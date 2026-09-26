@@ -23,6 +23,9 @@
 //!     Rather than drop those frames, a source that yields one is moved to a
 //!     software session, which lands its pictures in system memory where they
 //!     can be painted.
+//!
+//! [`upload_planar`]: ui::gpu_video::upload_planar
+//! [`YuvConverter`]: ui::gpu_video::YuvConverter
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

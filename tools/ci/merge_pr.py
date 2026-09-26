@@ -16,7 +16,7 @@ import urllib.request
 
 
 HOST = "code.sandbox.example"
-REPO = "qos/qos"
+REPO = "tilo/tilo"
 BRANCH = "main"
 INTEGRATOR = "tilo-integrator"
 REVIEWERS = {"claude"}

@@ -1347,16 +1347,19 @@ enum PrintScreenArbitration {
     Blocked(&'static str),
 }
 
+/// Where the desktop-control preferences come from. The persisted variant
+/// caches the last snapshot read from settings storage; the compositor
+/// refreshes it at its settings reload point, so key dispatch and paint
+/// never read the file.
 enum DesktopControlsSource {
-    Persisted,
+    Persisted(settings_store::hardware::DesktopControlsConfig),
     Explicit(settings_store::hardware::DesktopControlsConfig),
 }
 
 impl DesktopControlsSource {
     fn config(&self) -> settings_store::hardware::DesktopControlsConfig {
         match self {
-            Self::Persisted => settings_store::hardware::DesktopControlsConfig::load(),
-            Self::Explicit(config) => *config,
+            Self::Persisted(config) | Self::Explicit(config) => *config,
         }
     }
 
@@ -3001,6 +3004,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -3052,7 +3058,9 @@ impl ShellOverlayHost {
                 room_records,
                 collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
-                desktop_controls: DesktopControlsSource::Persisted,
+                desktop_controls: DesktopControlsSource::Persisted(
+                    settings_store::hardware::DesktopControlsConfig::load(),
+                ),
                 qs_root: QuickSettingsRoot::load_persisted(),
                 qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
                 qs_actions,
@@ -11309,6 +11317,25 @@ impl ShellOverlayHost {
         Ok(())
     }
 
+    /// The effective shortcut table. Pre-routing checks that run for every
+    /// input event (the session-lock chord) read this snapshot instead of
+    /// settings storage.
+    pub(crate) fn shortcut_config(&self) -> &settings_store::hardware::ShortcutConfig {
+        &self.shortcut_config
+    }
+
+    /// Replace the cached desktop-control preferences after settings
+    /// storage changed. A host constructed with explicit preferences keeps
+    /// them: it does not follow the settings file.
+    pub fn set_desktop_controls_config(
+        &mut self,
+        config: settings_store::hardware::DesktopControlsConfig,
+    ) {
+        if let DesktopControlsSource::Persisted(cached) = &mut self.desktop_controls {
+            *cached = config;
+        }
+    }
+
     /// Resolve a press against the effective user-edited shortcut table.
     ///
     /// The compositor asks before offering a press to a focused Wayland
@@ -13539,7 +13566,11 @@ impl ShellOverlayHost {
                 DeviceFabricUiAction::StopRemoteAudio {
                     session_id: route.session_id,
                 },
-                format!("Stopped routing {}", route.label),
+                if route.phase == crate::shell::remote_audio::RemoteAudioPhase::Interrupted {
+                    format!("Dismissed interrupted {}", route.label)
+                } else {
+                    format!("Stopped routing {}", route.label)
+                },
             )),
             DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
                 let (allow, decline) =
@@ -17394,8 +17425,14 @@ impl Widget for ShellOverlayHost {
                                         ),
                                         DeviceFabricPaneRow::RemoteAudioRoute(route) => (
                                             route.label,
-                                            "Remote audio route active or awaiting approval; activate to stop"
-                                                .into(),
+                                            if route.phase
+                                                == crate::shell::remote_audio::RemoteAudioPhase::Interrupted
+                                            {
+                                                "Remote audio route interrupted; activate to dismiss"
+                                            } else {
+                                                "Remote audio route active or awaiting approval; activate to stop"
+                                            }
+                                            .into(),
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::RemoteCaptureConsent(consent) => (
@@ -22956,15 +22993,20 @@ impl ShellOverlayHost {
                         .iter()
                         .find(|device| device.id == route.peer)
                         .map_or("certified device", |device| device.label.as_str());
-                    let phase = match route.phase {
+                    let detail = match route.phase {
                         crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
-                            "waiting for approval"
+                            format!("waiting for approval with {peer} · select to stop")
                         }
-                        crate::shell::remote_audio::RemoteAudioPhase::Streaming => "streaming",
+                        crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
+                            format!("streaming with {peer} · select to stop")
+                        }
+                        crate::shell::remote_audio::RemoteAudioPhase::Interrupted => {
+                            format!("interrupted with {peer} · select to dismiss")
+                        }
                     };
                     (
                         route.label.clone(),
-                        format!("{phase} with {peer} · select to stop"),
+                        detail,
                         ui::icons::Icon::Volume2,
                         true,
                         true,
@@ -26185,8 +26227,25 @@ mod palette_dispatch_tests {
 
     fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let (mut host, chrome) = host_with_chrome();
-        host.desktop_controls = DesktopControlsSource::Persisted;
+        host.desktop_controls = DesktopControlsSource::Persisted(
+            settings_store::hardware::DesktopControlsConfig::default(),
+        );
         (host, chrome)
+    }
+
+    #[test]
+    fn desktop_controls_refresh_only_replaces_a_persisted_snapshot() {
+        let enabled = settings_store::hardware::DesktopControlsConfig { vim_mode: true };
+        let (mut persisted, _chrome) = host_with_launch_polling();
+        persisted.set_desktop_controls_config(enabled);
+        assert!(persisted.desktop_controls.config().vim_mode);
+
+        let (mut explicit, _chrome) = host_with_chrome();
+        explicit.set_desktop_controls_config(enabled);
+        assert!(
+            !explicit.desktop_controls.config().vim_mode,
+            "a host given explicit preferences must not follow the settings file"
+        );
     }
 
     #[test]

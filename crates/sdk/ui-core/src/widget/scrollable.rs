@@ -14,7 +14,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::BlendMode;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 #[derive(Clone, Copy, Debug)]
@@ -167,6 +167,9 @@ pub struct Scrollable {
     /// Theme setting sampled by the latest draw. It prevents a reduced-motion
     /// bar (which intentionally remains visible) from requesting fade ticks.
     reduce_motion_active: bool,
+    /// Release-velocity samples of the continuous (touchpad/touchscreen)
+    /// gesture in progress; a fast lift turns into [`Self::fling`].
+    kinetic: crate::virtual_viewport::KineticSampler,
     /// Survives this widget being dropped and rebuilt — needed by apps that
     /// recreate their whole widget subtree every frame. Every offset
     /// mutation writes back through `clamp`. See
@@ -226,6 +229,7 @@ impl Scrollable {
             bar_visible_last_draw: Cell::new(false),
             terminal_fade_damage: Cell::new(false),
             reduce_motion_active: false,
+            kinetic: crate::virtual_viewport::KineticSampler::new(),
             persisted_offset: None,
             content_gutter: 0.0,
             bottom_content_inset: 0.0,
@@ -966,10 +970,45 @@ impl Scrollable {
     /// plain wheel (a tilt wheel's own X delta passes through untouched).
     /// Returns `true` when the view actually moved, so an at-the-edge
     /// wheel can bubble to an outer/sibling scroll region.
-    fn on_wheel(&mut self, delta: &MouseScrollDelta, shift: bool, scale_factor: f64) -> bool {
+    ///
+    /// Pixel deltas (touchpads, touchscreens) follow the fingers 1:1; when
+    /// the gesture's `Ended` phase arrives while they were still moving, the
+    /// content keeps gliding and decelerates, unless motion is reduced.
+    fn on_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        phase: TouchPhase,
+        shift: bool,
+        scale_factor: f64,
+    ) -> bool {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         const LINE_PX: f32 = 60.0;
+        let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
+        if pixel {
+            match phase {
+                TouchPhase::Ended => {
+                    let release = self.kinetic.release(crate::time::now());
+                    return match release {
+                        Some((vx, vy)) if !self.reduce_motion_active => {
+                            self.fling(px(vx), px(vy));
+                            true
+                        }
+                        _ => false,
+                    };
+                }
+                TouchPhase::Cancelled => {
+                    self.kinetic.reset();
+                    return false;
+                }
+                TouchPhase::Started => self.kinetic.reset(),
+                TouchPhase::Moved => {}
+            }
+        } else {
+            self.kinetic.reset();
+        }
+        // Fingers (or a wheel) back on the input catch a glide in progress.
+        self.fling(0.0, 0.0);
         let (mut dx, mut dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
             MouseScrollDelta::PixelDelta(pp) => {
@@ -982,7 +1021,15 @@ impl Scrollable {
         }
         let before = (self.offset_x, self.offset_y);
         self.scroll_by(dx, dy);
-        (self.offset_x, self.offset_y) != before
+        let (moved_x, moved_y) = (self.offset_x - before.0, self.offset_y - before.1);
+        let moved = moved_x != 0.0 || moved_y != 0.0;
+        if !moved {
+            self.kinetic.reset();
+        } else if pixel {
+            self.kinetic
+                .record(f64::from(moved_x), f64::from(moved_y), crate::time::now());
+        }
+        moved
     }
 }
 
@@ -1416,7 +1463,7 @@ impl Widget for Scrollable {
             }
             _ => {}
         }
-        if let WindowEvent::MouseWheel { delta, .. } = event {
+        if let WindowEvent::MouseWheel { delta, phase, .. } = event {
             if *handled || !self.content_viewport_rect().contains(self.last_cursor) {
                 return;
             }
@@ -1442,7 +1489,7 @@ impl Widget for Scrollable {
             }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
-            *handled = self.on_wheel(delta, mods.state().shift_key(), scale_factor);
+            *handled = self.on_wheel(delta, *phase, mods.state().shift_key(), scale_factor);
             return;
         }
 

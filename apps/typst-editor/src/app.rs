@@ -21,7 +21,7 @@
 //!
 //! There is no permanent bottom status strip: the caret/page/zoom readout and
 //! the compile status float as two transient [`ui::StatusBubble`] pills in the
-//! bottom corners (see [`TypstApp::draw_status_bubbles`]), so both content
+//! bottom corners (see `TypstApp::draw_status_bubbles`), so both content
 //! panes span all the way to the window bottom.
 //!
 //! State that belongs in the CRDT — the document source — lives in an

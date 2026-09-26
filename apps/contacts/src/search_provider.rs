@@ -2,7 +2,7 @@
 //!
 //! This is the reference wiring for the shared search framework
 //! ([`ui::search`]): Contacts declares its searchable type by implementing
-//! [`SearchProvider`], turning matching address-book records and durable group
+//! `SearchProvider`, turning matching address-book records and durable group
 //! names into typed [`SearchResult`]s that any search surface can rank and
 //! present alongside every other provider's hits. Each hit addresses an
 //! exported `open` view action, so pointer, keyboard, assistive technology and

@@ -1,8 +1,8 @@
-//! Panel rendering + interaction for [`ContainersApp`](crate::app::ContainersApp).
+//! Panel rendering + interaction for [`ContainersApp`].
 //!
 //! Split out of `app.rs` to keep the widget-trait wiring legible. Everything
 //! here is an inherent method on `ContainersApp`: the `draw_*` methods paint a
-//! region and record [`Hit`] regions; `on_click` / `on_key` resolve input
+//! region and record `Hit` regions; `on_click` / `on_key` resolve input
 //! against those regions and mutate the CRDT view state.
 
 use automerge::AutoCommit;

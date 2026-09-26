@@ -81,7 +81,7 @@ use crate::compositor::accessibility::{NativeAccessibility, Request as Accessibi
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
-    combined_geometry, headless,
+    combined_geometry, headless, output_geometry,
 };
 use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
@@ -1750,6 +1750,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "room_activity": overlays.room_activity,
             },
             "search_scope": format!("{:?}", chrome.search_scope),
+            // Applications' status-notifier items and their menus, as the top bar shows them.
+            "tray": crate::tray::Tray::global().state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -2139,6 +2141,27 @@ fn dispatch_synth_event(
     );
 }
 
+/// The pointer click a confirmed one-finger tap at `(x, y)` stands for, for
+/// taps that did not already reach a client over `wl_touch`.
+fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
+    [
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(x, y),
+        },
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    ]
+}
+
 /// Build the shell-side raw touch event for the test-control adapter. The
 /// adapter delegates ownership to [`DirectTouchOwnership`]; this merely puts
 /// that decision on the same chrome event wire as DRM's `touch_input_event`.
@@ -2252,23 +2275,12 @@ fn dispatch_test_control_touch(
                 if to_client {
                     forward_test_control_touch(state, fb, BackendTouchEvent::Up { slot: id });
                 }
-                if emulate_pointer {
-                    for event in [
-                        WindowEvent::CursorMoved {
-                            device_id: unsafe { std::mem::zeroed() },
-                            position: PhysicalPosition::new(last_x, last_y),
-                        },
-                        WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
-                            state: ElementState::Pressed,
-                            button: MouseButton::Left,
-                        },
-                        WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
-                            state: ElementState::Released,
-                            button: MouseButton::Left,
-                        },
-                    ] {
+                if emulate_pointer
+                    && state
+                        .as_deref()
+                        .is_none_or(State::touch_tap_needs_pointer_click)
+                {
+                    for event in touch_tap_pointer_events(last_x, last_y) {
                         dispatch_synth_event(&event, fb, ctx, state);
                     }
                 }
@@ -4856,8 +4868,14 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
         BackendKind::Headless => {
             // Initial size from `TILO_HEADLESS_SIZE` (shots-default fallback), keeping
             // headless env-var-driven. Skip `set_base_color`: no window to clear.
-            let (w, h) = headless::resolve_initial_size();
-            match HeadlessBackend::new(w, h) {
+            let outputs = match headless::resolve_initial_outputs() {
+                Ok(outputs) => outputs,
+                Err(e) => {
+                    eprintln!("tilo compositor: --backend headless: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match HeadlessBackend::with_outputs(outputs) {
                 Ok(b) => Box::new(b),
                 Err(e) => {
                     eprintln!("tilo compositor: --backend headless failed: {e}");
@@ -5816,6 +5834,32 @@ pub fn run() {
         }
     }
 
+    // Status-notifier watcher: applications' tray icons for the top bar and
+    // the action registry. Held for the session; a second watcher already on
+    // the bus (a nested session) leaves this one off.
+    let tray_handle: Option<
+        crate::session_runtime::Registration<crate::tray::watcher::WatcherHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "tray",
+            async move {
+                let conn = zbus::connection::Builder::session()?.build().await?;
+                crate::tray::watcher::serve(
+                    conn,
+                    std::sync::Arc::clone(crate::tray::Tray::global()),
+                )
+                .await
+            },
+            |_| {
+                tracing::info!(
+                    "tray: serving {} on session bus",
+                    crate::tray::WATCHER_BUS_NAME
+                );
+            },
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -5882,7 +5926,8 @@ pub fn run() {
     });
     // Reused per-iteration scratch so backend events process *after*
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
-    let mut pending_events: Vec<BackendEvent> = Vec::new();
+    let mut pending_events: std::collections::VecDeque<BackendEvent> =
+        std::collections::VecDeque::new();
 
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
@@ -6036,7 +6081,7 @@ pub fn run() {
         // nested DRM/libinput and test-control fds. Drain the backend now,
         // before any frame decision, so its level-triggered poll fd is cleared
         // in this same iteration instead of immediately waking calloop again.
-        backend.poll_events(&mut |event| pending_events.push(event));
+        backend.poll_events(&mut |event| pending_events.push_back(event));
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
             tracing::warn!(
@@ -6152,15 +6197,11 @@ pub fn run() {
                 AccessibilityRequest::Deactivated => {}
             }
         }
-        // `drain`, not `into_iter`: `pending_events` is declared once outside
-        // this loop and reused every tick to avoid a per-frame allocation on
-        // this hot path — `into_iter` would consume it, forcing a fresh `Vec` next iteration.
-        #[allow(
-            clippy::iter_with_drain,
-            reason = "pending_events is reused across ticks precisely to avoid a per-frame \
-                      allocation; into_iter() would consume it and defeat that"
-        )]
-        for event in pending_events.drain(..) {
+        // Popped rather than consumed: `pending_events` is declared once
+        // outside this loop and reused every tick to avoid a per-frame
+        // allocation on this hot path, and an event may expand into further
+        // events that must run next, before anything the backend queued later.
+        while let Some(event) = pending_events.pop_front() {
             match event {
                 BackendEvent::CloseRequested => {
                     close_requested = true;
@@ -6285,7 +6326,11 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if is_lock_chord(wev, test_control_ctx.modifiers) {
+                    } else if is_lock_chord(
+                        wev,
+                        test_control_ctx.modifiers,
+                        frame_builder.host().shortcut_config(),
+                    ) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
@@ -6445,6 +6490,18 @@ pub fn run() {
                             );
                         }
                         state.forward_client_touch(touch, target);
+                    } else if matches!(touch, crate::compositor::backend::TouchEvent::Down { .. }) {
+                        state.note_touch_down_withheld_from_clients();
+                    }
+                }
+                BackendEvent::TouchTap { x, y } => {
+                    // A tap whose touch sequence reached a client is that
+                    // client's alone. Otherwise it becomes one ordinary click,
+                    // processed right now through the physical pointer path.
+                    if state.touch_tap_needs_pointer_click() {
+                        for event in touch_tap_pointer_events(x, y).into_iter().rev() {
+                            pending_events.push_front(BackendEvent::Input(event));
+                        }
                     }
                 }
                 BackendEvent::Focus(focused) => {
@@ -6548,6 +6605,9 @@ pub fn run() {
             {
                 tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
             }
+            frame_builder.host_mut().set_desktop_controls_config(
+                settings_store::hardware::DesktopControlsConfig::load(),
+            );
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
@@ -6659,7 +6719,7 @@ pub fn run() {
         }
 
         // Advance the idle timers and apply any timeout-driven transitions (blank, auto-lock, suspend).
-        for t in session.tick(Instant::now()) {
+        for t in session.tick_inhibited(Instant::now(), &inhibit_registry) {
             if t == SessionTransition::Suspend {
                 // Idle-suspend is gated by the inhibitor registry (media playing, a task
                 // running); when inhibited, un-latch so it re-fires the instant the last inhibitor releases, no fresh input needed.
@@ -6918,6 +6978,15 @@ pub fn run() {
         } else {
             client_input::sync_keyboard_focus(&mut state, &frame_builder);
         }
+        // An app's idle inhibitor holds the screen on only while its window is visible.
+        crate::compositor::idle_inhibit::sync_idle_inhibitors(
+            &mut state,
+            &frame_builder,
+            &inhibit_registry,
+        );
+        let awake_holders =
+            inhibit_registry.active_reasons_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+        frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
@@ -8349,6 +8418,7 @@ pub fn run() {
     // Releases the D-Bus bus name and tears down the notification object
     // server before returning to the session wrapper.
     drop(notif_handle);
+    drop(tray_handle);
 }
 
 /// Publish a successful machine-level change to every shell surface that
@@ -8940,6 +9010,7 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         };
         let mut memberships = SurfaceOutputMemberships::default();
         assert_eq!(
@@ -8994,6 +9065,7 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         };
         let old_outputs = [output(0, 0), output(1, 100)];
         let moved_outputs = [output(0, 100), output(1, 0)];
@@ -10601,26 +10673,15 @@ mod tests {
     }
 }
 
-/// The refresh rate to advertise on `wl_output`, in millihertz. Derived
-/// from the cadence the compositor is actually pacing to, so client frame
-/// timing agrees with real production. `None` when the backend has no
-/// display; globals then advertise 60Hz rather than zero, which some toolkits divide by.
+/// The refresh rate to advertise on a `wl_output` whose backend output
+/// reports none of its own, in millihertz. Derived from the cadence the
+/// compositor is actually pacing to, so client frame timing agrees with real
+/// production. `None` when the backend has no display; globals then
+/// advertise 60Hz rather than zero, which some toolkits divide by.
 fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u32> {
     backend
         .refresh_interval()
-        .filter(|d| !d.is_zero())
-        .map(|d| {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the cast to u32 \
-                          neither truncates a fraction nor loses a sign"
-            )]
-            let mhz = (1000.0 / d.as_secs_f64())
-                .round()
-                .clamp(0.0, f64::from(u32::MAX)) as u32;
-            mhz
-        })
+        .and_then(crate::compositor::backend::interval_to_mhz)
 }
 
 /// Rectangles of Wayland root surfaces that are actually visible in the
@@ -10672,35 +10733,7 @@ fn send_surface_output_changes(
     output_globals: &output_globals::OutputGlobals,
     changes: Vec<SurfaceOutputChange>,
 ) {
-    for change in changes {
-        let (surface_id, output_id) = match change {
-            SurfaceOutputChange::Enter { surface_id, output }
-            | SurfaceOutputChange::Leave { surface_id, output } => (surface_id, output),
-        };
-        let Some(surface) = state.surface_handles.get(&surface_id) else {
-            // Destruction needs no final protocol leave: the client has
-            // already destroyed the resource. Drop the tracker entry on its
-            // next geometry reconciliation instead of resurrecting it here.
-            continue;
-        };
-        let Some(output) = output_globals.handle(output_id) else {
-            // Call ordering makes this an invariant breach, not a retryable
-            // state: removed outputs leave before sync withdraws their global,
-            // and current outputs reconcile after synchronous sync created or
-            // updated every handle. If a handle nevertheless vanished, there
-            // is no client-side output object on which a leave can be sent.
-            tracing::error!(
-                surface_id,
-                output = output_id.0,
-                "wl_surface output transition has no advertised wl_output handle"
-            );
-            continue;
-        };
-        match change {
-            SurfaceOutputChange::Enter { .. } => output.enter(surface),
-            SurfaceOutputChange::Leave { .. } => output.leave(surface),
-        }
-    }
+    output_globals.send_surface_changes(&state.surface_handles, changes);
 }
 
 fn reconcile_surface_output_memberships(
@@ -10772,25 +10805,6 @@ fn apply_shell_gesture(
             }
         }
     });
-}
-
-/// Translate the backend's output list into the geometry the shell's
-/// strips resolve window widths against.
-///
-/// Outputs with a zero dimension are dropped: a connector mid-modeset
-/// reports 0×0, which would hand a strip a display it can't place a window on.
-fn output_geometry(
-    outputs: &[crate::compositor::backend::Output],
-) -> Vec<crate::shell::overlay_host::OutputGeometry> {
-    outputs
-        .iter()
-        .filter(|o| o.size.0 > 0 && o.size.1 > 0)
-        .map(|o| crate::shell::overlay_host::OutputGeometry {
-            x: f64::from(o.position.0),
-            width: f64::from(o.size.0),
-            height: f64::from(o.size.1),
-        })
-        .collect()
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
@@ -11138,6 +11152,7 @@ mod output_geometry_tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
         ];
         let geo = output_geometry(&outs);
@@ -11167,6 +11182,7 @@ mod output_geometry_tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
         ];
         let centre = vello::kurbo::Point::new(2000.0, 400.0);
@@ -11210,6 +11226,7 @@ mod external_floating_security_tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         }
     }
 

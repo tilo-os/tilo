@@ -34,6 +34,8 @@ pub mod hosted;
 #[cfg(target_os = "linux")]
 pub mod hosted_test_control;
 pub mod idle;
+#[cfg(target_os = "linux")]
+pub mod idle_inhibit;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;

@@ -1,7 +1,7 @@
 //! Fluent localization for Files.
 //!
 //! Catalogs are embedded so standalone, sandboxed, headless and test runs all
-//! resolve the same copy, through the toolkit's [`ui::i18n`] manager. Locale
+//! resolve the same copy, through the toolkit's [`mod@ui::i18n`] manager. Locale
 //! selection follows the usual POSIX variables (`LC_ALL`, `LC_MESSAGES`,
 //! `LANGUAGE`, `LANG`) and falls back per-message to `en-US`.
 

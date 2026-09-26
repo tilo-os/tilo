@@ -11,7 +11,7 @@
 //!     single image across every cell is not a filmstrip; it is one picture
 //!     repeated.
 //!
-//! Frames come from a **bounded pool** of decode workers ([`MAX_WORKERS`]),
+//! Frames come from a **bounded pool** of decode workers (`MAX_WORKERS`),
 //! each owning one pipeline that is reused across every request for the same
 //! source. Standing up a whole engine per thumbnail — one `GStreamer` pipeline
 //! per cell — is what made a scrolled timeline unusable.
@@ -705,7 +705,7 @@ impl ThumbnailCache {
     /// The filmstrip frame to draw for source time `t` (seconds).
     ///
     /// Exact bucket when it has been decoded; otherwise a decoded frame from
-    /// the same source within [`NEAR_BUCKETS`] (a real frame a moment away,
+    /// the same source within `NEAR_BUCKETS` (a real frame a moment away,
     /// while the exact one is still decoding); otherwise the generated
     /// representative. Never a frame from elsewhere in the clip, never one
     /// from a different source, and never invented pixels dressed as a decode

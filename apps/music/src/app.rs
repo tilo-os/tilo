@@ -3999,7 +3999,7 @@ impl MusicApp {
     }
 
     /// Stage a track context menu open for a `--shots` frame. Deferred to the
-    /// first `sync` (the catalog is empty at construction); see [`apply_shot_stage`].
+    /// first `sync` (the catalog is empty at construction); see `apply_shot_stage`.
     pub fn snap_track_menu(&mut self) {
         self.shot_stage = Some(ShotStage::TrackMenu);
         // Default the shot to the Songs library so the menu has rows behind it.

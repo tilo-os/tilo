@@ -6,7 +6,7 @@
 //! about scroll performance on the thumbnail grids:
 //!
 //! 1. **Lazy, rebuild-free image loading.** The card holds an [`ImageStore`]
-//!    handle + the avatar URL and looks the decoded image up in [`sync`], so a
+//!    handle + the avatar URL and looks the decoded image up in [`sync`](crate::sync), so a
 //!    photo that finishes downloading folds in on the next *redraw* — no
 //!    whole-tree structural rebuild (which is what `imgs.get(url)` at build time
 //!    forced, via the app's image-pending refresh, on every single completion).

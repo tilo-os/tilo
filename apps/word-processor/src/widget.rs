@@ -5593,10 +5593,10 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Assemble the full accessibility node tree: a [`Role::Document`] root holding
+    /// Assemble the full accessibility node tree: a `Role::Document` root holding
     /// one node per block (headings with level, paragraphs/list items with text,
-    /// images with alt text, tables as [`Role::Table`]/[`Role::Cell`]), followed by
-    /// a [`Role::Toolbar`] group of formatting buttons. [`Widget::accessibility`]
+    /// images with alt text, tables as `Role::Table`/`Role::Cell`), followed by
+    /// a `Role::Toolbar` group of formatting buttons. [`Widget::accessibility`]
     /// returns this tree's root so the host's per-widget path surfaces the document.
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
@@ -10164,7 +10164,7 @@ impl Widget for WordProcessorWidget {
     }
 
     /// The word processor's local accessibility semantics: the editable
-    /// [`Role::Document`] root. Blocks render directly, not as child widgets, so
+    /// `Role::Document` root. Blocks render directly, not as child widgets, so
     /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
     /// rather than `children()`; convert the carrier into real synthetic
     /// children so AccessKit, AT-SPI and the built-in reader all receive it.
@@ -10375,7 +10375,7 @@ impl Widget for WordProcessorWidget {
     }
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// a [`WordProcessorAction`](crate::actions) through
-    /// [`Self::perform_action`], so it records one undo boundary bracketing the
+    /// `Self::perform_action`, so it records one undo boundary bracketing the
     /// affordance's change (the button-driven twin of the Ctrl+K palette).
     /// Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
