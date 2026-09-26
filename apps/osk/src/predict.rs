@@ -125,6 +125,12 @@ impl Predictor {
         *count = count.saturating_add(1);
     }
 
+    /// Whether this user has committed `word` before (in any context).
+    pub fn has_learned(&self, word: &str) -> bool {
+        let word = word.to_lowercase();
+        self.learned.values().any(|words| words.contains_key(&word))
+    }
+
     /// Forget all on-device adaptation immediately. The embedded dictionary
     /// and bundled bigram model remain available, but no typed words stay in
     /// this process after a privacy reset.
