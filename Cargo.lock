@@ -14466,6 +14466,9 @@ dependencies = [
 [[package]]
 name = "tilo-clock"
 version = "0.1.0"
+dependencies = [
+ "web-time",
+]
 
 [[package]]
 name = "tilo-connected-protocol"

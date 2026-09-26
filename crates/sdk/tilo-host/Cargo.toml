@@ -33,7 +33,6 @@ hex.workspace = true
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
 tilo-rt.workspace = true
-tokio = { workspace = true, features = ["full"] }
 thiserror.workspace = true
 tracing.workspace = true
 tts = { path = "../../system/tts" }
@@ -55,6 +54,14 @@ arboard = { workspace = true, features = ["image-data"], optional = true }
 # OpenURI portal instead.
 open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+# The browser has no sockets, processes or signals: tokio's `net` pulls mio,
+# which refuses to build for wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native
