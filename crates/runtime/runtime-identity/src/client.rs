@@ -83,10 +83,12 @@ impl BrokerSigningIdentity {
                     reason,
                 )))
             }
-            wire::Response::Signature(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "identity broker returned an invalid metadata response",
-            ))),
+            wire::Response::Signature(_) | wire::Response::ChannelKeys { .. } => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "identity broker returned an invalid metadata response",
+                )))
+            }
         }
     }
 
@@ -177,12 +179,67 @@ impl BrokerSigningIdentity {
         })
     }
 
+    /// Ask for the content keys of one document route. The host checks the
+    /// route against the connection's launch binding and the caller's live
+    /// role; it never hands out keys of another app or workspace.
+    ///
+    /// # Errors
+    /// Returns transport/framing errors or the broker's authorization refusal.
+    pub fn channel_keys(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        known_generation: u64,
+    ) -> Result<wire::ChannelKeysReply, NotAvailable> {
+        let mut stream = self.stream.lock().map_err(|_| {
+            NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+        })?;
+        write_frame(
+            &mut **stream,
+            &wire::Request::ChannelKeys {
+                workspace_id: workspace_id.to_owned(),
+                app_id: app_id.to_owned(),
+                record_id: record_id.to_owned(),
+                known_generation,
+            },
+        )?;
+        channel_keys_reply(read_frame::<wire::Response>(&mut **stream)?)
+    }
+
     fn signature(&self, request: &wire::Request) -> Result<[u8; 64], NotAvailable> {
         let mut stream = self.stream.lock().map_err(|_| {
             NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
         })?;
         write_frame(&mut **stream, request)?;
         read_signature_response(&mut **stream)
+    }
+}
+
+pub(super) fn channel_keys_reply(
+    response: wire::Response,
+) -> Result<wire::ChannelKeysReply, NotAvailable> {
+    match response {
+        wire::Response::ChannelKeys {
+            access,
+            generation,
+            keys,
+        } => Ok(wire::ChannelKeysReply {
+            access,
+            generation,
+            keys: (!keys.is_empty()).then_some(keys),
+        }),
+        wire::Response::Denied(reason) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            reason,
+        ))),
+        wire::Response::Error(reason) => {
+            Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
+        }
+        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity broker returned an invalid channel-keys response",
+        ))),
     }
 }
 
@@ -299,6 +356,74 @@ mod tests {
         match result {
             Err(NotAvailable::ConnectionFailed(error)) => error.kind(),
             _ => panic!("expected connection failure"),
+        }
+    }
+
+    #[test]
+    fn channel_keys_carry_the_route_and_report_every_access_state() {
+        let (stream, output) = channel(&[
+            metadata(),
+            wire::Response::ChannelKeys {
+                access: wire::ChannelAccess::Ready,
+                generation: 4,
+                keys: vec![1, 2, 3],
+            },
+            wire::Response::ChannelKeys {
+                access: wire::ChannelAccess::Ready,
+                generation: 4,
+                keys: Vec::new(),
+            },
+            wire::Response::ChannelKeys {
+                access: wire::ChannelAccess::Waiting,
+                generation: 5,
+                keys: Vec::new(),
+            },
+            wire::Response::Denied("not a member".into()),
+            wire::Response::Signature(vec![1; 64]),
+        ]);
+        let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
+        let ready = identity
+            .channel_keys("workspace", "so.tilo.notes", "record", 0)
+            .unwrap();
+        assert_eq!(ready.access, wire::ChannelAccess::Ready);
+        assert_eq!(ready.keys.as_deref(), Some([1, 2, 3].as_slice()));
+        let unchanged = identity
+            .channel_keys("workspace", "so.tilo.notes", "record", 4)
+            .unwrap();
+        assert_eq!(unchanged.keys, None);
+        let waiting = identity
+            .channel_keys("workspace", "so.tilo.notes", "record", 4)
+            .unwrap();
+        assert_eq!(waiting.access, wire::ChannelAccess::Waiting);
+        assert_eq!(
+            error_kind(identity.channel_keys("workspace", "so.tilo.notes", "record", 5)),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            error_kind(identity.channel_keys("workspace", "so.tilo.notes", "record", 5)),
+            io::ErrorKind::InvalidData
+        );
+        let captured = output.lock().expect("output").clone();
+        let mut requests = Cursor::new(captured);
+        let _ = read_frame::<wire::Request>(&mut requests).expect("metadata request");
+        match read_frame::<wire::Request>(&mut requests).expect("keys request") {
+            wire::Request::ChannelKeys {
+                workspace_id,
+                app_id,
+                record_id,
+                known_generation,
+            } => {
+                assert_eq!(
+                    (
+                        workspace_id.as_str(),
+                        app_id.as_str(),
+                        record_id.as_str(),
+                        known_generation
+                    ),
+                    ("workspace", "so.tilo.notes", "record", 0)
+                );
+            }
+            _ => panic!("wrong channel-keys request"),
         }
     }
 
