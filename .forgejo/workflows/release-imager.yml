@@ -253,7 +253,7 @@ jobs:
             if [[ ${TILO_GENERIC_TARGET:-false} == true ]]; then
               index_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "docker://$TILO_PUBLISHED_OS_IMAGE")"
               child_digest="$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest] | if length == 1 then .[0] else error("index must have one ARM64 child") end' <<<"$index_raw")"
-              target_image="code.tilo.so/tilo/tilo@$child_digest"
+              target_image="registry.tilo.so/tilo/tilo@$child_digest"
               target_profile=generic
             else
               target_image="$TILO_LENOVO_TARGET_IMAGE"

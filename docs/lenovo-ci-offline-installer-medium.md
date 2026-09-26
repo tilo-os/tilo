@@ -11,7 +11,7 @@ Dispatch `release-imager.yml` on `main` to build both proof media in one CI run:
 installer_only=true
 generic_target=true
 lenovo_target_image=code.tilo.so/tilo/tilo@sha256:<CI ARM64 child digest>
-published_os_image=code.tilo.so/tilo/tilo@sha256:<signed generic multiarch index>
+published_os_image=registry.tilo.so/tilo/tilo@sha256:<signed generic multiarch index>
 ```
 
 The generic medium gives a full VM install and first-boot proof through the

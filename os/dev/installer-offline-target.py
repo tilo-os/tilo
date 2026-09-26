@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 import shutil
 
-REF = re.compile(r"code\.tilo\.so/tilo/tilo@(sha256:[0-9a-f]{64})\Z")
+REF = re.compile(r"(registry\.tilo\.so/tilo/tilo|code\.tilo\.so/tilo/tilo)@(sha256:[0-9a-f]{64})\Z")
+# Board images carry private firmware and stay on the forge's private registry.
+REPOSITORY = {"generic": "registry.tilo.so/tilo/tilo", "lenovo-83ed": "code.tilo.so/tilo/tilo"}
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 IMAGE = {"application/vnd.oci.image.manifest.v1+json",
          "application/vnd.docker.distribution.manifest.v2+json"}
@@ -48,14 +50,15 @@ def verify(directory):
             "target metadata fields differ")
     match = REF.fullmatch(metadata["target_ref"])
     require(metadata["schema"] == "tilo.installer-offline-target.v1"
-            and match is not None and metadata["target_digest"] == match.group(1)
+            and match is not None and metadata["target_digest"] == match.group(2)
             and metadata["architecture"] == "aarch64"
             and metadata["hardware_profile"] in ("generic", "lenovo-83ed")
+            and match.group(1) == REPOSITORY[metadata["hardware_profile"]]
             and isinstance(metadata["update_origin"], str)
             and (re.fullmatch(r"code\.tilo\.so/tilo/tilo:lenovo-83ed-[0-9a-f]{40}",
                               metadata["update_origin"]) is not None
                  if metadata["hardware_profile"] == "lenovo-83ed"
-                 else re.fullmatch(r"code\.tilo\.so/tilo/tilo:gen[1-9][0-9]*",
+                 else re.fullmatch(r"registry\.tilo\.so/tilo/tilo:gen[1-9][0-9]*",
                                    metadata["update_origin"]) is not None),
             "target metadata does not pin a supported CI ARM64 child")
     layout = directory / "oci"

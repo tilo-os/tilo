@@ -98,7 +98,7 @@ Select the profile when building on native aarch64 Linux, after configuring
 the normal pinned build inputs, registry access, generation and owner key:
 
 Set `TILO_TARGET_IMGREF` explicitly to the reviewed update tag or SHA-256 digest
-in the signature-required `code.tilo.so/tilo/tilo` repository. It must identify
+in the signature-required `registry.tilo.so/tilo/tilo` repository. It must identify
 a published channel or artifact that retains this board's firmware and device
 tree; this guide does not designate a release that has not been published.
 Non-generic builds reject a missing reference before building and bind it into

@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def reference(value):
-    if not re.fullmatch(r"code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}", value):
+    if not re.fullmatch(r"(?:registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}", value):
         raise ValueError("expected immutable tilo registry reference")
     return value
 

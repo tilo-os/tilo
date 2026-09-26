@@ -257,34 +257,9 @@ pub fn describe_apply(result: &ApplyResult) -> String {
     text
 }
 
-/// The forge registry that publishes images and CI layers.
-pub const REGISTRY: &str = "code.tilo.so";
-
-/// Output that means the registry refused our credentials.
-pub fn is_auth_failure(text: &str) -> bool {
-    text.contains("401") || text.contains("reqPackageAccess") || text.contains("unauthorized")
-}
-
-/// Preflight for anything that pulls from [`REGISTRY`] on this host.
-fn registry_login(runner: &mut dyn Runner) -> Result<String, CliError> {
-    let output = runner
-        .output(&CommandLine::new(
-            "podman",
-            &["login", "--get-login", REGISTRY],
-        ))
-        .map_err(|_| CliError::ToolMissing {
-            tool: "podman".into(),
-            purpose: format!("pull from {REGISTRY}"),
-        })?;
-    if output.success {
-        Ok(output.stdout.trim().to_owned())
-    } else {
-        Err(CliError::RegistryLogin {
-            place: "this host".into(),
-            registry: REGISTRY.into(),
-        })
-    }
-}
+/// The registry that publishes images and CI layers. Anyone may pull from
+/// it: no pull needs a login.
+pub const REGISTRY: &str = "registry.tilo.so";
 
 /// `path`, or its nearest ancestor that exists.
 fn existing_ancestor(path: &Path) -> &Path {
@@ -781,10 +756,7 @@ impl App {
         let facts = HostFacts::probe(&mut self.runner);
         let mut checks = doctor::host_checks(&facts);
         let token = disk::find_token();
-        checks.extend(doctor::credential_checks(
-            token.as_ref(),
-            registry_login(&mut self.runner),
-        ));
+        checks.extend(doctor::credential_checks(token.as_ref()));
         let root = self.base_dir();
         match self.manifest() {
             Ok(Some(_)) => checks.push(Check::ok("manifest", "os/components.toml found")),
@@ -1995,7 +1967,6 @@ impl App {
     /// pulled here so a dev image can be built on top of it.
     fn resolve_ci_upgrade(&mut self, tag: &str) -> Result<CiUpgrade, CliError> {
         let candidates = imageup::ci_candidates(tag, std::env::consts::ARCH);
-        registry_login(&mut self.runner)?;
         let runner = &mut self.runner;
         let found = self.receipt.phase("resolve", || -> Result<_, CliError> {
             for image in &candidates.dev_images {
@@ -2021,7 +1992,7 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
                 problem: format!("names no CI build this host can pull (tried {tried})"),
-                fix: "list the builds CI pushed: skopeo list-tags docker://code.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
         if let CiUpgrade::Base(base) = &found {
@@ -2069,9 +2040,6 @@ impl App {
                 None => ("registry", String::new()),
             },
         };
-        if transport == "registry" && imgref.starts_with(REGISTRY) {
-            registry_login(&mut self.runner)?;
-        }
         self.receipt.set("image", &imgref);
         let stage = Stage {
             transport,
@@ -2216,12 +2184,6 @@ impl App {
         };
         let staged = self.vm_locked(vm, endpoint, &words)?;
         if !staged.success {
-            if stage.transport == "registry" && is_auth_failure(&staged.stderr) {
-                return Err(CliError::RegistryLogin {
-                    place: format!("VM {}", vm.name),
-                    registry: REGISTRY.into(),
-                });
-            }
             return Err(CliError::CommandFailed {
                 command: words.join(" "),
                 status: staged.status,
@@ -2926,17 +2888,10 @@ impl App {
                     status: "unexpected result".into(),
                     stderr: "an app install instead of a layer".into(),
                 }),
-                Err(CliError::Remote(error)) if error.code == tilo_vm_protocol::code::AUTH => {
-                    Err(CliError::RegistryLogin {
-                        place: format!("VM {}", vm.name),
-                        registry: REGISTRY.into(),
-                    })
-                }
                 Err(error) => Err(error),
             };
         }
         // No podman in the VM: pull here, upload the layer.
-        registry_login(&mut self.runner)?;
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         let staging = build::Staging::new(&worktree)?;
         let arch = remote.hello.arch.clone();
@@ -3918,7 +3873,7 @@ pub fn connect_failure(
             true,
             match bootc {
                 Some(true) => vec![
-                    format!("tilo-vm vm upgrade {vm} --image code.tilo.so/tilo/tilo-vm:<tag>"),
+                    format!("tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>"),
                     ssh,
                 ],
                 Some(false) => vec!["tilo-vm vm create <name>".into(), ssh],
@@ -4485,17 +4440,6 @@ mod tests {
         for key in ["error", "hint", "see"] {
             assert_eq!(merged[key], failed[key]);
         }
-    }
-
-    #[test]
-    fn registry_auth_failures_are_recognised() {
-        assert!(is_auth_failure(
-            "Error: reading manifest: unauthorized: reqPackageAccess"
-        ));
-        assert!(is_auth_failure(
-            "received unexpected HTTP status: 401 Unauthorized"
-        ));
-        assert!(!is_auth_failure("no space left on device"));
     }
 
     fn app_with_empty_registry(dir: &Path) -> App {

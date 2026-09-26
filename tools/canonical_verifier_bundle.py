@@ -33,7 +33,7 @@ def elf_arch(path, architecture):
 def identity(builder, source, architecture):
     channel.require(architecture in channel.ARCHES, 'unsupported verifier architecture')
     channel.digest(source, 40)
-    channel.require(re.fullmatch(r'code\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}', builder), 'immutable compatible builder required')
+    channel.require(re.fullmatch(r'registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}', builder), 'immutable compatible builder required')
 
 
 def produce(pkg, runtime, output, builder, source, architecture):

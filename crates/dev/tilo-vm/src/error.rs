@@ -9,14 +9,12 @@ use crate::host::Missing;
 /// The script that builds a dev disk locally, relative to the worktree.
 pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 
-// Two separate credentials, never interchangeable, although both take a
-// forge token with package read access as the secret.
+// Images are public on registry.tilo.so: pulls need no login. Only dev disk
+// downloads, from the forge's package registry, need a credential.
 
 /// What the forge token (`FORGEJO_TOKEN`, or an fgj or tea login) is for.
 pub const FORGE_TOKEN_USE: &str =
     "read only for dev disk downloads (vm create without --image, doctor's published-disk check)";
-/// What a podman registry login for code.tilo.so is for.
-pub const REGISTRY_LOGIN_USE: &str = "used only for image pulls: swap --from ci:/sha: layers (pulled in the VM when it has podman, else on this host) and vm upgrade (in the VM, with the VM's own login)";
 
 /// How the docs build tilo-vm; what to run when it is older than the VM.
 pub const REBUILD: &str =
@@ -124,8 +122,6 @@ pub enum CliError {
         free: String,
         floor: String,
     },
-    #[error("{place} is not logged in to {registry}")]
-    RegistryLogin { place: String, registry: String },
     #[error("vm ssh refuses `{command}`: it {change}")]
     RawWrite { command: String, change: String },
     #[error("unknown source '{0}'")]
@@ -283,7 +279,7 @@ impl CliError {
                 "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (quickuser, tilo): {install}"
             ),
             Self::DaemonMissing { vm, bootc: Some(true) } => format!(
-                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image code.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
+                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
             ),
             Self::DaemonMissing { bootc: Some(false), .. } | Self::NotBootc { .. } => {
                 NOT_BOOTC_FIX.into()
@@ -335,12 +331,6 @@ impl CliError {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
             }
             Self::LowDisk { .. } => "tilo-vm gc --dry-run   then   tilo-vm gc".into(),
-            Self::RegistryLogin { place, registry } if place == "this host" => format!(
-                "podman login {registry}   (user: your forge login, password: a forge token with package read access). podman keeps its own login: FORGEJO_TOKEN and fgj/tea logins do not count for image pulls"
-            ),
-            Self::RegistryLogin { registry, .. } => format!(
-                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json {registry}   (password: a forge token with package read access). The VM keeps its own login for image pulls; this host's logins do not reach it"
-            ),
             Self::RawWrite { .. } => {
                 "change the VM through tilo-vm instead, so it can be rolled back and other agents see it: a component: tilo-vm swap <component>   |   the image (/etc, units, packages): tilo-vm vm upgrade --from local   |   to run it by hand anyway, --raw is the escape hatch: tilo-vm vm ssh --raw -- <command>"
                     .into()
@@ -394,7 +384,7 @@ impl CliError {
                 "free space on that filesystem and rerun; an interrupted download resumes".into()
             }
             Self::ForgeAuth { token: None, .. } => {
-                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these, never podman's registry login".into()
+                "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these".into()
             }
             Self::ForgeAuth { token: Some(source), .. } => format!(
                 "the token from {source} lacks package read access or has expired; export FORGEJO_TOKEN=<token with package read access> and rerun"
@@ -488,7 +478,6 @@ impl CliError {
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
             | Self::ToolMissing { .. }
-            | Self::RegistryLogin { .. }
             | Self::ForgeAuth { .. }
             | Self::CommandFailed { .. }
             | Self::Unsupported { .. }
@@ -678,14 +667,6 @@ mod tests {
                 free: "1 GB".into(),
                 floor: "5 GB".into(),
             },
-            CliError::RegistryLogin {
-                place: "this host".into(),
-                registry: "code.tilo.so".into(),
-            },
-            CliError::RegistryLogin {
-                place: "VM dev".into(),
-                registry: "code.tilo.so".into(),
-            },
             CliError::RawWrite {
                 command: "cp shell /usr/bin/shell".into(),
                 change: "writes /usr/bin/shell".into(),
@@ -860,7 +841,6 @@ mod tests {
                 | CliError::ScopeMismatch { .. }
                 | CliError::ArchMismatch { .. }
                 | CliError::LowDisk { .. }
-                | CliError::RegistryLogin { .. }
                 | CliError::RawWrite { .. }
                 | CliError::InvalidSource(_)
                 | CliError::Io { .. } => {}
@@ -941,17 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_hints_name_the_one_login_each_operation_reads() {
-        let host = CliError::RegistryLogin {
-            place: "this host".into(),
-            registry: "code.tilo.so".into(),
-        }
-        .hint();
-        assert!(host.contains("podman login code.tilo.so"), "{host}");
-        assert!(
-            host.contains("FORGEJO_TOKEN and fgj/tea logins do not count"),
-            "{host}"
-        );
+    fn disk_downloads_name_the_forge_token() {
         let forge = CliError::ForgeAuth {
             url: "u".into(),
             status: 401,
@@ -959,10 +929,7 @@ mod tests {
         }
         .hint();
         assert!(forge.contains("FORGEJO_TOKEN"), "{forge}");
-        assert!(forge.contains("never podman's registry login"), "{forge}");
         assert!(FORGE_TOKEN_USE.contains("dev disk downloads"));
-        assert!(REGISTRY_LOGIN_USE.contains("swap --from ci:/sha:"));
-        assert!(REGISTRY_LOGIN_USE.contains("vm upgrade"));
     }
 
     #[test]

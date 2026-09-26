@@ -73,7 +73,7 @@ private key or cloud credential on the native fleet.
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`code.tilo.so/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
+`registry.tilo.so/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -385,7 +385,7 @@ administrators):
 | `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional GitHub binary repository in `OWNER/REPOSITORY` form; omit for `tilo-os/releases` |
 | `IMAGER_HOMEBREW_TAP_REPOSITORY` | optional GitHub tap repository; omit for `tilo-os/homebrew-tilo` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
-| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.tilo.so/tilo/tilo@sha256:...` manifest-list reference used by installer media |
+| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `registry.tilo.so/tilo/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the Tilo release EFI certificate (`keys/efi-signing.crt`) |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
@@ -399,8 +399,10 @@ administrators):
 | `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `tilo` |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
-`code.tilo.so`. Give its service account read-only access to the published
-Tilo image and its signature/attestation attachments. The workflow copies its
+`code.tilo.so`, where board (Lenovo) target images stay private; the generic
+Tilo images and their signature/attestation attachments are anonymously
+readable on `registry.tilo.so`. Give its service account read-only access to
+the private board images. The workflow copies its
 short-lived Podman auth file into a private Docker config for Cosign, then
 destroys both after use; installer-media CI never
 pushes an OS image or allocates a generation. Rotate it independently of
@@ -483,8 +485,9 @@ listed in the header of `os/dev/internal-bundle.py`.
 like `snapshot-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
 variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 
-- `REGISTRY_TOKEN` logs in to `code.tilo.so` to read the mirrored base and
-  push `tilo/tilo-wpe-buildroot`.
+- The job's Forgejo Actions ID token (`enable-openid-connect: true` and
+  `.forgejo/actions/tilo-registry-login`) pushes `tilo/tilo-wpe-buildroot`
+  to `registry.tilo.so`; the mirrored base is anonymously readable there.
 - `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
   buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
   preflight job refuses to start the multi-hour builds unless the KMS public

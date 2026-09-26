@@ -74,7 +74,7 @@ pub enum DaemonError {
     Job { step: String, detail: String },
     #[error("the VM's image has no {tool} (needed to {purpose})")]
     ToolMissing { tool: String, purpose: String },
-    #[error("the registry refused the VM's credentials for {image}")]
+    #[error("the registry refused to serve {image}")]
     RegistryAuth { image: String },
     #[error("{image} does not exist in the registry")]
     ImageNotFound { image: String },
@@ -202,7 +202,7 @@ impl DaemonError {
                 "start it again: tilo-vm slot restart --slot {slot}   (tilo-vm logs --slot {slot} says why it stopped)"
             ),
             Self::ControlMissing(_) => {
-                "run a dev image, which adds tilo-control: tilo-vm vm upgrade --image code.tilo.so/tilo/tilo-vm:<tag>"
+                "run a dev image, which adds tilo-control: tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>"
                     .into()
             }
             Self::Apply { .. } => "tilo-vm logs   (the unit journal usually names the cause)".into(),
@@ -233,10 +233,10 @@ impl DaemonError {
                 "build on a Linux host: tilo-vm swap <component> --builder host, or move the VM to a dev image that has it: tilo-vm vm upgrade".into()
             }
             Self::RegistryAuth { .. } => {
-                "tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.tilo.so   (password: a forge token with package read access). The VM keeps its own login for image pulls; the host's logins do not reach it".into()
+                "Tilo images on registry.tilo.so are public and need no login, so the registry refusing this pull means the reference is not a published Tilo image: check its name (registry.tilo.so/tilo/<image>:<tag>)".into()
             }
             Self::ImageNotFound { .. } => {
-                "check the tag: CI publishes code.tilo.so/tilo/tilo:main-<sha7> for main commits and :<version> for releases".into()
+                "check the tag: CI publishes registry.tilo.so/tilo/tilo:main-<sha7> for main commits and :<version> for releases".into()
             }
             Self::MissingInImage { .. } => {
                 "that image does not ship this component (an optional one, or an older image); pick another tag or build it: --from worktree".into()
@@ -414,10 +414,10 @@ mod tests {
                 purpose: "pull".into(),
             },
             DaemonError::RegistryAuth {
-                image: "code.tilo.so/tilo/tilo:main-abc1234".into(),
+                image: "registry.tilo.so/tilo/tilo:main-abc1234".into(),
             },
             DaemonError::ImageNotFound {
-                image: "code.tilo.so/tilo/tilo:nope".into(),
+                image: "registry.tilo.so/tilo/tilo:nope".into(),
             },
             DaemonError::MissingInImage {
                 image: "i".into(),

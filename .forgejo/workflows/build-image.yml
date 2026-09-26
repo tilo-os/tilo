@@ -96,8 +96,6 @@ jobs:
       - name: Read the revision of the latest published image
         id: published
         if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
-        env:
-          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           if ! command -v skopeo >/dev/null; then
@@ -111,17 +109,17 @@ jobs:
           fi
           revision=""
           if command -v skopeo >/dev/null; then
-            revision="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
+            revision="$(skopeo inspect --retry-times 3 \
               --override-os linux --override-arch amd64 \
-              docker://code.tilo.so/tilo/tilo:latest 2>/dev/null \
+              docker://registry.tilo.so/tilo/tilo:latest 2>/dev/null \
               | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || revision=""
           else
             echo '::warning::skopeo is unavailable; publishing without a freshness check'
           fi
           integration=""
           if command -v skopeo >/dev/null; then
-            integration="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
-              "docker://code.tilo.so/tilo/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
+            integration="$(skopeo inspect --retry-times 3 \
+              "docker://registry.tilo.so/tilo/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
               | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || integration=""
           fi
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
@@ -253,6 +251,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
     enable-openid-connect: true
+    env:
+      # Board images carry private firmware: they stay in the forge's private
+      # registry, which anonymous clients cannot read. Every other OS image is
+      # public on registry.tilo.so.
+      TILO_OS_REPOSITORY: ${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && 'code.tilo.so/tilo/tilo' || 'registry.tilo.so/tilo/tilo' }}
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -527,11 +530,15 @@ jobs:
           echo "TILO_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
           echo '::notice::using pinned prebuilt desktop payload'
 
-      # Log in on EVERY build: the build installs from the private, digest-pinned
-      # frozen RPM repo (RPMS_REF), pulled as a stage — so even build-only runs
-      # (main pushes / PRs) need registry read. Pushing the image still only
-      # happens on tags/dispatch (below).
-      - name: Log in to the code.tilo.so registry
+      # Every build input is anonymously readable. The login lets this run
+      # export its layer cache and, on tags/dispatch, push the image (below).
+      # A board build reads and writes its private cache and images on the
+      # forge's registry instead.
+      - name: Log in to registry.tilo.so
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.forgejo/actions/tilo-registry-login
+      - name: Log in to the private board registry
+        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: code.tilo.so
@@ -606,7 +613,7 @@ jobs:
         run: |
           set -euo pipefail
           . os/rpms-snapshot.env
-          [[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || {
+          [[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || {
             printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
             exit 1
           }
@@ -698,8 +705,8 @@ jobs:
                && "$HARDWARE_PROFILE" == lenovo-83ed ]] || {
               echo '::error::one-off Windows provider inputs require a Lenovo main dispatch'; exit 1;
             }
-            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
-               && "$WINDOWS_GUEST_CANDIDATE" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || {
+            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^(registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
+               && "$WINDOWS_GUEST_CANDIDATE" =~ ^(registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || {
               echo '::error::one-off Windows provider inputs require two immutable registry digests'; exit 1;
             }
             FEX_PAYLOAD_REF="$FEX_PAYLOAD_CANDIDATE"
@@ -743,6 +750,15 @@ jobs:
             [worker.oci]
               max-parallelism = 1
 
+      # A board build's layers include its private firmware, so its layer
+      # cache must never reach the public registry.
+      - name: Keep the board layer cache private
+        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        run: |
+          if [[ $TILO_LAYER_CACHE_REGISTRY == registry.tilo.so ]]; then
+            echo 'TILO_LAYER_CACHE_REGISTRY=code.tilo.so' >> "$GITHUB_ENV"
+          fi
+
       # Read the manifest through the builder that consumes the snapshot, so
       # its large RPM layer is pulled once, into BuildKit, instead of into
       # Docker first and BuildKit again.
@@ -763,7 +779,7 @@ jobs:
             *) printf 'unsupported WPE buildroot architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
           if [ "$WITH_BROWSER" = 1 ]; then
-            [[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
+            [[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
               printf 'no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot\n' "$(uname -m)" >&2
               exit 1
             }
@@ -930,11 +946,7 @@ jobs:
       # which is when a broken series would otherwise be discovered.
       - name: Resolve the image generation from the published series
         env:
-          # Explicit credentials rather than the auth file `docker login` left
-          # behind: the runner writes a credsStore entry the file itself does not
-          # carry, so a lookup finds a file with no credential in it and the read
-          # fails as "authentication required".
-          TILO_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          # The published series is anonymously readable: no credential.
           PUBLISH: ${{ steps.release-mode.outputs.publish }}
           # The very first publication finds no repository at all, which a
           # publication otherwise refuses: a renamed or deleted repository must
@@ -1062,7 +1074,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.tilo.so/tilo/tilo
+          images: ${{ env.TILO_OS_REPOSITORY }}
           labels: |
             org.opencontainers.image.created=${{ env.SOURCE_DATE_ISO }}
           tags: |
@@ -1350,28 +1362,28 @@ jobs:
       # involved.
       - name: Publish the dev-trust integration image
         id: dev-image
-        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-series != ''
+        # Generic images only: a board image carries private firmware.
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-series != '' && needs.plan.outputs.hardware-profile == 'generic'
         # A registry hiccup here must never block a release.
         continue-on-error: true
         env:
-          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
           ARCH: ${{ matrix.arch }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
         run: |
           set -euo pipefail
-          ref="code.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
+          ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
           # Buildx writes a full image name and a bare OCI ref for each tag.
           # Skopeo selects the latter; verify its descriptor and digest first.
           source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$source_tag"
           source_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$source_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
           digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
-          TMPDIR=/var/tmp skopeo copy --retry-times 3 --dest-creds "$REGISTRY_CREDS" \
+          TMPDIR=/var/tmp skopeo copy --retry-times 3 \
             --digestfile "$digest_file" \
             "oci-archive:/var/tmp/tilo-image.tar:$source_ref" "docker://$ref"
           digest="$(tr -d '[:space:]' < "$digest_file")"
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
-          revision="$(skopeo inspect --creds "$REGISTRY_CREDS" "docker://code.tilo.so/tilo/tilo-ci@$digest" \
+          revision="$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-ci@$digest" \
             | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
           [[ $revision == "$GITHUB_SHA" ]] || {
             echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
@@ -1381,9 +1393,9 @@ jobs:
           # the registry drops a manifest that loses its last tag. This
           # run- and attempt-unique tag keeps the digest the dev disk and the
           # integration index record reachable.
-          skopeo copy --retry-times 3 --preserve-digests --src-creds "$REGISTRY_CREDS" --dest-creds "$REGISTRY_CREDS" \
-            "docker://code.tilo.so/tilo/tilo-ci@$digest" \
-            "docker://code.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"
+          skopeo copy --retry-times 3 --preserve-digests \
+            "docker://registry.tilo.so/tilo/tilo-ci@$digest" \
+            "docker://registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "::notice::pushed dev-trust integration image $ref ($digest)"
@@ -1407,7 +1419,7 @@ jobs:
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar
-          tags: code.tilo.so/tilo/tilo:repro-${{ github.sha }}
+          tags: ${{ env.TILO_OS_REPOSITORY }}:repro-${{ github.sha }}
           # Identical labels: the manifests are compared byte for byte.
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -1449,14 +1461,14 @@ jobs:
           manifest=failed
           if [[ $REPRO_OUTCOME == success ]]; then
             repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-              'code.tilo.so/tilo/tilo:repro-${{ github.sha }}' '${{ steps.repro.outputs.digest }}')"
+              "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
             manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
             [[ $manifest =~ ^[0-9a-f]{64}$ ]]
           fi
           context="$(mktemp -d)"
           printf 'FROM scratch\nLABEL org.tilo.reproduction.manifest=%s\n' "$manifest" > "$context/Containerfile"
           docker buildx build --builder "$BUILDER_NAME" --provenance=false --push \
-            -f "$context/Containerfile" -t 'code.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' "$context"
+            -f "$context/Containerfile" -t 'registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' "$context"
           echo "::notice::independent rebuild of ${{ matrix.arch }}: $manifest"
           [[ $manifest != failed ]]
 
@@ -1466,12 +1478,10 @@ jobs:
         id: reproduction
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
         timeout-minutes: 300
-        env:
-          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           while true; do
-            manifest="$(skopeo inspect --creds "$REGISTRY_CREDS" 'docker://code.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' 2>/dev/null \
+            manifest="$(skopeo inspect 'docker://registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' 2>/dev/null \
               | jq -r '.Labels["org.tilo.reproduction.manifest"] // empty' || true)"
             case "$manifest" in
               failed) echo '::error::the independent rebuild failed'; exit 1 ;;
@@ -1585,7 +1595,7 @@ jobs:
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
           first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
-          repro_image="code.tilo.so/tilo/tilo:repro-${GITHUB_SHA}"
+          repro_image="$TILO_OS_REPOSITORY:repro-${GITHUB_SHA}"
           if [[ $PUBLISH == true ]]; then
             first_manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image.tar:$first_ref" | sha256sum | awk '{print $1}')"
             second_manifest='${{ steps.reproduction.outputs.manifest }}'
@@ -1596,8 +1606,10 @@ jobs:
             echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
           fi
 
-          printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.tilo.so \
-            --username "${{ github.actor }}" --password-stdin
+          if [[ $HARDWARE_PROFILE == lenovo-83ed ]]; then
+            printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.tilo.so \
+              --username "${{ github.actor }}" --password-stdin
+          fi
           skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" \
             "containers-storage:$first_tag"
           podman tag "$first_tag" "$TILO_IMAGE"
@@ -1616,7 +1628,7 @@ jobs:
             # The base is named as it was published, so the dev image's
             # base.json and labels describe the tilo-ci image, never a
             # production name. Its local manifest is the published one.
-            dev_base="code.tilo.so/tilo/tilo-ci:$DEV_SERIES-${{ matrix.arch }}"
+            dev_base="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-${{ matrix.arch }}"
             podman tag "$first_tag" "$dev_base"
             dev_base_digest="$(podman image inspect --format '{{.Digest}}' "$dev_base")"
             [[ $dev_base_digest =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -1632,8 +1644,8 @@ jobs:
             fi
             TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
               TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
-              TILO_TARGET_IMGREF="code.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
-              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=code.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
+              TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
+              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
               ./os/dev/build-dev-image.sh
             test -s "$DEV_OUTPUT/qcow2/disk.qcow2"
             # Gate a throwaway overlay so the disk published below is never
@@ -1791,7 +1803,7 @@ jobs:
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
             digest_file="$(mktemp /var/tmp/tilo-push-digest.XXXXXX)"
-            candidate="code.tilo.so/tilo/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"
+            candidate="$TILO_OS_REPOSITORY:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"
             podman tag "$TILO_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -1819,7 +1831,7 @@ jobs:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
           DISK_FORMATS: qcow2
-          BASE_REPOSITORY: code.tilo.so/tilo/tilo-ci
+          BASE_REPOSITORY: registry.tilo.so/tilo/tilo-ci
           BASE_TRUST: integration
           BASE_INDEX_DIGEST: ${{ steps.dev-image.outputs.digest }}
           BASE_CHILD_DIGEST: ${{ steps.dev-image.outputs.digest }}
@@ -1830,8 +1842,6 @@ jobs:
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" | podman login code.tilo.so \
-            --username "${{ github.actor }}" --password-stdin
           ./os/dev/publish-dev-disk.sh
 
       # Sign the pushed image with cosign (security plan §9). The signature
@@ -1850,7 +1860,7 @@ jobs:
         run: |
           . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" \
-            "code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
 
       - name: Install checksum-pinned Syft from the persistent asset cache
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
@@ -1864,7 +1874,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
         run: |
           syft \
-            "code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}" \
+            "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}" \
             --output spdx-json=sbom.spdx.json
 
       - name: Attest the SBOM to the image (signed)
@@ -1877,7 +1887,7 @@ jobs:
           cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
             --key "$COSIGN_KEY_REF" \
-            "code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
 
       - name: Generate and attest SLSA provenance
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
@@ -1898,7 +1908,7 @@ jobs:
           cosign attest --yes \
             --predicate provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" \
-            "code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
 
       # A short-lived, digest-bound statement makes release freshness an
       # authenticated value instead of an inference from mutable registry tags.
@@ -1918,13 +1928,13 @@ jobs:
           cosign attest --yes \
             --predicate freshness.json --type https://tilo.sh/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" \
-            "code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
 
       - name: Verify and describe the native release child
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
         run: |
           set -euo pipefail
-          image="code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}"
+          image="$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
@@ -1937,11 +1947,11 @@ jobs:
             --arg digest '${{ steps.release.outputs.digest }}' \
             --arg source "$GITHUB_SHA" \
             --argjson generation "$TILO_GENERATION" \
-            --argjson now "$now" '
+            --argjson now "$now" --arg repository "$TILO_OS_REPOSITORY" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
                   .schema == "https://tilo.sh/security/release-freshness/v1"
-                  and .repository == "code.tilo.so/tilo/tilo"
+                  and .repository == $repository
                   and .digest == $digest
                   and .sourceRevision == $source
                   and .generation == $generation
@@ -1982,11 +1992,11 @@ jobs:
         continue-on-error: true
         env:
           FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          IMAGE: code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}
+          IMAGE: registry.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          [[ $IMAGE =~ ^code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]]
+          [[ $IMAGE =~ ^registry\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]]
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME#v}"
           else
@@ -2040,11 +2050,7 @@ jobs:
             exit 1
           fi
       - name: Authenticate multi-architecture promotion
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+        uses: ./.forgejo/actions/tilo-registry-login
       - name: Assemble, sign, attest, and promote the OS index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
@@ -2071,7 +2077,7 @@ jobs:
           child_dependencies='[]'
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            image="code.tilo.so/tilo/tilo@$digest"
+            image="registry.tilo.so/tilo/tilo@$digest"
             case "$arch" in x86_64) expected_registry_arch=amd64 ;; aarch64) expected_registry_arch=arm64 ;; esac
             actual_registry_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
             [[ "$actual_registry_arch" == "$expected_registry_arch" ]] || {
@@ -2095,18 +2101,18 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
           done
 
-          candidate="code.tilo.so/tilo/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
+          candidate="registry.tilo.so/tilo/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"
           manifest="tilo-release-index-${GITHUB_RUN_ID}"
           podman manifest create "$manifest"
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            podman manifest add "$manifest" "docker://code.tilo.so/tilo/tilo@$digest"
+            podman manifest add "$manifest" "docker://registry.tilo.so/tilo/tilo@$digest"
           done
           digest_file="$(mktemp /var/tmp/tilo-index-digest.XXXXXX)"
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest="$(tr -d '[:space:]' < "$digest_file")"
           [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          index_image="code.tilo.so/tilo/tilo@$index_digest"
+          index_image="registry.tilo.so/tilo/tilo@$index_digest"
           expected_index="$(jq -c 'sort_by(.architecture)' <<<"$child_dependencies")"
           actual_index="$(skopeo inspect --raw "docker://$index_image" | jq -ce '
             [.manifests[] | {
@@ -2165,17 +2171,17 @@ jobs:
           # with different bytes, tolerate an exact retry, and verify every
           # registry write. `latest` is the sole mutable commit point and moves
           # only after all durable names are present.
-          durable_tags=("code.tilo.so/tilo/tilo:gen$generation")
+          durable_tags=("registry.tilo.so/tilo/tilo:gen$generation")
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
             [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
               echo '::error::OS release tag must be vMAJOR.MINOR.PATCH'
               exit 1
             }
-            durable_tags+=("code.tilo.so/tilo/tilo:$version")
+            durable_tags+=("registry.tilo.so/tilo/tilo:$version")
           fi
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            durable_tags+=("code.tilo.so/tilo/tilo:main-${GITHUB_SHA:0:7}")
+            durable_tags+=("registry.tilo.so/tilo/tilo:main-${GITHUB_SHA:0:7}")
           fi
 
           manifest_digest() {
@@ -2210,7 +2216,7 @@ jobs:
           for tag in "${durable_tags[@]}"; do
             promote_immutable "$tag"
           done
-          latest="code.tilo.so/tilo/tilo:latest"
+          latest="registry.tilo.so/tilo/tilo:latest"
           skopeo copy --all "docker://$index_image" "docker://$latest"
           [[ "$(manifest_digest "$latest")" == "$index_digest" ]] || {
             echo "::error::registry did not commit latest as $index_digest"
@@ -2334,7 +2340,12 @@ jobs:
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
     runs-on: runner
     timeout-minutes: 60
+    enable-openid-connect: true
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: .forgejo/actions/tilo-registry-login
+          sparse-checkout-cone-mode: false
       - name: Install OCI index tooling
         run: |
           set -euo pipefail
@@ -2350,15 +2361,11 @@ jobs:
             exit 1
           fi
       - name: Authenticate to the development image registry
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          printf '%s' "$REGISTRY_TOKEN" | podman login code.tilo.so \
-            --username "${{ github.actor }}" --password-stdin
+        uses: ./.forgejo/actions/tilo-registry-login
       - name: Verify native children and publish unsigned integration index
         run: |
           set -euo pipefail
-          repository=code.tilo.so/tilo/tilo-ci
+          repository=registry.tilo.so/tilo/tilo-ci
           children='[]'
           for arch in x86_64 aarch64; do
             case "$arch" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac

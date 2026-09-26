@@ -24,6 +24,13 @@ PROOF_SCHEMA_V2 = "tilo.windows-vm-install-proof-check.v2"
 BUILD_TYPE = "https://tilo.sh/buildtypes/bootc-os/v1"
 BUILDER_ID = "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"
 SOURCE = re.compile(r"git\+ssh://code\.tilo\.so/tilo/tilo@([0-9a-f]{40})\Z")
+PUBLIC_REPOSITORY = "registry.tilo.so/tilo/tilo"
+# Board images carry private firmware and stay on the forge's private registry.
+BOARD_REPOSITORY = "code.tilo.so/tilo/tilo"
+
+
+def repository(board):
+    return BOARD_REPOSITORY if board else PUBLIC_REPOSITORY
 
 
 def require(ok, message):
@@ -45,7 +52,9 @@ def raw_document(path):
 
 
 def signed_ci_child(image, index_path, child_path):
-    require(type(image) is str and image.startswith("code.tilo.so/tilo/tilo@sha256:")
+    require(type(image) is str
+            and image.split("@", 1)[0] in (PUBLIC_REPOSITORY, BOARD_REPOSITORY)
+            and image.split("@", 1)[1].startswith("sha256:")
             and SHA.fullmatch(image.split("@", 1)[1]),
             "CI image must pin the official Tilo release index")
     pinned = image.split("@", 1)[1]
@@ -91,6 +100,8 @@ def signed_ci_child(image, index_path, child_path):
             and SHA.fullmatch(child["config"]["digest"])
             and type(child.get("layers")) is list and child["layers"],
             "CI ARM64 child manifest does not match signed index descriptor")
+    require(image.split("@", 1)[0] == repository(kind == "lenovo-83ed"),
+            "CI image is not in its official repository")
     return pinned, child_digest, children, kind
 
 
@@ -132,7 +143,7 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
         require(type(selected) is dict
                 and selected.get("schema") == "tilo.installer-offline-target.v1"
                 and selected.get("target_digest") == child_digest
-                and selected.get("target_ref") == "code.tilo.so/tilo/tilo@" + child_digest
+                and selected.get("target_ref") == repository(board) + "@" + child_digest
                 and selected.get("architecture") == "aarch64"
                 and selected.get("hardware_profile") == ("lenovo-83ed" if board else "generic"),
                 "VM selected target differs from signed CI image")
@@ -145,7 +156,7 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
             generation = ci_provenance.get("generation")
             require(type(generation) is int and generation > 0,
                     "generic CI generation is invalid")
-            origin = "code.tilo.so/tilo/tilo:gen" + str(generation)
+            origin = "registry.tilo.so/tilo/tilo:gen" + str(generation)
         signed = selected.get("provenance")
         require(type(signed) is dict
                 and selected.get("update_origin") == origin
@@ -263,10 +274,11 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
     require(identity["schema"] == "tilo.whpx-ci-installer-medium.v1"
             and identity["target_profile"] in ("generic", "lenovo-83ed")
             and type(identity["target_image"]) is str
-            and re.fullmatch(r"code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}",
-                             identity["target_image"])
+            and identity["target_image"].split("@", 1)[0]
+            == repository(identity["target_profile"] == "lenovo-83ed")
+            and re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", identity["target_image"])
             and type(identity["live_base_image"]) is str
-            and re.fullmatch(r"code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}",
+            and re.fullmatch(r"registry\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}",
                              identity["live_base_image"])
             and type(identity["build_revision"]) is str
             and re.fullmatch(r"[0-9a-f]{40}", identity["build_revision"])
@@ -301,8 +313,8 @@ def checked_medium_pair(board, generic, board_checked, generic_checked,
             "signed CI media source revision differs from signed CI OS images")
     require(board["target_profile"] == "lenovo-83ed"
             and generic["target_profile"] == "generic"
-            and board["target_image"] == "code.tilo.so/tilo/tilo@" + board_child_digest
-            and generic["target_image"] == "code.tilo.so/tilo/tilo@" + generic_child_digest
+            and board["target_image"] == BOARD_REPOSITORY + "@" + board_child_digest
+            and generic["target_image"] == PUBLIC_REPOSITORY + "@" + generic_child_digest
             and board["live_base_image"] == generic_index_image
             and generic["live_base_image"] == generic_index_image
             and board["build_revision"] == generic["build_revision"]
@@ -478,7 +490,7 @@ def dual_ci_medium_gate(args, board_checked, board_child_digest,
     index_provenance = verify_ci_image(
         args.generic_ci_image, args.verify_key, children, "generic-index",
         args.cosign_command_json, args.cosign_key_arg)
-    child_image = "code.tilo.so/tilo/tilo@" + child_digest
+    child_image = PUBLIC_REPOSITORY + "@" + child_digest
     child_provenance = verify_ci_image(
         child_image, args.verify_key, [], "generic-child",
         args.cosign_command_json, args.cosign_key_arg)

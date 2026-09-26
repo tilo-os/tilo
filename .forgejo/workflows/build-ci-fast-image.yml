@@ -1,7 +1,7 @@
 name: Snapshot / CI fast images
 
-# Publishes code.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
-# and code.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for
+# Publishes registry.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
+# and registry.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for
 # builder resolution). Consumers pin both by digest. Pull requests from this
 # repository and manual dispatches publish candidate tags so the tested digests
 # can be pinned before merge; main publishes source-SHA tags. There is no
@@ -33,6 +33,7 @@ jobs:
     # toolchain, and every lane that uses them is an amd64 runner.
     runs-on: runner
     timeout-minutes: 45
+    enable-openid-connect: true
     env:
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       PUBLISH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -45,19 +46,11 @@ jobs:
             os/Containerfile.ci-fast
             os/Containerfile.ci-control
             os/dev/assert-native-arch.sh
+            .forgejo/actions/tilo-registry-login
           sparse-checkout-cone-mode: false
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh x86_64
-
-      # ci-fast copies its toolchain from the digest-pinned builder.
-      - name: Log in to the registry
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Build and exercise both images
         run: |
@@ -67,8 +60,8 @@ jobs:
           else
             tag="candidate-$SOURCE_REVISION"
           fi
-          fast="code.tilo.so/tilo/ci-fast:$tag"
-          control="code.tilo.so/tilo/ci-control:$tag"
+          fast="registry.tilo.so/tilo/ci-fast:$tag"
+          control="registry.tilo.so/tilo/ci-control:$tag"
           printf 'CI_FAST_REF=%s\nCI_CONTROL_REF=%s\n' "$fast" "$control" >> "$GITHUB_ENV"
           # Neither recipe copies from its context; never send the checkout.
           context=$(mktemp -d)
@@ -93,6 +86,10 @@ jobs:
             docker --version
             docker buildx version
             cargo --version'
+
+      - name: Log in to registry.tilo.so
+        if: env.PUBLISH == 'true'
+        uses: ./.forgejo/actions/tilo-registry-login
 
       - name: Publish the tested images
         if: env.PUBLISH == 'true'

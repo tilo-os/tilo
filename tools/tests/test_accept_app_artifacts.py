@@ -31,7 +31,7 @@ class AcceptanceTests(unittest.TestCase):
         self.policy_sha = accept.channel.sha(self.policy)
         self.platform_policy = {'enabled': True, 'qualification_only': True, 'final_receipt_policy_sha256': self.policy_sha}
         self.intent = {'id': '11111111-1111-1111-1111-111111111111', 'baseline': None, 'baseline_evidence': None,
-            'desired': {'source_sha': 'a' * 40, 'builder_image': 'code.tilo.so/tilo/tilo-builder@sha256:' + 'b' * 64,
+            'desired': {'source_sha': 'a' * 40, 'builder_image': 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'b' * 64,
                         'collection': 'default', 'architectures': ['x86_64'], 'policy_sha256': product.core.receipt_key(self.platform_policy)}}
         self.run = {'id': 100, 'status': 'success', 'repository': {'id': 23, 'full_name': 'tilo/tilo'},
             'workflow_id': 'release-apps.yml', 'trigger_event': 'workflow_dispatch', 'commit_sha': 'a' * 40,

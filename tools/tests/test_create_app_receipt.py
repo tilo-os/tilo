@@ -157,7 +157,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
         # publisher runs in the immutable public release-tools image.
         self.assertRegex(
             publish,
-            r'image: code\.tilo\.so/public/tilo-release-tools@sha256:[0-9a-f]{64}\n',
+            r'image: registry\.tilo\.so/tilo/tilo-release-tools@sha256:[0-9a-f]{64}\n',
         )
         self.assertIn('vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256', publish)
         self.assertLess(publish.index('tools/apps/final_app_receipt.py'), publish.index('bundle_upload='))

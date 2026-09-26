@@ -93,6 +93,11 @@ references() {
     if [[ $rest == *:* ]]; then tag=${rest##*:}; rest=${rest%:*}; fi
     name=$rest
     case $name in *.git) continue ;; esac
+    # Board images carry private firmware and stay on the forge's private
+    # registry, as does the development pipeline those board builds share.
+    # registry.tilo.so is anonymously readable: never copy them there.
+    case $name in *lenovo* | tilo-development* | tilo-compile-tools-cache) continue ;; esac
+    [[ $name == tilo && $tag == lenovo-* ]] && continue
     if [[ $ref == "$SOURCE_REGISTRY"/* ]]; then
       [[ -n ${OWNER_NEW[$owner]:-} ]] || continue
       origin=$owner
@@ -157,7 +162,9 @@ if [[ $RESIGN == 1 ]]; then
   . "$SCAN_ROOT/os/dev/configure-cosign-kms.sh"
 fi
 
-work=$(mktemp -d "${XDG_RUNTIME_DIR:-$HOME/.cache}/copy-images.XXXXXX")
+scratch=${RUNNER_TEMP:-${XDG_RUNTIME_DIR:-$HOME/.cache}}
+mkdir -p "$scratch"
+work=$(mktemp -d "$scratch/copy-images.XXXXXX")
 trap 'rm -rf "$work" "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' EXIT
 src_creds=()
 if [[ -n ${SOURCE_TOKEN:-} ]]; then

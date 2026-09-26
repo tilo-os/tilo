@@ -60,16 +60,12 @@ starts.
 
 ## CI builds (`--from sha:` / `--from ci:`)
 
-CI publishes `code.tilo.so/tilo/tilo:main-<sha7>` for main commits and
+CI publishes `registry.tilo.so/tilo/tilo:main-<sha7>` for main commits and
 `:<version>` for releases. `sha:<commit>` means `ci:main-<sha7>`. The
 component's manifest `files` are copied out of that image into a layer with
 `authority = "ci"`. The VM pulls it when its image has podman; otherwise this
-host does (needs podman here). Pulls need a podman registry login for
-`code.tilo.so` where the pull runs: the VM's own
-(`tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.tilo.so`)
-or this host's (`podman login code.tilo.so`). `FORGEJO_TOKEN` and fgj/tea
-logins do not count for pulls. A 401 or `reqPackageAccess` names which login
-is missing.
+host does (needs podman here). Tilo images on `registry.tilo.so` are public,
+so neither pull needs a login.
 
 ## Apps (`app:<dir>`)
 

@@ -70,7 +70,7 @@ class ServiceFixture(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.state, self.policyfile, self.finalfile, self.tokenfile = [self.root / x for x in ('state', 'policy', 'final', 'token')]
-        self.builder = 'code.tilo.so/tilo/tilo-builder@sha256:' + 'a'*64
+        self.builder = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a'*64
         descriptor = {'sha256': 'b'*64, 'bytes': 100, 'source_sha': 'c'*40,
             'compatible_builder': self.builder, 'verifier_sha256': 'd'*64,
             'canonical_binaries': {'tilo_pkg_sha256': 'e'*64, 'tilo_runtime_bundle_sha256': 'f'*64}}

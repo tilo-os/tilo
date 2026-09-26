@@ -13,9 +13,9 @@ import unittest
 SCRIPT = Path(__file__).parents[1] / "dev" / "kernel-build-environment.py"
 DIGEST = "sha256:" + "1" * 64
 SOURCE = "git+ssh://code.tilo.so/tilo/tilo@" + "2" * 40
-BUILDROOT = "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "3" * 64
-BASE = "code.tilo.so/tilo/fedora-bootc@sha256:" + "4" * 64
-RPMS = "code.tilo.so/tilo/rpms@sha256:" + "5" * 64
+BUILDROOT = "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "3" * 64
+BASE = "registry.tilo.so/tilo/fedora-bootc@sha256:" + "4" * 64
+RPMS = "registry.tilo.so/tilo/rpms@sha256:" + "5" * 64
 
 
 def envelope(uris, architecture="x86_64", digest=DIGEST,
@@ -51,12 +51,12 @@ class KernelBuildEnvironmentTests(unittest.TestCase):
         self.assertEqual(run(envelope([SOURCE, BASE, RPMS])).returncode, 1)
 
     def test_rejects_missing_or_ambiguous_environments(self):
-        other = "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "7" * 64
+        other = "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "7" * 64
         cases = (
             envelope([SOURCE, BASE]),
             envelope([SOURCE, BUILDROOT, other]),
             envelope([BUILDROOT, BASE]),  # no tilo/tilo source commit
-            envelope([SOURCE, "code.tilo.so/tilo/tilo-kernel-buildroot:latest"]),
+            envelope([SOURCE, "registry.tilo.so/tilo/tilo-kernel-buildroot:latest"]),
             envelope([SOURCE, "code.tilo.so/other/rpms@sha256:" + "5" * 64]),
         )
         for case in cases:
@@ -64,7 +64,7 @@ class KernelBuildEnvironmentTests(unittest.TestCase):
                 self.assertEqual(run(case).returncode, 1)
 
     def test_two_predicates_naming_different_environments_are_refused(self):
-        other = "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "7" * 64
+        other = "registry.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "7" * 64
         self.assertEqual(run(envelope([SOURCE, BUILDROOT]), envelope([SOURCE, other])).returncode, 1)
 
     def test_binds_digest_architecture_and_build_type(self):

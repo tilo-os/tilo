@@ -272,7 +272,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
     def test_source_mapping_and_regional_scope_reject_before_external_commands(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source.txt"
-            source.write_text("code.tilo.so/tilo/unknown@" + self.digest + "\n")
+            source.write_text("registry.tilo.so/tilo/unknown@" + self.digest + "\n")
             with self.assertRaisesRegex(ValueError, "no configured regional repository"):
                 MODULE.replicate(
                     source,
@@ -402,7 +402,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             source = Path(temporary) / "registry-server.txt"
             source_auth = Path(temporary) / "forgejo-auth.json"
             output = Path(temporary) / "replication.txt"
-            source.write_text("code.tilo.so/tilo/tilo-registry-server@" + digest + "\n")
+            source.write_text("registry.tilo.so/tilo/tilo-registry-server@" + digest + "\n")
             source_auth.write_text('{"auths":{"code.tilo.so":{}}}')
             environment = {
                 "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
@@ -427,7 +427,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             source_inspect = next(
                 call
                 for call in self.calls
-                if call[:3] == ("skopeo", "inspect", "--raw") and "code.tilo.so" in call[-1]
+                if call[:3] == ("skopeo", "inspect", "--raw") and "registry.tilo.so" in call[-1]
             )
             copy = next(call for call in self.calls if call[:2] == ("skopeo", "copy"))
             self.assertIn(("--authfile", str(source_auth)), list(zip(source_inspect, source_inspect[1:])))
@@ -446,7 +446,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported media type"):
             MODULE.validate_manifest(
                 {"schemaVersion": 2, "manifests": [descriptor]},
-                "code.tilo.so/tilo/tilo-registry-server",
+                "registry.tilo.so/tilo/tilo-registry-server",
             )
 
     def test_builder_requires_exactly_two_children_but_generic_indexes_do_not(self):
@@ -463,7 +463,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             }
             with self.subTest(count=count), self.assertRaisesRegex(ValueError, "two-platform index"):
                 MODULE.validate_manifest(document, MODULE.SOURCE_REPOSITORY)
-            MODULE.validate_manifest(document, "code.tilo.so/tilo/tilo-registry-server")
+            MODULE.validate_manifest(document, "registry.tilo.so/tilo/tilo-registry-server")
 
     def test_rejects_ambiguous_and_unknown_manifest_shapes(self):
         descriptor = {
@@ -479,12 +479,12 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                     "config": descriptor,
                     "layers": [],
                 },
-                "code.tilo.so/tilo/tilo-registry-server",
+                "registry.tilo.so/tilo/tilo-registry-server",
             )
         with self.assertRaisesRegex(ValueError, "neither index nor image-manifest"):
             MODULE.validate_manifest(
                 {"schemaVersion": 2},
-                "code.tilo.so/tilo/tilo-registry-server",
+                "registry.tilo.so/tilo/tilo-registry-server",
             )
 
     def test_rejects_target_manifest_bytes_changed_after_copy(self):
@@ -539,7 +539,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             with self.subTest(media_type=media_type):
                 MODULE.validate_manifest(
                     {"schemaVersion": 2, "mediaType": media_type, "manifests": [descriptor]},
-                    "code.tilo.so/tilo/tilo-registry-server",
+                    "registry.tilo.so/tilo/tilo-registry-server",
                 )
         for media_type in (
             "application/vnd.oci.image.manifest.v1+json",
@@ -550,7 +550,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 document = {"schemaVersion": 2, "config": descriptor, "layers": [descriptor]}
                 if media_type is not None:
                     document["mediaType"] = media_type
-                MODULE.validate_manifest(document, "code.tilo.so/tilo/tilo-registry-server")
+                MODULE.validate_manifest(document, "registry.tilo.so/tilo/tilo-registry-server")
 
 
 if __name__ == "__main__":

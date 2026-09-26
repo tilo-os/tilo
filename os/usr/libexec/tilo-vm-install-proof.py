@@ -86,7 +86,11 @@ def build_proof(args):
         selected = json.loads(receipt_path.read_text(encoding="utf-8"))
         require(selected.get("schema") == "tilo.installer-offline-target.v1"
                 and selected.get("target_digest") == installed_digest
-                and selected.get("target_ref") == "code.tilo.so/tilo/tilo@" + installed_digest
+                and selected.get("target_ref") == {
+                    "generic": "registry.tilo.so/tilo/tilo",
+                    # Board images stay on the forge's private registry.
+                    "lenovo-83ed": "code.tilo.so/tilo/tilo",
+                }.get(selected.get("hardware_profile"), "") + "@" + installed_digest
                 and installed_origin == "ostree-unverified-image:docker://" + selected.get("update_origin", ""),
                 "installed deployment differs from the independently signed offline target")
     else:

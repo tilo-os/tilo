@@ -31,7 +31,7 @@ REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-mo
 
 
 def immutable(value):
-    require(isinstance(value, str) and re.fullmatch(r'code\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}', value),
+    require(isinstance(value, str) and re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}', value),
             'immutable registry input required')
     return value
 

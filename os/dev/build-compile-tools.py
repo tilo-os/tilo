@@ -11,7 +11,7 @@ REPOSITORY = 'code.tilo.so/tilo/tilo-compile-tools-cache'
 
 
 def fingerprint(recipe, builder, cosign, platform):
-    if not re.fullmatch(r'code\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', builder):
+    if not re.fullmatch(r'(?:registry|code)\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', builder):
         raise ValueError('immutable builder required')
     if platform not in ('linux/arm64', 'linux/amd64'):
         raise ValueError('unsupported tools platform')

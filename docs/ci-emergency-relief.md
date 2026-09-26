@@ -172,7 +172,7 @@ not a latency guarantee for every future worker. The separate main **check** run
 as main advances.
 
 The lean image
-`code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
+`registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
 contains the pinned Rust toolchain and lint tools, without the full builder's
 native graphics/media/application stack. Compressed layers total 393 MB versus
 1.694 GB for its source builder. Its unchanged OpenSSL exclusion invariant

@@ -421,7 +421,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
              '        run: python3 tools/ci/resolve_builder.py'),
             ('    needs: [plan, authorize-publish]', '    needs: other'),
             ('      image: ${{ needs.plan.outputs.builder_image }}',
-             '      image: code.tilo.so/tilo/tilo-builder:latest'),
+             '      image: registry.tilo.so/tilo/tilo-builder:latest'),
         ):
             with self.subTest(before=before):
                 self.assertIn(before, source)

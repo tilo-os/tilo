@@ -8,6 +8,13 @@ out="${1:-freshness.json}"
 : "${RELEASE_DIGEST:?RELEASE_DIGEST is required}"
 : "${TILO_GENERATION:?TILO_GENERATION is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
+# Board images are published to the forge's private registry; every other OS
+# image to the public one.
+repository="${TILO_OS_REPOSITORY:-registry.tilo.so/tilo/tilo}"
+case "$repository" in
+  registry.tilo.so/tilo/tilo|code.tilo.so/tilo/tilo) ;;
+  *) echo 'release freshness: unknown OS repository' >&2; exit 1 ;;
+esac
 
 case "$RELEASE_DIGEST" in sha256:[0-9a-f][0-9a-f]*) ;; *) echo 'release freshness: invalid digest' >&2; exit 1 ;; esac
 digest_hex="${RELEASE_DIGEST#sha256:}"
@@ -30,7 +37,7 @@ expires=$(( issued + ttl ))
 [ "$expires" -gt "$issued" ] || { echo 'release freshness: timestamp overflow' >&2; exit 1; }
 
 jq -S -n \
-  --arg repository 'code.tilo.so/tilo/tilo' \
+  --arg repository "$repository" \
   --arg digest "$RELEASE_DIGEST" \
   --arg source "$GITHUB_SHA" \
   --argjson generation "$TILO_GENERATION" \

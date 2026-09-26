@@ -1,5 +1,5 @@
 //! `swap --from sha:<commit>` and `--from ci:<tag>`: take a component's
-//! files out of the published CI image `code.tilo.so/tilo/tilo:<tag>`.
+//! files out of the published CI image `registry.tilo.so/tilo/tilo:<tag>`.
 //!
 //! CI tags main commits `main-<sha7>` (`build-image.yml`, docker
 //! metadata-action `type=sha,prefix=main-`) and releases `<version>`.
@@ -12,7 +12,7 @@ use crate::context::Worktree;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
-pub const IMAGE: &str = "code.tilo.so/tilo/tilo";
+pub const IMAGE: &str = "registry.tilo.so/tilo/tilo";
 
 /// What `--from` names, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +168,7 @@ pub fn extract_on_host(
             result = Err(CliError::CommandFailed {
                 command: command.display(),
                 status: "failed".into(),
-                stderr: "the output above says why (401 or reqPackageAccess: podman login code.tilo.so)".into(),
+                stderr: "the output above says why".into(),
             });
             break;
         }
@@ -242,8 +242,8 @@ mod tests {
         assert_eq!(
             text,
             [
-                "podman pull --arch arm64 code.tilo.so/tilo/tilo:main-1a2b3c4",
-                "podman create --name c1 code.tilo.so/tilo/tilo:main-1a2b3c4 /bin/true",
+                "podman pull --arch arm64 registry.tilo.so/tilo/tilo:main-1a2b3c4",
+                "podman create --name c1 registry.tilo.so/tilo/tilo:main-1a2b3c4 /bin/true",
                 "podman cp c1:/usr/bin/app /s/tree/usr/bin/app",
                 "podman cp c1:/usr/lib/tilo-runtime /s/tree/usr/lib/tilo-runtime",
             ]

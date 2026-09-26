@@ -183,7 +183,7 @@ The production OCI image uses the same interface and contains no TLS
 termination or private signing material:
 
 ```text
-code.tilo.so/tilo/tilo-registry-server@sha256:<digest>
+registry.tilo.so/tilo/tilo-registry-server@sha256:<digest>
 /usr/local/bin/tilo-registry-server \
   --data-dir /var/lib/tilo-registry serve --bind 0.0.0.0 --port 8443
 ```

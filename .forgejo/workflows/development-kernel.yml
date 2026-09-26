@@ -44,10 +44,10 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = aarch64
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$BASE_REF" =~ ^code\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
-          [[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
+          [[ "$BASE_REF" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
+          [[ "$RPMS_REF" =~ ^(registry\.tilo\.so/tilo/rpms|code\.tilo\.so/tilo/tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
           [ -z "$KERNEL_BUILDROOT_REF" ] \
-            || [[ "$KERNEL_BUILDROOT_REF" =~ ^code\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
+            || [[ "$KERNEL_BUILDROOT_REF" =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 
@@ -108,7 +108,7 @@ jobs:
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
           cache-from: |
             type=registry,ref=code.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=code.tilo.so/tilo/tilo-kernel-buildcache:aarch64
+            type=registry,ref=registry.tilo.so/tilo/tilo-kernel-buildcache:aarch64
           cache-to: type=registry,ref=code.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
 

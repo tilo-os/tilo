@@ -34,7 +34,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # Where the published series lives. The generation counts published images, so it
 # is read from the repository `bootc upgrade` pulls from, not from a scratch
 # registry a disk build happened to push to.
-TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-code.tilo.so/tilo/tilo}"
+TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-registry.tilo.so/tilo/tilo}"
 
 WANT=next
 case "${1:-}" in
@@ -44,13 +44,14 @@ case "${1:-}" in
   *) die "unknown argument: $1" ;;
 esac
 
-# The registry is private, so the listing has to be authenticated: an anonymous
-# read fails rather than returning an empty list, which is the right way round —
-# an empty list would silently restart the series at 1 and hand out a number that
-# is already taken.
+# The published series is anonymously readable. A repository that does not
+# exist fails the listing ("name unknown") rather than returning an empty list,
+# which is the right way round: an empty list would silently restart the series
+# at 1 and hand out a number that is already taken.
 #
-# TILO_REGISTRY_CREDS ("user:token") is the explicit path, and it is what CI uses.
-# It is converted immediately into a mode-0600 temporary auth file. Passing it
+# A private TILO_PUBLISH_REPO needs credentials. TILO_REGISTRY_CREDS
+# ("user:token") is the explicit path; it is converted immediately into a
+# mode-0600 temporary auth file. Passing it
 # through a credential command-line option would expose the token in process argv.
 # Discovering an auth file works interactively and is unreliable in a job: the
 # runner's `docker login` may write a `credsStore` entry with no credential in the
@@ -150,16 +151,17 @@ list_tags() {
     echo "no skopeo, and no podman or docker to run it in" >&2; return 1; }
 
   if [ -z "${auth:-}" ]; then
-    auth="$(find_authfile)" || {
-    echo "no container auth file carries an entry for ${TILO_PUBLISH_REPO%%/*}." >&2
-    echo "Log in (podman login ${TILO_PUBLISH_REPO%%/*}), or set" >&2
-    echo "TILO_REGISTRY_CREDS=user:token." >&2
-    return 1; }
   # Copy into a directory of our own first. The resulting file is streamed over
   # stdin below: an Actions job commonly controls a host Docker daemon, which
-  # cannot bind-mount paths from the job container's private filesystem.
+  # cannot bind-mount paths from the job container's private filesystem. With
+  # no auth file carrying an entry for the registry, the lookup is anonymous.
     tmp="$(mktemp -d)" || return 1
-    if ! cp "$auth" "$tmp/auth.json" || ! chmod 0600 "$tmp/auth.json"; then
+    if auth="$(find_authfile)"; then
+      if ! cp "$auth" "$tmp/auth.json" || ! chmod 0600 "$tmp/auth.json"; then
+        rm -r "$tmp"
+        return 1
+      fi
+    elif ! (umask 077 && printf '{"auths":{}}\n' > "$tmp/auth.json"); then
       rm -r "$tmp"
       return 1
     fi
@@ -192,7 +194,8 @@ else
   die "could not list tags of
   $TILO_PUBLISH_REPO — the published generation series is unreadable, and guessing
   it would produce an image whose generation collides with one already published.
-  Log in (podman login code.tilo.so) or pass TILO_GENERATION=<N> explicitly.
+  Check that the registry is reachable (a private TILO_PUBLISH_REPO needs a
+  login or TILO_REGISTRY_CREDS), or pass TILO_GENERATION=<N> explicitly.
   The tag listing said:
 $(printf '%s' "$lookup_error" | sed 's/^/    /')"
 fi

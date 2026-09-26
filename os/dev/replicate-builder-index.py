@@ -19,14 +19,13 @@ import tempfile
 import urllib.request
 
 
-SOURCE_REPOSITORY = "code.tilo.so/tilo/tilo-builder"
+SOURCE_REPOSITORY = "registry.tilo.so/tilo/tilo-builder"
 REGIONAL_REPOSITORIES = {
     "code.tilo.so/public/runner-image": "public/runner-image",
-    "code.tilo.so/tilo/ci-fast": "tilo/ci-fast",
-    "code.tilo.so/tilo/tilo-builder": "tilo/tilo-builder",
-    "code.tilo.so/tilo/tilo-release-tools": "tilo/tilo-release-tools",
-    "code.tilo.so/public/tilo-release-tools": "tilo/tilo-release-tools",
-    "code.tilo.so/tilo/tilo-registry-server": "tilo/tilo-registry-server",
+    "registry.tilo.so/tilo/ci-fast": "tilo/ci-fast",
+    "registry.tilo.so/tilo/tilo-builder": "tilo/tilo-builder",
+    "registry.tilo.so/tilo/tilo-release-tools": "tilo/tilo-release-tools",
+    "registry.tilo.so/tilo/tilo-registry-server": "tilo/tilo-registry-server",
     "docker.io/library/python": "dockerhub/library/python",
 }
 OIDC_ISSUER = "https://code.tilo.so/api/actions"

@@ -6,13 +6,13 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-[ "$#" -eq 1 ] || die "usage: $0 code.tilo.so/tilo/tilo@sha256:<digest>"
+[ "$#" -eq 1 ] || die "usage: $0 registry.tilo.so/tilo/tilo@sha256:<digest>"
 image="$1"
 case "$image" in
-  code.tilo.so/tilo/tilo@sha256:*) ;;
-  *) die "published Tilo image must be an immutable code.tilo.so/tilo/tilo digest" ;;
+  registry.tilo.so/tilo/tilo@sha256:*) ;;
+  *) die "published Tilo image must be an immutable registry.tilo.so/tilo/tilo digest" ;;
 esac
-digest="${image#code.tilo.so/tilo/tilo@sha256:}"
+digest="${image#registry.tilo.so/tilo/tilo@sha256:}"
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]] \
   || die "published Tilo image digest must be 64 lowercase hex characters"
 
@@ -111,7 +111,7 @@ generation="$(printf '%s' "$provenance" | jq -er \
 # Signing a candidate does not publish it.  The immutable generation tag is the
 # dense series' commit record, so require that signed tag to resolve to this
 # exact index before installer media can consume it.
-generation_image="code.tilo.so/tilo/tilo:gen$generation"
+generation_image="registry.tilo.so/tilo/tilo:gen$generation"
 generation_signatures="$(cosign verify --key "$verify_key" "$generation_image")" \
   || die "published generation tag gen$generation has no valid release signature"
 generation_digest="$(printf '%s' "$generation_signatures" | jq -er '

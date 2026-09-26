@@ -5,8 +5,8 @@ name: Release / Dev VM disk
 # to a bootable disk, boots that disk once, and publishes each architecture on
 # its own (os/dev/publish-dev-disk.sh):
 #
-#   code.tilo.so/tilo/tilo-vm:<tag>-<arch>       the dev image child
-#   code.tilo.so/tilo/tilo-vm:<tag>              OCI index of the children so far
+#   registry.tilo.so/tilo/tilo-vm:<tag>-<arch>       the dev image child
+#   registry.tilo.so/tilo/tilo-vm:<tag>              OCI index of the children so far
 #   <generic packages>/tilo-vm-disk/<tag>/<disk>   qcow2 (and optional VHDX) disks
 #   <generic packages>/tilo-vm-disk/<tag>/tilo-vm-disk-<arch>.json
 #   <generic packages>/tilo-vm-disk/<tag>/*direct* ARM64 direct-boot companion
@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       base_image:
-        description: "Signed production image (code.tilo.so/tilo/tilo:<tag> or @sha256:...), or a dev-trust integration image (code.tilo.so/tilo/tilo-ci:main-<sha7>-<arch> or @sha256:...); empty uses tilo:main-<sha7>."
+        description: "Signed production image (registry.tilo.so/tilo/tilo:<tag> or @sha256:...), or a dev-trust integration image (registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch> or @sha256:...); empty uses tilo:main-<sha7>."
         required: false
         default: ""
       dev_image:
@@ -90,24 +90,24 @@ jobs:
           }
           short=${source:0:7}
 
-          base=${INPUT_BASE:-code.tilo.so/tilo/tilo:main-$short}
+          base=${INPUT_BASE:-registry.tilo.so/tilo/tilo:main-$short}
           # The repository is the trust boundary. tilo is signed and carries
           # provenance; tilo-ci holds unsigned main integration builds that
           # production policy rejects, and its disks carry a -ci tag suffix.
-          if [[ $base =~ ^code\.tilo\.so/tilo/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]]; then
+          if [[ $base =~ ^registry\.tilo\.so/tilo/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]]; then
             trust=release
             suffix=""
-          elif [[ $base =~ ^code\.tilo\.so/tilo/tilo-ci(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]]; then
+          elif [[ $base =~ ^registry\.tilo\.so/tilo/tilo-ci(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]]; then
             trust=integration
             suffix=-ci
           else
-            echo "::error::base_image must name code.tilo.so/tilo/tilo or code.tilo.so/tilo/tilo-ci by tag or digest: $base"
+            echo "::error::base_image must name registry.tilo.so/tilo/tilo or registry.tilo.so/tilo/tilo-ci by tag or digest: $base"
             exit 1
           fi
 
           checkpoint=${INPUT_CHECKPOINT:-}
-          [[ -z $checkpoint || $checkpoint =~ ^code\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
-            echo '::error::dev_image must be an immutable code.tilo.so/tilo/tilo-vm child digest'
+          [[ -z $checkpoint || $checkpoint =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::dev_image must be an immutable registry.tilo.so/tilo/tilo-vm child digest'
             exit 1
           }
 
@@ -190,6 +190,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
+    enable-openid-connect: true
     env:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
       DISK_TOOLING_REVISION: ${{ github.sha }}
@@ -285,12 +286,6 @@ jobs:
         with:
           cache-architecture: ${{ runner.arch }}
 
-      - name: Authenticate to the image registry
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          printf '%s' "$REGISTRY_TOKEN" | podman login code.tilo.so \
-            --username "${{ github.actor }}" --password-stdin
 
       # "Same commit" is checked, not assumed. A release base must carry the
       # release signature, and its native child's signed provenance must name
@@ -303,8 +298,8 @@ jobs:
           set -euo pipefail
           case "$ARCH" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
           case "$BASE_TRUST" in
-            release) repository=code.tilo.so/tilo/tilo ;;
-            integration) repository=code.tilo.so/tilo/tilo-ci ;;
+            release) repository=registry.tilo.so/tilo/tilo ;;
+            integration) repository=registry.tilo.so/tilo/tilo-ci ;;
             *) echo "::error::unknown base trust: $BASE_TRUST"; exit 1 ;;
           esac
           raw=$(skopeo inspect --raw "docker://$BASE_REF_INPUT")
@@ -372,6 +367,21 @@ jobs:
             TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_TAG --label org.opencontainers.image.revision=$SOURCE_REVISION --label org.opencontainers.image.base.name=$BASE_REPOSITORY@$BASE_INDEX_DIGEST --label org.opencontainers.image.base.digest=$BASE_INDEX_DIGEST --label org.opencontainers.image.base.child.digest=$BASE_CHILD_DIGEST --label sh.tilo.dev.base-trust=$BASE_TRUST" \
             ./os/dev/build-dev-image.sh
 
+      # Every input is anonymously readable; pushes log in with this workflow
+      # revision's login action, which an older signed source revision may
+      # not carry. Checked out only after the dev image build, so it never
+      # enters a build context.
+      - name: Checkout the reviewed registry login
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-registry-login
+          persist-credentials: false
+          sparse-checkout: .forgejo/actions/tilo-registry-login
+          sparse-checkout-cone-mode: false
+      - name: Log in to registry.tilo.so
+        uses: ./.ci-registry-login/.forgejo/actions/tilo-registry-login
+
       # Keep the expensive verified build if disk installation or boot fails.
       # A resumed request accepts only the immutable digest of this native
       # preinstall image, with the same source, base, trust and architecture.
@@ -379,12 +389,12 @@ jobs:
         if: needs.plan.outputs.checkpoint == ''
         run: |
           set -euo pipefail
-          candidate="code.tilo.so/tilo/tilo-vm:build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+          candidate="registry.tilo.so/tilo/tilo-vm:build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
           digest_file=$(mktemp /var/tmp/tilo-vm-build-digest.XXXXXX)
           podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$candidate"
           digest=$(tr -d '[:space:]' < "$digest_file")
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
-          echo "::notice::preinstall dev image $candidate ($digest); resume with dev_image=code.tilo.so/tilo/tilo-vm@$digest"
+          echo "::notice::preinstall dev image $candidate ($digest); resume with dev_image=registry.tilo.so/tilo/tilo-vm@$digest"
 
       - name: Load and verify preinstall dev-image checkpoint
         if: needs.plan.outputs.checkpoint != ''
@@ -396,7 +406,7 @@ jobs:
           set -euo pipefail
           raw=$(skopeo inspect --raw "docker://$DEV_CHECKPOINT_REF")
           actual="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
-          [[ $DEV_CHECKPOINT_REF == "code.tilo.so/tilo/tilo-vm@$actual" ]] || {
+          [[ $DEV_CHECKPOINT_REF == "registry.tilo.so/tilo/tilo-vm@$actual" ]] || {
             echo '::error::dev-image checkpoint manifest does not match its requested digest'
             exit 1
           }
@@ -472,7 +482,7 @@ jobs:
           TILO_DISTROBOX: ""
           TILO_OUTPUT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}
           TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
-          TILO_TARGET_IMGREF: code.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}
+          TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}
           TILO_DISK_SIZE: 64G
         run: |
           set -euo pipefail

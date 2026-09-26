@@ -290,7 +290,7 @@ class FinalizationTests(unittest.TestCase):
     def test_target_origin_rejects_aliases_and_invalid_digest_without_widening_publication(self):
         repository = 'code.tilo.so/tilo/tilo-development'
         for target in ('alias.example/tilo/tilo-development:old-aarch64',
-                       'code.tilo.so/tilo/tilo:old-aarch64',
+                       'registry.tilo.so/tilo/tilo:old-aarch64',
                        repository + '@sha256:' + 'A' * 64,
                        repository + '@sha256:' + 'a' * 63, None):
             with self.subTest(target=target), self.assertRaises(ValueError):

@@ -163,7 +163,7 @@ desktop payload publication does not release an OS version.
 ## Nightly OS publication
 
 Developers and agents build dev VMs from a published, signed OS image, so
-`code.tilo.so/tilo/tilo:latest` must not depend on someone remembering to
+`registry.tilo.so/tilo/tilo:latest` must not depend on someone remembering to
 dispatch CI. **Release / OS** therefore runs every night at 02:00 UTC on
 `main` and publishes a signed generation through exactly the protected manual
 `main` path: the same native `runner-large`/`runner-large-arm64`
@@ -214,7 +214,7 @@ two-architecture release per day and none on days without `main` changes.
 
 Dev VMs must not wait on release gating. Every branch build that gets past the
 image build pushes that image, unsigned, as
-`code.tilo.so/tilo/tilo-ci:<series>-<arch>`, where `<series>` is
+`registry.tilo.so/tilo/tilo-ci:<series>-<arch>`, where `<series>` is
 `main-<sha7>` on `main` and `<branch>-<sha7>` elsewhere. `tilo-ci` is a
 development-only repository: production policy
 (`os/etc/containers/policy.json`) rejects it, and
@@ -257,7 +257,7 @@ carry the release signature and provenance naming the source revision; a
 `-ci` tags, so it can never take a name a signed release would use. The disk
 manifest records `baseImage` and `baseTrust`. `tilo-vm vm create` takes the
 newest `main-*` tag that has a disk for the host's architecture. Dispatch
-`dev-disk.yml` with `base_image=code.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`
+`dev-disk.yml` with `base_image=registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`
 to rebuild a disk by hand.
 
 A manual **Release / OS** dispatch is build-only by default. Enable its
@@ -281,7 +281,7 @@ manual rehearsals retain the single generic x86-64 lane,
 so absent native release capacity does not block ordinary integration feedback.
 
 A publication reads the next generation from the signed published series and
-refuses to run when `code.tilo.so/tilo/tilo` does not exist, so a renamed
+refuses to run when `registry.tilo.so/tilo/tilo` does not exist, so a renamed
 or deleted repository can never silently restart the series at `gen1`. The
 very first publication therefore needs an explicit operator decision: set the
 repository variable `TILO_OS_SERIES_GENESIS_REVISION` to the full 40-hex
@@ -306,8 +306,8 @@ authority.
 
 `os/dev/publish-dev-disk.sh` then writes, for one architecture:
 
-- `code.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child.
-- `code.tilo.so/tilo/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
+- `registry.tilo.so/tilo/tilo-vm:<tag>-<arch>`: the dev image child.
+- `registry.tilo.so/tilo/tilo-vm:<tag>`: an OCI index of every child of `<tag>`
   published so far. It is rebuilt from the child tags, and each lane repeats
   that until a fresh read agrees, so it grows from one architecture to both
   without either lane waiting. The installed disk updates from this tag.
@@ -341,12 +341,21 @@ echo "$sha  tilo-vm.qcow2" | sha256sum --check --strict
 
 To find the current tag, read the `org.opencontainers.image.version` label of
 `tilo-vm:latest`, for example
-`skopeo inspect docker://code.tilo.so/tilo/tilo-vm:latest | jq -r '.Labels["org.opencontainers.image.version"]'`.
+`skopeo inspect docker://registry.tilo.so/tilo/tilo-vm:latest | jq -r '.Labels["org.opencontainers.image.version"]'`.
 
 ## Forgejo-specific rules
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
+- Container images live on `registry.tilo.so/tilo/<image>`. Anyone may pull
+  them, so job containers and pulls carry no credentials (a forge token there
+  is refused and fails the pull). A job that pushes sets
+  `enable-openid-connect: true` and runs `.forgejo/actions/tilo-registry-login`,
+  which gives docker, buildx, podman, skopeo and cosign a fresh ID token for
+  every request, so long builds never outlive their credential. Board
+  (Lenovo) images and firmware carry private firmware and stay on the forge's
+  private registry at `code.tilo.so`, as does the `tilo-development*`
+  pipeline those board builds share.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
   integrations: app release tags and manual dispatches from `main`. Their
   audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
@@ -368,7 +377,8 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - Dev VM disks are development artifacts, never release-signed, so
   `os/dev/publish-dev-disk.sh` (in the OS lane and in `dev-disk.yml`) uploads them with the CI account's package token
   (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an
-  Authorized Integration, and needs no OIDC. Disk uploads go to
+  Authorized Integration; their job's ID token only pushes the dev image to
+  `registry.tilo.so`. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the
   in-cluster Forgejo service.
 - Keep remote actions pinned to full commit hashes.
