@@ -40,7 +40,7 @@ jobs:
           cat >"$context/Containerfile" <<EOF
           FROM registry.tilo.so/tilo/tilo-development-finalization-tools-aarch64@sha256:b8f09490cb08b93ca137a9aca5a7c87b97a218ae33453f6b24b315fb0469903f
           COPY --chown=0:0 --chmod=0755 tilo-crypto /usr/local/bin/tilo-crypto
-          LABEL ai.podesta.tilo.finalization.crypto.sha256="$binary_sha256"
+          LABEL so.tilo.finalization.crypto.sha256="$binary_sha256"
           LABEL org.opencontainers.image.revision="$GITHUB_SHA"
           EOF
           docker build --file "$context/Containerfile" --tag "$tag" "$context"

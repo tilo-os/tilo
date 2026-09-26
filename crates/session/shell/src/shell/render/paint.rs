@@ -1179,7 +1179,7 @@ impl RetainedGpuTarget {
         height: u32,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("quick-desktop-drm-paint-target"),
+            label: Some("tilo-desktop-drm-paint-target"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -3413,7 +3413,7 @@ impl VelloDrmBridge {
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
         let readback_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quick-desktop-drm-paint-readback"),
+            label: Some("tilo-desktop-drm-paint-readback"),
             size: readback_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,

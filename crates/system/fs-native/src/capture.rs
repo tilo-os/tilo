@@ -17,11 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::btrfs;
-use crate::chunking::{ChunkStats, Manifest};
 use crate::extents;
 use crate::hydrate::RESIDENCY_XATTR;
 use crate::journal::{ChangeJournal, JournalBatch, JournalOp};
 use crate::sys;
+use fs_content::{ChunkStats, Manifest};
 
 /// Directory marker that opts a tree out of sync, per
 /// <https://bford.info/cachedir/>.
@@ -80,8 +80,8 @@ impl Node {
             NodeKind::File => {
                 self.size == other.size
                     && self.mtime_ns == other.mtime_ns
-                    && self.manifest.as_ref().map(|m| m.content_id)
-                        == other.manifest.as_ref().map(|m| m.content_id)
+                    && self.manifest.as_ref().map(|m| m.id())
+                        == other.manifest.as_ref().map(|m| m.id())
             }
         }
     }
@@ -1107,20 +1107,20 @@ fn hash_one(
     let (manifest, stats) = if let Some((base_file, base_manifest)) = base {
         let old = File::open(&base_file)?;
         let changed = extents::diff_files(&old, &file)?;
-        if changed.is_empty() && len == base_manifest.total_len {
+        if changed.is_empty() && len == base_manifest.total_len() {
             let stats = ChunkStats {
-                chunks_reused: base_manifest.chunks.len() as u64,
+                chunks_reused: base_manifest.chunks().len() as u64,
                 ..ChunkStats::default()
             };
             (base_manifest, stats)
         } else {
             let map = sys::Mmap::map(&file, len)?;
-            let (m, s) = Manifest::rebuild(Some(&base_manifest), map.as_slice(), &changed, None);
+            let (m, s) = fs_content::rebuild(Some(&base_manifest), map.as_slice(), &changed, None);
             (Arc::new(m), s)
         }
     } else {
         let map = sys::Mmap::map(&file, len)?;
-        let (m, s) = Manifest::build(map.as_slice(), None);
+        let (m, s) = fs_content::build(map.as_slice(), None);
         (Arc::new(m), s)
     };
     node.size = len;
