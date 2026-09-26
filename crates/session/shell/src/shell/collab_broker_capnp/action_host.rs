@@ -13,18 +13,20 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow,
+    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer,
     Confirmation, InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending,
     ReceiptStatus, Reservation, RowVisibility, pending, workspace_provider,
     workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
+use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
     ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, LaunchScope, PublishedAction,
-    PublishedInput, PublishedSurface, ResourceRef, SessionContentStore, Verb, permission_verb,
-    published_directory_action, validate_directory_target_input,
+    PublishedInput, PublishedSurface, ResourceRef, SessionContentStore, Verb,
+    confirmation_satisfied, permission_verb, published_directory_action,
+    validate_directory_target_input,
 };
 use crate::shell::collab_broker::CrdtRoute;
 
@@ -257,6 +259,15 @@ impl CapnpBrokerState {
                         }),
                 );
             }
+            if caller.room().is_some() {
+                self.launchable_catalogue(
+                    &workspace,
+                    &policy,
+                    &live_apps,
+                    with_rows.then_some(&mut rows),
+                    &mut providers,
+                );
+            }
             let unlisted = roots
                 .iter()
                 .filter(|root| {
@@ -325,6 +336,57 @@ impl CapnpBrokerState {
             }
         }
         (rows, providers)
+    }
+
+    /// Actions retained from applications that are closed in `workspace`,
+    /// offered to a caller on this machine that may launch the application
+    /// and use the action. Invoking one launches the app first.
+    fn launchable_catalogue(
+        &self,
+        workspace: &crate::shell::state::Workspace,
+        policy: &crate::shell::state::Actor,
+        live_apps: &std::collections::HashSet<String>,
+        mut rows: Option<&mut Vec<CatalogueRow>>,
+        providers: &mut Vec<CatalogueProvider>,
+    ) {
+        let room = workspace.room.to_string();
+        for surface in self.launchable.surfaces().into_iter().filter(|surface| {
+            surface.route.cluster_id == room
+                && !live_apps.contains(&surface.app_id)
+                && workspace.decide(
+                    policy,
+                    &ResourceRef::App(surface.app_id.clone()),
+                    Verb::Write,
+                ) == CapDecision::Allow
+        }) {
+            let provider = launchable_provider(&surface);
+            if let Some(rows) = rows.as_deref_mut() {
+                rows.extend(
+                    surface
+                        .actions
+                        .iter()
+                        .filter(|action| {
+                            Self::allowed(
+                                workspace,
+                                policy,
+                                &surface.app_id,
+                                &action.action,
+                                action.contract.permission,
+                            )
+                        })
+                        .map(|action| {
+                            action_row(provider.clone(), &surface.app_id, descriptor(action))
+                        }),
+                );
+            }
+            providers.push(CatalogueProvider {
+                provider,
+                app_id: surface.app_id.clone(),
+                room: room.clone(),
+                record_id: surface.route.record_id.clone(),
+                browsable: false,
+            });
+        }
     }
 
     /// The directory root publishing `peer_id` in a workspace `caller` may
@@ -439,6 +501,9 @@ impl CapnpBrokerState {
         launch: Option<&LaunchScope>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if is_launchable_provider(&request.target.provider) {
+            return self.invoke_launchable(caller, request);
+        }
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, request);
         }
@@ -556,6 +621,187 @@ impl CapnpBrokerState {
             completer.complete(result);
         });
         answer
+    }
+
+    /// Invoke an action retained from a closed application: launch the app,
+    /// wait for it to publish the action and its invocation stream, and
+    /// admit the invocation against what it publishes then — its current
+    /// contract, availability and confirmation. The wait is bounded, and a
+    /// caller that stops waiting cancels the delivery.
+    fn invoke_launchable(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let reservation = match self.remote_invocations.lock() {
+            Ok(mut ledger) => ledger.reserve(caller, request),
+            Err(_) => Err(ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            }),
+        };
+        match reservation {
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(Reservation::Admitted) => {
+                return Pending::ready(
+                    self.remote_job(caller, &request.invocation)
+                        .map(|job| self.receipt_for(request.invocation, job))
+                        .ok_or(ActionHostError::UnknownInvocation),
+                );
+            }
+            Ok(Reservation::Reserved) => {}
+        }
+        let admitted = self.admit_launchable(caller, request).and_then(|prepared| {
+            crate::session_runtime::runtime()
+                .map(|runtime| (prepared, runtime))
+                .map_err(|reason| ActionHostError::Unavailable { reason })
+        });
+        let ((workspace, app_id), runtime) = match admitted {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                if let Ok(mut ledger) = self.remote_invocations.lock() {
+                    ledger.abandon(&request.invocation);
+                }
+                return Pending::ready(Err(error));
+            }
+        };
+        let (completer, answer) = pending();
+        let state = Arc::clone(self);
+        let caller = caller.clone();
+        let request = request.clone();
+        runtime.spawn(async move {
+            let started = state
+                .relaunch_and_deliver(&completer, &caller, &workspace, &app_id, &request)
+                .await;
+            let result = match state.remote_invocations.lock() {
+                Ok(mut ledger) => match started {
+                    Ok(job) => {
+                        ledger.complete(&request.invocation, job);
+                        drop(ledger);
+                        Ok(state.receipt_for(request.invocation, job))
+                    }
+                    Err(error) => {
+                        ledger.abandon(&request.invocation);
+                        Err(error)
+                    }
+                },
+                Err(_) => Err(ActionHostError::Unavailable {
+                    reason: "the invocation ledger is unavailable".into(),
+                }),
+            };
+            completer.complete(result);
+        });
+        answer
+    }
+
+    /// Check a launchable invocation before anything starts: the caller may
+    /// launch the app and use the retained action, and carries the
+    /// confirmation its contract asks for, so a refusal never costs a launch.
+    /// Returns the workspace to launch into and the application.
+    fn admit_launchable(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(crate::shell::state::Workspace, String), ActionHostError> {
+        let retained = self
+            .launchable
+            .surface_for(&request.target.provider)
+            .ok_or(ActionHostError::UnknownAction)?;
+        let (workspace, policy) =
+            self.authorized_launch(caller, &retained.route.cluster_id, &retained.app_id)?;
+        let address = &request.target.address;
+        let action = retained
+            .actions
+            .iter()
+            .find(|action| action.resource == address.resource && action.action == address.action)
+            .filter(|action| {
+                Self::allowed(
+                    &workspace,
+                    &policy,
+                    &retained.app_id,
+                    &action.action,
+                    action.contract.permission,
+                )
+            })
+            .ok_or(ActionHostError::UnknownAction)?;
+        if !confirmation_satisfied(action, request.confirmation.as_ref()) {
+            return Err(ActionHostError::ConfirmationRequired);
+        }
+        Ok((workspace, retained.app_id))
+    }
+
+    /// Launch `app_id` unless it already publishes the action, then deliver
+    /// the invocation to the connection that does, through the same
+    /// admission a live action takes.
+    async fn relaunch_and_deliver(
+        &self,
+        completer: &Completer<Result<InvocationReceipt, ActionHostError>>,
+        caller: &Caller,
+        workspace: &crate::shell::state::Workspace,
+        app_id: &str,
+        request: &InvokeRequest,
+    ) -> Result<u64, ActionHostError> {
+        const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+        let room = workspace.room.to_string();
+        let address = &request.target.address;
+        let timeout = self.launchable.delivery_timeout();
+        let deadline = std::time::Instant::now().checked_add(timeout);
+        let mut launched = false;
+        loop {
+            if completer.is_abandoned() {
+                return Err(ActionHostError::Unavailable {
+                    reason: "the caller stopped waiting for admission".into(),
+                });
+            }
+            if let Some(peer_id) = self.ready_publisher(app_id, &room, address) {
+                let mut delivered = request.clone();
+                delivered.target.provider = peer_id.to_string();
+                return self.start_for(caller, None, &delivered);
+            }
+            if !launched {
+                (self.launchable.launcher())(app_id, workspace).map_err(|reason| {
+                    ActionHostError::Refused {
+                        reason: format!("{app_id} could not be launched: {reason}"),
+                    }
+                })?;
+                launched = true;
+                continue;
+            }
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return Err(ActionHostError::Unavailable {
+                    reason: format!(
+                        "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                        address.action,
+                        timeout.as_secs_f32()
+                    ),
+                });
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    }
+
+    /// The live connection of `app_id` in `room` that publishes `address`
+    /// and can receive invocations.
+    fn ready_publisher(
+        &self,
+        app_id: &str,
+        room: &str,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<u64> {
+        let subscribers = self.invocation_subscribers.lock().ok()?;
+        let surfaces = self.surfaces.lock().ok()?;
+        surfaces
+            .values()
+            .filter(|surface| {
+                surface.live
+                    && surface.app_id == app_id
+                    && surface.route.cluster_id == room
+                    && subscribers.contains_key(&surface.peer_id)
+                    && surface.actions.iter().any(|action| {
+                        action.resource == address.resource && action.action == address.action
+                    })
+            })
+            .map(|surface| surface.peer_id)
+            .min()
     }
 
     /// The hosted workspace `room` and the caller's policy actor in it, when
