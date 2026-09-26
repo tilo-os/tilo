@@ -15,6 +15,30 @@
 //! is only ever written into the two-member room of its author and recipient.
 
 pub mod act;
+/// Replays a session awaiting review out of sight, capturing its surfaces
+/// at the offsets and scales its frames were recorded at, so review can
+/// check the recording against it. The replay runs as the frame loop
+/// drives it; review asks after it from its own pump.
+pub trait OffscreenReplay {
+    /// Start replaying `record` against `frames`.
+    ///
+    /// # Errors
+    ///
+    /// When this device cannot replay the session.
+    fn start(
+        &self,
+        record: &ui::record::RecordId,
+        frames: &session_trace::frames::FrameStrip,
+    ) -> Result<u64, String>;
+
+    /// The replay's frames once every offset was captured; `None` while it
+    /// runs.
+    fn take(
+        &self,
+        check: u64,
+    ) -> Option<Result<Box<dyn session_trace::frames::FrameProvider + Send>, String>>;
+}
+
 pub mod fixture;
 pub mod pick;
 pub mod review;

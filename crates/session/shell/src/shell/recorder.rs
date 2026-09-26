@@ -143,6 +143,8 @@ pub struct PendingSession {
     pub summary: SessionSummary,
     doc: AutoCommit,
     frames: Option<SealedFrames>,
+    /// What replaying the session found against its frames, once checked.
+    divergence: Option<session_trace::divergence::DivergenceReport>,
 }
 
 /// The frame strip of a pending session and the blob bytes its record
@@ -162,6 +164,12 @@ impl PendingSession {
     /// `frames`: what review stores or attaches.
     pub fn frame_blob(&self) -> Option<&[u8]> {
         self.frames.as_ref().map(|frames| frames.blob.as_slice())
+    }
+
+    /// What replaying the session found against its frames, when it has
+    /// been checked.
+    pub const fn divergence(&self) -> Option<&session_trace::divergence::DivergenceReport> {
+        self.divergence.as_ref()
     }
 
     /// The record document: identity plus the `session` map.
@@ -674,6 +682,28 @@ impl Recorder {
             .iter()
             .find(|pending| &pending.checkout.id == id)
             .map(|pending| pending.doc.clone())
+    }
+
+    /// Keep what replaying a pending session found, so it is checked once
+    /// and its layer is the one the session is summarized with. `false`
+    /// when no such session awaits review.
+    pub fn record_divergence(
+        &self,
+        id: &RecordId,
+        report: session_trace::divergence::DivergenceReport,
+    ) -> bool {
+        let mut control = lock(&self.control);
+        let found = control
+            .awaiting_review
+            .iter_mut()
+            .find(|pending| &pending.checkout.id == id)
+            .map(|pending| {
+                pending.summary.layer = report.layer;
+                pending.divergence = Some(report);
+            })
+            .is_some();
+        drop(control);
+        found
     }
 
     /// Hand a reviewed-or-discarded session over, removing it from memory.
@@ -1215,6 +1245,7 @@ impl Recorder {
             summary,
             doc,
             frames,
+            divergence: None,
         });
         drop(control);
         Ok(checkout)

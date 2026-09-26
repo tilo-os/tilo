@@ -2789,6 +2789,13 @@ impl FrameHarness {
             &mut resources,
         );
         let mut semantics = crate::a11y_tree::SemanticTree::new();
+        // The window is the whole viewport, as the native host lays it out.
+        semantics.set_surface(Some(Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        )));
         semantics.refresh_bound(self.root.as_ref(), &self.node_map, self.focused, &resources);
         semantics.inspect(request)
     }

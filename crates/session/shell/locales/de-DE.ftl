@@ -85,10 +85,19 @@ remark-review-cut-state = Entfernt, wird nicht gesendet
 remark-review-hidden = { $count } verdeckt
 remark-review-failed = Fehlgeschlagen
 remark-review-refused = Abgelehnt
-remark-review-verdict-logic = Wiederholt sich genau: ein Logik- oder Bedienproblem
-remark-review-verdict-below = Bilder weichen von der Wiederholung ab: wahrscheinlich unterhalb der App
-remark-review-verdict-unsemantic = Ein Teil des Bildschirms hat keine wiederholbare Struktur
+remark-review-verdict-logic = Wiederholt sich genau
+remark-review-verdict-below = Wiederholung weicht unterhalb der App ab
+remark-review-verdict-unsemantic = Teils nicht wiederholbar
 remark-review-verdict-pending = Wiederholung wird geprüft…
+remark-review-verdict-pending-detail = Die Sitzung wird auf diesem Gerät gegen ihre Bilder wiederholt
+remark-review-verdict-logic-detail = Ihre Bilder stimmen mit einer Wiederholung auf diesem Gerät überein: ein Logik- oder Bedienproblem
+remark-review-verdict-below-detail = { $count ->
+    [one] Eine Stelle weicht ab, markiert an ihrem Schritt
+   *[other] { $count } Stellen weichen ab, markiert an ihren Schritten
+}
+remark-review-verdict-unavailable = Nicht gegen eine Wiederholung geprüft
+remark-review-verdict-unavailable-detail = Dieses Gerät kann die Sitzung nicht wiederholen; ihre Bilder gehen wie aufgenommen
+remark-review-verdict-failed = Die Wiederholung konnte nicht geprüft werden
 remark-review-attach-regions = Abweichende Bilder anhängen
 remark-review-back = Zurück
 remark-review-shown = Angezeigt

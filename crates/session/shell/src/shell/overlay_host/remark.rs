@@ -17,7 +17,7 @@ use vello::kurbo::{Point, Rect};
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::collab_broker_capnp::{InspectCaller, InspectionJob};
 use crate::shell::remark::pick::{PickNode, PickScene, PickSurface};
-use crate::shell::remark::review::{ModelUse, Review};
+use crate::shell::remark::review::{ModelUse, Review, Verdict};
 use crate::shell::remark::view::{RemarkView, StateNode, StepFrame, StepState};
 use crate::shell::remark::{
     CommunityRoom, DestinationKind, Directory, Flow, Request, Sending, Stage,
@@ -76,6 +76,13 @@ struct DeliveryJob {
     label: String,
 }
 
+/// A replay check waiting for the replay's frames.
+struct ReplayCheck {
+    check: u64,
+    trace: session_trace::SessionTrace,
+    frames: session_trace::frames::FrameStrip,
+}
+
 /// Host-side state of the remark surface.
 #[derive(Default)]
 pub(crate) struct RemarkHost {
@@ -84,6 +91,14 @@ pub(crate) struct RemarkHost {
     last_stage: Stage,
     directory_at: Option<Instant>,
     review_answers: Option<mpsc::Receiver<BatchAnswer>>,
+    /// How this device replays a session, when it can.
+    replay: Option<std::sync::Arc<dyn crate::shell::remark::OffscreenReplay>>,
+    /// The replay running for the session under review, until its frames
+    /// are in.
+    replay_check: Option<ReplayCheck>,
+    /// The replay check of the session under review, while it runs.
+    verdict_answer:
+        Option<mpsc::Receiver<Result<session_trace::divergence::DivergenceReport, String>>>,
     review_states: Vec<StepState>,
     review_states_key: Option<(String, u32, usize)>,
     /// The session under review, so the preview follows what is hidden.
@@ -225,6 +240,14 @@ fn in_process_surface(
 impl ShellOverlayHost {
     /// Offer `directory`'s destinations in a headless render (`shots`),
     /// where no community is configured and nobody else is in a room.
+    /// Let review check a recording's frames by replaying it.
+    pub fn set_remark_replay(
+        &mut self,
+        replay: std::sync::Arc<dyn crate::shell::remark::OffscreenReplay>,
+    ) {
+        self.remark.replay = Some(replay);
+    }
+
     pub fn seed_remark_directory_for_shots(&mut self, directory: Directory) {
         self.remark.fixture_directory = Some(directory);
         self.remark.directory_at = None;
@@ -301,6 +324,8 @@ impl ShellOverlayHost {
             if stage == Stage::Closed {
                 self.remark.surfaces.clear();
                 self.remark.review_answers = None;
+                self.remark.verdict_answer = None;
+                self.remark.replay_check = None;
                 self.remark.review_states.clear();
                 self.remark.review_states_key = None;
                 self.remark.review_trace = None;
@@ -346,6 +371,7 @@ impl ShellOverlayHost {
         }
         dirty |= self.pump_remark_flow();
         dirty |= self.pump_review_answers();
+        dirty |= self.pump_review_verdict();
         dirty |= self.refresh_review_states();
         dirty |= self.pump_remark_delivery();
         dirty
@@ -699,7 +725,8 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let review = Review::from_trace(record, trace, &app_label);
+        let mut review = Review::from_trace(record, trace, &app_label);
+        review.verdict = self.start_replay_check(record, trace, frames.as_ref());
         let requests: Vec<(usize, tilo_feedback_review::ReviewTraceRequest)> = review
             .batches()
             .iter()
@@ -729,6 +756,133 @@ impl ShellOverlayHost {
         if let Err(error) = spawned {
             tracing::warn!(%error, "review: could not start the review worker; the floor stands");
         }
+    }
+
+    /// Check the recording's frames against a replay of it, once per
+    /// session and off the frame loop. A session checked before keeps its
+    /// report.
+    fn start_replay_check(
+        &mut self,
+        record: &str,
+        trace: &session_trace::SessionTrace,
+        frames: Option<&session_trace::frames::FrameStrip>,
+    ) -> Verdict {
+        let checked = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().recorder().cloned())
+            .zip(ui::record::RecordId::parse(record))
+            .and_then(|(recorder, id)| {
+                recorder.with_pending(&id, |pending| pending.divergence().cloned())
+            })
+            .flatten();
+        if let Some(report) = checked {
+            return Verdict::Checked(report);
+        }
+        let Some(strip) = frames else {
+            return Verdict::Unchecked;
+        };
+        let (Some(replay), Some(id)) = (
+            self.remark.replay.clone(),
+            ui::record::RecordId::parse(record),
+        ) else {
+            return Verdict::Unavailable;
+        };
+        match replay.start(&id, strip) {
+            Ok(check) => {
+                self.remark.replay_check = Some(ReplayCheck {
+                    check,
+                    trace: trace.clone(),
+                    frames: strip.clone(),
+                });
+                Verdict::Checking
+            }
+            Err(reason) => {
+                tracing::info!(%reason, "review: this session cannot be replayed here");
+                Verdict::Unavailable
+            }
+        }
+    }
+
+    /// Once the replay's frames are in, compare them with the recorded
+    /// ones off the frame loop: decoding and comparing is the costly part.
+    fn compare_replayed_frames(&mut self) -> Option<Result<(), String>> {
+        let replay = self.remark.replay.clone()?;
+        let pending = self.remark.replay_check.as_ref()?;
+        let collected = replay.take(pending.check)?;
+        let ReplayCheck { trace, frames, .. } = self.remark.replay_check.take()?;
+        let mut provider = match collected {
+            Ok(provider) => provider,
+            Err(reason) => return Some(Err(reason)),
+        };
+        let (send, receive) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("remark-replay-check".into())
+            .spawn(move || {
+                let outcome = session_trace::divergence::check(
+                    &trace,
+                    &frames,
+                    provider.as_mut(),
+                    &session_trace::divergence::Tolerance::default(),
+                )
+                .map_err(|error| error.to_string());
+                let _ = send.send(outcome);
+            });
+        Some(match spawned {
+            Ok(_) => {
+                self.remark.verdict_answer = Some(receive);
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        })
+    }
+
+    /// Take the replay check's answer: onto the review, and onto the
+    /// pending session so it is not checked again and is summarized with
+    /// the layer found.
+    fn pump_review_verdict(&mut self) -> bool {
+        let outcome = if let Some(Err(reason)) = self.compare_replayed_frames() {
+            Err(reason)
+        } else {
+            let Some(receive) = self.remark.verdict_answer.as_ref() else {
+                return false;
+            };
+            match receive.try_recv() {
+                Ok(outcome) => outcome,
+                Err(mpsc::TryRecvError::Empty) => return false,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err("the replay check stopped".to_string())
+                }
+            }
+        };
+        self.remark.verdict_answer = None;
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let mut st = chrome.borrow_mut();
+        let recorder = st.recorder().cloned();
+        let Some(review) = st.remark.review.as_mut() else {
+            return false;
+        };
+        review.verdict = match outcome {
+            Ok(report) => {
+                if let Some((recorder, id)) =
+                    recorder.zip(ui::record::RecordId::parse(&review.record))
+                {
+                    recorder.record_divergence(&id, report.clone());
+                }
+                Verdict::Checked(report)
+            }
+            Err(reason) => {
+                tracing::warn!(%reason, "review: the replay check did not finish");
+                Verdict::Failed(reason)
+            }
+        };
+        st.bump();
+        drop(st);
+        // The preview marks where replay differs.
+        self.remark.review_states_key = None;
+        true
     }
 
     /// Draw the preview again when what is hidden or cut changed.
@@ -1002,6 +1156,10 @@ impl ShellOverlayHost {
         };
         let (mut duplicate, _report) = session_trace::redact::duplicate(&trace, &redaction)
             .map_err(|error| error.to_string())?;
+        // What replay found is what the session is summarized as.
+        if let Some(layer) = review.verdict.layer() {
+            duplicate.layer = layer;
+        }
         duplicate.redactions = session_trace::Redactions {
             text: review.redaction_count(),
             regions: 0,
@@ -1617,6 +1775,51 @@ fn located_redactions(
 
 /// What the review preview draws for each step: the step's app's latest
 /// tree at or before it, with every text as it will leave.
+/// Where replay does not vouch for a step's frames, in surface units.
+fn divergent_rects(
+    review: &Review,
+    step: &crate::shell::remark::review::Step,
+    unit: f64,
+) -> Vec<Rect> {
+    let unit = unit.max(f64::EPSILON);
+    let rects = review
+        .divergent_regions(step.index)
+        .into_iter()
+        .filter(|(route, _)| step.app_id.is_empty() || route.app_id == step.app_id)
+        // Pixels the replay drew otherwise, not those nothing describes:
+        // the verdict counts those, but outlining them marks the window.
+        .filter(|(_, region)| {
+            !matches!(
+                region.divergence,
+                session_trace::divergence::RegionDivergence::Unexplained
+            )
+        })
+        .map(|(_, region)| {
+            let b = region.bounds;
+            Rect::new(
+                f64::from(b.x) / unit,
+                f64::from(b.y) / unit,
+                f64::from(b.x.saturating_add(b.width)) / unit,
+                f64::from(b.y.saturating_add(b.height)) / unit,
+            )
+        })
+        .collect::<Vec<Rect>>();
+    // The innermost only: an element and its container differing is one
+    // place, marked once.
+    let within = |outer: &Rect, inner: &Rect| {
+        outer != inner
+            && outer.x0 <= inner.x0
+            && outer.y0 <= inner.y0
+            && outer.x1 >= inner.x1
+            && outer.y1 >= inner.y1
+    };
+    rects
+        .iter()
+        .filter(|rect| !rects.iter().any(|other| within(rect, other)))
+        .copied()
+        .collect()
+}
+
 fn step_states(
     review: &Review,
     trace: &session_trace::SessionTrace,
@@ -1713,10 +1916,13 @@ fn step_states(
                         scale: decoded.scale,
                     })
             });
+            let unit = frame.as_ref().map_or(1.0, |frame| frame.scale);
+            let divergent = divergent_rects(review, step, unit);
             StepState {
                 step: step.index,
                 nodes,
                 frame,
+                divergent,
             }
         })
         .collect()

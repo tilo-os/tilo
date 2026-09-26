@@ -6,7 +6,8 @@
 //! on the live path, which only ever reviews what the recorder recorded.
 
 use session_trace::frames::{
-    FrameLimits, FrameStrip, FrameStripBuilder, PixelPurpose, SurfaceFrame, keyframe_regions,
+    FrameError, FrameLimits, FrameProvider, FrameStrip, FrameStripBuilder, PixelPurpose,
+    SurfaceFrame, keyframe_regions,
 };
 use session_trace::{
     Environment, Event, InspectKeyframe, Offset, Origin, PresenceChange, PresenceUpdate,
@@ -23,8 +24,18 @@ const APP: &str = "so.tilo.mail";
 const ROOM: &str = "room";
 const VIEWPORT: (u32, u32) = (720, 480);
 
+/// How the failure is shown: as the app draws it, or as a replay whose
+/// renderer loses the banner's message, which is what a problem below the
+/// app looks like.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    None,
+    Shown,
+    LostBelowTheApp,
+}
+
 /// Mail's compose window, with the draft as far as it had been written.
-fn compose(to: &str, subject: &str, body: &str, failed: bool) -> Column {
+fn compose(to: &str, subject: &str, body: &str, failure: Failure) -> Column {
     let window = Column::new()
         .with_gap(8.0)
         .push(Box::new(
@@ -58,12 +69,12 @@ fn compose(to: &str, subject: &str, body: &str, failed: bool) -> Column {
                 .with_initial_value(body),
         ));
     // Below the draft, so the fields keep their place when it fails.
-    if failed {
-        window.push(Box::new(
+    match failure {
+        Failure::None => window,
+        Failure::Shown => window.push(Box::new(
             Banner::error("Couldn't send").with_message("The server refused the attachment"),
-        ))
-    } else {
-        window
+        )),
+        Failure::LostBelowTheApp => window.push(Box::new(Banner::error("Couldn't send"))),
     }
 }
 
@@ -73,10 +84,10 @@ struct Screen {
     rgba: Vec<u8>,
 }
 
-fn screen(theme: &ui::Theme, to: &str, subject: &str, body: &str, failed: bool) -> Screen {
+fn screen(theme: &ui::Theme, to: &str, subject: &str, body: &str, failure: Failure) -> Screen {
     let driver = ui::headless::Driver::new_with_theme(
         ui::State::new(),
-        Box::new(compose(to, subject, body, failed)),
+        Box::new(compose(to, subject, body, failure)),
         VIEWPORT,
         theme.clone(),
     );
@@ -168,21 +179,34 @@ pub struct SampleRecording {
     pub frames: Option<FrameStrip>,
 }
 
-/// The sample session, its screens drawn in `theme`.
-pub fn sample_recording(theme: &ui::Theme) -> SampleRecording {
-    let body =
-        "Hi Ada, the March invoice is attached. Call me on 0171 5550123 if anything looks off.";
-    let screens = [
-        (400_000, screen(theme, "", "", "", false)),
+const BODY: &str =
+    "Hi Ada, the March invoice is attached. Call me on 0171 5550123 if anything looks off.";
+
+/// The session's screens, by when they were shown, the failure drawn as
+/// `failure`.
+fn screens(theme: &ui::Theme, failure: Failure) -> [(u64, Screen); 3] {
+    [
+        (400_000, screen(theme, "", "", "", Failure::None)),
         (
             6_000_000,
-            screen(theme, "Ada Lovelace", "Invoice for March", body, false),
+            screen(
+                theme,
+                "Ada Lovelace",
+                "Invoice for March",
+                BODY,
+                Failure::None,
+            ),
         ),
         (
             31_500_000,
-            screen(theme, "Ada Lovelace", "Invoice for March", body, true),
+            screen(theme, "Ada Lovelace", "Invoice for March", BODY, failure),
         ),
-    ];
+    ]
+}
+
+/// The sample session, its screens drawn in `theme`.
+pub fn sample_recording(theme: &ui::Theme) -> SampleRecording {
+    let screens = screens(theme, Failure::Shown);
     let attach = control(&screens[1].1, "Attach");
     let send = control(&screens[1].1, "Send");
     let mut timeline: Vec<TimedEvent> = screens
@@ -251,6 +275,59 @@ pub fn sample_recording(theme: &ui::Theme) -> SampleRecording {
     SampleRecording { trace, frames }
 }
 
+/// Replays the sample session the way this device's offscreen replay
+/// would, except that its renderer loses the failure banner's message: the
+/// check finds the frames differ there, below the app.
+pub struct SampleReplay {
+    theme: ui::Theme,
+}
+
+impl SampleReplay {
+    pub const fn new(theme: ui::Theme) -> Self {
+        Self { theme }
+    }
+}
+
+impl super::OffscreenReplay for SampleReplay {
+    fn start(&self, _record: &ui::record::RecordId, _frames: &FrameStrip) -> Result<u64, String> {
+        Ok(1)
+    }
+
+    fn take(&self, _check: u64) -> Option<Result<Box<dyn FrameProvider + Send>, String>> {
+        let frames = screens(&self.theme, Failure::LostBelowTheApp)
+            .into_iter()
+            .map(|(at, screen)| {
+                SurfaceFrame::new(
+                    Offset(at),
+                    route(),
+                    VIEWPORT.0,
+                    VIEWPORT.1,
+                    1.0,
+                    screen.rgba,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string());
+        Some(frames.map(|frames| Box::new(Replayed { frames }) as Box<dyn FrameProvider + Send>))
+    }
+}
+
+struct Replayed {
+    frames: Vec<SurfaceFrame>,
+}
+
+impl FrameProvider for Replayed {
+    fn frames_at(&mut self, at: Offset) -> Result<Vec<SurfaceFrame>, FrameError> {
+        Ok(self
+            .frames
+            .iter()
+            .rfind(|frame| frame.at <= at)
+            .cloned()
+            .into_iter()
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +355,65 @@ mod tests {
         let frames = recording.frames.expect("frames");
         assert_eq!(frames.frames.len(), 3);
         assert!(frames.frames.iter().all(|frame| !frame.masked.is_empty()));
+    }
+
+    #[test]
+    fn a_replay_that_loses_the_banner_message_is_found_below_the_app_on_the_failed_step() {
+        use super::super::OffscreenReplay as _;
+        let theme = ui::Theme::dark();
+        let recording = sample_recording(&theme);
+        let frames = recording.frames.expect("frames");
+        let replay = SampleReplay::new(theme);
+        let id = ui::record::RecordId::parse("uuid:5a3e0000-0000-4000-8000-000000000001").unwrap();
+        let check = replay.start(&id, &frames).unwrap();
+        let mut provider = replay.take(check).expect("ready").expect("replayed");
+        let report = session_trace::divergence::check(
+            &recording.trace,
+            &frames,
+            provider.as_mut(),
+            &session_trace::divergence::Tolerance::default(),
+        )
+        .unwrap();
+        assert_eq!(report.layer, SessionLayer::BelowToolkit);
+        // The banner is drawn differently, and only there do pixels differ.
+        let differs: Vec<Offset> = report
+            .steps
+            .iter()
+            .filter(|step| {
+                step.regions.iter().any(|region| {
+                    matches!(
+                        region.divergence,
+                        session_trace::divergence::RegionDivergence::Differs { .. }
+                    )
+                })
+            })
+            .map(|step| step.at)
+            .collect();
+        assert_eq!(differs, vec![Offset(31_500_000)]);
+        assert_eq!(report.steps.len(), 1, "a real window is described whole");
+
+        let mut review =
+            super::super::review::Review::from_trace("uuid:1", &recording.trace, &|_| {
+                "Mail".into()
+            });
+        let failed = review
+            .steps
+            .iter()
+            .find(|step| step.failed())
+            .map(|step| step.index)
+            .unwrap();
+        review.verdict = super::super::review::Verdict::Checked(report);
+        assert!(!review.divergent_regions(failed).is_empty());
+        let differs_at = |step: u32| {
+            review.divergent_regions(step).iter().any(|(_, region)| {
+                matches!(
+                    region.divergence,
+                    session_trace::divergence::RegionDivergence::Differs { .. }
+                )
+            })
+        };
+        assert!(differs_at(failed));
+        assert!(!differs_at(0));
+        assert_eq!(review.verdict.layer(), Some(SessionLayer::BelowToolkit));
     }
 }

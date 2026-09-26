@@ -63,22 +63,7 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
             driver.host_mut().seed_remark_directory_for_shots(directory);
             driver.with_chrome(|st: &mut ChromeState| st.remark.destination = destination);
         }
-        RemarkStep::SeedReview => {
-            let recording = shell::shell::remark::fixture::sample_recording(driver.theme());
-            let summary = recording.trace.summary();
-            driver.with_chrome(|st: &mut ChromeState| {
-                st.remark.flow = shell::shell::remark::Flow::Attached {
-                    record: "uuid:5a3e0000-0000-4000-8000-000000000001".into(),
-                    summary,
-                };
-                st.remark.stage = shell::shell::remark::Stage::Review;
-            });
-            driver.host_mut().begin_remark_review(
-                "uuid:5a3e0000-0000-4000-8000-000000000001",
-                &recording.trace,
-                recording.frames,
-            );
-        }
+        RemarkStep::SeedReview => seed_review(driver),
         RemarkStep::SeedRecording => driver.with_chrome(|st: &mut ChromeState| {
             st.remark.flow = shell::shell::remark::Flow::Recording {
                 rooms: vec!["room".into()],
@@ -130,4 +115,26 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
             }
         }
     }
+}
+
+/// Attach the sample recording, with a replay that differs from it below
+/// the app, and open review on it.
+fn seed_review(driver: &mut ShellDriver) {
+    const RECORD: &str = "uuid:5a3e0000-0000-4000-8000-000000000001";
+    let recording = shell::shell::remark::fixture::sample_recording(driver.theme());
+    let replay = shell::shell::remark::fixture::SampleReplay::new(driver.theme().clone());
+    driver
+        .host_mut()
+        .set_remark_replay(std::sync::Arc::new(replay));
+    let summary = recording.trace.summary();
+    driver.with_chrome(|st: &mut ChromeState| {
+        st.remark.flow = shell::shell::remark::Flow::Attached {
+            record: RECORD.into(),
+            summary,
+        };
+        st.remark.stage = shell::shell::remark::Stage::Review;
+    });
+    driver
+        .host_mut()
+        .begin_remark_review(RECORD, &recording.trace, recording.frames);
 }

@@ -91,10 +91,19 @@ remark-review-hidden = { $count ->
 }
 remark-review-failed = Failed
 remark-review-refused = Refused
-remark-review-verdict-logic = Replays exactly: a logic or UX problem
-remark-review-verdict-below = Frames differ from the replay: likely below the app
-remark-review-verdict-unsemantic = Part of the screen has no structure to replay
+remark-review-verdict-logic = Replays exactly
+remark-review-verdict-below = Replay differs below the app
+remark-review-verdict-unsemantic = Some of it can't be replayed
 remark-review-verdict-pending = Checking the replay…
+remark-review-verdict-pending-detail = Replaying the session on this device against its frames
+remark-review-verdict-logic-detail = Its frames match a replay on this device: a logic or UX problem
+remark-review-verdict-below-detail = { $count ->
+    [one] One place differs, marked on its step
+   *[other] { $count } places differ, marked on their steps
+}
+remark-review-verdict-unavailable = Not checked against a replay
+remark-review-verdict-unavailable-detail = This device can't replay the session; its frames go as recorded
+remark-review-verdict-failed = Couldn't check the replay
 remark-review-attach-regions = Attach differing frames
 remark-review-back = Back
 remark-review-shown = On screen

@@ -53,6 +53,30 @@ impl Step {
     }
 }
 
+/// Whether replaying the session reproduces what its frames show.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Verdict {
+    /// The recording kept no frames, so there is nothing to check against.
+    #[default]
+    Unchecked,
+    /// This device cannot replay the session.
+    Unavailable,
+    /// Replaying off the event loop.
+    Checking,
+    Checked(session_trace::divergence::DivergenceReport),
+    Failed(String),
+}
+
+impl Verdict {
+    /// The layer the session is summarized with once checked.
+    pub const fn layer(&self) -> Option<tilo_reference::SessionLayer> {
+        match self {
+            Self::Checked(report) => Some(report.layer),
+            _ => None,
+        }
+    }
+}
+
 /// Which model titled the steps and proposed redactions, and what it saw.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -92,6 +116,7 @@ pub struct Review {
     pub model: ModelUse,
     pub duration: Offset,
     pub generation: Option<u64>,
+    pub verdict: Verdict,
 }
 
 /// One text of a step, with the batch it belongs to.
@@ -171,7 +196,43 @@ impl Review {
                 .image
                 .as_ref()
                 .and_then(|image| image.generation),
+            verdict: Verdict::Unchecked,
         }
+    }
+
+    /// The step an offset of the trace falls in: the last one begun by
+    /// then, or the first.
+    pub fn step_at(&self, at: Offset) -> Option<u32> {
+        self.steps
+            .iter()
+            .rev()
+            .find(|step| step.at <= at)
+            .or_else(|| self.steps.first())
+            .map(|step| step.index)
+    }
+
+    /// The regions replay does not vouch for, by the step they fall in.
+    pub fn divergent_regions(
+        &self,
+        step: u32,
+    ) -> Vec<(
+        &session_trace::Route,
+        &session_trace::divergence::DivergentRegion,
+    )> {
+        let Verdict::Checked(report) = &self.verdict else {
+            return Vec::new();
+        };
+        report
+            .steps
+            .iter()
+            .filter(|diverging| self.step_at(diverging.at) == Some(step))
+            .flat_map(|diverging| {
+                diverging
+                    .regions
+                    .iter()
+                    .map(move |region| (&diverging.route, region))
+            })
+            .collect()
     }
 
     pub fn batches(&self) -> &[ReviewBatch] {

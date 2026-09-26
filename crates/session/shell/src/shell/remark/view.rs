@@ -27,7 +27,7 @@ use ui::widget::{
 use crate::shell::i18n::{number, t, t_args, text};
 
 use super::pick::PickState;
-use super::review::{ModelUse, Review};
+use super::review::{ModelUse, Review, Verdict};
 use super::{Composer, DestinationKind, DestinationOption, Flow, Opening, Sending, Stage};
 
 fn f32_of(value: f64) -> f32 {
@@ -1788,9 +1788,27 @@ impl RemarkView {
             return;
         }
 
-        // Steps.
+        // Steps, and below them whether a replay reproduces the frames.
         let list_w = (body.width() * 0.34).clamp(200.0, 300.0);
         let step_h = 52.0;
+        let verdict_h = if matches!(review.verdict, Verdict::Unchecked) {
+            0.0
+        } else {
+            64.0
+        };
+        Self::draw_verdict_badge(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(
+                body.x0 + gap,
+                body.y1 - verdict_h + gap,
+                body.x0 + list_w,
+                body.y1,
+            ),
+            &review.verdict,
+        );
         let ground = ui::chrome::shell::panel_ground(theme);
         for (index, step) in review.steps.iter().enumerate() {
             let row = Rect::from_origin_size(
@@ -1800,7 +1818,7 @@ impl RemarkView {
                 ),
                 (list_w, step_h),
             );
-            if row.y1 > body.y1 {
+            if row.y1 > body.y1 - verdict_h {
                 break;
             }
             let target = Target::ReviewStep(step.index);
@@ -1847,6 +1865,21 @@ impl RemarkView {
                 TextWeight::Semibold,
             );
             let x = row.x0 + gap + 28.0;
+            // Replay drew this step differently.
+            let flagged = !review.divergent_regions(step.index).is_empty();
+            let text_x1 = if flagged {
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size((row.x1 - gap - 7.0, row.center().y), (14.0, 14.0)),
+                    Icon::TriangleAlert,
+                    colors.semantic.warning,
+                    LUCIDE_DEFAULT_STROKE_PX,
+                );
+                row.x1 - gap - 18.0
+            } else {
+                row.x1
+            };
             let title = review.title(step.index);
             let title_color = if cut {
                 colors.text_tertiary
@@ -1862,14 +1895,14 @@ impl RemarkView {
                 scale.sm,
                 title_color,
                 Point::new(x, row.y0 + 8.0),
-                row.x1 - x - gap,
+                text_x1 - x - gap,
                 TextWeight::Medium,
             );
             if cut {
                 let shown = tr.elide_to_width_weighted(
                     &title,
                     scale.sm,
-                    f32_of((row.x1 - x - gap).max(0.0)),
+                    f32_of((text_x1 - x - gap).max(0.0)),
                     TextWeight::Medium,
                 );
                 let (title_w, _) = tr.measure_weighted(&shown, scale.sm, None, TextWeight::Medium);
@@ -1895,7 +1928,7 @@ impl RemarkView {
                 scale.xs,
                 colors.text_dim,
                 Point::new(x, row.y0 + 12.0 + f64::from(title_h)),
-                row.x1 - x - gap,
+                text_x1 - x - gap,
                 TextWeight::Regular,
             );
             self.push(row, target);
@@ -2180,7 +2213,6 @@ impl RemarkView {
         model: &ModelUse,
     ) {
         let colors = &theme.tokens.colors;
-        let scale = &theme.tokens.typography.scale;
         let (icon, tint, title, detail) = match model {
             ModelUse::OnDevice { model } => (
                 Icon::Sparkles,
@@ -2225,6 +2257,103 @@ impl RemarkView {
                 t("remark-review-model-floor-detail"),
             ),
         };
+        Self::draw_badge(
+            scene, transform, tr, theme, rect, icon, tint, &title, &detail,
+        );
+    }
+
+    /// Whether a replay of the session reproduces its frames; nothing when
+    /// the recording kept none.
+    fn draw_verdict_badge(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        verdict: &Verdict,
+    ) {
+        let colors = &theme.tokens.colors;
+        let (icon, tint, title, detail) = match verdict {
+            Verdict::Unchecked => return,
+            Verdict::Unavailable => (
+                Icon::Film,
+                colors.text_dim,
+                t("remark-review-verdict-unavailable"),
+                t("remark-review-verdict-unavailable-detail"),
+            ),
+            Verdict::Checking => (
+                Icon::Film,
+                colors.accent[5],
+                t("remark-review-verdict-pending"),
+                t("remark-review-verdict-pending-detail"),
+            ),
+            Verdict::Failed(reason) => (
+                Icon::TriangleAlert,
+                colors.semantic.warning,
+                t("remark-review-verdict-failed"),
+                reason.clone(),
+            ),
+            Verdict::Checked(report) => {
+                let regions: Vec<_> = report
+                    .steps
+                    .iter()
+                    .flat_map(|step| step.regions.iter())
+                    .collect();
+                if regions.is_empty() {
+                    (
+                        Icon::Check,
+                        colors.semantic.success,
+                        t("remark-review-verdict-logic"),
+                        t("remark-review-verdict-logic-detail"),
+                    )
+                } else {
+                    let unsemantic = regions.iter().all(|region| {
+                        matches!(
+                            region.divergence,
+                            session_trace::divergence::RegionDivergence::Unexplained
+                        )
+                    });
+                    (
+                        Icon::TriangleAlert,
+                        colors.semantic.warning,
+                        if unsemantic {
+                            t("remark-review-verdict-unsemantic")
+                        } else {
+                            t("remark-review-verdict-below")
+                        },
+                        t_args(
+                            "remark-review-verdict-below-detail",
+                            &[(
+                                "count",
+                                number(u32::try_from(regions.len()).unwrap_or(u32::MAX)),
+                            )],
+                        ),
+                    )
+                }
+            }
+        };
+        Self::draw_badge(
+            scene, transform, tr, theme, rect, icon, tint, &title, &detail,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a badge is its icon, tint and two lines of text in a rectangle"
+    )]
+    fn draw_badge(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        icon: Icon,
+        tint: Color,
+        title: &str,
+        detail: &str,
+    ) {
+        let colors = &theme.tokens.colors;
+        let scale = &theme.tokens.typography.scale;
         let icon_rect = Rect::from_center_size((rect.x0 + 10.0, rect.y0 + 10.0), (16.0, 16.0));
         draw_icon(
             scene,
@@ -2235,12 +2364,12 @@ impl RemarkView {
             LUCIDE_DEFAULT_STROKE_PX,
         );
         let x = rect.x0 + 26.0;
-        let (_, h) = tr.measure_weighted(&title, scale.sm, None, TextWeight::Medium);
+        let (_, h) = tr.measure_weighted(title, scale.sm, None, TextWeight::Medium);
         line(
             scene,
             transform,
             tr,
-            &title,
+            title,
             scale.sm,
             colors.text_primary,
             Point::new(x, rect.y0 + 2.0),
@@ -2251,7 +2380,7 @@ impl RemarkView {
             scene,
             transform,
             tr,
-            &detail,
+            detail,
             scale.xs,
             colors.text_dim,
             Point::new(x, rect.y0 + 4.0 + f64::from(h)),
@@ -2441,6 +2570,16 @@ impl RemarkView {
                 );
             }
             self.push(rect, target);
+        }
+        // Where a replay of the session drew something else.
+        for region in &state.divergent {
+            scene.stroke(
+                &Stroke::new(1.5).with_dashes(0.0, [4.0, 3.0]),
+                transform,
+                colors.semantic.warning,
+                None,
+                &RoundedRect::from_rect(map(*region).inflate(3.0, 3.0), 3.0),
+            );
         }
         // The node the step acted on.
         if let Some(node) = state.nodes.iter().find(|node| node.acted) {
@@ -2746,6 +2885,9 @@ pub struct StepState {
     pub nodes: Vec<StateNode>,
     /// The recorded frame of the step's app, when frames were kept.
     pub frame: Option<StepFrame>,
+    /// Where a replay of the session drew something else, in the app's
+    /// surface units.
+    pub divergent: Vec<Rect>,
 }
 
 /// One recorded frame, already masked where the app declared personal or
