@@ -104,6 +104,7 @@ pub mod render;
 pub mod room_activity;
 pub mod room_records;
 pub mod search;
+pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod sidebar_wheel_disc;
