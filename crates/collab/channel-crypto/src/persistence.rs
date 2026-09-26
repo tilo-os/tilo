@@ -114,41 +114,41 @@ impl ChannelGroup {
     ///
     /// Returns an explicit serialization, encryption, lock, or I/O error.
     pub fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
-        let storage = self
-            .member
-            .provider
-            .storage()
-            .values
-            .read()
-            .map_err(|_| Error::InvalidState("OpenMLS storage lock poisoned".into()))?
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let signer = postcard::to_allocvec(&self.member.signer)
-            .map_err(|error| Error::Serialization(error.to_string()))?;
-        let mut state = StateV2 {
+        let mut state = self.snapshot()?;
+        let encoded = postcard::to_allocvec(&state);
+        state.zeroize_secret_material();
+        let plaintext =
+            Zeroizing::new(encoded.map_err(|error| Error::Serialization(error.to_string()))?);
+        write_sealed(path, key, STATE_RECORD, &plaintext)
+    }
+
+    fn snapshot(&self) -> Result<StateV2> {
+        let (member_name, signer, storage) = self.member.snapshot()?;
+        Ok(StateV2 {
             version: STATE_VERSION,
             mls: StateV1 {
                 channel_id: self.channel_id,
-                member_name: self.member.name.clone(),
+                member_name,
                 signer,
                 group_id: self.group.group_id().as_slice().to_vec(),
                 epoch: self.epoch(),
                 storage,
             },
             content_keys: self.keyring.to_wire(),
-        };
-        let encoded = postcard::to_allocvec(&state);
+        })
+    }
+
+    fn restore_v2(mut state: StateV2) -> Result<Self> {
+        if state.version != STATE_VERSION {
+            state.zeroize_secret_material();
+            return Err(Error::InvalidState(
+                "unsupported sealed-state version".into(),
+            ));
+        }
+        let keyring = ContentKeyring::from_wire(std::mem::take(&mut state.content_keys));
+        let restored = Self::restore(&state.mls, keyring.ok());
         state.zeroize_secret_material();
-        let plaintext =
-            Zeroizing::new(encoded.map_err(|error| Error::Serialization(error.to_string()))?);
-        let sealed = tilo_seal::envelope::seal(
-            &key.0,
-            Context::new(Label::ChannelMlsState, STATE_RECORD),
-            &plaintext,
-        )
-        .map_err(|_| Error::StateCrypto("state encryption failed"))?;
-        atomic_file::write_private(path, &sealed).map_err(Error::Io)
+        restored
     }
 
     /// Restore a group previously written by [`Self::save_sealed`], by this
@@ -173,18 +173,9 @@ impl ChannelGroup {
                 &bytes,
             )
             .map_err(|_| Error::StateCrypto("state authentication failed"))?;
-            let mut state: StateV2 = postcard::from_bytes(&plaintext)
+            let state: StateV2 = postcard::from_bytes(&plaintext)
                 .map_err(|error| Error::Serialization(error.to_string()))?;
-            if state.version != STATE_VERSION {
-                state.zeroize_secret_material();
-                return Err(Error::InvalidState(
-                    "unsupported sealed-state version".into(),
-                ));
-            }
-            let keyring = ContentKeyring::from_wire(std::mem::take(&mut state.content_keys));
-            let restored = Self::restore(&state.mls, keyring.ok());
-            state.zeroize_secret_material();
-            return restored;
+            return Self::restore_v2(state);
         }
         let plaintext = open_legacy(&bytes, &key.0)?;
         let mut state: StateV1 = postcard::from_bytes(&plaintext)
@@ -201,6 +192,45 @@ impl ChannelGroup {
     fn restore(state: &StateV1, keyring: Option<ContentKeyring>) -> Result<Self> {
         let keyring =
             keyring.ok_or_else(|| Error::InvalidState("conflicting stored content keys".into()))?;
+        let member = MemberKey::restore(&state.member_name, &state.signer, &state.storage)?;
+        let group_id = GroupId::from_slice(&state.group_id);
+        let group = MlsGroup::load(member.provider.storage(), &group_id)
+            .map_err(Error::storage)?
+            .ok_or_else(|| Error::InvalidState("group is absent from OpenMLS storage".into()))?;
+        if group.epoch().as_u64() != state.epoch {
+            return Err(Error::InvalidState(
+                "group epoch does not match sealed manifest".into(),
+            ));
+        }
+        Ok(Self {
+            channel_id: state.channel_id,
+            member,
+            group,
+            keyring,
+        })
+    }
+}
+
+/// A member key's name, encoded signer and provider storage.
+type MemberSnapshot = (Vec<u8>, Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>);
+
+impl MemberKey {
+    fn snapshot(&self) -> Result<MemberSnapshot> {
+        let storage = self
+            .provider
+            .storage()
+            .values
+            .read()
+            .map_err(|_| Error::InvalidState("OpenMLS storage lock poisoned".into()))?
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let signer = postcard::to_allocvec(&self.signer)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        Ok((self.name.clone(), signer, storage))
+    }
+
+    fn restore(name: &[u8], signer: &[u8], storage: &[(Vec<u8>, Vec<u8>)]) -> Result<Self> {
         let provider = OpenMlsRustCrypto::default();
         {
             let mut values = provider
@@ -208,13 +238,13 @@ impl ChannelGroup {
                 .values
                 .write()
                 .map_err(|_| Error::InvalidState("OpenMLS storage lock poisoned".into()))?;
-            for (storage_key, value) in &state.storage {
+            for (storage_key, value) in storage {
                 if values.insert(storage_key.clone(), value.clone()).is_some() {
                     return Err(Error::InvalidState("duplicate OpenMLS storage key".into()));
                 }
             }
         }
-        let signer: SignatureKeyPair = postcard::from_bytes(&state.signer)
+        let signer: SignatureKeyPair = postcard::from_bytes(signer)
             .map_err(|error| Error::Serialization(error.to_string()))?;
         let stored_signer = SignatureKeyPair::read(
             provider.storage(),
@@ -225,26 +255,160 @@ impl ChannelGroup {
         if stored_signer.public() != signer.public() {
             return Err(Error::InvalidState("signer/storage mismatch".into()));
         }
-        let group_id = GroupId::from_slice(&state.group_id);
-        let group = MlsGroup::load(provider.storage(), &group_id)
-            .map_err(Error::storage)?
-            .ok_or_else(|| Error::InvalidState("group is absent from OpenMLS storage".into()))?;
-        if group.epoch().as_u64() != state.epoch {
-            return Err(Error::InvalidState(
-                "group epoch does not match sealed manifest".into(),
-            ));
-        }
         Ok(Self {
-            channel_id: state.channel_id,
-            member: MemberKey {
-                name: state.member_name.clone(),
-                signer,
-                provider,
-            },
-            group,
-            keyring,
+            name: name.to_vec(),
+            signer,
+            provider,
         })
     }
+
+    /// An independent copy of this member key: same signer, same stored
+    /// key-package secrets. Used to keep a pending member usable when a
+    /// Welcome addressed to it fails to process.
+    pub(crate) fn duplicate(&self) -> Result<Self> {
+        let (name, mut signer, mut storage) = self.snapshot()?;
+        let copy = Self::restore(&name, &signer, &storage);
+        signer.zeroize();
+        for (key, value) in &mut storage {
+            key.zeroize();
+            value.zeroize();
+        }
+        copy
+    }
+}
+
+/// Record bound into every device member-state envelope.
+const MEMBER_RECORD: &[u8] = b"channel-crypto/device-member";
+const MEMBER_RECORD_VERSION: u8 = 1;
+
+/// A device's durable state for one channel it takes part in without
+/// stewarding it.
+pub(crate) enum MemberRecord {
+    /// Asked for access; holds the member key whose key packages are out.
+    Waiting(Box<MemberKey>),
+    /// Admitted.
+    Joined(Box<ChannelGroup>),
+    /// Removed by the steward.
+    Removed,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum MemberRecordWire {
+    Waiting {
+        name: Vec<u8>,
+        signer: Vec<u8>,
+        storage: Vec<(Vec<u8>, Vec<u8>)>,
+    },
+    Joined(StateV2),
+    Removed,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemberFile {
+    version: u8,
+    record: MemberRecordWire,
+}
+
+impl MemberRecordWire {
+    fn zeroize_secret_material(&mut self) {
+        match self {
+            Self::Waiting {
+                name,
+                signer,
+                storage,
+            } => {
+                name.zeroize();
+                signer.zeroize();
+                for (key, value) in storage.iter_mut() {
+                    key.zeroize();
+                    value.zeroize();
+                }
+                storage.clear();
+            }
+            Self::Joined(state) => state.zeroize_secret_material(),
+            Self::Removed => {}
+        }
+    }
+}
+
+impl MemberRecord {
+    pub(crate) fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
+        let record = match self {
+            Self::Waiting(member) => {
+                let (name, signer, storage) = member.snapshot()?;
+                MemberRecordWire::Waiting {
+                    name,
+                    signer,
+                    storage,
+                }
+            }
+            Self::Joined(group) => MemberRecordWire::Joined(group.snapshot()?),
+            Self::Removed => MemberRecordWire::Removed,
+        };
+        let mut file = MemberFile {
+            version: MEMBER_RECORD_VERSION,
+            record,
+        };
+        let encoded = postcard::to_allocvec(&file);
+        file.record.zeroize_secret_material();
+        let plaintext =
+            Zeroizing::new(encoded.map_err(|error| Error::Serialization(error.to_string()))?);
+        write_sealed(path, key, MEMBER_RECORD, &plaintext)
+    }
+
+    pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
+        let plaintext = read_sealed(path, key, MEMBER_RECORD)?;
+        let file: MemberFile = postcard::from_bytes(&plaintext)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        if file.version != MEMBER_RECORD_VERSION {
+            let mut file = file;
+            file.record.zeroize_secret_material();
+            return Err(Error::InvalidState(
+                "unsupported member-state version".into(),
+            ));
+        }
+        match file.record {
+            MemberRecordWire::Waiting {
+                mut name,
+                mut signer,
+                mut storage,
+            } => {
+                let member = MemberKey::restore(&name, &signer, &storage);
+                name.zeroize();
+                signer.zeroize();
+                for (key, value) in &mut storage {
+                    key.zeroize();
+                    value.zeroize();
+                }
+                member.map(Box::new).map(Self::Waiting)
+            }
+            MemberRecordWire::Joined(state) => ChannelGroup::restore_v2(state)
+                .map(Box::new)
+                .map(Self::Joined),
+            MemberRecordWire::Removed => Ok(Self::Removed),
+        }
+    }
+}
+
+fn write_sealed(path: &Path, key: &VaultKey, record: &[u8], plaintext: &[u8]) -> Result<()> {
+    let sealed = tilo_seal::envelope::seal(
+        &key.0,
+        Context::new(Label::ChannelMlsState, record),
+        plaintext,
+    )
+    .map_err(|_| Error::StateCrypto("state encryption failed"))?;
+    atomic_file::write_private(path, &sealed).map_err(Error::Io)
+}
+
+fn read_sealed(path: &Path, key: &VaultKey, record: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    if fs::metadata(path)?.len() > MAX_SEALED_STATE {
+        return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
+    }
+    let bytes = fs::read(path)?;
+    tilo_seal::envelope::open(&key.0, Context::new(Label::ChannelMlsState, record), &bytes)
+        .map_err(|_| Error::StateCrypto("state authentication failed"))
 }
 
 /// Open a state file written before `tilo-seal`: `"QMLSG" || 0x01 ||

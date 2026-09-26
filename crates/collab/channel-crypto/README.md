@@ -116,6 +116,55 @@ history.
 - `AddWithKeyHistory` is a new trailing variant, so journals written before
   it still decode.
 
+## Stewards, members and endpoints
+
+Each channel has exactly one **steward**: the device that created its MLS
+group. Only the steward issues governance frames, so frames form one hash
+chain with no forks to reconcile.
+
+- [`ChannelSteward`] owns the group, the governance journal and a small
+  ledger. `reconcile(allowed, requests)` moves the group to the device set
+  the caller's access policy allows. It removes devices that lost access
+  first, then admits allowed devices that sent an access request. A member
+  that sends a newer request because it lost its state is removed and
+  admitted again. `outbox()` lists, for each device with an unacknowledged
+  delivery, the frames after the last one it acknowledged, and
+  `acknowledge` applies a device's cumulative acknowledgement. Each change
+  stages the commit, writes the group, appends the frame, then merges; a
+  crash at any point is finished or rolled back on the next open.
+- [`ChannelMember`] is every other device's view. It starts `Waiting` and
+  signs `MlsAccessRequestV1`s that carry fresh key packages. Its MLS
+  credential is the device's certified key, and the steward refuses a
+  package whose credential names another device. It applies frames once and
+  in chain order, whatever order and however often the transport delivers
+  them: out-of-order frames are held back, duplicates are ignored, and a
+  frame replayed after a crash is recognised by its epoch. It keeps a mirror
+  of the journal that carries the plaintext gate and the head epoch for the
+  device's broker. A frame its MLS state cannot apply makes it `Waiting`
+  again instead of failing.
+- [`ChannelContentKeys`] is what an application process receives: the
+  current epoch and the content keyring. It has no MLS signer, HPKE or
+  ratchet secrets, so an app can seal and open content but cannot change
+  membership.
+
+A channel's first frame is `Genesis`. It closes the plaintext gate for
+good, whether the channel is new or is being migrated from plaintext.
+
+### Per-edit cost
+
+`examples/edit_overhead.rs` measures sealing on the sender and opening on a
+receiver through `ChannelContentKeys` (release build, one x86-64 core):
+
+| payload | added bytes | seal | open |
+|--------:|------------:|-----:|-----:|
+| 64 B    | 56          | 0.8 µs | 0.7 µs |
+| 1 KiB   | 56          | 1.2 µs | 1.5 µs |
+| 4 KiB   | 56          | 2.7 µs | 3.8 µs |
+| 64 KiB  | 56          | 33 µs  | 52 µs  |
+
+A signed op carrying a 64-byte edit grows from 201 to 276 bytes (75 bytes,
+including the encryption metadata).
+
 ## Production integration status
 
 The production collaboration transport accepts encrypted document envelopes.
