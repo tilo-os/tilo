@@ -1448,6 +1448,8 @@ struct PresenceSub {
 }
 struct ContextSub {
     peer_id: u64,
+    /// The delegated agent principal this connection was admitted as.
+    agent: Option<String>,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
 }
 
@@ -2482,6 +2484,25 @@ impl CapnpBrokerState {
             .filter(|channel_id| self.request_document_snapshot(channel_id, requester))
             .map(|channel_id| CrdtRoute::from_channel_key(&channel_id))
             .collect()
+    }
+
+    /// Agent principals with a live connection on some route in `room`,
+    /// sorted. A connection is live while its context stream is held.
+    pub(crate) fn live_agents_in(&self, room: &str) -> Vec<String> {
+        let Ok(channels) = self.channels.lock() else {
+            return Vec::new();
+        };
+        let mut agents: Vec<String> = channels
+            .iter()
+            .filter(|(key, _)| CrdtRoute::from_channel_key(key).cluster_id == room)
+            .flat_map(|(_, subscribers)| subscribers.context.iter())
+            .filter(|subscriber| !subscriber.tx.is_closed())
+            .filter_map(|subscriber| subscriber.agent.clone())
+            .collect();
+        drop(channels);
+        agents.sort();
+        agents.dedup();
+        agents
     }
 
     const MAX_RETAINED_INVOCATIONS: usize = 256;
@@ -4718,13 +4739,14 @@ impl CapnpBrokerState {
         &self,
         channel_id: &str,
         peer_id: u64,
+        agent: Option<String>,
     ) -> mpsc::UnboundedReceiver<ContextEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
                 .context
-                .push(ContextSub { peer_id, tx });
+                .push(ContextSub { peer_id, agent, tx });
         }
         rx
     }
@@ -6152,7 +6174,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let rx = self.state.subscribe_context(&self.channel_id, self.peer_id);
+        let rx = self.state.subscribe_context(
+            &self.channel_id,
+            self.peer_id,
+            self.verified_identity.agent_id.clone(),
+        );
         let server = ContextStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
         };
@@ -9161,9 +9187,9 @@ pub(crate) mod tests {
             None,
         );
         let channel = "so.tilo.notes#room:test#record:daily";
-        let mut first = state.subscribe_context(channel, 7);
-        let mut second = state.subscribe_context(channel, 9);
-        let _requester = state.subscribe_context(channel, 12);
+        let mut first = state.subscribe_context(channel, 7, None);
+        let mut second = state.subscribe_context(channel, 9, None);
+        let _requester = state.subscribe_context(channel, 12, None);
 
         assert!(state.request_document_snapshot(channel, 12));
         assert!(matches!(

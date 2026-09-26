@@ -513,6 +513,69 @@ pub fn local_participant_rows(
         .collect()
 }
 
+/// Keeps every room's roster listing the agents that take part from this
+/// machine — the session recorder and agents connected over the typed
+/// service — for as long as the broker has them live, and no longer. The
+/// network roster ([`PeerPresence::refresh_roster`]) folds in the same
+/// participants, so the two never disagree.
+pub struct LocalParticipantRoster {
+    fanout: Arc<crate::shell::collab_broker::FanoutState>,
+    listed: std::collections::BTreeSet<(crate::shell::state::RoomId, String)>,
+}
+
+impl LocalParticipantRoster {
+    pub fn new(fanout: Arc<crate::shell::collab_broker::FanoutState>) -> Self {
+        Self {
+            fanout,
+            listed: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Bring every room's roster in line with the live participants.
+    /// Returns whether a roster changed.
+    pub fn sync(&mut self, tree: &crate::shell::state::WorkspaceTreeHandle) -> bool {
+        let mut live: std::collections::BTreeMap<
+            (crate::shell::state::RoomId, String),
+            crate::shell::state::Collaborator,
+        > = std::collections::BTreeMap::new();
+        {
+            let read = tree.read();
+            for ws in &read.desktop.workspaces {
+                if ws.room.is_nil() {
+                    continue;
+                }
+                let participants = self.fanout.local_participants_in(&ws.room.to_string());
+                for row in local_participant_rows(ws, &participants, &[]) {
+                    live.insert((ws.room, row.id.clone()), row);
+                }
+            }
+        }
+        let gone: Vec<_> = self
+            .listed
+            .iter()
+            .filter(|key| !live.contains_key(*key))
+            .cloned()
+            .collect();
+        let missing: Vec<_> = live
+            .iter()
+            .filter(|(key, _)| !self.listed.contains(*key))
+            .collect();
+        if gone.is_empty() && missing.is_empty() {
+            return false;
+        }
+        let mut write = tree.write();
+        for (room, id) in &gone {
+            write.retire_collaborator_in_room(*room, id);
+        }
+        for ((room, _), row) in &missing {
+            write.admit_collaborator_in_room(*room, (*row).clone());
+        }
+        drop(write);
+        self.listed = live.into_keys().collect();
+        true
+    }
+}
+
 /// The peer handles this session has had presence from in `room`.
 ///
 /// Reads the same [`PresenceCtx`] the overlay paints cursors from, so the

@@ -384,8 +384,9 @@ impl FanoutState {
         }
     }
 
-    /// In-process agent participants live in `room` — the roster's answer
-    /// for participants that have no network session.
+    /// Agent participants live in `room` from this machine — in-process ones
+    /// and typed connections admitted as an agent. The roster's answer for
+    /// participants that have no network session.
     pub fn local_participants_in(&self, room: &str) -> Vec<LocalParticipant> {
         let mut out: Vec<LocalParticipant> = Vec::new();
         for sub in self.local_subs() {
@@ -394,6 +395,18 @@ impl FanoutState {
             };
             if sub.rooms().iter().any(|held| held == room) && !out.contains(participant) {
                 out.push(participant.clone());
+            }
+        }
+        // Agents connected over the typed service from this machine take
+        // part the same way; the broker knows them by their admission.
+        if let Some(capnp) = self.capnp_state() {
+            for agent in capnp.live_agents_in(room) {
+                if !out.iter().any(|participant| participant.agent == agent) {
+                    out.push(LocalParticipant {
+                        label: agent.clone(),
+                        agent,
+                    });
+                }
             }
         }
         out

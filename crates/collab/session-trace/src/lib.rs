@@ -132,17 +132,33 @@ pub struct ImageIdentity {
     pub version: String,
     /// Tilo image generation, matched against "fixed in generation N".
     pub generation: Option<u64>,
-    /// Immutable OCI manifest digest, when the host can name it.
-    pub digest: Option<String>,
+    pub digest: ImageDigest,
 }
 
-/// Size and scale of one recorded surface.
+/// Which immutable image the recording ran on.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageDigest {
+    /// The OCI manifest digest bootc reports as booted.
+    Booted(String),
+    /// The host is not a bootc system (a development or nested host), so
+    /// there is no image to name.
+    NotBootc,
+    /// A bootc system that could not say; the reason is kept.
+    Unavailable(String),
+    /// Not asked yet.
+    #[default]
+    Unknown,
+}
+
+/// Size, scale and output of one recorded app surface, in logical pixels.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SurfaceGeometry {
     pub app_id: String,
     pub width: u32,
     pub height: u32,
     pub scale: f64,
+    /// Name of the output the surface is shown on, empty when unknown.
+    pub output: String,
 }
 
 /// Where a recording ran.

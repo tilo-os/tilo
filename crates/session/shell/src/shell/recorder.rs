@@ -25,8 +25,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use automerge::AutoCommit;
 use session_trace::{
-    Environment, ImageIdentity, Limits, OpReference, PresenceChange, PresenceUpdate, Pushed,
-    RecentBuffer, RecentItem, Route, SessionSummary, SessionTrace, TraceBuilder,
+    Environment, ImageDigest, ImageIdentity, Limits, OpReference, PresenceChange, PresenceUpdate,
+    Pushed, RecentBuffer, RecentItem, Route, SessionSummary, SessionTrace, SurfaceGeometry,
+    TraceBuilder,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -36,8 +37,7 @@ use crate::shell::collab_broker::{
     BrokerChannels, BrokerHandle, CrdtRoute, FanoutState, LocalParticipant, RoomSubscription,
 };
 use crate::shell::state::{
-    CapOverride, CapRole, Collaborator, RoomId, Subject, UserId, Verb, WorkspaceId,
-    WorkspaceTreeHandle,
+    CapOverride, CapRole, Subject, UserId, Verb, WorkspaceId, WorkspaceTreeHandle,
 };
 
 /// The recorder's agent principal id: the capability subject it is admitted
@@ -82,6 +82,17 @@ pub enum RecorderError {
     Write(String),
 }
 
+/// One client surface as the compositor measured it this frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredSurface {
+    pub surface_id: u64,
+    /// Logical size of its tile.
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+    pub output: String,
+}
+
 /// A finished session waiting for review. Held only in memory.
 pub struct PendingSession {
     pub checkout: RecordCheckout,
@@ -112,6 +123,8 @@ struct Capture {
     recent: Option<RecentBuffer>,
     recent_rooms: BTreeSet<String>,
     finishing: Option<Finishing>,
+    /// Latest geometry of each app surface in a held room.
+    surfaces: Vec<(String, SurfaceGeometry)>,
 }
 
 struct Recording {
@@ -143,8 +156,8 @@ struct Control {
     /// Rooms the user removed the recorder from while the buffer followed
     /// them; not re-admitted until the buffer is switched on again.
     refused: BTreeSet<String>,
-    /// Rooms whose roster currently lists the recorder.
-    listed: BTreeSet<String>,
+    /// Rooms the subscription covers, last time it was pointed.
+    held: BTreeSet<String>,
     awaiting_review: Vec<PendingSession>,
     recent_enabled: bool,
     settings_stamp: Option<SystemTime>,
@@ -180,6 +193,7 @@ impl Recorder {
         tree: WorkspaceTreeHandle,
         limits: Limits,
     ) -> Arc<Self> {
+        warm_image_digest();
         let fanout = broker.fanout();
         let capture: Arc<Mutex<Capture>> = Arc::new(Mutex::new(Capture::default()));
         let sink_capture = Arc::clone(&capture);
@@ -206,7 +220,7 @@ impl Recorder {
         })
     }
 
-    /// Rooms the recorder currently holds (and is listed in).
+    /// Rooms the recorder currently holds, and so is listed in.
     pub fn rooms(&self) -> Vec<String> {
         self.subscription.rooms()
     }
@@ -225,6 +239,68 @@ impl Recorder {
 
     pub fn recent_buffer_enabled(&self) -> bool {
         lock(&self.control).recent_enabled
+    }
+
+    /// Whether the recorder holds any room, so the compositor knows to
+    /// measure surfaces for it.
+    pub fn is_observing(&self) -> bool {
+        !self.subscription.rooms().is_empty()
+    }
+
+    /// Take this frame's measurement of the client surfaces on screen. Only
+    /// surfaces tiled in a held room are kept, by the app they belong to.
+    pub fn note_surfaces(&self, measured: &[MeasuredSurface]) {
+        let held = self.subscription.rooms();
+        let surfaces: Vec<(String, SurfaceGeometry)> = {
+            let tree = self.tree.read();
+            let mut out = Vec::new();
+            for workspace in &tree.desktop.workspaces {
+                let room = workspace.room.to_string();
+                if !held.contains(&room) {
+                    continue;
+                }
+                let tabs = workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs);
+                for tab in tabs {
+                    let crate::shell::state::TileContent::Foreign { app_id, surface_id } =
+                        &tab.tile
+                    else {
+                        continue;
+                    };
+                    if let Some(size) = measured.iter().find(|m| m.surface_id == *surface_id) {
+                        out.push((
+                            room.clone(),
+                            SurfaceGeometry {
+                                app_id: app_id.clone(),
+                                width: size.width,
+                                height: size.height,
+                                scale: size.scale,
+                                output: size.output.clone(),
+                            },
+                        ));
+                    }
+                }
+            }
+            drop(tree);
+            out
+        };
+        let mut capture = lock(&self.capture);
+        if capture.surfaces == surfaces {
+            return;
+        }
+        if let Some(recording) = capture.recording.as_mut() {
+            for (room, surface) in &surfaces {
+                if recording.rooms.contains(room)
+                    && (recording.apps.is_empty() || recording.apps.contains(&surface.app_id))
+                {
+                    recording.builder.note_surface(surface.clone());
+                }
+            }
+        }
+        capture.surfaces = surfaces;
     }
 
     /// Record ids and summaries of the sessions waiting for review.
@@ -379,11 +455,23 @@ impl Recorder {
             self.limits,
         );
         builder.set_environment(environment());
-        lock(&self.capture).recording = Some(Recording {
-            rooms: rooms.iter().cloned().collect(),
-            apps,
-            builder,
-        });
+        {
+            let mut capture = lock(&self.capture);
+            let mut recording = Recording {
+                rooms: rooms.iter().cloned().collect(),
+                apps,
+                builder,
+            };
+            // Surfaces already measured for a room the buffer held.
+            for (room, surface) in &capture.surfaces {
+                if recording.rooms.contains(room)
+                    && (recording.apps.is_empty() || recording.apps.contains(&surface.app_id))
+                {
+                    recording.builder.note_surface(surface.clone());
+                }
+            }
+            capture.recording = Some(recording);
+        }
         self.resync_rooms();
         for room in rooms {
             let asked = self.fanout.request_room_snapshots(room, self.peer_id);
@@ -485,6 +573,11 @@ impl Recorder {
             resolve_op(&channels, reference)
         });
         builder.set_environment(environment());
+        for (room, surface) in &capture.surfaces {
+            if capture.recent_rooms.contains(room) {
+                builder.note_surface(surface.clone());
+            }
+        }
         drop(capture);
         let mut awaiting = Vec::new();
         for room in &rooms {
@@ -618,8 +711,9 @@ impl Recorder {
         true
     }
 
-    /// Point the subscription at exactly the rooms held, and list the
-    /// recorder on those rooms' rosters (and only those).
+    /// Point the subscription at exactly the rooms held. Holding a room is
+    /// what lists the recorder there: the roster reads the broker's live
+    /// participants ([`crate::shell::peer_presence::LocalParticipantRoster`]).
     fn resync_rooms(&self) -> bool {
         let held: BTreeSet<String> = {
             let capture = lock(&self.capture);
@@ -636,26 +730,10 @@ impl Recorder {
             .collect();
         self.subscription.set_rooms(held.iter().cloned().collect());
         let mut control = lock(&self.control);
-        if control.listed == held {
+        if control.held == held {
             return false;
         }
-        let mut tree = self.tree.write();
-        for room in control.listed.difference(&held) {
-            if let Some(room) = RoomId::parse(room) {
-                tree.retire_collaborator_in_room(room, RECORDER_AGENT);
-            }
-        }
-        for room in held.difference(&control.listed) {
-            if let Some(room) = RoomId::parse(room) {
-                tree.admit_collaborator_in_room(
-                    room,
-                    Collaborator::new(RECORDER_AGENT, RECORDER_LABEL)
-                        .with_role(crate::shell::state::role_label(CapRole::Viewer)),
-                );
-            }
-        }
-        drop(tree);
-        control.listed = held;
+        control.held = held;
         true
     }
 
@@ -776,8 +854,60 @@ fn image_identity() -> Option<ImageIdentity> {
         generation: std::fs::read_to_string("/usr/lib/tilo/generation")
             .ok()
             .and_then(|text| text.trim().parse().ok()),
-        digest: None,
+        digest: IMAGE_DIGEST.get().cloned().unwrap_or(ImageDigest::Unknown),
     })
+}
+
+/// The booted image digest, read once per session off the frame thread.
+static IMAGE_DIGEST: std::sync::OnceLock<ImageDigest> = std::sync::OnceLock::new();
+
+/// Start reading the booted image digest in the background; recordings made
+/// before it answers say `Unknown`.
+fn warm_image_digest() {
+    if IMAGE_DIGEST.get().is_some() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("tilo-recorder-image".into())
+        .spawn(|| {
+            let _ = IMAGE_DIGEST.set(booted_image_digest());
+        });
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "recorder: could not read the booted image");
+    }
+}
+
+/// What bootc says is booted. A host without `/run/ostree-booted` is not a
+/// bootc system (a development or nested host) and says so.
+fn booted_image_digest() -> ImageDigest {
+    if !std::path::Path::new("/run/ostree-booted").exists() {
+        return ImageDigest::NotBootc;
+    }
+    let output = match std::process::Command::new("bootc")
+        .args(["status", "--format", "json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(output) if output.status.success() => output.stdout,
+        Ok(output) => {
+            return ImageDigest::Unavailable(format!("bootc status exited with {}", output.status));
+        }
+        Err(error) => return ImageDigest::Unavailable(format!("bootc status: {error}")),
+    };
+    digest_from_bootc_status(&output)
+}
+
+fn digest_from_bootc_status(json: &[u8]) -> ImageDigest {
+    let Ok(status) = serde_json::from_slice::<serde_json::Value>(json) else {
+        return ImageDigest::Unavailable("bootc status is not JSON".into());
+    };
+    status
+        .pointer("/status/booted/image/imageDigest")
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(
+            || ImageDigest::Unavailable("bootc reports no booted image digest".into()),
+            |digest| ImageDigest::Booted(digest.to_string()),
+        )
 }
 
 fn trace_route(route: &CrdtRoute) -> Route {
@@ -926,6 +1056,23 @@ fn record_presence(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_booted_digest_is_read_from_bootc_status() {
+        let status = br#"{"status":{"booted":{"image":{"imageDigest":"sha256:0123"}}}}"#;
+        assert_eq!(
+            digest_from_bootc_status(status),
+            ImageDigest::Booted("sha256:0123".into())
+        );
+        assert!(matches!(
+            digest_from_bootc_status(br#"{"status":{"booted":null}}"#),
+            ImageDigest::Unavailable(_)
+        ));
+        assert!(matches!(
+            digest_from_bootc_status(b"not json"),
+            ImageDigest::Unavailable(_)
+        ));
+    }
 
     #[test]
     fn every_presence_payload_is_kept_in_trace_terms() {

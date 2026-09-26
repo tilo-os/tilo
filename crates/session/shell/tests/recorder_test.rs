@@ -14,6 +14,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
 use ed25519_dalek::{Signer as _, SigningKey};
 use session_trace::{Event, PresenceChange, SnapshotPoint};
+use shell::shell::peer_presence::LocalParticipantRoster;
 use shell::shell::recorder::{RECORDER_ADMISSION, RECORDER_AGENT, Recorder};
 use shell::shell::state::{
     CapRole, RoomId, Workspace, WorkspaceAuthority as _, WorkspaceId, WorkspaceTree,
@@ -133,15 +134,23 @@ fn events(recorder: &Recorder) -> u64 {
         .unwrap_or(0)
 }
 
-fn workspace_has_recorder(tree: &WorkspaceTreeHandle) -> (Option<CapRole>, bool) {
+/// The recorder's live role and whether the room's roster lists it, after
+/// the roster caught up with the broker's live participants (as the frame
+/// loop does every frame).
+fn workspace_has_recorder(
+    roster: &mut LocalParticipantRoster,
+    tree: &WorkspaceTreeHandle,
+) -> (Option<CapRole>, bool) {
+    roster.sync(tree);
+    listed(tree, RECORDER_AGENT)
+}
+
+fn listed(tree: &WorkspaceTreeHandle, agent: &str) -> (Option<CapRole>, bool) {
     let tree = tree.read();
     let workspace = &tree.desktop.workspaces[0];
     let seen = (
-        workspace.role_of_agent(RECORDER_AGENT),
-        workspace
-            .collaborators
-            .iter()
-            .any(|row| row.id == RECORDER_AGENT),
+        workspace.role_of_agent(agent),
+        workspace.collaborators.iter().any(|row| row.id == agent),
     );
     drop(tree);
     seen
@@ -162,18 +171,19 @@ fn a_recording_keeps_snapshot_ops_and_presence_and_is_a_visible_revocable_agent(
     )
     .unwrap();
     let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let mut roster = LocalParticipantRoster::new(broker.fanout());
 
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "Before recording").unwrap();
     let mut app = connect(&socket);
     let room = ROOM.to_string();
 
-    assert_eq!(workspace_has_recorder(&tree), (None, false));
+    assert_eq!(workspace_has_recorder(&mut roster, &tree), (None, false));
     recorder
         .start(std::slice::from_ref(&room), Vec::new(), &owner())
         .unwrap();
     assert_eq!(
-        workspace_has_recorder(&tree),
+        workspace_has_recorder(&mut roster, &tree),
         (Some(CapRole::Viewer), true),
         "recording admits the Recorder as an Observer agent and lists it in the room"
     );
@@ -182,7 +192,7 @@ fn a_recording_keeps_snapshot_ops_and_presence_and_is_a_visible_revocable_agent(
 
     let checkout = recorder.stop(&owner()).unwrap();
     assert_eq!(
-        workspace_has_recorder(&tree),
+        workspace_has_recorder(&mut roster, &tree),
         (None, false),
         "stopping revokes the admission and takes the Recorder off the roster"
     );
@@ -332,6 +342,7 @@ fn removing_the_recorder_agent_ends_the_recording() {
         shell::shell::collab_broker::spawn_native_harness(socket, Arc::clone(&tree), Vec::new())
             .unwrap();
     let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let mut roster = LocalParticipantRoster::new(broker.fanout());
     let room = ROOM.to_string();
     recorder
         .start(std::slice::from_ref(&room), Vec::new(), &owner())
@@ -350,11 +361,77 @@ fn removing_the_recorder_agent_ends_the_recording() {
         "losing its last room ends the recording"
     );
     assert!(recorder.rooms().is_empty());
-    assert_eq!(workspace_has_recorder(&tree), (None, false));
+    assert_eq!(workspace_has_recorder(&mut roster, &tree), (None, false));
     assert_eq!(
         recorder.awaiting_review().len(),
         1,
         "what was recorded before removal is kept for review, not discarded"
+    );
+    drop(broker);
+}
+
+#[test]
+fn an_agent_connected_from_this_machine_is_on_the_roster_while_connected() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("collab.sock");
+    let tree = room_tree();
+    {
+        let room = ROOM.to_string();
+        tree.write().desktop.workspaces[0]
+            .grant_as(
+                &owner(),
+                shell::shell::state::CapOverride::membership(
+                    shell::shell::state::Subject::agent("scribe"),
+                    room,
+                    shell::shell::state::Verb::Comment,
+                ),
+            )
+            .unwrap();
+    }
+    let device = SigningKey::from_bytes(&DEVICE_KEY)
+        .verifying_key()
+        .to_bytes();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        socket.clone(),
+        Arc::clone(&tree),
+        vec![device],
+    )
+    .unwrap();
+    let mut roster = LocalParticipantRoster::new(broker.fanout());
+    assert!(!roster.sync(&tree));
+    assert_eq!(listed(&tree, "scribe"), (Some(CapRole::Commenter), false));
+
+    let stream = UnixStream::connect(&socket).unwrap();
+    let mut agent = CollaborationManager::for_agent_route_fd_with_identity(
+        stream.into_raw_fd(),
+        APP,
+        ROOM,
+        Some(record_id()),
+        "scribe",
+        identity(),
+    )
+    .unwrap();
+    let deadline = later(Duration::from_secs(10));
+    while Instant::now() < deadline && !listed(&tree, "scribe").1 {
+        let _ = agent.poll();
+        roster.sync(&tree);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        listed(&tree, "scribe"),
+        (Some(CapRole::Commenter), true),
+        "a connected agent session is a roster row, named by its agent principal"
+    );
+
+    drop(agent);
+    let deadline = later(Duration::from_secs(10));
+    while Instant::now() < deadline && listed(&tree, "scribe").1 {
+        roster.sync(&tree);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !listed(&tree, "scribe").1,
+        "a disconnected agent leaves the roster"
     );
     drop(broker);
 }

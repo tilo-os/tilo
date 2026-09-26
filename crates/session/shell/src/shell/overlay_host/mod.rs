@@ -1755,6 +1755,9 @@ pub struct ShellOverlayHost {
     /// Session-local control path into the typed app broker. Follow never
     /// enters the replicated workspace document or crosses the network.
     follow_bridge: Option<FollowBridge>,
+    /// Lists the agents that take part from this machine on their rooms'
+    /// rosters; present once the collaboration broker is.
+    local_participants: Option<crate::shell::peer_presence::LocalParticipantRoster>,
     /// Authenticated ephemeral relationship cue for the people already in
     /// this room. It is neither durable workspace state nor a control path.
     follow_presence_bridge: Option<FollowPresenceBridge>,
@@ -3262,6 +3265,7 @@ impl ShellOverlayHost {
             realtime_continuity_bridge: None,
             wifi_secret_bridge: None,
             follow_bridge: None,
+            local_participants: None,
             follow_presence_bridge: None,
             status_presence_bridge: None,
             active_tab_presence_bridge: None,
@@ -13210,15 +13214,20 @@ impl ShellOverlayHost {
 
     /// Recorder upkeep: revocations, the recent buffer's room, the roster
     /// row that is the recording indicator, and finishing captures.
-    fn pump_recorder(&self) -> bool {
-        let Some((recorder, user)) = self.chrome.as_ref().and_then(|chrome| {
+    fn pump_recorder(&mut self) -> bool {
+        let Some((recorder, user, tree)) = self.chrome.as_ref().and_then(|chrome| {
             let chrome = chrome.borrow();
             let recorder = chrome.recorder().cloned()?;
-            Some((recorder, chrome.active_local_user()))
+            Some((recorder, chrome.active_local_user(), chrome.tree_handle()))
         }) else {
             return false;
         };
-        recorder.pump(std::time::Instant::now(), &user)
+        let changed = recorder.pump(std::time::Instant::now(), &user);
+        let listed = self
+            .local_participants
+            .as_mut()
+            .is_some_and(|roster| roster.sync(&tree));
+        changed || listed
     }
 
     /// Attach the session recorder to `broker`, sharing the chrome's tree so
@@ -13230,6 +13239,9 @@ impl ShellOverlayHost {
         let tree = chrome.borrow().tree_handle();
         let recorder = crate::shell::recorder::Recorder::attach(broker, tree);
         chrome.borrow_mut().set_recorder(recorder);
+        self.local_participants = Some(crate::shell::peer_presence::LocalParticipantRoster::new(
+            broker.fanout(),
+        ));
     }
 
     fn persist_collaboration_preferences(&self) {

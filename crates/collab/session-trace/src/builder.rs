@@ -103,6 +103,20 @@ impl TraceBuilder {
         self.environment = environment;
     }
 
+    /// Record the geometry of an app surface, replacing what was noted for
+    /// that app before. Bounded like the routes.
+    pub fn note_surface(&mut self, surface: crate::SurfaceGeometry) {
+        let surfaces = &mut self.environment.surfaces;
+        if let Some(existing) = surfaces
+            .iter_mut()
+            .find(|known| known.app_id == surface.app_id)
+        {
+            *existing = surface;
+        } else if surfaces.len() < self.limits.max_routes {
+            surfaces.push(surface);
+        }
+    }
+
     pub fn add_tag(&mut self, tag: impl Into<String>) {
         let tag = tag.into();
         if !tag.is_empty() && tag.len() <= 64 && self.tags.len() < 32 && !self.tags.contains(&tag) {
@@ -433,6 +447,26 @@ mod tests {
             Pushed::Full
         );
         assert!(by_bytes.is_truncated());
+
+        let (mut surfaces, epoch_s) = builder(Limits {
+            max_routes: 1,
+            ..Limits::default()
+        });
+        let surface = |app: &str, width| crate::SurfaceGeometry {
+            app_id: app.into(),
+            width,
+            height: 600,
+            scale: 2.0,
+            output: "DP-1".into(),
+        };
+        surfaces.note_surface(surface("so.tilo.notes", 800));
+        surfaces.note_surface(surface("so.tilo.notes", 1024));
+        surfaces.note_surface(surface("so.tilo.mail", 640));
+        assert_eq!(
+            surfaces.finish(epoch_s).environment.surfaces,
+            vec![surface("so.tilo.notes", 1024)],
+            "a surface's latest geometry replaces the earlier one, within bounds"
+        );
 
         let (mut by_routes, epoch) = builder(Limits {
             max_routes: 1,
