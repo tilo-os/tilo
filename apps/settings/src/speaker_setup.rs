@@ -601,7 +601,7 @@ impl SpeakerSetup {
         }
         self.microphones()
             .is_empty()
-            .then(|| "None of your devices has a microphone".into())
+            .then(|| "This device has no microphone to calibrate with".into())
     }
 
     /// Start measuring `group` with `microphone`.

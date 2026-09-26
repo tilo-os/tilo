@@ -84,6 +84,9 @@ pub enum SessionMemberPhase {
 
 #[derive(Clone, Debug)]
 struct SessionMember {
+    /// The id this member's route travels under: one per member, so each
+    /// member's capability and each audio route stay separate.
+    route: [u8; 16],
     device: DeviceId,
     output: EndpointSelector,
     channel: media::sync_playout::ChannelRole,
@@ -489,6 +492,7 @@ impl SpeakerGroupCore {
             .zip(channels)
             .filter(|((_, state), _)| *state == SpeakerMemberState::Ready)
             .map(|((member, _), channel)| SessionMember {
+                route: member_route_id(session_id, &member.device, member.output),
                 device: member.device.clone(),
                 output: member.output,
                 channel,
@@ -507,14 +511,11 @@ impl SpeakerGroupCore {
         let offers = members
             .iter()
             .filter(|member| member.phase == SessionMemberPhase::AwaitingAdmission)
-            .map(|member| member.device.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|device| {
+            .map(|member| {
                 egress(
-                    &device,
+                    &member.device,
                     PersonalFabricAction::SpeakerGroupSessionOffer {
-                        session_id,
+                        session_id: member.route,
                         group: group_id,
                     },
                 )
@@ -539,7 +540,7 @@ impl SpeakerGroupCore {
     /// Returns a message when the session is no longer active.
     pub fn stop_session(&mut self, session_id: [u8; 16]) -> Result<Vec<Egress>, String> {
         if let Some(session) = self.outbound.remove(&session_id) {
-            return Ok(stop_members(session_id, &session));
+            return Ok(stop_members(&session));
         }
         if let Some(session) = self.inbound.remove(&session_id) {
             return Ok(vec![egress(
@@ -681,11 +682,14 @@ impl SpeakerGroupCore {
                 authorization,
             } => {
                 let mut unmatched = authorization.is_some();
-                if let Some(session) = self.outbound.get_mut(session_id)
-                    && session.group == *group
+                for session in self
+                    .outbound
+                    .values_mut()
+                    .filter(|session| session.group == *group)
                 {
                     for member in session.members.iter_mut().filter(|member| {
-                        &member.device == source
+                        member.route == *session_id
+                            && &member.device == source
                             && member.phase == SessionMemberPhase::AwaitingAdmission
                     }) {
                         unmatched = false;
@@ -720,15 +724,14 @@ impl SpeakerGroupCore {
                 if inbound {
                     self.inbound.remove(session_id);
                 }
-                if let Some(session) = self.outbound.get_mut(session_id) {
-                    for member in session
-                        .members
-                        .iter_mut()
-                        .filter(|member| &member.device == source)
-                    {
-                        member.phase = SessionMemberPhase::Refused;
-                        member.authorization = None;
-                    }
+                for member in self
+                    .outbound
+                    .values_mut()
+                    .flat_map(|session| session.members.iter_mut())
+                    .filter(|member| member.route == *session_id && &member.device == source)
+                {
+                    member.phase = SessionMemberPhase::Refused;
+                    member.authorization = None;
                 }
             }
             _ => return None,
@@ -777,8 +780,8 @@ impl SpeakerGroupCore {
         let mut out = Vec::new();
         if !enabled {
             out.extend(self.end_inbound(|_| true));
-            for (session_id, session) in std::mem::take(&mut self.outbound) {
-                out.extend(stop_members(session_id, &session));
+            for session in std::mem::take(&mut self.outbound).into_values() {
+                out.extend(stop_members(&session));
             }
             self.consents.clear();
             self.invites.clear();
@@ -860,7 +863,7 @@ impl SpeakerGroupCore {
             .collect::<Vec<_>>();
         for session_id in finished {
             if let Some(session) = self.outbound.remove(&session_id) {
-                out.extend(stop_members(session_id, &session));
+                out.extend(stop_members(&session));
             }
         }
 
@@ -915,10 +918,7 @@ impl SpeakerGroupCore {
             .into_iter()
             .partition(|(_, session)| session.group == group);
         self.outbound = kept;
-        ended
-            .iter()
-            .flat_map(|(session_id, session)| stop_members(*session_id, session))
-            .collect()
+        ended.values().flat_map(stop_members).collect()
     }
 
     fn drop_outbound_member(
@@ -926,7 +926,7 @@ impl SpeakerGroupCore {
         mut predicate: impl FnMut(&GroupSession, &SessionMember) -> bool,
     ) -> Vec<Egress> {
         let mut out = Vec::new();
-        for (session_id, session) in &mut self.outbound {
+        for session in self.outbound.values_mut() {
             let snapshot = session.clone();
             for member in &mut session.members {
                 if member.phase == SessionMemberPhase::Refused || !predicate(&snapshot, member) {
@@ -936,7 +936,7 @@ impl SpeakerGroupCore {
                     out.push(egress(
                         &member.device,
                         PersonalFabricAction::SpeakerGroupSessionStop {
-                            session_id: *session_id,
+                            session_id: member.route,
                             authorization: member.authorization,
                         },
                     ));
@@ -1094,6 +1094,7 @@ impl SpeakerGroupCore {
                         )
                     })
                     .map(|member| PlannedMember {
+                        route: member.route,
                         device: member.device.clone(),
                         output: member.output,
                         channel: member.channel,
@@ -1103,6 +1104,78 @@ impl SpeakerGroupCore {
                     .collect(),
             })
             .collect()
+    }
+
+    /// Every audio route this device should run right now, derived from the
+    /// sessions it plays and the sessions it admitted as a member.
+    #[must_use]
+    pub fn route_specs(&self, fabric: &DeviceFabric, local: &DeviceId) -> Vec<RouteSpec> {
+        let playing = self.outbound.values().flat_map(|session| {
+            session.members.iter().filter_map(move |member| {
+                match (member.phase, member.authorization) {
+                    (SessionMemberPhase::Local, _) => Some(RouteSpec::Local {
+                        route: member.route,
+                        source: session.source.clone(),
+                        output: member.output,
+                        channel: member.channel,
+                        trim: member.trim.clone(),
+                    }),
+                    (SessionMemberPhase::Admitted, Some(authorization)) => Some(RouteSpec::Send {
+                        route: member.route,
+                        target: member.device.clone(),
+                        authorization,
+                        source: session.source.clone(),
+                    }),
+                    _ => None,
+                }
+            })
+        });
+        let receiving = self.inbound.iter().filter_map(|(route, session)| {
+            let grant = self.grant(fabric, local, *route, &session.source)?;
+            Some(RouteSpec::Receive {
+                route: *route,
+                source: session.source.clone(),
+                authorization: grant.authorization,
+                output: grant.output,
+                channel: grant.channel,
+                trim: grant.trim,
+            })
+        });
+        playing.chain(receiving).collect()
+    }
+
+    /// The output this device plays a calibration sweep on when `source`
+    /// asks: only the group's leader may ask, and only while this device's
+    /// consent covers its membership.
+    #[must_use]
+    pub fn sweep_output(
+        &self,
+        fabric: &DeviceFabric,
+        local: &DeviceId,
+        source: &DeviceId,
+        group: SpeakerGroupId,
+    ) -> Option<EndpointSelector> {
+        let published = fabric.speaker_group(group)?;
+        (&published.leader == source && self.consent_covers(fabric, local, group))
+            .then(|| published.member(local).map(|member| member.output))?
+    }
+
+    /// Whether this device admitted `route` from exactly `source`. Checked for
+    /// every received frame, so a withdrawn consent stops audio at once.
+    #[must_use]
+    pub fn admits(&self, route: [u8; 16], source: &DeviceId) -> bool {
+        self.inbound
+            .get(&route)
+            .is_some_and(|session| &session.source == source)
+    }
+
+    /// The audio path ended `route` on its own (a lost link or a failed
+    /// output): end the member session it carried, telling the peer.
+    pub fn route_lost(&mut self, route: [u8; 16]) -> Vec<Egress> {
+        if self.inbound.contains_key(&route) {
+            return self.end_inbound_ids(&BTreeSet::from([route]));
+        }
+        self.drop_outbound_member(|_, member| member.route == route)
     }
 
     /// What a member plays for one admitted session, resolved against the
@@ -1184,7 +1257,27 @@ fn removed_members(previous: &SpeakerGroup, next: &SpeakerGroup) -> BTreeSet<Dev
         .collect()
 }
 
-fn stop_members(session_id: [u8; 16], session: &GroupSession) -> Vec<Egress> {
+/// The route id one member's audio travels under within `session_id`.
+#[must_use]
+pub fn member_route_id(
+    session_id: [u8; 16],
+    device: &DeviceId,
+    output: EndpointSelector,
+) -> [u8; 16] {
+    let mut material = Vec::with_capacity(48);
+    material.extend_from_slice(&session_id);
+    material.extend_from_slice(&output.0);
+    material.extend_from_slice(device.as_str().as_bytes());
+    let digest = blake3::derive_key("so.tilo.speaker-group.member-route.v1", &material);
+    let mut route = [0; 16];
+    route.copy_from_slice(&digest[..16]);
+    if route == [0; 16] {
+        route[0] = 1;
+    }
+    route
+}
+
+fn stop_members(session: &GroupSession) -> Vec<Egress> {
     session
         .members
         .iter()
@@ -1198,7 +1291,7 @@ fn stop_members(session_id: [u8; 16], session: &GroupSession) -> Vec<Egress> {
             egress(
                 &member.device,
                 PersonalFabricAction::SpeakerGroupSessionStop {
-                    session_id,
+                    session_id: member.route,
                     authorization: member.authorization,
                 },
             )
@@ -1291,9 +1384,78 @@ pub struct SpeakerGroupsView {
     pub sessions: Vec<SpeakerSessionView>,
 }
 
+/// One audio route this device runs for a speaker group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RouteSpec {
+    /// Send `source` to a member that admitted it.
+    Send {
+        route: [u8; 16],
+        target: DeviceId,
+        authorization: [u8; 16],
+        source: GroupAudioSource,
+    },
+    /// Play `source` on one of this device's own outputs, as a member.
+    Local {
+        route: [u8; 16],
+        source: GroupAudioSource,
+        output: EndpointSelector,
+        channel: media::sync_playout::ChannelRole,
+        trim: SpeakerTrim,
+    },
+    /// Play what `source` sends, as this device's role in the group.
+    Receive {
+        route: [u8; 16],
+        source: DeviceId,
+        authorization: [u8; 16],
+        output: EndpointSelector,
+        channel: media::sync_playout::ChannelRole,
+        trim: SpeakerTrim,
+    },
+}
+
+impl RouteSpec {
+    #[must_use]
+    pub const fn route(&self) -> [u8; 16] {
+        match self {
+            Self::Send { route, .. } | Self::Local { route, .. } | Self::Receive { route, .. } => {
+                *route
+            }
+        }
+    }
+}
+
+/// Which routes to end and which to start so the running set becomes
+/// `desired`. A route whose parameters changed is restarted.
+#[must_use]
+pub fn route_changes(
+    running: &BTreeMap<[u8; 16], RouteSpec>,
+    desired: &[RouteSpec],
+) -> (Vec<[u8; 16]>, Vec<RouteSpec>) {
+    let wanted = desired
+        .iter()
+        .map(|spec| (spec.route(), spec))
+        .collect::<BTreeMap<_, _>>();
+    let end = running
+        .iter()
+        .filter(|(route, spec)| wanted.get(*route).is_none_or(|want| *want != *spec))
+        .map(|(route, _)| *route)
+        .collect::<Vec<_>>();
+    let start = desired
+        .iter()
+        .filter(|spec| {
+            running
+                .get(&spec.route())
+                .is_none_or(|current| current != *spec)
+        })
+        .cloned()
+        .collect();
+    (end, start)
+}
+
 /// One member as the playing device renders it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannedMember {
+    pub route: [u8; 16],
     pub device: DeviceId,
     pub output: EndpointSelector,
     pub channel: media::sync_playout::ChannelRole,
@@ -1395,6 +1557,17 @@ pub(crate) fn handle_action(
         let _ = play_identify_locally(&local, output);
         return true;
     }
+    if let PersonalFabricAction::SpeakerSweep { group, start_ns } = envelope.action {
+        let fabric = network.device_fabric();
+        let output = core()
+            .lock()
+            .ok()
+            .and_then(|core| core.sweep_output(&fabric, &local, &envelope.source, group));
+        if let Some(output) = output {
+            play_sweep_for_leader(&local, &envelope.source, output, start_ns);
+        }
+        return true;
+    }
     let fabric = network.device_fabric();
     let out = {
         let Ok(mut core) = core().lock() else {
@@ -1463,6 +1636,50 @@ fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(
         .spawn(move || play_pcm(&sink.name, &identify_chirp()))
         .map(|_| ())
         .map_err(|error| format!("could not play the sound: {error}"))
+}
+
+/// Play the calibration sweep on `output` when the leader's clock reads
+/// `leader_start_ns`. One sweep at a time; requests too far from now, or
+/// before the leader's clock is known, are ignored.
+fn play_sweep_for_leader(
+    local: &DeviceId,
+    leader: &DeviceId,
+    output: EndpointSelector,
+    leader_start_ns: i64,
+) {
+    use media::sync_playout::ClockMapping as _;
+    static SWEEPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(clock) = crate::shell::device_fabric_runtime::fabric_peer_clock(leader) else {
+        return;
+    };
+    let start_ns = clock.playout_clock().leader_to_local_ns(leader_start_ns);
+    let lead = start_ns.saturating_sub(media::pw_stream::monotonic_now_ns());
+    if !(0..=10_000_000_000).contains(&lead) {
+        return;
+    }
+    let Some(sink) = resolve_local_output(local, output) else {
+        return;
+    };
+    if SWEEPING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("speaker-sweep".into())
+        .spawn(move || {
+            if let Ok(sweep) = crate::shell::speaker_calibration::sweep() {
+                let _ = media::pw_stream::TimedAudio::native().play_at(
+                    sink.serial,
+                    crate::shell::speaker_calibration::SWEEP_RATE,
+                    1,
+                    sweep.signal().to_vec(),
+                    start_ns,
+                );
+            }
+            SWEEPING.store(false, std::sync::atomic::Ordering::Release);
+        });
+    if spawned.is_err() {
+        SWEEPING.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Two rising tones with soft edges: short, unmistakable, never loud.
@@ -1544,7 +1761,174 @@ pub(crate) fn pump(network: &crate::shell::network::ShellNetwork, media_enabled:
         },
     );
     let _ = send_all(network, out);
+    reconcile_routes(network, &fabric, &local, media_enabled);
     crate::shell::speaker_settings::pump(network);
+}
+
+/// Routes this process started, routes starting on a worker, and routes
+/// whose start failed recently.
+#[derive(Default)]
+struct RunningRoutes {
+    running: BTreeMap<[u8; 16], RouteSpec>,
+    starting: BTreeSet<[u8; 16]>,
+    retry_after: BTreeMap<[u8; 16], Instant>,
+}
+
+const ROUTE_RETRY: Duration = Duration::from_secs(2);
+
+fn running_routes() -> &'static Mutex<RunningRoutes> {
+    static ROUTES: OnceLock<Mutex<RunningRoutes>> = OnceLock::new();
+    ROUTES.get_or_init(|| Mutex::new(RunningRoutes::default()))
+}
+
+/// Bring the audio routes in line with the sessions: start routes for newly
+/// admitted members, end routes whose session or consent ended, and end the
+/// session of a route the audio path dropped on its own.
+fn reconcile_routes(
+    network: &crate::shell::network::ShellNetwork,
+    fabric: &DeviceFabric,
+    local: &DeviceId,
+    media_enabled: bool,
+) {
+    let desired = if media_enabled {
+        core()
+            .lock()
+            .map_or_else(|_| Vec::new(), |core| core.route_specs(fabric, local))
+    } else {
+        Vec::new()
+    };
+    let Ok(mut routes) = running_routes().lock() else {
+        return;
+    };
+    let lost = routes
+        .running
+        .keys()
+        .copied()
+        .filter(|route| !crate::shell::remote_audio::has_group_route(*route))
+        .collect::<Vec<_>>();
+    for route in &lost {
+        routes.running.remove(route);
+    }
+    let (end, start) = route_changes(&routes.running, &desired);
+    for route in end {
+        routes.running.remove(&route);
+        crate::shell::remote_audio::end_group_route(route);
+    }
+    let now = Instant::now();
+    routes.retry_after.retain(|_, until| *until > now);
+    for spec in start {
+        let route = spec.route();
+        if routes.retry_after.contains_key(&route) || !routes.starting.insert(route) {
+            continue;
+        }
+        // Opening sinks and streams talks to the audio daemon; never on the
+        // compositor thread.
+        let local = local.clone();
+        let spawned = std::thread::Builder::new()
+            .name("speaker-route".into())
+            .spawn(move || {
+                let result = start_route(&local, &spec);
+                let Ok(mut routes) = running_routes().lock() else {
+                    return;
+                };
+                routes.starting.remove(&route);
+                match result {
+                    Ok(()) => {
+                        routes.running.insert(route, spec);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not start a speaker group route");
+                        routes.retry_after.insert(
+                            route,
+                            Instant::now()
+                                .checked_add(ROUTE_RETRY)
+                                .unwrap_or_else(Instant::now),
+                        );
+                    }
+                }
+            });
+        if spawned.is_err() {
+            routes.starting.remove(&route);
+            routes
+                .retry_after
+                .insert(route, now.checked_add(ROUTE_RETRY).unwrap_or(now));
+        }
+    }
+    drop(routes);
+    if !lost.is_empty() {
+        let out = core().lock().map_or_else(
+            |_| Vec::new(),
+            |mut core| {
+                lost.iter()
+                    .flat_map(|route| core.route_lost(*route))
+                    .collect::<Vec<_>>()
+            },
+        );
+        let _ = send_all(network, out);
+    }
+}
+
+fn audio_source(source: &GroupAudioSource) -> crate::shell::remote_audio::GroupRouteSource {
+    match source {
+        GroupAudioSource::PickerToken(token) => {
+            crate::shell::remote_audio::GroupRouteSource::Picker(*token)
+        }
+        // The media keeps decoding here, so everything this device plays is
+        // what the group should hear.
+        GroupAudioSource::MediaSession(_) => crate::shell::remote_audio::GroupRouteSource::System,
+    }
+}
+
+fn member_output(local: &DeviceId, output: EndpointSelector) -> Result<u32, String> {
+    resolve_local_output(local, output)
+        .map(|sink| sink.serial)
+        .ok_or_else(|| "that speaker's output is no longer connected".to_string())
+}
+
+fn start_route(local: &DeviceId, spec: &RouteSpec) -> Result<(), String> {
+    use crate::shell::remote_audio::{
+        GroupPlayback, start_group_local, start_group_receive, start_group_send,
+    };
+    match spec {
+        RouteSpec::Send {
+            route,
+            target,
+            authorization,
+            source,
+        } => start_group_send(*route, target, *authorization, audio_source(source)),
+        RouteSpec::Local {
+            route,
+            source,
+            output,
+            channel,
+            trim,
+        } => start_group_local(
+            *route,
+            audio_source(source),
+            &GroupPlayback::new(member_output(local, *output)?, *channel, trim),
+        ),
+        RouteSpec::Receive {
+            route,
+            source,
+            authorization,
+            output,
+            channel,
+            trim,
+        } => start_group_receive(
+            *route,
+            source,
+            local,
+            *authorization,
+            &GroupPlayback::new(member_output(local, *output)?, *channel, trim),
+        ),
+    }
+}
+
+/// Whether this device admitted `route` from exactly `source`; the live
+/// audio path checks it for every group frame.
+#[must_use]
+pub fn admits_route(route: [u8; 16], source: &DeviceId) -> bool {
+    core().lock().is_ok_and(|core| core.admits(route, source))
 }
 
 fn with_core<T>(

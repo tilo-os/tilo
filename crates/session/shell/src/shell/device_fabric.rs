@@ -556,6 +556,14 @@ pub enum PersonalFabricAction {
     SpeakerIdentify {
         output: crate::shell::speaker_group::EndpointSelector,
     },
+    /// The group's leader, calibrating, asks a member to play the
+    /// measurement sweep so its first sample leaves the speaker at `start_ns`
+    /// on the leader's `CLOCK_MONOTONIC`. The member converts that through
+    /// its own estimate of the leader's clock.
+    SpeakerSweep {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        start_ns: i64,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -905,6 +913,11 @@ impl PersonalFabricActionEnvelope {
             }
             PersonalFabricAction::SpeakerIdentify { output } => {
                 if !output.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerSweep { group, start_ns } => {
+                if !group.valid() || *start_ns <= 0 {
                     return Err(FabricError::InvalidAction);
                 }
             }
