@@ -1547,7 +1547,22 @@ its own identity, never under the ambient authority of the person using it:
 - reading the catalogue (`catalogue`) needs the manifest to declare it;
 - invoking another app's action (`invoke`) needs the manifest to declare it
   **and** the workspace to grant it to the app, like any collaborator grant.
-  Without a grant it is refused.
+  Without a grant, the person who is using the app is asked on a sheet only
+  the compositor draws: "<App> wants to use <Other app>: <action>", with the
+  action's risk and whether it still confirms each use. They answer *Allow
+  once*, *Allow for this session*, *Always allow in this workspace* or
+  *Deny*; the invocation waits for the answer. An allowing answer is recorded
+  as an ordinary capability (the app as subject, `Scope::Action`, a matching
+  expiry) granted by that person, and appears in the workspace's history.
+  Nobody is asked when nobody can answer — the screen is locked, the
+  connection belongs to someone else, or they cannot administer the
+  workspace — and an action that governs the workspace is never offered:
+  such a request is refused.
+
+People review and revoke these grants in the workspace's Settings, under
+Permissions › App actions. Agents and scripts use the workspace's
+`app-action.grant` and `app-action.revoke` actions, which need the same
+authority and confirmation as any other permission change.
 
 ```toml
 [actions]
