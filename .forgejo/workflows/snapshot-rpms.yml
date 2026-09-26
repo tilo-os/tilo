@@ -156,9 +156,7 @@ jobs:
           password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Set up buildx for native snapshot construction
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
+        uses: ./.forgejo/actions/setup-buildx
 
       - name: Build + push the frozen RPM repo image
         id: rpms
@@ -275,9 +273,7 @@ jobs:
           echo "RPMS_REF=$(cat rpms-index.txt)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up buildx for index inspection
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
+        uses: ./.forgejo/actions/setup-buildx
 
       - name: Attest and verify the native snapshot index
         id: attest
