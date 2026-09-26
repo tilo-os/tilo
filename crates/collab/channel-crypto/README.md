@@ -232,9 +232,9 @@ content only as a **service member** (`shell/service_members.rs`):
 
 ### What the Cloud host must adopt
 
-The Cloud stack (`qos-cloud-host` and its agent workers) currently holds
+The Cloud stack (`tilo-cloud-host` and its agent workers) currently holds
 documents as a plaintext, full CRDT peer, enrolled as one more device of the
-owner. `qos-peer-state` parks encrypted payloads as
+owner. `tilo-peer-state` parks encrypted payloads as
 `RetryLater(PersistedMls)`, so on encrypted channels it stalls. With
 encryption on everywhere, it has to become a service member:
 
@@ -254,7 +254,7 @@ encryption on everywhere, it has to become a service member:
    host session). It asks for access, applies Welcomes and commits, and
    acknowledges.
 4. **Documents.** Decrypt with the route's `ChannelContentKeys` where
-   `qos-peer-state` admits a document (`Encrypted { .. }`), instead of
+   `tilo-peer-state` admits a document (`Encrypted { .. }`), instead of
    parking it, and seal outbound changes the same way
    (`local_outbox`, media governance). Workers that run through
    `CollaborationManager` get this from the SDK once they are launched with

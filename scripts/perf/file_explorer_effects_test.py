@@ -7,7 +7,7 @@ from file_explorer_effects import validate_file_explorer_scroll, validate_file_e
 class FileExplorerEffectsTests(unittest.TestCase):
     def fixture(self):
         manifest = dict(schema=1,hash_algorithm='sha256',entry_count=1200,image_count=299,directory_count=4,order_hash='a'*64)
-        state = dict(app='dev.qos.file-explorer',view_id='file_view',directory='/tmp/fixture',entry_count=1200,
+        state = dict(app='dev.tilo.file-explorer',view_id='file_view',directory='/tmp/fixture',entry_count=1200,
             order_hash='a'*64,hash_algorithm='sha256',ready=True,is_loading=False,has_error=False,
             thumbnail_pending=10,selected_indices=[],selected_names=[],primary_index=None,
             offset_x=0.0,offset_y=0.0,offset_units='pixels',root_rect=[0,0,800,600],
@@ -20,7 +20,7 @@ class FileExplorerEffectsTests(unittest.TestCase):
         return scenario,copy.deepcopy(effects),manifest,frames
 
     def lines(self,effects,frames=(),scale=2):
-        return ['qos-native-window '+json.dumps(dict(scale_factor=scale))]+['qos-native-effect '+json.dumps(e) for e in effects]+['qos-native-frame '+json.dumps(f) for f in frames]
+        return ['tilo-native-window '+json.dumps(dict(scale_factor=scale))]+['tilo-native-effect '+json.dumps(e) for e in effects]+['tilo-native-frame '+json.dumps(f) for f in frames]
 
     def test_real_movement_and_postdraw_with_async_thumbnail_progress(self):
         s,e,m,f=self.fixture()

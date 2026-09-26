@@ -37,7 +37,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     env:
-      IMAGE_REPOSITORY: code.sandbox.example/qos/tilo-release-tools
+      IMAGE_REPOSITORY: code.tilo.so/tilo/tilo-release-tools
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -75,7 +75,7 @@ jobs:
           }}
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
@@ -120,8 +120,8 @@ jobs:
     runs-on: runner
     timeout-minutes: 10
     env:
-      IMAGE_REPOSITORY: code.sandbox.example/qos/tilo-release-tools
-      PUBLIC_IMAGE_REPOSITORY: code.sandbox.example/public/tilo-release-tools
+      IMAGE_REPOSITORY: code.tilo.so/tilo/tilo-release-tools
+      PUBLIC_IMAGE_REPOSITORY: code.tilo.so/public/tilo-release-tools
       SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -132,7 +132,7 @@ jobs:
       - name: Log in for index publication
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Publish one immutable multi-architecture image and receipt
@@ -236,7 +236,7 @@ jobs:
         run: |
           set -euo pipefail
           image=$(jq -er '.image' release-tools-image-receipt/release-tools-image.json)
-          [[ $image == code.sandbox.example/public/tilo-release-tools@sha256:* ]]
+          [[ $image == code.tilo.so/public/tilo-release-tools@sha256:* ]]
           anonymous_config="$RUNNER_TEMP/release-tools-anonymous-docker"
           rm -rf "$anonymous_config"
           mkdir -m 0700 "$anonymous_config"

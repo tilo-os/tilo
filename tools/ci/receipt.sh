@@ -36,7 +36,7 @@ case "${1:-}" in
     valid_result "$affected_result" || { echo "invalid affected result: $affected_result" >&2; exit 2; }
     git rev-parse --verify "$sha^{commit}" >/dev/null
     git config user.name 'Tilo Forgejo CI'
-    git config user.email 'tilo@noreply.code.sandbox.example'
+    git config user.email 'tilo@noreply.code.tilo.so'
     # Several CI runs can record receipts at once. Refresh the notes tree and
     # retry a rejected push so each run retains notes written by the others.
     for attempt in {1..12}; do

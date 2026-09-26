@@ -99,7 +99,7 @@ jobs:
           bash controller/os/dev/install-cached-cosign.sh
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Reconstruct missing native phases with retained executable union

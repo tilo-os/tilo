@@ -120,7 +120,7 @@ for _tilo_input_trust in "${TILO_KERNEL_TRUST:=signed}" "${TILO_RPMS_TRUST:=sign
     [ -z "${GITHUB_ACTIONS:-}${FORGEJO_ACTIONS:-}${CI:-}" ] \
       || die "unsigned kernel or RPM inputs are for local builds; CI publishes only signed ones"
     case "${TILO_TARGET_IMGREF:-}" in
-      code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@*)
+      code.tilo.so/tilo/tilo:*|code.tilo.so/tilo/tilo@*)
         die "unsigned kernel or RPM inputs cannot target the production image $TILO_TARGET_IMGREF" ;;
     esac
   fi
@@ -239,8 +239,8 @@ fi
 # building one. The image builds in CI on this project, so the local half of
 # this pipeline is usually the disk step alone:
 #
-#   podman pull code.sandbox.example/qos/tilo:<tag>
-#   podman tag  code.sandbox.example/qos/tilo:<tag> localhost/tilo:latest
+#   podman pull code.tilo.so/tilo/tilo:<tag>
+#   podman tag  code.tilo.so/tilo/tilo:<tag> localhost/tilo:latest
 #   TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 #
 # The seal loop further down still runs, and still has to: it rewrites the UKI
@@ -255,8 +255,8 @@ if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = production ]; then
 if [ "$TILO_RPMS_TRUST" = unsigned ]; then
   warn "TILO_RPMS_TRUST=unsigned: not verifying the signature or provenance of the RPM snapshot $RPMS_REF"
 else
-  [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
-    || die "RPMS_REF must pin code.sandbox.example/qos/rpms by sha256 digest"
+  [[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
+    || die "RPMS_REF must pin code.tilo.so/tilo/rpms by sha256 digest"
   command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
   _tilo_rpms_digest="${RPMS_REF##*@}"
   _tilo_package_set_sha256="$({ "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch x86_64; "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch aarch64; } | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
@@ -292,8 +292,8 @@ fi
 if [ "$TILO_KERNEL_TRUST" = unsigned ]; then
   warn "TILO_KERNEL_TRUST=unsigned: not verifying the kernel signature or provenance of $KERNEL_RPMS_REF"
 else
-  [[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
-    || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/tilo-kernel by sha256 digest"
+  [[ "$KERNEL_RPMS_REF" =~ ^code\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
+    || die "KERNEL_RPMS_REF must pin code.tilo.so/tilo/tilo-kernel by sha256 digest"
   command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
   command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect the signed Tilo kernel"
   # The kernel binds its own signed build environment; the OS RPM snapshot
@@ -418,7 +418,7 @@ fi
 # Dockerfile FROM references are resolved even for a pruned browser stage.
 [ -n "$WPE_BUILDROOT_REF" ] || WPE_BUILDROOT_REF="$BASE_REF"
 if [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$TILO_WITH_BROWSER" = 1 ]; then
-  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
+  [[ "$WPE_BUILDROOT_REF" =~ ^code\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
     || die "release builds require a digest-pinned WPE buildroot"
   command -v cosign >/dev/null || die "release builds require cosign to verify the WPE buildroot"
   cosign verify --key "$TILO_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
@@ -521,8 +521,8 @@ fi
 if [ "$TILO_SKIP_BUILD" = "1" ]; then
   podman image exists "$TILO_IMAGE" || die "TILO_SKIP_BUILD=1, but $TILO_IMAGE is not in local
   storage, so there is nothing to image. Pull the published image and tag it:
-    podman pull code.sandbox.example/qos/tilo:<tag>
-    podman tag  code.sandbox.example/qos/tilo:<tag> $TILO_IMAGE"
+    podman pull code.tilo.so/tilo/tilo:<tag>
+    podman tag  code.tilo.so/tilo/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; generation=$TILO_GENERATION)"

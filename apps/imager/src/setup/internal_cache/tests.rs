@@ -8,18 +8,18 @@ fn selected() -> SelectedManifest {
     );
     let release = InternalRelease::transport_fixture(
         &bytes,
-        "https://code.sandbox.example/releases/manifest.json",
+        "https://code.tilo.so/releases/manifest.json",
     );
     SelectedManifest::from_bytes(&release, bytes).unwrap()
 }
 #[test]
 fn working_names_exclude_all_selected_final_names_and_unsafe_leaves() {
     let selected = selected();
-    assert!(validate_leaf(&selected, ".qos-part-0123456789abcdef0123456789abcdef").is_ok());
+    assert!(validate_leaf(&selected, ".tilo-part-0123456789abcdef0123456789abcdef").is_ok());
     for leaf in [
         "../payload",
         "",
-        ".qos-part-ABCDEF0123456789abcdef0123456789",
+        ".tilo-part-ABCDEF0123456789abcdef0123456789",
     ] {
         assert!(validate_leaf(&selected, leaf).is_err(), "accepted {leaf:?}");
     }
@@ -126,7 +126,7 @@ pub(in crate::setup) struct DiskProvider {
 impl DiskProvider {
     pub fn new(root: &Path) -> (Self, File) {
         fs::create_dir(root.join("journal")).unwrap();
-        let leaf = ".qos-part-0123456789abcdef0123456789abcdef";
+        let leaf = ".tilo-part-0123456789abcdef0123456789abcdef";
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -481,16 +481,16 @@ fn reserved_working_namespace_is_disjoint_from_both_authenticated_final_names() 
     for index in 0..2 {
         let mut value = super::super::internal_bundle::tests::fixture();
         value["components"][index]["filename"] =
-            serde_json::json!(".qos-part-0123456789abcdef0123456789abcdef");
+            serde_json::json!(".tilo-part-0123456789abcdef0123456789abcdef");
         let bytes = super::super::internal_bundle::tests::bytes(&value);
         let release = InternalRelease::transport_fixture(
             &bytes,
-            "https://code.sandbox.example/releases/manifest.json",
+            "https://code.tilo.so/releases/manifest.json",
         );
         assert!(SelectedManifest::from_bytes(&release, bytes).is_err());
         let normal = selected();
-        assert!(validate_leaf(&normal, ".qos-part-0123456789abcdef0123456789abcdef").is_ok());
-        assert!(validate_leaf(&normal, ".qos-part-fedcba9876543210fedcba9876543210").is_ok());
+        assert!(validate_leaf(&normal, ".tilo-part-0123456789abcdef0123456789abcdef").is_ok());
+        assert!(validate_leaf(&normal, ".tilo-part-fedcba9876543210fedcba9876543210").is_ok());
     }
 }
 #[cfg(unix)]
@@ -831,10 +831,10 @@ fn duplicate_prefix_transition_refuses_without_consuming_generation() {
 fn fixed_record_parser_has_platform_independent_bounded_positive_and_negative_controls() {
     use super::checkpoint::Record;
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"QOSCP001");
+    bytes.extend_from_slice(b"TILOCP01");
     bytes.push(1);
     bytes.extend_from_slice(&[0; 96]);
-    bytes.extend_from_slice(b".qos-part-0123456789abcdef0123456789abcdef");
+    bytes.extend_from_slice(b".tilo-part-0123456789abcdef0123456789abcdef");
     for value in [1u64, 0, 0, 4096] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -906,10 +906,10 @@ pub(in crate::setup) fn test_prepared(parts: TransferParts<'_>) -> PreparedPrefi
 fn standalone_epoch_record(kind: u8, generation: u64, epoch: u64) -> Vec<u8> {
     let length = if kind == 3 { 4096u64 } else { 4 };
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"QOSCP001");
+    bytes.extend_from_slice(b"TILOCP01");
     bytes.push(kind);
     bytes.extend_from_slice(&[0; 96]);
-    bytes.extend_from_slice(b".qos-part-0123456789abcdef0123456789abcdef");
+    bytes.extend_from_slice(b".tilo-part-0123456789abcdef0123456789abcdef");
     for value in [generation, epoch, length, 4096] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -1470,7 +1470,7 @@ fn fresh_settlement_refuses_wrong_selection_ownership_nonempty_history_and_reope
     changed_bytes.push(b' ');
     let release = InternalRelease::transport_fixture(
         &changed_bytes,
-        "https://code.sandbox.example/releases/manifest.json",
+        "https://code.tilo.so/releases/manifest.json",
     );
     let changed = SelectedManifest::from_bytes(&release, changed_bytes).unwrap();
     for case in 0..10 {

@@ -60,15 +60,15 @@ pub fn validate_profile(profile: &Path) -> io::Result<()> {
 /// # Errors
 /// Rejects a missing home directory or a relative profile override.
 pub fn default_profile() -> io::Result<PathBuf> {
-    let path = if let Some(value) = std::env::var_os("QOS_RUNTIME_PROFILE") {
+    let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
         PathBuf::from(value)
     } else {
         let home = std::env::var_os("HOME")
-            .ok_or_else(|| invalid("HOME is missing; set QOS_RUNTIME_PROFILE"))?;
+            .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))?;
         #[cfg(target_os = "macos")]
-        let suffix = "Library/Application Support/qOS/runtime";
+        let suffix = "Library/Application Support/Tilo/runtime";
         #[cfg(not(target_os = "macos"))]
-        let suffix = ".local/state/qos/runtime";
+        let suffix = ".local/state/tilo/runtime";
         PathBuf::from(home).join(suffix)
     };
     if !path.is_absolute() {
@@ -269,7 +269,7 @@ pub fn serve(profile: &Path) -> io::Result<()> {
         active.fetch_add(1, Ordering::Relaxed);
         let slot = ConnectionSlot(active);
         std::thread::Builder::new()
-            .name("qos-native-mcp".into())
+            .name("tilo-native-mcp".into())
             .spawn(move || {
                 let _slot = slot;
                 if let Err(error) =
@@ -332,7 +332,7 @@ pub fn connect(profile: &Path) -> io::Result<()> {
     let mut stream = UnixStream::connect(profile.join("native.sock"))?;
     let mut writer = stream.try_clone()?;
     std::thread::Builder::new()
-        .name("qos-mcp-proxy-stdin".into())
+        .name("tilo-mcp-proxy-stdin".into())
         .spawn(move || {
             let result = io::copy(&mut io::stdin().lock(), &mut writer);
             let _ = writer.shutdown(std::net::Shutdown::Write);
@@ -355,9 +355,9 @@ pub fn run_app(
     let owner = std::process::id().to_string();
     // Only the bootstrap exec for this exact process can request resumption.
     // A same-app ordinary child must run its own command handler first.
-    let resume = std::env::var_os("QOS_RUNTIME_CONNECTION_OWNER_PID").as_deref()
+    let resume = std::env::var_os("TILO_RUNTIME_CONNECTION_OWNER_PID").as_deref()
         == Some(std::ffi::OsStr::new(&owner))
-        && std::env::var_os("QOS_RUNTIME_RESUME_LIVE").as_deref()
+        && std::env::var_os("TILO_RUNTIME_RESUME_LIVE").as_deref()
             == Some(std::ffi::OsStr::new(app_id));
     let mut command = Command::new(executable);
     command.args(args);
@@ -372,10 +372,10 @@ pub fn run_app(
         },
     )?;
     command
-        .env("QOS_RUNTIME_CONNECTION_OWNER_PID", owner)
-        .env("QOS_RUNTIME_PROFILE", profile);
+        .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
+        .env("TILO_RUNTIME_PROFILE", profile);
     if resume {
-        command.env("QOS_RUNTIME_RESUME_LIVE", app_id);
+        command.env("TILO_RUNTIME_RESUME_LIVE", app_id);
     }
     let error = command.exec();
     drop(connections);

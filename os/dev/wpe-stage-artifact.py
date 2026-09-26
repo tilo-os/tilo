@@ -87,7 +87,7 @@ def dependency_inputs(repo, assets, architecture, epoch, buildroot):
     require(architecture in ARCHES, 'unsupported native architecture')
     require(bool(re.fullmatch(r'0|[1-9][0-9]{0,11}', epoch)) and
             int(epoch) <= 253402300799, 'invalid dependency epoch')
-    require(bool(re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@' + DIGEST, buildroot)),
+    require(bool(re.fullmatch(r'code\.tilo\.so/tilo/tilo-wpe-buildroot@' + DIGEST, buildroot)),
             'immutable WPE buildroot required')
     recipes = {name: read_bounded(repo / name, 2 * 1024 * 1024) for name in RECIPES}
     script = recipes[RECIPES[1]].decode()
@@ -107,7 +107,7 @@ def dependency_inputs(repo, assets, architecture, epoch, buildroot):
 
 def repository(architecture):
     require(architecture in ARCHES, 'unsupported architecture')
-    return 'code.sandbox.example/qos/tilo-development-wpe-stage-' + architecture
+    return 'code.tilo.so/tilo/tilo-development-wpe-stage-' + architecture
 
 
 def validate_receipt(receipt, inputs):

@@ -64,7 +64,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
             "\n  verify-public:\n", 1
         )[0]
         self.assertIn(
-            "PUBLIC_IMAGE_REPOSITORY: code.sandbox.example/public/tilo-release-tools",
+            "PUBLIC_IMAGE_REPOSITORY: code.tilo.so/public/tilo-release-tools",
             publish,
         )
         self.assertIn('"$IMAGE_REPOSITORY@$digest"', publish)
@@ -83,7 +83,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         # release-apps.yml is the single owner of the reviewed digest.
         self.assertRegex(
             publish,
-            r"image: code\.podesta\.ai/public/tilo-release-tools@sha256:[0-9a-f]{64}\n",
+            r"image: code\.tilo\.so/public/tilo-release-tools@sha256:[0-9a-f]{64}\n",
         )
         self.assertNotIn("image: ${{ needs.plan.outputs.builder_image }}", publish)
         container = publish.split("    container:\n", 1)[1].split(

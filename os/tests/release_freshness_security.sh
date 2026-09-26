@@ -16,7 +16,7 @@ env RELEASE_DIGEST="$digest" TILO_GENERATION=42 GITHUB_SHA="$source" \
 cmp "$tmp/one.json" "$tmp/two.json"
 jq -e --arg digest "$digest" --arg source "$source" '
   .schema == "https://tilo.sh/security/release-freshness/v1"
-  and .repository == "code.sandbox.example/qos/tilo"
+  and .repository == "code.tilo.so/tilo/tilo"
   and .digest == $digest
   and .sourceRevision == $source
   and .generation == 42

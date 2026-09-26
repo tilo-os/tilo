@@ -28,12 +28,12 @@ import urllib.request
 
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-KERNEL_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-kernel@sha256:([0-9a-f]{64})$")
-RPMS_REF = re.compile(r"^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$")
+KERNEL_REF = re.compile(r"^code\.tilo\.so/tilo/tilo-kernel@sha256:([0-9a-f]{64})$")
+RPMS_REF = re.compile(r"^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
-WPE_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
+WPE_REF = re.compile(r"^code\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
 KERNEL_BUILDROOT_REF = re.compile(
-    r"^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
+    r"^code\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -107,7 +107,7 @@ def kernel_snapshot(args, parser) -> tuple[str, dict]:
 
 def rpms_snapshot(args, parser) -> tuple[str, dict]:
     if RPMS_REF.fullmatch(args.rpms_ref) is None:
-        parser.error("--rpms-ref must be an immutable qos/rpms sha256 reference")
+        parser.error("--rpms-ref must be an immutable tilo/rpms sha256 reference")
     if REVISION.fullmatch(args.source_revision or "") is None:
         parser.error("--source-revision must be the full commit the index was built from")
     return rpms_contents(args.rpms_ref, args.source_revision), {

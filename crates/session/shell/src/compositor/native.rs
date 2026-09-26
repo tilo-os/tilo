@@ -5563,7 +5563,7 @@ pub fn run() {
         let uid = unsafe { libc::getuid() };
         let pending = xdg_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
-                &data.join("qos-imager/migrations/desktop-continuation.json"),
+                &data.join("tilo-imager/migrations/desktop-continuation.json"),
                 uid,
             )
         });
@@ -7728,7 +7728,7 @@ pub fn run() {
             && let Err(error) = crate::shell::desktop_continuation::launch_request()
                 .and_then(crate::shell::host_apps::queue_launch)
         {
-            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to Tilo");
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");

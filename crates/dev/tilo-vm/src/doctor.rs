@@ -454,7 +454,7 @@ mod tests {
             Some(&token),
             Err(CliError::RegistryLogin {
                 place: "this host".into(),
-                registry: "code.sandbox.example".into(),
+                registry: "code.tilo.so".into(),
             }),
         );
         assert!(

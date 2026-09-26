@@ -81,7 +81,7 @@ _li_exists() {
   podman image exists "$1" 2>/dev/null || skopeo inspect --raw "docker://$1" >/dev/null 2>&1
 }
 _li_newest_ci_kernel() {
-  local repo=code.sandbox.example/qos/tilo-kernel tag
+  local repo=code.tilo.so/tilo/tilo-kernel tag
   skopeo list-tags "docker://$repo" 2>/dev/null |
     jq -r --arg arch "$_li_arch" '.Tags[] | select(test("^main-\($arch)-[0-9a-f]+$") or test("^native-[0-9a-f]{40}-\($arch)$"))' |
     while read -r tag; do
@@ -132,7 +132,7 @@ else
 fi
 if [ -z "${TILO_KERNEL_TRUST:-}" ]; then
   case "$KERNEL_RPMS_REF" in
-    code.sandbox.example/qos/tilo-kernel@sha256:*)
+    code.tilo.so/tilo/tilo-kernel@sha256:*)
       if _li_kernel_binds "$KERNEL_RPMS_REF"; then
         TILO_KERNEL_TRUST=signed
       else

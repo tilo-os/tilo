@@ -6,8 +6,8 @@ Build the native probe with:
 cargo build -p ui --example ui-native-input-probe --profile thin-app --no-default-features --features presentation-feedback
 ```
 
-Set `QOS_PROFILE_PRESENTATION=1` alongside `QOS_NATIVE_SCENARIO`,
-`QOS_PROFILE_OUT`, and `QUICK_UI_PRESENT=1`. The feature is currently implemented
+Set `TILO_PROFILE_PRESENTATION=1` alongside `TILO_NATIVE_SCENARIO`,
+`TILO_PROFILE_OUT`, and `QUICK_UI_PRESENT=1`. The feature is currently implemented
 only on macOS Metal. Unsupported builds explicitly report unavailable feedback;
 absence of display records cannot qualify a workload. The normal feature-disabled
 HAL retains its original surface layout and presentation path.
@@ -18,8 +18,8 @@ before presentation, with runtime API availability and duplicate-registration
 checks. The worker releases the wgpu HAL guard before presenting. There is no
 extra drawable, command buffer, fence, or presentation-policy change.
 
-`qos-display-request` identifies the render-worker generation, worker frame and
-optional originating CPU frame. `qos-display-frame` carries those identities,
+`tilo-display-request` identifies the render-worker generation, worker frame and
+optional originating CPU frame. `tilo-display-frame` carries those identities,
 the Metal drawable ID, backend and raw `presentedTime` host seconds. A bounded
 nonblocking callback queue feeds a separate serialization thread. Missing rows,
 including queue overflow or logging failure, remain missing evidence. The
@@ -52,7 +52,7 @@ Source provenance and modified upstream files are retained in
 both feature-enabled and feature-disabled `cargo check` pass, and independent
 review found no ownership or lifetime blocker. The optional HAL package retains
 its upstream licenses and a patch description in
-`vendor/wgpu-hal/QOS-PRESENTATION-FEEDBACK.md`.
+`vendor/wgpu-hal/TILO-PRESENTATION-FEEDBACK.md`.
 
 ## Initial native results (2026-09-16)
 

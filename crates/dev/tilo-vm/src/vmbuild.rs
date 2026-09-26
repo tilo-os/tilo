@@ -252,14 +252,14 @@ mod tests {
     #[test]
     fn windows_worktree_is_a_local_msys2_rsync_operand() {
         let line = rsync_command(
-            Path::new(r"C:\Users\bob\qos-tilo-main"),
+            Path::new(r"C:\Users\bob\tilo-tilo-main"),
             &endpoint(),
             None,
             "wt-1",
         );
         assert_eq!(
             line.args[line.args.len() - 2],
-            "/c/Users/user/qos-tilo-main/"
+            "/c/Users/user/tilo-tilo-main/"
         );
         if let Some(found) = crate::host::which_all("rsync").first() {
             assert_eq!(line.program, found.display().to_string());

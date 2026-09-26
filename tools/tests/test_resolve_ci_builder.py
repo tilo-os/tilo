@@ -40,7 +40,7 @@ class BuilderResolutionTests(unittest.TestCase):
         # Redirects are refused, so a renamed owner must be spelled out here.
         self.assertEqual(
             resolver.FILES_URL,
-            'https://code.sandbox.example/api/v1/packages/tilo/container/tilo-builder/latest/files',
+            'https://code.tilo.so/api/v1/packages/tilo/container/tilo-builder/latest/files',
         )
 
     def test_actual_forgejo_manifest_record_contract(self):
@@ -76,8 +76,8 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
         self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 3)
         security = workflow.split('\n  security:', 1)[1].split('\n  suites:', 1)[0]
-        self.assertIn('image: code.sandbox.example/qos/ci-fast@sha256:', security)
-        self.assertNotIn('image=code.sandbox.example/qos/tilo-builder:latest', workflow)
+        self.assertIn('image: code.tilo.so/tilo/ci-fast@sha256:', security)
+        self.assertNotIn('image=code.tilo.so/tilo/tilo-builder:latest', workflow)
 
 
 class MetadataTransportTests(unittest.TestCase):

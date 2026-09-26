@@ -60,7 +60,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -145,14 +145,14 @@ jobs:
       # The build FROMs the signed kernel buildroot for its toolchain
       # (rpm-build, kernel-devel, gcc, ...) and the Fedora kernel SRPM. Log in
       # on every run — build-only PRs also need registry read.
-      - name: Log in to code.sandbox.example
+      - name: Log in to code.tilo.so
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           printf '%s' "$REGISTRY_PASSWORD" | \
             os/dev/login-registry-with-retry.sh \
-              docker code.sandbox.example "$REGISTRY_USERNAME"
+              docker code.tilo.so "$REGISTRY_USERNAME"
 
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
@@ -169,7 +169,7 @@ jobs:
             x86_64) ref="$KERNEL_BUILDROOT_X86_64_REF"; expected_arch=amd64 ;;
             aarch64) ref="$KERNEL_BUILDROOT_AARCH64_REF"; expected_arch=arm64 ;;
           esac
-          [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] || {
+          [[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] || {
             printf 'no digest-pinned native kernel buildroot for %s; run snapshot-kernel-buildroot\n' '${{ matrix.arch }}' >&2
             exit 1
           }
@@ -181,7 +181,7 @@ jobs:
             exit 1
           }
           base="$(docker run --rm --network=none --entrypoint cat "$ref" /usr/lib/tilo/kernel-buildroot-base)"
-          [[ "$base" =~ ^code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
+          [[ "$base" =~ ^code\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
           {
             echo "KERNEL_BUILDROOT_REF=$ref"
             echo "KERNEL_BUILDROOT_BASE_REF=$base"
@@ -262,7 +262,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.sandbox.example/qos/tilo-kernel
+          images: code.tilo.so/tilo/tilo-kernel
           tags: |
             type=raw,value=latest-${{ matrix.arch }},enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=main-${{ matrix.arch }}-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -276,7 +276,7 @@ jobs:
       # A shared Docker daemon can still hold this commit's image from an
       # earlier attempt; the registry-push retry below must never publish it.
       - name: Discard any earlier local image for this commit
-        run: docker image rm -f 'code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' >/dev/null 2>&1 || true
+        run: docker image rm -f 'code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' >/dev/null 2>&1 || true
 
       # Publication runs push; pull requests only build and load. A failure
       # always reaches the next step, which retries only a publication push
@@ -300,8 +300,8 @@ jobs:
           # run- and attempt-unique tag keeps each published digest reachable.
           tags: |
             ${{ steps.meta.outputs.tags }}
-            code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
-            code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+            code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
+            code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
@@ -317,14 +317,14 @@ jobs:
           # A published kernel imports no layer cache: no uncached rebuild
           # checks it, and the cache tag is writable by other jobs. Publishing
           # runs refresh the cache that pull requests then consume.
-          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/qos/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
           # PRs consume the shared cache but do not update it: exporting cache
           # work can outlive a successful compile and exhaust the runner's
           # hard deadline. Main/tag/dispatch builds refresh final-stage
           # dependencies only; mode=max duplicates the multi-GiB source tree.
           # ignore-error: a cache write failure must not fail a build whose
           # image was already pushed; the next run simply starts colder.
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/qos/tilo-kernel-buildcache:{1},mode=min,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1},mode=min,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
           provenance: false
 
       # The build step never fails the job itself (continue-on-error), so
@@ -357,8 +357,8 @@ jobs:
         if: ${{ steps.build.outcome == 'failure' }}
         env:
           PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
-          LOCAL_IMAGE: code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
-          UNIQUE_TAG: code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          LOCAL_IMAGE: code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
+          UNIQUE_TAG: code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
@@ -442,7 +442,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir kernel-repo
-          container=$(docker create 'code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' /bin/true)
+          container=$(docker create 'code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' /bin/true)
           trap 'docker rm "$container" >/dev/null' EXIT
           docker cp "$container":/repo/. kernel-repo/
           shopt -s nullglob
@@ -508,10 +508,10 @@ jobs:
         run: |
           set -euo pipefail
           . os/dev/configure-cosign-kms.sh
-          ref="code.sandbox.example/qos/tilo-kernel@${{ steps.published.outputs.digest }}"
+          ref="code.tilo.so/tilo/tilo-kernel@${{ steps.published.outputs.digest }}"
           digest='${{ steps.published.outputs.digest }}'
           jq -n \
-            --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
+            --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
             --arg digest "$digest" \
             --arg architecture '${{ matrix.arch }}' \
             --arg buildroot "$KERNEL_BUILDROOT_REF" \
@@ -530,7 +530,7 @@ jobs:
                   ]
                 },
                 runDetails: {
-                  builder: {id: "https://code.sandbox.example/qos/forgejo/actions/kernel-release-v1"},
+                  builder: {id: "https://code.tilo.so/tilo/forgejo/actions/kernel-release-v1"},
                   metadata: {invocationId: env.GITHUB_RUN_ID}
                 }
               }
@@ -551,7 +551,7 @@ jobs:
                   and .buildDefinition.externalParameters.architecture == $architecture
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
                   and any(.buildDefinition.resolvedDependencies[]?;
-                    .uri == ("git+ssh://code.sandbox.example/qos/qos@" + $source))
+                    .uri == ("git+ssh://code.tilo.so/tilo/tilo@" + $source))
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $buildroot)
                 )
             ' >/dev/null
@@ -559,7 +559,7 @@ jobs:
       - name: Report the new digest to commit
         if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         run: |
-          ref="code.sandbox.example/qos/tilo-kernel@${{ steps.published.outputs.digest }}"
+          ref="code.tilo.so/tilo/tilo-kernel@${{ steps.published.outputs.digest }}"
           # Promotion reads KERNEL_RPMS_X86_64_REF / KERNEL_RPMS_AARCH64_REF.
           variable="KERNEL_RPMS_$(printf '%s' '${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF"
           case "$variable" in
@@ -588,7 +588,7 @@ jobs:
 
       - name: Revoke local registry login
         if: ${{ always() }}
-        run: docker logout code.sandbox.example >/dev/null 2>&1 || true
+        run: docker logout code.tilo.so >/dev/null 2>&1 || true
 
   promote-native-kernels:
     needs: build-and-push-kernel
@@ -622,14 +622,14 @@ jobs:
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: x86_64
-      - name: Log in to code.sandbox.example
+      - name: Log in to code.tilo.so
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           printf '%s' "$REGISTRY_PASSWORD" | \
             os/dev/login-registry-with-retry.sh \
-              docker code.sandbox.example "$REGISTRY_USERNAME"
+              docker code.tilo.so "$REGISTRY_USERNAME"
       - name: Propose both kernel pins atomically through protected main
         env:
           # The automatic job token pushes the branch. Neither it nor
@@ -645,7 +645,7 @@ jobs:
           . "$x86"
           . "$arm"
           for ref in "$KERNEL_RPMS_X86_64_REF" "$KERNEL_RPMS_AARCH64_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]
           done
           [ "$KERNEL_RPMS_X86_64_REF" != "$KERNEL_RPMS_AARCH64_REF" ] || {
             printf 'native kernel builds unexpectedly produced one shared manifest\n' >&2
@@ -662,7 +662,7 @@ jobs:
             cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$1" 2>/dev/null \
               | jq -r '[(if type == "array" then .[] else . end) | .payload | @base64d | fromjson
                   | .predicate.buildDefinition.resolvedDependencies[]?.uri
-                  | capture("^git\\+ssh://code\\.podesta\\.ai/qos/qos@(?<commit>[0-9a-f]{40})$").commit]
+                  | capture("^git\\+ssh://code\\.tilo\\.so/tilo/tilo@(?<commit>[0-9a-f]{40})$").commit]
                   | unique | if length == 1 then .[0] else empty end' 2>/dev/null || true
           }
           # Succeeds when a pin built from $1 is older than this run's source.
@@ -731,4 +731,4 @@ jobs:
             --arm-ref "$KERNEL_RPMS_AARCH64_REF" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Revoke local registry login
         if: ${{ always() }}
-        run: docker logout code.sandbox.example >/dev/null 2>&1 || true
+        run: docker logout code.tilo.so >/dev/null 2>&1 || true

@@ -60,14 +60,14 @@ starts.
 
 ## CI builds (`--from sha:` / `--from ci:`)
 
-CI publishes `code.sandbox.example/qos/tilo:main-<sha7>` for main commits and
+CI publishes `code.tilo.so/tilo/tilo:main-<sha7>` for main commits and
 `:<version>` for releases. `sha:<commit>` means `ci:main-<sha7>`. The
 component's manifest `files` are copied out of that image into a layer with
 `authority = "ci"`. The VM pulls it when its image has podman; otherwise this
 host does (needs podman here). Pulls need a podman registry login for
-`code.sandbox.example` where the pull runs: the VM's own
-(`tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.sandbox.example`)
-or this host's (`podman login code.sandbox.example`). `FORGEJO_TOKEN` and fgj/tea
+`code.tilo.so` where the pull runs: the VM's own
+(`tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.tilo.so`)
+or this host's (`podman login code.tilo.so`). `FORGEJO_TOKEN` and fgj/tea
 logins do not count for pulls. A 401 or `reqPackageAccess` names which login
 is missing.
 

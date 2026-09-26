@@ -9,11 +9,11 @@ class Page(http.server.BaseHTTPRequestHandler):
                 "<a target='_blank' href='/popup'>popup</a><a style='position:absolute;top:60px;left:8px' href='/modifier'>modifier</a>").encode()
         self.send_response(200); self.send_header("Content-Type","text/html"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
     def log_message(self,*a):
-        if os.environ.get("QOS_TABS_DEBUG"): print(a,flush=True)
+        if os.environ.get("TILO_TABS_DEBUG"): print(a,flush=True)
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Page)
 threading.Thread(target=server.serve_forever,daemon=True).start()
-with tempfile.TemporaryDirectory(prefix='qos-tabs-') as profile:
-    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None if os.environ.get("QOS_TABS_DEBUG") else subprocess.DEVNULL)
+with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
+    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None if os.environ.get("TILO_TABS_DEBUG") else subprocess.DEVNULL)
     events=queue.Queue()
     def exact(n):
         data=b''
@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='qos-tabs-') as profile:
                 data=exact(n)
                 if data[0]==1:
                     event=json.loads(data[1:])
-                    if os.environ.get('QOS_TABS_DEBUG'): print(round(time.monotonic(),3),event,flush=True)
+                    if os.environ.get('TILO_TABS_DEBUG'): print(round(time.monotonic(),3),event,flush=True)
                     events.put(event)
                 else: events.put({'event':'frame','tab':struct.unpack_from('<I',data,1)[0] if data[0]==3 else 1})
         except Exception as e: events.put(e)

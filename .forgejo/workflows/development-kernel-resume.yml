@@ -60,9 +60,9 @@ jobs:
           test "$SOURCE_REVISION" = 33e83f64cde9df4ee65ff47a708f125d932256da
           [[ "$HELPER_REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$APPROVAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$CHECKPOINT_REF" =~ ^code\.podesta\.ai/qos/tilo-development-partial-kernel-aarch64@sha256:[0-9a-f]{64}$ ]]
-          [[ "$BASE_REF" =~ ^code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
-          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
+          [[ "$CHECKPOINT_REF" =~ ^code\.tilo\.so/tilo/tilo-development-partial-kernel-aarch64@sha256:[0-9a-f]{64}$ ]]
+          [[ "$BASE_REF" =~ ^code\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
+          [[ "$RPMS_REF" =~ ^code\.tilo\.so/tilo/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 
@@ -91,12 +91,12 @@ jobs:
           test "$(git -C recovery-helpers rev-parse HEAD)" = "$HELPER_REVISION"
           bash os/dev/assert-native-arch.sh aarch64
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-          echo "CANDIDATE=code.sandbox.example/qos/tilo-development-reconstructed-kernel-aarch64:candidate-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          echo "CANDIDATE=code.tilo.so/tilo/tilo-development-reconstructed-kernel-aarch64:candidate-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Authenticate development artifact transfers
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
@@ -150,9 +150,9 @@ jobs:
             KERNEL_CHECKPOINT_RUN_ID=${{ github.run_id }}
             KERNEL_CHECKPOINT_ATTEMPT=${{ github.run_attempt }}
           cache-from: |
-            type=registry,ref=code.sandbox.example/qos/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:aarch64
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-development-kernel-buildcache:aarch64,mode=min
+            type=registry,ref=code.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64
+            type=registry,ref=code.tilo.so/tilo/tilo-kernel-buildcache:aarch64
+          cache-to: type=registry,ref=code.tilo.so/tilo/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
 
       - name: Retain public checkpoint after failed kernel make
@@ -162,7 +162,7 @@ jobs:
           set -euo pipefail
           # This target reads only the run-specific cache; it has no dependency
           # on the compile stage and cannot compile the kernel a second time.
-          partial="code.sandbox.example/qos/tilo-development-partial-kernel-aarch64:failed-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          partial="code.tilo.so/tilo/tilo-development-partial-kernel-aarch64:failed-$SOURCE_REVISION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker buildx build --file kernel-recovery.Containerfile --target failed-kernel-checkpoint \
             --platform linux/arm64 --build-context kernel-checkpoint=./checkpoint-context \
             --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
@@ -181,7 +181,7 @@ jobs:
           import hashlib,json,os,pathlib,subprocess
           ref=os.environ['PARTIAL_REF']
           image=json.loads(subprocess.check_output(['docker','image','inspect',ref]))[0]
-          digest=next(x for x in image['RepoDigests'] if x.startswith('code.sandbox.example/qos/tilo-development-partial-kernel-aarch64@sha256:'))
+          digest=next(x for x in image['RepoDigests'] if x.startswith('code.tilo.so/tilo/tilo-development-partial-kernel-aarch64@sha256:'))
           raw=subprocess.check_output(['docker','buildx','imagetools','inspect','--raw',digest])
           assert 'sha256:'+hashlib.sha256(raw).hexdigest()==digest.split('@')[1], 'published manifest digest differs'
           assert json.loads(raw)['config']['digest']==image['Id'], 'published config differs'

@@ -1346,7 +1346,7 @@ mod tests {
     #[test]
     fn complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut store = DocStore::open_in("dev.qos.complete-load", tmp.path()).unwrap();
+        let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
         let mut doc = store.new_document();
         doc.put(ROOT, "body", "first").unwrap();
         let mut bytes = doc.save();
@@ -1376,7 +1376,7 @@ mod tests {
     #[test]
     fn complete_load_accepts_full_history_and_distinguishes_missing_from_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut store = DocStore::open_in("dev.qos.complete-load", tmp.path()).unwrap();
+        let mut store = DocStore::open_in("dev.tilo.complete-load", tmp.path()).unwrap();
         assert!(store.load_complete().unwrap().is_none());
         fs::write(store.document_path(), []).unwrap();
         assert!(matches!(

@@ -34,7 +34,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # Where the published series lives. The generation counts published images, so it
 # is read from the repository `bootc upgrade` pulls from, not from a scratch
 # registry a disk build happened to push to.
-TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-code.sandbox.example/qos/tilo}"
+TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-code.tilo.so/tilo/tilo}"
 
 WANT=next
 case "${1:-}" in
@@ -192,7 +192,7 @@ else
   die "could not list tags of
   $TILO_PUBLISH_REPO — the published generation series is unreadable, and guessing
   it would produce an image whose generation collides with one already published.
-  Log in (podman login code.sandbox.example) or pass TILO_GENERATION=<N> explicitly.
+  Log in (podman login code.tilo.so) or pass TILO_GENERATION=<N> explicitly.
   The tag listing said:
 $(printf '%s' "$lookup_error" | sed 's/^/    /')"
 fi

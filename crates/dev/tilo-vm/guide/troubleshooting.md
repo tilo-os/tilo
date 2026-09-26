@@ -37,7 +37,7 @@ it is.
 non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
 `vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
 If it has bootc, move it to a dev image:
-`tilo-vm vm upgrade --image code.sandbox.example/qos/tilo-vm:<tag>`, or one built
+`tilo-vm vm upgrade --image code.tilo.so/tilo/tilo-vm:<tag>`, or one built
 here: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
 
 **"Not running a bootc dev image".** `vm upgrade` and `vm rollback-image`
@@ -76,13 +76,13 @@ secret:
 
 | Operation | Needs | Where |
 |---|---|---|
-| `vm create` without `--image` (disk download), doctor's published-disk check | a forge token: `FORGEJO_TOKEN`, or an fgj or tea login for code.sandbox.example | this host |
-| `swap --from ci:`/`sha:` when the VM has podman, `vm upgrade` | a podman registry login | in the VM: `tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.sandbox.example` |
-| `swap --from ci:`/`sha:` when the VM has no podman | a podman registry login | this host: `podman login code.sandbox.example` |
+| `vm create` without `--image` (disk download), doctor's published-disk check | a forge token: `FORGEJO_TOKEN`, or an fgj or tea login for code.tilo.so | this host |
+| `swap --from ci:`/`sha:` when the VM has podman, `vm upgrade` | a podman registry login | in the VM: `tilo-vm vm ssh --raw -- podman login --authfile /etc/ostree/auth.json code.tilo.so` |
+| `swap --from ci:`/`sha:` when the VM has no podman | a podman registry login | this host: `podman login code.tilo.so` |
 
 `tilo-vm doctor` shows which of the host's two it found.
 
-**401 or reqPackageAccess from code.sandbox.example on a pull.** A podman
+**401 or reqPackageAccess from code.tilo.so on a pull.** A podman
 registry login is missing where the pull ran; the error names the place and
 the exact `podman login` line. `FORGEJO_TOKEN` does not help here.
 

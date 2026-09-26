@@ -11,7 +11,7 @@ autoexamples = false
 [package.metadata.cargo-machete]
 # build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
-# dependency enables the qOS presentation-feedback feature in the patched HAL.
+# dependency enables the Tilo presentation-feedback feature in the patched HAL.
 ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
@@ -22,7 +22,7 @@ default = ["native", "broker-transport"]
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
 native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content"]
-# The collaboration manager's built-in transport: the qOS collab broker's
+# The collaboration manager's built-in transport: the Tilo collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
@@ -98,7 +98,7 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
-# runtime-collab is the qOS collab broker Cap'n Proto SDK. Its vocabulary
+# runtime-collab is the Tilo collab broker Cap'n Proto SDK. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
 # them is only needed by the `broker-transport` feature.
 runtime-collab = { path = "../../runtime/runtime-collab", default-features = false }
@@ -348,4 +348,4 @@ name = "manual-composition-shots"
 path = "examples/manual_composition_shots.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }
+wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }

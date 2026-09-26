@@ -33,7 +33,7 @@ class UploadRedirectTests(unittest.TestCase):
             payload = Path(temporary) / "f"
             payload.write_bytes(b"x")
             manifest = Path(temporary) / "uploads.tsv"
-            url = f"http://127.0.0.1:{server.server_port}/api/packages/qos/generic/p/1/f"
+            url = f"http://127.0.0.1:{server.server_port}/api/packages/tilo/generic/p/1/f"
             manifest.write_text(f"{payload}\t{url}\n", encoding="utf-8")
             result = subprocess.run(
                 ["bash", str(SCRIPT), str(manifest)],

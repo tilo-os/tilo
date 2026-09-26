@@ -2,7 +2,7 @@
 """Read-only Forgejo CI experience report; never stores raw job logs.
 
 Offline: --input evidence.json (object containing runs, each with jobs and optional log).
-Live: --repo owner/repo --run 123 --run 124 [--hostname code.sandbox.example].
+Live: --repo owner/repo --run 123 --run 124 [--hostname code.tilo.so].
 Run numbers match the Forgejo web URL and fgj, not global API database IDs.
 Recent stream: --repo owner/repo --recent 20 [--workflow check.yml] [--head SHA].
 JSON goes to --output or stdout; a compact human summary goes to stderr.
@@ -600,7 +600,7 @@ def main():
     parser.add_argument("--recent", type=int, help="inspect this many newest runs (maximum 100)")
     parser.add_argument("--workflow", help="with --recent, select one workflow filename")
     parser.add_argument("--head", help="with --recent, select one exact commit SHA")
-    parser.add_argument("--hostname", default="code.sandbox.example")
+    parser.add_argument("--hostname", default="code.tilo.so")
     parser.add_argument("--fgj", default="fgj")
     parser.add_argument("--compare", action="store_true", help="compare exactly two runs in the order supplied")
     parser.add_argument("--compare-latest", action="store_true",

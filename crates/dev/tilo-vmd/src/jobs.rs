@@ -639,7 +639,7 @@ mod tests {
     #[test]
     fn ci_layers_carry_ci_authority() {
         let job = CiJob {
-            image: "code.sandbox.example/qos/tilo:main-abc1234".into(),
+            image: "code.tilo.so/tilo/tilo:main-abc1234".into(),
             component: "shell".into(),
             paths: vec!["/usr/bin/shell".into()],
             provenance: Provenance::local("shell"),

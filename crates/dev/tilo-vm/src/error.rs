@@ -15,7 +15,7 @@ pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// What the forge token (`FORGEJO_TOKEN`, or an fgj or tea login) is for.
 pub const FORGE_TOKEN_USE: &str =
     "read only for dev disk downloads (vm create without --image, doctor's published-disk check)";
-/// What a podman registry login for code.sandbox.example is for.
+/// What a podman registry login for code.tilo.so is for.
 pub const REGISTRY_LOGIN_USE: &str = "used only for image pulls: swap --from ci:/sha: layers (pulled in the VM when it has podman, else on this host) and vm upgrade (in the VM, with the VM's own login)";
 
 /// How the docs build tilo-vm; what to run when it is older than the VM.
@@ -40,7 +40,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
         ),
     };
     format!(
-        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R qos/qos, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+        "each architecture's lane of a main \"Release / OS\" run (.forgejo/workflows/build-image.yml) publishes its disk as soon as it passes: wait for the running one, or ask a human to dispatch it   |   for an image that already exists, ask a human to dispatch the \"Release / Dev VM disk\" workflow (.forgejo/workflows/dev-disk.yml)   |   or, if you may dispatch CI yourself: fgj workflow run dev-disk.yml -R tilo/tilo, then fgj run watch   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
     )
 }
 
@@ -283,7 +283,7 @@ impl CliError {
                 "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (tester, tilo): {install}"
             ),
             Self::DaemonMissing { vm, bootc: Some(true) } => format!(
-                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image code.sandbox.example/qos/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
+                "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image code.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
             ),
             Self::DaemonMissing { bootc: Some(false), .. } | Self::NotBootc { .. } => {
                 NOT_BOOTC_FIX.into()
@@ -371,7 +371,7 @@ impl CliError {
             Self::NoDiskForHost {
                 arch, local_build, ..
             } => format!(
-                "each architecture publishes on its own, so {arch}'s lane may still be running or may have failed: fgj run list -R qos/qos   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
+                "each architecture publishes on its own, so {arch}'s lane may still be running or may have failed: fgj run list -R tilo/tilo   |   pick a tag that has one: tilo-vm vm create <name> --tag <tag>   |   {}",
                 no_disk_help(local_build.as_deref())
             ),
             Self::NoHypervisor(missing) => missing.fix.clone(),
@@ -680,11 +680,11 @@ mod tests {
             },
             CliError::RegistryLogin {
                 place: "this host".into(),
-                registry: "code.sandbox.example".into(),
+                registry: "code.tilo.so".into(),
             },
             CliError::RegistryLogin {
                 place: "VM dev".into(),
-                registry: "code.sandbox.example".into(),
+                registry: "code.tilo.so".into(),
             },
             CliError::RawWrite {
                 command: "cp shell /usr/bin/shell".into(),
@@ -944,10 +944,10 @@ mod tests {
     fn credential_hints_name_the_one_login_each_operation_reads() {
         let host = CliError::RegistryLogin {
             place: "this host".into(),
-            registry: "code.sandbox.example".into(),
+            registry: "code.tilo.so".into(),
         }
         .hint();
-        assert!(host.contains("podman login code.sandbox.example"), "{host}");
+        assert!(host.contains("podman login code.tilo.so"), "{host}");
         assert!(
             host.contains("FORGEJO_TOKEN and fgj/tea logins do not count"),
             "{host}"

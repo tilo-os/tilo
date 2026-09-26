@@ -598,7 +598,7 @@ fn sample_cmdline(name: &str, user: &str) -> String {
         "monitor" => "/usr/bin/monitor".into(),
         "systemd" => "/usr/lib/systemd/systemd --system --deserialize 34".into(),
         "tilo-fs" => "/usr/bin/tilo-fs --mount /var/workspace --cache /var/cache/tilo-fs".into(),
-        "iroh-node" => "/usr/bin/iroh-node --relay code.sandbox.example".into(),
+        "iroh-node" => "/usr/bin/iroh-node --relay code.tilo.so".into(),
         "pipewire" => "/usr/bin/pipewire".into(),
         _ => format!("/usr/bin/{name}"),
     }

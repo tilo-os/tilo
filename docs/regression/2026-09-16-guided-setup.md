@@ -57,7 +57,7 @@ case folding, mount safety, and authorization remain execution responsibilities.
   passed, including system-folder rejection and overlapping-selection handling.
 - Native Fedora ARM64 full Imager library suite: 173 passed, zero failed before
   that final adjustment. The final focused view suite passed all 8 tests,
-  including accepting `/var/home/qos/Documents` while rejecting system folders.
+  including accepting `/var/home/tilo/Documents` while rejecting system folders.
 - The native Linux executable rendered `setup-folders-copy` at 640x640 using
   `cargo run --locked -p imager --bin imager -- --shots <output.png>
   --scenario setup-folders-copy --viewport 640x640`. The inspected image shows
@@ -258,7 +258,7 @@ regular-file checks.
 
 The final native run passed 14 regression tests and ran the actual host probe.
 It reported Fedora 44/aarch64, DNF, a mutable host reported as not sandboxed, active GDM with
-GNOME session entries and no installed qOS package. The only readiness blocker
+GNOME session entries and no installed Tilo package. The only readiness blocker
 was the empty authenticated release catalog. Host tests passed 295 library tests
 with one explicit ignore; Windows compilation of these exact module sources
 also passed. Strict native library Clippy still reports 18 findings in earlier
@@ -270,7 +270,7 @@ login remain unverified.
 
 A separate Fedora ARM64 proof VM was cloned during an idle window; the original
 VM was restarted and verified running. The clone has RPM signing/repository test
-tools, and still has no qOS session package installed.
+tools, and still has no Tilo session package installed.
 
 Native DNF 5.4.4 tests used a temporary signed RPM and repository in disposable
 install roots. A fixed transaction-local empty `gpgkey` override preserved
@@ -279,8 +279,8 @@ metadata and a repository package. Each refusal left that install root's keyring
 and package state unchanged. The control without the override imported the test
 key and installed the valid fixture only inside a separate disposable root.
 The proof guest's system keyring was unchanged, and temporary keys/artifacts were
-removed. These are package-trust tests, not qOS installation or graphical login
-proof. The subsequent real qOS transaction is recorded below.
+removed. These are package-trust tests, not Tilo installation or graphical login
+proof. The subsequent real Tilo transaction is recorded below.
 
 ## Existing installer baseline
 
@@ -307,20 +307,20 @@ The Fedora ARM64 test VM was restored after an external suspension. Podman
 repositories (14 additions, no upgrades or removals). The system reports running
 with no failed units. Rootless Podman reports the overlay driver using the
 per-command `--cgroup-manager=cgroupfs` option for the non-login test session.
-QEMU is available, but the configured qOS disk/installer images are still absent;
+QEMU is available, but the configured Tilo disk/installer images are still absent;
 these prerequisites do not establish an actual internal boot or installation.
 The exact pinned base manifest requires private-registry authentication; the
 native manifest probe confirmed this without pulling an image.
 
 RPM build tooling is now available as ordinary-user `rpmbuild` 6.0.2. Fedora
 installed six new required packages with no upgrades or removals (541 KiB
-download, 2 MiB installed). No qOS package or desktop-session change was made at that tooling step.
+download, 2 MiB installed). No Tilo package or desktop-session change was made at that tooling step.
 The subsequent package installation is recorded below; graphical-session proof
 remains required.
 
 Fresh native release builds of the launcher, unlock helper and Desktop shell
-completed, and RPM assembly produced `qos-session-0.1.9-1.fc44.aarch64.rpm` in
-`/home/parallels/qos-desktop-package.UhBqUX/RPMS/aarch64/` inside Fedora. Its SHA-256
+completed, and RPM assembly produced `tilo-session-0.1.9-1.fc44.aarch64.rpm` in
+`/home/parallels/tilo-desktop-package.UhBqUX/RPMS/aarch64/` inside Fedora. Its SHA-256
 is `39fdb1f7fd5baa646d4cd31b1f521f7cf66f44a9dbf814b91efbb4d015ed9a3a`.
 The shell build emitted one existing `restore_documents` dead-code warning.
 Extraction checks passed for the package layout, ARM64 executables, resolved
@@ -330,12 +330,12 @@ installed by that proposal. This local artifact is not a signed release or
 graphical login proof.
 
 The verified native Desktop helper subsequently installed that exact RPM in
-`qOS Desktop Proof Fedora 44 ARM64`, a disposable clone with a pre-install
+`Tilo Desktop Proof Fedora 44 ARM64`, a disposable clone with a pre-install
 snapshot. Its production empty-catalog refusal was asserted first; a test-only
 injection then permitted the local artifact while retaining every other host,
 package, signature-policy and installed-session check. The real transaction
-reported version `0.1.9-1.fc44` and `/usr/share/wayland-sessions/qos.desktop`;
-`rpm -V qos-session` returned clean. Saved GNOME session entries, GDM configuration,
+reported version `0.1.9-1.fc44` and `/usr/share/wayland-sessions/tilo.desktop`;
+`rpm -V tilo-session` returned clean. Saved GNOME session entries, GDM configuration,
 default target and the system signing-key list were unchanged. The original
 Fedora VM was not an installation target.
 
@@ -351,7 +351,7 @@ Desktop catalog remains unreleased. Graphical login, identity completion,
 selected-folder import and returning to the prior desktop are still unproved.
 
 A subsequent real GDM login attempt with a disposable fixture account exposed
-an actual graphical blocker in that local package: qOS reported zero usable DRM
+an actual graphical blocker in that local package: Tilo reported zero usable DRM
 outputs and returned to the greeter. GNOME rendered successfully for the same
 account before and after the attempt. The connected VM output is `Virtual-1`;
 the existing compositor connector filter rejects names containing `virtual`
@@ -382,7 +382,7 @@ Commits `6ab541720` and `1e2c78e35` connect the guided setup to live host
 readiness, verified downloads and the native installation helper. The review
 shows the exact host and package version before installation. Selected folders
 retain their modes and estimated sizes while destinations remain unresolved;
-that intent cannot authorize a copy. Completion explains how to select qOS at
+that intent cannot authorize a copy. Completion explains how to select Tilo at
 login and leaves the existing session default unchanged.
 
 Independent review found and verified fixes for two reachable failures:
@@ -419,10 +419,10 @@ A guarded, explicitly test-only same-version reinstall updated the disposable
 proof clone. This is runtime-artifact proof, not another execution of the
 production initial-install helper. Installed shell SHA-256 is
 `4dc4c892ac5e5b67401c495eda68cfa2eccb0b32ff027bf97c4f44aee0b5b4eb`;
-`rpm -V qos-session` passed, and existing desktop/default files and signing keys
+`rpm -V tilo-session` passed, and existing desktop/default files and signing keys
 were unchanged.
 
-Actual GDM login now finds one live DRM output and renders the qOS identity
+Actual GDM login now finds one live DRM output and renders the Tilo identity
 setup screen. Selecting GNOME again renders its normal desktop. Both screens
 were captured and visually inspected. The fixture's original GDM configuration
 was restored byte-for-byte afterward; the original user was not modified.
@@ -430,7 +430,7 @@ This resolves the earlier zero-output startup blocker for this exact guest.
 
 Limits remain: the local RPM is unsigned; identity creation and selected-folder
 import were not completed. DNF reported transient systemd-trigger connection
-warnings, and qOS logged one initial buffer-fence timeout before the observed
+warnings, and Tilo logged one initial buffer-fence timeout before the observed
 successful render. Neither is hidden as a pristine-run claim. Final first-login
 migration, packaged import delivery and broader distro/architecture evidence
 still require the remaining Desktop tasks.
@@ -486,10 +486,10 @@ empty pending genuine authenticated releases and their required runtime proof.
 The first four-binary Fedora ARM64 package built and passed extracted payload,
 ELF dependency and importer startup checks. Its SHA-256 is
 `b7ca017b3b6527fadf7791a774717464b1b4af6b19f6a073176a50dc5bd33818`.
-After a disposable-VM snapshot, the older qOS test package alone was removed
+After a disposable-VM snapshot, the older Tilo test package alone was removed
 with dependency autoremove disabled. The real transaction-core fixture then
 installed the new package and passed verification. Existing desktop/default
-files and signing keys remained unchanged, and `rpm -V qos-session` passed.
+files and signing keys remained unchanged, and `rpm -V tilo-session` passed.
 This is a local unsigned fixture, not authenticated release availability.
 
 Installed shell SHA-256 was

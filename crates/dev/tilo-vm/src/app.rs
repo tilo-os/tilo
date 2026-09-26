@@ -258,7 +258,7 @@ pub fn describe_apply(result: &ApplyResult) -> String {
 }
 
 /// The forge registry that publishes images and CI layers.
-pub const REGISTRY: &str = "code.sandbox.example";
+pub const REGISTRY: &str = "code.tilo.so";
 
 /// Output that means the registry refused our credentials.
 pub fn is_auth_failure(text: &str) -> bool {
@@ -2021,7 +2021,7 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
                 problem: format!("names no CI build this host can pull (tried {tried})"),
-                fix: "list the builds CI pushed: skopeo list-tags docker://code.sandbox.example/qos/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+                fix: "list the builds CI pushed: skopeo list-tags docker://code.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
         if let CiUpgrade::Base(base) = &found {
@@ -3918,7 +3918,7 @@ pub fn connect_failure(
             true,
             match bootc {
                 Some(true) => vec![
-                    format!("tilo-vm vm upgrade {vm} --image code.sandbox.example/qos/tilo-vm:<tag>"),
+                    format!("tilo-vm vm upgrade {vm} --image code.tilo.so/tilo/tilo-vm:<tag>"),
                     ssh,
                 ],
                 Some(false) => vec!["tilo-vm vm create <name>".into(), ssh],

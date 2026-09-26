@@ -26,7 +26,7 @@ def write(path, value):
 
 class ProvenanceTests(unittest.TestCase):
     def test_paired_release_rejects_different_ci_source_revisions(self):
-        image = "code.sandbox.example/qos/tilo@sha256:" + "a" * 64
+        image = "code.tilo.so/tilo/tilo@sha256:" + "a" * 64
         child = "sha256:" + "b" * 64
         args = SimpleNamespace(
             generic_ci_image=image, generic_index_manifest=Path("index.json"),
@@ -66,7 +66,7 @@ class ProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             child, digest, index, pinned, _ = self.fixture(root)
-            self.assertEqual(proof.signed_ci_child("code.sandbox.example/qos/tilo@" + pinned,
+            self.assertEqual(proof.signed_ci_child("code.tilo.so/tilo/tilo@" + pinned,
                                                    index, child)[:2], (pinned, digest))
 
     def test_duplicate_or_swapped_child_is_refused(self):
@@ -76,12 +76,12 @@ class ProvenanceTests(unittest.TestCase):
             doc["manifests"].append(dict(doc["manifests"][0]))
             new_pin = write(index, doc)
             with self.assertRaisesRegex(ValueError, "exactly two"):
-                proof.signed_ci_child("code.sandbox.example/qos/tilo@" + new_pin, index, child)
+                proof.signed_ci_child("code.tilo.so/tilo/tilo@" + new_pin, index, child)
             doc["manifests"].pop()
             write(index, doc)
             child.write_bytes(child.read_bytes() + b" ")
             with self.assertRaisesRegex(ValueError, "child manifest"):
-                proof.signed_ci_child("code.sandbox.example/qos/tilo@" + pinned, index, child)
+                proof.signed_ci_child("code.tilo.so/tilo/tilo@" + pinned, index, child)
 
     def test_guest_image_and_gpt_must_match_selected_child(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -120,11 +120,11 @@ class ProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = "sha256:" + "a" * 64
-            image = "code.sandbox.example/qos/tilo@" + target
+            image = "code.tilo.so/tilo/tilo@" + target
             revision = "b" * 40
-            origin = "code.sandbox.example/qos/tilo:lenovo-83ed-" + revision
+            origin = "code.tilo.so/tilo/tilo:lenovo-83ed-" + revision
             ci = {"source_revision": revision, "firmware_manifest_sha256": "c" * 64,
-                  "firmware_candidate": "code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64,
+                  "firmware_candidate": "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64,
                   "invocation_id": "234", "key_sha256": "d" * 64,
                   "image_kind": "lenovo-83ed", "generation": 1}
             ids = {"efi": "00000000-0000-4000-8000-000000000001",
@@ -178,16 +178,16 @@ class ProvenanceTests(unittest.TestCase):
             generic["first_boot_verified"] = True
             selected = generic["guest_proof"]["selected_target"]
             selected["hardware_profile"] = "generic"
-            selected["update_origin"] = "code.sandbox.example/qos/tilo:gen7"
+            selected["update_origin"] = "code.tilo.so/tilo/tilo:gen7"
             selected["provenance"].update(generation=7, firmware_candidate=None,
                                           firmware_manifest_sha256=None)
             generic["guest_proof"]["installed_update_origin"] = (
-                "ostree-unverified-image:docker://code.sandbox.example/qos/tilo:gen7")
+                "ostree-unverified-image:docker://code.tilo.so/tilo/tilo:gen7")
             generic_ci = dict(ci, image_kind="generic-child", generation=7,
                               firmware_candidate=None, firmware_manifest_sha256=None)
             path.write_text(json.dumps(generic))
             self.assertEqual(proof.checked_guest_proof(
-                path, target, "code.sandbox.example/qos/tilo@sha256:" + "e" * 64,
+                path, target, "code.tilo.so/tilo/tilo@sha256:" + "e" * 64,
                 generic_ci), generic)
 
     def test_cosign_runner_uses_argv_prefix_and_explicit_wsl_key_path(self):
@@ -201,7 +201,7 @@ class ProvenanceTests(unittest.TestCase):
             on_windows = proof.platform.system() == "Windows"
             wsl_key = (("/mnt/" + key.resolve().drive[0].lower() + "/"
                         + "/".join(key.resolve().parts[1:])) if on_windows else str(key))
-            image = "code.sandbox.example/qos/tilo@sha256:" + "a" * 64
+            image = "code.tilo.so/tilo/tilo@sha256:" + "a" * 64
             calls = []
             children = [{"architecture":"aarch64","digest":"sha256:"+"b"*64},
                         {"architecture":"x86_64","digest":"sha256:"+"c"*64}]
@@ -210,7 +210,7 @@ class ProvenanceTests(unittest.TestCase):
                          "predicate":{"buildDefinition":{"buildType":proof.BUILD_TYPE,
                              "externalParameters":{"children":list(reversed(children)),"generation":1},
                              "internalParameters":{"expectedReleaseDigest":"sha256:"+"a"*64},
-                             "resolvedDependencies":[{"uri":"git+ssh://code.sandbox.example/qos/qos@"+"d"*40}]},
+                             "resolvedDependencies":[{"uri":"git+ssh://code.tilo.so/tilo/tilo@"+"d"*40}]},
                              "runDetails":{"builder":{"id":proof.BUILDER_ID},
                              "metadata":{"invocationId":"1234"},
                              "byproducts":[{"name":"independent-rebuild",
@@ -246,7 +246,7 @@ class ProvenanceTests(unittest.TestCase):
                          "externalParameters": {"children": children, "generation": 5},
                          "internalParameters": {"expectedReleaseDigest": pinned},
                          "resolvedDependencies": [{"uri":
-                             "git+ssh://code.sandbox.example/qos/qos@" + "d" * 40}]},
+                             "git+ssh://code.tilo.so/tilo/tilo@" + "d" * 40}]},
                          "runDetails": {"builder": {"id": proof.BUILDER_ID},
                                         "metadata": {"invocationId": "123"},
                                         "byproducts": [{"name": "independent-rebuild",
@@ -277,10 +277,10 @@ class ProvenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             child, digest, _, _, _ = self.fixture(root)
-            image = "code.sandbox.example/qos/tilo@" + digest
+            image = "code.tilo.so/tilo/tilo@" + digest
             self.assertEqual(proof.signed_ci_child(image, child, child),
                              (digest, digest, [], "lenovo-83ed"))
-        candidate = "code.sandbox.example/qos/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64
+        candidate = "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:" + "e" * 64
         statement = {"predicateType": "https://slsa.dev/provenance/v1",
                      "subject": [{"digest": {"sha256": digest[7:]}}],
                      "predicate": {"buildDefinition": {
@@ -290,7 +290,7 @@ class ProvenanceTests(unittest.TestCase):
                              "firmwareManifestSha256": "f" * 64},
                          "internalParameters": {"expectedReleaseDigest": digest},
                          "resolvedDependencies": [
-                             {"uri": "git+ssh://code.sandbox.example/qos/qos@" + "d" * 40},
+                             {"uri": "git+ssh://code.tilo.so/tilo/tilo@" + "d" * 40},
                              {"uri": candidate}]},
                          "runDetails": {"builder": {"id": proof.BUILDER_ID},
                              "metadata": {"invocationId": "123"},
@@ -321,7 +321,7 @@ class ProvenanceTests(unittest.TestCase):
                          "externalParameters": {"generation": 7},
                          "internalParameters": {"expectedReleaseDigest": pinned},
                          "resolvedDependencies": [{"uri":
-                             "git+ssh://code.sandbox.example/qos/qos@" + "b" * 40}]},
+                             "git+ssh://code.tilo.so/tilo/tilo@" + "b" * 40}]},
                          "runDetails": {"builder": {"id": proof.BUILDER_ID},
                              "metadata": {"invocationId": "321"},
                              "byproducts": [{"name": "independent-rebuild",
@@ -342,8 +342,8 @@ class ProvenanceTests(unittest.TestCase):
             root = Path(directory)
             key = root / "cosign.pub"
             key.write_bytes(b"key")
-            image = "code.sandbox.example/qos/tilo@sha256:" + "a" * 64
-            base = "code.sandbox.example/qos/tilo@sha256:" + "b" * 64
+            image = "code.tilo.so/tilo/tilo@sha256:" + "a" * 64
+            base = "code.tilo.so/tilo/tilo@sha256:" + "b" * 64
             native = {"schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
                       "installed_image_digest": image.split("@", 1)[1],
                       "selected_target": {"schema": "tilo.installer-offline-target.v1",

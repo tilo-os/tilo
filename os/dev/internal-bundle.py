@@ -472,7 +472,7 @@ def inspect_uki(data):
     require(optional_size >= 112 and base+40*count <= len(data), 'truncated PE headers')
     require(struct.unpack_from('<H', data, pe+24)[0] == 0x20b and
             struct.unpack_from('<H', data, pe+24+68)[0] == 10, 'not a PE32+ EFI application')
-    spec = importlib.util.spec_from_file_location('qos_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
+    spec = importlib.util.spec_from_file_location('tilo_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
     uki = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(uki)
     sections, ranges, virtual = {}, [], []

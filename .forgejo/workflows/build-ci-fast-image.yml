@@ -1,7 +1,7 @@
 name: Snapshot / CI fast images
 
-# Publishes code.sandbox.example/qos/ci-fast (lint, planning and other quick jobs)
-# and code.sandbox.example/qos/ci-control (ci-fast plus the Docker client, for
+# Publishes code.tilo.so/tilo/ci-fast (lint, planning and other quick jobs)
+# and code.tilo.so/tilo/ci-control (ci-fast plus the Docker client, for
 # builder resolution). Consumers pin both by digest. Pull requests from this
 # repository and manual dispatches publish candidate tags so the tested digests
 # can be pinned before merge; main publishes source-SHA tags. There is no
@@ -55,7 +55,7 @@ jobs:
         if: env.PUBLISH == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
@@ -67,8 +67,8 @@ jobs:
           else
             tag="candidate-$SOURCE_REVISION"
           fi
-          fast="code.sandbox.example/qos/ci-fast:$tag"
-          control="code.sandbox.example/qos/ci-control:$tag"
+          fast="code.tilo.so/tilo/ci-fast:$tag"
+          control="code.tilo.so/tilo/ci-control:$tag"
           printf 'CI_FAST_REF=%s\nCI_CONTROL_REF=%s\n' "$fast" "$control" >> "$GITHUB_ENV"
           # Neither recipe copies from its context; never send the checkout.
           context=$(mktemp -d)

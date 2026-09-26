@@ -21,17 +21,17 @@ class ProofTests(unittest.TestCase):
         calls = []
         def tool(name, args):
             calls.append((name, args))
-            if name == 'qos_query':
+            if name == 'tilo_query':
                 return {'revision': 'current', 'rows': [{'resource': 'photo:real', 'action': 'crop', 'descriptor': {'params': [{'name': 'region'}]}}], 'exhausted': True}
             return {'row': {'descriptor': {'params': [{'name': 'region'}]}}}
         target, descriptor = proof.resolve_action(tool, 7, 'crop')
         self.assertEqual(target, {'peer_id': 7, 'revision': 'current', 'resource': 'photo:real', 'action': 'crop'})
-        self.assertEqual(calls[-1], ('qos_resolve', target))
+        self.assertEqual(calls[-1], ('tilo_resolve', target))
         self.assertEqual(proof.single_argument(descriptor, 'value'), {'region': 'value'})
 
     def test_browses_resource_actions_instead_of_provider_search(self):
         def tool(name, args):
-            if name == 'qos_resolve':
+            if name == 'tilo_resolve':
                 return {'row': {'descriptor': {'params': []}}}
             self.assertNotIn('needle', args)
             parent = args.get('parent_resource', '')
@@ -51,12 +51,12 @@ class ProofTests(unittest.TestCase):
         updates = iter([{'state': 'progress'}, {'state': 'succeeded', 'output': {'resources': ['tilo.content:actual']}}])
         def tool(name, args):
             calls.append(name)
-            if name == 'qos_invoke':
+            if name == 'tilo_invoke':
                 return {'invocation_id': 42, 'update': {'state': 'accepted'}}
             self.assertEqual(args, {'invocation_id': 42})
             return {'update': next(updates)}
         self.assertEqual(proof.invoke(tool, {}, {}, timeout=1, interval=0)['resources'], ['tilo.content:actual'])
-        self.assertEqual(calls, ['qos_invoke', 'qos_status', 'qos_status'])
+        self.assertEqual(calls, ['tilo_invoke', 'tilo_status', 'tilo_status'])
 
     def test_failure_and_timeout_never_replay(self):
         for state in ('failed', 'cancelled', 'accepted'):
@@ -66,7 +66,7 @@ class ProofTests(unittest.TestCase):
                 return {'invocation_id': 42, 'update': {'state': state}}
             with self.assertRaises(proof.ProofError):
                 proof.invoke(tool, {}, {}, timeout=0, interval=0)
-            self.assertEqual(calls, ['qos_invoke'])
+            self.assertEqual(calls, ['tilo_invoke'])
 
     def test_stdio_client_records_exact_requests_and_tool_denial(self):
         host = """import json,sys
@@ -81,13 +81,13 @@ for line in sys.stdin:
             try:
                 self.assertEqual(client.request('ping', {}), {'pong': True})
                 with self.assertRaisesRegex(proof.ProofError, 'denied'):
-                    client.tool('qos_invoke', {'arguments': {}})
+                    client.tool('tilo_invoke', {'arguments': {}})
             finally:
                 self.assertEqual(client.close(), 0)
             records = [proof.json.loads(line) for line in (root / 'transcript.jsonl').read_text().splitlines()]
             self.assertEqual(len(records), 4)
             self.assertEqual(records[2]['message']['method'], 'tools/call')
-            self.assertEqual(records[2]['message']['params']['name'], 'qos_invoke')
+            self.assertEqual(records[2]['message']['params']['name'], 'tilo_invoke')
 
     def test_cleanup_finds_known_child_after_it_is_reparented(self):
         with patch.object(proof.subprocess, 'check_output', return_value='201 1 S /private/binaries/photos\n999 1 S unrelated\n'):
@@ -102,7 +102,7 @@ for line in sys.stdin:
         initial = {'isError': False, 'structuredContent': {'invocation_id': 7, 'update': {'state': 'accepted'}}}
         terminal = proof.expect_denial(tool, initial, timeout=1, interval=0)
         self.assertEqual(terminal['update']['state'], 'failed')
-        self.assertEqual(calls, [('qos_status', {'invocation_id': 7})])
+        self.assertEqual(calls, [('tilo_status', {'invocation_id': 7})])
         with self.assertRaises(proof.ProofError):
             proof.expect_denial(tool, {'structuredContent': {'invocation_id': 8, 'update': {'state': 'succeeded', 'output': {}}}}, timeout=0)
 
@@ -110,26 +110,26 @@ for line in sys.stdin:
         calls = []
         def tool(name, args):
             calls.append(name)
-            if name == 'qos_query':
+            if name == 'tilo_query':
                 return {'revision': str(len(calls)), 'rows': [{'resource': 'photo', 'action': 'crop', 'descriptor': {'params': []}}], 'exhausted': True}
             if len(calls) == 2:
                 raise proof.StaleDiscovery('StaleRevision')
             return {'row': {'descriptor': {'params': []}}}
         target, _ = proof.resolve_action(tool, 1, 'crop', interval=0)
         self.assertEqual(target['revision'], '3')
-        self.assertEqual(calls, ['qos_query', 'qos_resolve', 'qos_query', 'qos_resolve'])
+        self.assertEqual(calls, ['tilo_query', 'tilo_resolve', 'tilo_query', 'tilo_resolve'])
 
     def test_waits_for_normal_publication_without_invoking(self):
         calls = []
         def tool(name, args):
             calls.append(name)
-            if name == 'qos_resolve':
+            if name == 'tilo_resolve':
                 return {'row': {'descriptor': {'params': []}}}
             rows = [] if len(calls) == 1 else [{'resource': 'photo', 'action': 'export', 'descriptor': {'params': []}}]
             return {'revision': 'r', 'rows': rows, 'exhausted': True}
         target, _ = proof.resolve_action(tool, 1, 'export', interval=0)
         self.assertEqual(target['action'], 'export')
-        self.assertEqual(calls, ['qos_query', 'qos_query', 'qos_resolve'])
+        self.assertEqual(calls, ['tilo_query', 'tilo_query', 'tilo_resolve'])
 
     def test_failure_evidence_includes_shutdown_verification_errors(self):
         with tempfile.TemporaryDirectory() as directory:

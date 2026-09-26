@@ -1,6 +1,6 @@
 name: CI engine canary
 
-# Exercises the CI features qOS jobs rely on, on runners of the
+# Exercises the CI features Tilo jobs rely on, on runners of the
 # runner-engine-canary label: Oregon VMs whose Docker engine uses the
 # containerd image store, so its own pulls follow the pool's registry mirror.
 # Compare with the same jobs on the production engine before moving labels.
@@ -12,7 +12,7 @@ jobs:
     runs-on: runner-engine-canary
     timeout-minutes: 30
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
+      image: code.tilo.so/tilo/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -33,7 +33,7 @@ jobs:
     runs-on: runner-engine-canary
     timeout-minutes: 30
     container:
-      image: code.sandbox.example/qos/tilo-builder@sha256:baa0a7a30c9dd6e02443fd0a32d7b22a5022eff50fcd300ea3b8ace9b8c240c2
+      image: code.tilo.so/tilo/tilo-builder@sha256:baa0a7a30c9dd6e02443fd0a32d7b22a5022eff50fcd300ea3b8ace9b8c240c2
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -51,15 +51,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
-      - name: Log in to the code.sandbox.example registry
+      - name: Log in to the code.tilo.so registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Engine, pulls, volumes, build, save and load
         env:
-          IMAGE: code.sandbox.example/qos/ci-control@sha256:904ecdefc18847410a4d449ce186ad5b62a0d864053ee2ff93769f8f591c8071
+          IMAGE: code.tilo.so/tilo/ci-control@sha256:904ecdefc18847410a4d449ce186ad5b62a0d864053ee2ff93769f8f591c8071
         run: |
           set -euo pipefail
           docker version --format 'client {{.Client.Version}} server {{.Server.Version}}'
@@ -85,7 +85,7 @@ jobs:
         uses: ./.forgejo/actions/setup-buildx
       - name: BuildKit build from a mirrored base
         env:
-          IMAGE: code.sandbox.example/qos/ci-control@sha256:904ecdefc18847410a4d449ce186ad5b62a0d864053ee2ff93769f8f591c8071
+          IMAGE: code.tilo.so/tilo/ci-control@sha256:904ecdefc18847410a4d449ce186ad5b62a0d864053ee2ff93769f8f591c8071
           BUILDER: ${{ steps.buildx.outputs.name }}
         run: |
           set -euo pipefail

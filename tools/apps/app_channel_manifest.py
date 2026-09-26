@@ -202,9 +202,9 @@ def validate_receipt(receipt, architecture, policy, require_published=True):
     if publication['status'] == 'published':
         digest(publication['upload_receipt_sha256'])
         parsed = urlsplit(publication['url'])
-        require(parsed.scheme == 'https' and parsed.netloc == 'code.sandbox.example' and not parsed.query and not parsed.fragment,
+        require(parsed.scheme == 'https' and parsed.netloc == 'code.tilo.so' and not parsed.query and not parsed.fragment,
                 'unsupported publication URL origin')
-        pattern = r'/api/packages/qos/generic/tilo-app-collections/[^/]+/tilo-apps-' + architecture + r'\.tar\.gz'
+        pattern = r'/api/packages/tilo/generic/tilo-app-collections/[^/]+/tilo-apps-' + architecture + r'\.tar\.gz'
         require(re.fullmatch(pattern, parsed.path) and (source in parsed.path or collection['sha256'] in parsed.path),
                 'publication URL must pin full source or content identity')
 

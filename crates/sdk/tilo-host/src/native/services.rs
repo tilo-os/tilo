@@ -130,10 +130,10 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             profile_hud: set("TILO_PROFILE"),
             profile_out: path("TILO_PROFILE_OUT"),
             presentation_profile: presentation_profile_requested(
-                std::env::var("QOS_PROFILE_PRESENTATION").ok().as_deref(),
-                std::env::var_os("QOS_NATIVE_SCENARIO").as_deref(),
+                std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
+                std::env::var_os("TILO_NATIVE_SCENARIO").as_deref(),
             ),
-            window_no_activate: std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
+            window_no_activate: std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
                 == Ok("1"),
         },
     }

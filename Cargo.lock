@@ -6202,7 +6202,7 @@ dependencies = [
  "cap-std",
  "hex",
  "libc",
- "qos-ntfs-protocol",
+ "tilo-ntfs-protocol",
  "reqwest",
  "runtime-dylib",
  "serde",
@@ -10752,7 +10752,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-chromium-blocker"
+name = "tilo-chromium-blocker"
 version = "0.1.0"
 dependencies = [
  "adblock",
@@ -10761,12 +10761,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-ntfs-helper"
+name = "tilo-ntfs-helper"
 version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
- "qos-ntfs-protocol",
+ "tilo-ntfs-protocol",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -10774,7 +10774,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-ntfs-protocol"
+name = "tilo-ntfs-protocol"
 version = "0.1.0"
 dependencies = [
  "hex",

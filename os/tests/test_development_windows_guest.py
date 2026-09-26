@@ -5,10 +5,10 @@ import unittest
 SPEC = importlib.util.spec_from_file_location("guest_ci", Path(__file__).resolve().parents[1] / "dev/run-development-windows-guest.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-ROOT = "code.sandbox.example/qos/wine-tools@sha256:" + "a" * 64
-PAIR = "code.sandbox.example/qos/wine-paired@sha256:" + "b" * 64
-SIGNED = "code.sandbox.example/qos/tilo-development-wine@sha256:" + "c" * 64
-SNAPSHOT = "code.sandbox.example/qos/tilo-development-windows-guest-rpms@sha256:" + "d" * 64
+ROOT = "code.tilo.so/tilo/wine-tools@sha256:" + "a" * 64
+PAIR = "code.tilo.so/tilo/wine-paired@sha256:" + "b" * 64
+SIGNED = "code.tilo.so/tilo/tilo-development-wine@sha256:" + "c" * 64
+SNAPSHOT = "code.tilo.so/tilo/tilo-development-windows-guest-rpms@sha256:" + "d" * 64
 
 
 class Inputs(unittest.TestCase):
@@ -35,7 +35,7 @@ class Inputs(unittest.TestCase):
                            "DEVELOPMENT_WINE_REF": SIGNED, "DEVELOPMENT_WINE_KEY_SHA256": "e" * 64})
 
     def test_mutable_or_external_sources_rejected(self):
-        for ref in ("code.sandbox.example/qos/wine-tools:latest", ROOT.replace("code.sandbox.example", "elsewhere.test")):
+        for ref in ("code.tilo.so/tilo/wine-tools:latest", ROOT.replace("code.tilo.so", "elsewhere.test")):
             with self.subTest(ref=ref), self.assertRaises(ValueError):
                 MODULE.inputs({"WINDOWS_GUEST_BUILDROOT_REF": ref, "WINE_PAIR_REF": PAIR})
 

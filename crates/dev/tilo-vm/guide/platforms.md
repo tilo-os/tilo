@@ -157,7 +157,7 @@ Last, it makes the VM's root SSH key and creates the VM
 
 The download needs a **forge token** with package read access:
 `FORGEJO_TOKEN`, or an fgj (`~/.config/fgj/config.yaml`) or tea login for
-code.sandbox.example. That token is read only for disk downloads; image pulls
+code.tilo.so. That token is read only for disk downloads; image pulls
 (`swap --from ci:`/`sha:`, `vm upgrade`) use podman's registry login instead
 (`tilo-vm guide troubleshooting`).
 
@@ -173,7 +173,7 @@ code.sandbox.example. That token is read only for disk downloads; image pulls
 - or dispatch "Release / Dev VM disk" (`.forgejo/workflows/dev-disk.yml`)
   yourself for an existing same-commit base. Set `architectures=aarch64` for
   an ARM host; the workflow's manual default is `x86_64`. Use
-  `fgj actions workflow run dev-disk.yml -R qos/qos -r main` with
+  `fgj actions workflow run dev-disk.yml -R tilo/tilo -r main` with
   `-f source_revision=<full SHA> -f base_image=<same-commit OCI ref>
   -f tag=<disk tag> -f architectures=aarch64 -f formats=qcow2`;
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;

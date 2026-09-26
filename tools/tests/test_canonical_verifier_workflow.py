@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.forgejo/workflows/canonical-verifier-bundle.yml'
-BUILDER = 'code.sandbox.example/qos/tilo-builder@sha256:' + 'a' * 64
+BUILDER = 'code.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 
 def production_script():

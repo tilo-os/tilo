@@ -12,7 +12,7 @@
 //! Run:  `cargo run -p ui --example ui-shots -- soft_shadow_shots`
 //! Out:  `$SOFT_SHADOW_SHOTS_OUT` (default `/tmp/soft_shadow_shots`) —
 //!       shadow-sheet.png, plus one shadow-<name>.png per case.
-//! Theme: `QOS_SHOTS_THEME=dark|light` (dark by default) — the sheet paints
+//! Theme: `TILO_SHOTS_THEME=dark|light` (dark by default) — the sheet paints
 //!       on that theme's base surface, so a shadow that only registers on a
 //!       dark ground shows up here as a light-theme sheet with no shadows.
 
@@ -48,9 +48,9 @@ fn out_dir() -> PathBuf {
         .map_or_else(|_| PathBuf::from("/tmp/soft_shadow_shots"), PathBuf::from)
 }
 
-/// The palette the sheet paints under: `QOS_SHOTS_THEME`, dark by default.
+/// The palette the sheet paints under: `TILO_SHOTS_THEME`, dark by default.
 fn shot_theme() -> Theme {
-    std::env::var("QOS_SHOTS_THEME")
+    std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)

@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       builder_image:
-        description: 'Optional immutable tested builder index (code.sandbox.example/qos/tilo-builder@sha256:...)'
+        description: 'Optional immutable tested builder index (code.tilo.so/tilo/tilo-builder@sha256:...)'
         required: false
         type: string
 
@@ -62,7 +62,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: code.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -90,7 +90,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -211,7 +211,7 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -245,7 +245,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -345,7 +345,7 @@ jobs:
           # package shard: those process-wide variables alter unrelated apps'
           # persistence and git fixtures. Only the imager's native syscall
           # tests consume this dedicated location.
-          printf 'QOS_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+          printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
       # app-cli's registry integration tests execute the installer;
       # it is deliberately not a Rust dependency, so an affected-only Cargo
@@ -366,7 +366,7 @@ jobs:
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
-          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p qos-ntfs-helper') && '1' || '0' }}
+          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p tilo-ntfs-helper') && '1' || '0' }}
           # The builder image carries the encoders and muxers the footage
           # tests need, so their absence here is a failure, not a skip.
           TILO_REQUIRE_MEDIA: "1"
@@ -603,10 +603,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Log in to code.sandbox.example
+      - name: Log in to code.tilo.so
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install verification tools
@@ -634,7 +634,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

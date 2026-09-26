@@ -195,7 +195,7 @@ mod tests {
         let images = topic("images").unwrap();
         assert!(images.contains("## Pick the fastest loop"));
         assert!(images.contains("--from sha:<commit>"));
-        assert!(images.contains("code.sandbox.example/qos/tilo-ci:main-<sha7>-<arch>"));
+        assert!(images.contains("code.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>"));
     }
 
     #[test]

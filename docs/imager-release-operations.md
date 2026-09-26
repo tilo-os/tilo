@@ -22,7 +22,7 @@ releases still require hardware KVM/DRI and the dedicated six-platform fleet
 above; installer-only rehearsals skip host packaging and every publication job.
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
-**repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
+**repository scope** (`tilo/tilo`), select ephemeral mode, expose exactly one of
 the labels above as `<label>:host`, and start it with `forgejo-runner one-job`.
 The registration is invalidated after that one job; the VM must be destroyed,
 not returned to a warm pool. The practical autoscaling sequence is:
@@ -56,7 +56,7 @@ destruction instruction, not permission to return the VM to a pool. Run the
 PowerShell launcher directly on Windows; do not use a Unix compatibility layer
 as the release host.
 
-The repository runner page is `/qos/qos/settings/actions/runners`. Forgejo's
+The repository runner page is `/tilo/tilo/settings/actions/runners`. Forgejo's
 [runner-registration guide](https://forgejo.org/docs/latest/admin/actions/registration/)
 documents both the UI/API registration response and offline administrator CLI;
 its [Actions security guide](https://forgejo.org/docs/latest/admin/actions/security/)
@@ -73,7 +73,7 @@ private key or cloud credential on the native fleet.
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`code.sandbox.example/qos/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
+`code.tilo.so/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -114,16 +114,16 @@ Forgejo behavior and token fields are documented in its
 
 Configure the external secret broker with all of these claim checks:
 
-- issuer: `https://code.sandbox.example/api/actions`
+- issuer: `https://code.tilo.so/api/actions`
 - audience: a dedicated value such as `tilo-release-signing`
-- `repository == qos/qos` and the pinned immutable `repository_id`
+- `repository == tilo/tilo` and the pinned immutable `repository_id`
 - `event_name == push`, `ref_type == tag`, `ref` matches only
   `refs/tags/imager-vMAJOR.MINOR.PATCH`, and `ref_protected == "true"`
-- `workflow == release-imager.yml`, and `workflow_ref` belongs to `qos/qos`
+- `workflow == release-imager.yml`, and `workflow_ref` belongs to `tilo/tilo`
 - `sub` equals the instance's actual protected-tag subject. Forgejo 16 may add
   immutable numeric owner/repository IDs to this string, so capture one denied
   bootstrap token and pin the exact format instead of assuming the older
-  `repo:qos/qos:ref:...` form.
+  `repo:tilo/tilo:ref:...` form.
 
 Validate JWT signature, `exp`, `nbf`, and `iat` against the issuer's discovery
 document/JWKS. Reject replay by `run_id` + `run_attempt` + platform, and never
@@ -385,7 +385,7 @@ administrators):
 | `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional GitHub binary repository in `OWNER/REPOSITORY` form; omit for `tilo-os/releases` |
 | `IMAGER_HOMEBREW_TAP_REPOSITORY` | optional GitHub tap repository; omit for `tilo-os/homebrew-tilo` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
-| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.sandbox.example/qos/tilo@sha256:...` manifest-list reference used by installer media |
+| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.tilo.so/tilo/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the Tilo release EFI certificate (`keys/efi-signing.crt`) |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
@@ -396,10 +396,10 @@ administrators):
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
 | `IMAGER_INTERNAL_BUNDLE` | optional: unset (default) skips the internal installer bundle; `export` tests and exports it on every run; `publish` also publishes it for tags and requires it in the catalog. See [Internal installer bundle](#internal-installer-bundle) |
 | `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle` |
-| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `qos` |
+| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `tilo` |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
-`code.sandbox.example`. Give its service account read-only access to the published
+`code.tilo.so`. Give its service account read-only access to the published
 Tilo image and its signature/attestation attachments. The workflow copies its
 short-lived Podman auth file into a private Docker config for Cosign, then
 destroys both after use; installer-media CI never
@@ -444,7 +444,7 @@ installation cycles:
    `release_id`; rehearsals record `rehearsal-<sha>`.
 3. **Publish** (`publish`, tags only): `publish-internal-bundle.sh` uploads
    components first and the manifest last to the Forgejo generic package
-   `https://code.sandbox.example/api/packages/OWNER/generic/tilo-internal-installer/TAG/`,
+   `https://code.tilo.so/api/packages/OWNER/generic/tilo-internal-installer/TAG/`,
    then downloads each file anonymously and compares digests. Existing files
    are never replaced; a rerun only verifies them.
 4. **Catalog** (`publish`, tags only): the lane uploads only the manifest and
@@ -456,7 +456,7 @@ installation cycles:
    (`purpose: tilo-internal-installer`, `layout: internal-bundle-v2`). The
    GitHub and Forgejo release publishers skip these catalog inputs.
 
-Why a Forgejo package on `code.sandbox.example` rather than a release attachment:
+Why a Forgejo package on `code.tilo.so` rather than a release attachment:
 the Imager accepts internal manifests from that origin only
 (`trusted_catalog_url` in `apps/imager/src/release.rs`); each architecture
 publishes independently without racing one draft release; the root image
@@ -483,8 +483,8 @@ listed in the header of `os/dev/internal-bundle.py`.
 like `snapshot-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
 variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 
-- `REGISTRY_TOKEN` logs in to `code.sandbox.example` to read the mirrored base and
-  push `qos/tilo-wpe-buildroot`.
+- `REGISTRY_TOKEN` logs in to `code.tilo.so` to read the mirrored base and
+  push `tilo/tilo-wpe-buildroot`.
 - `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
   buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
   preflight job refuses to start the multi-hour builds unless the KMS public

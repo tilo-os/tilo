@@ -33,7 +33,7 @@ if [ -n "$kernel_refs" ]; then
     and (map(.ref) | unique | length) == 2
     and all(.[].ref;
       type == "string"
-      and test("^code\\.podesta\\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$"))
+      and test("^code\\.tilo\\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$"))
   ' >/dev/null || {
     printf 'release provenance: invalid TILO_KERNEL_REFS_JSON\n' >&2
     exit 1
@@ -75,7 +75,7 @@ case "$hardware_profile" in
     [ "$release_architecture" = aarch64 ] \
       || { printf 'Lenovo provenance requires native aarch64 build\n' >&2; exit 1; }
     require_digest_ref TILO_FIRMWARE_CANDIDATE "$firmware_candidate"
-    [[ "$firmware_candidate" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
+    [[ "$firmware_candidate" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
        && "$firmware_manifest" =~ ^[0-9a-f]{64}$ ]] \
       || { printf 'Lenovo provenance requires pinned board firmware\n' >&2; exit 1; } ;;
   *) printf 'unsupported hardware profile in provenance\n' >&2; exit 1 ;;
@@ -87,8 +87,8 @@ case "$windows_input_class" in
       || { printf 'development Windows provider requires Lenovo aarch64 provenance\n' >&2; exit 1; }
     require_digest_ref FEX_PAYLOAD_REF "$fex_payload_ref"
     require_digest_ref WINDOWS_GUEST_REF "$windows_guest_ref"
-    [[ "$fex_payload_ref" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
-       && "$windows_guest_ref" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] \
+    [[ "$fex_payload_ref" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
+       && "$windows_guest_ref" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] \
       || { printf 'development Windows provider needs paired registry digests\n' >&2; exit 1; } ;;
   *) printf 'unsupported Windows provider input class in provenance\n' >&2; exit 1 ;;
 esac
@@ -105,7 +105,7 @@ printf '%s' "$release_children" | jq -e '
 }
 
 jq -n \
-  --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
+  --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
   --arg digest "$RELEASE_DIGEST" \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
@@ -163,7 +163,7 @@ jq -n \
       )
     },
     runDetails: {
-      builder: {id: "https://code.sandbox.example/qos/forgejo/actions/bootc-release-v1"},
+      builder: {id: "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
       byproducts: [{
         name: "independent-rebuild",

@@ -10,7 +10,7 @@
 #   OWNER_MOVES   required. Space-separated OLD:NEW owner pairs, e.g.
 #                 "<old-owner>:tilo public:tilo". Only these owners move;
 #                 several old owners may land in one new owner.
-#   SOURCE_REGISTRY   default code.sandbox.example
+#   SOURCE_REGISTRY   default code.tilo.so
 #   DEST_REGISTRY     default registry.tilo.so
 #   SOURCE_USERNAME/SOURCE_TOKEN
 #                 optional source credentials; otherwise the caller's
@@ -36,7 +36,7 @@
 # next to a digest are copied with it, for an index and for each child.
 set -euo pipefail
 
-SOURCE_REGISTRY=${SOURCE_REGISTRY:-code.sandbox.example}
+SOURCE_REGISTRY=${SOURCE_REGISTRY:-code.tilo.so}
 DEST_REGISTRY=${DEST_REGISTRY:-registry.tilo.so}
 SCAN_ROOT=${SCAN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 APPLY=${APPLY:-0}

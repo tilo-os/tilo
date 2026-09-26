@@ -81,7 +81,7 @@ Every builder produces the same layer format.
   as the base image. The sccache is shared, and each worktree gets its own target dir.
 - `host` (Linux): runs the pinned builder image in rootless podman.
 - `ci`: extracts the manifest paths for a component from the published
-  `code.sandbox.example/qos/tilo:<tag>` image of a commit.
+  `code.tilo.so/tilo/tilo:<tag>` image of a commit.
 
 An ABI check refuses a layer whose builder digest differs from the base image's. It also
 refuses apps whose runtime does not match.
@@ -137,7 +137,7 @@ compiles. A contract check guarantees that production images never enable the fe
 - The CLI is **`tilo-vm`** and the guest daemon `tilo-vmd`, because `tilo-dev` collides with the
   `tilo-dev.desktop` developer session. Everything follows: crates `crates/dev/tilo-vm*`, state
   `/var/lib/tilo-vm/`, unit `tilo-vm-session@.service`, config `tilo-vm/vms.toml`, env `TILO_VM`,
-  worktree file `.tilo-vm`, disk package `tilo-vm-disk`, image `code.sandbox.example/qos/tilo-vm:<tag>`.
+  worktree file `.tilo-vm`, disk package `tilo-vm-disk`, image `code.tilo.so/tilo/tilo-vm:<tag>`.
   Slots are meant to become the one dev story, replacing the Fedora 44 loop over time.
 - In-VM builds and CI layer extraction are streaming jobs (`ssh <vm> tilo-vmd build|ci-layer`,
   the job on stdin, live output on stderr) rather than RPC calls. A headful slot's uinput devices

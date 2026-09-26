@@ -21,7 +21,7 @@ class RegistryLoginRetryTests(unittest.TestCase):
             fake.write_text(
                 """#!/usr/bin/env bash
 set -euo pipefail
-[ "$1" = login ] && [ "$2" = code.sandbox.example ]
+[ "$1" = login ] && [ "$2" = code.tilo.so ]
 [ "$3" = --username ] && [ "$4" = ci-user ] && [ "$5" = --password-stdin ]
 secret=$(cat)
 [ "$secret" = token ]
@@ -58,7 +58,7 @@ esac
                 }
             )
             result = subprocess.run(
-                [str(LOGIN), "docker", "code.sandbox.example", "ci-user"],
+                [str(LOGIN), "docker", "code.tilo.so", "ci-user"],
                 input=password,
                 capture_output=True,
                 env=environment,
@@ -103,7 +103,7 @@ esac
         self.assertIn("os/dev/login-registry-with-retry.sh", build)
         self.assertNotIn("docker/login-action", build)
         self.assertIn("if: ${{ always() }}", build)
-        self.assertIn("docker logout code.sandbox.example", build)
+        self.assertIn("docker logout code.tilo.so", build)
 
 
 if __name__ == "__main__":

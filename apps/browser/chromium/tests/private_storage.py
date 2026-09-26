@@ -18,13 +18,13 @@ PAGE = b"""<!doctype html><meta charset=utf-8><title>starting</title>
 const params = new URLSearchParams(location.search);
 const value = params.get('set');
 if (value) {
-  localStorage.setItem('qosPrivateFixture', value);
-  document.cookie = 'qosPrivateFixture=' + value + ';path=/;SameSite=Lax;Max-Age=3600';
+  localStorage.setItem('tiloPrivateFixture', value);
+  document.cookie = 'tiloPrivateFixture=' + value + ';path=/;SameSite=Lax;Max-Age=3600';
 }
 document.title = JSON.stringify({
   page: location.search,
   cookie: document.cookie,
-  localStorage: localStorage.getItem('qosPrivateFixture')
+  localStorage: localStorage.getItem('tiloPrivateFixture')
 });
 </script>"""
 
@@ -180,30 +180,30 @@ origin = f"http://127.0.0.1:{server.server_port}/"
 site_origin = origin.rstrip("/")
 
 try:
-    with tempfile.TemporaryDirectory(prefix="qos-normal-profile-") as normal_root:
-        with tempfile.TemporaryDirectory(prefix="qos-private-profile-") as private_root:
+    with tempfile.TemporaryDirectory(prefix="tilo-normal-profile-") as normal_root:
+        with tempfile.TemporaryDirectory(prefix="tilo-private-profile-") as private_root:
             with ExitStack() as stack:
                 normal = stack.enter_context(Host(normal_root, fake_media=True))
                 private = stack.enter_context(
                     Host(private_root, private=True, fake_media=True)
                 )
                 assert normal.navigate(origin + "?set=normal-synthetic") == {
-                    "cookie": "qosPrivateFixture=normal-synthetic",
+                    "cookie": "tiloPrivateFixture=normal-synthetic",
                     "localStorage": "normal-synthetic",
                 }
                 assert private.navigate(origin) == {"cookie": "", "localStorage": None}
                 assert private.navigate(origin + "?set=private-synthetic") == {
-                    "cookie": "qosPrivateFixture=private-synthetic",
+                    "cookie": "tiloPrivateFixture=private-synthetic",
                     "localStorage": "private-synthetic",
                 }
                 private.send(op="create_tab", tab=2)
                 private.until(lambda event: event["event"] == "tab_ready" and event["tab"] == 2)
                 assert private.navigate(origin, tab=2) == {
-                    "cookie": "qosPrivateFixture=private-synthetic",
+                    "cookie": "tiloPrivateFixture=private-synthetic",
                     "localStorage": "private-synthetic",
                 }
                 assert normal.navigate(origin) == {
-                    "cookie": "qosPrivateFixture=normal-synthetic",
+                    "cookie": "tiloPrivateFixture=normal-synthetic",
                     "localStorage": "normal-synthetic",
                 }
 
@@ -251,7 +251,7 @@ try:
 
             with Host(normal_root, fake_media=True) as reopened_normal:
                 assert reopened_normal.navigate(origin) == {
-                    "cookie": "qosPrivateFixture=normal-synthetic",
+                    "cookie": "tiloPrivateFixture=normal-synthetic",
                     "localStorage": "normal-synthetic",
                 }
                 normal_status = reopened_normal.status(site_origin, 18)

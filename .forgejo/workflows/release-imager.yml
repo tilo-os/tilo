@@ -77,7 +77,7 @@ jobs:
                && ${INSTALLER_ONLY:-false} == true \
                && ${PUBLISHED_OS_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$ \
                && ( -z ${LENOVO_TARGET_IMAGE:-} \
-                    || $LENOVO_TARGET_IMAGE =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ) ]] || {
+                    || $LENOVO_TARGET_IMAGE =~ ^code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ) ]] || {
               echo '::error::offline medium requires main, installer_only, an immutable signed target, and a full source revision'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
@@ -239,7 +239,7 @@ jobs:
           test -n "$TILO_REGISTRY_TOKEN"
           umask 077
           printf '%s' "$TILO_REGISTRY_TOKEN" | podman login \
-            --authfile "$REGISTRY_AUTH_FILE" code.sandbox.example \
+            --authfile "$REGISTRY_AUTH_FILE" code.tilo.so \
             --username '${{ github.actor }}' --password-stdin
       - name: Build the tested Tilo live installer from a published OS
         run: |
@@ -253,7 +253,7 @@ jobs:
             if [[ ${TILO_GENERIC_TARGET:-false} == true ]]; then
               index_raw="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "docker://$TILO_PUBLISHED_OS_IMAGE")"
               child_digest="$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest] | if length == 1 then .[0] else error("index must have one ARM64 child") end' <<<"$index_raw")"
-              target_image="code.sandbox.example/qos/tilo@$child_digest"
+              target_image="code.tilo.so/tilo/tilo@$child_digest"
               target_profile=generic
             else
               target_image="$TILO_LENOVO_TARGET_IMAGE"
@@ -520,7 +520,7 @@ jobs:
       - name: Export the internal installer bundle
         if: vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish'
         env:
-          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
@@ -536,7 +536,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER }}
-          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
         run: apps/imager/packaging/publish-internal-bundle.sh dist/tilo-internal/bundle
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'
@@ -567,7 +567,7 @@ jobs:
       TILO_INTERNAL_CYCLE_RELEASE_TAG: imager-v0.0.${{ github.run_number }}
       TILO_INTERNAL_CYCLE_RUN_ID: release-${{ github.run_id }}-${{ github.run_attempt }}
       TILO_INTERNAL_CYCLE_STORAGE_ROOT: /var/tmp/tilo-internal-cycle-release-${{ github.run_id }}-${{ github.run_attempt }}
-      TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+      TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
       TILO_ACCEL: kvm
       TILO_DISTROBOX: ""
       TILO_MEM: "8192"
@@ -632,7 +632,7 @@ jobs:
           path: release-assets
       - name: Assemble the release catalog
         env:
-          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'qos' }}
+          TILO_INTERNAL_BUNDLE_OWNER: ${{ vars.IMAGER_INTERNAL_BUNDLE_OWNER || 'tilo' }}
           TILO_REQUIRE_INTERNAL_BUNDLE: ${{ vars.IMAGER_INTERNAL_BUNDLE == 'publish' && '1' || '0' }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
