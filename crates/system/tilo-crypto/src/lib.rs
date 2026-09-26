@@ -1676,153 +1676,84 @@ mod tests {
     use sha_crypt::{PasswordHashRef, PasswordVerifier};
 
     #[test]
-    fn account_hashes_are_compatible_and_scrub_all_input() {
-        // Phase `account_hash_is_compatible_and_scrubs_input`.
-        {
-            let original = b"correct horse battery staple";
-            let mut password = original.to_vec();
-            let hash = hash_account_password(&mut password).expect("hash password");
+    fn account_hash_is_compatible_and_scrubs_input() {
+        let original = b"correct horse battery staple";
+        let mut password = original.to_vec();
+        let hash = hash_account_password(&mut password).expect("hash password");
 
-            assert!(hash.starts_with("$6$"));
-            assert!(password.iter().all(|byte| *byte == 0));
-            let fields: Vec<_> = hash.split('$').collect();
-            assert_eq!(fields.len(), 5);
-            assert_eq!(fields[2], "rounds=5000");
-            assert_eq!(fields[3].len(), 16);
-            assert_eq!(fields[4].len(), 86);
-            let parsed = PasswordHashRef::new(&hash).expect("parse generated hash");
-            ShaCrypt::default()
-                .verify_password(original, parsed)
-                .expect("verify generated hash");
-        }
-        // Phase `invalid_input_is_also_scrubbed`.
-        {
-            let mut password = b"short".to_vec();
-            assert!(hash_account_password(&mut password).is_err());
-            assert!(password.iter().all(|byte| *byte == 0));
-        }
+        assert!(hash.starts_with("$6$"));
+        assert!(password.iter().all(|byte| *byte == 0));
+        let fields: Vec<_> = hash.split('$').collect();
+        assert_eq!(fields.len(), 5);
+        assert_eq!(fields[2], "rounds=5000");
+        assert_eq!(fields[3].len(), 16);
+        assert_eq!(fields[4].len(), 86);
+        let parsed = PasswordHashRef::new(&hash).expect("parse generated hash");
+        ShaCrypt::default()
+            .verify_password(original, parsed)
+            .expect("verify generated hash");
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn certificates_are_inspected_bounded_and_generated_with_constraints() {
-        // Phase `generated_tls_fixture_has_constrained_ca_and_loopback_san`.
-        fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
-            use der::{Decode, DecodePem};
-            use x509_cert::{
-                Certificate,
-                ext::pkix::{
-                    AuthorityKeyIdentifier, BasicConstraints, SubjectAltName, SubjectKeyIdentifier,
-                    name::GeneralName,
-                },
-            };
+    fn invalid_input_is_also_scrubbed() {
+        let mut password = b"short".to_vec();
+        assert!(hash_account_password(&mut password).is_err());
+        assert!(password.iter().all(|byte| *byte == 0));
+    }
 
-            fn extension<T: for<'a> Decode<'a>>(
-                certificate: &Certificate,
-                oid: const_oid::ObjectIdentifier,
-            ) -> Option<T> {
-                certificate
-                    .tbs_certificate
-                    .extensions
-                    .as_deref()?
-                    .iter()
-                    .find(|extension| extension.extn_id == oid)
-                    .map(|extension| T::from_der(extension.extn_value.as_bytes()).unwrap())
-            }
+    #[test]
+    fn rejects_non_certificates() {
+        assert!(inspect_certificate(b"not a certificate").is_err());
+    }
 
-            let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
-            assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
+    #[test]
+    fn certificate_inspection_reports_subject_expiry_and_bounds_pem_input() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-            let ca = Certificate::from_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
-            let ca_constraints: BasicConstraints =
-                extension(&ca, const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS).unwrap();
-            assert!(ca_constraints.ca);
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        let pem = fixture.ca_certificate_pem.as_str();
+        let info = inspect_certificate(pem.as_bytes()).expect("inspect CA certificate");
+        assert_eq!(info.subject, "CN=Tilo Disposable Registry CA");
+        let (month, rest) = info.expires.split_once(' ').expect("month");
+        assert_eq!(month.len(), 3, "{}", info.expires);
+        assert!(rest.ends_with(" +00:00"), "{}", info.expires);
+        assert_eq!(info.sha256_fingerprint.len(), 32 * 3 - 1);
 
-            let server = Certificate::from_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
-            let ca_key_id: SubjectKeyIdentifier =
-                extension(&ca, const_oid::db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER)
-                    .expect("CA subject key identifier");
-            let issuer_key_id = extension::<AuthorityKeyIdentifier>(
-                &server,
-                const_oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER,
-            )
-            .and_then(|identifier| identifier.key_identifier)
-            .expect("server authority key identifier");
-            assert_eq!(
-                issuer_key_id, ca_key_id.0,
-                "server identifies the signing CA key"
-            );
-            assert!(
-                !extension::<BasicConstraints>(
-                    &server,
-                    const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS
-                )
-                .is_some_and(|constraints| constraints.ca)
-            );
-            let san: SubjectAltName =
-                extension(&server, const_oid::db::rfc5280::ID_CE_SUBJECT_ALT_NAME).unwrap();
-            assert!(san.0.iter().any(
-                |name| matches!(name, GeneralName::IpAddress(bytes) if bytes.as_bytes() == [127, 0, 0, 1])
-            ));
-        }
-        // Phase `rejects_non_certificates`.
-        {
-            assert!(inspect_certificate(b"not a certificate").is_err());
-        }
-        // Phase `certificate_inspection_reports_subject_expiry_and_bounds_pem_input`.
-        {
-            use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let der = certificate_der(pem.as_bytes()).expect("certificate DER");
+        let digest = certificate_sha256(pem.as_bytes()).expect("PEM digest");
+        assert_eq!(certificate_sha256(&der), Ok(digest.clone()));
+        assert_eq!(
+            info.sha256_fingerprint.replace(':', "").to_lowercase(),
+            digest
+        );
 
-            let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
-            let pem = fixture.ca_certificate_pem.as_str();
-            let info = inspect_certificate(pem.as_bytes()).expect("inspect CA certificate");
-            assert_eq!(info.subject, "CN=Tilo Disposable Registry CA");
-            let (month, rest) = info.expires.split_once(' ').expect("month");
-            assert_eq!(month.len(), 3, "{}", info.expires);
-            assert!(rest.ends_with(" +00:00"), "{}", info.expires);
-            assert_eq!(info.sha256_fingerprint.len(), 32 * 3 - 1);
+        let body = STANDARD.encode(&der);
+        let rewrapped = format!(
+            "-----BEGIN CERTIFICATE-----\r\n{}\r\n-----END CERTIFICATE-----\r\n\r\n  \n",
+            body.as_bytes()
+                .chunks(76)
+                .map(|line| std::str::from_utf8(line).unwrap())
+                .collect::<Vec<_>>()
+                .join("\r\n")
+        );
+        assert_eq!(
+            certificate_sha256(rewrapped.as_bytes()),
+            Ok(digest),
+            "line width and trailing whitespace are not part of the certificate"
+        );
 
-            let der = certificate_der(pem.as_bytes()).expect("certificate DER");
-            let digest = certificate_sha256(pem.as_bytes()).expect("PEM digest");
-            assert_eq!(certificate_sha256(&der), Ok(digest.clone()));
-            assert_eq!(
-                info.sha256_fingerprint.replace(':', "").to_lowercase(),
-                digest
-            );
-
-            let body = STANDARD.encode(&der);
-            let rewrapped = format!(
-                "-----BEGIN CERTIFICATE-----\r\n{}\r\n-----END CERTIFICATE-----\r\n\r\n  \n",
-                body.as_bytes()
-                    .chunks(76)
-                    .map(|line| std::str::from_utf8(line).unwrap())
-                    .collect::<Vec<_>>()
-                    .join("\r\n")
-            );
-            assert_eq!(
-                certificate_sha256(rewrapped.as_bytes()),
-                Ok(digest),
-                "line width and trailing whitespace are not part of the certificate"
-            );
-
-            let bundle = format!("{pem}{pem}");
-            assert!(inspect_certificate(bundle.as_bytes()).is_err());
-            assert!(certificate_sha256(format!("{pem}trailing").as_bytes()).is_err());
-            let relabeled = pem.replace("CERTIFICATE", "PUBLIC KEY");
-            assert!(certificate_sha256(relabeled.as_bytes()).is_err());
-            let mut trailing_der = der.clone();
-            trailing_der.push(0);
-            assert_eq!(
-                certificate_sha256(&trailing_der),
-                Err("certificate contains trailing DER data".into())
-            );
-            assert!(certificate_sha256(&der[..der.len() - 1]).is_err());
-        }
-        // Phase `generated_tls_fixture_has_constrained_ca_and_loopback_san` (defined above).
-        generated_tls_fixture_has_constrained_ca_and_loopback_san();
+        let bundle = format!("{pem}{pem}");
+        assert!(inspect_certificate(bundle.as_bytes()).is_err());
+        assert!(certificate_sha256(format!("{pem}trailing").as_bytes()).is_err());
+        let relabeled = pem.replace("CERTIFICATE", "PUBLIC KEY");
+        assert!(certificate_sha256(relabeled.as_bytes()).is_err());
+        let mut trailing_der = der.clone();
+        trailing_der.push(0);
+        assert_eq!(
+            certificate_sha256(&trailing_der),
+            Err("certificate contains trailing DER data".into())
+        );
+        assert!(certificate_sha256(&der[..der.len() - 1]).is_err());
     }
 
     #[test]
@@ -1931,6 +1862,66 @@ mod tests {
     }
 
     #[test]
+    fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
+        use der::{Decode, DecodePem};
+        use x509_cert::{
+            Certificate,
+            ext::pkix::{
+                AuthorityKeyIdentifier, BasicConstraints, SubjectAltName, SubjectKeyIdentifier,
+                name::GeneralName,
+            },
+        };
+
+        fn extension<T: for<'a> Decode<'a>>(
+            certificate: &Certificate,
+            oid: const_oid::ObjectIdentifier,
+        ) -> Option<T> {
+            certificate
+                .tbs_certificate
+                .extensions
+                .as_deref()?
+                .iter()
+                .find(|extension| extension.extn_id == oid)
+                .map(|extension| T::from_der(extension.extn_value.as_bytes()).unwrap())
+        }
+
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
+
+        let ca = Certificate::from_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
+        let ca_constraints: BasicConstraints =
+            extension(&ca, const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS).unwrap();
+        assert!(ca_constraints.ca);
+
+        let server = Certificate::from_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
+        let ca_key_id: SubjectKeyIdentifier =
+            extension(&ca, const_oid::db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER)
+                .expect("CA subject key identifier");
+        let issuer_key_id = extension::<AuthorityKeyIdentifier>(
+            &server,
+            const_oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER,
+        )
+        .and_then(|identifier| identifier.key_identifier)
+        .expect("server authority key identifier");
+        assert_eq!(
+            issuer_key_id, ca_key_id.0,
+            "server identifies the signing CA key"
+        );
+        assert!(
+            !extension::<BasicConstraints>(
+                &server,
+                const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS
+            )
+            .is_some_and(|constraints| constraints.ca)
+        );
+        let san: SubjectAltName =
+            extension(&server, const_oid::db::rfc5280::ID_CE_SUBJECT_ALT_NAME).unwrap();
+        assert!(san.0.iter().any(
+            |name| matches!(name, GeneralName::IpAddress(bytes) if bytes.as_bytes() == [127, 0, 0, 1])
+        ));
+    }
+
+    #[test]
     fn rsa_signature_round_trips_and_rejects_tampering() {
         let generated = generate_secure_boot_certificate("Tilo signer").expect("generate RSA cert");
         let public = rsa_public_key_pem(&generated.private_key_pem).expect("derive public key");
@@ -1944,68 +1935,63 @@ mod tests {
     }
 
     #[test]
-    fn public_identities_and_module_signatures_match_production_profiles() {
-        // Phase `tpm_authority_keys_match_the_portable_production_profile`.
-        {
-            let generated = generate_tpm_authority_key().expect("generate TPM authority key");
-            let (bits, identity) =
-                rsa_public_key_info(generated.public_key_pem()).expect("inspect public key");
-            assert_eq!(bits, 2048);
-            assert_eq!(identity.len(), 64);
-            let signature =
-                sign_rsa_sha256(generated.private_key_pem(), b"PCR policy").expect("sign policy");
-            verify_rsa_sha256(generated.public_key_pem(), b"PCR policy", &signature)
-                .expect("verify policy signature");
-        }
-        // Phase `p256_public_identity_validates_curve_point_and_is_stable`.
-        {
-            use p256::pkcs8::{EncodePublicKey as _, LineEnding};
-            let signing = p256::ecdsa::SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
-            let public = signing
-                .verifying_key()
-                .to_public_key_pem(LineEnding::LF)
-                .expect("public PEM");
-            let identity = p256_public_key_sha256(&public).expect("P-256 identity");
-            // SHA-256 over the canonical SubjectPublicKeyInfo DER; the identity
-            // is persisted, so its bytes are pinned.
-            assert_eq!(
-                identity,
-                "ce97ec20d43661a19b215cb2e376a698d0b4aa2aa5b4c7854e916bd05082fcee"
-            );
-            assert!(
-                p256_public_key_sha256(
-                    "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
-                )
+    fn tpm_authority_keys_match_the_portable_production_profile() {
+        let generated = generate_tpm_authority_key().expect("generate TPM authority key");
+        let (bits, identity) =
+            rsa_public_key_info(generated.public_key_pem()).expect("inspect public key");
+        assert_eq!(bits, 2048);
+        assert_eq!(identity.len(), 64);
+        let signature =
+            sign_rsa_sha256(generated.private_key_pem(), b"PCR policy").expect("sign policy");
+        verify_rsa_sha256(generated.public_key_pem(), b"PCR policy", &signature)
+            .expect("verify policy signature");
+    }
+
+    #[test]
+    fn p256_public_identity_validates_curve_point_and_is_stable() {
+        use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+        let signing = p256::ecdsa::SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        let identity = p256_public_key_sha256(&public).expect("P-256 identity");
+        // SHA-256 over the canonical SubjectPublicKeyInfo DER; the identity
+        // is persisted, so its bytes are pinned.
+        assert_eq!(
+            identity,
+            "ce97ec20d43661a19b215cb2e376a698d0b4aa2aa5b4c7854e916bd05082fcee"
+        );
+        assert!(
+            p256_public_key_sha256("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
                 .is_err()
-            );
-        }
-        // Phase `pure_rust_kernel_module_signature_round_trips`.
-        {
-            let certificate = generate_secure_boot_certificate("Tilo kernel test").expect("signer");
-            let module = b"synthetic kernel module bytes";
-            let signed_module = sign_kernel_module(
+        );
+    }
+
+    #[test]
+    fn pure_rust_kernel_module_signature_round_trips() {
+        let certificate = generate_secure_boot_certificate("Tilo kernel test").expect("signer");
+        let module = b"synthetic kernel module bytes";
+        let signed_module = sign_kernel_module(
+            &certificate.private_key_pem,
+            certificate.certificate_pem.as_bytes(),
+            module,
+        )
+        .expect("sign module");
+        verify_kernel_module(certificate.certificate_pem.as_bytes(), &signed_module)
+            .expect("verify module");
+
+        let mut tampered = signed_module.clone();
+        *tampered.first_mut().expect("nonempty signed module") ^= 1;
+        assert!(verify_kernel_module(certificate.certificate_pem.as_bytes(), &tampered).is_err());
+        assert!(
+            sign_kernel_module(
                 &certificate.private_key_pem,
                 certificate.certificate_pem.as_bytes(),
-                module,
+                &signed_module,
             )
-            .expect("sign module");
-            verify_kernel_module(certificate.certificate_pem.as_bytes(), &signed_module)
-                .expect("verify module");
-
-            let mut tampered = signed_module.clone();
-            *tampered.first_mut().expect("nonempty signed module") ^= 1;
-            assert!(
-                verify_kernel_module(certificate.certificate_pem.as_bytes(), &tampered).is_err()
-            );
-            assert!(
-                sign_kernel_module(
-                    &certificate.private_key_pem,
-                    certificate.certificate_pem.as_bytes(),
-                    &signed_module,
-                )
-                .is_err()
-            );
-        }
+            .is_err()
+        );
     }
 
     #[allow(
@@ -2166,107 +2152,55 @@ mod tests {
         clippy::indexing_slicing,
         reason = "offsets come from locating the envelope's own fields"
     )]
-    fn efi_verification_checks_every_signed_field_and_signer_purpose() {
-        // Phase `efi_verification_checks_every_signed_field`.
-        {
-            let signer = generate_secure_boot_certificate("Tilo EFI signer").expect("signer");
-            let image = minimal_efi_image();
-            let signed_image =
-                sign_efi_image(&signer.private_key_pem, &signer.certificate_pem, &image)
-                    .expect("sign EFI image");
-            let range = with_pe(&signed_image, |pe| {
-                Ok(pe
-                    .certificate_table_range()
-                    .expect("certificate table")
-                    .expect("signed_image image"))
-            })
-            .expect("PE image");
-            let envelope = signed_image[range.start + 8..range.end].to_vec();
-            let parsed = authenticode::AuthenticodeSignature::from_bytes(&envelope).expect("parse");
+    fn efi_verification_checks_every_signed_field() {
+        let signer = generate_secure_boot_certificate("Tilo EFI signer").expect("signer");
+        let image = minimal_efi_image();
+        let signed_image = sign_efi_image(&signer.private_key_pem, &signer.certificate_pem, &image)
+            .expect("sign EFI image");
+        let range = with_pe(&signed_image, |pe| {
+            Ok(pe
+                .certificate_table_range()
+                .expect("certificate table")
+                .expect("signed_image image"))
+        })
+        .expect("PE image");
+        let envelope = signed_image[range.start + 8..range.end].to_vec();
+        let parsed = authenticode::AuthenticodeSignature::from_bytes(&envelope).expect("parse");
 
-            let mut forged_signature = signed_image.clone();
-            let signature_at = find(&forged_signature, parsed.signature());
-            forged_signature[signature_at + 10] ^= 1;
-            let error = verify_efi_image(&signer.certificate_pem, &forged_signature).unwrap_err();
-            assert!(error.contains("signature does not match"), "{error}");
+        let mut forged_signature = signed_image.clone();
+        let signature_at = find(&forged_signature, parsed.signature());
+        forged_signature[signature_at + 10] ^= 1;
+        let error = verify_efi_image(&signer.certificate_pem, &forged_signature).unwrap_err();
+        assert!(error.contains("signature does not match"), "{error}");
 
-            let mut forged_digest = signed_image.clone();
-            let digest_at = find(&forged_digest, parsed.digest());
-            forged_digest[digest_at] ^= 1;
-            let error = verify_efi_image(&signer.certificate_pem, &forged_digest).unwrap_err();
-            assert!(error.contains("image digest does not match"), "{error}");
+        let mut forged_digest = signed_image.clone();
+        let digest_at = find(&forged_digest, parsed.digest());
+        forged_digest[digest_at] ^= 1;
+        let error = verify_efi_image(&signer.certificate_pem, &forged_digest).unwrap_err();
+        assert!(error.contains("image digest does not match"), "{error}");
 
-            // A correctly signed_image attribute set whose messageDigest names other
-            // content must not vouch for the embedded SpcIndirectDataContent.
-            let content_digest = Sha256::digest(parsed.encapsulated_content().expect("content"));
-            let stale_digest = resign_attributes(&signed_image, &signer.private_key_pem, |body| {
-                let mut body = body.to_vec();
-                let at = find(&body, &content_digest);
-                body[at] ^= 1;
-                body
-            });
-            let error = verify_efi_image(&signer.certificate_pem, &stale_digest).unwrap_err();
-            assert!(error.contains("messageDigest"), "{error}");
+        // A correctly signed_image attribute set whose messageDigest names other
+        // content must not vouch for the embedded SpcIndirectDataContent.
+        let content_digest = Sha256::digest(parsed.encapsulated_content().expect("content"));
+        let stale_digest = resign_attributes(&signed_image, &signer.private_key_pem, |body| {
+            let mut body = body.to_vec();
+            let at = find(&body, &content_digest);
+            body[at] ^= 1;
+            body
+        });
+        let error = verify_efi_image(&signer.certificate_pem, &stale_digest).unwrap_err();
+        assert!(error.contains("messageDigest"), "{error}");
 
-            // The signature covers the attributes as transmitted; signers that
-            // do not sort them into DER order must remain verifiable.
-            let unsorted = resign_attributes(&signed_image, &signer.private_key_pem, |body| {
-                let mut elements = attribute_elements(body);
-                elements.reverse();
-                elements.concat()
-            });
-            assert_ne!(unsorted, signed_image);
-            verify_efi_image(&signer.certificate_pem, &unsorted).expect("unsorted attributes");
-            assert_eq!(efi_signature_count(&unsorted).expect("count"), 1);
-        }
-        // Phase `efi_verification_enforces_signer_validity_and_code_signing_purpose`.
-        {
-            use rcgen::ExtendedKeyUsagePurpose::{CodeSigning, ServerAuth};
-
-            let key = generate_tpm_authority_key().expect("RSA key");
-            let now = time::OffsetDateTime::now_utc();
-            let day = time::Duration::days(1);
-            let image = minimal_efi_image();
-            let sign = |certificate: &str| {
-                embed_efi_signature(key.private_key_pem(), certificate, &image).expect("embed")
-            };
-
-            let code_signing = rsa_code_signing_certificate(
-                key.private_key_pem(),
-                vec![CodeSigning],
-                now - day,
-                now + day,
-            );
-            verify_efi_image(&code_signing, &sign(&code_signing)).expect("code-signing EKU");
-
-            let server_only = rsa_code_signing_certificate(
-                key.private_key_pem(),
-                vec![ServerAuth],
-                now - day,
-                now + day,
-            );
-            let error = verify_efi_image(&server_only, &sign(&server_only)).unwrap_err();
-            assert!(error.contains("code signing"), "{error}");
-
-            let expired = rsa_code_signing_certificate(
-                key.private_key_pem(),
-                Vec::new(),
-                now - day * 10,
-                now - day,
-            );
-            let error = verify_efi_image(&expired, &sign(&expired)).unwrap_err();
-            assert!(error.contains("expired"), "{error}");
-            assert!(sign_efi_image(key.private_key_pem(), &expired, &image).is_err());
-
-            let future = rsa_code_signing_certificate(
-                key.private_key_pem(),
-                Vec::new(),
-                now + day,
-                now + day * 10,
-            );
-            let error = verify_efi_image(&future, &sign(&future)).unwrap_err();
-            assert!(error.contains("not yet valid"), "{error}");
-        }
+        // The signature covers the attributes as transmitted; signers that
+        // do not sort them into DER order must remain verifiable.
+        let unsorted = resign_attributes(&signed_image, &signer.private_key_pem, |body| {
+            let mut elements = attribute_elements(body);
+            elements.reverse();
+            elements.concat()
+        });
+        assert_ne!(unsorted, signed_image);
+        verify_efi_image(&signer.certificate_pem, &unsorted).expect("unsorted attributes");
+        assert_eq!(efi_signature_count(&unsorted).expect("count"), 1);
     }
 
     fn rsa_code_signing_certificate(
@@ -2288,5 +2222,54 @@ mod tests {
             .distinguished_name
             .push(DnType::CommonName, "Tilo EFI purpose test");
         params.self_signed(&key).expect("certificate").pem()
+    }
+
+    #[test]
+    fn efi_verification_enforces_signer_validity_and_code_signing_purpose() {
+        use rcgen::ExtendedKeyUsagePurpose::{CodeSigning, ServerAuth};
+
+        let key = generate_tpm_authority_key().expect("RSA key");
+        let now = time::OffsetDateTime::now_utc();
+        let day = time::Duration::days(1);
+        let image = minimal_efi_image();
+        let sign = |certificate: &str| {
+            embed_efi_signature(key.private_key_pem(), certificate, &image).expect("embed")
+        };
+
+        let code_signing = rsa_code_signing_certificate(
+            key.private_key_pem(),
+            vec![CodeSigning],
+            now - day,
+            now + day,
+        );
+        verify_efi_image(&code_signing, &sign(&code_signing)).expect("code-signing EKU");
+
+        let server_only = rsa_code_signing_certificate(
+            key.private_key_pem(),
+            vec![ServerAuth],
+            now - day,
+            now + day,
+        );
+        let error = verify_efi_image(&server_only, &sign(&server_only)).unwrap_err();
+        assert!(error.contains("code signing"), "{error}");
+
+        let expired = rsa_code_signing_certificate(
+            key.private_key_pem(),
+            Vec::new(),
+            now - day * 10,
+            now - day,
+        );
+        let error = verify_efi_image(&expired, &sign(&expired)).unwrap_err();
+        assert!(error.contains("expired"), "{error}");
+        assert!(sign_efi_image(key.private_key_pem(), &expired, &image).is_err());
+
+        let future = rsa_code_signing_certificate(
+            key.private_key_pem(),
+            Vec::new(),
+            now + day,
+            now + day * 10,
+        );
+        let error = verify_efi_image(&future, &sign(&future)).unwrap_err();
+        assert!(error.contains("not yet valid"), "{error}");
     }
 }
