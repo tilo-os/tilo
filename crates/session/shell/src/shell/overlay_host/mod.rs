@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use settings_store::magnifier::MagnifierStep;
 use taffy::{
     Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
     TaffyTree,
@@ -1911,6 +1912,9 @@ pub struct ShellOverlayHost {
     /// Shift/Alt+Print captures, which skip the chooser and wait here for
     /// the compositor's next clean scene alongside the chooser's intents.
     instant_captures: Vec<ui::widget::CaptureIntent>,
+    /// Set when a shortcut changed the magnifier, so the frame re-reads it at once instead of
+    /// on its next settings poll.
+    magnifier_changed: bool,
     capture_node: Option<NodeId>,
     /// Native exact-pixel screenshot editor. It lives in the shared UI crate;
     /// the shell supplies only artifact bytes and drains semantic commands.
@@ -1986,22 +1990,14 @@ const PALETTE_ROW_BUDGET: usize = 8;
 /// The file manager Super+E opens.
 const FILES_PACKAGE: (&str, &str) = ("so.tilo.file-explorer", "Files");
 
-/// Flip the desktop magnifier between off and its default 2× zoom. The
-/// frame builder reads `accessibility.magnifier_zoom` on its settings poll,
-/// the same path the Settings slider takes.
-fn toggle_magnifier(settings: Option<&std::path::Path>) {
-    let Some(settings) = settings else {
-        return;
-    };
-    let zoom = settings_store::load_section_at(settings, "accessibility")
-        .get("magnifier_zoom")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(1);
-    let next = if zoom > 1 { 1 } else { 2 };
-    let mut values = serde_json::Map::new();
-    values.insert("magnifier_zoom".into(), serde_json::Value::from(next));
-    if let Err(error) = settings_store::update_section_at(settings, "accessibility", values) {
-        tracing::warn!(%error, "magnifier toggle could not be saved");
+/// The magnifier step a shortcut performs, if it is a magnifier shortcut.
+fn magnifier_step(action: settings_store::hardware::ShortcutAction) -> Option<MagnifierStep> {
+    use settings_store::hardware::ShortcutAction as A;
+    match action {
+        A::ToggleMagnifier => Some(MagnifierStep::Toggle),
+        A::MagnifierZoomIn => Some(MagnifierStep::ZoomIn),
+        A::MagnifierZoomOut => Some(MagnifierStep::ZoomOut),
+        _ => None,
     }
 }
 
@@ -3432,6 +3428,7 @@ impl ShellOverlayHost {
             follow_cursor_targets: Vec::new(),
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
+            magnifier_changed: false,
             capture_node: None,
             screenshot_markup: None,
             screenshot_markup_node: None,
@@ -3555,6 +3552,29 @@ impl ShellOverlayHost {
     /// compositor uses this to turn the frame encoder on only while needed.
     pub fn projection_capture_requested(&self) -> bool {
         self.projection_overlay.capture_requested()
+    }
+
+    /// Whether a shortcut changed the magnifier since the last call.
+    pub fn take_magnifier_changed(&mut self) -> bool {
+        std::mem::take(&mut self.magnifier_changed)
+    }
+
+    /// Apply a magnifier shortcut to the shared settings and show the resulting zoom.
+    fn step_magnifier(&mut self, step: MagnifierStep) {
+        let Some(path) = settings_store::settings_path() else {
+            return;
+        };
+        match settings_store::magnifier::apply_step_at(&path, step) {
+            Ok(zoom) => {
+                self.magnifier_changed = true;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome
+                        .borrow_mut()
+                        .show_osd(crate::shell::osd::Osd::magnifier(zoom));
+                }
+            }
+            Err(error) => tracing::warn!(%error, "magnifier change could not be saved"),
+        }
     }
 
     /// Drained by the compositor after it has built a clean scene (the picker
@@ -7974,6 +7994,13 @@ impl ShellOverlayHost {
         candidates
     }
 
+    /// The on-screen part of the focused window, which the magnifier follows when keyboard
+    /// focus is inside an app rather than on shell chrome.
+    pub fn focused_window_rect(&self) -> Option<Rect> {
+        self.focused_capture_target()
+            .map(|target| target.visible_rect)
+    }
+
     /// The window Alt+Print photographs: the focused group, which
     /// [`Self::capture_targets`] lists first.
     fn focused_capture_target(&self) -> Option<ui::widget::CaptureTarget> {
@@ -12372,6 +12399,13 @@ impl ShellOverlayHost {
             }
             return true;
         }
+        if let Some(step) = magnifier_step(action) {
+            // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
+            if !(repeat && step == MagnifierStep::Toggle) {
+                self.step_magnifier(step);
+            }
+            return true;
+        }
         if !matches!(
             action,
             A::OpenFiles
@@ -12379,7 +12413,6 @@ impl ShellOverlayHost {
                 | A::ClipboardHistory
                 | A::Notifications
                 | A::ToggleFullscreen
-                | A::ToggleMagnifier
                 | A::PowerMenu
         ) {
             return false;
@@ -12405,7 +12438,6 @@ impl ShellOverlayHost {
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
             A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
-            A::ToggleMagnifier => toggle_magnifier(settings_store::settings_path().as_deref()),
             A::PowerMenu => {
                 self.power_menu.open();
                 let mut st = chrome.borrow_mut();

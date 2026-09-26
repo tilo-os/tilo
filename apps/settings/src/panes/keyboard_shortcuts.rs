@@ -254,6 +254,18 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Turn screen magnification on or off",
         ),
         (
+            ShortcutAction::MagnifierZoomIn,
+            "shortcuts.magnifier_zoom_in",
+            "Magnifier zoom in",
+            "Magnify more, turning the magnifier on if it is off",
+        ),
+        (
+            ShortcutAction::MagnifierZoomOut,
+            "shortcuts.magnifier_zoom_out",
+            "Magnifier zoom out",
+            "Magnify less, down to off",
+        ),
+        (
             ShortcutAction::PowerMenu,
             "shortcuts.power_menu",
             "Power menu",
@@ -293,6 +305,8 @@ fn is_desktop_navigation(action: ShortcutAction) -> bool {
             | ShortcutAction::ClipboardHistory
             | ShortcutAction::Notifications
             | ShortcutAction::ToggleMagnifier
+            | ShortcutAction::MagnifierZoomIn
+            | ShortcutAction::MagnifierZoomOut
             | ShortcutAction::PowerMenu
     )
 }

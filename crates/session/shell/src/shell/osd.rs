@@ -64,6 +64,8 @@ pub enum OsdKind {
     PointerHeld { held: bool },
     /// Mouse keys after its Shift+Alt+Num Lock chord.
     MouseKeys { enabled: bool },
+    /// The magnifier after a magnifier shortcut; `zoom` is the factor, `1` meaning off.
+    Magnifier { zoom: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,12 +193,26 @@ impl Osd {
         }
     }
 
+    /// The magnifier at `zoom`; the bar fills from off to the strongest zoom.
+    pub fn magnifier(zoom: u8) -> Self {
+        use settings_store::magnifier::{MAX_ZOOM, OFF};
+        let zoom = zoom.clamp(OFF, MAX_ZOOM);
+        Self {
+            kind: OsdKind::Magnifier { zoom },
+            level: f32::from(zoom.saturating_sub(OFF)) / f32::from(MAX_ZOOM.saturating_sub(OFF)),
+            raised_at: Instant::now(),
+        }
+    }
+
     /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
         matches!(
             self.kind,
-            OsdKind::Volume { .. } | OsdKind::Brightness | OsdKind::KeyboardBacklight
+            OsdKind::Volume { .. }
+                | OsdKind::Brightness
+                | OsdKind::KeyboardBacklight
+                | OsdKind::Magnifier { .. }
         )
     }
 
@@ -219,6 +235,12 @@ impl Osd {
             OsdKind::AirplaneMode { on: true } => "Airplane mode on".to_string(),
             OsdKind::AirplaneMode { on: false } => "Airplane mode off".to_string(),
             OsdKind::Touchpad { enabled: true } => "Touchpad on".to_string(),
+            OsdKind::Magnifier { zoom } if zoom <= settings_store::magnifier::OFF => {
+                "Magnifier off".to_string()
+            }
+            OsdKind::Magnifier { zoom } => {
+                format!("Magnifier {}", settings_store::magnifier::zoom_label(zoom))
+            }
             OsdKind::Touchpad { enabled: false } => "Touchpad off".to_string(),
             OsdKind::PointerHeld { held: true } => format!(
                 "Pointer held by app · {} releases",
@@ -473,6 +495,14 @@ fn draw_glyph(
             },
         ),
         OsdKind::PointerHeld { .. } => (ui::icons::Icon::MousePointer2, colors.text_primary),
+        OsdKind::Magnifier { zoom } => (
+            ui::icons::Icon::Search,
+            if zoom > settings_store::magnifier::OFF {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+        ),
     };
     ui::icons::draw_icon(
         scene,
@@ -583,6 +613,21 @@ mod tests {
         assert_eq!(Osd::volume(0.375, false).caption(), "Volume 38%");
         assert_eq!(Osd::brightness(0.0).caption(), "Brightness 0%");
         assert_eq!(Osd::brightness(1.0).caption(), "Brightness 100%");
+    }
+
+    #[test]
+    fn the_magnifier_readout_shows_the_zoom_on_a_bar_from_off_to_strongest() {
+        use settings_store::magnifier::{MAX_ZOOM, OFF};
+        let off = Osd::magnifier(OFF);
+        assert_eq!(off.caption(), "Magnifier off");
+        assert_eq!(off.level, 0.0);
+        assert_eq!(Osd::magnifier(3).caption(), "Magnifier 3×");
+        assert!(Osd::magnifier(3).has_level());
+        assert_eq!(Osd::magnifier(MAX_ZOOM).level, 1.0);
+        assert_eq!(
+            Osd::magnifier(MAX_ZOOM + 5).kind,
+            OsdKind::Magnifier { zoom: MAX_ZOOM }
+        );
     }
 
     #[test]

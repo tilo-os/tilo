@@ -288,10 +288,12 @@ enum DesktopColorFilter {
     GrayscaleInverted,
 }
 
+use settings_store::magnifier::{MagnifierState, MagnifierView};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
     color_filter: DesktopColorFilter,
-    magnifier_zoom: u8,
+    magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
@@ -299,7 +301,10 @@ impl Default for VisualAccessibility {
     fn default() -> Self {
         Self {
             color_filter: DesktopColorFilter::None,
-            magnifier_zoom: 1,
+            magnifier: MagnifierState {
+                zoom: settings_store::magnifier::OFF,
+                view: MagnifierView::Lens,
+            },
             cursor_crosshair: false,
         }
     }
@@ -318,12 +323,7 @@ impl VisualAccessibility {
                 Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
                 _ => DesktopColorFilter::None,
             },
-            magnifier_zoom: section
-                .get("magnifier_zoom")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u8::try_from(v).ok())
-                .unwrap_or(1)
-                .clamp(1, 3),
+            magnifier: MagnifierState::from_section(&section),
             cursor_crosshair: section
                 .get("cursor_crosshair")
                 .and_then(serde_json::Value::as_bool)
@@ -377,6 +377,10 @@ pub struct FrameBuilder {
     /// change what is drawn without changing the settings file.
     day_phase: Option<(settings_store::day_schedule::Scheduled, bool)>,
     visual_accessibility: VisualAccessibility,
+    /// Where the magnifier looks: the pointer, or the keyboard focus when it moved last.
+    magnifier_focus: crate::shell::magnifier::FocusTracker,
+    /// The keyboard focus rectangle the compositor last reported, while the magnifier is on.
+    keyboard_focus_rect: Option<Rect>,
     /// The logical desktop the shell lays out in: the bounding box of every
     /// display's logical rectangle.
     viewport: (f64, f64),
@@ -606,6 +610,8 @@ impl FrameBuilder {
             night_light_temperature: 3_700,
             day_phase: None,
             visual_accessibility: VisualAccessibility::default(),
+            magnifier_focus: crate::shell::magnifier::FocusTracker::default(),
+            keyboard_focus_rect: None,
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
             scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
@@ -1138,6 +1144,7 @@ impl FrameBuilder {
     /// logical coordinates, the space the widget tree is laid out in.
     fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
+        self.refresh_magnifier();
         let mut scene = Scene::new();
         self.host.draw(
             &mut scene,
@@ -1232,6 +1239,7 @@ impl FrameBuilder {
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
+        self.refresh_magnifier();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1299,7 +1307,7 @@ impl FrameBuilder {
                     self.visual_accessibility.color_filter,
                     DesktopColorFilter::None
                 )
-                || self.visual_accessibility.magnifier_zoom > 1
+                || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair);
         let damage_regions = (!global_filter)
             .then(|| self.damage_from_sections(&sections, global_filter))
@@ -1503,41 +1511,54 @@ impl FrameBuilder {
         let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
         self.apply_color_filter(scene, bounds);
         let pointer = self.host.pointer_position();
-        if self.visual_accessibility.magnifier_zoom > 1
-            && let Some(pointer) = pointer
+        if self.visual_accessibility.magnifier.is_on()
+            && let Some(centre) = self.magnifier_focus.centre()
         {
-            // A lens deliberately leaves the underlying coordinate space
-            // untouched: its centre is the real hardware pointer and hence
-            // the target under the centre remains exactly clickable.
             let source = scene.clone();
-            let lens_w = 420.0_f64.min(self.viewport.0 * 0.7);
-            let lens_h = 280.0_f64.min(self.viewport.1 * 0.7);
-            let lens = Rect::from_center_size(pointer, (lens_w, lens_h));
-            let clip = RoundedRect::from_rect(lens, 18.0);
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &clip,
+            let magnify = crate::shell::magnifier::magnify(
+                centre,
+                f64::from(self.visual_accessibility.magnifier.zoom),
             );
-            let z = f64::from(self.visual_accessibility.magnifier_zoom);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-            )]
-            let magnify = Affine::translate((pointer.x, pointer.y))
-                * Affine::scale(z)
-                * Affine::translate((-pointer.x, -pointer.y));
-            scene.append(&source, Some(magnify));
-            scene.pop_layer();
-            scene.stroke(
-                &Stroke::new(3.0),
-                Affine::IDENTITY,
-                self.theme.border_focus,
-                None,
-                &clip,
-            );
+            match self.visual_accessibility.magnifier.view {
+                MagnifierView::Lens => {
+                    // A lens deliberately leaves the underlying coordinate space
+                    // untouched: scaling about the centre keeps the target there
+                    // exactly where it really is, so it remains clickable.
+                    let lens = crate::shell::magnifier::lens_rect(centre, self.viewport);
+                    let clip = RoundedRect::from_rect(lens, 18.0);
+                    scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &clip,
+                    );
+                    scene.append(&source, Some(magnify));
+                    scene.pop_layer();
+                    scene.stroke(
+                        &Stroke::new(3.0),
+                        Affine::IDENTITY,
+                        self.theme.border_focus,
+                        None,
+                        &clip,
+                    );
+                }
+                MagnifierView::FullScreen => {
+                    // The magnified copy covers the whole screen; scaling about the
+                    // centre pans it so the screen's edges are reached as the
+                    // centre reaches them.
+                    *scene = Scene::new();
+                    scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &bounds,
+                    );
+                    scene.append(&source, Some(magnify));
+                    scene.pop_layer();
+                }
+            }
         }
         if self.visual_accessibility.cursor_crosshair
             && let Some(pointer) = pointer
@@ -1558,6 +1579,35 @@ impl FrameBuilder {
                 &vello::kurbo::Line::new((pointer.x, 0.0), (pointer.x, self.viewport.1)),
             );
         }
+    }
+
+    /// Pick up a shortcut's magnifier change at once, and note where the pointer and the keyboard
+    /// focus are for the magnifier to follow.
+    fn refresh_magnifier(&mut self) {
+        self.refresh_magnifier_at(Instant::now());
+    }
+
+    fn refresh_magnifier_at(&mut self, now: Instant) {
+        if self.host.take_magnifier_changed() && self.watch_configured_theme {
+            self.visual_accessibility = VisualAccessibility::load();
+        }
+        self.magnifier_focus
+            .observe(self.host.pointer_position(), self.keyboard_focus_rect, now);
+    }
+
+    /// Where the keyboard focus is on screen, for the magnifier to follow: the focused shell
+    /// control, else the focused window. Only looked up while the magnifier is on.
+    pub fn note_keyboard_focus(&mut self, focus: Option<NodeId>) {
+        self.keyboard_focus_rect = if self.visual_accessibility.magnifier.is_on() {
+            focus
+                .and_then(|id| self.node_map.get(&id))
+                // SAFETY: `node_map` belongs to the current, live layout tree.
+                .map(|&widget| unsafe { (*widget).get_rect() })
+                .filter(|rect| rect.area() > 0.0)
+                .or_else(|| self.host.focused_window_rect())
+        } else {
+            None
+        };
     }
 
     fn refresh_display_comfort(&mut self) {
@@ -3345,6 +3395,50 @@ mod tests {
             Some(position),
             "onboarding must retain the motion used to hit-test the following coordinate-free MouseInput"
         );
+    }
+
+    #[test]
+    fn the_magnifier_centres_on_the_keyboard_focus_once_it_moves_past_a_resting_pointer() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        fb.visual_accessibility.magnifier.zoom = 2;
+        let t0 = Instant::now();
+        let pointer = Point::new(20.0, 700.0);
+        fb.host.note_pointer(pointer);
+        fb.note_keyboard_focus(None);
+        fb.refresh_magnifier_at(t0);
+        let focused = fb.focusable_order().into_iter().find_map(|id| {
+            let &widget = fb.node_map.get(&id)?;
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            let rect = unsafe { (*widget).get_rect() };
+            (rect.area() > 0.0 && rect.center() != pointer).then_some((id, rect))
+        });
+        let Some((node, rect)) = focused else {
+            panic!("the desktop offers a focusable control");
+        };
+        assert_eq!(
+            fb.magnifier_focus.centre(),
+            Some(pointer),
+            "before the focus moves, the pointer leads"
+        );
+
+        fb.note_keyboard_focus(Some(node));
+        fb.refresh_magnifier_at(t0 + Duration::from_millis(50));
+        assert_eq!(fb.magnifier_focus.centre(), Some(rect.center()));
+
+        let moved = Point::new(40.0, 690.0);
+        fb.host.note_pointer(moved);
+        fb.refresh_magnifier_at(t0 + Duration::from_millis(100));
+        assert_eq!(fb.magnifier_focus.centre(), Some(moved));
+    }
+
+    #[test]
+    fn keyboard_focus_is_not_tracked_while_the_magnifier_is_off() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let node = fb.focusable_order().into_iter().next();
+        fb.note_keyboard_focus(node);
+        assert_eq!(fb.keyboard_focus_rect, None);
     }
 
     #[test]
