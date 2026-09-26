@@ -3350,12 +3350,7 @@ impl SlidesApp {
     }
 
     fn insert_element(&mut self, doc: &mut AutoCommit, kind: ElementKind) {
-        let el = match kind {
-            ElementKind::Text => Element::text("Text", 440.0, 320.0, 400.0, 90.0, 40.0),
-            ElementKind::Line => Element::shape(ElementKind::Line, 440.0, 360.0, 360.0, 0.0),
-            ElementKind::Image => Element::shape(ElementKind::Image, 440.0, 220.0, 400.0, 280.0),
-            other => Element::shape(other, 480.0, 260.0, 320.0, 220.0),
-        };
+        let el = actions::inserted_element_template(kind);
         let id = el.id.clone();
         let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
@@ -5133,7 +5128,10 @@ impl SlidesApp {
             // Seed the picker with the element's current fill on the first frame
             // it's open (now that we hold the theme to resolve a colour role).
             if self.fill_picker_needs_init {
-                let pal = self.palette(theme);
+                let mut pal = self.palette(theme);
+                if let Some(slide) = self.slide() {
+                    pal = pal.on(slide.background);
+                }
                 let col = self
                     .selected_element()
                     .and_then(|e| pal.resolve_role(&e.fill))

@@ -1340,6 +1340,17 @@ pub fn new_slide_template() -> Slide {
     s
 }
 
+/// The element the toolbar's insert tools add, before the user moves or
+/// styles it.
+pub fn inserted_element_template(kind: ElementKind) -> Element {
+    match kind {
+        ElementKind::Text => Element::text("Text", 440.0, 320.0, 400.0, 90.0, 40.0),
+        ElementKind::Line => Element::shape(ElementKind::Line, 440.0, 360.0, 360.0, 0.0),
+        ElementKind::Image => Element::shape(ElementKind::Image, 440.0, 220.0, 400.0, 280.0),
+        other => Element::shape(other, 480.0, 260.0, 320.0, 220.0),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
