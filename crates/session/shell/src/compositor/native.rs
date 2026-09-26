@@ -6739,6 +6739,18 @@ pub fn run() {
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
                         let settings = settings_store::settings_path();
+                        let displays = if matches!(
+                            mk,
+                            crate::shell::media_keys::MediaKey::BrightnessUp
+                                | crate::shell::media_keys::MediaKey::BrightnessDown
+                        ) {
+                            os_actions::BrightnessService::global().levels()
+                        } else {
+                            Vec::new()
+                        };
+                        let pointer = frame_builder.host().pointer_position();
+                        let under_pointer = pointer
+                            .and_then(|p| output_connector_at(backend.outputs(), (p.x, p.y)));
                         let response = crate::shell::media_keys::apply(
                             mk,
                             &crate::shell::media_keys::Context {
@@ -6747,6 +6759,10 @@ pub fn run() {
                                 transport_osd: &transport_osd,
                                 airplane_mode,
                                 settings: settings.as_deref(),
+                                brightness: crate::shell::media_keys::BrightnessKeys {
+                                    displays: &displays,
+                                    under_pointer,
+                                },
                             },
                         );
                         match response {
@@ -9219,6 +9235,24 @@ mod media_osd_publication_tests {
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
 /// Settings exits. Missing sensors/backlights simply produce no write.
+/// Connector of the output containing `point` in compositor coordinates.
+fn output_connector_at(
+    outputs: &[crate::compositor::backend::Output],
+    point: (f64, f64),
+) -> Option<&str> {
+    outputs
+        .iter()
+        .find(|output| {
+            let (x, y) = (f64::from(output.position.0), f64::from(output.position.1));
+            point.0 >= x
+                && point.1 >= y
+                && point.0 < x + f64::from(output.size.0)
+                && point.1 < y + f64::from(output.size.1)
+        })
+        .map(|output| output.identity.connector.as_str())
+        .filter(|connector| !connector.is_empty())
+}
+
 fn spawn_auto_brightness_worker() {
     let _ = std::thread::Builder::new()
         .name("tilo-auto-brightness".into())

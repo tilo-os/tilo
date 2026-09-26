@@ -9,6 +9,7 @@ fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
         crate::shell::quick_settings::refresh::QsReading::Fast(Box::new(
             crate::shell::quick_settings::refresh::FastReading {
                 brightness: None,
+                displays: Vec::new(),
                 volume: None,
                 wifi: None,
                 bluetooth: None,

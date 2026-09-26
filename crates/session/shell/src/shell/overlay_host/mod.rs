@@ -7980,6 +7980,7 @@ impl ShellOverlayHost {
         use crate::shell::quick_settings::refresh::FastReading;
         let FastReading {
             brightness,
+            displays,
             volume,
             wifi,
             bluetooth,
@@ -7991,7 +7992,12 @@ impl ShellOverlayHost {
             privacy,
             vpns,
         } = *reading;
-        st.quick_settings.brightness_available = brightness.is_some();
+        st.quick_settings.brightness_available = brightness.is_some() || !displays.is_empty();
+        let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
+        if st.quick_settings.displays != displays {
+            st.quick_settings.displays = displays;
+            st.bump();
+        }
         st.quick_settings.volume_available = volume.is_some();
         if let Some(radios) = radios {
             st.quick_settings.radios = radios;
@@ -14009,6 +14015,25 @@ impl ShellOverlayHost {
         let (label, result, osd) = match commit {
             SliderCommit::Brightness(value_pct) => {
                 let result = actions.set_brightness(value_pct);
+                (
+                    "brightness",
+                    result,
+                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
+                )
+            }
+            SliderCommit::DisplayBrightness(index, value_pct) => {
+                let connector = self.chrome.as_ref().and_then(|chrome| {
+                    chrome
+                        .borrow()
+                        .quick_settings
+                        .displays
+                        .get(index)
+                        .map(|display| display.connector.clone())
+                });
+                let result = connector.map_or_else(
+                    || Err("that monitor is no longer connected".to_owned()),
+                    |connector| actions.set_display_brightness(&connector, value_pct),
+                );
                 (
                     "brightness",
                     result,
