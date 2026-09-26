@@ -13,14 +13,14 @@ use tilo_vm_protocol::{
     Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
     Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Owner, Policy,
     Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList,
-    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Swap, VM_SLOT, VmTools,
+    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Stick, Swap, VM_SLOT, VmTools,
 };
 
 use crate::build;
 use crate::ci;
 use crate::cli::{
-    Builder, Command, CreateArgs, InputCommand, ScenarioCommand, SeatCommand, SlotCommand,
-    UpgradeArgs, VmCommand,
+    Builder, Command, CreateArgs, GamepadCommand, InputCommand, PenCommand, ScenarioCommand,
+    SeatCommand, SlotCommand, TouchCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -3523,10 +3523,94 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
                 _ => None,
             },
         },
+        InputCommand::Touch(gesture) => touch_action(gesture),
+        InputCommand::Pen(PenCommand::Tap { x, y, pressure }) => {
+            InputAction::PenTap { x, y, pressure }
+        }
+        InputCommand::Pen(PenCommand::Drag {
+            x1,
+            y1,
+            x2,
+            y2,
+            duration,
+            pressure,
+        }) => InputAction::PenDrag {
+            from: (x1, y1),
+            to: (x2, y2),
+            duration_ms: duration,
+            pressure,
+        },
+        InputCommand::Gamepad(command) => gamepad_action(command)?,
     };
     let actions = vec![action];
     tilo_vm_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
     Ok(actions)
+}
+
+fn touch_action(gesture: TouchCommand) -> InputAction {
+    match gesture {
+        TouchCommand::Tap { x, y } => InputAction::TouchTap { x, y },
+        TouchCommand::Hold { x, y, duration } => InputAction::TouchHold {
+            x,
+            y,
+            duration_ms: duration,
+        },
+        TouchCommand::Drag {
+            x1,
+            y1,
+            x2,
+            y2,
+            duration,
+        } => InputAction::TouchDrag {
+            from: (x1, y1),
+            to: (x2, y2),
+            duration_ms: duration,
+        },
+        TouchCommand::Pinch {
+            x,
+            y,
+            from,
+            to,
+            duration,
+        } => InputAction::TouchPinch {
+            center: (x, y),
+            from_distance: from,
+            to_distance: to,
+            duration_ms: duration,
+        },
+    }
+}
+
+fn gamepad_action(command: GamepadCommand) -> Result<InputAction, CliError> {
+    Ok(match command {
+        GamepadCommand::Press { combos } => InputAction::GamepadPress { combos },
+        GamepadCommand::Dpad { directions } => {
+            if let Some(bad) = directions.iter().find(|d| {
+                !matches!(
+                    d.to_ascii_lowercase().as_str(),
+                    "up" | "down" | "left" | "right"
+                )
+            }) {
+                return Err(CliError::InvalidInput(format!(
+                    "'{bad}' is not a d-pad direction (up, down, left, right)"
+                )));
+            }
+            InputAction::GamepadPress { combos: directions }
+        }
+        GamepadCommand::Stick {
+            stick,
+            x,
+            y,
+            duration,
+        } => InputAction::GamepadStick {
+            stick: Stick::parse(&stick).ok_or_else(|| {
+                CliError::InvalidInput(format!("'{stick}' is not a stick (left, right)"))
+            })?,
+            x,
+            y,
+            duration_ms: duration,
+        },
+    })
 }
 
 fn describe_input(action: &InputAction) -> String {
@@ -3537,6 +3621,36 @@ fn describe_input(action: &InputAction) -> String {
         InputAction::Click { button, at } => {
             let at = at.map(|(x, y)| format!(" at {x},{y}")).unwrap_or_default();
             format!("clicked {button:?}{at}").to_lowercase()
+        }
+        InputAction::TouchTap { x, y } => format!("tapped {x},{y}"),
+        InputAction::TouchHold { x, y, duration_ms } => {
+            format!("held a finger on {x},{y} for {duration_ms} ms")
+        }
+        InputAction::TouchDrag { from, to, .. } => {
+            format!(
+                "dragged a finger from {},{} to {},{}",
+                from.0, from.1, to.0, to.1
+            )
+        }
+        InputAction::TouchPinch {
+            center,
+            from_distance,
+            to_distance,
+            ..
+        } => format!(
+            "pinched at {},{} from {from_distance} to {to_distance} px apart",
+            center.0, center.1
+        ),
+        InputAction::PenTap { x, y, .. } => format!("tapped the pen at {x},{y}"),
+        InputAction::PenDrag { from, to, .. } => {
+            format!(
+                "drew with the pen from {},{} to {},{}",
+                from.0, from.1, to.0, to.1
+            )
+        }
+        InputAction::GamepadPress { combos } => format!("pressed gamepad {}", combos.join(" ")),
+        InputAction::GamepadStick { stick, x, y, .. } => {
+            format!("pushed the {stick:?} stick to {x},{y}").to_lowercase()
         }
     }
 }
@@ -4589,6 +4703,67 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains('ï'));
         assert!(error.hint().contains("tilo-vm input key"));
+    }
+
+    #[test]
+    fn touch_pen_and_gamepad_commands_become_actions() {
+        use clap::Parser as _;
+        let parse = |args: &[&str]| {
+            let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+            let Some(Command::Input { action, .. }) = cli.command else {
+                panic!("{args:?} is not an input command");
+            };
+            input_actions(action)
+        };
+        let pinch = parse(&[
+            "tilo-vm", "input", "touch", "pinch", "640", "400", "--from", "400", "--to", "100",
+        ])
+        .unwrap();
+        assert_eq!(
+            pinch,
+            [InputAction::TouchPinch {
+                center: (640, 400),
+                from_distance: 400,
+                to_distance: 100,
+                duration_ms: 400,
+            }]
+        );
+        assert_eq!(
+            describe_input(&pinch[0]),
+            "pinched at 640,400 from 400 to 100 px apart"
+        );
+        let stick = parse(&["tilo-vm", "input", "gamepad", "stick", "left", "0", "-100"]).unwrap();
+        assert_eq!(
+            stick,
+            [InputAction::GamepadStick {
+                stick: Stick::Left,
+                x: 0,
+                y: -100,
+                duration_ms: 300,
+            }]
+        );
+        let dpad = parse(&["tilo-vm", "input", "gamepad", "dpad", "down", "right"]).unwrap();
+        assert_eq!(
+            dpad,
+            [InputAction::GamepadPress {
+                combos: vec!["down".into(), "right".into()]
+            }]
+        );
+        let bad = parse(&["tilo-vm", "input", "gamepad", "dpad", "a"]).unwrap_err();
+        assert!(bad.to_string().contains("d-pad direction"), "{bad}");
+        let bad = parse(&["tilo-vm", "input", "gamepad", "press", "guide+zz"]).unwrap_err();
+        assert!(bad.to_string().contains("'zz'"), "{bad}");
+        let pen = parse(&[
+            "tilo-vm",
+            "input",
+            "pen",
+            "tap",
+            "1",
+            "2",
+            "--pressure",
+            "0",
+        ]);
+        assert!(pen.unwrap_err().to_string().contains("pressure"));
     }
 
     fn create_args(name: &str) -> CreateArgs {

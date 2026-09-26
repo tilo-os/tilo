@@ -465,9 +465,14 @@ impl Daemon {
             _ => return Err(DaemonError::HeadlessInput(name.to_owned())),
         };
         // On seat0 the slot sees the VM's real display, not its vkms outputs.
-        let extent = (record.seat0.is_none() && !record.outputs.is_empty())
-            .then(|| crate::display::desktop_extent(&record.outputs));
-        let events = self.apply.input(name, &seat, extent, actions)?;
+        let geometry = match (&record.seat0, record.outputs.first()) {
+            (None, Some(first)) => Some(crate::input::Geometry {
+                desktop: crate::display::desktop_extent(&record.outputs),
+                touch: (first.width, first.height),
+            }),
+            _ => None,
+        };
+        let events = self.apply.input(name, &seat, geometry, actions)?;
         Ok(InputResult {
             slot: record.name,
             seat,

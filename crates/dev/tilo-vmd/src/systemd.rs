@@ -451,18 +451,16 @@ impl Apply for SystemdApply {
         &mut self,
         slot: &str,
         seat: &str,
-        extent: Option<(u32, u32)>,
+        geometry: Option<input::Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError> {
         let socket = input::socket_path(slot);
         let reply = match input::send(&socket, actions) {
-            Ok(reply) if reply.seat == seat && extent.is_none_or(|e| reply.extent == Some(e)) => {
-                reply
-            }
+            Ok(reply) if reply.seat == seat && reply.geometry == geometry => reply,
             // Not running yet, or its devices belong to the seat the slot had
             // before a seat0 claim or release: (re)create them.
             _ => {
-                start_input_server(slot, seat, extent, &socket)?;
+                start_input_server(slot, seat, geometry, &socket)?;
                 input::send(&socket, actions).map_err(|e| DaemonError::Apply {
                     step: format!("send input to {}", input::unit_name(slot)),
                     detail: e.to_string(),
@@ -522,7 +520,7 @@ impl Apply for SystemdApply {
 fn start_input_server(
     slot: &str,
     seat: &str,
-    extent: Option<(u32, u32)>,
+    geometry: Option<input::Geometry>,
     socket: &Path,
 ) -> Result<(), DaemonError> {
     let unit = input::unit_name(slot);
@@ -538,8 +536,13 @@ fn start_input_server(
         .arg(exe)
         .args(["input-serve", "--seat", seat, "--socket"])
         .arg(socket);
-    if let Some((width, height)) = extent {
+    if let Some(input::Geometry {
+        desktop: (width, height),
+        touch: (touch_width, touch_height),
+    }) = geometry
+    {
         command.arg(format!("--extent={width}x{height}"));
+        command.arg(format!("--touch-extent={touch_width}x{touch_height}"));
     }
     run(&format!("systemd-run --unit {unit}"), &mut command)?;
     for _ in 0..100 {

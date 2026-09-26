@@ -40,6 +40,27 @@ tilo-vm input move 400 300          # desktop pixels (see below)
 tilo-vm input click left --at 400 300
 ```
 
+Touch, pen and game controllers work the same way. Each is a uinput device
+plugged into the slot's seat the first time a command needs it, so the
+compositor sees a real touchscreen (libinput touch events), a real pen
+(libinput tablet tool) and a real controller (evdev, opened through the
+seat's device access):
+
+```sh
+tilo-vm input touch tap 400 300
+tilo-vm input touch hold 400 300 --duration 1200     # long-press
+tilo-vm input touch drag 400 600 400 100             # swipe up
+tilo-vm input touch pinch 640 400 --from 100 --to 400
+tilo-vm input pen drag 100 100 500 300 --pressure 80
+tilo-vm input gamepad press a                        # printed legends
+tilo-vm input gamepad press guide+rb
+tilo-vm input gamepad dpad down down
+tilo-vm input gamepad stick left 0 -100 --duration 600
+```
+
+Touch and pen coordinates are pixels of the slot's first output: the
+compositor puts a touchscreen that names no output on the primary one.
+
 Headless slots have no seat and refuse `input`; use `tilo-vm control
 key|type|click` there. While a slot holds seat0, its input goes to seat0.
 

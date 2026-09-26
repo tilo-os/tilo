@@ -14,6 +14,7 @@ use tilo_vm_protocol::{
 };
 
 use crate::error::DaemonError;
+use crate::input::Geometry;
 use crate::slots::{Generation, SlotRecord};
 
 pub const LAYERS_DROPIN: &str = "50-tilo-vm-layers.conf";
@@ -94,15 +95,15 @@ pub trait Apply {
     }
     /// `(free, total)` bytes of the filesystem holding `path`, when known.
     fn disk_space(&mut self, path: &std::path::Path) -> Option<(u64, u64)>;
-    /// Send input through `seat`'s uinput keyboard and pointer, creating
-    /// them on first use; returns the number of kernel events written.
-    /// `extent` is the logical desktop the absolute pointer spans (`None`:
-    /// the seat's first output).
+    /// Send input through `seat`'s uinput devices, creating them on first
+    /// use; returns the number of kernel events written. `geometry` gives
+    /// the coordinate spaces of a slot with several outputs (`None`: every
+    /// device spans the seat's first output).
     fn input(
         &mut self,
         slot: &str,
         seat: &str,
-        extent: Option<(u32, u32)>,
+        geometry: Option<Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError>;
     /// Remove the slot's uinput devices (they follow its seat).
@@ -549,11 +550,13 @@ impl Apply for RecordingApply {
         &mut self,
         slot: &str,
         seat: &str,
-        extent: Option<(u32, u32)>,
+        geometry: Option<Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError> {
-        match extent {
-            Some((w, h)) => self.call(format!("input {slot} {seat} {w}x{h} {}", actions.len())),
+        match geometry {
+            Some(Geometry {
+                desktop: (w, h), ..
+            }) => self.call(format!("input {slot} {seat} {w}x{h} {}", actions.len())),
             None => self.call(format!("input {slot} {seat} {}", actions.len())),
         }
         Ok(u64::try_from(actions.len()).unwrap_or(0).saturating_mul(2))

@@ -27,11 +27,11 @@ use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
 pub use display::OutputSpec;
-pub use input::{Button, InputAction};
+pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
