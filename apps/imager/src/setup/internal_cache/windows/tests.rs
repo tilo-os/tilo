@@ -202,7 +202,8 @@ mod native {
                         });
                         let mut bytes = fs::read(&old).unwrap();
                         if case == 1 {
-                            bytes[layout::GENERATION..layout::EPOCH].copy_from_slice(&3u64.to_le_bytes());
+                            bytes[layout::GENERATION..layout::EPOCH]
+                                .copy_from_slice(&3u64.to_le_bytes());
                         } else {
                             bytes[layout::DIGEST] ^= 1;
                         }
