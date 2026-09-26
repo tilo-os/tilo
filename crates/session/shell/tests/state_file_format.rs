@@ -57,6 +57,7 @@ fn populated_tree() -> WorkspaceTree {
         updated_at: 20,
         audit: Vec::new(),
     });
+    ws.shortcuts = serde_json::from_str(r#"[{"id":"tidy","name":"Tidy","steps":[]}]"#).unwrap();
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(WindowGroup {
         id: 3,

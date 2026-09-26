@@ -528,6 +528,14 @@ impl AppActionBroker {
         self.state.capture_invocations_for_test(peer_id)
     }
 
+    /// Shortcut runs finished since the last call, oldest first, for the
+    /// history recorder to record against the documents they changed.
+    pub fn take_finished_shortcut_runs(
+        &self,
+    ) -> Vec<crate::shell::automation_host::FinishedShortcutRun> {
+        self.state.take_finished_shortcut_runs()
+    }
+
     pub fn statuses_generation(&self) -> u64 {
         self.state.invocations_generation()
     }

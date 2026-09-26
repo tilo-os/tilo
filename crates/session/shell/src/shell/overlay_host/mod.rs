@@ -3000,6 +3000,9 @@ impl ShellOverlayHost {
     ) {
         self.room_activity.attach_task_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
+        ));
+        self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::LiveAppActionsProvider::new(broker),
         ));
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
@@ -24567,6 +24570,7 @@ mod tab_context_menu_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Home".into(),
@@ -33982,6 +33986,7 @@ mod maximize_harvest_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -34235,6 +34240,7 @@ mod resync_strips_tests {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),

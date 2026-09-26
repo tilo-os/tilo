@@ -28,7 +28,9 @@ use super::{
     confirmation_satisfied, permission_verb, published_directory_action,
     validate_directory_target_input,
 };
+use crate::shell::automation_host;
 use crate::shell::collab_broker::CrdtRoute;
+use tilo_automation::SHORTCUTS_APP_ID;
 
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
@@ -313,6 +315,22 @@ impl CapnpBrokerState {
                         )
                     }),
             );
+            rows.extend(
+                automation_host::descriptors(&workspace)
+                    .into_iter()
+                    .filter(|descriptor| {
+                        Self::allowed(
+                            &workspace,
+                            &policy,
+                            SHORTCUTS_APP_ID,
+                            &descriptor.address.action,
+                            descriptor.contract.permission,
+                        )
+                    })
+                    .map(|descriptor| {
+                        action_row(workspace_provider(&room), SHORTCUTS_APP_ID, descriptor)
+                    }),
+            );
             if caller.room().is_some() {
                 rows.extend(
                     crate::shell::launcher::gui_apps()
@@ -509,6 +527,11 @@ impl CapnpBrokerState {
         }
         if let Some(content) = content_launch_target(request) {
             return self.invoke_content_launch(caller, launch.cloned(), content, request);
+        }
+        if let Some(room) = workspace_provider_room(&request.target.provider)
+            && let Some(shortcut) = automation_host::run_target(&request.target.address)
+        {
+            return Pending::ready(self.invoke_shortcut_run(caller, room, shortcut, request));
         }
         Pending::ready(self.invoke_eager(caller, own_peer, request))
     }
@@ -1140,6 +1163,9 @@ impl CapnpBrokerState {
             let (workspace, _) = self.authorized_launch(caller, room, app_id)?;
             return Ok(self.launch_into(&workspace, actor, app_id, None));
         }
+        if address.resource == automation_host::LIBRARY_RESOURCE {
+            return self.start_shortcut_library(caller, actor, room, &address.action, argument);
+        }
         if matches!(
             address.action.as_str(),
             crate::shell::state::PROFILE_SAVE_ACTION_ID
@@ -1158,6 +1184,184 @@ impl CapnpBrokerState {
                 .map_err(refusal);
         }
         Err(ActionHostError::UnknownAction)
+    }
+
+    /// Apply one shortcut library action for `caller` in `room`. A saved
+    /// shortcut is checked against exactly what `caller` is offered now.
+    fn start_shortcut_library(
+        &self,
+        caller: &Caller,
+        actor: &BrokerActor,
+        room: &str,
+        action: &str,
+        argument: Option<&str>,
+    ) -> Result<u64, ActionHostError> {
+        let descriptor =
+            automation_host::library_descriptor(action).ok_or(ActionHostError::UnknownAction)?;
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if !Self::allowed(
+            &workspace,
+            &policy,
+            SHORTCUTS_APP_ID,
+            action,
+            descriptor.contract.permission,
+        ) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let operation = automation_host::decode_library(action, argument)
+            .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
+        let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: "the action broker has no workspace authority".into(),
+            })?;
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let output = {
+            let mut tree = membership.write();
+            let output =
+                automation_host::apply_library(&mut tree, workspace.id, operation, &catalog)
+                    .map_err(|reason| ActionHostError::Refused { reason })?;
+            if action != automation_host::LIST_ACTION {
+                let _ = tree.append_workspace_effect_receipt(
+                    workspace.id,
+                    invocation,
+                    &actor.id,
+                    automation_host::library_context(&descriptor),
+                    tilo_actions::EffectReceiptStatus::Succeeded,
+                );
+            }
+            output
+        };
+        self.record_completion(
+            id,
+            actor.id.clone(),
+            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
+        );
+        Ok(id)
+    }
+
+    /// Admit a run of saved shortcut `shortcut_id` in `room` for `caller`
+    /// and start it. The run invokes every step through this broker as
+    /// `caller`, so each step meets `caller`'s own authority as well as the
+    /// shortcut's grant; the admission answers at once and the run reports
+    /// its outcome on the invocation when it ends. The run's id is the
+    /// invocation's, so the history it leaves is found from the receipt.
+    fn invoke_shortcut_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        room: &str,
+        shortcut_id: &str,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        let abandon = |error: ActionHostError| {
+            if let Ok(mut ledger) = self.remote_invocations.lock() {
+                ledger.abandon(&request.invocation);
+            }
+            error
+        };
+        let reservation = self
+            .remote_invocations
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            })?
+            .reserve(caller, request)?;
+        if matches!(reservation, Reservation::Admitted) {
+            return self
+                .remote_job(caller, &request.invocation)
+                .map(|job| self.receipt_for(request.invocation, job))
+                .ok_or(ActionHostError::UnknownInvocation);
+        }
+        let Some(shortcut) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .and_then(|(workspace, _)| {
+                workspace
+                    .shortcuts
+                    .iter()
+                    .find(|shortcut| shortcut.id == shortcut_id)
+                    .cloned()
+            })
+        else {
+            return Err(abandon(ActionHostError::UnknownAction));
+        };
+        let inputs = match &request.argument {
+            tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+            tilo_actions::remote::InvokeArgument::Json(inputs) => inputs.clone(),
+            tilo_actions::remote::InvokeArgument::Text(_) => {
+                return Err(abandon(ActionHostError::InvalidRequest {
+                    reason: "a shortcut takes its inputs as JSON arguments".into(),
+                }));
+            }
+        };
+        let runtime = crate::session_runtime::runtime()
+            .map_err(|reason| abandon(ActionHostError::Unavailable { reason }))?;
+        let actor = BrokerActor::for_caller(caller).id;
+        let job = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
+        self.record_completion(
+            job,
+            actor.clone(),
+            tilo_actions::InvocationUpdate::Accepted { invocation },
+        );
+        if let Ok(mut ledger) = self.remote_invocations.lock() {
+            ledger.complete(&request.invocation, job);
+        }
+        let host = crate::shell::remote_actions::BrokerActionHost::new(
+            crate::shell::collab_broker::AppActionBroker::from_state(Arc::clone(self)),
+        );
+        let hooks = automation_host::DoorHooks::new(request.confirmation.clone());
+        let mode = automation_host::run_mode(request.confirmation.as_ref());
+        let run = tilo_automation::RunId(request.invocation.0);
+        let state = Arc::clone(self);
+        let caller = caller.clone();
+        let room = room.to_string();
+        runtime.spawn(async move {
+            let report = tilo_automation::run(
+                &host,
+                &hooks,
+                tilo_automation::RunRequest {
+                    shortcut: &shortcut,
+                    run,
+                    caller,
+                    mode,
+                    trigger: tilo_automation::RunTrigger::Manual,
+                    inputs,
+                },
+            )
+            .await;
+            state.record_completion(
+                job,
+                actor.clone(),
+                automation_host::completion(invocation, &report),
+            );
+            state
+                .shortcut_runs
+                .push(automation_host::FinishedShortcutRun {
+                    room,
+                    shortcut,
+                    invoker: actor,
+                    report,
+                });
+        });
+        Ok(self.receipt_for(request.invocation, job))
+    }
+
+    /// Shortcut runs finished since the last call, oldest first.
+    pub(crate) fn take_finished_shortcut_runs(&self) -> Vec<automation_host::FinishedShortcutRun> {
+        self.shortcut_runs.take()
     }
 
     /// Launch `app_id` into `workspace`, optionally opening a staged
