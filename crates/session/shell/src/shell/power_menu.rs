@@ -153,11 +153,16 @@ impl PowerMenu {
                 .with_state(AccessState::new().modal(true))
                 .with_children(
                     self.rows()
-                        .map(|(action, _)| {
+                        .enumerate()
+                        .map(|(index, (action, _))| {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
                                 .with_description(action.detail())
-                                .with_state(AccessState::new().focusable(true))
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(index == self.selected),
+                                )
                         })
                         .collect(),
                 )
