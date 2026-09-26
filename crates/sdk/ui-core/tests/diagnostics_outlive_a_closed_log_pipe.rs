@@ -159,47 +159,50 @@ fn with_stderr_pointed_at<R>(writer_fd: i32, body: impl FnOnce() -> R) -> R {
 }
 
 #[test]
-fn diag_writes_the_line_when_stderr_works() {
-    use std::io::Read;
+fn diag_delivers_whole_lines_when_stderr_works() {
+    // Case `diag_writes_the_line_when_stderr_works`.
+    {
+        use std::io::Read;
 
-    let _guard = STDERR_SLOT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
+        let _guard = STDERR_SLOT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
 
-    with_stderr_pointed_at(writer.as_raw_fd(), || {
-        diag!("[app] recv document {}B", 64);
-    });
-    drop(writer);
+        with_stderr_pointed_at(writer.as_raw_fd(), || {
+            diag!("[app] recv document {}B", 64);
+        });
+        drop(writer);
 
-    let mut buf = [0u8; 256];
-    let n = reader.read(&mut buf).expect("read the diagnostic back");
-    assert_eq!(&buf[..n], b"[app] recv document 64B\n");
-}
+        let mut buf = [0u8; 256];
+        let n = reader.read(&mut buf).expect("read the diagnostic back");
+        assert_eq!(&buf[..n], b"[app] recv document 64B\n");
+    }
 
-/// Not tidiness: the compositor's relay decodes this stderr as UTF-8, and a
-/// line torn between two halves of a multi-byte character fails that decode
-/// — a relay that stops on a decode error closes the reading end, which is
-/// the other way an application loses the reader of its stderr.
-#[test]
-fn a_diagnostic_line_reaches_the_pipe_whole() {
-    use std::io::Read;
+    // Case `a_diagnostic_line_reaches_the_pipe_whole`.
+    // Not tidiness: the compositor's relay decodes this stderr as UTF-8, and a
+    // line torn between two halves of a multi-byte character fails that decode
+    // — a relay that stops on a decode error closes the reading end, which is
+    // the other way an application loses the reader of its stderr.
+    {
+        use std::io::Read;
 
-    let _guard = STDERR_SLOT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
-    let writer_fd = writer.into_raw_fd();
+        let _guard = STDERR_SLOT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut reader, writer) = std::io::pipe().expect("pipe for the stand-in stderr");
+        let writer_fd = writer.into_raw_fd();
 
-    with_stderr_pointed_at(writer_fd, || {
-        // Multi-byte, so a torn write shows up as invalid UTF-8 rather than
-        // merely as a short line.
-        diag!("{}", "→→→→→→→→");
-    });
-    unsafe { libc::close(writer_fd) };
+        with_stderr_pointed_at(writer_fd, || {
+            // Multi-byte, so a torn write shows up as invalid UTF-8 rather than
+            // merely as a short line.
+            diag!("{}", "→→→→→→→→");
+        });
+        unsafe { libc::close(writer_fd) };
 
-    let mut buf = [0u8; 256];
-    let n = reader.read(&mut buf).expect("read the diagnostic back");
-    let text = std::str::from_utf8(&buf[..n]).expect("the line is valid UTF-8");
-    assert_eq!(text, "→→→→→→→→\n");
+        let mut buf = [0u8; 256];
+        let n = reader.read(&mut buf).expect("read the diagnostic back");
+        let text = std::str::from_utf8(&buf[..n]).expect("the line is valid UTF-8");
+        assert_eq!(text, "→→→→→→→→\n");
+    }
 }

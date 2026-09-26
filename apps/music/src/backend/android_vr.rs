@@ -156,29 +156,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn player_response_prefers_trusted_m4a_audio() {
-        let response = br#"{
-          "playabilityStatus":{"status":"OK"},
-          "streamingData":{"adaptiveFormats":[
-            {"itag":251,"url":"https://r1.googlevideo.com/videoplayback?itag=251","mimeType":"audio/webm; codecs=\"opus\"","bitrate":160000,"contentLength":"4000000"},
-            {"itag":140,"url":"https://r1.googlevideo.com/videoplayback?itag=140","mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":128000,"contentLength":"3458986","approxDurationMs":"212000"},
-            {"itag":999,"url":"https://attacker.invalid/audio","mimeType":"audio/mp4","bitrate":999999}
-          ]}}
-        "#;
-        let stream = parse_player_response("video_id", response).expect("valid audio stream");
-        assert_eq!(stream.itag, 140);
-        assert_eq!(stream.size_bytes, 3_458_986);
-        assert_eq!(stream.duration_ms, 212_000);
-        assert_eq!(stream.format, "m4a");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn player_response_prefers_trusted_m4a_and_fails_closed() {
+        // Phase `player_response_prefers_trusted_m4a_audio`.
+        {
+            let response = br#"{
+              "playabilityStatus":{"status":"OK"},
+              "streamingData":{"adaptiveFormats":[
+                {"itag":251,"url":"https://r1.googlevideo.com/videoplayback?itag=251","mimeType":"audio/webm; codecs=\"opus\"","bitrate":160000,"contentLength":"4000000"},
+                {"itag":140,"url":"https://r1.googlevideo.com/videoplayback?itag=140","mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":128000,"contentLength":"3458986","approxDurationMs":"212000"},
+                {"itag":999,"url":"https://attacker.invalid/audio","mimeType":"audio/mp4","bitrate":999999}
+              ]}}
+            "#;
+            let stream = parse_player_response("video_id", response).expect("valid audio stream");
+            assert_eq!(stream.itag, 140);
+            assert_eq!(stream.size_bytes, 3_458_986);
+            assert_eq!(stream.duration_ms, 212_000);
+            assert_eq!(stream.format, "m4a");
+        }
 
-    #[test]
-    fn player_response_fails_closed() {
-        assert!(
-            parse_player_response("v", br#"{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"#)
-                .is_none()
-        );
-        assert!(parse_player_response("v", br#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":140,"url":"https://googlevideo.com.attacker.invalid/a","mimeType":"audio/mp4"}]}}"#).is_none());
+        // Phase `player_response_fails_closed`.
+        {
+            assert!(
+                parse_player_response("v", br#"{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"#)
+                    .is_none()
+            );
+            assert!(parse_player_response("v", br#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"itag":140,"url":"https://googlevideo.com.attacker.invalid/a","mimeType":"audio/mp4"}]}}"#).is_none());
+        }
     }
 
     #[cfg(feature = "live")]

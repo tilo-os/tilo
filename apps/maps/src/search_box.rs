@@ -457,51 +457,58 @@ mod tests {
     }
 
     #[test]
-    fn debounce_replaces_results_and_fires_once() {
-        let mut search = SearchBox::new();
-        let now = Instant::now();
-        search.query_changed("caf", vec![place("local")], now);
-        assert_eq!(search.results()[0].id, "local");
-        assert!(search.take_due_query(now, "caf").is_none());
-        assert_eq!(
-            search.take_due_query(now + DEBOUNCE, " caf "),
-            Some("caf".into())
-        );
-        assert!(search.take_due_query(now + DEBOUNCE, "caf").is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn search_box_debounces_picks_dismisses_and_skips_spellcheck() {
+        // Phase `debounce_replaces_results_and_fires_once`.
+        {
+            let mut search = SearchBox::new();
+            let now = Instant::now();
+            search.query_changed("caf", vec![place("local")], now);
+            assert_eq!(search.results()[0].id, "local");
+            assert!(search.take_due_query(now, "caf").is_none());
+            assert_eq!(
+                search.take_due_query(now + DEBOUNCE, " caf "),
+                Some("caf".into())
+            );
+            assert!(search.take_due_query(now + DEBOUNCE, "caf").is_none());
+        }
 
-    #[test]
-    fn picking_is_an_owned_event_effect() {
-        let mut search = SearchBox::new();
-        search.set_focused(true);
-        search.replace_results(vec![place("first")]);
-        let SearchEffect::Pick(picked) = search.handle_hit(&SearchHit::Result(0)) else {
-            panic!("result hit must produce a pick effect");
-        };
-        assert_eq!(picked.id, "first");
-        assert!(!search.is_focused());
-        assert!(search.results().is_empty());
-    }
+        // Phase `picking_is_an_owned_event_effect`.
+        {
+            let mut search = SearchBox::new();
+            search.set_focused(true);
+            search.replace_results(vec![place("first")]);
+            let SearchEffect::Pick(picked) = search.handle_hit(&SearchHit::Result(0)) else {
+                panic!("result hit must produce a pick effect");
+            };
+            assert_eq!(picked.id, "first");
+            assert!(!search.is_focused());
+            assert!(search.results().is_empty());
+        }
 
-    #[test]
-    fn dismiss_keeps_the_query_but_drops_transient_suggestions() {
-        let mut search = SearchBox::new();
-        let now = Instant::now();
-        search.set_focused(true);
-        search.query_changed("museum", vec![place("local")], now);
+        // Phase `dismiss_keeps_the_query_but_drops_transient_suggestions`.
+        {
+            let mut search = SearchBox::new();
+            let now = Instant::now();
+            search.set_focused(true);
+            search.query_changed("museum", vec![place("local")], now);
 
-        search.dismiss();
+            search.dismiss();
 
-        assert!(!search.is_focused());
-        assert!(search.results().is_empty());
-        assert!(search.take_due_query(now + DEBOUNCE, "museum").is_none());
-    }
+            assert!(!search.is_focused());
+            assert!(search.results().is_empty());
+            assert!(search.take_due_query(now + DEBOUNCE, "museum").is_none());
+        }
 
-    #[test]
-    fn place_search_is_not_spellchecked_as_prose() {
-        assert!(
-            !SearchBox::new().input.spellcheck_enabled(),
-            "place and address terms must not gain spelling-error decoration"
-        );
+        // Phase `place_search_is_not_spellchecked_as_prose`.
+        {
+            assert!(
+                !SearchBox::new().input.spellcheck_enabled(),
+                "place and address terms must not gain spelling-error decoration"
+            );
+        }
     }
 }

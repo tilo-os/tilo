@@ -144,6 +144,7 @@ enum Tint {
     Screen,
     Remote,
     Network,
+    AppAction,
 }
 
 impl Tint {
@@ -151,7 +152,7 @@ impl Tint {
         match self {
             Tint::Files => c.semantic.info,
             Tint::Camera | Tint::Microphone => c.semantic.warning,
-            Tint::Screen => c.accent[5],
+            Tint::Screen | Tint::AppAction => c.accent[5],
             Tint::Remote => c.semantic.danger,
             Tint::Network => c.semantic.success,
         }
@@ -189,8 +190,8 @@ fn expiry_label(e: Expiry) -> &'static str {
 }
 
 /// Project one stored capability into a display capability, or `None` when it
-/// is not an app portal grant this pane renders (role/room/action/resource
-/// overrides and restrictions are enforcement plumbing, not app permissions).
+/// is not an app grant this pane renders (role/room/resource overrides and
+/// restrictions are enforcement plumbing, not app permissions).
 fn cap_view(cap: &CapOverride) -> Option<CapView> {
     if cap.effect != Effect::Grant {
         return None;
@@ -227,6 +228,13 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             };
             ("Network", detail, Tint::Network)
         }
+        // Another app's action this app may use: the consent sheet grants
+        // these; the workspace's own Settings lists them under App actions.
+        Scope::Action { app, action } => (
+            "App action",
+            format!("Use \u{201c}{action}\u{201d} in {app}"),
+            Tint::AppAction,
+        ),
         _ => return None,
     };
     Some(CapView {
@@ -618,160 +626,180 @@ mod tests {
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
+    /// Read-only pane, owner routing, scope kinds and one pill per grant.
     #[test]
-    fn is_read_only_except_for_one_live_context_route() {
-        // The pane still cannot mutate state.json. Its only button asks the
-        // shell to reveal the active workspace's authoritative controls.
-        for json in [None, Some(sample_state().as_str())] {
-            let mut pane = build_view(json);
+    fn permissions_pane_is_read_only_and_routes_workspace_access() {
+        // Case `is_read_only_except_for_one_live_context_route`.
+        {
+            // The pane still cannot mutate state.json. Its only button asks the
+            // shell to reveal the active workspace's authoritative controls.
+            for json in [None, Some(sample_state().as_str())] {
+                let mut pane = build_view(json);
+                build_layout_of(&mut pane);
+                assert_eq!(count_named(pane.as_ref(), "Button"), 1);
+            }
+        }
+
+        // Case `workspace_access_is_explicitly_routed_to_its_owner`.
+        {
+            // System Settings never pretends it can edit a workspace. The one
+            // live control is an explicit route to the current workspace's
+            // authoritative access surface.
+            let mut pane = build_view(Some(&sample_state()));
             build_layout_of(&mut pane);
-            assert_eq!(count_named(pane.as_ref(), "Button"), 1);
+            let mut labels = Vec::new();
+            button_labels(pane.as_ref(), &mut labels);
+            assert_eq!(labels, vec!["Open current workspace access"]);
+        }
+
+        // Case `cap_view_maps_each_scope_to_its_kind`.
+        {
+            let g = |scope, verb| {
+                cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
+            };
+            assert_eq!(
+                g(Scope::Device("camera".into()), Verb::Read),
+                Some("Camera")
+            );
+            assert_eq!(
+                g(Scope::Device("microphone".into()), Verb::Read),
+                Some("Microphone")
+            );
+            assert_eq!(
+                g(Scope::Device("screencast".into()), Verb::Read),
+                Some("Screen sharing")
+            );
+            assert_eq!(
+                g(Scope::Device("remote-desktop".into()), Verb::Write),
+                Some("Remote control")
+            );
+            assert_eq!(g(Scope::NetHost("*".into()), Verb::Write), Some("Network"));
+            let action = cap_view(&CapOverride::grant(
+                Subject::app("so.tilo.shortcuts"),
+                Scope::Action {
+                    app: "so.tilo.agent".into(),
+                    action: "freeform".into(),
+                },
+                Verb::Write,
+            ))
+            .unwrap();
+            assert_eq!(action.kind, "App action");
+            assert!(action.detail.contains("freeform") && action.detail.contains("so.tilo.agent"));
+            // Read vs write is reflected in the file detail.
+            let rw = cap_view(&CapOverride::grant(
+                Subject::app("a"),
+                Scope::FsPath("/w".into()),
+                Verb::Write,
+            ))
+            .unwrap();
+            assert!(rw.detail.contains("read & write"));
+            // A restriction (not a grant) renders nothing.
+            assert!(
+                cap_view(&CapOverride::new(
+                    Subject::app("a"),
+                    Scope::Device("camera".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ))
+                .is_none()
+            );
+        }
+
+        // Case `populated_pane_renders_a_pill_per_grant`.
+        {
+            // Two grants → the workspace card carries a kind pill + a lifetime chip
+            // for each (4 badges), built from the real projection.
+            let mut pane = build_view(Some(&sample_state()));
+            build_layout_of(&mut pane);
+            assert_eq!(
+                count_named(pane.as_ref(), "Badge"),
+                4,
+                "two pills per grant"
+            );
+            // Intro + one workspace + enforcement cards are all present.
+            assert!(count_named(pane.as_ref(), "Card") >= 3);
         }
     }
 
+    /// Real grants, missing/empty/malformed state and omitted workspaces.
     #[test]
-    fn workspace_access_is_explicitly_routed_to_its_owner() {
-        // System Settings never pretends it can edit a workspace. The one
-        // live control is an explicit route to the current workspace's
-        // authoritative access surface.
-        let mut pane = build_view(Some(&sample_state()));
-        build_layout_of(&mut pane);
-        let mut labels = Vec::new();
-        button_labels(pane.as_ref(), &mut labels);
-        assert_eq!(labels, vec!["Open current workspace access"]);
-    }
-
-    #[test]
-    fn projection_reads_the_real_grants_from_state_json() {
-        // The projection is exactly what `build_view` renders from, so
-        // asserting on it asserts on the production path.
-        let all = project(&sample_state()).expect("sample state parses");
-        assert_eq!(all.len(), 1, "one workspace holds grants");
-        assert_eq!(all[0].name, "Studio");
-        assert_eq!(all[0].apps.len(), 1, "one app");
-        assert_eq!(all[0].apps[0].app, "org.tilo.Camera");
-        assert_eq!(all[0].apps[0].caps.len(), 2, "camera + file grant");
-        assert_eq!(grant_count(&all), 2);
-        // The file grant carries the path + mode; the camera grant its kind.
-        let kinds: Vec<&str> = all[0].apps[0].caps.iter().map(|c| c.kind).collect();
-        assert!(kinds.contains(&"Camera") && kinds.contains(&"Files"));
-        let file = all[0].apps[0]
-            .caps
-            .iter()
-            .find(|c| c.kind == "Files")
-            .unwrap();
-        assert!(file.detail.contains("/var/workspace/Photos"));
-        assert!(file.detail.contains("read-only"));
-    }
-
-    #[test]
-    fn cap_view_maps_each_scope_to_its_kind() {
-        let g = |scope, verb| {
-            cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
-        };
-        assert_eq!(
-            g(Scope::Device("camera".into()), Verb::Read),
-            Some("Camera")
-        );
-        assert_eq!(
-            g(Scope::Device("microphone".into()), Verb::Read),
-            Some("Microphone")
-        );
-        assert_eq!(
-            g(Scope::Device("screencast".into()), Verb::Read),
-            Some("Screen sharing")
-        );
-        assert_eq!(
-            g(Scope::Device("remote-desktop".into()), Verb::Write),
-            Some("Remote control")
-        );
-        assert_eq!(g(Scope::NetHost("*".into()), Verb::Write), Some("Network"));
-        // Read vs write is reflected in the file detail.
-        let rw = cap_view(&CapOverride::grant(
-            Subject::app("a"),
-            Scope::FsPath("/w".into()),
-            Verb::Write,
-        ))
-        .unwrap();
-        assert!(rw.detail.contains("read & write"));
-        // A restriction (not a grant) renders nothing.
-        assert!(
-            cap_view(&CapOverride::new(
-                Subject::app("a"),
-                Scope::Device("camera".into()),
-                Effect::Restrict,
-                Verb::Read,
-            ))
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn populated_pane_renders_a_pill_per_grant() {
-        // Two grants → the workspace card carries a kind pill + a lifetime chip
-        // for each (4 badges), built from the real projection.
-        let mut pane = build_view(Some(&sample_state()));
-        build_layout_of(&mut pane);
-        assert_eq!(
-            count_named(pane.as_ref(), "Badge"),
-            4,
-            "two pills per grant"
-        );
-        // Intro + one workspace + enforcement cards are all present.
-        assert!(count_named(pane.as_ref(), "Card") >= 3);
-    }
-
-    #[test]
-    fn missing_state_never_claims_that_no_grants_exist() {
-        // No state document means the panel cannot make a claim about grants.
-        let mut pane = build_view(None);
-        build_layout_of(&mut pane);
-        assert_eq!(
-            count_named(pane.as_ref(), "Badge"),
-            0,
-            "no grant pills when empty"
-        );
-        let mut labels = Vec::new();
-        text_labels(pane.as_ref(), &mut labels);
-        assert!(labels.contains(&"Workspace access status unavailable".to_string()));
-        assert!(
-            !labels
+    fn permission_state_is_reported_truthfully() {
+        // Case `projection_reads_the_real_grants_from_state_json`.
+        {
+            // The projection is exactly what `build_view` renders from, so
+            // asserting on it asserts on the production path.
+            let all = project(&sample_state()).expect("sample state parses");
+            assert_eq!(all.len(), 1, "one workspace holds grants");
+            assert_eq!(all[0].name, "Studio");
+            assert_eq!(all[0].apps.len(), 1, "one app");
+            assert_eq!(all[0].apps[0].app, "org.tilo.Camera");
+            assert_eq!(all[0].apps[0].caps.len(), 2, "camera + file grant");
+            assert_eq!(grant_count(&all), 2);
+            // The file grant carries the path + mode; the camera grant its kind.
+            let kinds: Vec<&str> = all[0].apps[0].caps.iter().map(|c| c.kind).collect();
+            assert!(kinds.contains(&"Camera") && kinds.contains(&"Files"));
+            let file = all[0].apps[0]
+                .caps
                 .iter()
-                .any(|label| label.contains("Nothing here means nothing is granted"))
-        );
-    }
+                .find(|c| c.kind == "Files")
+                .unwrap();
+            assert!(file.detail.contains("/var/workspace/Photos"));
+            assert!(file.detail.contains("read-only"));
+        }
 
-    #[test]
-    fn valid_empty_state_is_the_only_path_that_claims_no_grants() {
-        let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
-        build_layout_of(&mut pane);
-        let mut labels = Vec::new();
-        text_labels(pane.as_ref(), &mut labels);
-        assert!(labels.contains(&"No workspace access grants".to_string()));
-        assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
-    }
+        // Case `missing_state_never_claims_that_no_grants_exist`.
+        {
+            // No state document means the panel cannot make a claim about grants.
+            let mut pane = build_view(None);
+            build_layout_of(&mut pane);
+            assert_eq!(
+                count_named(pane.as_ref(), "Badge"),
+                0,
+                "no grant pills when empty"
+            );
+            let mut labels = Vec::new();
+            text_labels(pane.as_ref(), &mut labels);
+            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(
+                !labels
+                    .iter()
+                    .any(|label| label.contains("Nothing here means nothing is granted"))
+            );
+        }
 
-    #[test]
-    fn workspace_without_app_grants_is_omitted() {
-        // A workspace whose only capability is room membership (a person
-        // subject) holds no *app* grant and must not render a card.
-        let membership = CapOverride::membership(Subject::person("alice"), "room-1", Verb::Write);
-        let caps = serde_json::to_string(&vec![membership]).unwrap();
-        let json = format!(r#"{{"workspaces":[{{"name":"Empty","capabilities":{caps}}}]}}"#);
-        assert!(
-            project(&json).expect("valid workspace state").is_empty(),
-            "no app grants → no workspace card"
-        );
-    }
+        // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
+        {
+            let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
+            build_layout_of(&mut pane);
+            let mut labels = Vec::new();
+            text_labels(pane.as_ref(), &mut labels);
+            assert!(labels.contains(&"No workspace access grants".to_string()));
+            assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
+        }
 
-    #[test]
-    fn malformed_document_is_reported_as_unavailable_not_empty() {
-        assert!(project("not json {").is_err());
-        let mut pane = build_view(Some("not json {"));
-        build_layout_of(&mut pane);
-        assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
-        let mut labels = Vec::new();
-        text_labels(pane.as_ref(), &mut labels);
-        assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+        // Case `workspace_without_app_grants_is_omitted`.
+        {
+            // A workspace whose only capability is room membership (a person
+            // subject) holds no *app* grant and must not render a card.
+            let membership =
+                CapOverride::membership(Subject::person("alice"), "room-1", Verb::Write);
+            let caps = serde_json::to_string(&vec![membership]).unwrap();
+            let json = format!(r#"{{"workspaces":[{{"name":"Empty","capabilities":{caps}}}]}}"#);
+            assert!(
+                project(&json).expect("valid workspace state").is_empty(),
+                "no app grants → no workspace card"
+            );
+        }
+
+        // Case `malformed_document_is_reported_as_unavailable_not_empty`.
+        {
+            assert!(project("not json {").is_err());
+            let mut pane = build_view(Some("not json {"));
+            build_layout_of(&mut pane);
+            assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
+            let mut labels = Vec::new();
+            text_labels(pane.as_ref(), &mut labels);
+            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+        }
     }
 }

@@ -206,8 +206,11 @@ mod tests {
         out
     }
 
+    /// The phrase is found where it was typed, both in a document built here
+    /// and in the reply a running app gave; the controls — the same shapes
+    /// without the phrase — must not report it.
     #[test]
-    fn text_typed_into_a_document_is_found_by_path() {
+    fn typed_text_is_found_by_path_and_absent_text_is_not() {
         let found = strings(&saved_document(TYPED));
         let hit = found
             .iter()
@@ -217,10 +220,8 @@ mod tests {
             hit.0, "blocks[0].text",
             "the path must name where the text sits, so a failing check can say where it looked",
         );
-    }
 
-    #[test]
-    fn a_document_without_the_text_does_not_report_it() {
+        // A document without the text does not report it.
         let found = strings(&saved_document("something else entirely"));
         assert!(
             !found.iter().any(|(_, t)| t.contains(TYPED)),
@@ -233,17 +234,8 @@ mod tests {
                 .iter()
                 .any(|(p, t)| p == "styles.quote.name" && t == "quote")
         );
-    }
 
-    /// The document a real word processor answered with, captured byte-for-byte from a running
-    /// packaged app (headless session, text typed, a client asking for the document) — makes the tests below claims about the product, not guesses about Automerge's encoder.
-    const FROM_A_RUNNING_APP: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/word-processor-typed.automerge"
-    ));
-
-    #[test]
-    fn the_reply_from_a_running_app_cannot_be_searched_as_bytes() {
+        // The reply from a running app cannot be searched as bytes, only decoded.
         assert!(
             !contains_bytes(FROM_A_RUNNING_APP, TYPED),
             "a substring search over the saved document does not find the \
@@ -257,11 +249,9 @@ mod tests {
             Some("blocks.77702d32.0.text"),
             "and decoding it finds the phrase, in the paragraph it was typed into",
         );
-    }
 
-    /// The control: without it the test above would also pass against a document that never had the text.
-    #[test]
-    fn the_same_app_before_typing_holds_no_such_text() {
+        // The control: without it the check above would also pass against a
+        // document that never had the text.
         let found = strings(&saved_document(""));
         assert!(
             !found.iter().any(|(_, t)| t.contains(TYPED)),
@@ -275,6 +265,13 @@ mod tests {
              above is an answer and not an empty walk",
         );
     }
+
+    /// The document a real word processor answered with, captured byte-for-byte from a running
+    /// packaged app (headless session, text typed, a client asking for the document) — makes the checks that read it claims about the product, not guesses about Automerge's encoder.
+    const FROM_A_RUNNING_APP: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/word-processor-typed.automerge"
+    ));
 
     fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
         haystack
@@ -322,9 +319,11 @@ mod tests {
         d.save()
     }
 
-    /// Text in a table cell is text, and is found: cells are ordinary blocks, so the walk does not stop at body text.
+    /// Text in a table cell is text, and is found: cells are ordinary blocks, so
+    /// the walk does not stop at body text. The control: a table does not
+    /// report cells it never held.
     #[test]
-    fn text_written_into_a_table_cell_is_found() {
+    fn table_cells_are_found_and_only_the_ones_written() {
         let saved = table_document();
         let found = strings(&saved);
         let hit = found
@@ -354,12 +353,8 @@ mod tests {
             "the phrase must be absent from the saved bytes — that absence is what \
              a byte search would report as an empty page",
         );
-    }
 
-    /// The control for the test above.
-    #[test]
-    fn a_table_does_not_report_cells_it_never_held() {
-        let found = strings(&table_document());
+        // The control.
         assert!(
             !found.iter().any(|(_, t)| t.contains("gamma")),
             "a table must not claim a row that was never written into it",
@@ -367,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn nesting_is_walked_to_the_bottom() {
+    fn the_walk_reaches_nested_values_and_skips_empty_ones() {
         let mut doc = AutoCommit::new();
         let a = doc.put_object(&automerge::ROOT, "a", ObjType::Map).unwrap();
         let b = doc.put_object(&a, "b", ObjType::List).unwrap();
@@ -382,10 +377,8 @@ mod tests {
                 .map(|(p, _)| p.as_str()),
             Some("a.b[0].deep"),
         );
-    }
 
-    #[test]
-    fn empty_strings_are_not_reported() {
+        // Empty strings are not reported.
         let mut doc = AutoCommit::new();
         doc.put(&automerge::ROOT, "blank", "").unwrap();
         let t = doc

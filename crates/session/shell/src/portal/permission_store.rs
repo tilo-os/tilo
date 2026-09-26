@@ -507,49 +507,49 @@ fn checked_permissions(
 mod tests {
     use super::*;
     #[test]
-    fn store_survives_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("permissions.json");
-        let store = PermissionStoreData::at_path(&path);
-        store
-            .with_mutation(|state| {
-                state.entries.entry("documents".into()).or_default().insert(
-                    "one".into(),
-                    StoredEntry {
-                        permissions: BTreeMap::from([(
-                            "org.example.App".into(),
-                            vec!["yes".into()],
-                        )]),
-                        data: StoredValue::Text("x".into()),
-                    },
-                );
-                Ok(())
-            })
-            .unwrap();
-        let reopened = PermissionStoreData::at_path(path);
-        assert!(
-            reopened
-                .state
-                .lock()
-                .unwrap()
-                .entries
-                .contains_key("documents")
-        );
-    }
-    #[test]
-    fn rejects_path_like_keys() {
+    fn permission_store_persists_bounded_entries_and_rejects_path_keys() {
+        // Phase `store_survives_reopen`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("permissions.json");
+            let store = PermissionStoreData::at_path(&path);
+            store
+                .with_mutation(|state| {
+                    state.entries.entry("documents".into()).or_default().insert(
+                        "one".into(),
+                        StoredEntry {
+                            permissions: BTreeMap::from([(
+                                "org.example.App".into(),
+                                vec!["yes".into()],
+                            )]),
+                            data: StoredValue::Text("x".into()),
+                        },
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            let reopened = PermissionStoreData::at_path(path);
+            assert!(
+                reopened
+                    .state
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .contains_key("documents")
+            );
+        }
+        // Phase `rejects_path_like_keys`.
         assert!(PermissionStoreData::entry("table", "../escape").is_err());
-    }
-
-    #[test]
-    fn arbitrary_bounded_variant_round_trips() {
-        let input = OwnedValue::try_from(zbus::zvariant::Value::new((
-            7_u32,
-            vec!["monitor-1".to_string(), "window-2".to_string()],
-        )))
-        .unwrap();
-        let stored = StoredValue::from_value(input).unwrap();
-        let restored: (u32, Vec<String>) = stored.to_value().try_into().unwrap();
-        assert_eq!(restored, (7, vec!["monitor-1".into(), "window-2".into()]));
+        // Phase `arbitrary_bounded_variant_round_trips`.
+        {
+            let input = OwnedValue::try_from(zbus::zvariant::Value::new((
+                7_u32,
+                vec!["monitor-1".to_string(), "window-2".to_string()],
+            )))
+            .unwrap();
+            let stored = StoredValue::from_value(input).unwrap();
+            let restored: (u32, Vec<String>) = stored.to_value().try_into().unwrap();
+            assert_eq!(restored, (7, vec!["monitor-1".into(), "window-2".into()]));
+        }
     }
 }

@@ -53,20 +53,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn modal_reports_dialog_role_modal_and_title() {
-        let m = Modal::new("confirm").with_title("Delete file?");
-        let node = m.accessibility();
-        assert_eq!(node.role, Role::Dialog);
-        assert_eq!(node.name.as_deref(), Some("Delete file?"));
-        assert!(
-            node.state.modal,
-            "a modal overlay traps focus → modal flag set"
-        );
-    }
-
-    #[test]
-    fn untitled_modal_has_no_accessible_name() {
-        let m = Modal::new("confirm");
-        assert_eq!(m.accessibility().name, None);
+    fn a_modal_reports_the_dialog_role_modal_state_and_its_title_if_any() {
+        // phase: modal_reports_dialog_role_modal_and_title
+        {
+            let m = Modal::new("confirm").with_title("Delete file?");
+            let node = m.accessibility();
+            assert_eq!(node.role, Role::Dialog);
+            assert_eq!(node.name.as_deref(), Some("Delete file?"));
+            assert!(
+                node.state.modal,
+                "a modal overlay traps focus → modal flag set"
+            );
+        }
+        // phase: untitled_modal_has_no_accessible_name
+        {
+            let m = Modal::new("confirm");
+            assert_eq!(m.accessibility().name, None);
+        }
     }
 }

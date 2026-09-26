@@ -1176,120 +1176,128 @@ fn fit_slide_top(area: Rect) -> Rect {
 mod tests {
     use super::*;
 
+    /// Blank navigation, presenter clicks and the paused timer.
     #[test]
-    fn blank_navigation_resumes_before_advancing() {
-        let mut p = Presentation::default();
-        p.set_blank(Blank::Black);
-        assert_eq!(
-            p.handle_key(&Key::Named(NamedKey::ArrowRight)),
-            Some(Command::None)
-        );
-        assert_eq!(
-            p.handle_key(&Key::Named(NamedKey::ArrowRight)),
-            Some(Command::Advance)
-        );
+    fn presentation_navigation_and_timer_state() {
+        // Case `blank_navigation_resumes_before_advancing`.
+        {
+            let mut p = Presentation::default();
+            p.set_blank(Blank::Black);
+            assert_eq!(
+                p.handle_key(&Key::Named(NamedKey::ArrowRight)),
+                Some(Command::None)
+            );
+            assert_eq!(
+                p.handle_key(&Key::Named(NamedKey::ArrowRight)),
+                Some(Command::Advance)
+            );
+        }
+
+        // Case `presenter_click_never_advances`.
+        {
+            let mut p = Presentation::default();
+            p.set_presenter_view(true);
+            assert_eq!(p.pointer_command(), Command::None);
+        }
+
+        // Case `paused_timer_is_stable_and_reset_resumes`.
+        {
+            let mut p = Presentation::default();
+            p.start();
+            p.handle_key(&Key::Character("k".into()));
+            let frozen = p.elapsed();
+            std::thread::sleep(Duration::from_millis(10));
+            assert_eq!(p.elapsed(), frozen);
+            p.handle_key(&Key::Character("0".into()));
+            assert!(!p.is_paused());
+            assert!(p.elapsed() < Duration::from_millis(50));
+        }
     }
 
+    /// The settled slide cache reuses unchanged renders and keys every input.
     #[test]
-    fn presenter_click_never_advances() {
-        let mut p = Presentation::default();
-        p.set_presenter_view(true);
-        assert_eq!(p.pointer_command(), Command::None);
-    }
+    fn settled_slide_cache_reuses_and_keys_every_input() {
+        // Case `settled_slide_cache_reuses_an_unchanged_render`.
+        {
+            let deck = crate::model::seed_deck();
+            let images = ImageStore::new(tilo_content::ContentStore::memory());
+            let frame =
+                PresentationFrame::new(Rect::new(0.0, 0.0, 1280.0, 720.0), &deck, 1, 7, &images);
+            let theme = Theme::dark();
+            let palette = Palette::resolve(deck.palette, &theme);
+            let destination = Rect::new(100.0, 50.0, 1180.0, 660.0);
+            let mut presentation = Presentation::default();
+            let mut text = TextRenderer::new();
 
-    #[test]
-    fn paused_timer_is_stable_and_reset_resumes() {
-        let mut p = Presentation::default();
-        p.start();
-        p.handle_key(&Key::Character("k".into()));
-        let frozen = p.elapsed();
-        std::thread::sleep(Duration::from_millis(10));
-        assert_eq!(p.elapsed(), frozen);
-        p.handle_key(&Key::Character("0".into()));
-        assert!(!p.is_paused());
-        assert!(p.elapsed() < Duration::from_millis(50));
-    }
+            assert!(Presentation::append_settled_slide(
+                &mut presentation.cache,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &frame,
+                &palette,
+                destination,
+            ));
+            assert!(!Presentation::append_settled_slide(
+                &mut presentation.cache,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &frame,
+                &palette,
+                destination,
+            ));
 
-    #[test]
-    fn settled_slide_cache_reuses_an_unchanged_render() {
-        let deck = crate::model::seed_deck();
-        let images = ImageStore::new(tilo_content::ContentStore::memory());
-        let frame =
-            PresentationFrame::new(Rect::new(0.0, 0.0, 1280.0, 720.0), &deck, 1, 7, &images);
-        let theme = Theme::dark();
-        let palette = Palette::resolve(deck.palette, &theme);
-        let destination = Rect::new(100.0, 50.0, 1180.0, 660.0);
-        let mut presentation = Presentation::default();
-        let mut text = TextRenderer::new();
+            presentation.invalidate_cache();
+            assert!(Presentation::append_settled_slide(
+                &mut presentation.cache,
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &frame,
+                &palette,
+                destination,
+            ));
+        }
 
-        assert!(Presentation::append_settled_slide(
-            &mut presentation.cache,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &frame,
-            &palette,
-            destination,
-        ));
-        assert!(!Presentation::append_settled_slide(
-            &mut presentation.cache,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &frame,
-            &palette,
-            destination,
-        ));
-
-        presentation.invalidate_cache();
-        assert!(Presentation::append_settled_slide(
-            &mut presentation.cache,
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &frame,
-            &palette,
-            destination,
-        ));
-    }
-
-    #[test]
-    fn settled_slide_cache_key_covers_all_render_inputs() {
-        let destination = Rect::new(100.2, 50.2, 1180.2, 660.2);
-        let base = PresentCache::key(destination, 1, 7, PaletteKind::Indigo);
-        assert_eq!(
-            base,
-            PresentCache::key(
-                Rect::new(100.4, 50.4, 1180.4, 660.4),
-                1,
-                7,
-                PaletteKind::Indigo,
-            ),
-            "subpixel destination jitter remains a cache hit"
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(destination, 2, 7, PaletteKind::Indigo)
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(destination, 1, 8, PaletteKind::Indigo)
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(destination, 1, 7, PaletteKind::Amber)
-        );
-        assert_ne!(
-            base,
-            PresentCache::key(
-                Rect::new(101.2, 50.2, 1181.2, 660.2),
-                1,
-                7,
-                PaletteKind::Indigo,
-            )
-        );
+        // Case `settled_slide_cache_key_covers_all_render_inputs`.
+        {
+            let destination = Rect::new(100.2, 50.2, 1180.2, 660.2);
+            let base = PresentCache::key(destination, 1, 7, PaletteKind::Indigo);
+            assert_eq!(
+                base,
+                PresentCache::key(
+                    Rect::new(100.4, 50.4, 1180.4, 660.4),
+                    1,
+                    7,
+                    PaletteKind::Indigo,
+                ),
+                "subpixel destination jitter remains a cache hit"
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(destination, 2, 7, PaletteKind::Indigo)
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(destination, 1, 8, PaletteKind::Indigo)
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(destination, 1, 7, PaletteKind::Amber)
+            );
+            assert_ne!(
+                base,
+                PresentCache::key(
+                    Rect::new(101.2, 50.2, 1181.2, 660.2),
+                    1,
+                    7,
+                    PaletteKind::Indigo,
+                )
+            );
+        }
     }
 }

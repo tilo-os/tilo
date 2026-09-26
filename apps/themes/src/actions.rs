@@ -705,237 +705,249 @@ mod tests {
         ],
     }
 
-    /// Ctrl+K on Themes yields the tree: the library with a "New theme" action,
-    /// a `themes.theme` child per theme exporting apply + duplicate, and — for a
-    /// custom theme — rename, set-accent and delete. Drives the real resource
-    /// hook (`Widget::resources`).
+    /// Ctrl+K publishes the themes tree, and every control resource uses the canonical action or broker.
     #[test]
-    fn ctrl_k_publishes_the_themes_tree() {
-        let mut app = ThemesApp::new_demo();
-        let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn themes_tree_publishes_canonical_actions_and_brokers() {
+        // Case `ctrl_k_publishes_the_themes_tree`.
+        // Ctrl+K on Themes yields the tree: the library with a "New theme" action,
+        // a `themes.theme` child per theme exporting apply + duplicate, and — for a
+        // custom theme — rename, set-accent and delete. Drives the real resource
+        // hook (`Widget::resources`).
+        {
+            let mut app = ThemesApp::new_demo();
+            let mut st = ui::State::new();
+            app.sync(&mut st.doc, &st.root);
 
-        let resources = Widget::resources(&app, &st.doc);
-        assert_eq!(resources.len(), 1, "one library root");
-        let lib = &resources[0];
-        assert_eq!(lib.kind, "themes.library");
-        let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(lib_actions.contains(&"new-theme"), "{lib_actions:?}");
+            let resources = Widget::resources(&app, &st.doc);
+            assert_eq!(resources.len(), 1, "one library root");
+            let lib = &resources[0];
+            assert_eq!(lib.kind, "themes.library");
+            let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(lib_actions.contains(&"new-theme"), "{lib_actions:?}");
 
-        // A built-in preset exports apply + duplicate but neither delete nor edit.
-        let builtin = lib
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "themes.theme:tilo-blue")
-            .expect("the tilo-blue preset resource");
-        let b_actions: Vec<&str> = builtin.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(b_actions.contains(&"apply"), "{b_actions:?}");
-        assert!(b_actions.contains(&"duplicate"), "{b_actions:?}");
-        assert!(
-            !b_actions.contains(&"delete"),
-            "a preset is not deletable: {b_actions:?}"
-        );
-        assert!(
-            !b_actions.contains(&"edit"),
-            "a preset is not editable: {b_actions:?}"
-        );
+            // A built-in preset exports apply + duplicate but neither delete nor edit.
+            let builtin = lib
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == "themes.theme:tilo-blue")
+                .expect("the tilo-blue preset resource");
+            let b_actions: Vec<&str> = builtin.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(b_actions.contains(&"apply"), "{b_actions:?}");
+            assert!(b_actions.contains(&"duplicate"), "{b_actions:?}");
+            assert!(
+                !b_actions.contains(&"delete"),
+                "a preset is not deletable: {b_actions:?}"
+            );
+            assert!(
+                !b_actions.contains(&"edit"),
+                "a preset is not editable: {b_actions:?}"
+            );
 
-        // The custom theme adds rename, recolour and delete.
-        let custom = lib
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "themes.theme:sunset")
-            .expect("the sunset custom resource");
-        let c_actions: Vec<&str> = custom.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(c_actions.contains(&"apply"), "{c_actions:?}");
-        assert!(c_actions.contains(&"edit"), "{c_actions:?}");
-        assert!(c_actions.contains(&"set-accent"), "{c_actions:?}");
-        assert!(c_actions.contains(&"reset"), "{c_actions:?}");
-        assert!(c_actions.contains(&"delete"), "{c_actions:?}");
-        assert_eq!(
-            custom
+            // The custom theme adds rename, recolour and delete.
+            let custom = lib
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == "themes.theme:sunset")
+                .expect("the sunset custom resource");
+            let c_actions: Vec<&str> = custom.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(c_actions.contains(&"apply"), "{c_actions:?}");
+            assert!(c_actions.contains(&"edit"), "{c_actions:?}");
+            assert!(c_actions.contains(&"set-accent"), "{c_actions:?}");
+            assert!(c_actions.contains(&"reset"), "{c_actions:?}");
+            assert!(c_actions.contains(&"delete"), "{c_actions:?}");
+            assert_eq!(
+                custom
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "delete")
+                    .expect("delete action")
+                    .contract
+                    .risk,
+                RiskLevel::Destructive
+            );
+            let apply = custom
                 .actions
                 .iter()
-                .find(|action| action.id == "delete")
-                .expect("delete action")
-                .contract
-                .risk,
-            RiskLevel::Destructive
-        );
-        let apply = custom
-            .actions
-            .iter()
-            .find(|action| action.id == "apply")
-            .expect("apply operation");
-        assert_eq!(apply.kind, OperationKind::Effect);
-        assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
-        assert_eq!(
-            apply.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
-        );
-        assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
-    }
+                .find(|action| action.id == "apply")
+                .expect("apply operation");
+            assert_eq!(apply.kind, OperationKind::Effect);
+            assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
+            assert_eq!(
+                apply.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: true }
+            );
+            assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
+        }
 
-    /// Deleting a built-in preset through the action is a safe no-op: the catalog
-    /// is unchanged and the document's heads do not move (no empty change).
-    #[test]
-    fn deleting_a_builtin_is_a_safe_no_op() {
-        let mut doc = seeded_doc();
-        doc.commit();
-        let before_heads = doc.get_heads();
-        let before = catalog(&doc);
-
-        let action = delete_custom_theme_action("tilo-blue");
-        let encoded = encode(&action);
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
-
-        assert_eq!(catalog(&doc), before, "a built-in preset is protected");
-        assert_eq!(
-            doc.get_heads(),
-            before_heads,
-            "a no-op delete writes no change"
-        );
-    }
-
-    /// An upsert that names a built-in preset id is likewise a no-op — a preset
-    /// can't be overwritten into an editable clone in place.
-    #[test]
-    fn upsert_over_a_builtin_id_is_a_no_op() {
-        let mut doc = seeded_doc();
-        doc.commit();
-        let before = catalog(&doc);
-        // Try to overwrite the tilo-blue preset (claiming custom).
-        let mut sneaky = presets()[0].clone();
-        sneaky.builtin = false;
-        sneaky.name = "Hijacked".into();
-        let action = upsert_custom_theme_action(&sneaky);
-        let encoded = encode(&action);
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
-        assert_eq!(
-            catalog(&doc),
-            before,
-            "a preset id can't be hijacked by an upsert"
-        );
-    }
-
-    /// Applying a theme writes its id as the active theme in the shared document.
-    #[test]
-    fn set_active_theme_writes_the_active_id() {
-        let mut doc = seeded_doc();
-        let action = set_active_theme_action("dracula");
-        let encoded = encode(&action);
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
-        assert_eq!(
-            ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
-            Some("dracula")
-        );
-    }
-
-    /// Applying is an external store effect; the spec carries the stable theme
-    /// id to the widget operation handler.
-    #[test]
-    fn apply_effect_carries_the_stable_theme_id() {
-        let resources = provide_resources(&seeded_doc());
-        let (_, apply) = find_spec(&resources, "themes.theme:tilo-blue", "apply");
-        let from_spec = spec_encoding(apply, None);
-        assert_eq!(from_spec.type_id, "themes.apply");
-        assert_eq!(
-            serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
-            "tilo-blue"
-        );
-    }
-
-    #[test]
-    fn every_theme_control_resource_uses_the_canonical_action_or_broker() {
-        let doc = seeded_doc();
-        let library = &provide_resources(&doc)[0];
-        let sunset = library
-            .children
-            .iter()
-            .find(|theme| theme.id.as_str() == "themes.theme:sunset")
-            .unwrap();
-        let decode = |id: &str| -> ThemesAction {
-            let spec = sunset
-                .actions
+        // Case `every_theme_control_resource_uses_the_canonical_action_or_broker`.
+        {
+            let doc = seeded_doc();
+            let library = &provide_resources(&doc)[0];
+            let sunset = library
+                .children
                 .iter()
-                .find(|action| action.id == id)
+                .find(|theme| theme.id.as_str() == "themes.theme:sunset")
                 .unwrap();
-            serde_json::from_slice(&spec_encoding(spec, None).payload).unwrap()
-        };
-        assert!(matches!(
-            decode("duplicate"),
-            ThemesAction::CreateCustomTheme { .. }
-        ));
-        assert!(matches!(
-            decode("reset"),
-            ThemesAction::ResetCustomTheme { id } if id == "sunset"
-        ));
-        assert!(matches!(
-            decode("delete"),
-            ThemesAction::DeleteCustomTheme { id } if id == "sunset"
-        ));
-        let accent = sunset
-            .actions
-            .iter()
-            .find(|action| action.id == "set-accent")
-            .unwrap();
-        let encoded = spec_encoding(accent, Some("#010203"));
-        assert!(matches!(
-            serde_json::from_slice::<ThemesAction>(&encoded.payload).unwrap(),
-            ThemesAction::SetCustomThemeToken { id, token: TokenId::Accent, rgb: [1, 2, 3] } if id == "sunset"
-        ));
-        assert!(
-            library
+            let decode = |id: &str| -> ThemesAction {
+                let spec = sunset
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap();
+                serde_json::from_slice(&spec_encoding(spec, None).payload).unwrap()
+            };
+            assert!(matches!(
+                decode("duplicate"),
+                ThemesAction::CreateCustomTheme { .. }
+            ));
+            assert!(matches!(
+                decode("reset"),
+                ThemesAction::ResetCustomTheme { id } if id == "sunset"
+            ));
+            assert!(matches!(
+                decode("delete"),
+                ThemesAction::DeleteCustomTheme { id } if id == "sunset"
+            ));
+            let accent = sunset
                 .actions
                 .iter()
-                .any(|action| action.id == "new-theme")
-        );
-        assert!(
-            library
-                .actions
-                .iter()
-                .any(|action| action.id == "apply-selected")
-        );
-        assert!(
-            library
-                .actions
-                .iter()
-                .any(|action| action.id == "export-selected")
-        );
+                .find(|action| action.id == "set-accent")
+                .unwrap();
+            let encoded = spec_encoding(accent, Some("#010203"));
+            assert!(matches!(
+                serde_json::from_slice::<ThemesAction>(&encoded.payload).unwrap(),
+                ThemesAction::SetCustomThemeToken { id, token: TokenId::Accent, rgb: [1, 2, 3] } if id == "sunset"
+            ));
+            assert!(
+                library
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "new-theme")
+            );
+            assert!(
+                library
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "apply-selected")
+            );
+            assert!(
+                library
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "export-selected")
+            );
+        }
     }
 
-    /// Dispatching the "New theme" prompted action creates an editable theme in
-    /// the document carrying the committed name.
+    /// Theme actions: built-ins are never deleted or overwritten, apply writes/carries the stable id, and New creates a theme.
     #[test]
-    fn new_theme_action_creates_a_theme() {
-        let mut doc = seeded_doc();
-        let resources = provide_resources(&doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "new-theme")
-            .unwrap();
-        let before = catalog(&doc).len();
+    fn theme_actions_write_the_store_and_refuse_builtins() {
+        // Case `deleting_a_builtin_is_a_safe_no_op`.
+        // Deleting a built-in preset through the action is a safe no-op: the catalog
+        // is unchanged and the document's heads do not move (no empty change).
+        {
+            let mut doc = seeded_doc();
+            doc.commit();
+            let before_heads = doc.get_heads();
+            let before = catalog(&doc);
 
-        // The prompted build mints a fresh theme id per call, so this drives
-        // the palette's build directly rather than comparing two builds.
-        let tilo_actions::ActionInput::Prompted { build, .. } = &spec.input else {
-            panic!("new-theme is prompted");
-        };
-        let encoded = build("Aurora");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            let action = delete_custom_theme_action("tilo-blue");
+            let encoded = encode(&action);
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
 
-        let cat = catalog(&doc);
-        assert_eq!(cat.len(), before + 1, "the action added a theme");
-        let created = cat
-            .iter()
-            .find(|s| s.name == "Aurora")
-            .expect("named theme exists");
-        assert!(!created.builtin, "the created theme is editable");
+            assert_eq!(catalog(&doc), before, "a built-in preset is protected");
+            assert_eq!(
+                doc.get_heads(),
+                before_heads,
+                "a no-op delete writes no change"
+            );
+        }
+
+        // Case `upsert_over_a_builtin_id_is_a_no_op`.
+        // An upsert that names a built-in preset id is likewise a no-op — a preset
+        // can't be overwritten into an editable clone in place.
+        {
+            let mut doc = seeded_doc();
+            doc.commit();
+            let before = catalog(&doc);
+            // Try to overwrite the tilo-blue preset (claiming custom).
+            let mut sneaky = presets()[0].clone();
+            sneaky.builtin = false;
+            sneaky.name = "Hijacked".into();
+            let action = upsert_custom_theme_action(&sneaky);
+            let encoded = encode(&action);
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+            assert_eq!(
+                catalog(&doc),
+                before,
+                "a preset id can't be hijacked by an upsert"
+            );
+        }
+
+        // Case `set_active_theme_writes_the_active_id`.
+        // Applying a theme writes its id as the active theme in the shared document.
+        {
+            let mut doc = seeded_doc();
+            let action = set_active_theme_action("dracula");
+            let encoded = encode(&action);
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+            assert_eq!(
+                ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+                Some("dracula")
+            );
+        }
+
+        // Case `apply_effect_carries_the_stable_theme_id`.
+        // Applying is an external store effect; the spec carries the stable theme
+        // id to the widget operation handler.
+        {
+            let resources = provide_resources(&seeded_doc());
+            let (_, apply) = find_spec(&resources, "themes.theme:tilo-blue", "apply");
+            let from_spec = spec_encoding(apply, None);
+            assert_eq!(from_spec.type_id, "themes.apply");
+            assert_eq!(
+                serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
+                "tilo-blue"
+            );
+        }
+
+        // Case `new_theme_action_creates_a_theme`.
+        // Dispatching the "New theme" prompted action creates an editable theme in
+        // the document carrying the committed name.
+        {
+            let mut doc = seeded_doc();
+            let resources = provide_resources(&doc);
+            let spec = resources[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "new-theme")
+                .unwrap();
+            let before = catalog(&doc).len();
+
+            // The prompted build mints a fresh theme id per call, so this drives
+            // the palette's build directly rather than comparing two builds.
+            let tilo_actions::ActionInput::Prompted { build, .. } = &spec.input else {
+                panic!("new-theme is prompted");
+            };
+            let encoded = build("Aurora");
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let cat = catalog(&doc);
+            assert_eq!(cat.len(), before + 1, "the action added a theme");
+            let created = cat
+                .iter()
+                .find(|s| s.name == "Aurora")
+                .expect("named theme exists");
+            assert!(!created.builtin, "the created theme is editable");
+        }
     }
 }

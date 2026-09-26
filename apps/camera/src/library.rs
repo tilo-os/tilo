@@ -141,64 +141,64 @@ mod tests {
     }
 
     #[test]
-    fn write_round_trips_real_dimensions() {
-        let dir = tmp();
-        let frame = crate::frame::viewfinder(1, 48, 32);
-        let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
-        assert!(dir.join(&name).exists());
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("png"))
-        );
-        assert_eq!(image::image_dimensions(dir.join(&name)).unwrap(), (48, 32));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn jpeg_format_writes_a_real_jpeg() {
-        let dir = tmp();
-        let frame = crate::frame::viewfinder(3, 64, 48);
-        let name = write_photo(&dir, &frame, PhotoFormat::Jpeg).expect("write");
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("jpg"))
-        );
-        // The bytes are a genuine JPEG (SOI marker) and decode at full size.
-        let bytes = std::fs::read(dir.join(&name)).unwrap();
-        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
-        let (w, h) = image::image_dimensions(dir.join(&name)).unwrap();
-        assert_eq!((w, h), (64, 48));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn scanner_luma_downscales_below_box() {
-        let dir = tmp();
-        let frame = crate::frame::viewfinder(2, 200, 120);
-        let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
-        let (luma, tw, th) = load_luma(&dir.join(&name), 50).expect("luma");
-        assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
-        assert_eq!(luma.len(), tw * th);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn malformed_frames_are_refused_before_io() {
-        let dir = tmp();
-        assert!(
-            write_photo(
-                &dir,
-                &FrameBuf {
-                    rgba: vec![0; 1],
-                    w: 8,
-                    h: 8,
-                },
-                PhotoFormat::Png,
-            )
-            .is_err()
-        );
-        std::fs::remove_dir_all(&dir).ok();
+    fn write_photo_stores_real_decodable_images_and_refuses_malformed_frames() {
+        // Phase `write_round_trips_real_dimensions`.
+        {
+            let dir = tmp();
+            let frame = crate::frame::viewfinder(1, 48, 32);
+            let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
+            assert!(dir.join(&name).exists());
+            assert!(
+                Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+            );
+            assert_eq!(image::image_dimensions(dir.join(&name)).unwrap(), (48, 32));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `jpeg_format_writes_a_real_jpeg`.
+        {
+            let dir = tmp();
+            let frame = crate::frame::viewfinder(3, 64, 48);
+            let name = write_photo(&dir, &frame, PhotoFormat::Jpeg).expect("write");
+            assert!(
+                Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("jpg"))
+            );
+            // The bytes are a genuine JPEG (SOI marker) and decode at full size.
+            let bytes = std::fs::read(dir.join(&name)).unwrap();
+            assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
+            let (w, h) = image::image_dimensions(dir.join(&name)).unwrap();
+            assert_eq!((w, h), (64, 48));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `scanner_luma_downscales_below_box`.
+        {
+            let dir = tmp();
+            let frame = crate::frame::viewfinder(2, 200, 120);
+            let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
+            let (luma, tw, th) = load_luma(&dir.join(&name), 50).expect("luma");
+            assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
+            assert_eq!(luma.len(), tw * th);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `malformed_frames_are_refused_before_io`.
+        {
+            let dir = tmp();
+            assert!(
+                write_photo(
+                    &dir,
+                    &FrameBuf {
+                        rgba: vec![0; 1],
+                        w: 8,
+                        h: 8,
+                    },
+                    PhotoFormat::Png,
+                )
+                .is_err()
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

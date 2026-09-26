@@ -307,115 +307,125 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unicode_words_retain_trailing_combining_marks() {
-        for (text, expected) in [
-            ("test\u{301}", vec!["test\u{301}"]),
-            ("test\u{301} ", vec!["test\u{301}"]),
-            (
-                "e\u{301}test test\u{301} 123\u{301}",
-                vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
-            ),
-        ] {
-            let words: Vec<_> = unicode_word_ranges(text)
-                .map(|range| text.get(range).expect("UTF-8 word range"))
-                .collect();
+    fn word_and_grapheme_segmentation_keeps_clusters_whole() {
+        // Case `unicode_words_retain_trailing_combining_marks`.
+        {
+            for (text, expected) in [
+                ("test\u{301}", vec!["test\u{301}"]),
+                ("test\u{301} ", vec!["test\u{301}"]),
+                (
+                    "e\u{301}test test\u{301} 123\u{301}",
+                    vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
+                ),
+            ] {
+                let words: Vec<_> = unicode_word_ranges(text)
+                    .map(|range| text.get(range).expect("UTF-8 word range"))
+                    .collect();
+                assert_eq!(
+                    words, expected,
+                    "the complete source word remains word-like"
+                );
+            }
+            assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+        }
+
+        // Case `grapheme_indices_keep_extended_clusters_whole`.
+        {
+            let text = "e\u{301}👨‍👩‍👧🇳🇱a";
+            let clusters: Vec<_> = grapheme_indices(text).collect();
             assert_eq!(
-                words, expected,
-                "the complete source word remains word-like"
+                clusters,
+                vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
+            );
+            assert_eq!(graphemes("").count(), 0);
+        }
+    }
+
+    #[test]
+    fn line_break_opportunities_follow_script_rules() {
+        // Case `cjk_has_opportunities_without_ascii_spaces`.
+        {
+            let text = "東京京都";
+            let breaks: Vec<_> = line_break_opportunities(text).collect();
+            assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
+            assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
+        }
+
+        // Case `non_breaking_space_does_not_create_an_opportunity`.
+        {
+            let text = "10\u{a0}km away";
+            let protected_end = "10\u{a0}".len();
+            assert!(
+                line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
+                "NBSP keeps its adjacent words together"
             );
         }
-        assert!(unicode_word_ranges("\u{301} , .").next().is_none());
-    }
 
-    #[test]
-    fn grapheme_indices_keep_extended_clusters_whole() {
-        let text = "e\u{301}👨‍👩‍👧🇳🇱a";
-        let clusters: Vec<_> = grapheme_indices(text).collect();
-        assert_eq!(
-            clusters,
-            vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
-        );
-        assert_eq!(graphemes("").count(), 0);
-    }
+        // Case `emoji_zwj_sequence_is_not_split`.
+        {
+            let family = "👨‍👩‍👧‍👦";
+            assert_eq!(
+                line_break_opportunities(family).collect::<Vec<_>>(),
+                vec![(family.len(), LineBreakKind::Mandatory)]
+            );
+        }
 
-    #[test]
-    fn cjk_has_opportunities_without_ascii_spaces() {
-        let text = "東京京都";
-        let breaks: Vec<_> = line_break_opportunities(text).collect();
-        assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
-        assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
-    }
-
-    #[test]
-    fn non_breaking_space_does_not_create_an_opportunity() {
-        let text = "10\u{a0}km away";
-        let protected_end = "10\u{a0}".len();
-        assert!(
-            line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
-            "NBSP keeps its adjacent words together"
-        );
-    }
-
-    #[test]
-    fn emoji_zwj_sequence_is_not_split() {
-        let family = "👨‍👩‍👧‍👦";
-        assert_eq!(
-            line_break_opportunities(family).collect::<Vec<_>>(),
-            vec![(family.len(), LineBreakKind::Mandatory)]
-        );
-    }
-
-    #[test]
-    fn dictionary_line_breaks_segment_thai_without_spaces() {
-        let text = "ทุกสองสัปดาห์";
-        let breaks: Vec<_> = line_break_opportunities(text)
-            .map(|(byte, _)| byte)
-            .collect();
-        assert_eq!(breaks, vec![9, 18, text.len()]);
-    }
-
-    #[test]
-    fn english_hyphenation_inserts_soft_hyphens_at_tex_pattern_boundaries() {
-        let text = "extensive";
-        let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
-        let insertions: Vec<_> = map
-            .insertions
-            .iter()
-            .map(|insertion| (insertion.source, insertion.ch))
-            .collect();
-        assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
-        assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
-        for source in 0..=text.len() {
-            assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+        // Case `dictionary_line_breaks_segment_thai_without_spaces`.
+        {
+            let text = "ทุกสองสัปดาห์";
+            let breaks: Vec<_> = line_break_opportunities(text)
+                .map(|(byte, _)| byte)
+                .collect();
+            assert_eq!(breaks, vec![9, 18, text.len()]);
         }
     }
 
     #[test]
-    fn hyphenation_only_touches_word_like_segments() {
-        let text = "extensive, 123";
-        let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
-        assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
-        assert_eq!(
-            map.shaped_to_source(map.source_to_shaped(text.len())),
-            text.len()
-        );
-    }
+    fn discretionary_hyphens_map_to_word_like_source_offsets() {
+        // Case `english_hyphenation_inserts_soft_hyphens_at_tex_pattern_boundaries`.
+        {
+            let text = "extensive";
+            let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+            let insertions: Vec<_> = map
+                .insertions
+                .iter()
+                .map(|insertion| (insertion.source, insertion.ch))
+                .collect();
+            assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
+            assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
+            for source in 0..=text.len() {
+                assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+            }
+        }
 
-    #[test]
-    fn custom_breaks_ignore_endpoints_and_non_utf8_boundaries() {
-        let text = "éclair";
-        let map = OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
-        assert_eq!(map.shape_text(text), "é\u{ad}clair");
-        assert_eq!(map.insertions.len(), 1);
-        assert_eq!(map.insertions[0].source, 2);
-    }
+        // Case `hyphenation_only_touches_word_like_segments`.
+        {
+            let text = "extensive, 123";
+            let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+            assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
+            assert_eq!(
+                map.shaped_to_source(map.source_to_shaped(text.len())),
+                text.len()
+            );
+        }
 
-    #[test]
-    fn public_hyphen_breaks_are_source_offsets() {
-        let text = "typography";
-        let breaks = discretionary_hyphen_breaks(text, "en-US");
-        assert!(!breaks.is_empty());
-        assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
-        assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+        // Case `custom_breaks_ignore_endpoints_and_non_utf8_boundaries`.
+        {
+            let text = "éclair";
+            let map =
+                OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
+            assert_eq!(map.shape_text(text), "é\u{ad}clair");
+            assert_eq!(map.insertions.len(), 1);
+            assert_eq!(map.insertions[0].source, 2);
+        }
+
+        // Case `public_hyphen_breaks_are_source_offsets`.
+        {
+            let text = "typography";
+            let breaks = discretionary_hyphen_breaks(text, "en-US");
+            assert!(!breaks.is_empty());
+            assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
+            assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+        }
     }
 }

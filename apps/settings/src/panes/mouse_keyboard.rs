@@ -20,9 +20,12 @@
 //   `input.mouse_natural_scroll`    — bool
 //   `input.tap_to_click`     — bool
 //   `input.key_repeat`       — f64 in `[0.0, 1.0]`
+//   `input.touchpad_click_method` / `input.touchpad_scroll_method` — choice
+//   `input.scroll_speed`     — multiplier; the slider edits its log position
 //   `input.keyboard_layout`  — active source display label
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
@@ -84,6 +87,47 @@ pub const COMPOSE_KEY: &str = "input.compose_key";
 pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
 pub const ADD_SOURCE_KEY: &str = "input.source.add";
 pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
+
+/// Touchpad click methods as `(label, value)`, in menu order.
+pub const CLICK_METHOD_CHOICES: [(&str, TouchpadClickMethod); 3] = [
+    ("Device default", TouchpadClickMethod::Default),
+    ("Button areas", TouchpadClickMethod::Areas),
+    ("Finger count", TouchpadClickMethod::Clickfinger),
+];
+
+/// Touchpad scroll methods as `(label, value)`, in menu order.
+pub const SCROLL_METHOD_CHOICES: [(&str, TouchpadScrollMethod); 2] = [
+    ("Two fingers", TouchpadScrollMethod::TwoFinger),
+    ("Edge", TouchpadScrollMethod::Edge),
+];
+
+pub fn click_method_label(method: TouchpadClickMethod) -> &'static str {
+    CLICK_METHOD_CHOICES
+        .iter()
+        .find(|(_, value)| *value == method)
+        .map_or("Device default", |(label, _)| label)
+}
+
+pub fn click_method_for_label(label: &str) -> Option<TouchpadClickMethod> {
+    CLICK_METHOD_CHOICES
+        .iter()
+        .find(|(choice, _)| *choice == label)
+        .map(|(_, value)| *value)
+}
+
+pub fn scroll_method_label(method: TouchpadScrollMethod) -> &'static str {
+    SCROLL_METHOD_CHOICES
+        .iter()
+        .find(|(_, value)| *value == method)
+        .map_or("Two fingers", |(label, _)| label)
+}
+
+pub fn scroll_method_for_label(label: &str) -> Option<TouchpadScrollMethod> {
+    SCROLL_METHOD_CHOICES
+        .iter()
+        .find(|(choice, _)| *choice == label)
+        .map(|(_, value)| *value)
+}
 pub const AUTO_CORRECT_KEY: &str = "text.auto_correct";
 
 #[allow(
@@ -232,6 +276,7 @@ impl MouseKeyboardPane {
             self.spell_checker_card(),
             self.input_sources_card(),
             self.pointer_card(),
+            self.touchpad_click_scroll_card(),
             self.pointer_options_card(),
             Self::pen_card(),
         ])
@@ -331,6 +376,62 @@ impl MouseKeyboardPane {
         )
     }
 
+    /// How a touchpad turns presses and finger movement into clicks and
+    /// scrolling, plus the scroll distance shared with mouse wheels. Each
+    /// choice is applied only to devices whose libinput driver offers it.
+    fn touchpad_click_scroll_card(&self) -> Box<dyn Widget> {
+        let choices = |labels: &[&str]| labels.iter().map(|l| (*l).to_string()).collect();
+        card(
+            "Clicking & scrolling",
+            rows(vec![
+                choice_row(
+                    "Touchpad click",
+                    Box::new(
+                        Dropdown::from_state(
+                            choices(&CLICK_METHOD_CHOICES.map(|(label, _)| label)),
+                            &ui::LocalState::new(
+                                click_method_label(self.last.touchpad_click_method).to_string(),
+                            ),
+                        )
+                        .on_action(text_action("touchpad-click-method"))
+                        .with_id("input.touchpad_click_method")
+                        .with_placeholder(click_method_label(self.initial.touchpad_click_method)),
+                    ),
+                ),
+                caption(
+                    "Button areas: press the bottom-right corner to right-click. Finger count: press with two fingers to right-click, three to middle-click.",
+                ),
+                choice_row(
+                    "Touchpad scrolling",
+                    Box::new(
+                        Dropdown::from_state(
+                            choices(&SCROLL_METHOD_CHOICES.map(|(label, _)| label)),
+                            &ui::LocalState::new(
+                                scroll_method_label(self.last.touchpad_scroll_method).to_string(),
+                            ),
+                        )
+                        .on_action(text_action("touchpad-scroll-method"))
+                        .with_id("input.touchpad_scroll_method")
+                        .with_placeholder(scroll_method_label(self.initial.touchpad_scroll_method)),
+                    ),
+                ),
+                setting_row_described(
+                    "Scroll speed",
+                    "Distance per wheel click or finger movement",
+                    Box::new(
+                        Slider::from_state(&ui::LocalState::new(
+                            settings_store::hardware::scroll_speed_to_slider(
+                                self.last.scroll_speed,
+                            ),
+                        ))
+                        .on_action(number_action("scroll-speed"))
+                        .with_id("input.scroll_speed"),
+                    ),
+                ),
+            ]),
+        )
+    }
+
     /// Less-common pointer choices still get a specific destination instead
     /// of an opaque "Advanced" bucket: people and assistive agents can tell
     /// what will be changed before opening the card.
@@ -416,7 +517,7 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 caption(
-                    "Changes apply to this user session through the compositor. With multiple sources, Alt+Shift switches temporarily; Super+Space remains global search.",
+                    "Changes apply to this user session through the compositor. With multiple layouts, Alt+Shift switches temporarily; Super+Space remains global search.",
                 ),
                 choice_row(
                     "Compose key",
@@ -553,14 +654,15 @@ impl MouseKeyboardPane {
         let available: Vec<String> = self
             .catalog
             .iter()
-            .filter(|entry| !self.last.keyboard_layouts.contains(&entry.id))
+            .filter(|entry| {
+                !self.last.keyboard_layouts.contains(&entry.id)
+                    && crate::input_sources::has_room_for(&self.last.keyboard_layouts, &entry.id)
+            })
             .map(|entry| entry.label.clone())
             .collect();
-        if self.last.keyboard_layouts.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-            && !available.is_empty()
-        {
+        if !available.is_empty() {
             source_rows.push(choice_row(
-                "Add a language or layout",
+                "Add a language, layout or input method",
                 Box::new(
                     Dropdown::from_state(
                         available.clone(),
@@ -571,11 +673,15 @@ impl MouseKeyboardPane {
                     .with_placeholder("Choose a source"),
                 ),
             ));
-        } else {
+        }
+        if crate::input_sources::layouts_full(&self.last.keyboard_layouts) {
             source_rows.push(caption(
-                "Up to four input sources can be active at once, matching the interoperable XKB group limit.",
+                "Up to four keyboard layouts can be active at once, matching the interoperable XKB group limit.",
             ));
         }
+        source_rows.push(caption(
+            "Input methods (Pinyin, Mozc, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
+        ));
         card("Input sources", rows(source_rows))
     }
 
@@ -881,10 +987,9 @@ impl MouseKeyboardPane {
             self.pending_add_id = self.source_id(&label);
         }
         if Self::consume_action(state, root, ADD_SOURCE_KEY)
-            && self.last.keyboard_layouts.len()
-                < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
             && let Some(id) = self.pending_add_id.clone()
             && !self.last.keyboard_layouts.contains(&id)
+            && crate::input_sources::has_room_for(&self.last.keyboard_layouts, &id)
         {
             self.last.keyboard_layouts.push(id.clone());
             self.last.keyboard_layout = id;
@@ -1122,139 +1227,147 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
+    /// The pane lays out and imported repeat settings show the live rate or disabled.
     #[test]
     #[expect(
         clippy::float_cmp,
         reason = "off, pass-through and clamped slider values are exact sentinels, not computed"
     )]
-    fn imported_repeat_settings_are_shown_as_the_live_rate_or_disabled() {
-        let disabled = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat: 0.5,
-                key_repeat_delay_ms: Some(500),
-                key_repeat_rate_hz: Some(0),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(disabled.key_repeat_slider_value(), 0.0);
-        assert_eq!(
-            disabled.key_repeat_description(),
-            "Repeat is off — move the slider to turn it on"
-        );
+    fn input_pane_lays_out_and_shows_imported_repeat_settings() {
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
 
-        let exact = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat: 0.5,
-                key_repeat_delay_ms: Some(275),
-                key_repeat_rate_hz: Some(37),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
-        assert_eq!(
-            exact.key_repeat_description(),
-            "37 keys per second · starts after 275 ms"
-        );
+        // Case `imported_repeat_settings_are_shown_as_the_live_rate_or_disabled`.
+        {
+            let disabled = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat: 0.5,
+                    key_repeat_delay_ms: Some(500),
+                    key_repeat_rate_hz: Some(0),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert_eq!(disabled.key_repeat_slider_value(), 0.0);
+            assert_eq!(
+                disabled.key_repeat_description(),
+                "Repeat is off — move the slider to turn it on"
+            );
 
-        let partial = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat: 0.25,
-                key_repeat_rate_hz: Some(50),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(partial.key_repeat_slider_value(), 0.25);
-        assert_eq!(
-            partial.key_repeat_description(),
-            "Faster repeat starts sooner"
-        );
+            let exact = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat: 0.5,
+                    key_repeat_delay_ms: Some(275),
+                    key_repeat_rate_hz: Some(37),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
+            assert_eq!(
+                exact.key_repeat_description(),
+                "37 keys per second · starts after 275 ms"
+            );
 
-        let clamped = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat_delay_ms: Some(200),
-                key_repeat_rate_hz: Some(1_000),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(clamped.key_repeat_slider_value(), 1.0);
+            let partial = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat: 0.25,
+                    key_repeat_rate_hz: Some(50),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert_eq!(partial.key_repeat_slider_value(), 0.25);
+            assert_eq!(
+                partial.key_repeat_description(),
+                "Faster repeat starts sooner"
+            );
+
+            let clamped = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat_delay_ms: Some(200),
+                    key_repeat_rate_hz: Some(1_000),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert_eq!(clamped.key_repeat_slider_value(), 1.0);
+        }
     }
 
+    /// Document source selection, source latches and pointer speeds never drive the device.
     #[test]
-    fn document_active_source_selection_is_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let initial = InputPrefs {
-            keyboard_layouts: vec!["us".into(), "de".into()],
-            ..Default::default()
-        };
-        let mut pane = MouseKeyboardPane::with_catalog(initial, catalog());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, LAYOUT_KEY, "German");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layout, "us");
-        assert_eq!(SystemPrefs::load().input.keyboard_layout, "us");
-        assert!(!pane.take_structure_dirty());
-    }
+    fn document_input_edits_are_ignored_in_favour_of_local_effects() {
+        // Case `document_active_source_selection_is_ignored`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let initial = InputPrefs {
+                keyboard_layouts: vec!["us".into(), "de".into()],
+                ..Default::default()
+            };
+            let mut pane = MouseKeyboardPane::with_catalog(initial, catalog());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, LAYOUT_KEY, "German");
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layout, "us");
+            assert_eq!(SystemPrefs::load().input.keyboard_layout, "us");
+            assert!(!pane.take_structure_dirty());
+        }
 
-    #[test]
-    fn document_source_latches_are_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
+        // Case `document_source_latches_are_ignored`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-        let _ = doc.put(&root, ADD_SOURCE_PICKER_KEY, "German");
-        let _ = doc.put(&root, ADD_SOURCE_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us"]);
-        assert_eq!(pane.last.keyboard_layout, "us");
+            let _ = doc.put(&root, ADD_SOURCE_PICKER_KEY, "German");
+            let _ = doc.put(&root, ADD_SOURCE_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layouts, ["us"]);
+            assert_eq!(pane.last.keyboard_layout, "us");
 
-        let _ = doc.put(&root, MouseKeyboardPane::source_action(1, "up"), true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us"]);
-        assert_eq!(pane.last.keyboard_layout, "us");
+            let _ = doc.put(&root, MouseKeyboardPane::source_action(1, "up"), true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layouts, ["us"]);
+            assert_eq!(pane.last.keyboard_layout, "us");
 
-        let _ = doc.put(&root, MouseKeyboardPane::source_action(0, "remove"), true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us"]);
-        assert_eq!(pane.last.keyboard_layout, "us");
-    }
+            let _ = doc.put(&root, MouseKeyboardPane::source_action(0, "remove"), true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layouts, ["us"]);
+            assert_eq!(pane.last.keyboard_layout, "us");
+        }
 
-    /// Device class speed sliders only travel through local effect actions.
-    #[test]
-    fn document_pointer_speed_changes_are_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            TOUCHPAD_POINTER_SPEED_KEY,
-            automerge::ScalarValue::F64(0.9),
-        );
-        let _ = doc.put(
-            &root,
-            MOUSE_POINTER_SPEED_KEY,
-            automerge::ScalarValue::F64(0.2),
-        );
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.touchpad_pointer_speed, None);
-        assert_eq!(pane.last.mouse_pointer_speed, None);
+        // Case `document_pointer_speed_changes_are_ignored`.
+        // Device class speed sliders only travel through local effect actions.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                TOUCHPAD_POINTER_SPEED_KEY,
+                automerge::ScalarValue::F64(0.9),
+            );
+            let _ = doc.put(
+                &root,
+                MOUSE_POINTER_SPEED_KEY,
+                automerge::ScalarValue::F64(0.2),
+            );
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.touchpad_pointer_speed, None);
+            assert_eq!(pane.last.mouse_pointer_speed, None);
+        }
     }
 }

@@ -355,41 +355,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_negative_stride_is_refused_rather_than_read_as_a_huge_row() {
-        // `GStreamer` spells a bottom-up image as a negative stride. Reading
-        // the sign as magnitude — what `stride as usize` does — turns -4096
-        // into 18 446 744 073 709 547 520, which sails past a `stride < row`
-        // check and then indexes billions of bytes off the end of the buffer.
-        // This repacker only walks rows forward, so it cannot describe the
-        // frame.
-        assert_eq!(
-            packed_row_geometry(64, 4, -256, 4096),
-            None,
-            "a bottom-up buffer must be refused, not reinterpreted"
-        );
-        // The same geometry with the stride the right way up is fine.
-        assert_eq!(
-            packed_row_geometry(64, 4, 256, 4096),
-            Some((256, 256, 4)),
-            "a normal top-down buffer still works"
-        );
-    }
-
-    #[test]
-    fn packed_geometry_refuses_a_buffer_that_cannot_supply_the_rows_claimed() {
-        // A buffer one byte short of four rows cannot supply four rows.
-        assert_eq!(
-            packed_row_geometry(64, 4, 256, 1023),
-            None,
-            "a short buffer is refused rather than read past its end"
-        );
-        // A stride narrower than the visible row is not padding, it is wrong.
-        assert_eq!(packed_row_geometry(64, 4, 128, 4096), None, "stride < row");
-        // Padding past the visible pixels is normal and must be accepted.
-        assert_eq!(
-            packed_row_geometry(60, 4, 256, 1024),
-            Some((240, 256, 4)),
-            "a padded row is accepted, and the padding is not part of the row"
-        );
+    fn buffers_that_cannot_supply_their_claimed_rows_are_refused() {
+        // Phase `a_negative_stride_is_refused_rather_than_read_as_a_huge_row`.
+        {
+            // `GStreamer` spells a bottom-up image as a negative stride. Reading
+            // the sign as magnitude — what `stride as usize` does — turns -4096
+            // into 18 446 744 073 709 547 520, which sails past a `stride < row`
+            // check and then indexes billions of bytes off the end of the buffer.
+            // This repacker only walks rows forward, so it cannot describe the
+            // frame.
+            assert_eq!(
+                packed_row_geometry(64, 4, -256, 4096),
+                None,
+                "a bottom-up buffer must be refused, not reinterpreted"
+            );
+            // The same geometry with the stride the right way up is fine.
+            assert_eq!(
+                packed_row_geometry(64, 4, 256, 4096),
+                Some((256, 256, 4)),
+                "a normal top-down buffer still works"
+            );
+        }
+        // Phase `packed_geometry_refuses_a_buffer_that_cannot_supply_the_rows_claimed`.
+        {
+            // A buffer one byte short of four rows cannot supply four rows.
+            assert_eq!(
+                packed_row_geometry(64, 4, 256, 1023),
+                None,
+                "a short buffer is refused rather than read past its end"
+            );
+            // A stride narrower than the visible row is not padding, it is wrong.
+            assert_eq!(packed_row_geometry(64, 4, 128, 4096), None, "stride < row");
+            // Padding past the visible pixels is normal and must be accepted.
+            assert_eq!(
+                packed_row_geometry(60, 4, 256, 1024),
+                Some((240, 256, 4)),
+                "a padded row is accepted, and the padding is not part of the row"
+            );
+        }
     }
 }

@@ -214,75 +214,76 @@ fn assert_references_resolved(snap: &DocSnapshot, format: &str) {
 }
 
 #[test]
-fn docx_keeps_entity_and_character_references_in_text() {
-    let d = import(&DocxCodec, &docx_with_references());
-    let snap = d.materialize();
-    assert_references_resolved(&snap, "docx");
-    assert_eq!(
-        snap.properties.get("subject").map(String::as_str),
-        Some(TEXT)
-    );
+fn office_text_keeps_entity_references_and_drops_undeclared_ones() {
+    // Phase `docx_keeps_entity_and_character_references_in_text`.
+    {
+        let d = import(&DocxCodec, &docx_with_references());
+        let snap = d.materialize();
+        assert_references_resolved(&snap, "docx");
+        assert_eq!(
+            snap.properties.get("subject").map(String::as_str),
+            Some(TEXT)
+        );
 
-    let exported = DocxCodec
-        .export(d.as_ref(), &tilo_content::NoContent)
-        .unwrap();
-    assert!(
-        part(&exported, "docProps/core.xml").contains(&format!(
-            "<cp:lastModifiedBy>{RAW_UNMODELED}</cp:lastModifiedBy>"
-        )),
-        "unmodeled core property keeps its references: {}",
-        part(&exported, "docProps/core.xml")
-    );
-    let reopened = import(&DocxCodec, &exported).materialize();
-    assert_references_resolved(&reopened, "docx re-export");
-}
+        let exported = DocxCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        assert!(
+            part(&exported, "docProps/core.xml").contains(&format!(
+                "<cp:lastModifiedBy>{RAW_UNMODELED}</cp:lastModifiedBy>"
+            )),
+            "unmodeled core property keeps its references: {}",
+            part(&exported, "docProps/core.xml")
+        );
+        let reopened = import(&DocxCodec, &exported).materialize();
+        assert_references_resolved(&reopened, "docx re-export");
+    }
+    // Phase `odt_keeps_entity_and_character_references_in_text`.
+    {
+        let d = import(&OdtCodec, &odt_with_references());
+        let snap = d.materialize();
+        assert_references_resolved(&snap, "odt");
+        assert_eq!(snap.changes.len(), 1, "one tracked change");
+        assert_eq!(snap.changes[0].author, TEXT, "tracked-change author");
 
-#[test]
-fn odt_keeps_entity_and_character_references_in_text() {
-    let d = import(&OdtCodec, &odt_with_references());
-    let snap = d.materialize();
-    assert_references_resolved(&snap, "odt");
-    assert_eq!(snap.changes.len(), 1, "one tracked change");
-    assert_eq!(snap.changes[0].author, TEXT, "tracked-change author");
-
-    let exported = OdtCodec
-        .export(d.as_ref(), &tilo_content::NoContent)
-        .unwrap();
-    assert!(
-        part(&exported, "meta.xml").contains(&format!(
-            r#"<meta:user-defined meta:name="note">{RAW_UNMODELED}</meta:user-defined>"#
-        )),
-        "unmodeled meta field keeps its references: {}",
-        part(&exported, "meta.xml")
-    );
-    let reopened = import(&OdtCodec, &exported).materialize();
-    assert_references_resolved(&reopened, "odt re-export");
-    assert_eq!(reopened.changes[0].author, TEXT, "tracked-change author");
-}
-
-/// A named entity no DTD declares cannot occur in a well-formed part (a DTD is
-/// refused before parsing), so it stands for no character: the readers drop
-/// the reference and keep the text around it, as the spreadsheet readers do.
-#[test]
-fn undeclared_named_entities_are_dropped_without_losing_neighbours() {
-    let docx = zip_of(&[(
-        "word/document.xml",
-        format!(
-            "<w:document {W}><w:body><w:p><w:r><w:t>a&bogus;b&amp;c</w:t></w:r></w:p></w:body></w:document>"
-        ),
-    )]);
-    let snap = import(&DocxCodec, &docx).materialize();
-    assert_eq!(snap.blocks[0].text, "ab&c");
-
-    let odt = zip_of(&[
-        ("mimetype", "application/vnd.oasis.opendocument.text".into()),
-        (
-            "content.xml",
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        assert!(
+            part(&exported, "meta.xml").contains(&format!(
+                r#"<meta:user-defined meta:name="note">{RAW_UNMODELED}</meta:user-defined>"#
+            )),
+            "unmodeled meta field keeps its references: {}",
+            part(&exported, "meta.xml")
+        );
+        let reopened = import(&OdtCodec, &exported).materialize();
+        assert_references_resolved(&reopened, "odt re-export");
+        assert_eq!(reopened.changes[0].author, TEXT, "tracked-change author");
+    }
+    // Phase `undeclared_named_entities_are_dropped_without_losing_neighbours`.
+    // A named entity no DTD declares cannot occur in a well-formed part (a DTD is
+    // refused before parsing), so it stands for no character: the readers drop
+    // the reference and keep the text around it, as the spreadsheet readers do.
+    {
+        let docx = zip_of(&[(
+            "word/document.xml",
             format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ODF_NS}><office:body><office:text><text:p>a&bogus;b&amp;c</text:p></office:text></office:body></office:document-content>"#
+                "<w:document {W}><w:body><w:p><w:r><w:t>a&bogus;b&amp;c</w:t></w:r></w:p></w:body></w:document>"
             ),
-        ),
-    ]);
-    let snap = import(&OdtCodec, &odt).materialize();
-    assert_eq!(snap.blocks[0].text, "ab&c");
+        )]);
+        let snap = import(&DocxCodec, &docx).materialize();
+        assert_eq!(snap.blocks[0].text, "ab&c");
+
+        let odt = zip_of(&[
+            ("mimetype", "application/vnd.oasis.opendocument.text".into()),
+            (
+                "content.xml",
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {ODF_NS}><office:body><office:text><text:p>a&bogus;b&amp;c</text:p></office:text></office:body></office:document-content>"#
+                ),
+            ),
+        ]);
+        let snap = import(&OdtCodec, &odt).materialize();
+        assert_eq!(snap.blocks[0].text, "ab&c");
+    }
 }

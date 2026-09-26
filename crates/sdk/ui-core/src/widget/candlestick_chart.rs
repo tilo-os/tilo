@@ -695,14 +695,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn impossible_ohlc_is_rejected() {
-        assert!(!Candle::new("x", "X", 2.0, 1.0, 3.0, 2.0).valid());
-    }
+    fn candlestick_rejects_impossible_ohlc_and_ranges_flat_data() {
+        fn impossible_ohlc_is_rejected() {
+            assert!(!Candle::new("x", "X", 2.0, 1.0, 3.0, 2.0).valid());
+        }
 
-    #[test]
-    fn flat_data_gets_a_safe_price_range() {
-        let chart = CandlestickChart::new(vec![Candle::new("x", "X", 2.0, 2.0, 2.0, 2.0)]);
-        let (min, max) = chart.price_range();
-        assert!(max > min);
+        fn flat_data_gets_a_safe_price_range() {
+            let chart = CandlestickChart::new(vec![Candle::new("x", "X", 2.0, 2.0, 2.0, 2.0)]);
+            let (min, max) = chart.price_range();
+            assert!(max > min);
+        }
+
+        impossible_ohlc_is_rejected();
+        flat_data_gets_a_safe_price_range();
     }
 }

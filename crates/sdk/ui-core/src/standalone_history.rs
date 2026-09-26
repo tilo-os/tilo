@@ -283,175 +283,186 @@ mod tests {
     }
 
     #[test]
-    fn browsing_and_comparison_preserve_pending_edit_and_attribution() {
-        let mut doc = document("saved");
-        let record = RecordId::for_file("a.md");
-        let identity = uuid::Uuid::new_v4();
-        let permissions = read_only("notes");
-        let before = doc.base_heads();
-        doc.put(ROOT, "body", "still typing").unwrap();
-        let pending = doc.pending_ops();
-        let context = HistoryReadContext {
-            document: &doc,
-            active_record: Some(&record),
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let mut session = StandaloneHistory::open(
-            target(Some(record.clone()), identity),
-            &context,
-            AuthorDirectory::new(),
-        )
-        .unwrap();
-        assert_eq!(session.rows().len(), 1);
-        assert!(!session.refresh(&context).unwrap());
-        session.select(&context, &[session.rows()[0].id]).unwrap();
-        let comparison = session.compare_selection(&context).unwrap();
-        let after = AutoCommit::load(&comparison.after_document).unwrap();
-        assert_eq!(
-            after.get(ROOT, "body").unwrap().unwrap().0.as_str(),
-            Some("saved")
-        );
-        assert_eq!(doc.pending_ops(), pending);
-        assert_eq!(doc.base_heads(), before);
-        doc.put(ROOT, "body", "finished").unwrap();
-        let action = tilo_actions::ActionContext::for_resource("Finish edit", "a", "note", "A");
-        doc.commit_with(CommitOptions::default().with_message(action.change_message().unwrap()));
-        let changes = doc.get_changes(&before);
-        assert_eq!(changes.len(), 1);
-        assert_eq!(
-            changes[0]
-                .message()
-                .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-                .unwrap()
-                .action_label,
-            "Finish edit",
-        );
-    }
-
-    #[test]
-    fn record_switch_clears_old_rows_and_does_not_fall_back() {
-        let first = document("first");
-        let second = document("second");
-        let a = RecordId::for_file("a.md");
-        let b = RecordId::for_file("b.md");
-        let identity = uuid::Uuid::new_v4();
-        let permissions = PermissionContext::permissive();
-        let context = HistoryReadContext {
-            document: &first,
-            active_record: Some(&a),
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let mut session = StandaloneHistory::open(
-            target(Some(a.clone()), identity),
-            &context,
-            AuthorDirectory::new(),
-        )
-        .unwrap();
-        session.select(&context, &[session.rows()[0].id]).unwrap();
-        session.compare_selection(&context).unwrap();
-        let switched = HistoryReadContext {
-            document: &second,
-            active_record: Some(&b),
-            ..context
-        };
-        assert_eq!(session.refresh(&switched), Err(HistoryError::Stale));
-        assert!(session.rows().is_empty());
-        assert!(session.selection().is_empty());
-        assert!(session.comparison().is_none());
-        assert_eq!(session.refresh(&context), Err(HistoryError::Stale));
-    }
-
-    #[test]
-    fn replacing_same_record_or_app_document_invalidates_old_session() {
-        let first = document("first");
-        let replacement = document("replacement");
-        let permissions = PermissionContext::permissive();
-        for record in [None, Some(RecordId::for_tab(3))] {
+    fn standalone_history_browsing_preserves_edits_and_stays_on_its_document() {
+        // Case `browsing_and_comparison_preserve_pending_edit_and_attribution`.
+        {
+            let mut doc = document("saved");
+            let record = RecordId::for_file("a.md");
             let identity = uuid::Uuid::new_v4();
+            let permissions = read_only("notes");
+            let before = doc.base_heads();
+            doc.put(ROOT, "body", "still typing").unwrap();
+            let pending = doc.pending_ops();
             let context = HistoryReadContext {
-                document: &first,
-                active_record: record.as_ref(),
+                document: &doc,
+                active_record: Some(&record),
                 document_identity: identity,
                 permissions: &permissions,
             };
             let mut session = StandaloneHistory::open(
-                target(record.clone(), identity),
+                target(Some(record.clone()), identity),
                 &context,
                 AuthorDirectory::new(),
             )
             .unwrap();
-            let replaced = HistoryReadContext {
-                document: &replacement,
-                document_identity: uuid::Uuid::new_v4(),
+            assert_eq!(session.rows().len(), 1);
+            assert!(!session.refresh(&context).unwrap());
+            session.select(&context, &[session.rows()[0].id]).unwrap();
+            let comparison = session.compare_selection(&context).unwrap();
+            let after = AutoCommit::load(&comparison.after_document).unwrap();
+            assert_eq!(
+                after.get(ROOT, "body").unwrap().unwrap().0.as_str(),
+                Some("saved")
+            );
+            assert_eq!(doc.pending_ops(), pending);
+            assert_eq!(doc.base_heads(), before);
+            doc.put(ROOT, "body", "finished").unwrap();
+            let action = tilo_actions::ActionContext::for_resource("Finish edit", "a", "note", "A");
+            doc.commit_with(
+                CommitOptions::default().with_message(action.change_message().unwrap()),
+            );
+            let changes = doc.get_changes(&before);
+            assert_eq!(changes.len(), 1);
+            assert_eq!(
+                changes[0]
+                    .message()
+                    .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+                    .unwrap()
+                    .action_label,
+                "Finish edit",
+            );
+        }
+
+        // Case `record_switch_clears_old_rows_and_does_not_fall_back`.
+        {
+            let first = document("first");
+            let second = document("second");
+            let a = RecordId::for_file("a.md");
+            let b = RecordId::for_file("b.md");
+            let identity = uuid::Uuid::new_v4();
+            let permissions = PermissionContext::permissive();
+            let context = HistoryReadContext {
+                document: &first,
+                active_record: Some(&a),
+                document_identity: identity,
+                permissions: &permissions,
+            };
+            let mut session = StandaloneHistory::open(
+                target(Some(a.clone()), identity),
+                &context,
+                AuthorDirectory::new(),
+            )
+            .unwrap();
+            session.select(&context, &[session.rows()[0].id]).unwrap();
+            session.compare_selection(&context).unwrap();
+            let switched = HistoryReadContext {
+                document: &second,
+                active_record: Some(&b),
                 ..context
             };
-            assert_eq!(session.refresh(&replaced), Err(HistoryError::Stale));
-            assert!(session.rows().is_empty());
-        }
-    }
-
-    #[test]
-    fn revocation_is_checked_on_cached_refresh_select_and_compare() {
-        let doc = document("private");
-        let identity = uuid::Uuid::new_v4();
-        let permissions = read_only("notes");
-        let denied = read_only("other-app");
-        let context = HistoryReadContext {
-            document: &doc,
-            active_record: None,
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let revoked = HistoryReadContext {
-            permissions: &denied,
-            ..context
-        };
-        for operation in 0..3 {
-            let mut session =
-                StandaloneHistory::open(target(None, identity), &context, AuthorDirectory::new())
-                    .unwrap();
-            let id = session.rows()[0].id;
-            session.select(&context, &[id]).unwrap();
-            session.compare_selection(&context).unwrap();
-            let result = match operation {
-                0 => session.refresh(&revoked).map(|_| ()),
-                1 => session.select(&revoked, &[id]),
-                _ => session.compare_selection(&revoked).map(|_| ()),
-            };
-            assert_eq!(result, Err(HistoryError::Denied));
+            assert_eq!(session.refresh(&switched), Err(HistoryError::Stale));
             assert!(session.rows().is_empty());
             assert!(session.selection().is_empty());
             assert!(session.comparison().is_none());
-            assert_eq!(session.refresh(&context), Err(HistoryError::Denied));
+            assert_eq!(session.refresh(&context), Err(HistoryError::Stale));
+        }
+
+        // Case `unknown_selection_cannot_materialize_another_documents_change`.
+        {
+            let doc = document("first");
+            let mut foreign = document("foreign");
+            let foreign_id = HistorySource::new().entries(&mut foreign)[0].id;
+            let identity = uuid::Uuid::new_v4();
+            let permissions = PermissionContext::permissive();
+            let context = HistoryReadContext {
+                document: &doc,
+                active_record: None,
+                document_identity: identity,
+                permissions: &permissions,
+            };
+            let mut session =
+                StandaloneHistory::open(target(None, identity), &context, AuthorDirectory::new())
+                    .unwrap();
+            assert_eq!(
+                session.select(&context, &[foreign_id]),
+                Err(HistoryError::InvalidSelection)
+            );
+            assert_eq!(
+                session.compare_selection(&context).unwrap_err(),
+                HistoryError::InvalidSelection
+            );
+            assert!(session.comparison().is_none());
         }
     }
 
     #[test]
-    fn unknown_selection_cannot_materialize_another_documents_change() {
-        let doc = document("first");
-        let mut foreign = document("foreign");
-        let foreign_id = HistorySource::new().entries(&mut foreign)[0].id;
-        let identity = uuid::Uuid::new_v4();
-        let permissions = PermissionContext::permissive();
-        let context = HistoryReadContext {
-            document: &doc,
-            active_record: None,
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let mut session =
-            StandaloneHistory::open(target(None, identity), &context, AuthorDirectory::new())
+    fn standalone_history_sessions_invalidate_on_replacement_and_revocation() {
+        // Case `replacing_same_record_or_app_document_invalidates_old_session`.
+        {
+            let first = document("first");
+            let replacement = document("replacement");
+            let permissions = PermissionContext::permissive();
+            for record in [None, Some(RecordId::for_tab(3))] {
+                let identity = uuid::Uuid::new_v4();
+                let context = HistoryReadContext {
+                    document: &first,
+                    active_record: record.as_ref(),
+                    document_identity: identity,
+                    permissions: &permissions,
+                };
+                let mut session = StandaloneHistory::open(
+                    target(record.clone(), identity),
+                    &context,
+                    AuthorDirectory::new(),
+                )
                 .unwrap();
-        assert_eq!(
-            session.select(&context, &[foreign_id]),
-            Err(HistoryError::InvalidSelection)
-        );
-        assert_eq!(
-            session.compare_selection(&context).unwrap_err(),
-            HistoryError::InvalidSelection
-        );
-        assert!(session.comparison().is_none());
+                let replaced = HistoryReadContext {
+                    document: &replacement,
+                    document_identity: uuid::Uuid::new_v4(),
+                    ..context
+                };
+                assert_eq!(session.refresh(&replaced), Err(HistoryError::Stale));
+                assert!(session.rows().is_empty());
+            }
+        }
+
+        // Case `revocation_is_checked_on_cached_refresh_select_and_compare`.
+        {
+            let doc = document("private");
+            let identity = uuid::Uuid::new_v4();
+            let permissions = read_only("notes");
+            let denied = read_only("other-app");
+            let context = HistoryReadContext {
+                document: &doc,
+                active_record: None,
+                document_identity: identity,
+                permissions: &permissions,
+            };
+            let revoked = HistoryReadContext {
+                permissions: &denied,
+                ..context
+            };
+            for operation in 0..3 {
+                let mut session = StandaloneHistory::open(
+                    target(None, identity),
+                    &context,
+                    AuthorDirectory::new(),
+                )
+                .unwrap();
+                let id = session.rows()[0].id;
+                session.select(&context, &[id]).unwrap();
+                session.compare_selection(&context).unwrap();
+                let result = match operation {
+                    0 => session.refresh(&revoked).map(|_| ()),
+                    1 => session.select(&revoked, &[id]),
+                    _ => session.compare_selection(&revoked).map(|_| ()),
+                };
+                assert_eq!(result, Err(HistoryError::Denied));
+                assert!(session.rows().is_empty());
+                assert!(session.selection().is_empty());
+                assert!(session.comparison().is_none());
+                assert_eq!(session.refresh(&context), Err(HistoryError::Denied));
+            }
+        }
     }
 }

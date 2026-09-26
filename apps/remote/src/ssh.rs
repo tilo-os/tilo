@@ -654,40 +654,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_auth_password_reads_env() {
-        let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
-        match resolve_auth(false, env, &[]).unwrap() {
-            SshAuth::Password(p) => assert_eq!(p, "hunter2"),
-            other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_auth_password_missing_is_error() {
-        assert!(resolve_auth(false, |_| None, &[]).is_err());
-    }
-
-    #[test]
-    fn resolve_auth_key_prefers_env_over_defaults() {
-        let env = |k: &str| match k {
-            "REMOTE_SSH_KEY" => Some("/keys/explicit".to_string()),
-            "REMOTE_SSH_KEY_PASSPHRASE" => Some("pw".to_string()),
-            _ => None,
-        };
-        let defaults = vec![PathBuf::from("/keys/default")];
-        match resolve_auth(true, env, &defaults).unwrap() {
-            SshAuth::Key { path, passphrase } => {
-                assert_eq!(path, PathBuf::from("/keys/explicit"));
-                assert_eq!(passphrase.as_deref(), Some("pw"));
+    fn auth_resolution_reads_env_and_default_keys() {
+        eprintln!("phase resolve_auth_password_reads_env");
+        {
+            let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
+            match resolve_auth(false, env, &[]).unwrap() {
+                SshAuth::Password(p) => assert_eq!(p, "hunter2"),
+                other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
             }
-            other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
         }
-    }
 
-    #[test]
-    fn default_key_paths_are_under_dot_ssh() {
-        let paths = default_key_paths();
-        assert!(paths.iter().any(|p| p.ends_with(".ssh/id_ed25519")));
+        eprintln!("phase resolve_auth_password_missing_is_error");
+        {
+            assert!(resolve_auth(false, |_| None, &[]).is_err());
+        }
+
+        eprintln!("phase resolve_auth_key_prefers_env_over_defaults");
+        {
+            let env = |k: &str| match k {
+                "REMOTE_SSH_KEY" => Some("/keys/explicit".to_string()),
+                "REMOTE_SSH_KEY_PASSPHRASE" => Some("pw".to_string()),
+                _ => None,
+            };
+            let defaults = vec![PathBuf::from("/keys/default")];
+            match resolve_auth(true, env, &defaults).unwrap() {
+                SshAuth::Key { path, passphrase } => {
+                    assert_eq!(path, PathBuf::from("/keys/explicit"));
+                    assert_eq!(passphrase.as_deref(), Some("pw"));
+                }
+                other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
+            }
+        }
+
+        eprintln!("phase default_key_paths_are_under_dot_ssh");
+        {
+            let paths = default_key_paths();
+            assert!(paths.iter().any(|p| p.ends_with(".ssh/id_ed25519")));
+        }
     }
 
     fn test_known_hosts_path() -> PathBuf {
@@ -703,57 +706,60 @@ mod tests {
     }
 
     #[test]
-    fn device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted() {
-        let path = test_known_hosts_path();
-        let first = HostKeyIdentity {
-            algorithm: "ssh-ed25519".into(),
-            fingerprint: "SHA256:first".into(),
-        };
-        let changed = HostKeyIdentity {
-            algorithm: "ssh-ed25519".into(),
-            fingerprint: "SHA256:changed".into(),
-        };
+    fn known_hosts_store_fails_closed_until_exactly_trusted() {
+        eprintln!("phase device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted");
+        {
+            let path = test_known_hosts_path();
+            let first = HostKeyIdentity {
+                algorithm: "ssh-ed25519".into(),
+                fingerprint: "SHA256:first".into(),
+            };
+            let changed = HostKeyIdentity {
+                algorithm: "ssh-ed25519".into(),
+                fingerprint: "SHA256:changed".into(),
+            };
 
-        let empty = load_known_hosts(&path).unwrap();
-        assert!(
-            matches!(
-                verify_known_host(&empty, "host.example", 2222, first.clone()),
-                Err(HostKeyIssue::FirstContact { observed }) if observed == first
-            ),
-            "first contact must fail closed until the displayed key is explicitly trusted"
-        );
-        trust_host_key(&path, "host.example", 2222, &first).unwrap();
-        let stored = load_known_hosts(&path).unwrap();
-        assert_eq!(stored.entries[0].identity, first);
-        assert!(
-            verify_known_host(&stored, "host.example", 2222, first.clone()).is_ok(),
-            "an exact host:port:key match reconnects"
-        );
-        assert!(
-            matches!(
-                verify_known_host(&stored, "host.example", 2222, changed.clone()),
-                Err(HostKeyIssue::Changed { expected, observed }) if expected == first && observed == changed
-            ),
-            "a changed key must fail closed"
-        );
-        assert!(
-            trust_host_key(&path, "host.example", 2222, &changed).is_err(),
-            "a changed key cannot silently replace a pin"
-        );
-        assert!(forget_host_key(&path, "host.example", 2222).unwrap());
-        assert!(!forget_host_key(&path, "host.example", 2222).unwrap());
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
+            let empty = load_known_hosts(&path).unwrap();
+            assert!(
+                matches!(
+                    verify_known_host(&empty, "host.example", 2222, first.clone()),
+                    Err(HostKeyIssue::FirstContact { observed }) if observed == first
+                ),
+                "first contact must fail closed until the displayed key is explicitly trusted"
+            );
+            trust_host_key(&path, "host.example", 2222, &first).unwrap();
+            let stored = load_known_hosts(&path).unwrap();
+            assert_eq!(stored.entries[0].identity, first);
+            assert!(
+                verify_known_host(&stored, "host.example", 2222, first.clone()).is_ok(),
+                "an exact host:port:key match reconnects"
+            );
+            assert!(
+                matches!(
+                    verify_known_host(&stored, "host.example", 2222, changed.clone()),
+                    Err(HostKeyIssue::Changed { expected, observed }) if expected == first && observed == changed
+                ),
+                "a changed key must fail closed"
+            );
+            assert!(
+                trust_host_key(&path, "host.example", 2222, &changed).is_err(),
+                "a changed key cannot silently replace a pin"
+            );
+            assert!(forget_host_key(&path, "host.example", 2222).unwrap());
+            assert!(!forget_host_key(&path, "host.example", 2222).unwrap());
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
 
-    #[test]
-    fn corrupt_known_hosts_store_fails_closed() {
-        let path = test_known_hosts_path();
-        fs::write(&path, b"not JSON").unwrap();
-        assert!(
-            load_known_hosts(&path).is_err(),
-            "corrupt trust state cannot be treated as empty"
-        );
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        eprintln!("phase corrupt_known_hosts_store_fails_closed");
+        {
+            let path = test_known_hosts_path();
+            fs::write(&path, b"not JSON").unwrap();
+            assert!(
+                load_known_hosts(&path).is_err(),
+                "corrupt trust state cannot be treated as empty"
+            );
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
     }
 
     #[cfg(unix)]

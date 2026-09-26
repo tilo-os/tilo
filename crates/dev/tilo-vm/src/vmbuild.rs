@@ -209,69 +209,74 @@ mod tests {
         }
     }
 
+    /// Worktree ids are readable and unique per host; rsync respects gitignore and leaves target alone; the
+    /// Windows worktree is a local MSYS2 rsync operand; job commands follow the configured daemon.
     #[test]
-    fn worktree_ids_are_readable_and_unique_per_host() {
-        let wt = Worktree {
-            root: PathBuf::from("/home/a/tilo/.claude/worktrees/agent-A74"),
-            branch: None,
-        };
-        let a = worktree_id(&wt, Some("laptop"));
-        assert!(a.starts_with("agent-a74-"), "{a}");
-        assert_eq!(a.len(), "agent-a74-".len() + 8);
-        assert_ne!(a, worktree_id(&wt, Some("desktop")));
-        assert_eq!(a, worktree_id(&wt, Some("laptop")));
-    }
-
-    #[test]
-    fn rsync_respects_gitignore_and_leaves_target_alone() {
-        let line = rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1");
-        let text = line.display();
-        assert!(line.args.contains(&"--filter=:- .gitignore".to_owned()));
-        assert!(line.args.contains(&"--exclude=/target/".to_owned()));
-        assert!(line.args.contains(&"--delete".to_owned()));
-        assert!(
-            !line.args.iter().any(|a| a == "--delete-excluded"),
-            "excluded files (the VM's target/) must survive"
-        );
-        assert!(
-            text.ends_with("/w/tilo/ root@127.0.0.1:/var/lib/tilo-vm/src/wt-1/"),
-            "{text}"
-        );
-        let rsh = &line.args[line.args.iter().position(|a| a == "--rsh").unwrap() + 1];
-        assert!(rsh.contains("-p 2223"), "{rsh}");
-        assert!(rsh.contains("-i '/k/id x'"), "{rsh}");
-        assert!(!rsh.contains("root@"), "{rsh}");
-        let path = &line.args[line.args.iter().position(|a| a == "--rsync-path").unwrap() + 1];
-        assert!(
-            path.contains("flock --nonblock /var/lib/tilo-vm/locks/src-wt-1.lock rsync"),
-            "{path}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_worktree_is_a_local_msys2_rsync_operand() {
-        let line = rsync_command(
-            Path::new(r"C:\Users\bob\tilo-tilo-main"),
-            &endpoint(),
-            None,
-            "wt-1",
-        );
-        assert_eq!(
-            line.args[line.args.len() - 2],
-            "/c/Users/user/tilo-tilo-main/"
-        );
-        if let Some(found) = crate::host::which_all("rsync").first() {
-            assert_eq!(line.program, found.display().to_string());
+    fn vm_builds_sync_each_worktree_to_its_configured_daemon() {
+        // Phase: worktree_ids_are_readable_and_unique_per_host.
+        {
+            let wt = Worktree {
+                root: PathBuf::from("/home/a/tilo/.claude/worktrees/agent-A74"),
+                branch: None,
+            };
+            let a = worktree_id(&wt, Some("laptop"));
+            assert!(a.starts_with("agent-a74-"), "{a}");
+            assert_eq!(a.len(), "agent-a74-".len() + 8);
+            assert_ne!(a, worktree_id(&wt, Some("desktop")));
+            assert_eq!(a, worktree_id(&wt, Some("laptop")));
         }
-    }
 
-    #[test]
-    fn job_commands_follow_the_configured_daemon() {
-        assert_eq!(daemon_command(None, "build"), ["tilo-vmd", "build"]);
-        assert_eq!(
-            daemon_command(Some("sudo -n tilo-vmd rpc"), "ci-layer"),
-            ["sudo", "-n", "tilo-vmd", "ci-layer"]
-        );
+        // Phase: rsync_respects_gitignore_and_leaves_target_alone.
+        {
+            let line = rsync_command(Path::new("/w/tilo"), &endpoint(), Some("/k/id x"), "wt-1");
+            let text = line.display();
+            assert!(line.args.contains(&"--filter=:- .gitignore".to_owned()));
+            assert!(line.args.contains(&"--exclude=/target/".to_owned()));
+            assert!(line.args.contains(&"--delete".to_owned()));
+            assert!(
+                !line.args.iter().any(|a| a == "--delete-excluded"),
+                "excluded files (the VM's target/) must survive"
+            );
+            assert!(
+                text.ends_with("/w/tilo/ root@127.0.0.1:/var/lib/tilo-vm/src/wt-1/"),
+                "{text}"
+            );
+            let rsh = &line.args[line.args.iter().position(|a| a == "--rsh").unwrap() + 1];
+            assert!(rsh.contains("-p 2223"), "{rsh}");
+            assert!(rsh.contains("-i '/k/id x'"), "{rsh}");
+            assert!(!rsh.contains("root@"), "{rsh}");
+            let path = &line.args[line.args.iter().position(|a| a == "--rsync-path").unwrap() + 1];
+            assert!(
+                path.contains("flock --nonblock /var/lib/tilo-vm/locks/src-wt-1.lock rsync"),
+                "{path}"
+            );
+        }
+
+        // Phase: windows_worktree_is_a_local_msys2_rsync_operand.
+        #[cfg(windows)]
+        {
+            let line = rsync_command(
+                Path::new(r"C:\Users\bob\tilo-tilo-main"),
+                &endpoint(),
+                None,
+                "wt-1",
+            );
+            assert_eq!(
+                line.args[line.args.len() - 2],
+                "/c/Users/user/tilo-tilo-main/"
+            );
+            if let Some(found) = crate::host::which_all("rsync").first() {
+                assert_eq!(line.program, found.display().to_string());
+            }
+        }
+
+        // Phase: job_commands_follow_the_configured_daemon.
+        {
+            assert_eq!(daemon_command(None, "build"), ["tilo-vmd", "build"]);
+            assert_eq!(
+                daemon_command(Some("sudo -n tilo-vmd rpc"), "ci-layer"),
+                ["sudo", "-n", "tilo-vmd", "ci-layer"]
+            );
+        }
     }
 }

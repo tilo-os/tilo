@@ -21,6 +21,7 @@ trap cleanup EXIT
 
 python3 - "$work/port" <<'PY' &
 import json
+import os
 import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -109,14 +110,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, release)
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-with open(sys.argv[1], "w", encoding="utf-8") as target:
+# Publish the port by rename so a reader never sees a partial number.
+with open(sys.argv[1] + ".partial", "w", encoding="utf-8") as target:
     target.write(str(server.server_port))
+os.replace(sys.argv[1] + ".partial", sys.argv[1])
 server.serve_forever()
 PY
 server_pid=$!
 
-for _attempt in $(seq 1 100); do
+# Interpreter start-up is slow on a loaded runner, so wait for as long as the
+# server process lives, bounded only against a wedged interpreter.
+for _attempt in $(seq 1 1500); do
   [ -s "$work/port" ] && break
+  kill -0 "$server_pid" 2>/dev/null || break
   sleep 0.02
 done
 [ -s "$work/port" ] || { printf 'mock GitHub server did not start\n' >&2; exit 1; }

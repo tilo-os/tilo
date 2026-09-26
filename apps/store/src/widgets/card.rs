@@ -225,42 +225,46 @@ mod tests {
 
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
+    /// Registry categories read as words and the tooltip keeps full metadata.
     #[test]
-    fn registry_categories_are_presented_as_words() {
-        assert_eq!(category_label("AudioVideo"), "Audio & video");
-        assert_eq!(category_label("Development"), "Developer tools");
-        assert_eq!(category_label("Games"), "Games");
-    }
+    fn card_categories_and_tooltip_preserve_metadata() {
+        // Case `registry_categories_are_presented_as_words`.
+        {
+            assert_eq!(category_label("AudioVideo"), "Audio & video");
+            assert_eq!(category_label("Development"), "Developer tools");
+            assert_eq!(category_label("Games"), "Games");
+        }
 
-    #[test]
-    fn card_tooltip_preserves_full_quiet_metadata_and_description() {
-        let item = StoreItem {
-            id: "org.example.Editor".into(),
-            name: "Editor".into(),
-            description: "Write without distractions.".into(),
-            tagline: String::new(),
-            supported_languages: Vec::new(),
-            categories: vec!["Development".into(), "Productivity".into()],
-            icon_url: None,
-            screenshot_urls: Vec::new(),
-            homepage_url: None,
-            source_url: None,
-            install_ref_path: None,
-            source: StoreSource::Flathub,
-            trust: StoreTrust::Flathub,
-            versions: vec![StoreItemVersion {
-                version: "2.4".into(),
-                released_at_unix: 0,
-                download_url: None,
-                root_hash_hex: None,
-                size_bytes: 0,
-            }],
-            publisher_pubkey_hex: None,
-            installed: InstalledState::Not,
-        };
-        let summary = card_summary(&item);
-        assert!(summary.contains("Flathub · v2.4"));
-        assert!(summary.contains("Developer tools, Productivity"));
-        assert!(summary.contains("Write without distractions."));
+        // Case `card_tooltip_preserves_full_quiet_metadata_and_description`.
+        {
+            let item = StoreItem {
+                id: "org.example.Editor".into(),
+                name: "Editor".into(),
+                description: "Write without distractions.".into(),
+                tagline: String::new(),
+                supported_languages: Vec::new(),
+                categories: vec!["Development".into(), "Productivity".into()],
+                icon_url: None,
+                screenshot_urls: Vec::new(),
+                homepage_url: None,
+                source_url: None,
+                install_ref_path: None,
+                source: StoreSource::Flathub,
+                trust: StoreTrust::Flathub,
+                versions: vec![StoreItemVersion {
+                    version: "2.4".into(),
+                    released_at_unix: 0,
+                    download_url: None,
+                    root_hash_hex: None,
+                    size_bytes: 0,
+                }],
+                publisher_pubkey_hex: None,
+                installed: InstalledState::Not,
+            };
+            let summary = card_summary(&item);
+            assert!(summary.contains("Flathub · v2.4"));
+            assert!(summary.contains("Developer tools, Productivity"));
+            assert!(summary.contains("Write without distractions."));
+        }
     }
 }
