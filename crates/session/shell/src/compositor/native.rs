@@ -6012,6 +6012,23 @@ pub fn run() {
         )
     });
 
+    // polkit authentication agent: administrator prompts from pkexec,
+    // GNOME Disks, virt-manager and system Flatpak installs become a sheet
+    // only the compositor draws. Registered on the system bus for this login
+    // session; without polkit or logind the requests fail as before.
+    let polkit_agent: Option<
+        crate::session_runtime::Registration<crate::polkit_agent::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "polkit agent",
+            crate::polkit_agent::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+            ),
+            |_| tracing::info!("polkit: authentication agent registered for this session"),
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -8688,6 +8705,7 @@ pub fn run() {
     // server before returning to the session wrapper.
     drop(notif_handle);
     drop(tray_handle);
+    drop(polkit_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
