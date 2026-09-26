@@ -5,6 +5,9 @@
 //! and its frames are masked by the recorder's own frame strip. Never used
 //! on the live path, which only ever reviews what the recorder recorded.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use session_trace::frames::{
     FrameError, FrameLimits, FrameProvider, FrameStrip, FrameStripBuilder, PixelPurpose,
     SurfaceFrame, keyframe_regions,
@@ -20,7 +23,8 @@ use tilo_actions::{
 use tilo_reference::inspect::{InspectQuery, InspectReply, InspectRequest};
 use ui::widget::{Banner, Button, Column, Row, TextInput};
 
-const APP: &str = "so.tilo.mail";
+/// The app the sample session records.
+pub const APP: &str = "so.tilo.mail";
 const ROOM: &str = "room";
 const VIEWPORT: (u32, u32) = (720, 480);
 
@@ -35,13 +39,25 @@ enum Failure {
 }
 
 /// Mail's compose window, with the draft as far as it had been written.
-fn compose(to: &str, subject: &str, body: &str, failure: Failure) -> Column {
+/// `on_send` is what pressing Send does, in a live window.
+fn compose(
+    to: &str,
+    subject: &str,
+    body: &str,
+    failure: Failure,
+    on_send: Option<Rc<Cell<bool>>>,
+) -> Column {
+    let send = Button::new("send", "Send", None).primary();
+    let send = match on_send.clone() {
+        Some(pressed) => send.on_effect(move || pressed.set(true)),
+        None => send,
+    };
     let window = Column::new()
         .with_gap(8.0)
         .push(Box::new(
             Row::new()
                 .with_gap(8.0)
-                .push(Box::new(Button::new("send", "Send", None).primary()))
+                .push(Box::new(send))
                 .push(Box::new(Button::new("attach", "Attach", None)))
                 .push(Box::new(Button::new("discard", "Discard", None).ghost())),
         ))
@@ -69,12 +85,59 @@ fn compose(to: &str, subject: &str, body: &str, failure: Failure) -> Column {
                 .with_initial_value(body),
         ));
     // Below the draft, so the fields keep their place when it fails.
+    if let Some(sent) = on_send {
+        return window.push(Box::new(SendFailure {
+            banner: Banner::error("Couldn't send")
+                .with_message("The server refused the attachment")
+                .hidden(),
+            sent,
+        }));
+    }
     match failure {
         Failure::None => window,
         Failure::Shown => window.push(Box::new(
             Banner::error("Couldn't send").with_message("The server refused the attachment"),
         )),
         Failure::LostBelowTheApp => window.push(Box::new(Banner::error("Couldn't send"))),
+    }
+}
+
+/// Mail's compose window as a live app, for end-to-end tests: the sample
+/// session's draft, ready to send. Pressing Send fails, and the window
+/// then says why under the draft.
+pub fn mail_window() -> Column {
+    compose(
+        "Ada Lovelace",
+        "Invoice for March",
+        BODY,
+        Failure::None,
+        Some(Rc::new(Cell::new(false))),
+    )
+}
+
+/// The banner saying why sending failed, shown once Send was pressed.
+struct SendFailure {
+    banner: Banner,
+    sent: Rc<Cell<bool>>,
+}
+
+impl ui::widget::Decorator for SendFailure {
+    type Inner = Banner;
+
+    fn inner(&self) -> &Banner {
+        &self.banner
+    }
+
+    fn inner_mut(&mut self) -> &mut Banner {
+        &mut self.banner
+    }
+
+    fn update(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) -> bool {
+        if self.sent.get() && self.banner.is_dismissed() {
+            self.banner.set_shown(true);
+            return true;
+        }
+        false
     }
 }
 
@@ -87,7 +150,7 @@ struct Screen {
 fn screen(theme: &ui::Theme, to: &str, subject: &str, body: &str, failure: Failure) -> Screen {
     let driver = ui::headless::Driver::new_with_theme(
         ui::State::new(),
-        Box::new(compose(to, subject, body, failure)),
+        Box::new(compose(to, subject, body, failure, None)),
         VIEWPORT,
         theme.clone(),
     );

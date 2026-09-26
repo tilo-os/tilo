@@ -667,6 +667,17 @@ impl Composer {
     }
 }
 
+/// `remark` with every value review hid masked in the labels of what it is
+/// about, as it is in the recording: a picked field is labelled by its
+/// content.
+pub fn hide_reviewed(mut remark: Remark, masker: &session_trace::redact::Masker) -> Remark {
+    remark.reference.label = masker.mask(&remark.reference.label);
+    for reference in &mut remark.also {
+        reference.label = masker.mask(&reference.label);
+    }
+    remark
+}
+
 /// A remark addressed: which room's conversation it is written into, and the
 /// arguments chat's `remark` action takes there.
 #[derive(Clone, Debug, PartialEq)]

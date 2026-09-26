@@ -60,7 +60,7 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
                 rooms: vec![("room-launch".into(), "Launch plan".into())],
             };
             let destination = directory.default_destination();
-            driver.host_mut().seed_remark_directory_for_shots(directory);
+            driver.host_mut().seed_remark_directory(directory);
             driver.with_chrome(|st: &mut ChromeState| st.remark.destination = destination);
         }
         RemarkStep::SeedReview => seed_review(driver),

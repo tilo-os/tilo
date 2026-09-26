@@ -248,7 +248,9 @@ impl ShellOverlayHost {
         self.remark.replay = Some(replay);
     }
 
-    pub fn seed_remark_directory_for_shots(&mut self, directory: Directory) {
+    /// Where a remark can go, for a session nothing configures: a
+    /// headless render or a test, with no community or collaborators.
+    pub fn seed_remark_directory(&mut self, directory: Directory) {
         self.remark.fixture_directory = Some(directory);
         self.remark.directory_at = None;
     }
@@ -1095,6 +1097,13 @@ impl ShellOverlayHost {
                 crate::shell::i18n::t("remark-blocked-nothing-picked"),
             );
             return;
+        };
+        let remark = match chrome.borrow().remark.review.as_ref() {
+            Some(review) => crate::shell::remark::hide_reviewed(
+                remark,
+                &session_trace::redact::Masker::new(review.hidden_values()),
+            ),
+            None => remark,
         };
         let ts = tilo_clock::unix_now_i64();
         let delivery = match crate::shell::remark::plan_delivery(&remark, &option, &me, &id, ts) {
