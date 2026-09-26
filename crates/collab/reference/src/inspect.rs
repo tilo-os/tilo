@@ -83,6 +83,10 @@ impl SurfaceRect {
 }
 
 /// One node of an inspection answer.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about one node on the wire (durable identity, where content sits, whether pixels are described, focus, disabled); folding them into an enum would forbid valid combinations"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InspectedNode {
     /// The node's stable semantic id.
