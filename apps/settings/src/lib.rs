@@ -60,11 +60,13 @@
 pub mod account_probe;
 pub mod accounts;
 pub mod actions;
+pub mod ai_settings;
 pub mod categories;
 pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
 pub mod dispatcher;
+pub mod i18n;
 pub(crate) mod input_sources;
 pub mod panes;
 pub mod prefs;

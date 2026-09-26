@@ -274,7 +274,6 @@ fn all_panels_navigate_and_seed_their_controls() {
             Category::Storage => Some(settings::panes::storage::CLEAN_KEY),
             Category::Printers => Some("settings.printers.refresh"),
             Category::Users => Some("settings.users.add"),
-            Category::AgentModels => Some("agent_models.local.confirm"),
             _ => None,
         };
         if let Some(key) = seeded_key {

@@ -1,21 +1,23 @@
 //! A deliberately narrow bridge from a decoded photograph to a verified local
 //! multimodal model.
 //!
-//! This is not a generic prompt runner. [`discover_local_capability`] accepts
-//! only a configured, loopback, revision-pinned model that explicitly declares
-//! `vision`; [`prepare`] bounds pixels and encoded bytes before any data crosses
-//! a sandbox service boundary; and [`analyze`] calls the Photos-only fixed
-//! schema gateway operation. The returned bytes are model output, not labels
+//! This is not a generic prompt runner. [`discover_local_capability`] asks the
+//! gateway which model serves the device-only `photos.vision` task and accepts
+//! only a loopback, revision-pinned model that explicitly declares `vision`;
+//! [`prepare`] bounds pixels and encoded bytes before any data crosses a
+//! sandbox service boundary; and [`analyze`] calls the Photos-only fixed schema
+//! gateway operation. The returned bytes are model output, not labels
 //! inferred from filenames, EXIF, or fixtures.
 
 use std::io::Cursor;
 
-use agent_provider_config::{ModelCapability, ProviderConfig};
+use agent_provider_config::{EndpointLocation, ModelCapability, is_pinned_revision, tasks};
 use base64::Engine as _;
 use image::{DynamicImage, GenericImageView, ImageEncoder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
+use tilo_model_gateway::Route;
 
 pub const MAX_INPUT_EDGE: u32 = 1_536;
 pub const MAX_INPUT_PIXELS: u64 = 8_000_000;
@@ -33,7 +35,6 @@ pub const MAX_FACE_PREVIEW_EDGE: u32 = 512;
 /// deliberately after a model upgrade rather than silently mixing outputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalVisionCapability {
-    pub profile_id: String,
     pub model_id: String,
     pub model_label: String,
     pub revision: String,
@@ -43,7 +44,6 @@ pub struct LocalVisionCapability {
 /// clustering. It is never inferred from [`LocalVisionCapability`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalFaceCapability {
-    pub profile_id: String,
     pub model_id: String,
     pub model_label: String,
     pub revision: String,
@@ -75,20 +75,34 @@ pub struct FaceCluster {
     pub photo_ids: Vec<String>,
 }
 
-/// Discover only an explicitly declared, revision-pinned, loopback face
-/// model. A generic vision model cannot enter this path.
+/// Discover the model that serves `photos.faces`: only an explicitly
+/// declared, revision-pinned, device-local face model. A generic vision model
+/// cannot enter this path.
 #[must_use]
-pub fn discover_local_face_capability(config: &ProviderConfig) -> Option<LocalFaceCapability> {
-    let profile = config.active_profile()?;
-    let model_id = profile.default_model.as_ref()?;
-    let model = profile.pinned_local_model(model_id, ModelCapability::FaceRecognition)?;
-    let revision = model.revision.as_deref()?;
-    Some(LocalFaceCapability {
-        profile_id: profile.id.clone(),
-        model_id: model.id.clone(),
-        model_label: model.display_label().to_owned(),
-        revision: revision.to_owned(),
-    })
+pub fn discover_local_face_capability() -> Option<LocalFaceCapability> {
+    let route = tilo_model_gateway::resolve(tasks::PHOTOS_FACES.id, None).ok()?;
+    face_capability(&route)
+}
+
+/// The face capability `route` offers, if it is an explicit, pinned model on
+/// this device.
+#[must_use]
+pub fn face_capability(route: &Route) -> Option<LocalFaceCapability> {
+    let revision = local_revision(route)?;
+    route
+        .model
+        .declares(ModelCapability::FaceRecognition)
+        .then(|| LocalFaceCapability {
+            model_id: route.model.id.clone(),
+            model_label: route.model.display_label().to_owned(),
+            revision,
+        })
+}
+
+fn local_revision(route: &Route) -> Option<String> {
+    let revision = route.model.revision.as_deref()?.trim();
+    (route.location == EndpointLocation::ThisDevice && is_pinned_revision(revision))
+        .then(|| revision.to_owned())
 }
 
 /// A downscaled JPEG ready for the authenticated model-gateway boundary.
@@ -152,21 +166,28 @@ impl Error {
     }
 }
 
-/// Discover the selected local capability without probing a socket or trusting
-/// a model name. `None` means unavailable—not that another provider may be
+/// Discover the model that serves `photos.vision` without trusting a model
+/// name. `None` means unavailable—not that another provider may be
 /// substituted.
 #[must_use]
-pub fn discover_local_capability(config: &ProviderConfig) -> Option<LocalVisionCapability> {
-    let profile = config.active_profile()?;
-    let model_id = profile.default_model.as_ref()?;
-    let model = profile.pinned_local_model(model_id, ModelCapability::Vision)?;
-    let revision = model.revision.as_deref()?;
-    Some(LocalVisionCapability {
-        profile_id: profile.id.clone(),
-        model_id: model.id.clone(),
-        model_label: model.display_label().to_string(),
-        revision: revision.to_string(),
-    })
+pub fn discover_local_capability() -> Option<LocalVisionCapability> {
+    let route = tilo_model_gateway::resolve(tasks::PHOTOS_VISION.id, None).ok()?;
+    vision_capability(&route)
+}
+
+/// The vision capability `route` offers, if it is an explicit, pinned model
+/// on this device.
+#[must_use]
+pub fn vision_capability(route: &Route) -> Option<LocalVisionCapability> {
+    let revision = local_revision(route)?;
+    route
+        .model
+        .declares(ModelCapability::Vision)
+        .then(|| LocalVisionCapability {
+            model_id: route.model.id.clone(),
+            model_label: route.model.display_label().to_string(),
+            revision,
+        })
 }
 
 /// Produce an adaptive JPEG preview from already decoded pixels. This function
@@ -238,15 +259,12 @@ pub fn analyze(
     capability: &LocalVisionCapability,
     image: PreparedImage,
 ) -> Result<Analysis, Error> {
-    let output = tilo_model_gateway::analyze_image(
-        &capability.profile_id,
-        &capability.model_id,
-        tilo_model_gateway::VisionImage {
-            media_type: image.media_type.to_string(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(image.jpeg),
-            source_content_hash: image.source_content_hash,
-        },
-    )?;
+    let _ = capability;
+    let output = tilo_model_gateway::analyze_image(tilo_model_gateway::VisionImage {
+        media_type: image.media_type.to_string(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(image.jpeg),
+        source_content_hash: image.source_content_hash,
+    })?;
     parse_analysis(&output)
 }
 
@@ -280,8 +298,8 @@ pub fn cluster_faces(
             source_content_hash: preview.source_content_hash,
         });
     }
-    let output =
-        tilo_model_gateway::cluster_faces(&capability.profile_id, &capability.model_id, requests)?;
+    let _ = capability;
+    let output = tilo_model_gateway::cluster_faces(requests)?;
     parse_face_clusters(&output, &ids)
 }
 
@@ -455,39 +473,44 @@ fn bounded_text(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use agent_provider_config::{ModelDescriptor, ProviderProfile};
+    use agent_provider_config::ModelDescriptor;
     use image::{DynamicImage, Rgba, RgbaImage};
 
     use super::*;
 
-    fn config(vision: bool, endpoint: &str) -> ProviderConfig {
-        let mut profile = ProviderProfile::local_vllm();
-        profile.endpoint = endpoint.into();
-        profile.id = "local-profile".into();
-        profile.default_model = Some("vision-1".into());
-        profile.models = vec![ModelDescriptor {
-            id: "vision-1".into(),
-            label: "Vision 1".into(),
-            context_window: Some(8_192),
-            revision: Some("a".repeat(40)),
-            capabilities: if vision {
-                [ModelCapability::Vision].into()
-            } else {
-                std::collections::BTreeSet::new()
+    fn route(vision: bool, location: EndpointLocation, revision: &str) -> Route {
+        Route {
+            task: tasks::PHOTOS_VISION.id.into(),
+            profile_id: agent_provider_config::LOCAL_PROFILE_ID.into(),
+            profile_label: "This device".into(),
+            protocol: agent_provider_config::ProviderProtocol::OpenAiCompatible,
+            location,
+            model: ModelDescriptor {
+                id: "vision-1".into(),
+                label: "Vision 1".into(),
+                context_window: Some(8_192),
+                revision: Some(revision.into()),
+                capabilities: if vision {
+                    [ModelCapability::Vision].into()
+                } else {
+                    std::collections::BTreeSet::new()
+                },
+                tool_calling: false,
+                ..ModelDescriptor::default()
             },
-            tool_calling: false,
-        }];
-        ProviderConfig {
-            profiles: vec![profile],
-            default_profile: Some("local-profile".into()),
+            options: agent_provider_config::ModelOptions::default(),
+            layer: agent_provider_config::assign::Layer::Recommended,
         }
     }
 
     #[test]
-    fn discovers_only_explicit_loopback_vision_model() {
-        assert!(discover_local_capability(&config(true, "http://127.0.0.1:8100/v1")).is_some());
-        assert!(discover_local_capability(&config(false, "http://127.0.0.1:8100/v1")).is_none());
-        assert!(discover_local_capability(&config(true, "http://192.168.1.9:8100/v1")).is_none());
+    fn accepts_only_an_explicit_pinned_vision_model_on_this_device() {
+        let pin = "a".repeat(40);
+        assert!(vision_capability(&route(true, EndpointLocation::ThisDevice, &pin)).is_some());
+        assert!(vision_capability(&route(false, EndpointLocation::ThisDevice, &pin)).is_none());
+        assert!(vision_capability(&route(true, EndpointLocation::PrivateNetwork, &pin)).is_none());
+        assert!(vision_capability(&route(true, EndpointLocation::ThisDevice, "main")).is_none());
+        assert!(face_capability(&route(true, EndpointLocation::ThisDevice, &pin)).is_none());
     }
 
     #[test]

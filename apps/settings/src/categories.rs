@@ -67,7 +67,7 @@ pub enum Category {
     DefaultApps,
     Storage,
     ExternalAccounts,
-    AgentModels,
+    Ai,
     RegionFormats,
     Permissions,
     Updates,
@@ -249,7 +249,7 @@ const EXTERNAL_ACCOUNTS_KEYWORDS: &[&str] = &[
     "sync",
     "cloud",
 ];
-const AGENT_MODELS_KEYWORDS: &[&str] = &[
+const AI_KEYWORDS: &[&str] = &[
     "agent",
     "ai",
     "model",
@@ -263,6 +263,11 @@ const AGENT_MODELS_KEYWORDS: &[&str] = &[
     "ollama",
     "llm",
     "tool calling",
+    "azure",
+    "preset",
+    "fast mode",
+    "reasoning",
+    "gpu",
 ];
 const REGION_FORMATS_KEYWORDS: &[&str] = &[
     "locale",
@@ -353,7 +358,7 @@ impl Category {
         Category::RegionFormats,
         // Hubs
         Category::ExternalAccounts,
-        Category::AgentModels,
+        Category::Ai,
         Category::Permissions,
         // Maintenance
         Category::Updates,
@@ -382,9 +387,7 @@ impl Category {
             | Category::TimeDate
             | Category::Users
             | Category::RegionFormats => Section::System,
-            Category::ExternalAccounts | Category::AgentModels | Category::Permissions => {
-                Section::Hubs
-            }
+            Category::ExternalAccounts | Category::Ai | Category::Permissions => Section::Hubs,
             Category::Updates | Category::About => Section::Maintenance,
         }
     }
@@ -418,7 +421,7 @@ impl Category {
             Category::DefaultApps => "Apps & Files",
             Category::Storage => "Storage",
             Category::ExternalAccounts => "External Accounts",
-            Category::AgentModels => "Agent Models",
+            Category::Ai => "AI",
             Category::RegionFormats => "Region & Formats",
             Category::Permissions => "Device Privacy & Security",
             Category::Updates => "Updates",
@@ -446,7 +449,7 @@ impl Category {
             Category::DefaultApps => "Your preferred apps for links and file types",
             Category::Storage => "Apps, data, cache, and synced files",
             Category::ExternalAccounts => "Accounts shared with compatible installed apps",
-            Category::AgentModels => "Providers, local models, and the model agents use",
+            Category::Ai => "Providers, models on this device, and which model does what",
             Category::RegionFormats => "Currency, date, time, and measurement units",
             Category::Permissions => {
                 "This device's privacy and security; workspace access is managed per workspace"
@@ -464,7 +467,7 @@ impl Category {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
             Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
-            Category::AgentModels | Category::Appearance => Icon::Sparkles,
+            Category::Ai | Category::Appearance => Icon::Sparkles,
             Category::Sound => Icon::Volume2,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
@@ -506,7 +509,7 @@ impl Category {
             Category::DefaultApps => DEFAULT_APPS_KEYWORDS,
             Category::Storage => STORAGE_KEYWORDS,
             Category::ExternalAccounts => EXTERNAL_ACCOUNTS_KEYWORDS,
-            Category::AgentModels => AGENT_MODELS_KEYWORDS,
+            Category::Ai => AI_KEYWORDS,
             Category::RegionFormats => REGION_FORMATS_KEYWORDS,
             Category::Permissions => PERMISSIONS_KEYWORDS,
             Category::Updates => UPDATES_KEYWORDS,
@@ -555,7 +558,7 @@ impl Category {
             Category::DefaultApps => "default-apps",
             Category::Storage => "storage",
             Category::ExternalAccounts => "external_accounts",
-            Category::AgentModels => "agent_models",
+            Category::Ai => "ai",
             Category::RegionFormats => "region_formats",
             Category::Permissions => "permissions",
             Category::Updates => "updates",

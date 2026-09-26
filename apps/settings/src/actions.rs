@@ -104,7 +104,6 @@ pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
 /// Device-mesh role, relay services and workspace pinning configure this
 /// machine's trust boundary. They are local effects, never CRDT preferences.
 pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
-pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operation";
 
 /// Collaboration policy for every action exported by Settings. There is no
 /// implicit/default bucket: a new operation type must be added here before it
@@ -114,8 +113,14 @@ pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operati
 pub enum SettingScope {
     PortableDocument,
     DeviceLocalEffect,
+    /// Applied here to the person's own settings records, which follow them
+    /// through personal continuity; never replayed as a document action.
+    PersonalEffect,
     Presentation,
 }
+
+/// Operations on the person's own records (AI providers and assignments).
+pub(crate) const PERSONAL_OPERATION_TYPES: &[&str] = &[crate::ai_settings::AI_OPERATION_TYPE];
 
 pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
     ACCOUNT_OPERATION_TYPE,
@@ -133,7 +138,6 @@ pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
     USER_OPERATION_TYPE,
     AGENT_MODEL_OPERATION_TYPE,
     DEVICE_MESH_OPERATION_TYPE,
-    AGENT_PROVIDER_OPERATION_TYPE,
 ];
 
 pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
@@ -146,6 +150,14 @@ pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
                 .is_some_and(|type_id| DEVICE_LOCAL_OPERATION_TYPES.contains(&type_id)) =>
         {
             Some(SettingScope::DeviceLocalEffect)
+        }
+        OperationKind::Effect
+            if spec
+                .operation_type
+                .as_deref()
+                .is_some_and(|type_id| PERSONAL_OPERATION_TYPES.contains(&type_id)) =>
+        {
+            Some(SettingScope::PersonalEffect)
         }
         OperationKind::View => Some(SettingScope::Presentation),
         OperationKind::Effect => None,
@@ -472,33 +484,6 @@ pub enum DeviceMeshOperation {
     SetReplication { replication: String },
     SetService { service: String, enabled: bool },
     SetWorkspace { id: u64, enabled: bool },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AgentProviderOperation {
-    Add {
-        protocol: String,
-    },
-    SetProtocol {
-        id: String,
-        protocol: String,
-    },
-    SetEnabled {
-        id: String,
-        enabled: bool,
-    },
-    Remove {
-        id: String,
-    },
-    SetDefault {
-        id: String,
-    },
-    SetDetails {
-        id: String,
-        label: String,
-        endpoint: String,
-        model: Option<String>,
-    },
 }
 
 /// Lifecycle reported by the pane that actually executes a device-local
@@ -1206,7 +1191,7 @@ fn section_resource(
         Category::DeviceMesh => device_mesh_section(doc),
         Category::Updates => updates_section(),
         Category::ExternalAccounts => accounts_section(account_inventory),
-        Category::AgentModels => agent_models_section(),
+        Category::Ai => ai_section(),
         Category::DefaultApps => default_apps_section(doc),
         Category::Storage => storage_section(),
         Category::Printers => printers_section(),
@@ -1250,12 +1235,15 @@ fn category_for_resource_id(id: &str) -> Option<Category> {
         ("settings.print-job:", Category::Printers),
         ("settings.user:", Category::Users),
         ("settings.device-mesh-workspace:", Category::DeviceMesh),
+        (crate::panes::ai::PROVIDER_RESOURCE_PREFIX, Category::Ai),
         (
-            "settings.agent-model-recommendation:",
-            Category::AgentModels,
+            crate::panes::ai::PROVIDER_MODEL_RESOURCE_PREFIX,
+            Category::Ai,
         ),
-        ("settings.agent-model:", Category::AgentModels),
-        ("settings.agent-provider:", Category::AgentModels),
+        (crate::panes::ai::TASK_RESOURCE_PREFIX, Category::Ai),
+        (crate::panes::ai::AGENT_RESOURCE_PREFIX, Category::Ai),
+        (crate::panes::ai::RELEASE_RESOURCE_PREFIX, Category::Ai),
+        (crate::panes::ai::INSTALLED_RESOURCE_PREFIX, Category::Ai),
     ];
     mappings
         .into_iter()
@@ -4205,147 +4193,585 @@ fn users_section() -> Resource {
     sec
 }
 
-/// The model manager is the source of truth for the dynamic package tree.
-/// Building the palette snapshot is deliberately best-effort: stale entries
-/// are rejected again by the local executor before any manager command runs.
+/// The AI hub's resource tree: providers, tasks, agents and this device's
+/// local models, each carrying the actions that change it. The pane's
+/// controls bind to exactly these actions, so an agent or `tilo-control`
+/// configures the hub through the same doors a person does.
+fn ai_section() -> Resource {
+    let snapshot = crate::panes::ai::live_snapshot();
+    ai_section_for(&crate::ai_settings::AiState::load(snapshot))
+}
+
+fn ai_operation_spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    operation: &crate::ai_settings::AiOperation,
+    tags: &[&str],
+) -> Option<ActionSpec> {
+    immediate_local_effect_spec(
+        id,
+        label,
+        crate::ai_settings::AI_OPERATION_TYPE,
+        operation,
+        tags,
+    )
+}
+
+fn confirmed(mut action: ActionSpec, risk: tilo_actions::RiskLevel) -> ActionSpec {
+    action.contract.risk = risk;
+    action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+    action
+}
+
+fn ai_typed_operation(
+    id: &str,
+    label: String,
+    params: Vec<ActionParam>,
+    tags: &[&str],
+    build: impl Fn(&tilo_actions::ActionArgs) -> Option<crate::ai_settings::AiOperation>
+    + Send
+    + Sync
+    + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        String::new(),
+        OperationKind::Effect,
+        crate::ai_settings::AI_OPERATION_TYPE,
+        params,
+        move |args| match build(args) {
+            Some(operation) => {
+                encode_local_operation(crate::ai_settings::AI_OPERATION_TYPE, &operation)
+            }
+            None => EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: Vec::new(),
+            },
+        },
+    )
+    .with_contract(ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        reversible: false,
+        tags: tags.iter().map(|tag| (*tag).into()).collect(),
+        ..ActionContract::default()
+    })
+}
+
+const AI_PERSONAL_TAGS: &[&str] = &["personal", "ai"];
+
+/// `settings.section:ai` and everything under it, for `state`.
 #[allow(
     clippy::too_many_lines,
-    reason = "the resource tree keeps each live model phase beside its bounded action"
+    reason = "the hub's tree keeps each resource beside the actions it exports"
 )]
-fn agent_models_section() -> Resource {
-    use crate::panes::agent_models::{self, AcceleratorSetupState, LocalModelPhase};
+pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
+    use crate::ai_settings::{AiOperation, AssignScope, ModelFeature, parse_target};
+    use crate::i18n::{arg, t, t_args};
+    use crate::panes::ai as pane;
+    use agent_provider_config::assign::Preset;
+    use agent_provider_config::manager::{AcceleratorSetupState, HardwareFit, LocalModelPhase};
+    use agent_provider_config::tasks::{self, PrivacyClass};
+    use agent_provider_config::{
+        EndpointLocation, ModelCapability, ProviderProtocol, ReasoningEffort,
+    };
 
     let mut section = Resource::new(
-        pane_resource_id(Category::AgentModels),
-        "settings.agent-models",
-        Category::AgentModels.label(),
+        pane_resource_id(Category::Ai),
+        "settings.ai",
+        Category::Ai.label(),
     );
-    for (id, label, protocol) in [
-        ("add-anthropic", "Add Anthropic provider", "anthropic"),
+    for (id, key, protocol, location) in [
+        (
+            "add-anthropic",
+            "ai-action-add-anthropic",
+            ProviderProtocol::Anthropic,
+            EndpointLocation::Hosted,
+        ),
         (
             "add-openai-compatible",
-            "Add compatible API provider",
-            "openai-compatible",
+            "ai-action-add-openai",
+            ProviderProtocol::OpenAiCompatible,
+            EndpointLocation::Hosted,
+        ),
+        (
+            "add-azure-openai",
+            "ai-action-add-azure",
+            ProviderProtocol::AzureOpenAi,
+            EndpointLocation::Hosted,
+        ),
+        (
+            "add-private-server",
+            "ai-action-add-private",
+            ProviderProtocol::OpenAiCompatible,
+            EndpointLocation::PrivateNetwork,
         ),
     ] {
-        if let Some(action) = immediate_local_effect_spec(
+        if let Some(action) = ai_operation_spec(
             id,
-            label,
-            AGENT_PROVIDER_OPERATION_TYPE,
-            &AgentProviderOperation::Add {
-                protocol: protocol.into(),
-            },
-            &["device-local", "agent-provider"],
+            t(key),
+            &AiOperation::AddProvider { protocol, location },
+            AI_PERSONAL_TAGS,
         ) {
             section = section.with_action(action);
         }
     }
-    let provider_config = agent_provider_config::ProviderConfig::load();
-    for profile in provider_config
+    for (id, preset) in [
+        ("preset-private", Some(Preset::Private)),
+        ("preset-balanced", Some(Preset::Balanced)),
+        ("preset-best-quality", Some(Preset::BestQuality)),
+        ("preset-none", None),
+    ] {
+        let label = preset.map_or_else(
+            || t("ai-action-preset-none"),
+            |preset| {
+                t_args(
+                    "ai-action-use-preset",
+                    &[("preset", arg(t(preset.label_key())))],
+                )
+            },
+        );
+        if let Some(action) = ai_operation_spec(
+            id,
+            label,
+            &AiOperation::SetPreset { preset },
+            AI_PERSONAL_TAGS,
+        ) {
+            section = section.with_action(action);
+        }
+    }
+
+    // Providers.
+    for profile in state
+        .config
         .profiles
         .iter()
-        .filter(|profile| profile.location != agent_provider_config::EndpointLocation::ThisDevice)
+        .filter(|profile| !profile.is_device_local())
         .take(MAX_DYNAMIC_RESOURCES)
     {
+        let id = profile.id.clone();
         let mut resource = Resource::new(
-            format!("settings.agent-provider:{}", profile.id),
-            "settings.agent-provider",
+            format!("{}{}", pane::PROVIDER_RESOURCE_PREFIX, profile.id),
+            "settings.ai-provider",
             profile.display_label(),
         );
-        let alternate = match profile.protocol {
-            agent_provider_config::ProviderProtocol::Anthropic => "openai-compatible",
-            agent_provider_config::ProviderProtocol::OpenAiCompatible => "anthropic",
-        };
-        for (id, label, operation) in [
-            (
-                "set-protocol",
-                format!("Use {alternate} protocol"),
-                AgentProviderOperation::SetProtocol {
-                    id: profile.id.clone(),
-                    protocol: alternate.into(),
-                },
-            ),
+        let mut unit = vec![
             (
                 if profile.enabled { "disable" } else { "enable" },
-                if profile.enabled {
-                    "Disable provider".into()
+                t(if profile.enabled {
+                    "ai-action-disable-provider"
                 } else {
-                    "Enable provider".into()
-                },
-                AgentProviderOperation::SetEnabled {
-                    id: profile.id.clone(),
+                    "ai-action-enable-provider"
+                }),
+                AiOperation::SetProviderEnabled {
+                    id: id.clone(),
                     enabled: !profile.enabled,
                 },
             ),
             (
-                "remove",
-                "Remove provider".into(),
-                AgentProviderOperation::Remove {
-                    id: profile.id.clone(),
+                "set-default",
+                t("ai-action-default-provider"),
+                AiOperation::SetDefaultProvider { id: id.clone() },
+            ),
+            (
+                "remove-api-key",
+                t("ai-action-remove-key"),
+                AiOperation::RemoveApiKey {
+                    profile: id.clone(),
                 },
             ),
-        ] {
-            if let Some(mut action) = immediate_local_effect_spec(
-                id,
-                label,
-                AGENT_PROVIDER_OPERATION_TYPE,
-                &operation,
-                &["device-local", "agent-provider"],
-            ) {
-                if matches!(operation, AgentProviderOperation::Remove { .. }) {
-                    action = action.destructive();
-                }
-                resource = resource.with_action(action);
+        ];
+        if profile.protocol.supports_account_sign_in() {
+            unit.push((
+                "sign-in",
+                t("ai-action-sign-in-microsoft"),
+                AiOperation::SignIn {
+                    profile: id.clone(),
+                },
+            ));
+            unit.push((
+                "sign-out",
+                t("ai-action-sign-out"),
+                AiOperation::SignOut {
+                    profile: id.clone(),
+                },
+            ));
+        }
+        for (action_id, label, operation) in unit {
+            if let Some(action) = ai_operation_spec(action_id, label, &operation, AI_PERSONAL_TAGS)
+            {
+                resource = resource.with_action(if action_id == "remove-api-key" {
+                    confirmed(action, tilo_actions::RiskLevel::Destructive)
+                } else {
+                    action
+                });
             }
         }
-        let details_id = profile.id.clone();
-        resource = resource.with_action(
-            ActionSpec::typed_operation(
-                "set-details",
-                "Update provider details",
-                "Provider name",
-                OperationKind::Effect,
-                AGENT_PROVIDER_OPERATION_TYPE,
-                vec![
-                    ActionParam::required("label", ParamType::Text, "Provider name"),
-                    ActionParam::required("endpoint", ParamType::Text, "HTTPS API endpoint"),
-                    ActionParam::optional("model", ParamType::Text, "Default model id"),
-                ],
+        if let Some(action) = ai_operation_spec(
+            "remove",
+            t("ai-action-remove-provider"),
+            &AiOperation::RemoveProvider { id: id.clone() },
+            AI_PERSONAL_TAGS,
+        ) {
+            resource = resource.with_action(confirmed(
+                action.destructive(),
+                tilo_actions::RiskLevel::Destructive,
+            ));
+        }
+        let details_id = id.clone();
+        resource = resource.with_action(ai_typed_operation(
+            "set-details",
+            t("ai-action-provider-details"),
+            vec![
+                ActionParam::required("label", ParamType::Text, "Provider name"),
+                ActionParam::required("endpoint", ParamType::Text, "API endpoint"),
+            ],
+            AI_PERSONAL_TAGS,
+            move |args| {
+                Some(AiOperation::SetProviderDetails {
+                    id: details_id.clone(),
+                    label: args.text("label")?.to_string(),
+                    endpoint: args.text("endpoint")?.to_string(),
+                })
+            },
+        ));
+        let key_id = id.clone();
+        resource = resource.with_action(confirmed(
+            ai_typed_operation(
+                "set-api-key",
+                t("ai-action-set-key"),
+                vec![ActionParam::required("key", ParamType::Secret, "API key")],
+                AI_PERSONAL_TAGS,
                 move |args| {
-                    encode_local_operation(
-                        AGENT_PROVIDER_OPERATION_TYPE,
-                        &AgentProviderOperation::SetDetails {
-                            id: details_id.clone(),
-                            label: args.text("label").unwrap_or_default().to_string(),
-                            endpoint: args.text("endpoint").unwrap_or_default().to_string(),
-                            model: args.text("model").map(str::to_string),
-                        },
-                    )
+                    Some(AiOperation::SetApiKey {
+                        profile: key_id.clone(),
+                        key: args.text("key")?.to_string(),
+                    })
                 },
-            )
-            .with_contract(ActionContract {
-                retry: RetryPolicy::AtMostOnce,
-                reversible: false,
-                tags: vec!["device-local".into(), "agent-provider".into()],
-                ..ActionContract::default()
+            ),
+            tilo_actions::RiskLevel::Privileged,
+        ));
+        let add_id = id.clone();
+        resource = resource.with_action(ai_typed_operation(
+            "add-model",
+            t(if profile.protocol == ProviderProtocol::AzureOpenAi {
+                "ai-action-add-deployment"
+            } else {
+                "ai-action-add-model"
             }),
-        );
-        if profile.default_model.is_some()
-            && let Some(action) = immediate_local_effect_spec(
-                "set-default",
-                "Use by default",
-                AGENT_PROVIDER_OPERATION_TYPE,
-                &AgentProviderOperation::SetDefault {
-                    id: profile.id.clone(),
+            vec![
+                ActionParam::required(
+                    "model",
+                    ParamType::Text,
+                    "Model id, or the Azure deployment name",
+                ),
+                ActionParam::optional(
+                    "context_window",
+                    ParamType::Integer,
+                    "Context window in tokens",
+                ),
+            ],
+            AI_PERSONAL_TAGS,
+            move |args| {
+                Some(AiOperation::AddModel {
+                    profile: add_id.clone(),
+                    model: args.text("model")?.to_string(),
+                    context_window: args
+                        .integer("context_window")
+                        .and_then(|value| u32::try_from(value).ok()),
+                })
+            },
+        ));
+        for model in profile.models.iter().take(MAX_DYNAMIC_CHOICES) {
+            let mut entry = Resource::new(
+                format!(
+                    "{}{}/{}",
+                    pane::PROVIDER_MODEL_RESOURCE_PREFIX,
+                    profile.id,
+                    model.id
+                ),
+                "settings.ai-provider-model",
+                model.display_label(),
+            );
+            let mut toggles = Vec::new();
+            for (action_id, feature, key) in [
+                ("tools", Some(ModelFeature::Tools), "ai-feature-tools"),
+                (
+                    "fast-mode",
+                    Some(ModelFeature::FastMode),
+                    "ai-feature-fast-mode",
+                ),
+                (
+                    "reasoning",
+                    Some(ModelFeature::Reasoning),
+                    "ai-feature-reasoning",
+                ),
+                ("vision", None, ModelCapability::Vision.label_key()),
+                (
+                    "trace-review",
+                    None,
+                    ModelCapability::TraceReview.label_key(),
+                ),
+            ] {
+                let (profile_id, model_id) = (profile.id.clone(), model.id.clone());
+                toggles.push(ai_typed_operation(
+                    &format!("set-{action_id}"),
+                    t_args("ai-action-declare", &[("feature", arg(t(key)))]),
+                    vec![ActionParam::required(
+                        "enabled",
+                        ParamType::Boolean,
+                        "Declared",
+                    )],
+                    AI_PERSONAL_TAGS,
+                    move |args| {
+                        let enabled = args.boolean("enabled")?;
+                        Some(match feature {
+                            Some(feature) => AiOperation::SetModelFeature {
+                                profile: profile_id.clone(),
+                                model: model_id.clone(),
+                                feature,
+                                enabled,
+                            },
+                            None => AiOperation::SetModelCapability {
+                                profile: profile_id.clone(),
+                                model: model_id.clone(),
+                                capability: if action_id == "vision" {
+                                    ModelCapability::Vision
+                                } else {
+                                    ModelCapability::TraceReview
+                                },
+                                declared: enabled,
+                            },
+                        })
+                    },
+                ));
+            }
+            if let Some(action) = ai_operation_spec(
+                "remove",
+                t("ai-action-remove-model"),
+                &AiOperation::RemoveModel {
+                    profile: profile.id.clone(),
+                    model: model.id.clone(),
                 },
-                &["device-local", "agent-provider"],
-            )
-        {
-            resource = resource.with_action(action);
+                AI_PERSONAL_TAGS,
+            ) {
+                toggles.push(action.destructive());
+            }
+            for action in toggles {
+                entry = entry.with_action(action);
+            }
+            resource = resource.with_child(entry);
         }
         section = section.with_child(resource);
     }
-    let Ok(snapshot) = agent_models::live_snapshot() else {
+
+    // Tasks, then agents.
+    let mut scopes: Vec<(Resource, AssignScope, &'static tasks::TaskSpec, bool)> = tasks::REGISTRY
+        .iter()
+        .map(|task| {
+            (
+                Resource::new(
+                    format!("{}{}", pane::TASK_RESOURCE_PREFIX, task.id),
+                    "settings.ai-task",
+                    t(task.label_key),
+                ),
+                AssignScope::Task {
+                    task: task.id.to_string(),
+                },
+                *task,
+                false,
+            )
+        })
+        .collect();
+    for agent in state.agents.iter().take(MAX_DYNAMIC_RESOURCES) {
+        for task in tasks::REGISTRY.iter().filter(|task| task.per_agent) {
+            scopes.push((
+                Resource::new(
+                    format!("{}{}/{}", pane::AGENT_RESOURCE_PREFIX, agent, task.id),
+                    "settings.ai-agent",
+                    t_args(
+                        "ai-agent-task",
+                        &[
+                            ("agent", arg(agent.as_str())),
+                            ("task", arg(t(task.label_key))),
+                        ],
+                    ),
+                ),
+                AssignScope::Agent {
+                    agent: agent.clone(),
+                    task: task.id.to_string(),
+                },
+                *task,
+                true,
+            ));
+        }
+    }
+    for (mut resource, scope, task, per_agent) in scopes {
+        let on_device = state.targets(task, false);
+        let off_device = state.targets(task, true);
+        let choosable: Vec<String> = if task.privacy == PrivacyClass::Open {
+            &off_device
+        } else {
+            &on_device
+        }
+        .iter()
+        .map(|(value, _, _)| value.clone())
+        .take(MAX_DYNAMIC_CHOICES)
+        .collect();
+        let mut choices = vec![pane::DEFAULT_CHOICE.to_string()];
+        choices.extend(choosable);
+        let choose_scope = scope.clone();
+        resource = resource.with_action(ai_typed_operation(
+            "choose-model",
+            t(if per_agent {
+                "ai-action-choose-agent-model"
+            } else {
+                "ai-action-choose-model"
+            }),
+            vec![ActionParam::required("model", ParamType::Text, "Model").with_choices(choices)],
+            AI_PERSONAL_TAGS,
+            move |args| {
+                let value = args.text("model")?;
+                let target = if value == pane::DEFAULT_CHOICE {
+                    None
+                } else {
+                    Some(parse_target(value)?)
+                };
+                Some(AiOperation::ChooseModel {
+                    scope: choose_scope.clone(),
+                    target,
+                })
+            },
+        ));
+        if task.privacy == PrivacyClass::Sensitive {
+            let hosted: Vec<String> = off_device
+                .iter()
+                .filter(|(_, profile, _)| !profile.is_device_local())
+                .map(|(value, _, _)| value.clone())
+                .take(MAX_DYNAMIC_CHOICES)
+                .collect();
+            if !hosted.is_empty() {
+                let allow_scope = scope.clone();
+                resource = resource.with_action(
+                    confirmed(
+                        ai_typed_operation(
+                            "allow-off-device",
+                            t_args(
+                                "ai-action-allow-off-device",
+                                &[("task", arg(t(task.label_key)))],
+                            ),
+                            vec![
+                                ActionParam::required("model", ParamType::Text, "Provider model")
+                                    .with_choices(hosted),
+                            ],
+                            AI_PERSONAL_TAGS,
+                            move |args| {
+                                Some(AiOperation::AllowOffDevice {
+                                    scope: allow_scope.clone(),
+                                    target: parse_target(args.text("model")?)?,
+                                })
+                            },
+                        ),
+                        tilo_actions::RiskLevel::Sensitive,
+                    )
+                    .with_description(t("ai-action-allow-off-device-description")),
+                );
+            }
+        }
+        let resolved = state.resolve(
+            task,
+            match &scope {
+                AssignScope::Agent { agent, .. } => Some(agent.as_str()),
+                AssignScope::Task { .. } => None,
+            },
+        );
+        if let Ok(resolution) = &resolved {
+            if resolution.model.options.fast_mode {
+                let fast_scope = scope.clone();
+                resource = resource.with_action(ai_typed_operation(
+                    "set-fast-mode",
+                    t("ai-action-fast-mode"),
+                    vec![ActionParam::required(
+                        "enabled",
+                        ParamType::Boolean,
+                        "Fast mode",
+                    )],
+                    AI_PERSONAL_TAGS,
+                    move |args| {
+                        Some(AiOperation::SetFastMode {
+                            scope: fast_scope.clone(),
+                            enabled: args.boolean("enabled")?,
+                        })
+                    },
+                ));
+            }
+            if resolution.model.options.reasoning {
+                let efforts = ReasoningEffort::for_protocol(resolution.profile.protocol);
+                let mut effort_choices = vec![pane::DEFAULT_CHOICE.to_string()];
+                effort_choices.extend(efforts.iter().map(|effort| effort.wire().to_string()));
+                let effort_scope = scope.clone();
+                resource = resource.with_action(ai_typed_operation(
+                    "set-reasoning-effort",
+                    t("ai-action-reasoning-effort"),
+                    vec![
+                        ActionParam::required("effort", ParamType::Text, "Reasoning effort")
+                            .with_choices(effort_choices),
+                    ],
+                    AI_PERSONAL_TAGS,
+                    move |args| {
+                        let value = args.text("effort")?;
+                        let effort = if value == pane::DEFAULT_CHOICE {
+                            None
+                        } else {
+                            Some(
+                                *ReasoningEffort::for_protocol(
+                                    agent_provider_config::ProviderProtocol::Anthropic,
+                                )
+                                .iter()
+                                .chain(ReasoningEffort::for_protocol(
+                                    agent_provider_config::ProviderProtocol::OpenAiCompatible,
+                                ))
+                                .find(|effort| effort.wire() == value)?,
+                            )
+                        };
+                        Some(AiOperation::SetReasoningEffort {
+                            scope: effort_scope.clone(),
+                            effort,
+                        })
+                    },
+                ));
+            }
+        }
+        if !per_agent
+            && let Some(available) = state.installable_for(task)
+            && let Some(action) = local_operation_spec(
+                "set-up-on-device",
+                t_args(
+                    "ai-action-set-up-for-task",
+                    &[
+                        ("model", arg(available.package.name.as_str())),
+                        ("task", arg(t(task.label_key))),
+                    ],
+                ),
+                OperationKind::Effect,
+                AGENT_MODEL_OPERATION_TYPE,
+                &AgentModelOperation::Install {
+                    id: available.package.id.clone(),
+                    revision: available.package.revision.clone(),
+                },
+                &["device-local", "ai", "downloads-model"],
+            )
+        {
+            resource = resource.with_action(
+                confirmed(action, tilo_actions::RiskLevel::Privileged)
+                    .with_description(pane::download_terms(available)),
+            );
+        }
+        section = section.with_child(resource);
+    }
+
+    // This device's local models.
+    let Ok(snapshot) = &state.snapshot else {
         return section;
     };
     if snapshot.accelerator_setup.as_ref().is_some_and(|setup| {
@@ -4355,67 +4781,82 @@ fn agent_models_section() -> Resource {
         )
     }) && let Some(action) = local_operation_spec(
         "stage-accelerator",
-        "Set up accelerator support",
+        t("ai-action-stage-accelerator"),
         OperationKind::Effect,
         AGENT_MODEL_OPERATION_TYPE,
         &AgentModelOperation::StageAccelerator,
-        &["device-local", "agent-models", "live-accelerator"],
+        &["device-local", "ai", "live-accelerator"],
     ) {
-        section = section.with_action(action);
+        section = section.with_action(confirmed(action, tilo_actions::RiskLevel::Privileged));
     }
-    let install_available = snapshot.hardware.fit != agent_models::HardwareFit::Unsupported
-        && snapshot
-            .accelerator_setup
-            .as_ref()
-            .is_none_or(|setup| !setup.status.blocks_model_setup());
-    if let Some(package) = snapshot.recommendation {
-        let resource = Resource::new(
-            format!("settings.agent-model-recommendation:{}", package.id),
-            "settings.agent-model-package",
-            package.name.clone(),
+    let can_install = !matches!(
+        snapshot.hardware.fit,
+        HardwareFit::Unsupported | HardwareFit::RestartRequired
+    ) && snapshot
+        .accelerator_setup
+        .as_ref()
+        .is_none_or(|setup| !setup.status.blocks_model_setup());
+    for available in snapshot.available.iter().take(MAX_DYNAMIC_RESOURCES) {
+        if snapshot
+            .models
+            .iter()
+            .any(|model| model.package.id == available.package.id)
+        {
+            continue;
+        }
+        let mut resource = Resource::new(
+            format!("{}{}", pane::RELEASE_RESOURCE_PREFIX, available.package.id),
+            "settings.ai-local-release",
+            available.package.name.clone(),
         );
-        if install_available
+        if can_install
             && let Some(action) = local_operation_spec(
                 "install",
-                "Accept license and install on this device",
+                t_args(
+                    "ai-action-download",
+                    &[("model", arg(available.package.name.as_str()))],
+                ),
                 OperationKind::Effect,
                 AGENT_MODEL_OPERATION_TYPE,
                 &AgentModelOperation::Install {
-                    id: package.id,
-                    revision: package.revision,
+                    id: available.package.id.clone(),
+                    revision: available.package.revision.clone(),
                 },
-                &["device-local", "agent-models", "signed-package"],
+                &["device-local", "ai", "downloads-model"],
             )
         {
-            section = section.with_child(resource.with_action(action));
-        } else {
-            section = section.with_child(resource);
+            resource = resource.with_action(
+                confirmed(action, tilo_actions::RiskLevel::Privileged)
+                    .with_description(pane::download_terms(available)),
+            );
         }
+        section = section.with_child(resource);
     }
-    for model in snapshot.models.into_iter().take(MAX_DYNAMIC_RESOURCES) {
+    for model in snapshot.models.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
-            format!("settings.agent-model:{}", model.package.id),
+            format!("{}{}", pane::INSTALLED_RESOURCE_PREFIX, model.package.id),
             "settings.agent-model",
             model.package.name.clone(),
-        );
+        )
+        .with_presentation(pane::phase_presentation(&model.phase));
         let operation = match model.phase {
             LocalModelPhase::Ready { running: true, .. } => Some((
                 "stop",
-                "Stop local model",
+                t("ai-action-stop"),
                 AgentModelOperation::Stop {
                     id: model.package.id.clone(),
                 },
             )),
             LocalModelPhase::Ready { running: false, .. } => Some((
                 "start",
-                "Start local model",
+                t("ai-action-start"),
                 AgentModelOperation::Start {
                     id: model.package.id.clone(),
                 },
             )),
             LocalModelPhase::Error { .. } => Some((
                 "retry",
-                "Retry model installation",
+                t("ai-action-retry"),
                 AgentModelOperation::Retry {
                     id: model.package.id.clone(),
                     revision: model.package.revision.clone(),
@@ -4430,7 +4871,7 @@ fn agent_models_section() -> Resource {
                 OperationKind::Effect,
                 AGENT_MODEL_OPERATION_TYPE,
                 &operation,
-                &["device-local", "agent-models", "live-model"],
+                &["device-local", "ai", "live-model"],
             )
         {
             resource = resource.with_action(action);
@@ -4440,41 +4881,47 @@ fn agent_models_section() -> Resource {
             LocalModelPhase::Ready { .. } | LocalModelPhase::Error { .. }
         ) && let Some(action) = local_operation_spec(
             "remove",
-            "Remove local model",
+            t("ai-action-remove-local"),
             OperationKind::Effect,
             AGENT_MODEL_OPERATION_TYPE,
             &AgentModelOperation::Remove {
-                id: model.package.id,
+                id: model.package.id.clone(),
             },
-            &["device-local", "agent-models", "live-model", "destructive"],
+            &["device-local", "ai", "live-model", "destructive"],
         ) {
-            resource = resource.with_action(action.destructive());
+            resource = resource.with_action(confirmed(
+                action.destructive(),
+                tilo_actions::RiskLevel::Destructive,
+            ));
         }
         section = section.with_child(resource);
     }
     section
 }
 
-pub fn agent_provider_action_resources() -> Resource {
-    agent_models_section()
-}
-
-pub fn agent_provider_binding(
+/// A nullary binding to `action_id` on the hub resource `resource_id` (the
+/// pane itself when `None`), or `None` when the tree does not export it now.
+pub fn ai_binding(
     section: &Resource,
-    profile_id: Option<&str>,
+    resource_id: Option<&str>,
     action_id: &str,
 ) -> Option<tilo_actions::ActionBinding<()>> {
-    let resource = match profile_id {
-        None => section.clone(),
-        Some(profile_id) => section
-            .children
-            .iter()
-            .find(|resource| {
-                resource.id.as_str() == format!("settings.agent-provider:{profile_id}")
-            })?
-            .clone(),
-    };
+    let resource = ai_resource(section, resource_id)?;
     tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+/// The hub resource `resource_id`, searched through the whole tree.
+pub fn ai_resource(section: &Resource, resource_id: Option<&str>) -> Option<Resource> {
+    fn find(resource: &Resource, id: &str) -> Option<Resource> {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        resource.children.iter().find_map(|child| find(child, id))
+    }
+    match resource_id {
+        None => Some(section.clone()),
+        Some(id) => find(section, id),
+    }
 }
 
 /// Region and time are deliberately represented as individual named actions,
@@ -5707,23 +6154,137 @@ mod tests {
     }
 
     #[test]
-    fn agent_provider_configuration_is_a_typed_immediate_local_effect() {
+    fn the_ai_hub_is_configured_through_typed_immediate_actions() {
         let resources = provide_resources(&AutoCommit::new());
-        let models = find(&resources, &pane_resource_id(Category::AgentModels));
-        let add = models
+        let hub = find(&resources, &pane_resource_id(Category::Ai));
+        let add = hub
             .actions
             .iter()
-            .find(|action| action.id == "add-openai-compatible")
+            .find(|action| action.id == "add-azure-openai")
             .expect("provider creation is agent-addressable");
         assert_eq!(add.kind, OperationKind::Effect);
         assert_eq!(add.locus, ExecutionLocus::ClientLocal);
         assert_eq!(
             add.operation_type.as_deref(),
-            Some(AGENT_PROVIDER_OPERATION_TYPE)
+            Some(crate::ai_settings::AI_OPERATION_TYPE)
         );
         assert!(matches!(add.contract.execution, ExecutionMode::Immediate));
         assert!(matches!(add.contract.result, ResultSpec::None));
-        assert!(add.contract.tags.iter().any(|tag| tag == "device-local"));
+        let task = hub
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "settings.ai-task:feedback.review")
+            .expect("every registered task is a resource");
+        assert!(
+            task.actions
+                .iter()
+                .any(|action| action.id == "choose-model")
+        );
+    }
+
+    #[test]
+    fn secrets_and_downloads_require_confirmation() {
+        use crate::ai_settings::AiState;
+        use agent_provider_config::manager::*;
+        use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
+
+        let profile = ProviderProfile::hosted(ProviderProtocol::AzureOpenAi);
+        let package = LocalModelPackage {
+            id: "qwen3-4b".into(),
+            name: "Qwen3 4B".into(),
+            description: String::new(),
+            source: "https://example.test/qwen".into(),
+            revision: "a".repeat(40),
+            license: "Apache-2.0".into(),
+            license_url: "https://example.test/license".into(),
+            download_bytes: 2_800_000_000,
+            installed_bytes: 3_000_000_000,
+            capabilities: [agent_provider_config::ModelCapability::TraceReview].into(),
+            context_window: 32_768,
+            accelerator_memory_mib: 4096,
+        };
+        let state = AiState {
+            config: ProviderConfig {
+                profiles: vec![profile.clone()],
+                default_profile: None,
+            },
+            assignments: agent_provider_config::assign::ModelAssignments::default(),
+            snapshot: Ok(LocalModelSnapshot {
+                hardware: HardwareRecommendation {
+                    fit: HardwareFit::Good,
+                    memory_gib: 32,
+                    accelerator: "CPU".into(),
+                    accelerator_memory_gib: None,
+                    free_storage_gib: Some(100),
+                    reason: String::new(),
+                },
+                facts: agent_provider_config::local::HardwareSnapshot::default(),
+                recommendation: Some(package.clone()),
+                available: vec![AvailableModel {
+                    package,
+                    runtime: agent_provider_config::local::RuntimeKind::Cpu,
+                    speed: agent_provider_config::local::ExpectedSpeed {
+                        tokens_per_second: 8,
+                        class: agent_provider_config::local::SpeedClass::Slow,
+                    },
+                }],
+                models: Vec::new(),
+                accelerator_setup: None,
+            }),
+            health: std::collections::BTreeMap::new(),
+            agents: vec!["Claude".into()],
+        };
+        let hub = ai_section_for(&state);
+        let confirm = |resource: &str, action: &str| {
+            let resource = ai_resource(&hub, Some(resource)).expect(resource);
+            let spec = resource
+                .actions
+                .iter()
+                .find(|spec| spec.id == action)
+                .unwrap_or_else(|| panic!("{action}"));
+            spec.contract.confirmation.clone()
+        };
+        let provider = format!(
+            "{}{}",
+            crate::panes::ai::PROVIDER_RESOURCE_PREFIX,
+            profile.id
+        );
+        assert_eq!(
+            confirm(&provider, "set-api-key"),
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            confirm(&provider, "remove"),
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            confirm("settings.ai-local-release:qwen3-4b", "install"),
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            confirm("settings.ai-task:feedback.review", "set-up-on-device"),
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        let key = ai_resource(&hub, Some(&provider))
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == "set-api-key")
+            .unwrap();
+        assert!(
+            key.params()
+                .iter()
+                .any(|param| param.ty == ParamType::Secret)
+        );
+        let setup = ai_resource(&hub, Some("settings.ai-task:feedback.review"))
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == "set-up-on-device")
+            .unwrap();
+        let terms = setup.description.unwrap_or_default();
+        assert!(terms.contains("Apache-2.0"), "{terms}");
+        assert!(ai_resource(&hub, Some("settings.ai-agent:Claude/agent.planning")).is_some());
     }
 
     #[test]
@@ -5936,6 +6497,15 @@ mod tests {
                         assert!(
                             action.contract.tags.iter().any(|tag| tag == "device-local"),
                             "{:?}#{} must state its device-local policy",
+                            resource.id,
+                            action.id
+                        );
+                    }
+                    SettingScope::PersonalEffect => {
+                        assert_eq!(action.kind, OperationKind::Effect);
+                        assert!(
+                            action.contract.tags.iter().any(|tag| tag == "personal"),
+                            "{:?}#{} must state its personal policy",
                             resource.id,
                             action.id
                         );

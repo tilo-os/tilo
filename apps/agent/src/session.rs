@@ -18,7 +18,7 @@ use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 use crate::apply::Editor;
 use crate::model::{Chooser, Route};
 use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
-use crate::providers::default_selection;
+use crate::providers::planning_route;
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
@@ -340,15 +340,17 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
-        let chooser = default_selection().map_or_else(
+        let route = planning_route(&cfg.name);
+        let model_id = route.as_ref().map(|route| route.model.id.clone());
+        let chooser = route.map_or_else(
             || Chooser::new(false, cfg.model_timeout),
-            |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
+            |route| Chooser::with_provider(cfg.model, cfg.model_timeout, route, &cfg.name),
         );
         // Said once, at the top of the run: an operator should know which
         // path a recording is going to take before the beat, not after.
         tracing::info!(
             live = chooser.is_live(),
-            model = ?default_selection().map(|selection| selection.model.id),
+            model = ?model_id,
             timeout_ms = cfg.model_timeout.as_millis() as u64,
             "action choice: {}",
             if chooser.is_live() {

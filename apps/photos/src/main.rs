@@ -133,7 +133,7 @@ fn import_directory_at_startup(
         return;
     };
     let capability = if analyze {
-        tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+        tilo_vision::discover_local_capability()
     } else {
         None
     };

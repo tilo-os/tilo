@@ -14,17 +14,18 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use agent_provider_config::{ModelCapability, ProviderConfig};
+use agent_provider_config::assign::ResolveError;
+use agent_provider_config::tasks::{self, Consumer};
 use serde::Deserialize;
 use tilo_feedback_review::{
     Confidence, Exposure, MAX_REDACTIONS, MAX_STEPS, MAX_TEXT_CHARS, MAX_TITLE_CHARS, ModelText,
     RedactionBasis, RedactionCategory, RedactionProposal, ReviewProposals, ReviewTraceRequest,
     StepTitle, TitleText, model_view, valid_title,
 };
-use tilo_model_gateway::{ReviewAnswer, review_model};
+use tilo_model_gateway::{ReviewAnswer, ReviewModel};
 
 use super::{
-    blocking, configured_profile, local_profile, profile_client, provider_attempt, provider_url,
+    blocking, credential_for, profile_client, provider_attempt, provider_url, resolve_task,
     while_busy,
 };
 
@@ -304,45 +305,51 @@ pub(crate) fn parse_review(
     Ok(proposals)
 }
 
-/// Run the fixed review verb for the desktop session.
+/// Run the fixed review verb for the desktop session. The model is the one
+/// the person's assignments resolve `feedback.review` to: a model on this
+/// device by default, another only when the person explicitly allowed it.
+/// With no model set up, review answers with the deterministic floor alone.
 pub(crate) async fn review_trace(
     http: &reqwest::Client,
     trace: ReviewTraceRequest,
 ) -> Result<String, String> {
     trace.validate().map_err(|error| error.to_string())?;
     let (chosen, trace) = blocking(move || {
-        let config = ProviderConfig::load();
-        if !config.validation_errors().is_empty() {
-            return Err("provider configuration is invalid".to_string());
-        }
-        let Some(model) = review_model(&config) else {
-            return Ok((None, trace));
+        let resolution = match resolve_task(&Consumer::Session, tasks::FEEDBACK_REVIEW.id, None) {
+            Ok(resolution) => resolution,
+            Err(ResolveError::NoModel { .. } | ResolveError::RestartRequired { .. }) => {
+                return Ok((None, trace));
+            }
+            Err(error) => return Err(error.to_string()),
         };
-        let profile = local_profile(
-            configured_profile(&model.profile_id)?,
-            &model.model_id,
-            ModelCapability::TraceReview,
-            "trace review",
-        )?;
-        let exposure = exposure_for(&profile);
-        let body = review_body(&model.model_id, &trace, exposure);
-        Ok((Some((model, profile, body, exposure)), trace))
+        let bearer = credential_for(&resolution.profile)?;
+        let exposure = exposure_for(&resolution.profile);
+        let body = review_body(&resolution.model.id, &trace, exposure);
+        let model = ReviewModel {
+            profile_id: resolution.profile.id.clone(),
+            model_id: resolution.model.id.clone(),
+            revision: resolution.model.revision.clone(),
+        };
+        Ok((
+            Some((model, resolution.profile, bearer, body, exposure)),
+            trace,
+        ))
     })
     .await?;
-    let Some((model, profile, body, exposure)) = chosen else {
+    let Some((model, profile, bearer, body, exposure)) = chosen else {
         return encode(&ReviewAnswer {
             model: None,
             proposals: ReviewProposals::default(),
         });
     };
     let http = &profile_client(http, &profile)?;
+    let http = &profile_client(http, &profile)?;
     let endpoint = provider_url(&profile);
     let began = Instant::now();
-    // A local endpoint is unauthenticated; no hosted secret is looked up.
     let raw = while_busy(
         || REVIEW_TIMEOUT.checked_sub(began.elapsed()),
         tokio::time::sleep,
-        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
+        |budget| provider_attempt(http, &profile, &endpoint, &bearer, &[], &body, budget),
     )
     .await?;
     let proposals = parse_review(&trace, exposure, &raw)?;
@@ -475,16 +482,18 @@ mod tests {
 
     #[test]
     fn only_a_supervised_runtime_sees_declared_values() {
-        let mut profile = agent_provider_config::ProviderProfile::local_vllm();
+        let mut typed_in = agent_provider_config::ProviderProfile::local_runtime(None);
+        typed_in.endpoint = "http://127.0.0.1:8000/v1".into();
+        typed_in.enabled = true;
         assert_eq!(
-            exposure_for(&profile),
+            exposure_for(&typed_in),
             Exposure::Placeholders,
             "a typed-in localhost URL"
         );
-        profile.custody = agent_provider_config::EndpointCustody::Supervised {
-            socket: "/run/user/1000/tilo/models/0123456789abcdef/api.sock".into(),
-        };
-        assert_eq!(exposure_for(&profile), Exposure::Full);
+        let supervised = agent_provider_config::ProviderProfile::local_runtime(Some(
+            "/run/user/1000/tilo/models/0123456789abcdef/api.sock".into(),
+        ));
+        assert_eq!(exposure_for(&supervised), Exposure::Full);
         let full = review_body("m", &trace(), Exposure::Full).to_string();
         assert!(full.contains("Jana Nov"));
         let hidden = review_body("m", &trace(), Exposure::Placeholders).to_string();

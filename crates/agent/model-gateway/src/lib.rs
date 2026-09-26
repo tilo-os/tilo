@@ -18,6 +18,8 @@ use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
+use agent_provider_config::assign::{Layer, Resolution};
+use agent_provider_config::{EndpointLocation, ModelDescriptor, ModelOptions, ProviderProtocol};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 #[cfg(unix)]
@@ -25,7 +27,7 @@ use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 4;
+pub const RPC_VERSION: u16 = 5;
 /// Version of the [`Principal`] handoff frame.
 pub const HANDOFF_PROTOCOL: u16 = 2;
 /// The handoff: a little-endian `u32` length, then JSON.
@@ -129,33 +131,55 @@ impl Principal {
     }
 }
 
-/// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
-/// Settings; a server also authenticates the launcher-provided app preamble.
-/// Caller-owned settings types cannot serialize it.
+impl From<&Principal> for agent_provider_config::tasks::Consumer {
+    fn from(principal: &Principal) -> Self {
+        match principal {
+            Principal::App { app_id } => Self::App {
+                app_id: app_id.clone(),
+            },
+            Principal::Session => Self::Session,
+        }
+    }
+}
+
+/// A request that can cross the sandbox boundary. Inference verbs name a
+/// registered task ([`agent_provider_config::tasks`]), never a provider
+/// profile or a model: the gateway resolves the task through the person's
+/// assignments and enforces its constraints. `SetApiKey` is only accepted
+/// from Settings; a server also authenticates the launcher-provided app
+/// preamble.
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
+    /// Which model would serve `task` for this caller (acting as `agent`).
+    /// Returns a [`Route`]; carries no secret.
+    Resolve {
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// A provider-dialect request for `task`. `protocol` is the dialect the
+    /// caller wrote `body` in, taken from a prior [`Request::Resolve`]; the
+    /// gateway re-resolves, refuses a body written for another dialect, and
+    /// sets the model and its typed options itself.
     Plan {
-        profile_id: String,
-        model_id: String,
+        task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        protocol: ProviderProtocol,
         body: serde_json::Value,
         timeout_ms: u64,
     },
-    /// Fixed-shape, device-local visual analysis for Photos. The gateway
-    /// owns the prompt and refuses hosted, unpinned, or non-vision profiles;
-    /// a sandboxed caller never obtains direct network access.
+    /// Fixed-shape visual analysis for Photos (`photos.vision`). The gateway
+    /// owns the prompt; a sandboxed caller never obtains network access.
     AnalyzeImage {
-        profile_id: String,
-        model_id: String,
         image: VisionImage,
     },
-    /// Fixed, consent-gated face detection and clustering.  The gateway owns
-    /// the request schema and admits it only for the signed local face model.
-    /// It returns opaque cluster/photo membership; no embedding, crop, face
-    /// rectangle, identity name, or raw path can cross this boundary.
+    /// Fixed, consent-gated face detection and clustering
+    /// (`photos.faces`). It returns opaque cluster/photo membership; no
+    /// embedding, crop, face rectangle, identity name, or raw path can cross
+    /// this boundary.
     ClusterFaces {
-        profile_id: String,
-        model_id: String,
         images: Vec<FaceImage>,
     },
     /// Fixed-shape, device-local review of a feedback recording: redaction
@@ -163,7 +187,7 @@ pub enum Request {
     /// schema, validates the model's answer against `trace`, and refuses
     /// hosted, unpinned or undeclared profiles. Only the desktop session may
     /// ask, because review runs there. The caller names no profile or model:
-    /// the gateway picks the device-local review model ([`review_model`]).
+    /// the gateway resolves the `feedback.review` task.
     /// The answer is a JSON [`ReviewAnswer`] holding model proposals only;
     /// the caller merges them over its own deterministic floor.
     ReviewTrace {
@@ -179,6 +203,76 @@ pub enum Request {
     RemoveApiKey {
         profile_id: String,
     },
+    /// Settings asks whether a provider's credential is present and whether
+    /// its endpoint answers with it. Returns [`ProviderHealth`].
+    Probe {
+        profile_id: String,
+    },
+}
+
+/// Where a task is served, as a caller may know it: no endpoint, no
+/// credential.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Route {
+    pub task: String,
+    pub profile_id: String,
+    pub profile_label: String,
+    pub protocol: ProviderProtocol,
+    pub location: EndpointLocation,
+    pub model: ModelDescriptor,
+    pub options: ModelOptions,
+    pub layer: Layer,
+}
+
+impl Route {
+    #[must_use]
+    pub fn from_resolution(resolution: &Resolution) -> Self {
+        Self {
+            task: resolution.task.id.to_string(),
+            profile_id: resolution.profile.id.clone(),
+            profile_label: resolution.profile.display_label().to_string(),
+            protocol: resolution.profile.protocol,
+            location: resolution.profile.location,
+            model: resolution.model.clone(),
+            options: resolution.options,
+            layer: resolution.layer,
+        }
+    }
+}
+
+/// Whether a provider can be used from this device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialState {
+    /// The endpoint needs no credential (this device's runtime).
+    NotNeeded,
+    /// No key is stored on this device, or the account is not signed in.
+    Missing,
+    /// A key or a signed-in account token is present.
+    Present,
+}
+
+/// Whether the endpoint answered a model listing with the credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Reachability {
+    Reachable,
+    /// The endpoint answered but refused the credential.
+    Unauthorized,
+    /// The endpoint answered with another failure status.
+    Failed {
+        status: u16,
+    },
+    /// Nothing answered.
+    Unreachable,
+    /// Not checked because no credential is present.
+    NotChecked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ProviderHealth {
+    pub credential: CredentialState,
+    pub reachability: Reachability,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -188,13 +282,17 @@ pub struct Frame<T> {
     pub value: T,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Response {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configured: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<Route>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<ProviderHealth>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -279,22 +377,40 @@ pub fn request(_request: Request) -> Result<Response, ClientError> {
     Err(ClientError::Unavailable)
 }
 
-/// Ask the isolated model gateway to plan against one configured provider.
+/// Which model serves `task` for this caller, acting as `agent` when given.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway is unavailable or no model can
+/// serve the task within its constraints.
+pub fn resolve(task: &str, agent: Option<&str>) -> Result<Route, ClientError> {
+    request(Request::Resolve {
+        task: task.to_string(),
+        agent: agent.map(str::to_string),
+    })?
+    .route
+    .ok_or_else(|| ClientError::Protocol("gateway returned no route".into()))
+}
+
+/// Send one provider-dialect request for `task`. `protocol` is the dialect
+/// `body` is written in, from the [`Route`] the caller resolved.
 ///
 /// # Errors
 ///
 /// Returns [`ClientError`] when the gateway is unavailable, rejects the
 /// request, returns a malformed response, or the provider request fails.
 pub fn plan(
-    profile_id: &str,
-    model_id: &str,
+    task: &str,
+    agent: Option<&str>,
+    protocol: ProviderProtocol,
     body: serde_json::Value,
     timeout: Duration,
 ) -> Result<String, ClientError> {
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let response = request(Request::Plan {
-        profile_id: profile_id.to_string(),
-        model_id: model_id.to_string(),
+        task: task.to_string(),
+        agent: agent.map(str::to_string),
+        protocol,
         body,
         timeout_ms,
     })?;
@@ -304,48 +420,47 @@ pub fn plan(
 }
 
 /// Request a fixed-schema visual analysis through the launcher-issued gateway
-/// descriptor. This operation can only be authorized for Photos by the
-/// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
+/// descriptor. Only Photos may ask; the gateway resolves `photos.vision` to a
+/// model on this device. Callers cannot provide a URL, prompt, or timeout.
 ///
 /// # Errors
 ///
 /// Returns [`ClientError`] if the capability is not passed by the launcher,
 /// the gateway rejects the request, or the provider is unavailable.
-pub fn analyze_image(
-    profile_id: &str,
-    model_id: &str,
-    image: VisionImage,
-) -> Result<String, ClientError> {
-    let response = request(Request::AnalyzeImage {
-        profile_id: profile_id.to_string(),
-        model_id: model_id.to_string(),
-        image,
-    })?;
+pub fn analyze_image(image: VisionImage) -> Result<String, ClientError> {
+    let response = request(Request::AnalyzeImage { image })?;
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no image analysis".into()))
 }
 
-/// Run the dedicated local face model against one bounded batch.  This is not
-/// a generic multimodal request and cannot be redirected to a hosted model.
+/// Run the dedicated local face model (`photos.faces`) against one bounded
+/// batch. This is not a generic multimodal request and cannot be redirected
+/// to a hosted model.
 ///
 /// # Errors
 ///
 /// Returns [`ClientError`] if the launcher gateway is absent, the local model
 /// refuses the fixed protocol, or its response is unavailable.
-pub fn cluster_faces(
-    profile_id: &str,
-    model_id: &str,
-    images: Vec<FaceImage>,
-) -> Result<String, ClientError> {
-    let response = request(Request::ClusterFaces {
-        profile_id: profile_id.to_string(),
-        model_id: model_id.to_string(),
-        images,
-    })?;
+pub fn cluster_faces(images: Vec<FaceImage>) -> Result<String, ClientError> {
+    let response = request(Request::ClusterFaces { images })?;
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
+}
+
+/// Whether a provider's credential is present on this device and its
+/// endpoint answers with it. Settings only.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway cannot be reached or refuses.
+pub fn probe(profile_id: &str) -> Result<ProviderHealth, ClientError> {
+    request(Request::Probe {
+        profile_id: profile_id.to_string(),
+    })?
+    .health
+    .ok_or_else(|| ClientError::Protocol("gateway returned no provider health".into()))
 }
 
 /// Query whether the profile has a secret stored by the isolated gateway.
@@ -427,12 +542,13 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
 }
 
-/// A device-local model whose signed metadata declares trace review.
+/// The model that answered a review.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewModel {
     pub profile_id: String,
     pub model_id: String,
-    pub revision: String,
+    /// Absent for a model with no attested revision (one off this device).
+    pub revision: Option<String>,
 }
 
 /// The gateway's answer to [`Request::ReviewTrace`].
@@ -444,31 +560,6 @@ pub struct ReviewAnswer {
     pub model: Option<ReviewModel>,
     /// The model's proposals only, checked against the request.
     pub proposals: tilo_feedback_review::ReviewProposals,
-}
-
-/// The configured device-local model that reviews traces, if any: the first
-/// enabled loopback profile whose default model, or else another of its
-/// models, declares `trace_review` with a pinned revision. A hosted or
-/// private-network profile never qualifies, whatever its models claim.
-#[must_use]
-pub fn review_model(config: &agent_provider_config::ProviderConfig) -> Option<ReviewModel> {
-    config
-        .profiles
-        .iter()
-        .filter(|profile| profile.is_device_local())
-        .find_map(|profile| {
-            let preferred = profile.default_model.iter();
-            let others = profile.models.iter().map(|model| &model.id);
-            preferred.chain(others).find_map(|id| {
-                let model = profile
-                    .pinned_local_model(id, agent_provider_config::ModelCapability::TraceReview)?;
-                Some(ReviewModel {
-                    profile_id: profile.id.clone(),
-                    model_id: model.id.clone(),
-                    revision: model.revision.clone()?,
-                })
-            })
-        })
 }
 
 /// The desktop session's own gateway calls.
@@ -539,6 +630,26 @@ pub mod session {
                     response.error.unwrap_or_else(|| "request rejected".into()),
                 ))
             }
+        }
+
+        /// Which model serves `task` for the session, acting as `agent`
+        /// when given.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`ClientError`] when the gateway is unreachable or no model
+        /// can serve the task within its constraints.
+        pub fn resolve(
+            &mut self,
+            task: &str,
+            agent: Option<&str>,
+        ) -> Result<super::Route, ClientError> {
+            self.request(Request::Resolve {
+                task: task.to_string(),
+                agent: agent.map(str::to_string),
+            })?
+            .route
+            .ok_or_else(|| ClientError::Protocol("gateway returned no route".into()))
         }
 
         /// Ask the device-local review model about `trace`. The proposals
@@ -652,8 +763,7 @@ mod wire_tests {
             &Response {
                 ok: true,
                 output: Some("x".into()),
-                configured: None,
-                error: None,
+                ..Response::default()
             },
         )
         .unwrap();
@@ -672,9 +782,6 @@ mod wire_tests {
 #[cfg(test)]
 #[cfg(unix)]
 mod session_tests {
-    use agent_provider_config::{
-        ModelCapability, ModelDescriptor, ProviderConfig, ProviderProfile,
-    };
     use tilo_feedback_review::{
         Confidence, DeclaredSensitivity, RedactionBasis, RedactionCategory, RedactionProposal,
         ReviewProposals, ReviewStep, ReviewText, ReviewTraceRequest, Span, StepKind, StepOutcome,
@@ -703,40 +810,11 @@ mod session_tests {
         }
     }
 
-    fn config(trace_review: bool, endpoint: &str) -> ProviderConfig {
-        ProviderConfig {
-            profiles: vec![ProviderProfile {
-                id: "local".into(),
-                endpoint: endpoint.into(),
-                location: agent_provider_config::EndpointLocation::ThisDevice,
-                models: vec![
-                    ModelDescriptor {
-                        revision: Some("b".repeat(40)),
-                        capabilities: [ModelCapability::Vision].into(),
-                        ..ModelDescriptor::new("vision")
-                    },
-                    ModelDescriptor {
-                        revision: Some("a".repeat(40)),
-                        capabilities: if trace_review {
-                            [ModelCapability::TraceReview].into()
-                        } else {
-                            std::collections::BTreeSet::new()
-                        },
-                        ..ModelDescriptor::new("reviewer")
-                    },
-                ],
-                default_model: Some("vision".into()),
-                ..ProviderProfile::default()
-            }],
-            default_profile: Some("local".into()),
-        }
-    }
-
     fn reviewer() -> ReviewModel {
         ReviewModel {
             profile_id: "local".into(),
             model_id: "reviewer".into(),
-            revision: "a".repeat(40),
+            revision: Some("a".repeat(40)),
         }
     }
 
@@ -767,8 +845,7 @@ mod session_tests {
                 &Response {
                     ok: true,
                     output: Some(serde_json::to_string(&answer).unwrap()),
-                    configured: None,
-                    error: None,
+                    ..Response::default()
                 },
             )
             .unwrap();
@@ -796,22 +873,6 @@ mod session_tests {
                 }],
             },
         }
-    }
-
-    #[test]
-    fn only_a_declared_pinned_local_model_reviews() {
-        assert_eq!(
-            review_model(&config(true, "http://127.0.0.1:9000/v1")),
-            Some(reviewer())
-        );
-        assert_eq!(
-            review_model(&config(false, "http://127.0.0.1:9000/v1")),
-            None
-        );
-        assert_eq!(
-            review_model(&config(true, "https://api.example.test/v1")),
-            None
-        );
     }
 
     #[test]
@@ -887,28 +948,29 @@ mod unsupported_platform_tests {
     fn photos_and_secret_operations_require_a_supported_gateway_capability() {
         assert!(!available());
         assert!(matches!(
-            analyze_image(
-                "local",
-                "vision",
-                VisionImage {
-                    media_type: "image/png".into(),
-                    data_base64: String::new(),
-                    source_content_hash: String::new(),
-                }
-            ),
+            analyze_image(VisionImage {
+                media_type: "image/png".into(),
+                data_base64: String::new(),
+                source_content_hash: String::new(),
+            }),
             Err(ClientError::Unavailable)
         ));
         assert!(matches!(
-            cluster_faces("local", "faces", Vec::new()),
+            cluster_faces(Vec::new()),
             Err(ClientError::Unavailable)
         ));
         assert!(matches!(
             plan(
-                "hosted",
-                "model",
+                "agent.planning",
+                None,
+                ProviderProtocol::Anthropic,
                 serde_json::Value::Null,
                 Duration::from_secs(1)
             ),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            resolve("agent.planning", None),
             Err(ClientError::Unavailable)
         ));
         assert!(matches!(

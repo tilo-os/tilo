@@ -525,8 +525,8 @@ impl SettingsApp {
                         .with_account_tester(std::sync::Arc::clone(&self.account_tester)),
                 )
             }
-            Category::AgentModels => Box::new(
-                panes::agent_models::AgentModelsPane::new()
+            Category::Ai => Box::new(
+                panes::ai::AiPane::new()
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
@@ -1214,7 +1214,7 @@ impl SettingsApp {
             crate::actions::AGENT_MODEL_OPERATION_TYPE => {
                 let operation: crate::actions::AgentModelOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.select(Category::AgentModels);
+                self.select(Category::Ai);
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::AgentModel(
                         operation,
@@ -1574,7 +1574,7 @@ impl Widget for SettingsApp {
             crate::actions::USER_OPERATION_TYPE,
             crate::actions::AGENT_MODEL_OPERATION_TYPE,
             crate::actions::DEVICE_MESH_OPERATION_TYPE,
-            crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
+            crate::ai_settings::AI_OPERATION_TYPE,
         ]
     }
 
@@ -1823,8 +1823,6 @@ impl Widget for SettingsApp {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Result<bool, String> {
-        use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
-
         if type_id == crate::actions::UPDATE_OPERATION_TYPE
             && kind == tilo_actions::OperationKind::View
         {
@@ -1836,88 +1834,15 @@ impl Widget for SettingsApp {
             }
             return Err("operation kind does not match update operation".into());
         }
-        if type_id == crate::actions::AGENT_PROVIDER_OPERATION_TYPE {
+        if type_id == crate::ai_settings::AI_OPERATION_TYPE {
             if kind != tilo_actions::OperationKind::Effect {
-                return Err("provider configuration requires an effect operation".into());
+                return Err("AI settings require an effect operation".into());
             }
-            let operation: crate::actions::AgentProviderOperation =
+            let operation: crate::ai_settings::AiOperation =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let protocol = |label: &str| match label {
-                "anthropic" => Ok(ProviderProtocol::Anthropic),
-                "openai-compatible" => Ok(ProviderProtocol::OpenAiCompatible),
-                _ => Err("unsupported provider protocol".to_string()),
-            };
-            let mut config = ProviderConfig::load();
-            match operation {
-                crate::actions::AgentProviderOperation::Add { protocol: label } => {
-                    config.upsert(ProviderProfile::hosted(protocol(&label)?));
-                }
-                crate::actions::AgentProviderOperation::SetProtocol {
-                    id,
-                    protocol: label,
-                } => {
-                    let profile = config
-                        .profiles
-                        .iter_mut()
-                        .find(|profile| profile.id == id)
-                        .ok_or_else(|| "provider is no longer available".to_string())?;
-                    profile.protocol = protocol(&label)?;
-                }
-                crate::actions::AgentProviderOperation::SetEnabled { id, enabled } => {
-                    let profile = config
-                        .profiles
-                        .iter_mut()
-                        .find(|profile| profile.id == id)
-                        .ok_or_else(|| "provider is no longer available".to_string())?;
-                    profile.enabled = enabled;
-                }
-                crate::actions::AgentProviderOperation::Remove { id } => {
-                    if !config.profiles.iter().any(|profile| profile.id == id) {
-                        return Err("provider is no longer available".into());
-                    }
-                    tilo_model_gateway::remove_api_key(&id)
-                        .map_err(|error| format!("provider vault key was not removed: {error}"))?;
-                    let _ = config.remove(&id);
-                }
-                crate::actions::AgentProviderOperation::SetDefault { id } => {
-                    let available = config.profiles.iter().any(|profile| {
-                        profile.id == id && profile.enabled && profile.default_model.is_some()
-                    });
-                    if !available {
-                        return Err("provider cannot currently be selected as default".into());
-                    }
-                    config.default_profile = Some(id);
-                }
-                crate::actions::AgentProviderOperation::SetDetails {
-                    id,
-                    label,
-                    endpoint,
-                    model,
-                } => {
-                    if label.trim().is_empty() || endpoint.trim().is_empty() {
-                        return Err("provider name and endpoint are required".into());
-                    }
-                    let profile = config
-                        .profiles
-                        .iter_mut()
-                        .find(|profile| profile.id == id)
-                        .ok_or_else(|| "provider is no longer available".to_string())?;
-                    profile.label = label;
-                    profile.endpoint = endpoint;
-                    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
-                        if !profile.models.iter().any(|candidate| candidate.id == model) {
-                            profile
-                                .models
-                                .push(agent_provider_config::ModelDescriptor::new(model.clone()));
-                        }
-                        profile.default_model = Some(model);
-                    }
-                }
-            }
-            config
-                .save()
-                .map_err(|error| format!("provider settings were not saved: {error}"))?;
-            self.select(Category::AgentModels);
+            crate::ai_settings::perform(operation)?;
+            crate::panes::ai::changed();
+            self.select(Category::Ai);
             return Ok(true);
         }
         if type_id == crate::actions::ACCOUNT_OPERATION_TYPE {
@@ -2569,9 +2494,9 @@ mod tests {
         assert!(
             app.invoke_resource_operation(
                 tilo_actions::OperationKind::Effect,
-                crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
-                &serde_json::to_vec(&crate::actions::AgentProviderOperation::Add {
-                    protocol: "anthropic".into(),
+                crate::ai_settings::AI_OPERATION_TYPE,
+                &serde_json::to_vec(&crate::ai_settings::AiOperation::SetPreset {
+                    preset: Some(agent_provider_config::assign::Preset::Private),
                 })
                 .unwrap(),
                 &doc,
@@ -2580,12 +2505,13 @@ mod tests {
             .expect("provider command is admitted")
         );
         assert_eq!(doc.get_heads(), heads, "provider command touched Automerge");
-        covered.insert(crate::actions::AGENT_PROVIDER_OPERATION_TYPE);
+        covered.insert(crate::ai_settings::AI_OPERATION_TYPE);
 
         assert_eq!(
             covered,
             crate::actions::DEVICE_LOCAL_OPERATION_TYPES
                 .iter()
+                .chain(crate::actions::PERSONAL_OPERATION_TYPES)
                 .copied()
                 .collect(),
             "the unchanged-heads matrix must cover the complete closed set"

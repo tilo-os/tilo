@@ -2858,12 +2858,10 @@ pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
 /// description; discovery never probes an endpoint and never falls back to a
 /// remote provider.
 pub(crate) fn local_vision_unavailable_reason() -> Option<String> {
-    tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
-        .is_none()
-        .then(|| {
-            "No verified local image-analysis model is ready. Install and start one in Settings."
-                .to_owned()
-        })
+    tilo_vision::discover_local_capability().is_none().then(|| {
+        "No verified local image-analysis model is ready. Install and start one in Settings."
+            .to_owned()
+    })
 }
 
 #[allow(

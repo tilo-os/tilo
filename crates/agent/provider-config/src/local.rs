@@ -15,8 +15,68 @@ use serde::{Deserialize, Serialize};
 /// One accelerator the trusted hardware probe observed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Accelerator {
-    Nvidia { vram_mib: u64, driver: String },
-    Amd { vram_mib: u64, rocm: Option<String> },
+    /// An NVIDIA card. An empty `driver` means the device is present on the
+    /// bus but no driver answers for it.
+    Nvidia {
+        vram_mib: u64,
+        driver: String,
+    },
+    Amd {
+        vram_mib: u64,
+        rocm: Option<String>,
+    },
+    /// A card that is present and set up, but whose driver becomes usable
+    /// only after the next restart: the loaded kernel module and the
+    /// userspace library disagree, or a driver deployment is staged for the
+    /// next boot. Distinct from an absent card, so nothing degrades to CPU or
+    /// a hosted model as if there were no GPU.
+    RestartRequired {
+        vendor: AcceleratorVendor,
+        reason: RestartReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceleratorVendor {
+    Nvidia,
+    Amd,
+}
+
+impl AcceleratorVendor {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Nvidia => "NVIDIA",
+            Self::Amd => "AMD",
+        }
+    }
+}
+
+/// Why a present accelerator waits for a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartReason {
+    /// The running kernel module and the installed userspace driver differ
+    /// in version (NVML reports a driver/library mismatch).
+    DriverLibraryMismatch,
+    /// A signed driver deployment is staged and boots next time.
+    DriverStaged,
+}
+
+/// The one accelerator fact every consumer asks about first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcceleratorState {
+    /// A driver answers and the card is usable now.
+    Usable { kind: RuntimeKind, vram_mib: u64 },
+    /// Present and set up; usable after a restart.
+    RestartRequired {
+        vendor: AcceleratorVendor,
+        reason: RestartReason,
+    },
+    /// Present on the bus with no working driver; setup is needed.
+    NeedsDriver { vendor: AcceleratorVendor },
+    /// No supported accelerator.
+    Absent,
 }
 
 /// The capability snapshot a privileged hardware service publishes. A UI or
@@ -26,8 +86,140 @@ pub enum Accelerator {
 pub struct HardwareSnapshot {
     pub cpu_threads: u16,
     pub memory_mib: u64,
+    /// Memory the kernel reports available for new work (`MemAvailable`),
+    /// the budget a CPU model competes for with the desktop.
+    pub available_memory_mib: u64,
     pub free_storage_mib: u64,
     pub accelerators: Vec<Accelerator>,
+}
+
+impl HardwareSnapshot {
+    /// The accelerator this device offers, strongest state first: a usable
+    /// card wins over one waiting for a restart, which wins over one with no
+    /// driver.
+    #[must_use]
+    pub fn accelerator_state(&self) -> AcceleratorState {
+        let usable = self
+            .accelerators
+            .iter()
+            .filter_map(|accelerator| match accelerator {
+                Accelerator::Nvidia { vram_mib, driver }
+                    if !driver.trim().is_empty()
+                        && accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB =>
+                {
+                    Some((RuntimeKind::NvidiaCuda, *vram_mib))
+                }
+                Accelerator::Amd {
+                    vram_mib,
+                    rocm: Some(version),
+                } if !version.trim().is_empty()
+                    && accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB =>
+                {
+                    Some((RuntimeKind::AmdRocm, *vram_mib))
+                }
+                _ => None,
+            })
+            .max_by_key(|(kind, vram)| (*kind == RuntimeKind::NvidiaCuda, *vram));
+        if let Some((kind, vram_mib)) = usable {
+            return AcceleratorState::Usable { kind, vram_mib };
+        }
+        let restart = self
+            .accelerators
+            .iter()
+            .find_map(|accelerator| match accelerator {
+                Accelerator::RestartRequired { vendor, reason } => Some((*vendor, *reason)),
+                _ => None,
+            });
+        if let Some((vendor, reason)) = restart {
+            return AcceleratorState::RestartRequired { vendor, reason };
+        }
+        let driverless = self
+            .accelerators
+            .iter()
+            .find_map(|accelerator| match accelerator {
+                Accelerator::Nvidia { driver, .. } if driver.trim().is_empty() => {
+                    Some(AcceleratorVendor::Nvidia)
+                }
+                Accelerator::Amd { rocm: None, .. } => Some(AcceleratorVendor::Amd),
+                _ => None,
+            });
+        match driverless {
+            Some(vendor) => AcceleratorState::NeedsDriver { vendor },
+            None => AcceleratorState::Absent,
+        }
+    }
+
+    /// Memory a CPU model may take after leaving room for the desktop.
+    #[must_use]
+    pub fn cpu_model_budget_mib(&self) -> u64 {
+        let available = if self.available_memory_mib == 0 {
+            self.memory_mib
+        } else {
+            self.available_memory_mib
+        };
+        available.saturating_sub(DESKTOP_HEADROOM_MIB)
+    }
+}
+
+/// Memory kept free for the desktop and open apps when a CPU model runs.
+pub const DESKTOP_HEADROOM_MIB: u64 = 4096;
+
+/// Fewest CPU threads a CPU model is offered on.
+pub const MIN_CPU_THREADS: u16 = 4;
+
+/// How quickly a local model answers on this device, as the person
+/// experiences it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedClass {
+    /// Too slow to offer: minutes for an ordinary answer.
+    Impractical,
+    /// Usable for background work; an answer takes tens of seconds.
+    Slow,
+    /// Responsive enough to wait for.
+    Interactive,
+}
+
+/// An honest throughput estimate for one model on one runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExpectedSpeed {
+    pub tokens_per_second: u16,
+    pub class: SpeedClass,
+}
+
+/// Token generation is bound by how fast the weights stream from memory:
+/// roughly the memory bandwidth divided by the bytes read per token (the
+/// quantized weights). Desktop DDR sustains about 25 GiB/s with eight or more
+/// threads; accelerator memory is an order of magnitude faster.
+#[must_use]
+pub fn expected_speed(
+    hardware: &HardwareSnapshot,
+    runtime: RuntimeKind,
+    model: &LocalModelRelease,
+) -> ExpectedSpeed {
+    let size_mib =
+        u32::try_from(model.artifact.download_bytes() / (1024 * 1024)).unwrap_or(u32::MAX);
+    let weights_gib = (f64::from(size_mib) / 1024.0).max(0.25);
+    let bandwidth_gib_s = match runtime {
+        RuntimeKind::NvidiaCuda | RuntimeKind::AmdRocm => 300.0,
+        RuntimeKind::Cpu => 25.0 * (f64::from(hardware.cpu_threads.min(8)) / 8.0),
+    };
+    let tokens = (bandwidth_gib_s / weights_gib).clamp(0.0, f64::from(u16::MAX));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the non-negative u16 range above"
+    )]
+    let tokens_per_second = tokens as u16;
+    let class = match tokens_per_second {
+        0..=2 => SpeedClass::Impractical,
+        3..=14 => SpeedClass::Slow,
+        _ => SpeedClass::Interactive,
+    };
+    ExpectedSpeed {
+        tokens_per_second,
+        class,
+    }
 }
 
 /// A runtime build selected by trusted hardware facts.
@@ -357,24 +549,39 @@ impl LocalModelCatalog {
     /// caller still presents this as a recommendation, never a silent install.
     pub fn recommend<'a>(
         &'a self,
-        hardware: &HardwareSnapshot,
+        hardware: &'a HardwareSnapshot,
         runtime: RuntimeKind,
     ) -> Option<&'a LocalModelRelease> {
+        self.fitting(hardware, runtime).max_by_key(|model| {
+            (
+                model.context_window,
+                Reverse(model.artifact.download_bytes()),
+            )
+        })
+    }
+
+    /// Every model that honestly runs on `runtime` here: it fits memory,
+    /// accelerator memory and storage, and on the CPU it leaves the desktop
+    /// its headroom and answers faster than [`SpeedClass::Impractical`].
+    pub fn fitting<'a>(
+        &'a self,
+        hardware: &'a HardwareSnapshot,
+        runtime: RuntimeKind,
+    ) -> impl Iterator<Item = &'a LocalModelRelease> + 'a {
         let accelerator = accelerator_memory(hardware, runtime);
-        self.models
-            .iter()
-            .filter(|model| {
-                model.allowed_runtimes.contains(&runtime)
-                    && model.required_memory_mib <= hardware.memory_mib
-                    && model.required_accelerator_mib <= accelerator
-                    && model.installed_size_bytes / (1024 * 1024) <= hardware.free_storage_mib
-            })
-            .max_by_key(|model| {
-                (
-                    model.context_window,
-                    Reverse(model.artifact.download_bytes()),
-                )
-            })
+        self.models.iter().filter(move |model| {
+            let memory_fits = if runtime == RuntimeKind::Cpu {
+                model.required_memory_mib <= hardware.cpu_model_budget_mib()
+                    && hardware.cpu_threads >= MIN_CPU_THREADS
+                    && expected_speed(hardware, runtime, model).class > SpeedClass::Impractical
+            } else {
+                model.required_memory_mib <= hardware.memory_mib
+            };
+            model.allowed_runtimes.contains(&runtime)
+                && memory_fits
+                && model.required_accelerator_mib <= accelerator
+                && model.installed_size_bytes / (1024 * 1024) <= hardware.free_storage_mib
+        })
     }
 }
 
@@ -399,9 +606,6 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
         .unwrap_or(0)
 }
 
-/// Determine the best runtime without probing hardware from an unprivileged
-/// agent process. `CUDA` and `ROCm` are selected only when both the driver stack
-/// and sufficient VRAM are confirmed; CPU is used otherwise.
 /// Smallest accelerator class, in GiB, a GPU runtime is selected for.
 const MIN_ACCELERATOR_GIB: u64 = 8;
 
@@ -412,14 +616,21 @@ fn accelerator_class_gib(vram_mib: u64) -> u64 {
     vram_mib.saturating_add(512) / 1024
 }
 
+/// Determine the best runtime without probing hardware from an unprivileged
+/// agent process. `CUDA` and `ROCm` are selected only when both the driver stack
+/// and sufficient VRAM are confirmed; a card waiting for a restart holds the
+/// decision; CPU is used otherwise.
 pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
-    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Nvidia { vram_mib, driver } if accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB && !driver.trim().is_empty())) {
-        return RuntimeDecision::Ready(RuntimeKind::NvidiaCuda);
+    match hardware.accelerator_state() {
+        AcceleratorState::Usable { kind, .. } => return RuntimeDecision::Ready(kind),
+        // A card waiting for a restart is not "no card": running on the CPU
+        // now would pick a far smaller model than this device is set up for.
+        AcceleratorState::RestartRequired { vendor, reason } => {
+            return RuntimeDecision::RestartRequired { vendor, reason };
+        }
+        AcceleratorState::NeedsDriver { .. } | AcceleratorState::Absent => {}
     }
-    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Amd { vram_mib, rocm: Some(version) } if accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB && !version.trim().is_empty())) {
-        return RuntimeDecision::Ready(RuntimeKind::AmdRocm);
-    }
-    if hardware.memory_mib >= 8192 && hardware.cpu_threads >= 4 {
+    if hardware.memory_mib >= 8192 && hardware.cpu_threads >= MIN_CPU_THREADS {
         RuntimeDecision::Ready(RuntimeKind::Cpu)
     } else {
         RuntimeDecision::Unavailable(
@@ -431,7 +642,32 @@ pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeDecision {
     Ready(RuntimeKind),
+    RestartRequired {
+        vendor: AcceleratorVendor,
+        reason: RestartReason,
+    },
     Unavailable(&'static str),
+}
+
+impl RuntimeDecision {
+    /// The ready runtime, or the refusal a provisioning step reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProvisionError::UnsupportedHardware`] when no runtime is
+    /// ready now.
+    pub fn ready(self) -> Result<RuntimeKind, ProvisionError> {
+        match self {
+            Self::Ready(kind) => Ok(kind),
+            Self::RestartRequired { vendor, .. } => {
+                Err(ProvisionError::UnsupportedHardware(format!(
+                    "Restart to finish setting up the {} graphics driver.",
+                    vendor.label()
+                )))
+            }
+            Self::Unavailable(reason) => Err(ProvisionError::UnsupportedHardware(reason.into())),
+        }
+    }
 }
 
 /// Typed lifecycle state shown to the task manager. It separates
@@ -627,9 +863,84 @@ mod tests {
         HardwareSnapshot {
             cpu_threads: 8,
             memory_mib: 16384,
+            available_memory_mib: 0,
             free_storage_mib: 100,
             accelerators: vec![],
         }
+    }
+
+    #[test]
+    fn a_card_waiting_for_a_restart_holds_the_decision_instead_of_falling_to_cpu() {
+        let pending = HardwareSnapshot {
+            accelerators: vec![Accelerator::RestartRequired {
+                vendor: AcceleratorVendor::Nvidia,
+                reason: RestartReason::DriverLibraryMismatch,
+            }],
+            ..cpu()
+        };
+        assert_eq!(
+            pending.accelerator_state(),
+            AcceleratorState::RestartRequired {
+                vendor: AcceleratorVendor::Nvidia,
+                reason: RestartReason::DriverLibraryMismatch,
+            }
+        );
+        assert!(matches!(
+            select_runtime(&pending),
+            RuntimeDecision::RestartRequired { .. }
+        ));
+        let error = select_runtime(&pending).ready().unwrap_err();
+        assert!(error.to_string().contains("Restart"), "{error}");
+        let absent = cpu();
+        assert_eq!(absent.accelerator_state(), AcceleratorState::Absent);
+        let driverless = HardwareSnapshot {
+            accelerators: vec![Accelerator::Nvidia {
+                vram_mib: 0,
+                driver: String::new(),
+            }],
+            ..cpu()
+        };
+        assert_eq!(
+            driverless.accelerator_state(),
+            AcceleratorState::NeedsDriver {
+                vendor: AcceleratorVendor::Nvidia
+            }
+        );
+    }
+
+    #[test]
+    fn a_cpu_model_is_offered_only_when_free_memory_and_threads_can_run_it() {
+        let catalog = catalog();
+        let roomy = HardwareSnapshot {
+            available_memory_mib: 14_000,
+            ..cpu()
+        };
+        assert!(catalog.recommend(&roomy, RuntimeKind::Cpu).is_some());
+        // Enough RAM in total, but the desktop already holds most of it.
+        let busy = HardwareSnapshot {
+            available_memory_mib: 9_000,
+            ..cpu()
+        };
+        assert!(catalog.recommend(&busy, RuntimeKind::Cpu).is_none());
+        let few_threads = HardwareSnapshot {
+            cpu_threads: 2,
+            ..roomy.clone()
+        };
+        assert!(catalog.recommend(&few_threads, RuntimeKind::Cpu).is_none());
+        // A 4 GiB model on eight threads is honest about being slow.
+        let mut model = catalog.models[0].clone();
+        model.artifact = ModelArtifact::Gguf(PinnedArtifact {
+            url: "https://models.example.invalid/model.gguf".into(),
+            sha256: "c".repeat(64),
+            size_bytes: 4 * 1_073_741_824,
+        });
+        let speed = expected_speed(&roomy, RuntimeKind::Cpu, &model);
+        assert_eq!(speed.class, SpeedClass::Slow);
+        assert_eq!(speed.tokens_per_second, 6);
+        assert_eq!(
+            expected_speed(&roomy, RuntimeKind::NvidiaCuda, &model).class,
+            SpeedClass::Interactive
+        );
     }
 
     #[test]

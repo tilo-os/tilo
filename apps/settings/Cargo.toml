@@ -60,7 +60,7 @@ tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
-accounts = { path = "../../crates/system/accounts" }
+accounts = { path = "../../crates/system/accounts", features = ["http"] }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config" }

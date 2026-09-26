@@ -274,6 +274,33 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
     Ok(out)
 }
 
+/// The agents admitted to any of this person's workspaces, by the name their
+/// grants carry, sorted and deduplicated. The AI pane offers each one a
+/// model override; admission itself stays in Workspace Settings.
+#[must_use]
+pub fn agent_members() -> Vec<String> {
+    load_text()
+        .map(|text| agent_members_in(&text))
+        .unwrap_or_default()
+}
+
+fn agent_members_in(state_json: &str) -> Vec<String> {
+    let Ok(tree) = serde_json::from_str::<TreeView>(state_json) else {
+        return Vec::new();
+    };
+    let names: std::collections::BTreeSet<String> = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.capabilities)
+        .filter(|cap| cap.effect == Effect::Grant)
+        .filter_map(|cap| match &cap.subject {
+            Subject::Principal(Principal::Agent(name)) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    names.into_iter().collect()
+}
+
 /// Total number of app grants across every workspace — drives populated vs.
 /// empty and the summary count.
 fn grant_count(all: &[WsGrants]) -> usize {

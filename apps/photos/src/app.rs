@@ -1548,11 +1548,10 @@ impl Default for PhotosApp {
 impl PhotosApp {
     fn discover_library_analysis_capability() -> Result<tilo_vision::LocalVisionCapability, String>
     {
-        tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
-            .ok_or_else(|| {
-                "No verified local image-analysis model is ready. Install and start one in Settings."
-                    .to_owned()
-            })
+        tilo_vision::discover_local_capability().ok_or_else(|| {
+            "No verified local image-analysis model is ready. Install and start one in Settings."
+                .to_owned()
+        })
     }
 
     fn begin_library_analysis(
@@ -2857,8 +2856,7 @@ impl PhotosApp {
                 let enabled = !self.people_controller.privacy().recognition_enabled;
                 self.people_controller.set_recognition_enabled(enabled);
                 if enabled {
-                    self.people_controller
-                        .discover_face_capability(&agent_provider_config::ProviderConfig::load());
+                    self.people_controller.discover_face_capability();
                 }
                 self.notice = Some(self.people_controller.capability().summary().to_owned());
             }
@@ -4904,8 +4902,7 @@ impl PhotosApp {
             }
             crate::actions::PhotosOperation::EnablePeopleRecognition => {
                 self.people_controller.set_recognition_enabled(true);
-                self.people_controller
-                    .discover_face_capability(&agent_provider_config::ProviderConfig::load());
+                self.people_controller.discover_face_capability();
                 self.notice = Some(self.people_controller.capability().summary().to_owned());
             }
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
@@ -14653,10 +14650,7 @@ impl Widget for PhotosApp {
             if photo.image.content.is_none() {
                 return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
             }
-            let capability = tilo_vision::discover_local_capability(
-                &agent_provider_config::ProviderConfig::load(),
-            )
-            .ok_or_else(|| {
+            let capability = tilo_vision::discover_local_capability().ok_or_else(|| {
                 "No verified local image-analysis model is ready. Install and start one in Settings."
                     .to_owned()
             })?;
@@ -16578,9 +16572,8 @@ impl PhotosApp {
         if !self.people_controller.privacy().recognition_enabled {
             return Err("People recognition is off on this device. Enable it in People before scanning local photographs.".to_owned());
         }
-        let config = agent_provider_config::ProviderConfig::load();
-        self.people_controller.discover_face_capability(&config);
-        let capability = tilo_vision::discover_local_face_capability(&config).ok_or_else(|| {
+        self.people_controller.discover_face_capability();
+        let capability = tilo_vision::discover_local_face_capability().ok_or_else(|| {
             "No verified local face model is ready. Install and start one in Settings.".to_owned()
         })?;
         let locally_available: Vec<_> = PhotosDoc::library(doc)

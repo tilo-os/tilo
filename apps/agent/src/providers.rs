@@ -1,84 +1,48 @@
-//! Agent-runner view of Settings' provider configuration.
+//! Agent-runner view of the model assignment for planning.
 //!
-//! A task captures this selection before it begins. That prevents a Settings
-//! change from silently moving work already under way to a different provider,
-//! and leaves secret resolution to the desktop broker rather than environment
-//! variables or the replicated task state.
+//! The agent never names a provider or a model. It asks the gateway which
+//! model the person assigned to `agent.planning` for this agent, captures
+//! that [`ModelRoute`] when a run begins, and writes its request in the route's
+//! dialect. The gateway re-resolves on every call and refuses a body written
+//! for a dialect the assignment no longer uses, so a Settings change cannot
+//! silently send work in progress somewhere else. Credentials stay in the
+//! gateway; the route carries none.
 
-use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, SecretReference};
+use agent_provider_config::tasks;
+pub use tilo_model_gateway::Route as ModelRoute;
 
-/// The non-secret endpoint selection captured by a new task.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderSelection {
-    pub profile_id: String,
-    pub profile_label: String,
-    pub endpoint: String,
-    pub protocol: agent_provider_config::ProviderProtocol,
-    pub model: ModelDescriptor,
-    pub credential: Option<SecretReference>,
-}
+/// The task every agent plan is served as.
+pub const PLANNING_TASK: &str = tasks::AGENT_PLANNING.id;
 
-impl ProviderSelection {
-    /// Resolve the user's currently enabled default. A profile without a
-    /// declared default model is intentionally not guessed: the task center
-    /// must ask the user/model-discovery flow to choose one.
-    pub fn from_config(config: &ProviderConfig) -> Option<Self> {
-        let profile = config.active_profile()?;
-        let model_id = profile.default_model.as_ref()?;
-        let model = profile
-            .models
-            .iter()
-            .find(|model| &model.id == model_id)?
-            .clone();
-        Some(Self::from_profile(profile, model))
-    }
-
-    pub fn from_profile(profile: &ProviderProfile, model: ModelDescriptor) -> Self {
-        Self {
-            profile_id: profile.id.clone(),
-            profile_label: profile.display_label().to_string(),
-            endpoint: profile.endpoint.clone(),
-            protocol: profile.protocol,
-            model,
-            credential: profile.credential.clone(),
+/// The model the person assigned to planning for `agent`, if any serves it.
+pub fn planning_route(agent: &str) -> Option<ModelRoute> {
+    match tilo_model_gateway::resolve(PLANNING_TASK, Some(agent)) {
+        Ok(route) => Some(route),
+        Err(error) => {
+            tracing::info!(%error, "no model serves agent planning");
+            None
         }
     }
-}
-
-/// Load the current Settings selection for a *new* task. Existing tasks use
-/// their recorded [`ProviderSelection`] instead.
-pub fn default_selection() -> Option<ProviderSelection> {
-    ProviderSelection::from_config(&ProviderConfig::load())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_provider_config::{ProviderProfile, ProviderProtocol};
 
     #[test]
-    fn task_selection_captures_a_model_but_not_a_secret() {
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        profile.models.push(ModelDescriptor::new("claude-test"));
-        profile.default_model = Some("claude-test".into());
-        let config = ProviderConfig {
-            default_profile: Some(profile.id.clone()),
-            profiles: vec![profile],
+    fn a_route_carries_a_model_but_no_endpoint_or_secret() {
+        let route = ModelRoute {
+            task: PLANNING_TASK.into(),
+            profile_id: "azure".into(),
+            profile_label: "Azure".into(),
+            protocol: agent_provider_config::ProviderProtocol::AzureOpenAi,
+            location: agent_provider_config::EndpointLocation::Hosted,
+            model: agent_provider_config::ModelDescriptor::new("gpt-5.6-sol"),
+            options: agent_provider_config::ModelOptions::default(),
+            layer: agent_provider_config::assign::Layer::Agent,
         };
-        let selected = ProviderSelection::from_config(&config).expect("configured provider");
-        assert_eq!(selected.model.id, "claude-test");
-        assert!(selected.credential.is_some());
-        let serialised = format!("{selected:?}");
-        assert!(!serialised.contains("sk-ant-"));
-    }
-
-    #[test]
-    fn incomplete_provider_requires_an_explicit_model_choice() {
-        let profile = ProviderProfile::local_vllm();
-        let config = ProviderConfig {
-            default_profile: Some(profile.id.clone()),
-            profiles: vec![profile],
-        };
-        assert!(ProviderSelection::from_config(&config).is_none());
+        let serialised = serde_json::to_string(&route).unwrap();
+        assert!(!serialised.contains("https://"));
+        assert!(!serialised.contains("secret"));
     }
 }

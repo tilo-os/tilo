@@ -36,6 +36,9 @@ use crate::settings_app::NAV_BREAKPOINT;
 /// Default (wide) offscreen viewport. Matches the sibling apps' aspect.
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
 
+/// Tall viewport for the AI hub's full-page stills.
+pub const AI_SHOTS_VIEWPORT: (u32, u32) = (1000, 3800);
+
 /// Narrow viewport used for the responsive single-pane shot — phone-ish.
 pub const NARROW_SHOTS_VIEWPORT: (u32, u32) = (440, 820);
 
@@ -305,6 +308,21 @@ pub fn render_for_path_with_text_scale(
         return render_to_path_with_text_scale(
             Box::new(app),
             DEFAULT_SHOTS_VIEWPORT,
+            out,
+            text_scale,
+        );
+    }
+
+    // `…aidemo.png` renders the whole AI hub on a device with an 8 GiB card:
+    // presets, tasks, an agent on an Azure deployment in fast mode, providers
+    // and local models. `…airestart.png` is the same device waiting for a
+    // restart to finish its graphics driver. The viewport is tall so every
+    // card is in one still.
+    if fname.contains("aidemo") || fname.contains("airestart") {
+        let state = crate::panes::ai::demo_state(fname.contains("airestart"));
+        return render_to_path_with_text_scale(
+            Box::new(crate::panes::ai::AiPane::for_state(state)),
+            AI_SHOTS_VIEWPORT,
             out,
             text_scale,
         );

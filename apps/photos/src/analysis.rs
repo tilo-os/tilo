@@ -220,7 +220,6 @@ mod tests {
     fn vision_output_stays_generic_and_records_the_pinned_model() {
         let open = OpenImage::from_path("vision.png", 3, 2).with_content("b".repeat(64));
         let capability = tilo_vision::LocalVisionCapability {
-            profile_id: "local".to_owned(),
             model_id: "vision-model".to_owned(),
             model_label: "Vision model".to_owned(),
             revision: "a".repeat(64),

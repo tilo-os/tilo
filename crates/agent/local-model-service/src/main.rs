@@ -5,7 +5,7 @@
 //! fixed-argv systemd user service. No subcommand accepts a URL, command, tag,
 //! model path, or arbitrary process argument.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -15,10 +15,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use agent_provider_config::ModelCapability;
 use agent_provider_config::local::{
-    Accelerator, HardwareSnapshot, LocalEndpoint, LocalModelCatalog, LocalModelRelease,
-    LocalModelStatus, ModelArtifact, RuntimeDecision, RuntimeKind, select_runtime,
+    Accelerator, AcceleratorState, AcceleratorVendor, HardwareSnapshot, LocalModelCatalog,
+    LocalModelRelease, LocalModelStatus, ModelArtifact, RestartReason, RuntimeDecision,
+    RuntimeKind, expected_speed, select_runtime,
+};
+use agent_provider_config::manager::{
+    AcceleratorSetup, AcceleratorSetupState, AvailableModel, HardwareFit, HardwareRecommendation,
+    InstalledLocalModel, LocalModelPackage, LocalModelPhase, LocalModelSnapshot,
 };
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -158,86 +162,6 @@ struct CatalogPayload {
 #[derive(Default, Deserialize)]
 struct KeyFile {
     keys: BTreeMap<String, String>,
-}
-
-// The JSON contract is intentionally duplicated rather than importing the
-// Settings application: this CLI remains service-only, but its schema exactly
-// matches Settings' `LocalModelSnapshot` deserialization contract.
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum HardwareFit {
-    Excellent,
-    Good,
-    Tight,
-    Unsupported,
-}
-#[derive(Serialize)]
-struct HardwareRecommendation {
-    fit: HardwareFit,
-    memory_gib: u16,
-    accelerator: String,
-    accelerator_memory_gib: Option<u16>,
-    free_storage_gib: Option<u16>,
-    reason: String,
-}
-#[derive(Clone, Serialize)]
-struct LocalModelPackage {
-    id: String,
-    name: String,
-    description: String,
-    source: String,
-    revision: String,
-    license: String,
-    license_url: String,
-    download_bytes: u64,
-    installed_bytes: u64,
-    capabilities: BTreeSet<ModelCapability>,
-}
-#[derive(Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum LocalModelPhase {
-    Downloading {
-        downloaded_bytes: u64,
-        total_bytes: u64,
-    },
-    Installing {
-        percent: Option<u8>,
-        message: String,
-    },
-    Ready {
-        running: bool,
-        endpoint: Option<LocalEndpoint>,
-    },
-    Error {
-        message: String,
-    },
-}
-#[derive(Serialize)]
-struct InstalledLocalModel {
-    package: LocalModelPackage,
-    phase: LocalModelPhase,
-}
-#[derive(Clone, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum AcceleratorSetupState {
-    Available,
-    Queued,
-    Staging,
-    RestartRequired,
-    Active,
-    Error { message: String },
-}
-#[derive(Serialize)]
-struct AcceleratorSetup {
-    boot_pack_id: String,
-    status: AcceleratorSetupState,
-}
-#[derive(Serialize)]
-struct LocalModelSnapshot {
-    hardware: HardwareRecommendation,
-    recommendation: Option<LocalModelPackage>,
-    models: Vec<InstalledLocalModel>,
-    accelerator_setup: Option<AcceleratorSetup>,
 }
 
 const SYSTEM_EXTENSION_SOCKET: &str = "/run/tilo/system-extension-api/request.sock";
@@ -585,18 +509,21 @@ impl ProcessSupervisor for SystemdSupervisor {
 /// What this machine offers. Free storage is measured where the model store
 /// actually lives, so a per-user store is not judged by a system path.
 fn local_hardware(store: &Path) -> HardwareSnapshot {
-    let memory_mib = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|body| {
-            body.lines().find_map(|line| {
-                line.strip_prefix("MemTotal:")?
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let meminfo_mib = |field: &str| {
+        meminfo
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix(field)?
                     .split_whitespace()
                     .next()?
                     .parse::<u64>()
                     .ok()
             })
-        })
-        .map_or(0, |kib| kib / 1024);
+            .map_or(0, |kib| kib / 1024)
+    };
+    let memory_mib = meminfo_mib("MemTotal:");
+    let available_memory_mib = meminfo_mib("MemAvailable:");
     let free_storage_mib = free_storage_mib(store).unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
@@ -607,8 +534,19 @@ fn local_hardware(store: &Path) -> HardwareSnapshot {
         "--query-gpu=memory.total,driver_version",
         "--format=csv,noheader,nounits",
     ]);
-    if let Ok(output) =
-        bounded_command::run_prepared(nvidia, None, 1024 * 1024, Duration::from_secs(5))
+    let nvidia = bounded_command::run_prepared(nvidia, None, 1024 * 1024, Duration::from_secs(5));
+    if let Ok(output) = &nvidia
+        && !output.status.success()
+        && nvml_reports_version_mismatch(&output.stdout, &output.stderr)
+    {
+        // The card and a driver are present, but the loaded kernel module and
+        // the installed userspace library differ: usable after a restart.
+        accelerators.push(Accelerator::RestartRequired {
+            vendor: AcceleratorVendor::Nvidia,
+            reason: RestartReason::DriverLibraryMismatch,
+        });
+    }
+    if let Ok(output) = nvidia
         && output.status.success()
     {
         for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -643,9 +581,16 @@ fn local_hardware(store: &Path) -> HardwareSnapshot {
                     rocm: rocm.clone(),
                 });
             } else if vendor.as_deref() == Some("0x10de")
-                && !accelerators
-                    .iter()
-                    .any(|item| matches!(item, Accelerator::Nvidia { .. }))
+                && !accelerators.iter().any(|item| {
+                    matches!(
+                        item,
+                        Accelerator::Nvidia { .. }
+                            | Accelerator::RestartRequired {
+                                vendor: AcceleratorVendor::Nvidia,
+                                ..
+                            }
+                    )
+                })
             {
                 // Retain the PCI device when `nvidia-smi` is absent so policy
                 // asks for the signed driver boot pack instead of quietly
@@ -661,9 +606,44 @@ fn local_hardware(store: &Path) -> HardwareSnapshot {
         cpu_threads: std::thread::available_parallelism()
             .map_or(1, |count| u16::try_from(count.get()).unwrap_or(u16::MAX)),
         memory_mib,
+        available_memory_mib,
         free_storage_mib,
         accelerators,
     }
+}
+
+/// NVML's own words when the loaded kernel module and the userspace library
+/// differ in version, which only a restart resolves.
+fn nvml_reports_version_mismatch(stdout: &[u8], stderr: &[u8]) -> bool {
+    [stdout, stderr].iter().any(|stream| {
+        String::from_utf8_lossy(stream)
+            .to_ascii_lowercase()
+            .contains("driver/library version mismatch")
+    })
+}
+
+/// A staged driver deployment boots next time: the driverless card it is for
+/// is waiting for a restart, not missing a driver.
+fn with_staged_driver(
+    mut hardware: HardwareSnapshot,
+    setup: Option<&AcceleratorSetup>,
+) -> HardwareSnapshot {
+    if setup.is_some_and(|setup| setup.status == AcceleratorSetupState::RestartRequired) {
+        for accelerator in &mut hardware.accelerators {
+            let vendor = match accelerator {
+                Accelerator::Nvidia { driver, .. } if driver.trim().is_empty() => {
+                    AcceleratorVendor::Nvidia
+                }
+                Accelerator::Amd { rocm: None, .. } => AcceleratorVendor::Amd,
+                _ => continue,
+            };
+            *accelerator = Accelerator::RestartRequired {
+                vendor,
+                reason: RestartReason::DriverStaged,
+            };
+        }
+    }
+    hardware
 }
 fn free_storage_mib(path: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -708,6 +688,8 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         download_bytes: model.artifact.download_bytes(),
         installed_bytes: model.installed_size_bytes,
         capabilities: model.capabilities.clone(),
+        context_window: model.context_window,
+        accelerator_memory_mib: model.required_accelerator_mib,
     }
 }
 fn runtime_kind_for(
@@ -716,6 +698,12 @@ fn runtime_kind_for(
 ) -> Result<RuntimeKind, String> {
     let kind = match select_runtime(hardware) {
         RuntimeDecision::Ready(kind) => kind,
+        RuntimeDecision::RestartRequired { vendor, .. } => {
+            return Err(format!(
+                "Restart to finish setting up the {} graphics driver.",
+                vendor.label()
+            ));
+        }
         RuntimeDecision::Unavailable(reason) => return Err(reason.into()),
     };
     if kind == RuntimeKind::Cpu
@@ -725,6 +713,7 @@ fn runtime_kind_for(
             .any(|accelerator| match accelerator {
                 Accelerator::Nvidia { driver, .. } => driver.trim().is_empty(),
                 Accelerator::Amd { rocm, .. } => rocm.is_none(),
+                Accelerator::RestartRequired { .. } => true,
             })
     {
         return Err(
@@ -780,6 +769,31 @@ fn recommended_model<'a>(
     Ok((model, kind))
 }
 
+/// Every signed release that honestly runs on `kind` here, best first, with
+/// its expected speed.
+fn available_models(
+    catalog: &CatalogPayload,
+    hardware: &HardwareSnapshot,
+    kind: RuntimeKind,
+) -> Vec<AvailableModel> {
+    let local = model_catalog(catalog);
+    let mut fitting: Vec<&LocalModelRelease> = local.fitting(hardware, kind).collect();
+    fitting.sort_by_key(|model| {
+        (
+            std::cmp::Reverse(model.context_window),
+            model.artifact.download_bytes(),
+        )
+    });
+    fitting
+        .into_iter()
+        .map(|model| AvailableModel {
+            package: package(model),
+            runtime: kind,
+            speed: expected_speed(hardware, kind, model),
+        })
+        .collect()
+}
+
 fn signed_runtime_for<'a>(
     catalog: &'a CatalogPayload,
     hardware: &HardwareSnapshot,
@@ -810,7 +824,7 @@ fn recommendation(
                 .iter()
                 .filter_map(|item| match item {
                     Accelerator::Nvidia { vram_mib, .. } => Some(*vram_mib),
-                    Accelerator::Amd { .. } => None,
+                    Accelerator::Amd { .. } | Accelerator::RestartRequired { .. } => None,
                 })
                 .max();
             (
@@ -848,7 +862,12 @@ fn recommendation(
         ),
         Err(reason) => ("Unavailable".into(), None, reason),
     };
-    let fit = if !has_model || accelerator == "Unavailable" {
+    let fit = if matches!(
+        hardware.accelerator_state(),
+        AcceleratorState::RestartRequired { .. }
+    ) {
+        HardwareFit::RestartRequired
+    } else if !has_model || accelerator == "Unavailable" {
         HardwareFit::Unsupported
     } else if gib >= 32 {
         HardwareFit::Excellent
@@ -1456,7 +1475,8 @@ fn local_snapshot(
         SystemdSupervisor,
     )
     .map_err(|error| error.to_string())?;
-    let hardware = local_hardware(root);
+    let accelerator_setup = accelerator_setup_snapshot();
+    let hardware = with_staged_driver(local_hardware(root), accelerator_setup.as_ref());
     let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
         Ok((model, kind)) => (Some(package(model)), Ok(kind)),
         Err(reason) => (None, Err(reason)),
@@ -1476,11 +1496,17 @@ fn local_snapshot(
                 })
         })
         .collect();
+    let available = runtime.as_ref().map_or_else(
+        |_| Vec::new(),
+        |kind| available_models(&catalog, &hardware, *kind),
+    );
     let payload = LocalModelSnapshot {
         hardware: recommendation(&hardware, runtime, recommended.is_some()),
+        facts: hardware,
         recommendation: recommended,
+        available,
         models,
-        accelerator_setup: accelerator_setup_snapshot(),
+        accelerator_setup,
     };
     serde_json::to_string(&payload).map_err(|error| error.to_string())
 }
@@ -1707,6 +1733,7 @@ mod tests {
         let hardware = HardwareSnapshot {
             cpu_threads: 8,
             memory_mib: 32 * 1024,
+            available_memory_mib: 0,
             free_storage_mib: 100 * 1024,
             accelerators: vec![Accelerator::Nvidia {
                 vram_mib: 12 * 1024,
@@ -1726,6 +1753,7 @@ mod tests {
         let hardware = HardwareSnapshot {
             cpu_threads: 8,
             memory_mib: 32 * 1024,
+            available_memory_mib: 0,
             free_storage_mib: 100 * 1024,
             accelerators: vec![Accelerator::Amd {
                 vram_mib: 16 * 1024,
@@ -1746,10 +1774,61 @@ mod tests {
     }
 
     #[test]
+    fn a_driver_waiting_for_a_restart_is_reported_as_such_not_as_no_gpu() {
+        assert!(nvml_reports_version_mismatch(
+            b"Failed to initialize NVML: Driver/library version mismatch\n",
+            b""
+        ));
+        assert!(!nvml_reports_version_mismatch(
+            b"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.",
+            b""
+        ));
+        let driverless = HardwareSnapshot {
+            cpu_threads: 8,
+            memory_mib: 32 * 1024,
+            available_memory_mib: 24 * 1024,
+            free_storage_mib: 100 * 1024,
+            accelerators: vec![Accelerator::Nvidia {
+                vram_mib: 0,
+                driver: String::new(),
+            }],
+        };
+        let staged = with_staged_driver(
+            driverless.clone(),
+            Some(&AcceleratorSetup {
+                boot_pack_id: "nvidia".into(),
+                status: AcceleratorSetupState::RestartRequired,
+            }),
+        );
+        assert_eq!(
+            staged.accelerator_state(),
+            AcceleratorState::RestartRequired {
+                vendor: AcceleratorVendor::Nvidia,
+                reason: RestartReason::DriverStaged,
+            }
+        );
+        let hint =
+            runtime_kind_for(&staged, [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]).unwrap_err();
+        assert!(hint.starts_with("Restart to finish setting up"), "{hint}");
+        assert_eq!(
+            recommendation(&staged, Err(hint), false).fit,
+            HardwareFit::RestartRequired
+        );
+        // Without a staged deployment it is a card that needs its driver.
+        assert_eq!(
+            with_staged_driver(driverless, None).accelerator_state(),
+            AcceleratorState::NeedsDriver {
+                vendor: AcceleratorVendor::Nvidia
+            }
+        );
+    }
+
+    #[test]
     fn runtime_selection_uses_cpu_when_no_supported_accelerator_exists() {
         let hardware = HardwareSnapshot {
             cpu_threads: 4,
             memory_mib: 8 * 1024,
+            available_memory_mib: 0,
             free_storage_mib: 100 * 1024,
             accelerators: vec![],
         };

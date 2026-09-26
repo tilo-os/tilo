@@ -117,6 +117,11 @@ policies! {
         "tilo.quick_settings.controls",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
+        // Provider profiles hold only vault references, never a key, and a
+        // local model is assigned by catalogue id, so both follow the person;
+        // each device resolves them against its own vault and runtime.
+        "tilo.agent_providers.profiles",
+        "tilo.agent_providers.assignments",
     ],
     DeviceLocal => [
         "tilo.audio.output_device",
@@ -171,10 +176,9 @@ policies! {
         "tilo.video_player.autoplay",
         "tilo.video_player.loop_enabled",
         "tilo.video_player.recent_history",
-        // Provider records can name loopback endpoints and device-vault
-        // locators. The secret bytes live elsewhere, but this aggregate
-        // cannot safely roam until it is split into portable/local records.
-        "tilo.agent_providers.config",
+        // The model manager's loopback endpoint and this machine's hardware
+        // facts. Hosted profiles and assignments are personal (above).
+        "tilo.agent_providers.local",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
         // Consent to keep the last minutes of this device's rooms in memory
@@ -358,7 +362,7 @@ mod tests {
                 "future_value": "must stay local"
             },
             "display_outputs": {"outputs": {"DP-1": {"scale": 2.0}}},
-            "agent_providers": {"config": {"profiles": [{"endpoint": "http://127.0.0.1:8000"}]}},
+            "agent_providers": {"local": {"profile": {"endpoint": "http://127.0.0.1:8000"}}},
             "security": {"local_credential": {"pin": "never"}}
         });
         let projected = personal_values(document.as_object().unwrap());
@@ -404,7 +408,7 @@ mod tests {
                 "app_continuations": false,
                 "audit": []
             },
-            "agent_providers": {"config": {}},
+            "agent_providers": {"profiles": {}, "local": {}, "assignments": {}},
             "collaboration": {"status_sharing": "automatic", "manual_status": null},
             "history": {"seen_frontiers": {}},
             "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},

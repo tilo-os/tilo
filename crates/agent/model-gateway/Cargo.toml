@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 agent-provider-config = { path = "../provider-config" }
 tilo-feedback-review = { path = "../../collab/feedback-review" }
-accounts = { path = "../../system/accounts" }
+accounts = { path = "../../system/accounts", features = ["http"] }
 reqwest = { workspace = true, features = ["json"] }
 tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 tilo-rt.workspace = true

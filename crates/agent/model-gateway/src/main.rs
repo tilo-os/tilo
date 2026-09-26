@@ -12,14 +12,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use accounts::oauth::ClientSlot;
 use accounts::{AccountId, Secret, SecretVault};
+use agent_provider_config::assign::{self, Inputs, ModelAssignments, Resolution};
+use agent_provider_config::tasks::{self, Consumer, TaskRequest};
 use agent_provider_config::{
-    EndpointCustody, ModelCapability, ProviderConfig, ProviderProfile, ProviderProtocol,
+    AZURE_OPENAI_SCOPE, Credential, EndpointCustody, LocalRuntime, ModelCapability, ProviderConfig,
+    ProviderProfile, ProviderProtocol,
 };
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use tilo_model_gateway::{
-    ClientError, FaceImage, Frame, Principal, RPC_VERSION, Request, Response, VisionImage,
+    ClientError, CredentialState, FaceImage, Frame, Principal, ProviderHealth, RPC_VERSION,
+    Reachability, Request, Response, Route, VisionImage,
 };
 use tokio::net::UnixStream;
 use tokio::sync::Semaphore;
@@ -53,8 +58,8 @@ enum Action {
 }
 
 const SETTINGS_APP: &str = "so.tilo.settings";
-const AGENT_APP: &str = "so.tilo.agent";
-const PHOTOS_APP: &str = "so.tilo.photos";
+const AGENT_APP: &str = tasks::AGENT_APP;
+const PHOTOS_APP: &str = tasks::PHOTOS_APP;
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -287,51 +292,42 @@ async fn handle(principal: &Principal, request: Request, http: &reqwest::Client)
     let output = |output| Response {
         ok: true,
         output: Some(output),
-        configured: None,
-        error: None,
+        ..Response::default()
     };
     let done = |()| Response {
         ok: true,
-        output: None,
-        configured: None,
-        error: None,
+        ..Response::default()
     };
+    let consumer = Consumer::from(principal);
     let result = match request {
+        Request::Resolve { task, agent } => {
+            blocking(move || resolve_for(&consumer, &task, agent.as_deref()))
+                .await
+                .map(|resolution| Response {
+                    ok: true,
+                    route: Some(Route::from_resolution(&resolution)),
+                    ..Response::default()
+                })
+        }
         Request::Plan {
-            profile_id,
-            model_id,
+            task,
+            agent,
+            protocol,
             body,
             timeout_ms,
-        } if app_id == AGENT_APP => plan(
+        } => plan(
             http,
-            profile_id,
-            model_id,
-            &body,
+            consumer,
+            task,
+            agent,
+            protocol,
+            body,
             Duration::from_millis(timeout_ms),
         )
         .await
         .map(output),
-        Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
-        Request::AnalyzeImage {
-            profile_id,
-            model_id,
-            image,
-        } if app_id == PHOTOS_APP => analyze_image(http, profile_id, model_id, image)
-            .await
-            .map(output),
-        Request::AnalyzeImage { .. } => {
-            Err("only Photos may request fixed local image analysis".into())
-        }
-        Request::ClusterFaces {
-            profile_id,
-            model_id,
-            images,
-        } if app_id == PHOTOS_APP => cluster_faces(http, profile_id, model_id, images)
-            .await
-            .map(output),
-        Request::ClusterFaces { .. } => {
-            Err("only Photos may request fixed local face clustering".into())
-        }
+        Request::AnalyzeImage { image } => analyze_image(http, consumer, image).await.map(output),
+        Request::ClusterFaces { images } => cluster_faces(http, consumer, images).await.map(output),
         Request::ReviewTrace { trace } if session => {
             review::review_trace(http, trace).await.map(output)
         }
@@ -343,9 +339,8 @@ async fn handle(principal: &Principal, request: Request, http: &reqwest::Client)
                 .await
                 .map(|configured| Response {
                     ok: true,
-                    output: None,
                     configured: Some(configured),
-                    error: None,
+                    ..Response::default()
                 })
         }
         Request::SetApiKey {
@@ -357,17 +352,50 @@ async fn handle(principal: &Principal, request: Request, http: &reqwest::Client)
         Request::RemoveApiKey { profile_id } if app_id == SETTINGS_APP => {
             blocking(move || remove_key(&profile_id)).await.map(done)
         }
+        Request::Probe { profile_id } if app_id == SETTINGS_APP => {
+            probe(http, profile_id).await.map(|health| Response {
+                ok: true,
+                health: Some(health),
+                ..Response::default()
+            })
+        }
         _ => Err("caller is not authorized for this gateway operation".into()),
     };
     result.unwrap_or_else(|error| rejected(&error))
 }
 
+/// Resolve `task` for `consumer` through the person's assignments, with this
+/// device's runtime and hardware.
+fn resolve_for(consumer: &Consumer, task: &str, agent: Option<&str>) -> Result<Resolution, String> {
+    resolve_task(consumer, task, agent).map_err(|error| error.to_string())
+}
+
+/// [`resolve_for`], keeping the typed reason.
+fn resolve_task(
+    consumer: &Consumer,
+    task: &str,
+    agent: Option<&str>,
+) -> Result<Resolution, assign::ResolveError> {
+    let config = ProviderConfig::load();
+    let assignments = ModelAssignments::load();
+    let local = LocalRuntime::load();
+    assign::resolve(
+        &Inputs {
+            config: &config,
+            assignments: &assignments,
+            hardware: local.hardware.as_ref(),
+        },
+        consumer,
+        task,
+        agent,
+    )
+}
+
 fn rejected(error: &str) -> Response {
     Response {
         ok: false,
-        output: None,
-        configured: None,
         error: Some(error.into()),
+        ..Response::default()
     }
 }
 
@@ -392,8 +420,8 @@ fn configured_profile(profile_id: &str) -> Result<ProviderProfile, String> {
     config
         .profiles
         .into_iter()
-        .find(|profile| profile.id == profile_id && profile.enabled)
-        .ok_or_else(|| "provider is not enabled".into())
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "provider is not configured".into())
 }
 
 fn secret_status(profile_id: &str) -> Result<bool, String> {
@@ -417,11 +445,54 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
 }
 
 fn remove_key(profile_id: &str) -> Result<(), String> {
-    let _ = configured_profile(profile_id)?;
     let mut vault = SecretVault::open();
     vault.remove(&vault_id(profile_id)?);
     vault.save();
     Ok(())
+}
+
+/// The credential a request to `profile` carries, read from the vault.
+enum Bearer {
+    None,
+    /// An API key the person entered.
+    ApiKey(Zeroizing<String>),
+    /// An OAuth access token of a signed-in account.
+    Token(Zeroizing<String>),
+}
+
+impl Bearer {
+    fn state(&self) -> CredentialState {
+        match self {
+            Self::None => CredentialState::NotNeeded,
+            Self::ApiKey(_) | Self::Token(_) => CredentialState::Present,
+        }
+    }
+}
+
+/// Read (and, for an account, refresh) `profile`'s credential. Blocking.
+fn credential_for(profile: &ProviderProfile) -> Result<Bearer, String> {
+    match &profile.credential {
+        None => Ok(Bearer::None),
+        Some(Credential::ApiKey { .. }) => SecretVault::open()
+            .get(&vault_id(&profile.id)?)
+            .map(|secret| Zeroizing::new(secret.password))
+            .filter(|secret| !secret.is_empty())
+            .map(Bearer::ApiKey)
+            .ok_or_else(|| "API key is not configured".to_string()),
+        Some(Credential::Account { account_id }) => {
+            let client = ClientSlot::Entra
+                .registration()
+                .ok_or("Microsoft sign-in is not configured on this device")?
+                .client(AZURE_OPENAI_SCOPE);
+            let mut vault = SecretVault::open();
+            accounts::oauth::fresh_access_token(
+                &mut vault,
+                &AccountId::new(account_id.clone()),
+                &client,
+            )
+            .map(Bearer::Token)
+        }
+    }
 }
 
 const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -454,32 +525,47 @@ where
         .map_err(|_| "gateway worker failed".to_string())?
 }
 
-/// The configured profile for a planning call and its API key.
-fn plan_profile(
-    profile_id: &str,
-    model_id: &str,
-) -> Result<(ProviderProfile, Zeroizing<String>), String> {
-    let profile = configured_profile(profile_id)?;
-    if !profile.models.iter().any(|model| model.id == model_id) {
-        return Err("model is not configured for this provider".into());
+/// Resolve a caller-dialect task and read its credential.
+fn plan_route(
+    consumer: &Consumer,
+    task: &str,
+    agent: Option<&str>,
+    protocol: ProviderProtocol,
+) -> Result<(Resolution, Bearer), String> {
+    let spec = tasks::task(task).ok_or("unknown model task")?;
+    if spec.request != TaskRequest::CallerDialect {
+        return Err("this task is served only through its fixed gateway operation".into());
     }
-    let secret = SecretVault::open()
-        .get(&vault_id(profile_id)?)
-        .map(|secret| Zeroizing::new(secret.password))
-        .filter(|secret| !secret.is_empty())
-        .ok_or_else(|| "API key is not configured".to_string())?;
-    Ok((profile, secret))
+    let resolution = resolve_for(consumer, task, agent)?;
+    if resolution.profile.protocol != protocol {
+        return Err("the model assignment changed; resolve the task again".into());
+    }
+    let bearer = credential_for(&resolution.profile)?;
+    Ok((resolution, bearer))
 }
 
 async fn plan(
     http: &reqwest::Client,
-    profile_id: String,
-    model_id: String,
-    body: &serde_json::Value,
+    consumer: Consumer,
+    task: String,
+    agent: Option<String>,
+    protocol: ProviderProtocol,
+    mut body: serde_json::Value,
     requested_timeout: Duration,
 ) -> Result<String, String> {
-    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model_id)).await?;
-    let endpoint = provider_url(&profile);
+    let (resolution, bearer) =
+        blocking(move || plan_route(&consumer, &task, agent.as_deref(), protocol)).await?;
+    // The assignment, not the caller, names the model and its options.
+    let Some(object) = body.as_object_mut() else {
+        return Err("provider request body must be a JSON object".into());
+    };
+    object.insert(
+        "model".into(),
+        serde_json::Value::String(resolution.model.id.clone()),
+    );
+    let headers = resolution.options.apply(protocol, &mut body);
+    let http = &profile_client(http, &resolution.profile)?;
+    let endpoint = provider_url(&resolution.profile);
     let timeout = requested_timeout.min(MAX_PROVIDER_TIMEOUT);
     let began = Instant::now();
     let result = while_busy(
@@ -488,98 +574,150 @@ async fn plan(
         |budget| {
             provider_attempt(
                 http,
-                &profile,
+                &resolution.profile,
                 &endpoint,
-                Some(secret.as_str()),
-                body,
+                &bearer,
+                &headers,
+                &body,
                 budget,
             )
         },
     )
     .await;
-    secret.zeroize();
+    drop(bearer);
     result
+}
+
+/// Resolve one of Photos' fixed device-only tasks and re-check, beside the
+/// resolver, that the model is the supervised loopback runtime, declares
+/// `capability` and is pinned ([`local_profile`]).
+fn fixed_local_route(
+    consumer: &Consumer,
+    task: &str,
+    capability: ModelCapability,
+    purpose: &str,
+) -> Result<Resolution, String> {
+    let mut resolution = resolve_for(consumer, task, None)?;
+    resolution.profile = local_profile(
+        resolution.profile,
+        &resolution.model.id,
+        capability,
+        purpose,
+    )?;
+    Ok(resolution)
 }
 
 /// Validate Photos' one fixed local-only visual-analysis operation and
 /// build its request. No arbitrary prompt crosses the app boundary: the
-/// schema, token budget, and image URL shape are all constructed here after
-/// validating the launcher-authenticated caller and model capability.
+/// schema, token budget, and image URL shape are all constructed here.
 fn vision_request(
-    profile_id: &str,
-    model_id: &str,
+    consumer: &Consumer,
     image: &VisionImage,
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
-    let profile = local_profile(
-        configured_profile(profile_id)?,
-        model_id,
+    let resolution = fixed_local_route(
+        consumer,
+        tasks::PHOTOS_VISION.id,
         ModelCapability::Vision,
         "image analysis",
     )?;
-    let body = local_vision_body(model_id, image);
-    Ok((profile, body))
+    let body = local_vision_body(&resolution.model.id, image);
+    Ok((resolution.profile, body))
 }
 
 /// Run Photos' fixed visual-analysis operation (see [`vision_request`]).
 async fn analyze_image(
     http: &reqwest::Client,
-    profile_id: String,
-    model_id: String,
+    consumer: Consumer,
     image: VisionImage,
 ) -> Result<String, String> {
-    let (profile, body) = blocking(move || vision_request(&profile_id, &model_id, &image)).await?;
+    let (profile, body) = blocking(move || vision_request(&consumer, &image)).await?;
     let http = &profile_client(http, &profile)?;
     let endpoint = provider_url(&profile);
     let began = Instant::now();
-    // A local vLLM endpoint is normally unauthenticated. Do not invent a
-    // bearer token, and never look up a hosted-provider secret for it.
+    // A local vLLM endpoint is unauthenticated. Do not invent a bearer
+    // token, and never look up a hosted-provider secret for it.
     while_busy(
         || VISION_TIMEOUT.checked_sub(began.elapsed()),
         tokio::time::sleep,
-        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
+        |budget| provider_attempt(http, &profile, &endpoint, &Bearer::None, &[], &body, budget),
     )
     .await
 }
 
 /// Validate one fixed face-clustering request against the separate signed
-/// local capability and build it.  An OpenAI-compatible local runner can
-/// expose its face model behind the normal chat endpoint, but it must
-/// explicitly advertise `face_recognition`; generic image description models
-/// cannot use this path.
+/// local capability and build it. Generic image description models cannot
+/// use this path.
 fn face_request(
-    profile_id: &str,
-    model_id: &str,
+    consumer: &Consumer,
     images: &[FaceImage],
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
-    let profile = local_profile(
-        configured_profile(profile_id)?,
-        model_id,
+    let resolution = fixed_local_route(
+        consumer,
+        tasks::PHOTOS_FACES.id,
         ModelCapability::FaceRecognition,
         "face clustering",
     )?;
-    let body = local_face_body(model_id, images);
-    Ok((profile, body))
+    let body = local_face_body(&resolution.model.id, images);
+    Ok((resolution.profile, body))
 }
 
 /// Run one fixed face-clustering request (see [`face_request`]).
 async fn cluster_faces(
     http: &reqwest::Client,
-    profile_id: String,
-    model_id: String,
+    consumer: Consumer,
     images: Vec<FaceImage>,
 ) -> Result<String, String> {
-    let (profile, body) = blocking(move || face_request(&profile_id, &model_id, &images)).await?;
+    let (profile, body) = blocking(move || face_request(&consumer, &images)).await?;
     let http = &profile_client(http, &profile)?;
     let endpoint = provider_url(&profile);
     let began = Instant::now();
     while_busy(
         || VISION_TIMEOUT.checked_sub(began.elapsed()),
         tokio::time::sleep,
-        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
+        |budget| provider_attempt(http, &profile, &endpoint, &Bearer::None, &[], &body, budget),
     )
     .await
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Whether `profile_id`'s credential is present here and its endpoint lists
+/// models with it. A listing is read-only and costs no tokens.
+async fn probe(http: &reqwest::Client, profile_id: String) -> Result<ProviderHealth, String> {
+    let (profile, bearer) = blocking(move || {
+        let profile = configured_profile(&profile_id)?;
+        let bearer = credential_for(&profile);
+        Ok((profile, bearer))
+    })
+    .await?;
+    let Ok(bearer) = bearer else {
+        return Ok(ProviderHealth {
+            credential: CredentialState::Missing,
+            reachability: Reachability::NotChecked,
+        });
+    };
+    let mut request = authorize(http.get(models_url(&profile)), &profile, &bearer, &[])
+        .map_err(|failure| failure.why)?
+        .timeout(PROBE_TIMEOUT);
+    if profile.protocol == ProviderProtocol::Anthropic {
+        request = request.header("anthropic-version", "2023-06-01");
+    }
+    let reachability = match request.send().await {
+        Ok(response) if response.status().is_success() => Reachability::Reachable,
+        Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
+            Reachability::Unauthorized
+        }
+        Ok(response) => Reachability::Failed {
+            status: response.status().as_u16(),
+        },
+        Err(_) => Reachability::Unreachable,
+    };
+    Ok(ProviderHealth {
+        credential: bearer.state(),
+        reachability,
+    })
 }
 
 fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
@@ -648,9 +786,9 @@ fn local_profile(
     capability: ModelCapability,
     purpose: &str,
 ) -> Result<ProviderProfile, String> {
-    if !profile.is_device_local() {
+    if !profile.is_supervised() {
         return Err(format!(
-            "{purpose} requires a supervised loopback OpenAI-compatible model on this device"
+            "{purpose} requires the supervised model runtime on this device"
         ));
     }
     let model = profile
@@ -718,36 +856,68 @@ fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
     })
 }
 
+/// Attach `bearer` the way `profile`'s protocol expects, plus any headers
+/// the request's typed options need.
+fn authorize(
+    mut request: reqwest::RequestBuilder,
+    profile: &ProviderProfile,
+    bearer: &Bearer,
+    headers: &[(&'static str, &'static str)],
+) -> Result<reqwest::RequestBuilder, ProviderFailure> {
+    match (profile.protocol, bearer) {
+        (ProviderProtocol::Anthropic, Bearer::ApiKey(key)) => {
+            request = request
+                .header("anthropic-version", "2023-06-01")
+                .header("x-api-key", key.as_str());
+        }
+        (ProviderProtocol::Anthropic, _) => {
+            return Err(ProviderFailure {
+                why: "Anthropic requests require a configured API key".into(),
+                again: Again::Never,
+            });
+        }
+        (ProviderProtocol::AzureOpenAi, Bearer::ApiKey(key)) => {
+            request = request.header("api-key", key.as_str());
+        }
+        (ProviderProtocol::AzureOpenAi, Bearer::None) => {
+            return Err(ProviderFailure {
+                why: "Azure OpenAI requests require a key or a signed-in account".into(),
+                again: Again::Never,
+            });
+        }
+        (
+            ProviderProtocol::AzureOpenAi | ProviderProtocol::OpenAiCompatible,
+            Bearer::Token(token),
+        )
+        | (ProviderProtocol::OpenAiCompatible, Bearer::ApiKey(token)) => {
+            request = request.bearer_auth(token.as_str());
+        }
+        (ProviderProtocol::OpenAiCompatible, Bearer::None) => {}
+    }
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    Ok(request)
+}
+
 async fn provider_attempt(
     client: &reqwest::Client,
     profile: &ProviderProfile,
     endpoint: &str,
-    secret: Option<&str>,
+    bearer: &Bearer,
+    headers: &[(&'static str, &'static str)],
     body: &serde_json::Value,
     budget: Duration,
 ) -> Result<String, ProviderFailure> {
-    let mut request = client
-        .post(endpoint)
-        .timeout(budget)
-        .header("content-type", "application/json");
-    match profile.protocol {
-        ProviderProtocol::Anthropic => {
-            let Some(secret) = secret else {
-                return Err(ProviderFailure {
-                    why: "Anthropic requests require a configured credential".into(),
-                    again: Again::Never,
-                });
-            };
-            request = request
-                .header("anthropic-version", "2023-06-01")
-                .header("x-api-key", secret);
-        }
-        ProviderProtocol::OpenAiCompatible => {
-            if let Some(secret) = secret {
-                request = request.bearer_auth(secret);
-            }
-        }
-    }
+    let request = authorize(
+        client
+            .post(endpoint)
+            .timeout(budget)
+            .header("content-type", "application/json"),
+        profile,
+        bearer,
+        headers,
+    )?;
     let response = request
         .json(body)
         .send()
@@ -876,8 +1046,29 @@ fn provider_url(profile: &ProviderProfile) -> String {
     match profile.protocol {
         ProviderProtocol::Anthropic if base.ends_with("/v1/messages") => base.into(),
         ProviderProtocol::Anthropic => format!("{base}/v1/messages"),
-        ProviderProtocol::OpenAiCompatible if base.ends_with("/chat/completions") => base.into(),
-        ProviderProtocol::OpenAiCompatible => format!("{base}/chat/completions"),
+        ProviderProtocol::OpenAiCompatible | ProviderProtocol::AzureOpenAi
+            if base.ends_with("/chat/completions") =>
+        {
+            base.into()
+        }
+        ProviderProtocol::OpenAiCompatible | ProviderProtocol::AzureOpenAi => {
+            format!("{base}/chat/completions")
+        }
+    }
+}
+
+/// The read-only model listing a probe asks for.
+fn models_url(profile: &ProviderProfile) -> String {
+    let base = profile.endpoint.trim_end_matches('/');
+    let base = base
+        .strip_suffix("/chat/completions")
+        .or_else(|| base.strip_suffix("/v1/messages"))
+        .unwrap_or(base);
+    match profile.protocol {
+        ProviderProtocol::Anthropic => format!("{base}/v1/models"),
+        ProviderProtocol::OpenAiCompatible | ProviderProtocol::AzureOpenAi => {
+            format!("{base}/models")
+        }
     }
 }
 
@@ -986,26 +1177,22 @@ mod tests {
     ];
 
     #[test]
-    fn local_verbs_run_only_on_a_pinned_loopback_model() {
+    fn local_verbs_run_only_on_the_pinned_supervised_runtime() {
         let pinned = "a".repeat(40);
+        let supervised = |revision: Option<&str>| {
+            let mut profile = profile(
+                EndpointLocation::ThisDevice,
+                agent_provider_config::SUPERVISED_BASE_URL,
+                revision,
+            );
+            profile.custody = EndpointCustody::Supervised {
+                socket: "/run/user/1000/tilo/models/m/api.sock".into(),
+            };
+            profile
+        };
         for (capability, purpose) in VERBS {
             let run = |profile| local_profile(profile, "m", capability, purpose);
-            assert!(
-                run(profile(
-                    EndpointLocation::ThisDevice,
-                    "http://127.0.0.1:8123/v1",
-                    Some(&pinned)
-                ))
-                .is_ok()
-            );
-            assert!(
-                run(profile(
-                    EndpointLocation::ThisDevice,
-                    "http://[::1]:8123/v1",
-                    Some(&pinned)
-                ))
-                .is_ok()
-            );
+            assert!(run(supervised(Some(&pinned))).is_ok());
             for refused in [
                 profile(
                     EndpointLocation::Hosted,
@@ -1017,10 +1204,10 @@ mod tests {
                     "http://192.168.1.20:8123/v1",
                     Some(&pinned),
                 ),
-                // Claiming to be local does not make a remote endpoint local.
+                // A typed-in loopback URL could forward what it is sent.
                 profile(
                     EndpointLocation::ThisDevice,
-                    "https://models.example.test/v1",
+                    "http://127.0.0.1:8123/v1",
                     Some(&pinned),
                 ),
                 profile(
@@ -1028,46 +1215,20 @@ mod tests {
                     "http://localhost.evil.test:8123/v1",
                     Some(&pinned),
                 ),
-                profile(
-                    EndpointLocation::ThisDevice,
-                    "http://127.0.0.1:8123/v1",
-                    Some("main"),
-                ),
-                profile(
-                    EndpointLocation::ThisDevice,
-                    "http://127.0.0.1:8123/v1",
-                    Some(&"A".repeat(40)),
-                ),
-                profile(
-                    EndpointLocation::ThisDevice,
-                    "http://127.0.0.1:8123/v1",
-                    None,
-                ),
+                supervised(Some("main")),
+                supervised(Some(&"A".repeat(40))),
+                supervised(None),
             ] {
                 assert!(run(refused.clone()).is_err(), "{purpose}: {refused:?}");
             }
-            let mut undeclared = profile(
-                EndpointLocation::ThisDevice,
-                "http://127.0.0.1:8123/v1",
-                Some(&pinned),
-            );
+            let mut undeclared = supervised(Some(&pinned));
             undeclared.models = vec![ModelDescriptor {
                 revision: Some(pinned.clone()),
                 ..ModelDescriptor::new("m")
             }];
             assert!(run(undeclared).is_err(), "{purpose} must be declared");
             assert!(
-                local_profile(
-                    profile(
-                        EndpointLocation::ThisDevice,
-                        "http://127.0.0.1:8123/v1",
-                        Some(&pinned)
-                    ),
-                    "other",
-                    capability,
-                    purpose
-                )
-                .is_err()
+                local_profile(supervised(Some(&pinned)), "other", capability, purpose).is_err()
             );
         }
     }
@@ -1116,14 +1277,13 @@ mod tests {
                 api_key: "owned fixture".into(),
             },
             Request::Plan {
-                profile_id: "hosted".into(),
-                model_id: "m".into(),
+                task: tasks::AGENT_PLANNING.id.into(),
+                agent: None,
+                protocol: ProviderProtocol::Anthropic,
                 body: serde_json::Value::Null,
                 timeout_ms: 1,
             },
             Request::AnalyzeImage {
-                profile_id: "local".into(),
-                model_id: "m".into(),
                 image: vision_image(),
             },
         ];
@@ -1133,10 +1293,76 @@ mod tests {
             let error = response.error.unwrap_or_default();
             assert!(
                 error.starts_with("only ")
-                    || error == "caller is not authorized for this gateway operation",
+                    || error == "caller is not authorized for this gateway operation"
+                    || error == "caller may not request this model task",
                 "{error}"
             );
         }
+    }
+
+    fn hosted_at(protocol: ProviderProtocol, endpoint: &str) -> ProviderProfile {
+        let mut profile = ProviderProfile::hosted(protocol);
+        profile.endpoint = endpoint.into();
+        profile
+    }
+
+    #[test]
+    fn each_protocol_is_addressed_and_authorized_in_its_own_dialect() {
+        let azure = hosted_at(
+            ProviderProtocol::AzureOpenAi,
+            "https://tilo.openai.azure.com/openai/v1/",
+        );
+        assert_eq!(
+            provider_url(&azure),
+            "https://tilo.openai.azure.com/openai/v1/chat/completions"
+        );
+        assert_eq!(
+            models_url(&azure),
+            "https://tilo.openai.azure.com/openai/v1/models"
+        );
+        let anthropic = hosted_at(ProviderProtocol::Anthropic, "https://api.anthropic.com");
+        assert_eq!(
+            models_url(&anthropic),
+            "https://api.anthropic.com/v1/models"
+        );
+
+        let http = provider_client().unwrap();
+        let key = || Bearer::ApiKey(Zeroizing::new("k".into()));
+        let token = || Bearer::Token(Zeroizing::new("t".into()));
+        let built = |profile: &ProviderProfile, bearer: &Bearer| {
+            authorize(
+                http.post("https://example.test"),
+                profile,
+                bearer,
+                &[("x-extra", "1")],
+            )
+            .map(|request| request.build().unwrap())
+        };
+        let with_key = built(&azure, &key()).ok().unwrap();
+        assert_eq!(with_key.headers()["api-key"], "k");
+        assert!(with_key.headers().get("authorization").is_none());
+        assert_eq!(with_key.headers()["x-extra"], "1");
+        let signed_in = built(&azure, &token()).ok().unwrap();
+        assert_eq!(signed_in.headers()["authorization"], "Bearer t");
+        assert!(built(&azure, &Bearer::None).is_err());
+        assert_eq!(
+            built(&anthropic, &key()).ok().unwrap().headers()["x-api-key"],
+            "k"
+        );
+        assert!(built(&anthropic, &token()).is_err());
+    }
+
+    #[test]
+    fn a_fixed_task_cannot_be_driven_through_the_caller_dialect_verb() {
+        let error = plan_route(
+            &Consumer::app(PHOTOS_APP),
+            tasks::PHOTOS_VISION.id,
+            None,
+            ProviderProtocol::OpenAiCompatible,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("fixed gateway operation"), "{error}");
     }
 
     #[test]

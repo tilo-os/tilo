@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::plan::{self, Block, Instruction};
-use crate::providers::ProviderSelection;
+use crate::providers::{ModelRoute, PLANNING_TASK};
 use crate::surface::Catalogue;
 use crate::tools::{self, Revealed};
 
@@ -114,7 +114,10 @@ pub struct Chooser {
 }
 
 struct ProviderConnection {
-    selection: ProviderSelection,
+    /// The route captured when this chooser was built.
+    selection: ModelRoute,
+    /// The agent this chooser plans for; assignments may differ per agent.
+    agent: String,
 }
 
 impl Chooser {
@@ -128,11 +131,20 @@ impl Chooser {
         }
     }
 
-    /// Construct a chooser over a profile selected in Settings. The profile
-    /// is non-secret metadata; tilo-model-gateway owns credential resolution.
-    pub fn with_provider(enabled: bool, timeout: Duration, selection: ProviderSelection) -> Self {
+    /// Construct a chooser over the route the gateway resolved for `agent`.
+    /// The route is non-secret metadata; tilo-model-gateway owns credential
+    /// resolution.
+    pub fn with_provider(
+        enabled: bool,
+        timeout: Duration,
+        selection: ModelRoute,
+        agent: &str,
+    ) -> Self {
         Self {
-            provider: Some(ProviderConnection { selection }),
+            provider: Some(ProviderConnection {
+                selection,
+                agent: agent.to_string(),
+            }),
             timeout,
             enabled,
         }
@@ -291,7 +303,7 @@ enum ActionTurn {
 }
 
 fn action_request_body_for(
-    selection: &ProviderSelection,
+    selection: &ModelRoute,
     messages: &[Value],
     revealed: &Revealed,
     most_steps: usize,
@@ -386,8 +398,9 @@ fn post_provider(
     // at the per-user model gateway reached through a launcher-issued FD.
     let timeout = remaining().ok_or_else(|| AskError::Failed("the call timed out".into()))?;
     tilo_model_gateway::plan(
-        &provider.selection.profile_id,
-        &provider.selection.model.id,
+        PLANNING_TASK,
+        Some(&provider.agent),
+        provider.selection.protocol,
         body.clone(),
         timeout,
     )
@@ -445,11 +458,7 @@ pub fn request_body(rest: &str, blocks: &[Block]) -> serde_json::Value {
 
 /// Provider-neutral decision request. Both dialects receive the same bounded
 /// instruction and catalogue; only the wire envelope changes.
-pub fn request_body_for(
-    selection: &ProviderSelection,
-    rest: &str,
-    blocks: &[Block],
-) -> serde_json::Value {
+pub fn request_body_for(selection: &ModelRoute, rest: &str, blocks: &[Block]) -> serde_json::Value {
     if selection.protocol == agent_provider_config::ProviderProtocol::Anthropic {
         let mut body = request_body(rest, blocks);
         if let Some(object) = body.as_object_mut() {
@@ -849,11 +858,16 @@ mod tests {
 
     #[test]
     fn openai_compatible_profile_uses_its_model_and_chat_envelope() {
-        let mut profile = agent_provider_config::ProviderProfile::local_vllm();
-        profile
-            .models
-            .push(agent_provider_config::ModelDescriptor::new("local-qwen"));
-        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
+        let selection = ModelRoute {
+            task: PLANNING_TASK.into(),
+            profile_id: agent_provider_config::LOCAL_PROFILE_ID.into(),
+            profile_label: "This device".into(),
+            protocol: agent_provider_config::ProviderProtocol::OpenAiCompatible,
+            location: agent_provider_config::EndpointLocation::ThisDevice,
+            model: agent_provider_config::ModelDescriptor::new("local-qwen"),
+            options: agent_provider_config::ModelOptions::default(),
+            layer: agent_provider_config::assign::Layer::Task,
+        };
         let body = request_body_for(&selection, "make a title", &[]);
         assert_eq!(body["model"], "local-qwen");
         assert!(body.get("messages").is_some());
