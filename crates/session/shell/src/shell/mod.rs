@@ -21,6 +21,7 @@
 pub mod actions;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
+pub mod app_action_consent;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;

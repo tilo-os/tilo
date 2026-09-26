@@ -186,7 +186,21 @@ impl ActionHost for FakeHost {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         self.callers.lock().unwrap().push(caller.clone());
-        let value = (request.target.address.action == "list").then(|| json!([]));
+        let value = match request.target.address.action.as_str() {
+            "list" => Some(json!([])),
+            "freeform" => Some(json!({
+                "name": "Note the inbox",
+                "steps": [
+                    {"id": "list", "step": "invoke", "app_id": NOTES,
+                     "resource": {"fixed": INBOX}, "action": "list"},
+                    {"id": "note", "step": "invoke", "app_id": NOTES,
+                     "resource": {"fixed": INBOX}, "action": "create",
+                     "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
+                ],
+                "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}]
+            })),
+            _ => None,
+        };
         let receipt = InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
@@ -221,7 +235,11 @@ fn rule(action: &str, verb: collab_types::Verb) -> Value {
 }
 
 fn open() -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
-    let host = Arc::new(FakeHost::new());
+    open_with(FakeHost::new())
+}
+
+fn open_with(host: FakeHost) -> (Arc<FakeHost>, RemoteActionsGuard, TestApp<App>) {
+    let host = Arc::new(host);
     let guard = RemoteActions::enter(
         Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
         Caller::local_app(APP_ID).in_room("room"),
@@ -278,7 +296,7 @@ fn every_operation_is_a_published_action() {
         .map(|action| action.id.as_str())
         .collect();
     actions.sort_unstable();
-    assert_eq!(actions, ["delete", "refresh", "run", "save"]);
+    assert_eq!(actions, ["delete", "describe", "refresh", "run", "save"]);
     let workbench = resources
         .iter()
         .find(|resource| resource.kind == "shortcuts.workbench")
@@ -393,5 +411,96 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
                 rule("create", collab_types::Verb::Write),
             ]
         }})
+    );
+}
+
+/// The workspace also offers the agent's free-form transform.
+fn with_agent() -> FakeHost {
+    let mut host = FakeHost::new();
+    host.rows.push(row(
+        "9",
+        tilo_automation::AGENT_APP_ID,
+        "agent.transform:default",
+        tilo_automation::AGENT_TRANSFORM_KIND,
+        "freeform",
+        vec![
+            ActionParam::required("prompt", ParamType::Text, "Prompt"),
+            ActionParam::required("input", ParamType::Text, "Input"),
+            ActionParam::required("schema", ParamType::Object, "Schema"),
+        ],
+        PermissionRequirement::Write,
+        ResultSpec::Json { schema: json!({}) },
+    ));
+    host
+}
+
+#[test]
+fn drafting_is_hidden_without_the_agent() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("new-shortcut", WAIT)
+        .expect("the library shows");
+    assert!(
+        !app.harness().targets().contains_key("describe-shortcut"),
+        "no agent, no drafting"
+    );
+}
+
+#[test]
+fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
+    let (host, _guard, mut app) = open_with(with_agent());
+    act(
+        &mut app,
+        "describe-shortcut",
+        &Action::SetValue("note what is in my inbox".into()),
+    );
+    act(&mut app, "draft-with-agent", &Action::Activate);
+    app.harness()
+        .expect(
+            &SemanticExpectation::named("drafted-summary")
+                .name_contains("Note the inbox")
+                .within(WAIT),
+        )
+        .expect("the draft is offered");
+
+    let asked: Vec<_> = host
+        .invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request.target.address.action == "freeform")
+        .cloned()
+        .collect();
+    assert_eq!(asked.len(), 1, "the agent was asked once");
+    let InvokeArgument::Json(arguments) = &asked[0].argument else {
+        panic!("typed arguments")
+    };
+    assert!(
+        arguments["prompt"]
+            .as_str()
+            .unwrap()
+            .ends_with("note what is in my inbox")
+    );
+    assert!(
+        arguments["input"]
+            .as_str()
+            .unwrap()
+            .contains("\"action\":\"create\""),
+        "the agent sees the actions it may use"
+    );
+
+    act(&mut app, "open-drafted", &Action::Activate);
+    // Let the open land.
+    let _ = app
+        .harness()
+        .wait_until(Duration::from_millis(300), |_| false);
+    let drafts: Vec<_> = app.state().drafts.values().cloned().collect();
+    assert_eq!(drafts.len(), 1, "opened as a draft");
+    let shortcut = drafts[0].shortcut(Vec::new());
+    assert_eq!(shortcut.name, "Note the inbox");
+    assert_eq!(shortcut.steps.len(), 2);
+    assert!(
+        host.library_calls("create").is_empty() && host.library_calls("update").is_empty(),
+        "nothing is saved without the grant review"
     );
 }

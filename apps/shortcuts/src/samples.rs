@@ -203,6 +203,7 @@ pub fn stage(
                 status: RunStatus::Completed(None),
             }],
             notice: None,
+            drafted: None,
         });
         if matches!(scenario, Some("editor" | "review")) {
             let first = live.with(|workbench| {

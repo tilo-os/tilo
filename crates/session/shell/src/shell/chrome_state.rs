@@ -346,6 +346,17 @@ impl OpenTarget {
     }
 }
 
+/// One monitor's brightness control in Quick Settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayBrightness {
+    /// DRM connector, e.g. `DP-2` — what the brightness service keys on.
+    pub connector: String,
+    /// The monitor's EDID name, e.g. `Dell U2720Q`, else its connector.
+    pub name: String,
+    /// 0.0..=1.0.
+    pub level: f32,
+}
+
 /// Local UI state; does not sync to peers — device settings like
 /// brightness, volume, and radio toggles are always per-device.
 #[derive(Clone, Debug, PartialEq)]
@@ -359,6 +370,11 @@ pub struct QuickSettingsState {
     /// False after the device probe confirms there is no controllable
     /// backlight. The slider remains visible but honestly disabled.
     pub brightness_available: bool,
+    /// Every monitor whose brightness can be set (the laptop panel's
+    /// backlight, external monitors over DDC/CI), built-in first. Each gets
+    /// its own slider once there is more than one; empty falls back to the
+    /// single `brightness` control.
+    pub displays: Vec<DisplayBrightness>,
     /// 0.0..=1.0.
     pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
@@ -463,6 +479,7 @@ impl Default for QuickSettingsState {
         Self {
             brightness: 0.6,
             brightness_available: true,
+            displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -508,6 +525,7 @@ impl QuickSettingsState {
         Self {
             brightness: 0.6,
             brightness_available: true,
+            displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
             wifi: true,

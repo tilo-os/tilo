@@ -40,6 +40,14 @@
 //! stayed alone on the keys for its whole contact may swipe; once a second
 //! finger lands, the first one's drag is a tap.
 //!
+//! ## Emoji
+//! The emoji key opens the [`crate::emoji_panel`]: group tabs, a grid with
+//! this user's recents first, and a search field the keys type into. A pick
+//! commits through the same output stream as any key. While a word is
+//! composing, words that name an emoji add emoji chips to the suggestion
+//! strip. Secret fields get neither chips nor recents. Recents persist with
+//! the other keyboard preferences in the keyboard's own per-user document.
+//!
 //! ## Seams
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
@@ -54,7 +62,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, Touch, TouchPhase, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
@@ -65,7 +73,9 @@ use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::Widget;
 
 use crate::autocorrect::{Autocorrector, KeyAdjacency};
+use crate::emoji_panel::{EMOJI_SUGGESTIONS, EmojiPanel, PanelBands, PanelHit, PanelMode};
 use crate::futo::FutoSwipeModel;
+use crate::i18n;
 use crate::imclient::{content_hint, may_learn};
 use crate::inject::Symbol;
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
@@ -112,6 +122,7 @@ const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
 const CONFIG_LAYOUT_KEY: &str = "osk.preferred_layout";
 const CONFIG_SUGGESTIONS_KEY: &str = "osk.suggestions_enabled";
 const CONFIG_PERSONALIZATION_KEY: &str = "osk.personalization_enabled";
+const CONFIG_EMOJI_RECENTS_KEY: &str = "osk.emoji_recents";
 
 /// The on-screen keyboard widget.
 #[allow(
@@ -221,6 +232,18 @@ pub struct OskWidget {
     /// Fingers currently down on the keys, in press order.
     fingers: Vec<Finger>,
 
+    // --- emoji ---
+    emoji_panel: EmojiPanel,
+    /// This user's recently picked emoji, persisted with the preferences.
+    emoji_recents: emoji::Recents,
+    /// The persisted recents last read or written, so `sync` parses only a
+    /// change.
+    recents_seen: String,
+    /// The theme's spacing scale and metrics, captured at `build_layout`,
+    /// for the emoji panel.
+    spacing: ui::tokens::Spacing,
+    metrics: ui::tokens::Metrics,
+
     // --- output ---
     mirror: TextMirror,
     output: VecDeque<OskOutput>,
@@ -317,6 +340,13 @@ impl OskWidget {
             pointer: None,
             gesture_path: None,
             fingers: Vec::new(),
+            emoji_panel: EmojiPanel::new(emoji::Catalogue::for_locale(
+                &ui::i18n::I18nManager::current_locale(),
+            )),
+            emoji_recents: emoji::Recents::default(),
+            recents_seen: String::new(),
+            spacing: ui::tokens::Spacing::BASE,
+            metrics: ui::tokens::Metrics::BASE,
             mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
             output: VecDeque::new(),
             dropped_outputs: 0,
@@ -490,6 +520,7 @@ impl OskWidget {
         if !enabled {
             self.predictor.clear_learned();
             self.touch_model.clear();
+            self.emoji_recents = emoji::Recents::default();
         }
         self.refresh_next_word_suggestions();
         self.configuration_dirty = true;
@@ -503,6 +534,10 @@ impl OskWidget {
         if let Some(ac) = &mut self.autocorrect {
             ac.clear_kept();
         }
+        if !self.emoji_recents.is_empty() {
+            self.emoji_recents = emoji::Recents::default();
+            self.configuration_dirty = true;
+        }
     }
 
     // --- runtime configuration -----------------------------------------
@@ -512,6 +547,7 @@ impl OskWidget {
     /// the symbols layer, and raises `structure_dirty` so the host relays out
     /// (the row count differs between, say, the dialpad and QWERTY).
     pub fn set_purpose(&mut self, purpose: InputPurpose) {
+        self.close_emoji_panel();
         self.apply_purpose(purpose);
         self.showing_symbols = false;
         self.structure_dirty = true;
@@ -598,6 +634,7 @@ impl OskWidget {
             self.visible = visible;
             self.structure_dirty = true;
             self.fingers.clear();
+            self.close_emoji_panel();
         }
     }
 
@@ -665,7 +702,11 @@ impl OskWidget {
             Some(k) => k.emit_action(self.shift),
             None => return,
         };
-        self.apply_action(action);
+        if self.emoji_panel.is_searching() {
+            self.apply_search_action(action);
+        } else {
+            self.apply_action(action);
+        }
     }
 
     /// Activate the first key whose *base* label matches `label`
@@ -795,6 +836,7 @@ impl OskWidget {
         if !enabled {
             self.predictor.clear_learned();
             self.touch_model.clear();
+            self.emoji_recents = emoji::Recents::default();
         }
         self.refresh_next_word_suggestions();
     }
@@ -864,6 +906,10 @@ impl OskWidget {
             }
             KeyAction::Layout(name) => {
                 self.select_text_layout(name);
+            }
+            KeyAction::Emoji => {
+                self.open_emoji_panel();
+                self.last_correction = correction;
             }
         }
         if matches!(
@@ -962,8 +1008,14 @@ impl OskWidget {
     /// nothing before an editing key). The word becomes the bigram context for
     /// next-word prediction and the bar is refilled with predictions.
     fn finish_word(&mut self, tail: &str) {
+        self.finish_word_with(tail, true);
+    }
+
+    /// [`finish_word`](Self::finish_word), autocorrecting the word only when
+    /// `may_correct`.
+    fn finish_word_with(&mut self, tail: &str, may_correct: bool) {
         let mut word = std::mem::take(&mut self.current_word);
-        let typed = (!tail.is_empty() && !self.word_from_swipe)
+        let typed = (may_correct && !tail.is_empty() && !self.word_from_swipe)
             .then(|| self.correction_for(&word))
             .flatten()
             .map(|fixed| std::mem::replace(&mut word, fixed));
@@ -1059,6 +1111,7 @@ impl OskWidget {
     /// (or went away), so none of it belongs to what the user edits next — and
     /// a password typed there must not outlive the field.
     pub fn reset_composition(&mut self) {
+        self.close_emoji_panel();
         self.last_correction = None;
         self.current_word.clear();
         self.word_from_swipe = false;
@@ -1094,6 +1147,30 @@ impl OskWidget {
             .into_iter()
             .map(|(w, s)| Suggestion::new(w, s))
             .collect();
+        self.add_emoji_suggestions();
+    }
+
+    /// Add chips for the emoji the composing word names ("pizza" -> 🍕),
+    /// making room at the end of the strip. Never in a secret field.
+    fn add_emoji_suggestions(&mut self) {
+        if !self.suggestions_enabled || self.is_secret_field() || self.current_word.is_empty() {
+            return;
+        }
+        let word = self.current_word.to_lowercase();
+        let found: Vec<String> = self
+            .emoji_panel
+            .catalogue()
+            .suggest(&word, EMOJI_SUGGESTIONS)
+            .into_iter()
+            .map(|e| e.text().to_owned())
+            .collect();
+        if found.is_empty() {
+            return;
+        }
+        self.suggestions
+            .truncate(MAX_SUGGESTIONS.saturating_sub(found.len()));
+        self.suggestions
+            .extend(found.into_iter().map(Suggestion::emoji));
     }
 
     /// Refill the bar with next-word predictions for the previous word.
@@ -1128,6 +1205,12 @@ impl OskWidget {
         let Some(s) = self.suggestions.get(index).cloned() else {
             return false;
         };
+        if s.emoji {
+            // The word stays as typed; the emoji follows it.
+            self.finish_word_with(" ", false);
+            self.commit_emoji(&s.word, " ");
+            return true;
+        }
         self.current_word = s.word;
         if self.word_from_swipe {
             self.emit(OskOutput::SetPreedit(self.current_word.clone()));
@@ -1168,7 +1251,243 @@ impl OskWidget {
             .into_iter()
             .map(|c| Suggestion::new(c.word, c.score))
             .collect();
+        self.add_emoji_suggestions();
         true
+    }
+
+    // --- emoji ------------------------------------------------------------
+
+    /// This user's recently picked emoji, most recent first.
+    pub fn emoji_recents(&self) -> &[String] {
+        self.emoji_recents.items()
+    }
+
+    /// The emoji panel's state, for hosts and tests.
+    pub fn emoji_panel(&self) -> &EmojiPanel {
+        &self.emoji_panel
+    }
+
+    fn open_emoji_panel(&mut self) {
+        self.emoji_panel.open();
+        self.fingers.clear();
+        self.structure_dirty = true;
+        self.layout_bands();
+    }
+
+    fn close_emoji_panel(&mut self) {
+        if self.emoji_panel.is_open() {
+            self.emoji_panel.close();
+            self.structure_dirty = true;
+            self.layout_bands();
+        }
+    }
+
+    /// Type `text` (an emoji) into the field, after any composing word left
+    /// as typed, followed by `tail`. Remembered as recent unless the field is
+    /// secret or personalization is off.
+    fn commit_emoji(&mut self, text: &str, tail: &str) {
+        self.last_correction = None;
+        if !self.current_word.is_empty() {
+            self.finish_word_with("", false);
+        }
+        let mut out = text.to_owned();
+        out.push_str(tail);
+        self.emit(OskOutput::Commit(out));
+        if self.personalization_enabled && !self.is_secret_field() {
+            self.emoji_recents.record(text);
+            self.configuration_dirty = true;
+        }
+    }
+
+    /// A key pressed while the emoji search is open edits the query.
+    fn apply_search_action(&mut self, action: KeyAction) {
+        match action {
+            KeyAction::Char(s) => {
+                if self.shift == ShiftState::Shift {
+                    self.shift = ShiftState::Off;
+                }
+                self.emoji_panel.type_text(&s);
+            }
+            KeyAction::Space => self.emoji_panel.type_text(" "),
+            KeyAction::Backspace => self.emoji_panel.backspace(),
+            KeyAction::Enter => {
+                if let Some(best) = self.emoji_panel.results().into_iter().next() {
+                    self.commit_emoji(&best, "");
+                }
+            }
+            KeyAction::Shift => self.shift = self.shift.cycle(),
+            KeyAction::SymbolsToggle => {
+                self.showing_symbols = !self.showing_symbols;
+                self.structure_dirty = true;
+            }
+            KeyAction::Layout(name) => {
+                self.select_text_layout(&name);
+            }
+            KeyAction::Emoji => {
+                self.emoji_panel.end_search();
+                self.structure_dirty = true;
+            }
+        }
+        self.layout_bands();
+    }
+
+    /// Act on a panel target the user activated.
+    fn activate_panel(&mut self, target: PanelHit) {
+        match target {
+            PanelHit::Search => {
+                self.emoji_panel.start_search();
+                self.structure_dirty = true;
+            }
+            PanelHit::Group(i) => self.emoji_panel.select_group(i),
+            PanelHit::Emoji(text) => self.commit_emoji(&text, ""),
+            PanelHit::Tone(text) => {
+                self.emoji_panel.close_tones();
+                self.commit_emoji(&text, "");
+            }
+            PanelHit::Letters => {
+                self.close_emoji_panel();
+                return;
+            }
+            PanelHit::Delete => self.apply_action(KeyAction::Backspace),
+            PanelHit::EndSearch => {
+                self.emoji_panel.end_search();
+                self.structure_dirty = true;
+            }
+            PanelHit::Nothing => self.emoji_panel.close_tones(),
+        }
+        self.layout_bands();
+    }
+
+    /// Open the skin-tone row on `text`, where it was last laid out.
+    fn open_emoji_tones(&mut self, text: &str) -> bool {
+        let anchor = self
+            .emoji_panel
+            .emoji_rect(text)
+            .unwrap_or(self.content_rect);
+        let opened = self.emoji_panel.open_tones(text, anchor);
+        self.layout_bands();
+        opened
+    }
+
+    /// Pointer input while the emoji panel is open. Returns whether the panel
+    /// consumed the event.
+    fn handle_panel_event(&mut self, event: &WindowEvent, scale: f64, handled: &mut bool) -> bool {
+        if !self.emoji_panel.is_open() {
+            return false;
+        }
+        let hit = self.pointer.and_then(|p| self.emoji_panel.hit(p));
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(hit) = hit else { return false };
+                self.emoji_panel.press(hit);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(pressed) = self.emoji_panel.take_pressed() else {
+                    return false;
+                };
+                if hit.as_ref() == Some(&pressed) {
+                    self.activate_panel(pressed);
+                }
+            }
+            // A long press, or a right click.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let Some(hit) = hit else { return false };
+                if let PanelHit::Emoji(text) = hit {
+                    self.open_emoji_tones(&text);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if !self.pointer.is_some_and(|p| self.emoji_panel.over_grid(p)) {
+                    return false;
+                }
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        -f64::from(*y) * f64::from(self.metrics.bar_height)
+                    }
+                    MouseScrollDelta::PixelDelta(d) => -d.y / scale,
+                };
+                self.emoji_panel.scroll_by(dy);
+                self.layout_bands();
+            }
+            _ => return false,
+        }
+        *handled = true;
+        true
+    }
+
+    /// Semantic actions on the emoji panel's nodes; `None` when `target` is
+    /// not one of them. Only what the panel currently shows can be acted on.
+    fn perform_emoji_action(&mut self, target: &str, action: &AccessibilityAction) -> Option<bool> {
+        if !target.starts_with("osk:emoji") {
+            return None;
+        }
+        let panel = &self.emoji_panel;
+        if !panel.is_open() {
+            return Some(false);
+        }
+        if target == "osk:emoji-search" {
+            match action {
+                AccessibilityAction::Activate | AccessibilityAction::Focus => {
+                    self.activate_panel(PanelHit::Search);
+                }
+                AccessibilityAction::SetValue(query) => {
+                    self.emoji_panel.start_search();
+                    self.emoji_panel.set_query(query);
+                    self.structure_dirty = true;
+                    self.layout_bands();
+                }
+                _ => return Some(false),
+            }
+            return Some(true);
+        }
+        if let Some(text) = target.strip_prefix("osk:emoji:") {
+            if panel.emoji_rect(text).is_none() {
+                return Some(false);
+            }
+            return Some(match action {
+                AccessibilityAction::Activate => {
+                    self.activate_panel(PanelHit::Emoji(text.to_owned()));
+                    true
+                }
+                AccessibilityAction::ShowContextMenu => self.open_emoji_tones(text),
+                _ => false,
+            });
+        }
+        if !matches!(action, AccessibilityAction::Activate) {
+            return Some(false);
+        }
+        let hit = if let Some(text) = target.strip_prefix("osk:emoji-tone:") {
+            if !panel.tone_options().iter().any(|t| t == text) {
+                return Some(false);
+            }
+            PanelHit::Tone(text.to_owned())
+        } else if let Some(index) = target.strip_prefix("osk:emoji-group:") {
+            let Ok(index) = index.parse::<usize>() else {
+                return Some(false);
+            };
+            PanelHit::Group(index)
+        } else {
+            match (target, panel.mode()) {
+                ("osk:emoji-letters", PanelMode::Browse) => PanelHit::Letters,
+                ("osk:emoji-delete", PanelMode::Browse) => PanelHit::Delete,
+                ("osk:emoji-end-search", PanelMode::Search) => PanelHit::EndSearch,
+                _ => return Some(false),
+            }
+        };
+        self.activate_panel(hit);
+        Some(true)
     }
 
     /// Average key dimension of the current frame (the swipe/tap threshold
@@ -1314,6 +1633,86 @@ impl OskWidget {
         }
     }
 
+    /// Split the laid-out rect into the toolbar, suggestion and key bands and
+    /// place what each shows: the keys, or the emoji panel's face.
+    fn layout_bands(&mut self) {
+        let content_width = self.rect.width().min(MAX_KEYBOARD_CONTENT_WIDTH);
+        let content_x0 = self.rect.center().x - content_width * 0.5;
+        self.content_rect = Rect::new(
+            content_x0,
+            self.rect.y0,
+            content_x0 + content_width,
+            self.rect.y1,
+        );
+
+        // Top → bottom bands: toolbar, suggestion bar, keys (keys fill the
+        // rest). Clamp each band so a too-short surface degrades gracefully.
+        let h = self.content_rect.height();
+        let toolbar_h = f64::from(self.toolbar_height).min(h);
+        let suggestion_h = f64::from(self.suggestion_height).min((h - toolbar_h).max(0.0));
+        let toolbar_y1 = self.content_rect.y0 + toolbar_h;
+        let suggestion_y1 = toolbar_y1 + suggestion_h;
+
+        let toolbar_area = Rect::new(
+            self.content_rect.x0,
+            self.content_rect.y0,
+            self.content_rect.x1,
+            toolbar_y1,
+        );
+        let suggestion_area = Rect::new(
+            self.content_rect.x0,
+            toolbar_y1,
+            self.content_rect.x1,
+            suggestion_y1,
+        );
+        let key_area = Rect::new(
+            self.content_rect.x0,
+            suggestion_y1,
+            self.content_rect.x1,
+            self.content_rect.y1,
+        );
+
+        self.toolbar_geom = toolbar_rects(&self.toolbar, toolbar_area);
+        self.suggestion_geom = suggestion_rects(&self.suggestions, suggestion_area);
+        // Stash the suggestion-bar area so an empty bar can still render its
+        // background + hit-test correctly (suggestion_rects is empty then).
+        self.suggestion_area = suggestion_area;
+        self.key_area = key_area;
+        let geom = {
+            let layout = self.current_layout();
+            key_rects(layout, key_area, self.shift)
+        };
+        self.key_geom = geom;
+        let mode = self.emoji_panel.mode();
+        if mode != PanelMode::Closed {
+            self.suggestion_geom.clear();
+        }
+        match mode {
+            PanelMode::Closed => {}
+            PanelMode::Browse => {
+                // The panel takes touch as taps, drags and long presses.
+                self.key_geom.clear();
+                self.key_area = Rect::ZERO;
+            }
+            PanelMode::Search => self.toolbar_geom.clear(),
+        }
+        let bands = PanelBands {
+            toolbar: toolbar_area,
+            suggestion: suggestion_area,
+            keys: key_area,
+            row_height: f64::from(self.target_key_height),
+            ..PanelBands::default()
+        }
+        .sized_by(&self.spacing, &self.metrics);
+        let none = emoji::Recents::default();
+        let recents = if self.personalization_enabled {
+            &self.emoji_recents
+        } else {
+            &none
+        };
+        self.emoji_panel.layout(bands, recents);
+    }
+
     fn key_at(&self, p: Point) -> Option<KeyId> {
         self.key_geom
             .iter()
@@ -1373,14 +1772,14 @@ struct Correction {
               cell, and splitting them into sub-structs would not express any \
               real invariant between them"
 )]
-struct CellState {
-    hovered: bool,
-    pressed: bool,
+pub(crate) struct CellState {
+    pub(crate) hovered: bool,
+    pub(crate) pressed: bool,
     /// Accent styling (e.g. an active toggle key).
-    accent: bool,
+    pub(crate) accent: bool,
     /// Solid (vs. outline) icon glyph — used for a latched state like
     /// Caps-Lock's Shift key.
-    icon_filled: bool,
+    pub(crate) icon_filled: bool,
 }
 
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
@@ -1388,7 +1787,7 @@ struct CellState {
     clippy::too_many_arguments,
     reason = "Keyboard cells combine render context with bounds, optional icon, label, interaction state, and key-specific font scaling."
 )]
-fn draw_cell(
+pub(crate) fn draw_cell(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
@@ -1668,8 +2067,21 @@ impl Widget for OskWidget {
                 CONFIG_PERSONALIZATION_KEY,
                 self.personalization_enabled,
             );
+            if let Ok(recents) = serde_json::to_string(&self.emoji_recents) {
+                let _ = state.put(path, CONFIG_EMOJI_RECENTS_KEY, recents.as_str());
+                self.recents_seen = recents;
+            }
             self.configuration_dirty = false;
             return;
+        }
+        if let Some(recents) = read_str(state, path, CONFIG_EMOJI_RECENTS_KEY)
+            && recents != self.recents_seen
+        {
+            if let Ok(parsed) = serde_json::from_str::<emoji::Recents>(&recents) {
+                self.emoji_recents = parsed;
+                self.layout_bands();
+            }
+            self.recents_seen = recents;
         }
         let layout = read_str(state, path, CONFIG_LAYOUT_KEY);
         let suggestions = read_bool(state, path, CONFIG_SUGGESTIONS_KEY);
@@ -1690,9 +2102,11 @@ impl Widget for OskWidget {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.spacing = theme.tokens.spacing;
+        self.metrics = theme.tokens.metrics;
         let rows = self.current_layout().row_count();
         // Toolbar + suggestion bar + key rows. The suggestion bar is always
         // reserved (it shows next-word predictions even before any swipe), so
@@ -1735,53 +2149,7 @@ impl Widget for OskWidget {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        let content_width = self.rect.width().min(MAX_KEYBOARD_CONTENT_WIDTH);
-        let content_x0 = self.rect.center().x - content_width * 0.5;
-        self.content_rect = Rect::new(
-            content_x0,
-            self.rect.y0,
-            content_x0 + content_width,
-            self.rect.y1,
-        );
-
-        // Top → bottom bands: toolbar, suggestion bar, keys (keys fill the
-        // rest). Clamp each band so a too-short surface degrades gracefully.
-        let h = self.content_rect.height();
-        let toolbar_h = f64::from(self.toolbar_height).min(h);
-        let suggestion_h = f64::from(self.suggestion_height).min((h - toolbar_h).max(0.0));
-        let toolbar_y1 = self.content_rect.y0 + toolbar_h;
-        let suggestion_y1 = toolbar_y1 + suggestion_h;
-
-        let toolbar_area = Rect::new(
-            self.content_rect.x0,
-            self.content_rect.y0,
-            self.content_rect.x1,
-            toolbar_y1,
-        );
-        let suggestion_area = Rect::new(
-            self.content_rect.x0,
-            toolbar_y1,
-            self.content_rect.x1,
-            suggestion_y1,
-        );
-        let key_area = Rect::new(
-            self.content_rect.x0,
-            suggestion_y1,
-            self.content_rect.x1,
-            self.content_rect.y1,
-        );
-
-        self.toolbar_geom = toolbar_rects(&self.toolbar, toolbar_area);
-        self.suggestion_geom = suggestion_rects(&self.suggestions, suggestion_area);
-        // Stash the suggestion-bar area so an empty bar can still render its
-        // background + hit-test correctly (suggestion_rects is empty then).
-        self.suggestion_area = suggestion_area;
-        self.key_area = key_area;
-        let geom = {
-            let layout = self.current_layout();
-            key_rects(layout, key_area, self.shift)
-        };
-        self.key_geom = geom;
+        self.layout_bands();
     }
 
     #[allow(
@@ -1794,7 +2162,7 @@ impl Widget for OskWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // A hidden keyboard paints nothing (and `build_layout` gave it zero
         // height, so there is no area to fill anyway).
@@ -1838,7 +2206,8 @@ impl Widget for OskWidget {
         }
 
         // Suggestion bar: a subtle band, then a tappable chip per suggestion.
-        if self.suggestion_area.area() > 0.0 {
+        // The emoji panel puts its search field there instead.
+        if self.suggestion_area.area() > 0.0 && !self.emoji_panel.is_open() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1925,6 +2294,10 @@ impl Widget for OskWidget {
                 font_scale,
             );
         }
+
+        // Last, so the skin-tone row floats over the keys.
+        self.emoji_panel
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -1942,6 +2315,15 @@ impl Widget for OskWidget {
         // A hidden keyboard occupies no area and draws nothing, so it should
         // not consume or react to pointer events meant for the app behind it.
         if !self.visible {
+            return;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Some(Point::new(
+                position.x / scale_factor,
+                position.y / scale_factor,
+            ));
+        }
+        if self.handle_panel_event(event, scale_factor, handled) {
             return;
         }
         match event {
@@ -2087,9 +2469,20 @@ impl Widget for OskWidget {
             let Some(suggestion) = self.suggestions.get(*index) else {
                 continue;
             };
+            let name = if suggestion.emoji {
+                i18n::t_args(
+                    "osk-emoji-insert",
+                    &[(
+                        "name",
+                        self.emoji_panel.spoken_name(&suggestion.word).into(),
+                    )],
+                )
+            } else {
+                format!("Insert {}", suggestion.word)
+            };
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Insert {}", suggestion.word))
+                    .with_name(name)
                     .with_bounds(*rect)
                     .with_state(AccessState::new().focusable(true))
                     .with_hashed_key(format!("suggestion:{}:{}", index, suggestion.word))
@@ -2103,9 +2496,14 @@ impl Widget for OskWidget {
                 continue;
             };
             let label = key.display_label(shift);
+            let name = if key.action == KeyAction::Emoji {
+                i18n::t("osk-emoji-key")
+            } else {
+                label.clone()
+            };
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(label.clone())
+                    .with_name(name)
                     .with_bounds(*rect)
                     .with_state(AccessState::new().focusable(true))
                     .with_hashed_key(format!("key:{}:{}:{}", layout.name, id.row, id.col))
@@ -2115,6 +2513,7 @@ impl Widget for OskWidget {
                     )),
             );
         }
+        children.extend(self.emoji_panel.accessibility());
         Some(
             AccessNode::new(Role::Group)
                 .with_name("On-screen keyboard")
@@ -2134,7 +2533,13 @@ impl Widget for OskWidget {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        if !self.visible || !matches!(action, AccessibilityAction::Activate) {
+        if !self.visible {
+            return false;
+        }
+        if let Some(handled) = self.perform_emoji_action(target, action) {
+            return handled;
+        }
+        if !matches!(action, AccessibilityAction::Activate) {
             return false;
         }
         if let Some(rest) = target.strip_prefix("osk:key:") {
@@ -3477,6 +3882,278 @@ mod tests {
         }
         assert_eq!(osk.key_log.len(), MAX_KEY_LOG_ENTRIES);
         assert!(osk.dropped_key_actions() >= 6);
+    }
+
+    // --- emoji ---------------------------------------------------------
+
+    fn semantic(osk: &mut OskWidget, target: &str, action: &AccessibilityAction) -> bool {
+        osk.perform_semantic_action(target, action, &mut AutoCommit::new(), &automerge::ROOT)
+    }
+
+    fn activate(osk: &mut OskWidget, target: &str) -> bool {
+        semantic(osk, target, &AccessibilityAction::Activate)
+    }
+
+    fn open_panel(osk: &mut OskWidget) {
+        lay_out(osk, 720.0, 360.0);
+        assert!(
+            osk.activate_label("\u{1F642}"),
+            "the emoji key is on the letters"
+        );
+        assert_eq!(osk.emoji_panel().mode(), PanelMode::Browse);
+    }
+
+    fn named_nodes(osk: &OskWidget) -> Vec<(String, String)> {
+        osk.accessibility()
+            .into_iter()
+            .flat_map(|n| n.children)
+            .flat_map(|n| std::iter::once(n.clone()).chain(n.children))
+            .filter_map(|n| Some((n.name?, n.action_target?)))
+            .collect()
+    }
+
+    #[test]
+    fn emoji_key_opens_the_panel_in_place_of_the_keys() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        assert!(osk.key_geometry().is_empty(), "the grid replaces the keys");
+        assert!(
+            osk.suggestion_geometry().is_empty(),
+            "the search field replaces the strip"
+        );
+        assert!(
+            !osk.claims_raw_touch(osk.rect.center()),
+            "the grid takes taps and drags"
+        );
+        let names = named_nodes(&osk);
+        assert!(names.iter().any(|(n, _)| n == &i18n::t("osk-emoji-search")));
+        assert!(names.iter().any(|(_, t)| t == "osk:emoji-group:0"));
+        assert!(activate(&mut osk, "osk:emoji-letters"));
+        assert_eq!(osk.emoji_panel().mode(), PanelMode::Closed);
+        assert!(!osk.key_geometry().is_empty(), "the keys are back");
+    }
+
+    #[test]
+    fn emoji_key_is_named_for_assistive_tech() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let names = named_nodes(&osk);
+        assert!(
+            names
+                .iter()
+                .any(|(n, t)| n == &i18n::t("osk-emoji-key") && t.starts_with("osk:key:"))
+        );
+    }
+
+    #[test]
+    fn picking_an_emoji_commits_it_after_the_composing_word() {
+        let mut osk = OskWidget::new();
+        type_word(&mut osk, "hi");
+        let _ = osk.take_output();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert_eq!(osk.take_output(), vec![commit("hi"), commit(&first)]);
+        assert_eq!(osk.emoji_recents(), [first]);
+        assert_eq!(
+            osk.emoji_panel().mode(),
+            PanelMode::Browse,
+            "the panel stays for more"
+        );
+    }
+
+    #[test]
+    fn recents_lead_the_grid() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        assert!(activate(&mut osk, "osk:emoji-group:3"));
+        let second = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[1].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{second}")));
+        let names = named_nodes(&osk);
+        let first_emoji = names
+            .iter()
+            .find(|(_, t)| t.starts_with("osk:emoji:"))
+            .map(|(_, t)| t.clone());
+        assert_eq!(first_emoji, Some(format!("osk:emoji:{second}")));
+    }
+
+    #[test]
+    fn search_is_typed_with_the_keys_and_enter_picks_the_best_match() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        assert!(activate(&mut osk, "osk:emoji-search"));
+        assert_eq!(osk.emoji_panel().mode(), PanelMode::Search);
+        assert!(!osk.key_geometry().is_empty(), "the keys type the query");
+        for c in ["p", "i", "z", "z", "a"] {
+            assert!(osk.activate_label(c));
+        }
+        assert_eq!(osk.emoji_panel().query(), "pizza");
+        assert!(
+            osk.take_output().is_empty(),
+            "the query never reaches the field"
+        );
+        assert!(named_nodes(&osk).iter().any(|(_, t)| t == "osk:emoji:🍕"));
+        assert!(osk.activate_label("⌫"));
+        assert_eq!(osk.emoji_panel().query(), "pizz");
+        assert!(osk.activate_label("a"));
+        assert!(osk.activate_label("⏎"));
+        assert_eq!(osk.take_output(), vec![commit("🍕")]);
+        assert!(activate(&mut osk, "osk:emoji-end-search"));
+        assert_eq!(osk.emoji_panel().mode(), PanelMode::Browse);
+        assert_eq!(osk.emoji_panel().query(), "");
+    }
+
+    #[test]
+    fn long_press_offers_skin_tones_and_commits_the_toned_form() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        // Thumbs up is in People & Body; search puts it on screen.
+        assert!(semantic(
+            &mut osk,
+            "osk:emoji-search",
+            &AccessibilityAction::SetValue("thumbs up".into()),
+        ));
+        assert!(!semantic(
+            &mut osk,
+            "osk:emoji:🍕",
+            &AccessibilityAction::ShowContextMenu
+        ));
+        assert!(semantic(
+            &mut osk,
+            "osk:emoji:👍",
+            &AccessibilityAction::ShowContextMenu
+        ));
+        assert_eq!(osk.emoji_panel().tones_for(), Some("👍"));
+        let toned = emoji::Catalogue::english()
+            .with_skin_tone("👍", Some(emoji::SkinTone::MediumDark))
+            .unwrap()
+            .to_owned();
+        assert!(activate(&mut osk, &format!("osk:emoji-tone:{toned}")));
+        assert_eq!(osk.take_output(), vec![commit(&toned)]);
+        assert_eq!(osk.emoji_panel().tones_for(), None);
+        assert_eq!(osk.emoji_recents(), [toned]);
+    }
+
+    #[test]
+    fn emoji_without_tones_open_no_tone_row() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(!semantic(
+            &mut osk,
+            &format!("osk:emoji:{first}"),
+            &AccessibilityAction::ShowContextMenu,
+        ));
+    }
+
+    #[test]
+    fn a_word_that_names_an_emoji_offers_it_and_the_chip_commits_it() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        type_word(&mut osk, "pizza");
+        let chip = osk
+            .suggestions()
+            .iter()
+            .position(|s| s.emoji && s.word == "🍕")
+            .expect("an emoji chip for pizza");
+        assert!(osk.suggestions().len() <= MAX_SUGGESTIONS);
+        let _ = osk.take_output();
+        assert!(osk.activate_suggestion(chip));
+        assert_eq!(osk.take_output(), vec![commit("pizza "), commit("🍕 ")]);
+        assert_eq!(osk.pending_text(), "pizza 🍕 ");
+        assert_eq!(osk.emoji_recents(), ["🍕".to_owned()]);
+    }
+
+    #[test]
+    fn emoji_chips_are_named_for_the_emoji() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        type_word(&mut osk, "pizza");
+        lay_out(&mut osk, 720.0, 360.0);
+        let expected = i18n::t_args("osk-emoji-insert", &[("name", "pizza".into())]);
+        assert!(named_nodes(&osk).iter().any(|(n, _)| n == &expected));
+    }
+
+    #[test]
+    fn password_fields_get_no_emoji_suggestions_or_recents() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.set_purpose(InputPurpose::Password);
+        type_word(&mut osk, "pizza");
+        assert!(osk.suggestions().iter().all(|s| !s.emoji));
+        osk.set_purpose(InputPurpose::Text);
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        type_word(&mut osk, "pizza");
+        assert!(osk.suggestions().is_empty());
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert!(
+            osk.emoji_recents().is_empty(),
+            "a secret field leaves no recents"
+        );
+    }
+
+    #[test]
+    fn recents_follow_the_personalization_preference() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert_eq!(osk.emoji_recents().len(), 1);
+        osk.clear_personalization();
+        assert!(osk.emoji_recents().is_empty());
+        osk.set_personalization_enabled(false);
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        assert!(osk.emoji_recents().is_empty());
+    }
+
+    #[test]
+    fn recents_round_trip_through_the_keyboard_document() {
+        let mut doc = AutoCommit::new();
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
+        assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
+        osk.sync(&mut doc, &automerge::ROOT);
+        let mut restarted = OskWidget::new();
+        restarted.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(restarted.emoji_recents(), [first]);
+    }
+
+    #[test]
+    fn every_panel_face_paints() {
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        let mut paint = |osk: &mut OskWidget| {
+            let mut scene = Scene::new();
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            assert!(!scene.encoding().is_empty());
+        };
+        paint(&mut osk);
+        assert!(semantic(
+            &mut osk,
+            "osk:emoji-search",
+            &AccessibilityAction::SetValue("thumbs".into()),
+        ));
+        paint(&mut osk);
+        assert!(semantic(
+            &mut osk,
+            "osk:emoji:👍",
+            &AccessibilityAction::ShowContextMenu,
+        ));
+        paint(&mut osk);
+    }
+
+    #[test]
+    fn a_field_change_closes_the_panel() {
+        let mut osk = OskWidget::new();
+        open_panel(&mut osk);
+        osk.on_external_event("osk:field", &mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(osk.emoji_panel().mode(), PanelMode::Closed);
     }
 
     // The keyboard publishes only device-local configuration effects (layout,

@@ -339,6 +339,10 @@ fn apply_ownership_action(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatcher over every workspace governance action; each arm validates and applies a single operation"
+)]
 fn apply_permission_profile_action(
     state: &ChromeState,
     action_id: &str,
@@ -431,6 +435,38 @@ fn apply_permission_profile_action(
             for capability in written {
                 tree.doc_insert_capability(workspace_id, &capability);
             }
+        }
+        crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID
+        | crate::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
+            use crate::shell::workspace_settings::PermissionProfileOperation;
+            let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
+            let operation =
+                if action_id == crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
+                    PermissionProfileOperation::GrantAppAction {
+                        app: text("app"),
+                        target_app: text("target_app"),
+                        action: text("action"),
+                        lifetime: text("lifetime"),
+                    }
+                } else {
+                    PermissionProfileOperation::RevokeAppAction {
+                        app: text("app"),
+                        target_app: text("target_app"),
+                        action: text("action"),
+                    }
+                };
+            let person = tree
+                .desktop
+                .active_workspace()
+                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
+                .actor_for_person(&actor);
+            crate::shell::workspace_settings::apply_app_action_operation(
+                &mut tree,
+                workspace_id,
+                &person,
+                &operation,
+            )
+            .map_err(ActionError::Refused)?;
         }
         _ => {
             return Err(ActionError::Refused(
@@ -1549,15 +1585,26 @@ pub(crate) const QS_POWER_ID: &str = "quick-settings.power-profile.set";
 pub(crate) const QS_VPN_ID: &str = "quick-settings.vpn.set-enabled";
 
 fn quick_settings_params(id: &str) -> Vec<ActionParam> {
+    let percent = || {
+        ActionParam::required_owned(
+            "percent",
+            ParamType::Number,
+            "Exact percentage from 0 through 100.",
+        )
+        .with_schema(serde_json::json!({"minimum": 0, "maximum": 100}))
+    };
     match id {
-        QS_BRIGHTNESS_ID | QS_VOLUME_ID => vec![
-            ActionParam::required_owned(
-                "percent",
-                ParamType::Number,
-                "Exact percentage from 0 through 100.",
+        QS_BRIGHTNESS_ID => vec![
+            percent(),
+            ActionParam::optional_owned(
+                "display",
+                ParamType::Text,
+                "Connector of the monitor to set, e.g. eDP-1 or DP-2, as wl_output names it. \
+                 Omitted: the built-in panel, else the first monitor.",
             )
-            .with_schema(serde_json::json!({"minimum": 0, "maximum": 100})),
+            .with_schema(serde_json::json!({"minLength": 1, "maxLength": 64})),
         ],
+        QS_VOLUME_ID => vec![percent()],
         QS_WIFI_ID => vec![ActionParam::required_owned(
             "enabled",
             ParamType::Boolean,
@@ -1598,7 +1645,10 @@ fn apply_quick_settings_effect(
     args: &ActionArgs,
 ) -> Result<(), ActionError> {
     let result = match id {
-        QS_BRIGHTNESS_ID => actions.set_brightness(validated_percent(args)),
+        QS_BRIGHTNESS_ID => match args.text("display") {
+            Some(display) => actions.set_display_brightness(display, validated_percent(args)),
+            None => actions.set_brightness(validated_percent(args)),
+        },
         QS_VOLUME_ID => actions.set_volume(validated_percent(args)),
         QS_WIFI_ID => actions.set_wifi(args.boolean("enabled").unwrap_or(false)),
         QS_POWER_ID => {
@@ -1653,6 +1703,22 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
                 "percent".into(),
                 crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
             )],
+        )
+    }
+
+    fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
+        self.dispatch(
+            QS_BRIGHTNESS_ID,
+            [
+                (
+                    "percent".into(),
+                    crate::shell::search::action_api::ArgValue::Number(f64::from(percent)),
+                ),
+                (
+                    "display".into(),
+                    crate::shell::search::action_api::ArgValue::Text(connector.to_owned()),
+                ),
+            ],
         )
     }
 
@@ -1924,7 +1990,8 @@ impl SearchProvider for ActionsProvider {
             (
                 QS_BRIGHTNESS_ID,
                 "Set display brightness",
-                "Set this device's backlight percentage",
+                "Set a monitor's brightness percentage: the panel backlight or an external \
+                 monitor over DDC/CI",
             ),
             (
                 QS_VOLUME_ID,
@@ -2170,7 +2237,20 @@ impl SearchProvider for ActionsProvider {
                     let mut state = chrome.borrow_mut();
                     match id {
                         QS_BRIGHTNESS_ID => {
-                            state.quick_settings.brightness = validated_percent(args) / 100.0;
+                            let level = validated_percent(args) / 100.0;
+                            match args.text("display") {
+                                Some(display) => {
+                                    if let Some(entry) = state
+                                        .quick_settings
+                                        .displays
+                                        .iter_mut()
+                                        .find(|entry| entry.connector == display)
+                                    {
+                                        entry.level = level;
+                                    }
+                                }
+                                None => state.quick_settings.brightness = level,
+                            }
                         }
                         QS_VOLUME_ID => {
                             state.quick_settings.volume = validated_percent(args) / 100.0;
@@ -3524,6 +3604,13 @@ mod tests {
             self.calls
                 .borrow_mut()
                 .push(format!("brightness:{percent}"));
+            self.result()
+        }
+
+        fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("brightness:{connector}:{percent}"));
             self.result()
         }
 

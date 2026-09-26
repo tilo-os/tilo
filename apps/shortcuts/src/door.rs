@@ -45,6 +45,8 @@ pub const SAVE: &str = "save";
 pub const RUN: &str = "run";
 /// Delete a saved shortcut.
 pub const DELETE: &str = "delete";
+/// Ask the agent to draft a shortcut from a description.
+pub const DESCRIBE: &str = "describe";
 
 /// The library's own actions, published by the session under this app's id.
 const LIBRARY_RESOURCE: &str = "shortcuts";
@@ -93,6 +95,14 @@ pub enum Notice {
     Failed(String),
 }
 
+/// Where asking the agent for a draft stands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Drafting {
+    Drafting,
+    Ready(Box<crate::drafting::Drafted>),
+    Failed(String),
+}
+
 /// Everything the door knows, shown by the views.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DoorState {
@@ -100,6 +110,8 @@ pub struct DoorState {
     pub library: Loaded<Vec<Shortcut>>,
     pub runs: Vec<RunRecord>,
     pub notice: Option<Notice>,
+    /// The last draft asked of the agent.
+    pub drafted: Option<Drafting>,
 }
 
 impl DoorState {
@@ -132,6 +144,7 @@ enum Purpose {
     Save { name: String },
     Run { serial: u64 },
     Delete { name: String },
+    Draft,
 }
 
 enum Answer {
@@ -307,6 +320,29 @@ impl DoorCore {
         Ok(())
     }
 
+    /// Ask the agent to draft a shortcut doing what `description` says.
+    ///
+    /// # Errors
+    ///
+    /// Why no draft can be asked for now; nothing was sent.
+    pub fn describe(&mut self, description: &str, reply: Option<Reply>) -> Result<(), String> {
+        let description = description.trim();
+        if description.is_empty() {
+            return Err("describe what the shortcut should do".to_owned());
+        }
+        let catalog = self
+            .state
+            .with(|state| state.catalogue.ready().cloned())
+            .ok_or("the action catalogue has not been read yet")?;
+        let target = crate::drafting::target(&catalog)
+            .ok_or("the agent does not offer drafting in this workspace")?;
+        let arguments = crate::drafting::arguments(description, &catalog);
+        self.state
+            .update(|state| state.drafted = Some(Drafting::Drafting));
+        self.invoke(target, arguments, Purpose::Draft, reply);
+        Ok(())
+    }
+
     /// Delete saved shortcut `shortcut`.
     ///
     /// # Errors
@@ -416,6 +452,10 @@ impl DoorCore {
                     self.refresh(None);
                 }
             }
+            (Purpose::Draft, result) => {
+                self.settle_draft(result.clone(), call.reply);
+                return;
+            }
             (Purpose::Run { serial }, result) => {
                 let status = match result {
                     Ok(output) => RunStatus::Completed(
@@ -432,6 +472,41 @@ impl DoorCore {
         }
         if let Some(reply) = call.reply {
             let _ = reply.send(outcome.map(Option::unwrap_or_default));
+        }
+    }
+
+    /// Offer what the agent drafted, and answer the `describe` caller with
+    /// it and the checker's verdict.
+    fn settle_draft(&self, result: Result<Option<ActionOutput>, String>, reply: Option<Reply>) {
+        let saved = self
+            .state
+            .with(|state| state.library.ready().cloned().unwrap_or_default());
+        let catalog = self.state.with(DoorState::catalog);
+        let drafted = result.and_then(|output| {
+            let value = output
+                .and_then(|output| output.value)
+                .ok_or("the agent answered nothing")?;
+            crate::drafting::adopt(value, &saved, &catalog)
+        });
+        let answer = drafted.as_ref().map_err(Clone::clone).and_then(|drafted| {
+            serde_json::to_value(&drafted.shortcut)
+                .map(|shortcut| ActionOutput {
+                    value: Some(json!({
+                        "shortcut": shortcut,
+                        "problems": drafted.problems,
+                    })),
+                    resources: Vec::new(),
+                })
+                .map_err(|error| error.to_string())
+        });
+        self.state.update(|state| {
+            state.drafted = Some(match drafted {
+                Ok(drafted) => Drafting::Ready(Box::new(drafted)),
+                Err(reason) => Drafting::Failed(reason),
+            });
+        });
+        if let Some(reply) = reply {
+            let _ = reply.send(answer);
         }
     }
 
@@ -496,6 +571,7 @@ impl DoorCore {
                 self.run(&text("shortcut")?, inputs, Some(reply))?;
             }
             DELETE => self.delete(&text("shortcut")?, Some(reply))?,
+            DESCRIBE => self.describe(&text("description")?, Some(reply))?,
             other => return Err(format!("unknown shortcuts operation `{other}`")),
         }
         Ok(receiver)
@@ -587,6 +663,19 @@ pub fn resource() -> ui::tilo_actions::Resource {
             ActionContract {
                 risk: RiskLevel::Destructive,
                 confirmation: ConfirmationPolicy::Confirm,
+                ..ActionContract::default()
+            },
+        ))
+        .with_action(operation(
+            DESCRIBE,
+            "Draft a shortcut with the agent",
+            vec![ActionParam::required(
+                "description",
+                ParamType::Text,
+                "What the shortcut should do, in your words",
+            )],
+            ActionContract {
+                result: ResultSpec::Job,
                 ..ActionContract::default()
             },
         ))

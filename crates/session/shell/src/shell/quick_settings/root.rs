@@ -135,7 +135,11 @@ enum RootStop {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SliderCommit {
+    /// The one brightness control of a machine whose monitors are not
+    /// enumerated individually.
     Brightness(f32),
+    /// Monitor `.0` of [`QuickSettingsState::displays`], in percent.
+    DisplayBrightness(usize, f32),
     Volume(f32),
 }
 
@@ -153,6 +157,10 @@ pub struct QuickSettingsRoot {
     // heights read this and the toolkit's line metrics, never a literal.
     text_scale: f64,
     slider_drag: Option<usize>,
+    // One brightness slider per controllable monitor, named from its EDID;
+    // synced from the state before geometry is resolved. Empty (or one
+    // monitor) keeps the single unlabelled brightness slider.
+    display_names: Vec<String>,
     keyboard_focus: Option<usize>,
     config: QuickSettingsConfig,
     // Hosts that inject a model (tests, screenshots and embedders) must not
@@ -295,6 +303,7 @@ impl QuickSettingsRoot {
             layout_scale: 1.0,
             text_scale: 1.0,
             slider_drag: None,
+            display_names: Vec::new(),
             keyboard_focus: None,
             config: config.normalised(),
             persist_config,
@@ -346,7 +355,7 @@ impl QuickSettingsRoot {
         let mut rects = Vec::new();
         for stop in self.root_stops(state) {
             let rect = self.stop_hit_rect(stop, state);
-            let name = Self::semantic_stop_name(stop);
+            let name = self.semantic_stop_name(stop);
             if let RootStop::Control(_, control) = stop
                 && Self::has_details(control, state)
             {
@@ -390,6 +399,7 @@ impl QuickSettingsRoot {
     /// leaving text itself at the user's full theme scale. The same effective
     /// factor drives drawing and hit testing through every geometry helper.
     pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
+        self.sync_displays(state);
         // Preserve the refined root's compact footprint even when the host
         // could offer the old 416px panel. Text remains at its full scale;
         // only spatial chrome participates in this fit.
@@ -403,6 +413,19 @@ impl QuickSettingsRoot {
             self.layout_scale = (self.layout_scale - 0.01).max(0.2);
         }
     }
+    /// Take the monitor list from `state`: one brightness slider each.
+    pub fn sync_displays(&mut self, state: &QuickSettingsState) {
+        if self.display_names.len() != state.displays.len()
+            || self
+                .display_names
+                .iter()
+                .zip(&state.displays)
+                .any(|(name, display)| *name != display.name)
+        {
+            self.display_names = state.displays.iter().map(|d| d.name.clone()).collect();
+            self.slider_drag = None;
+        }
+    }
     fn target_at(scale: f64) -> f64 {
         (TARGET * scale).max(TARGET)
     }
@@ -414,8 +437,81 @@ impl QuickSettingsRoot {
             .max(Self::target_at(scale))
             .max(self.line_height(ui::tokens::TypeScale::default().base))
     }
-    fn sliders_height_at(scale: f64) -> f64 {
-        (2.0 * CONTROL_PAD + RELATED_GAP) * scale + 2.0 * Self::target_at(scale)
+    fn sliders_height_at(&self, scale: f64) -> f64 {
+        let count = self.slider_count();
+        let captions: f64 = (0..count).map(|i| self.slider_caption_height(i)).sum();
+        (2.0 * CONTROL_PAD + n(count.saturating_sub(1)) * RELATED_GAP) * scale
+            + n(count) * Self::target_at(scale)
+            + captions
+    }
+    /// Brightness sliders: one per monitor, at least one.
+    fn brightness_rows(&self) -> usize {
+        self.display_names.len().max(1)
+    }
+    /// Every brightness slider, then volume.
+    fn slider_count(&self) -> usize {
+        self.brightness_rows().saturating_add(1)
+    }
+    fn volume_slider(&self) -> usize {
+        self.brightness_rows()
+    }
+    /// With several monitors, each brightness slider carries its monitor's
+    /// name on a caption line above the face.
+    fn slider_caption_height(&self, i: usize) -> f64 {
+        if self.display_names.len() > 1 && i < self.brightness_rows() {
+            self.caption_line_height()
+        } else {
+            0.0
+        }
+    }
+    fn slider_name(&self, i: usize) -> String {
+        if i == self.volume_slider() {
+            "Volume".into()
+        } else {
+            match self.display_names.get(i) {
+                Some(name) if self.display_names.len() > 1 => format!("Brightness, {name}"),
+                _ => "Brightness".into(),
+            }
+        }
+    }
+    fn slider_available(&self, state: &QuickSettingsState, i: usize) -> bool {
+        if i == self.volume_slider() {
+            state.volume_available
+        } else {
+            !state.displays.is_empty() || state.brightness_available
+        }
+    }
+    fn slider_value(&self, state: &QuickSettingsState, i: usize) -> f32 {
+        if i == self.volume_slider() {
+            state.volume
+        } else {
+            state
+                .displays
+                .get(i)
+                .map_or(state.brightness, |display| display.level)
+        }
+    }
+    fn set_slider_value(&self, state: &mut QuickSettingsState, i: usize, value: f32) {
+        if i == self.volume_slider() {
+            state.volume = value;
+            return;
+        }
+        if let Some(display) = state.displays.get_mut(i) {
+            display.level = value;
+        }
+        if i == 0 {
+            state.brightness = value;
+        }
+    }
+    fn slider_commit(&self, state: &QuickSettingsState, i: usize) -> SliderCommit {
+        let pct = self.slider_value(state, i) * 100.;
+        if i == self.volume_slider() {
+            SliderCommit::Volume(pct)
+        } else if state.displays.is_empty() {
+            SliderCommit::Brightness(pct)
+        } else {
+            SliderCommit::DisplayBrightness(i, pct)
+        }
     }
     fn scaled(&self, value: f64) -> f64 {
         value * self.layout_scale
@@ -587,7 +683,7 @@ impl QuickSettingsRoot {
             let sections = if rows > 0.0 { 4.0 } else { 3.0 };
             scaled(PANEL_PAD * 2.0 + SECTION_GAP * sections + SIBLING_GAP)
                 + self.header_height_at(layout_scale)
-                + Self::sliders_height_at(layout_scale)
+                + self.sliders_height_at(layout_scale)
                 + self.action_height_at(layout_scale)
                 + rows * self.card_height_at(layout_scale)
                 + (rows - 1.0).max(0.0) * scaled(SIBLING_GAP)
@@ -621,13 +717,13 @@ impl QuickSettingsRoot {
             panel.x0 + self.scaled(PANEL_PAD),
             top,
             panel.x1 - self.scaled(PANEL_PAD),
-            top + Self::sliders_height_at(self.layout_scale),
+            top + self.sliders_height_at(self.layout_scale),
         )
     }
     /// Top of the control cards: one section gap under the slider block.
     fn grid_top(&self, panel: Rect) -> f64 {
         self.sliders_top(panel)
-            + Self::sliders_height_at(self.layout_scale)
+            + self.sliders_height_at(self.layout_scale)
             + self.scaled(SECTION_GAP)
     }
     fn edit_grid_top(&self, panel: Rect) -> f64 {
@@ -790,9 +886,12 @@ impl QuickSettingsRoot {
     /// paint, hit-testing and the accessibility tree.
     fn slider_face_rect(&self, panel: Rect, i: usize) -> Rect {
         let block = self.sliders_rect(panel);
+        let above: f64 = (0..i).map(|j| self.slider_caption_height(j)).sum();
         let y = block.y0
             + self.scaled(CONTROL_PAD)
-            + n(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP));
+            + n(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP))
+            + above
+            + self.slider_caption_height(i);
         Rect::new(
             block.x0 + self.scaled(CONTROL_INSET + GLYPH + CONTROL_INSET),
             y,
@@ -849,12 +948,13 @@ impl QuickSettingsRoot {
         let y = self.actions_top(self.panel);
         Rect::new(x, y, x + w, y + self.action_height())
     }
-    /// Every root focus stop, in keyboard order: the two sliders, the live
+    /// Every root focus stop, in keyboard order: the sliders (one brightness
+    /// slider per monitor, then volume), the live
     /// controls, Devices, Clipboard and the power profile, then Edit and the
     /// four destination tiles. Controls come first so the first Tab after
     /// opening reaches Brightness.
     fn root_stops(&self, state: &QuickSettingsState) -> Vec<RootStop> {
-        let mut stops = vec![RootStop::Slider(0), RootStop::Slider(1)];
+        let mut stops: Vec<RootStop> = (0..self.slider_count()).map(RootStop::Slider).collect();
         stops.extend(
             self.visible_controls(state)
                 .into_iter()
@@ -904,10 +1004,11 @@ impl QuickSettingsRoot {
             _ => self.stop_rect(stop, state),
         }
     }
-    fn semantic_stop_name(stop: RootStop) -> String {
+    fn semantic_stop_name(&self, stop: RootStop) -> String {
         match stop {
+            RootStop::Slider(i) if i == self.volume_slider() => "quick_settings_volume".into(),
             RootStop::Slider(0) => "quick_settings_brightness".into(),
-            RootStop::Slider(_) => "quick_settings_volume".into(),
+            RootStop::Slider(i) => format!("quick_settings_brightness_{i}"),
             RootStop::Control(_, control) => {
                 format!("quick_settings_{}", Self::semantic_control_name(control))
             }
@@ -1255,20 +1356,12 @@ impl QuickSettingsRoot {
         let Some(RootStop::Slider(index)) = self.focused_stop(state) else {
             return None;
         };
-        let (available, value) = if index == 0 {
-            (state.brightness_available, &mut state.brightness)
-        } else {
-            (state.volume_available, &mut state.volume)
-        };
-        if !available {
+        if !self.slider_available(state, index) {
             return None;
         }
-        *value = (*value + direction * 0.05).clamp(0., 1.);
-        Some(if index == 0 {
-            SliderCommit::Brightness(*value * 100.)
-        } else {
-            SliderCommit::Volume(*value * 100.)
-        })
+        let value = (self.slider_value(state, index) + direction * 0.05).clamp(0., 1.);
+        self.set_slider_value(state, index, value);
+        Some(self.slider_commit(state, index))
     }
     fn cycle_power(s: &mut QuickSettingsState) -> RootAction {
         s.power_profile = match s.power_profile {
@@ -1292,17 +1385,13 @@ impl QuickSettingsRoot {
         if self.edit_mode {
             return self.edit_click(point, state);
         }
-        for i in 0..2 {
+        for i in 0..self.slider_count() {
             let (bar, _) = self.slider_geometry_for(panel, i);
             // The pointer target is the painted face — the same rect the
             // accessibility tree publishes — not a second band around the track.
             if self.slider_face_rect(panel, i).contains(point) {
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
-                if i == 0 {
-                    state.brightness = value;
-                } else {
-                    state.volume = value;
-                }
+                self.set_slider_value(state, i, value);
                 self.slider_drag = Some(i);
                 return RootAction::Changed(PendingRootActions::default());
             }
@@ -1399,11 +1488,7 @@ impl QuickSettingsRoot {
         if let Some(i) = self.slider_drag {
             let (bar, _) = self.slider_geometry_for(panel, i);
             let v = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
-            if i == 0 {
-                state.brightness = v;
-            } else {
-                state.volume = v;
-            }
+            self.set_slider_value(state, i, v);
             return true;
         }
         if self.edit_drag.is_pending() {
@@ -1418,11 +1503,7 @@ impl QuickSettingsRoot {
     }
     pub fn finish_drag(&mut self, state: &QuickSettingsState) -> Option<SliderCommit> {
         if let Some(i) = self.slider_drag.take() {
-            return Some(if i == 0 {
-                SliderCommit::Brightness(state.brightness * 100.)
-            } else {
-                SliderCommit::Volume(state.volume * 100.)
-            });
+            return Some(self.slider_commit(state, i));
         }
         // The controller reports visible row indices. Hidden persisted
         // controls (a VPN slot with no profiles) sit between them in the
@@ -1626,22 +1707,32 @@ impl QuickSettingsRoot {
         // bands, each with its glyph on the leading inset of the band.
         let sliders = self.sliders_rect(self.panel);
         paint_control(scene, transform, theme, sliders, false, false);
-        for i in 0..2 {
+        let caption_size = type_size(text, theme.tokens.typography.scale.xs);
+        for i in 0..self.slider_count() {
             let face = self.slider_face_rect(self.panel, i);
-            let available = if i == 0 {
-                state.brightness_available
-            } else {
-                state.volume_available
-            };
+            let available = self.slider_available(state, i);
             let band = Rect::new(sliders.x0, face.y0, sliders.x1, face.y1);
+            if self.slider_caption_height(i) > 0.0
+                && let Some(name) = self.display_names.get(i)
+            {
+                text.draw_text(
+                    scene,
+                    name,
+                    caption_size,
+                    colors.text_dim,
+                    transform
+                        .pre_translate((face.x0, face.y0 - self.slider_caption_height(i)).into()),
+                    Some(f32v(face.width())),
+                );
+            }
             ui::icons::draw_icon(
                 scene,
                 transform,
                 leading_glyph(band, inset, glyph),
-                if i == 0 {
-                    ui::icons::Icon::Sun
-                } else {
+                if i == self.volume_slider() {
                     ui::icons::Icon::Volume2
+                } else {
+                    ui::icons::Icon::Sun
                 },
                 colors.text_dim,
                 1.5,
@@ -1650,18 +1741,11 @@ impl QuickSettingsRoot {
                 scene,
                 transform,
                 theme,
-                &SliderFace::new(
-                    face,
-                    f64::from(if i == 0 {
-                        state.brightness
-                    } else {
-                        state.volume
-                    }),
-                )
-                .hovered(available && cursor.is_some_and(|p| face.contains(p)))
-                .focused(self.is_focused(state, RootStop::Slider(i)))
-                .dragging(self.slider_drag == Some(i))
-                .disabled(!available),
+                &SliderFace::new(face, f64::from(self.slider_value(state, i)))
+                    .hovered(available && cursor.is_some_and(|p| face.contains(p)))
+                    .focused(self.is_focused(state, RootStop::Slider(i)))
+                    .dragging(self.slider_drag == Some(i))
+                    .disabled(!available),
             );
         }
         let controls = self.visible_controls(state);
@@ -2272,7 +2356,7 @@ impl QuickSettingsRoot {
             // Children follow the keyboard focus table, so an assistive
             // technology's child index is the focus stop it names.
             for stop in self.root_stops(state) {
-                let node = Self::stop_access_node(stop, state).with_state(
+                let node = self.stop_access_node(stop, state).with_state(
                     AccessState::new()
                         .focusable(true)
                         .focused(self.is_focused(state, stop)),
@@ -2332,17 +2416,13 @@ impl QuickSettingsRoot {
     const fn is_switch(control: QuickSettingsControl) -> bool {
         !matches!(control, QuickSettingsControl::Vpn)
     }
-    fn stop_access_node(stop: RootStop, state: &QuickSettingsState) -> ui::a11y::AccessNode {
+    fn stop_access_node(&self, stop: RootStop, state: &QuickSettingsState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Role};
         match stop {
             RootStop::Slider(index) => {
-                let (name, value) = if index == 0 {
-                    ("Brightness", state.brightness)
-                } else {
-                    ("Volume", state.volume)
-                };
+                let value = self.slider_value(state, index);
                 AccessNode::new(Role::Slider)
-                    .with_name(name)
+                    .with_name(self.slider_name(index))
                     .with_value(format!("{:.0}%", value * 100.0))
                     .with_description("Use Left and Right Arrow to adjust")
             }
@@ -2377,8 +2457,9 @@ impl QuickSettingsRoot {
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [] => Some(self.panel),
-            [0] if !self.edit_mode => Some(self.slider_geometry_for(self.panel, 0).0),
-            [1] if !self.edit_mode => Some(self.slider_geometry_for(self.panel, 1).0),
+            [i] if !self.edit_mode && *i < self.slider_count() => {
+                Some(self.slider_geometry_for(self.panel, *i).0)
+            }
             _ => None,
         }
     }
@@ -2431,6 +2512,110 @@ mod tests {
         assert_eq!(
             power_detail(&state),
             "AC power \u{b7} 2 apps are preventing sleep"
+        );
+    }
+
+    #[test]
+    fn each_monitor_gets_a_named_brightness_slider() {
+        use crate::shell::chrome_state::DisplayBrightness;
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::fixture();
+        let single_height = root.preferred_height(&state);
+        state.displays = vec![
+            DisplayBrightness {
+                connector: "eDP-1".into(),
+                name: "Built-in display".into(),
+                level: 0.5,
+            },
+            DisplayBrightness {
+                connector: "DP-2".into(),
+                name: "Dell U2720Q".into(),
+                level: 0.2,
+            },
+        ];
+        root.sync_displays(&state);
+        root.panel = PANEL;
+        assert_eq!(root.slider_count(), 3, "two monitors, then volume");
+        assert!(
+            root.preferred_height(&state) > single_height,
+            "the extra slider and its name make room for themselves"
+        );
+        let names: Vec<String> = (0..3).map(|i| root.slider_name(i)).collect();
+        assert_eq!(
+            names,
+            [
+                "Brightness, Built-in display",
+                "Brightness, Dell U2720Q",
+                "Volume"
+            ]
+        );
+        let faces: Vec<Rect> = (0..3).map(|i| root.slider_face_rect(PANEL, i)).collect();
+        assert!(
+            faces.windows(2).all(|pair| pair[0].y1 < pair[1].y0),
+            "faces never overlap: {faces:?}"
+        );
+        assert!(
+            faces[1].y0 - faces[0].y1 >= root.caption_line_height(),
+            "the second monitor's name fits above its face"
+        );
+
+        // A press on the second monitor's slider commits that monitor only.
+        let (track, _) = root.slider_geometry_for(PANEL, 1);
+        let end = Point::new(track.x0 + track.width() * 0.75, faces[1].center().y);
+        let _ = root.handle_click(end, PANEL, &mut state);
+        let commit = root.finish_drag(&state);
+        assert!(
+            matches!(commit, Some(SliderCommit::DisplayBrightness(1, pct)) if (pct - 75.0).abs() < 1.0),
+            "{commit:?}"
+        );
+        assert!((state.displays[0].level - 0.5).abs() < f32::EPSILON);
+
+        // Keyboard focus walks the monitors before volume and the controls.
+        assert_eq!(
+            root.root_stops(&state)[..3],
+            [
+                RootStop::Slider(0),
+                RootStop::Slider(1),
+                RootStop::Slider(2)
+            ]
+        );
+        root.keyboard_focus = Some(1);
+        assert!(matches!(
+            root.adjust_focused_slider(&mut state, 1.0),
+            Some(SliderCommit::DisplayBrightness(1, _))
+        ));
+        root.keyboard_focus = Some(2);
+        assert!(matches!(
+            root.adjust_focused_slider(&mut state, 1.0),
+            Some(SliderCommit::Volume(_))
+        ));
+        assert_eq!(
+            root.semantic_stop_name(RootStop::Slider(1)),
+            "quick_settings_brightness_1"
+        );
+        assert_eq!(
+            root.semantic_stop_name(RootStop::Slider(2)),
+            "quick_settings_volume"
+        );
+    }
+
+    #[test]
+    fn a_single_monitor_keeps_the_single_unlabelled_slider() {
+        use crate::shell::chrome_state::DisplayBrightness;
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::fixture();
+        state.displays = vec![DisplayBrightness {
+            connector: "DP-1".into(),
+            name: "Dell U2720Q".into(),
+            level: 0.3,
+        }];
+        root.sync_displays(&state);
+        assert_eq!(root.slider_count(), 2);
+        assert_eq!(root.slider_name(0), "Brightness");
+        assert!(root.slider_caption_height(0).abs() < f64::EPSILON);
+        assert!(
+            matches!(root.slider_commit(&state, 0), SliderCommit::DisplayBrightness(0, pct) if (pct - 30.0).abs() < 0.01),
+            "a lone external monitor is still driven over DDC/CI"
         );
     }
 
