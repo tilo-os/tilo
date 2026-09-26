@@ -1758,6 +1758,12 @@ pub struct ShellOverlayHost {
     /// Lists the agents that take part from this machine on their rooms'
     /// rosters; present once the collaboration broker is.
     local_participants: Option<crate::shell::peer_presence::LocalParticipantRoster>,
+    /// The displays this shell draws onto, as the compositor reports them;
+    /// empty in the hosted compositor, whose one display is its window.
+    recording_outputs: Vec<crate::shell::recorder::RecordedOutput>,
+    /// The scale of the window this shell last received input through —
+    /// the hosted compositor's one display.
+    window_scale: f64,
     /// Authenticated ephemeral relationship cue for the people already in
     /// this room. It is neither durable workspace state nor a control path.
     follow_presence_bridge: Option<FollowPresenceBridge>,
@@ -3266,6 +3272,8 @@ impl ShellOverlayHost {
             wifi_secret_bridge: None,
             follow_bridge: None,
             local_participants: None,
+            recording_outputs: Vec::new(),
+            window_scale: 1.0,
             follow_presence_bridge: None,
             status_presence_bridge: None,
             active_tab_presence_bridge: None,
@@ -13228,6 +13236,9 @@ impl ShellOverlayHost {
         }) else {
             return false;
         };
+        if recorder.is_observing() {
+            recorder.note_surfaces(&self.measured_surfaces());
+        }
         let changed = recorder.pump(std::time::Instant::now(), &user);
         let listed = self
             .local_participants
@@ -13236,9 +13247,79 @@ impl ShellOverlayHost {
         changed || listed
     }
 
+    /// Report the displays the compositor drives, in scene coordinates. The
+    /// hosted compositor never calls this: its one display is its window.
+    pub fn set_recording_outputs(&mut self, outputs: Vec<crate::shell::recorder::RecordedOutput>) {
+        self.recording_outputs = outputs;
+    }
+
+    /// Each window group's active tab as it is laid out now: its logical
+    /// size, and the scale and name of the display its centre is on.
+    pub fn measured_surfaces(&self) -> Vec<crate::shell::recorder::MeasuredSurface> {
+        let mut measured = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in &row.groups {
+                let Some(rect) = group.active_host().map(ui::Widget::get_rect) else {
+                    continue;
+                };
+                if rect.area() <= 0.0 {
+                    continue;
+                }
+                let center = rect.center();
+                let (scale, output) = self
+                    .recording_outputs
+                    .iter()
+                    .find(|output| output.rect.contains(center))
+                    .map_or_else(
+                        || (self.window_scale, "window".to_string()),
+                        |output| (output.scale, output.name.clone()),
+                    );
+                measured.push(crate::shell::recorder::MeasuredSurface {
+                    tab: group.active_tab_id(),
+                    width: logical_extent(rect.width()),
+                    height: logical_extent(rect.height()),
+                    scale,
+                    output,
+                });
+            }
+        }
+        measured
+    }
+
+    /// Everything the shell takes from the session's collaboration broker,
+    /// one wiring for the native and the hosted compositor: the recorder and
+    /// the roster of local agents, session-local Follow, the live action
+    /// directory, and realtime continuity.
+    pub fn attach_collab_broker(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
+        self.attach_recorder(broker);
+        let dispatcher = broker.follow_dispatcher();
+        self.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+            dispatcher.set(&room.to_string(), peer_id);
+        }));
+        if let Some(action_broker) = broker.app_action_broker() {
+            self.attach_app_action_broker(action_broker);
+        }
+        if let Some(realtime) = broker.realtime_fabric_bridge() {
+            self.set_realtime_continuity_bridge(std::rc::Rc::new(move |action| {
+                match action {
+                    RealtimeContinuityUiAction::Snapshot => {}
+                    RealtimeContinuityUiAction::Propose { session, target } => {
+                        realtime.propose_to(&session, &target)?;
+                    }
+                    RealtimeContinuityUiAction::ResolveConsent { session, approved } => {
+                        realtime.resolve_consent(&session, approved)?;
+                    }
+                }
+                Ok(realtime.ui_view())
+            }));
+        }
+    }
+
     /// Attach the session recorder to `broker`, sharing the chrome's tree so
     /// its admission is the workspace's own capability state.
-    pub fn attach_recorder(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
+    fn attach_recorder(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
         let Some(chrome) = self.chrome.as_ref() else {
             return;
         };
@@ -16612,6 +16693,7 @@ impl Widget for ShellOverlayHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.window_scale = scale_factor;
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
@@ -26283,6 +26365,76 @@ mod palette_dispatch_tests {
         (host, chrome)
     }
 
+    /// The shell the hosted compositor builds, wired to a broker the way both
+    /// compositors wire it, records through its own frame pass: the recorder
+    /// is attached, its roster row appears and leaves with the frame loop,
+    /// and every active tab is measured for it.
+    #[test]
+    fn a_shell_wired_to_a_broker_records_through_its_own_frame_pass() {
+        let dir = tempfile::tempdir().expect("socket dir");
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_records(
+            tree.clone(),
+            false,
+            ui::record::RecordStore::in_memory(),
+        );
+        let user = chrome.borrow().active_local_user();
+        let room = {
+            let mut write = tree.write();
+            let workspace = write
+                .desktop
+                .active_workspace_mut()
+                .expect("active workspace");
+            workspace.set_owner(user.clone());
+            let room = workspace.room.to_string();
+            drop(write);
+            room
+        };
+        let broker = crate::shell::collab_broker::spawn_native_harness(
+            dir.path().join("collab.sock"),
+            tree.clone(),
+            Vec::new(),
+        )
+        .expect("broker");
+        assert!(chrome.borrow().recorder().is_none());
+        host.attach_collab_broker(&broker);
+        let recorder = chrome
+            .borrow()
+            .recorder()
+            .cloned()
+            .expect("recorder attached");
+        let listed = |tree: &crate::shell::state::WorkspaceTreeHandle| {
+            tree.read()
+                .desktop
+                .active_workspace()
+                .is_some_and(|workspace| {
+                    workspace
+                        .collaborators
+                        .iter()
+                        .any(|row| row.id == crate::shell::recorder::RECORDER_AGENT)
+                })
+        };
+
+        recorder
+            .start(std::slice::from_ref(&room), Vec::new(), None, &user)
+            .expect("recording starts");
+        let mut doc = AutoCommit::new();
+        host.update(&mut doc, &automerge::ROOT);
+        assert!(listed(&tree), "the frame pass lists the recording agent");
+        host.set_recording_outputs(Vec::new());
+        assert!(
+            host.measured_surfaces()
+                .iter()
+                .all(|surface| surface.output == "window"),
+            "without compositor outputs the shell's display is its window"
+        );
+
+        recorder.stop(&user).expect("recording stops");
+        host.update(&mut doc, &automerge::ROOT);
+        assert!(!listed(&tree), "the frame pass takes it off again");
+        drop(broker);
+    }
+
     fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let (mut host, chrome) = host_with_chrome();
         host.desktop_controls = DesktopControlsSource::Persisted(
@@ -35676,4 +35828,13 @@ pub(crate) fn install_fixture_search_provider(
     provider: std::rc::Rc<dyn crate::shell::search::SearchProvider>,
 ) {
     host.search_registry.register_or_replace(provider);
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a tile extent is a finite, non-negative screen size well inside u32"
+)]
+fn logical_extent(extent: f64) -> u32 {
+    extent.max(0.0).round() as u32
 }

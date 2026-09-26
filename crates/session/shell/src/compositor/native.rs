@@ -4329,93 +4329,34 @@ fn install_session_peer_sync(
     net
 }
 
-/// Hand the session recorder this frame's tiled client surfaces — logical
-/// tile size, the scale the surface was asked to render at, and the output
-/// its tile sits on — while it holds any room.
-fn measure_recorded_surfaces(
-    state: &State,
-    frame_builder: &FrameBuilder,
+/// Tell the shell which monitors it draws onto, so a recorded surface
+/// names its output and scale the same way the hosted shell names its
+/// window.
+fn report_recording_outputs(
+    frame_builder: &mut FrameBuilder,
     outputs: &[crate::compositor::backend::Output],
 ) {
-    let Some(recorder) = frame_builder
-        .chrome()
-        .recorder()
-        .filter(|recorder| recorder.is_observing())
-        .cloned()
-    else {
-        return;
-    };
-    let measured: Vec<crate::shell::recorder::MeasuredSurface> = state
-        .client_input
-        .placements()
-        .filter_map(|(surface_id, group)| {
-            let rect = frame_builder.host().active_tile_rect(group)?;
-            let center = rect.center();
-            let output = outputs
-                .iter()
-                .find(|output| {
-                    let (x, y) = (f64::from(output.position.0), f64::from(output.position.1));
-                    center.x >= x
-                        && center.y >= y
-                        && center.x < x + f64::from(output.size.0)
-                        && center.y < y + f64::from(output.size.1)
-                })
-                .map(|output| format!("output {}", output.id.0))
-                .unwrap_or_default();
-            Some(crate::shell::recorder::MeasuredSurface {
-                surface_id,
-                width: logical_extent(rect.width()),
-                height: logical_extent(rect.height()),
-                scale: state.surface_scale(surface_id),
-                output,
-            })
+    let outputs = outputs
+        .iter()
+        .map(|output| crate::shell::recorder::RecordedOutput {
+            rect: vello::kurbo::Rect::new(
+                f64::from(output.position.0),
+                f64::from(output.position.1),
+                f64::from(output.position.0) + f64::from(output.size.0),
+                f64::from(output.position.1) + f64::from(output.size.1),
+            ),
+            scale: f64::from(output.scale),
+            name: format!("output {}", output.id.0),
         })
         .collect();
-    recorder.note_surfaces(&measured);
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a tile extent is a finite, non-negative screen size well inside u32"
-)]
-fn logical_extent(extent: f64) -> u32 {
-    extent.max(0.0).round() as u32
+    frame_builder.host_mut().set_recording_outputs(outputs);
 }
 
 fn attach_collab_broker_bridges(
     frame_builder: &mut FrameBuilder,
     broker: &crate::shell::collab_broker::BrokerHandle,
 ) {
-    frame_builder.host_mut().attach_recorder(broker);
-    let dispatcher = broker.follow_dispatcher();
-    frame_builder
-        .host_mut()
-        .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
-            dispatcher.set(&room.to_string(), peer_id);
-        }));
-    if let Some(action_broker) = broker.app_action_broker() {
-        frame_builder
-            .host_mut()
-            .attach_app_action_broker(action_broker);
-    }
-    if let Some(realtime) = broker.realtime_fabric_bridge() {
-        frame_builder
-            .host_mut()
-            .set_realtime_continuity_bridge(std::rc::Rc::new(move |action| {
-                use crate::shell::overlay_host::RealtimeContinuityUiAction;
-                match action {
-                    RealtimeContinuityUiAction::Snapshot => {}
-                    RealtimeContinuityUiAction::Propose { session, target } => {
-                        realtime.propose_to(&session, &target)?;
-                    }
-                    RealtimeContinuityUiAction::ResolveConsent { session, approved } => {
-                        realtime.resolve_consent(&session, approved)?;
-                    }
-                }
-                Ok(realtime.ui_view())
-            }));
-    }
+    frame_builder.host_mut().attach_collab_broker(broker);
 }
 
 fn attach_peer_presence(
@@ -7118,7 +7059,7 @@ pub fn run() {
             }));
             state.update_surface_scales(&placements);
         }
-        measure_recorded_surfaces(&state, &frame_builder, backend.outputs());
+        report_recording_outputs(&mut frame_builder, backend.outputs());
         // An output change has already installed the backend's new geometry,
         // but the frame builder still exposes the previous frame's tile rects
         // until `relayout` below. Diffing that mismatched pair would send a

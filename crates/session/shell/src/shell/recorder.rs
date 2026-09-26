@@ -101,15 +101,39 @@ pub enum RecorderError {
     Write(String),
 }
 
-/// One client surface as the compositor measured it this frame.
+/// One app surface as the shell measured it this frame: the active tab of
+/// a window group, the same way in the native and the hosted compositor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeasuredSurface {
-    pub surface_id: u64,
+    pub tab: crate::shell::state::TabId,
     /// Logical size of its tile.
     pub width: u32,
     pub height: u32,
     pub scale: f64,
     pub output: String,
+}
+
+/// One display the shell draws onto, in scene coordinates: a monitor in the
+/// native compositor, the host window in the hosted one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordedOutput {
+    pub rect: vello::kurbo::Rect,
+    pub scale: f64,
+    pub name: String,
+}
+
+/// The app a tab shows, by the id its surface and grants use.
+fn tab_app_id(tile: &crate::shell::state::TileContent) -> Option<String> {
+    use crate::shell::state::TileContent;
+    match tile {
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. } => Some(app_id.clone()),
+        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+            Some(kind.app_id())
+        }
+        TileContent::WorkspaceActivity => None,
+    }
 }
 
 /// A finished session waiting for review. Held only in memory.
@@ -513,16 +537,14 @@ impl Recorder {
                     .flat_map(|strip| &strip.window_groups)
                     .flat_map(|group| &group.tabs);
                 for tab in tabs {
-                    let crate::shell::state::TileContent::Foreign { app_id, surface_id } =
-                        &tab.tile
-                    else {
+                    let Some(app_id) = tab_app_id(&tab.tile) else {
                         continue;
                     };
-                    if let Some(size) = measured.iter().find(|m| m.surface_id == *surface_id) {
+                    if let Some(size) = measured.iter().find(|m| m.tab == tab.id) {
                         out.push((
                             room.clone(),
                             SurfaceGeometry {
-                                app_id: app_id.clone(),
+                                app_id,
                                 width: size.width,
                                 height: size.height,
                                 scale: size.scale,

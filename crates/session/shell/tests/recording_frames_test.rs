@@ -191,7 +191,7 @@ fn recording_with_pixels_keeps_the_recorded_surface_as_a_frames_blob() {
         Vec::new(),
     )
     .unwrap();
-    fb.host_mut().attach_recorder(&broker);
+    fb.host_mut().attach_collab_broker(&broker);
     let recorder = fb.chrome().recorder().cloned().expect("recorder attached");
     let owner = OWNER.to_string();
     recorder

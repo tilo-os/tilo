@@ -119,12 +119,10 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // Give the palette's `/invite` and `/connect` rows something that actually performs them —
     // without this the host records an intent and drops it: reachable in the palette, inert in a running session.
     let mut host = attach_peer_sync_bridge(host, peer_sync.as_ref(), tree_handle.clone());
+    // The same broker wiring the native compositor installs: recorder,
+    // follow, the live action directory and realtime continuity.
     if let Some(broker) = collab_broker.as_ref() {
-        host.attach_recorder(broker);
-        let dispatcher = broker.follow_dispatcher();
-        host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
-            dispatcher.set(&room.to_string(), peer_id);
-        }));
+        host.attach_collab_broker(broker);
     }
     if let Some(network) = peer_sync.as_ref() {
         let follow_network = Arc::clone(network);
@@ -178,12 +176,6 @@ pub fn run_with_full_options(opts: HostedOptions) {
     host.set_portal_queues(portal_prompts.clone(), portal_pickers.clone());
     // Bind before erasing the concrete host behind `dyn Widget`, so the
     // same live app-action provider exists in hosted and native sessions.
-    if let Some(action_broker) = collab_broker
-        .as_ref()
-        .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker)
-    {
-        host.attach_app_action_broker(action_broker);
-    }
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     tilo_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::from_scoped_parts(wake_scope, state, root);
