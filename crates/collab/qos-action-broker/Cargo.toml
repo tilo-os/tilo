@@ -44,5 +44,6 @@ qos-session-peer = { path = "../../hosting/qos-session-peer" }
 word-processor = { path = "../../../apps/word-processor" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true
+tilo-automerge-isolate.workspace = true
 [lints]
 workspace = true

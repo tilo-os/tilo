@@ -6364,14 +6364,15 @@ mod private_transport_tests {
                 "reconnect suffix did not converge to the complete next checkpoint generation"
             );
         }
-        for (chunk, budgets) in [
+        let chunks = [
             (third.iter().take(1).collect::<Vec<_>>(), vec![None]),
             (
                 third.iter().skip(1).take(32).collect::<Vec<_>>(),
                 vec![None; 32],
             ),
             (third.iter().skip(33).collect::<Vec<_>>(), vec![None; 2]),
-        ] {
+        ];
+        for (chunk, budgets) in chunks {
             enqueue_checkpoint_prefix(
                 &workspace,
                 chunk

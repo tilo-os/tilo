@@ -938,6 +938,13 @@ fn output_names(output_dir: &File) -> io::Result<Vec<OsString>> {
         return Err(error);
     }
     let stream = DirectoryStream(stream);
+    // The descriptor was opened before the sandbox wrote its outputs. POSIX
+    // leaves entries added since opendir/rewinddir unspecified, and tmpfs
+    // really does hide them, so refresh the stream before enumerating.
+    // SAFETY: stream remains live for the duration of this call.
+    unsafe {
+        libc::rewinddir(stream.0);
+    }
     let mut names = Vec::new();
     loop {
         clear_errno();

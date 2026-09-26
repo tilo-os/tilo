@@ -458,13 +458,13 @@ fn search_refuses_modal_trap_and_pending_caller_operations() {
     f.focus_trap_active = true;
     assert!(f.open_global_search_all("").is_err());
     f.focus_trap_active = false;
-    f.root = Box::new(
+    f.replace_root(Box::new(
         crate::widget::modal_dialog::ModalDialog::new(
             "Blocking",
             crate::widget::TextInput::local(),
         )
         .open(true),
-    );
+    ));
     f.relayout();
     assert!(f.open_global_search_all("").is_err());
     let mut f = frame();

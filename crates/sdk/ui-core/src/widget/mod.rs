@@ -877,8 +877,12 @@ pub trait Widget {
     /// Whether this widget introduces a document owner distinct from the
     /// runner's outer State. This is a compatibility check, never identity
     /// or authority for history access or restore.
+    ///
+    /// A [`Self::record_intent`] alone does not qualify: the runner (or the
+    /// enclosing [`TileHost`], which reports its own binding) checks that
+    /// record out as the very State this widget reads.
     fn has_separate_document_owner(&self) -> bool {
-        self.callback_binding().is_some() || self.record_intent().is_some()
+        self.callback_binding().is_some()
     }
 
     /// Opaque actual custody for framework History source registration.

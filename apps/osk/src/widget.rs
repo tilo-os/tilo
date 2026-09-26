@@ -2396,12 +2396,17 @@ mod tests {
         assert!(osk.dropped_key_actions() >= 6);
     }
 
-    // The keyboard publishes only device-local configuration effects (layout,
-    // suggestion privacy); keystrokes never become actions, so the registry
-    // is empty.
+    // The keyboard publishes device-local configuration (layout, suggestion
+    // privacy) as client-local `osk.preference` document actions plus the
+    // clear-personal effect; keystrokes never become actions. The registry is
+    // the one the app installs, so every published document type decodes.
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
+        registry: {
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            crate::actions::register(&mut registry);
+            registry
+        },
         resources: |doc| Widget::resources(&OskWidget::new(), doc),
         palette: ["Use QWERTY layout", "Use AZERTY layout", "Clear learned suggestions"],
     }

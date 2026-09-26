@@ -1796,10 +1796,6 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] for invalid or oversized inputs, an unavailable
     /// broker, an unsupported method, or a malformed initial invocation update.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the additive RPC preserves the exact revisioned invocation fields"
-    )]
     pub async fn invoke_resolved_published_action(
         &self,
         peer_id: u64,

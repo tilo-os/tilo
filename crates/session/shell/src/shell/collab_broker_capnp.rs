@@ -167,6 +167,10 @@ pub mod tests {
             chrome: crate::shell::chrome_state::ChromeState::new_with_handle(membership),
         }
     }
+    #[allow(
+        clippy::future_not_send,
+        reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
+    )]
     pub async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         qos_action_broker::collab_broker_capnp::tests::drain_directory_bridge(&fixture.inner).await;
     }
