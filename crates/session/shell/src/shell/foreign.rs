@@ -3948,7 +3948,10 @@ mod tests {
     /// layer, so using that primitive here covers their shared durable
     /// transaction while `strip_navigation` checks both actual event routes.
     #[test]
-    #[serial_test::serial(launch_events)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one lifecycle, interleaved step by step, is the property under test"
+    )]
     fn deterministic_layout_lifecycle_survives_interleaved_mutations() {
         use crate::shell::state::AppKind;
         use crate::shell::tab_binding::{

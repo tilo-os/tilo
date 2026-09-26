@@ -47,7 +47,6 @@ fn staged(tree: &WorkspaceTree, tab: TabId) -> Option<u64> {
 }
 
 #[test]
-#[serial_test::serial(pending_placement)]
 fn local_record_restart_keeps_distinct_source_records_for_same_app_tabs() {
     let _runtime = RuntimeReset::new();
     let directory = tempfile::tempdir().unwrap();
@@ -103,7 +102,6 @@ fn local_record_restart_keeps_distinct_source_records_for_same_app_tabs() {
 }
 
 #[test]
-#[serial_test::serial(pending_placement)]
 fn local_record_restart_does_not_guess_records_for_legacy_snapshots() {
     let _runtime = RuntimeReset::new();
     let directory = tempfile::tempdir().unwrap();
@@ -121,7 +119,6 @@ fn local_record_restart_does_not_guess_records_for_legacy_snapshots() {
 }
 
 #[test]
-#[serial_test::serial(pending_placement)]
 fn local_record_restart_rejects_mismatched_room_app_and_remote_tab() {
     let _runtime = RuntimeReset::new();
     for mode in ["room", "app", "peer", "missing-tab"] {
@@ -172,7 +169,6 @@ fn local_record_restart_rejects_mismatched_room_app_and_remote_tab() {
 }
 
 #[test]
-#[serial_test::serial(pending_placement)]
 fn local_record_restart_removes_closed_tab_metadata() {
     let _runtime = RuntimeReset::new();
     let directory = tempfile::tempdir().unwrap();
@@ -194,7 +190,6 @@ fn local_record_restart_removes_closed_tab_metadata() {
 }
 
 #[test]
-#[serial_test::serial(pending_placement)]
 fn local_record_restart_revalidates_live_tab_before_each_staging() {
     let _runtime = RuntimeReset::new();
     for mode in ["room", "app", "peer"] {
