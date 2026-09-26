@@ -378,6 +378,10 @@ pub struct RetainedGpuTarget {
     completion_markers: usize,
     #[cfg(test)]
     completion_test: Option<CompletionTest>,
+    /// Replaces the Linux per-phase completion allowance for correctness fixtures that must
+    /// wait for the GPU to finish rather than for a production frame budget.
+    #[cfg(test)]
+    phase_wait_override: Option<Duration>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
     /// Offscreen render target. Recreated on resize.
@@ -455,6 +459,8 @@ impl RetainedGpuTarget {
             completion_markers: 0,
             #[cfg(test)]
             completion_test: None,
+            #[cfg(test)]
+            phase_wait_override: None,
             size: (width, height),
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
@@ -541,6 +547,19 @@ impl RetainedGpuTarget {
             return clock.now();
         }
         Instant::now()
+    }
+
+    /// The allowance for one Linux completion phase: `nominal` outside correctness fixtures.
+    #[allow(
+        clippy::unused_self,
+        reason = "correctness fixtures replace the allowance on this actual target instance"
+    )]
+    fn linux_phase_wait(&self, nominal: Duration) -> Duration {
+        #[cfg(test)]
+        if let Some(wait) = self.phase_wait_override {
+            return wait;
+        }
+        nominal
     }
 
     fn eligible_sparse_damage(
@@ -853,12 +872,14 @@ impl RetainedGpuTarget {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
+        let fence_wait = self.linux_phase_wait(LINUX_FENCE_WAIT);
+        let callback_wait = self.linux_phase_wait(LINUX_MAP_CALLBACK_WAIT);
         let result = (|| {
             #[cfg(test)]
-            self.before_wait(WaitPhase::Fence, LINUX_FENCE_WAIT)?;
+            self.before_wait(WaitPhase::Fence, fence_wait)?;
             let waited = self.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
-                timeout: Some(LINUX_FENCE_WAIT),
+                timeout: Some(fence_wait),
             });
             self.check_health()?;
             waited.map_err(|error| {
@@ -866,8 +887,8 @@ impl RetainedGpuTarget {
             })?;
             // A fresh one-second callback allowance follows the independent one-second fence.
             #[cfg(test)]
-            self.before_wait(WaitPhase::MapCallback, LINUX_MAP_CALLBACK_WAIT)?;
-            rx.recv_timeout(LINUX_MAP_CALLBACK_WAIT)
+            self.before_wait(WaitPhase::MapCallback, callback_wait)?;
+            rx.recv_timeout(callback_wait)
                 .map_err(|error| {
                     BridgeError::Map(format!("LinuxPerPhase map_async channel: {error}"))
                 })?
@@ -886,7 +907,7 @@ impl RetainedGpuTarget {
             CompletionPolicy::Absolute(deadline) => deadline,
             CompletionPolicy::LinuxPerPhase => self
                 .now()
-                .checked_add(BUMP_SETTLEMENT_WAIT)
+                .checked_add(self.linux_phase_wait(BUMP_SETTLEMENT_WAIT))
                 .ok_or_else(|| {
                     BridgeError::BumpReadback("counter deadline out of range".to_owned())
                 })?,
@@ -1395,6 +1416,17 @@ impl VelloDrmBridge {
         self.xrgb_history_epoch = self
             .xrgb_history_epoch
             .and_then(|epoch| epoch.checked_add(1));
+    }
+
+    /// Wait for each Linux completion phase until the GPU actually finishes, bounded only by a
+    /// generous backstop, instead of the production one-second allowance.
+    ///
+    /// On a shared CI host llvmpipe competes with every other test for CPU, so a frame whose
+    /// pixels a fixture checks can legitimately miss the per-phase budget. Fixtures that assert
+    /// what is rendered, not how fast, opt in here; device loss still fails immediately.
+    #[cfg(test)]
+    pub(crate) fn wait_for_gpu_completion_for_test(&mut self) {
+        self.target.phase_wait_override = Some(Duration::from_secs(120));
     }
 
     /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start

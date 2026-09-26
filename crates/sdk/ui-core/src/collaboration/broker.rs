@@ -82,7 +82,9 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
-static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
+/// The connected transport's outbound queue, used by the Settings-only
+/// commands ([`wifi_continuity_command`], [`speaker_command`]).
+static SETTINGS_COMMAND_BRIDGE: std::sync::OnceLock<
     std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
 > = std::sync::OnceLock::new();
 
@@ -97,7 +99,7 @@ static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
-    let sender = WIFI_CONTINUITY_BRIDGE
+    let sender = SETTINGS_COMMAND_BRIDGE
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
@@ -122,6 +124,44 @@ pub fn wifi_continuity_command(
     reply_rx
         .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
         .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
+}
+
+const SPEAKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Ask the shell's speaker-group authority over the launcher-authenticated
+/// Settings route. Run it off the frame thread; a lost broker times out into
+/// an ordinary unavailable result.
+///
+/// # Errors
+///
+/// Returns an unavailable message when the collaboration bridge is absent,
+/// its bounded queue rejects the command, or the broker does not reply in time.
+pub fn speaker_command(
+    command: runtime_collab::SpeakerCommand,
+) -> Result<runtime_collab::SpeakerReply, String> {
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "speaker service is unavailable".to_string())?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or_else(|| "speakers need the certified collaboration service".to_string())?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    let state = BridgeState::new();
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::Speakers {
+            app_id: "so.tilo.settings".into(),
+            command,
+            reply: reply_tx,
+        },
+        &state,
+    ) {
+        return Err("speaker command queue is unavailable".into());
+    }
+    reply_rx
+        .recv_timeout(SPEAKER_COMMAND_TIMEOUT)
+        .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
 impl RouteSpec {
@@ -170,7 +210,7 @@ impl BrokerTransport {
 
     /// Route [`wifi_continuity_command`] through this transport.
     fn register_wifi_bridge(&mut self) {
-        if let Ok(mut bridge) = WIFI_CONTINUITY_BRIDGE
+        if let Ok(mut bridge) = SETTINGS_COMMAND_BRIDGE
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
@@ -303,6 +343,11 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::WifiContinuityCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::WifiContinuityReply, String>>,
+    },
+    Speakers {
+        app_id: String,
+        command: runtime_collab::SpeakerCommand,
+        reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
 }
 
@@ -582,6 +627,14 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             std::mem::size_of::<SdkCommand>().checked_add(app_id.capacity())
         }
         SdkCommand::WifiContinuity {
+            app_id, command, ..
+        } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(app_id);
+            serialized_bytes(command, &mut meter);
+            meter.finish()
+        }
+        SdkCommand::Speakers {
             app_id, command, ..
         } => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
@@ -2554,6 +2607,24 @@ async fn drive_shovel(
                     route
                         .channel
                         .wifi_continuity_command(&app_id, &command)
+                        .await
+                        .map_err(|error| error.to_string())
+                } else {
+                    Err("primary collaboration route is unavailable".into())
+                };
+                let _ = reply.send(result);
+            }
+            SdkCommand::Speakers {
+                app_id,
+                command,
+                reply,
+            } => {
+                let result = if let Some(key) = primary.as_ref()
+                    && let Some(route) = routes.get_mut(key)
+                {
+                    route
+                        .channel
+                        .speaker_command(&app_id, &command)
                         .await
                         .map_err(|error| error.to_string())
                 } else {

@@ -16,3 +16,5 @@ mod preferences;
 mod render_smoke;
 #[path = "shots_smoke.rs"]
 mod shots_smoke;
+#[path = "touch.rs"]
+mod touch;
