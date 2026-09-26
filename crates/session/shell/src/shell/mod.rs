@@ -22,6 +22,8 @@ pub mod actions;
 pub(crate) mod animation_diagnostics;
 pub(crate) mod capture_surface;
 pub mod catalogue;
+pub mod channel_encryption;
+pub mod channel_policy;
 pub mod chrome_state;
 pub mod codec_pack_notice;
 pub mod collab_broker;
