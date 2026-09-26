@@ -918,13 +918,24 @@ pub enum QuickSettingsControl {
     AirplaneMode,
     MobileData,
     DoNotDisturb,
+    /// Stop a convertible's screen following the device. Shown only where
+    /// an accelerometer exists.
+    RotationLock,
 }
 
 impl QuickSettingsControl {
     /// A small, useful surface for a typical laptop.  Airplane mode and Do
     /// Not Disturb are available extras, not always-visible destinations:
     /// the compact root must still fit a small display with a VPN present.
-    pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
+    /// Rotation lock is hidden on machines that cannot rotate, so it costs
+    /// room only on a convertible.
+    pub const DEFAULT: [Self; 5] = [
+        Self::Wifi,
+        Self::Bluetooth,
+        Self::Vpn,
+        Self::NightLight,
+        Self::RotationLock,
+    ];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
     /// path for connecting a newly installed desktop to a network.
