@@ -1,6 +1,6 @@
 //! Clipboard backends — how a `ui` process accesses the selection.
 //!
-//! [`crate::text_selection`]'s verbs resolve to the clipboard of the current
+//! `ui::text_selection`'s verbs resolve to the clipboard of the current
 //! [`crate::host::HostServices`]: a host-installed one (the compositor hosts
 //! several apps in-process and mirrors its own selection for them), the
 //! native desktop clipboard (see `ui::native::services`), or an

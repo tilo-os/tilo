@@ -2,7 +2,7 @@
 //! asked to be served.
 //!
 //! Toolkit code takes these from [`environment`] (or from constructor
-//! parameters such as [`crate::record::RecordSet::open_in`]) rather than
+//! parameters such as `ui::record::RecordSet::open_in`) rather than
 //! reading the process environment itself. Only the native runner derives
 //! them from the process — environment variables, the settings file — in
 //! `ui::native::services::process_environment`. Another host installs its
@@ -11,7 +11,30 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use crate::collaboration::ContinuationMetadata;
+use unic_langid::LanguageIdentifier;
+
+/// Inert, app-owned resume projection sent only to the local shell.
+///
+/// The bytes are deliberately opaque to the toolkit so each app can version
+/// its CRDT-derived schema. The shell validates size and path redaction before
+/// retaining them for same-identity continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuationMetadata {
+    pub schema_version: u16,
+    pub bytes: Vec<u8>,
+}
+
+/// Decode a hex resume payload and its schema version. Invalid input is
+/// ignored so an app outside Tilo or an older sender opens normally.
+#[cfg(feature = "native")]
+pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<ContinuationMetadata> {
+    let bytes = hex::decode(hex).ok()?;
+    let schema_version = schema.parse().ok()?;
+    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(ContinuationMetadata {
+        schema_version,
+        bytes,
+    })
+}
 
 /// Who this process is and which workspace it serves.
 ///
@@ -77,6 +100,10 @@ pub struct AccessibilityInputs {
 
 /// Opt-in developer diagnostics for the runner and the toolkit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent opt-in switch a developer sets"
+)]
 pub struct RunnerDiagnostics {
     /// Debug overlays (only honoured in debug builds).
     pub debug_overlay: bool,
@@ -112,6 +139,50 @@ pub struct HostEnvironment {
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);
+
+/// A POSIX locale value (`de_DE.UTF-8`, or a `LANGUAGE` list such as
+/// `de:en_US`, whose first entry wins) as a language identifier. `C`, `POSIX`,
+/// empty and malformed values name none.
+pub fn parse_posix_locale(locale: &str) -> Option<LanguageIdentifier> {
+    let first = locale.split(':').next().unwrap_or(locale).trim();
+    if first.is_empty() || is_c_locale(first) {
+        return None;
+    }
+    let core = first.split(['.', '@']).next().unwrap_or(first);
+    core.replace('_', "-").parse().ok()
+}
+
+/// Whether a POSIX locale value names the `C`/`POSIX` locale (`C`,
+/// `C.UTF-8`, `POSIX`), which means untranslated source copy.
+fn is_c_locale(value: &str) -> bool {
+    let first = value.split(':').next().unwrap_or(value).trim();
+    let core = first.split(['.', '@']).next().unwrap_or(first);
+    core.eq_ignore_ascii_case("C") || core.eq_ignore_ascii_case("POSIX")
+}
+
+/// The user's message locale from the variables `var` reads: `LC_ALL`,
+/// `LC_MESSAGES`, `LANGUAGE`, then `LANG`. The first variable with a usable
+/// value decides: an explicit `C`/`POSIX` there means source copy (`None`),
+/// not "ignore this and consult the next variable". Unset, empty and
+/// malformed values are skipped.
+#[cfg(any(feature = "native", test))]
+pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    for name in ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"] {
+        let Some(value) = var(name) else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            continue;
+        }
+        if is_c_locale(&value) {
+            return None;
+        }
+        if parse_posix_locale(&value).is_some() {
+            return Some(value);
+        }
+    }
+    None
+}
 
 /// Install `environment` for this process, replacing any earlier one.
 pub fn install_environment(environment: HostEnvironment) {
@@ -154,5 +225,35 @@ mod tests {
             ..HostPaths::default()
         };
         assert_eq!(paths.config_dir(), Some(PathBuf::from("/cfg")));
+    }
+
+    #[test]
+    fn an_explicit_c_locale_ends_the_environment_search() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            }
+        };
+        let found = |vars| {
+            locale_from_vars(env(vars))
+                .and_then(|value| parse_posix_locale(&value))
+                .map(|l| l.to_string())
+        };
+        assert_eq!(
+            found(&[("LC_ALL", "C.UTF-8"), ("LANG", "de_DE.UTF-8")]),
+            None
+        );
+        assert_eq!(
+            found(&[("LC_ALL", ""), ("LANG", "de_DE.UTF-8")]).as_deref(),
+            Some("de-DE")
+        );
+        assert_eq!(
+            found(&[("LC_MESSAGES", "not a locale!"), ("LANG", "fr_FR")]).as_deref(),
+            Some("fr-FR"),
+            "a malformed value is skipped"
+        );
+        assert_eq!(found(&[]), None);
     }
 }

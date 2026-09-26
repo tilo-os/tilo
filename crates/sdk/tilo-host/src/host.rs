@@ -20,7 +20,7 @@
 //! The existing free functions (`text_selection::clipboard_copy`,
 //! `portal::PickRequest::send`, `widget::try_open_external_url`, …) resolve
 //! through [`current`], so apps need no changes. New code that holds a
-//! [`crate::application::HostContext`] can use its `services()` directly.
+//! `ui::application::HostContext` can use its `services()` directly.
 
 use std::cell::RefCell;
 use std::sync::mpsc::Receiver;
@@ -42,8 +42,8 @@ pub use crate::native::services as native;
 mod recording;
 
 pub use environment::{
-    AccessibilityInputs, HostEnvironment, HostIdentity, HostPaths, RunnerDiagnostics, environment,
-    install_environment,
+    AccessibilityInputs, ContinuationMetadata, HostEnvironment, HostIdentity, HostPaths,
+    RunnerDiagnostics, environment, install_environment, parse_posix_locale,
 };
 pub use recording::HostRecorder;
 
@@ -379,13 +379,13 @@ impl Drop for HostScope {
 /// The services effects on this thread should reach right now; see the
 /// module docs for the resolution order.
 pub fn current() -> HostServices {
+    static NULL: OnceLock<HostServices> = OnceLock::new();
     if let Some(scoped) = SCOPES.with(|scopes| scopes.borrow().last().cloned()) {
         return scoped;
     }
     if let Some(installed) = installed_default() {
         return installed;
     }
-    static NULL: OnceLock<HostServices> = OnceLock::new();
     NULL.get_or_init(HostServices::null).clone()
 }
 

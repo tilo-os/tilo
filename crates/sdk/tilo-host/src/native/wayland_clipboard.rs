@@ -65,7 +65,7 @@ pub struct WaylandClipboard {
     primary_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
     clipboard_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
     primary_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
-    wake: crate::WakeHandle,
+    wake: crate::wake::WakeHandle,
 }
 
 #[cfg(target_os = "linux")]
@@ -133,7 +133,7 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            wake: crate::WakeHandle::new(),
+            wake: crate::wake::WakeHandle::new(),
         }
     }
 
@@ -172,7 +172,7 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            wake: crate::WakeHandle::new(),
+            wake: crate::wake::WakeHandle::new(),
         }
     }
 }

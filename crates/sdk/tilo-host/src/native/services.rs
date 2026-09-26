@@ -11,7 +11,7 @@
 //! - notifications: Windows toasts (with the `notifications` feature);
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
 //! - location: the XDG Location portal (with the `portal` feature);
-//! - screen capture: the XDG ScreenCast portal (with the `portal` feature).
+//! - screen capture: the XDG `ScreenCast` portal (with the `portal` feature).
 //!
 //! It is also the one place the toolkit reads the process environment:
 //! [`process_environment`] turns launcher variables, XDG paths and
@@ -89,7 +89,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
     }
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX").and_then(|hex| {
-        crate::collaboration::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?)
+        crate::host::environment::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?)
     });
     crate::host::HostEnvironment {
         identity: crate::host::HostIdentity {
@@ -118,7 +118,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             // sandboxes so an app comes up already scaled.
             ui_scale: factor(&["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"]),
         },
-        locale: crate::i18n::locale_from_vars(|name| std::env::var(name).ok()),
+        locale: crate::host::environment::locale_from_vars(|name| std::env::var(name).ok()),
         diagnostics: crate::host::RunnerDiagnostics {
             debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
             perf_log: set("QUICK_UI_PERF"),
@@ -129,8 +129,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
                 .is_ok_and(|v| v == "1"),
             profile_hud: set("TILO_PROFILE"),
             profile_out: path("TILO_PROFILE_OUT"),
-            presentation_profile: crate::render_thread::timing::gate(
-                true,
+            presentation_profile: presentation_profile_requested(
                 std::env::var("QOS_PROFILE_PRESENTATION").ok().as_deref(),
                 std::env::var_os("QOS_NATIVE_SCENARIO").as_deref(),
             ),
@@ -138,6 +137,16 @@ pub fn process_environment() -> crate::host::HostEnvironment {
                 == Ok("1"),
         },
     }
+}
+
+/// Presentation profiling needs an explicit `profile == "1"` and a native
+/// scenario to profile. Whether this platform can profile presentation at all
+/// is the renderer's decision.
+fn presentation_profile_requested(
+    profile: Option<&str>,
+    scenario: Option<&std::ffi::OsStr>,
+) -> bool {
+    profile == Some("1") && scenario.is_some_and(|path| !path.is_empty())
 }
 
 /// Attach the native clipboard to the runner's Wayland display, so copies go
@@ -201,7 +210,7 @@ impl NativeClipboard {
     }
 
     /// Write to a clipboard other processes can read, if there is one.
-    fn set_shared(&self, target: ClipboardTarget, text: &str) -> bool {
+    fn set_shared(target: ClipboardTarget, text: &str) -> bool {
         if let Some(wayland) = Self::wayland()
             && wayland.set_text(target, text)
         {
@@ -255,7 +264,7 @@ impl NoWayland {
 
 impl ClipboardBackend for NativeClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
-        if self.set_shared(target, text) {
+        if Self::set_shared(target, text) {
             return true;
         }
         // Windows has no primary-selection protocol. Keep select/middle-click
@@ -274,7 +283,7 @@ impl ClipboardBackend for NativeClipboard {
         if let Some(wayland) = Self::wayland() {
             return wayland.set_text(target, text);
         }
-        self.set_shared(target, text)
+        Self::set_shared(target, text)
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
@@ -424,6 +433,23 @@ impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_profile_requires_a_native_scenario_and_explicit_feedback() {
+        use std::ffi::OsStr;
+        assert!(presentation_profile_requested(
+            Some("1"),
+            Some(OsStr::new("scenario.json"))
+        ));
+        for (profile, scenario) in [
+            (None, Some(OsStr::new("scenario.json"))),
+            (Some("0"), Some(OsStr::new("scenario.json"))),
+            (Some("1"), None),
+            (Some("1"), Some(OsStr::new(""))),
+        ] {
+            assert!(!presentation_profile_requested(profile, scenario));
+        }
+    }
 
     #[cfg(windows)]
     #[test]

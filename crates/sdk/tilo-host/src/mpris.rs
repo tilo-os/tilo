@@ -3,7 +3,7 @@
 //! Shared, app-agnostic core that publishes now-playing metadata + transport
 //! state to the desktop and receives media-key / system-widget commands back.
 //! Lifted out of the Music app so any `ui` consumer (e.g.
-//! [`crate::widget::video_player::VideoPlayer`], hence Tube) gets this free.
+//! `ui::widget::video_player::VideoPlayer`, hence Tube) gets this free.
 //!
 //! This is the pure state/command core; it always compiles so tests run
 //! without D-Bus. The session itself comes from the host's

@@ -228,47 +228,8 @@ fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
 }
 
 fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
-    let first = locale.split(':').next().unwrap_or(locale).trim();
-    if first.is_empty() || first.eq_ignore_ascii_case("C") || first.eq_ignore_ascii_case("POSIX") {
-        return Err(I18nError::InvalidLocale(locale.to_owned()));
-    }
-    let core = first.split(['.', '@']).next().unwrap_or(first);
-    core.replace('_', "-")
-        .parse()
-        .map_err(|_| I18nError::InvalidLocale(locale.to_owned()))
-}
-
-/// Whether a POSIX locale value names the `C`/`POSIX` locale (`C`,
-/// `C.UTF-8`, `POSIX`), which means untranslated source copy.
-#[cfg(any(feature = "native", test))]
-fn is_c_locale(value: &str) -> bool {
-    let first = value.split(':').next().unwrap_or(value).trim();
-    let core = first.split(['.', '@']).next().unwrap_or(first);
-    core.eq_ignore_ascii_case("C") || core.eq_ignore_ascii_case("POSIX")
-}
-
-/// The user's message locale from the variables `var` reads: `LC_ALL`,
-/// `LC_MESSAGES`, `LANGUAGE`, then `LANG`. The first variable with a usable
-/// value decides: an explicit `C`/`POSIX` there means source copy (`None`),
-/// not "ignore this and consult the next variable". Unset, empty and
-/// malformed values are skipped.
-#[cfg(any(feature = "native", test))]
-pub(crate) fn locale_from_vars(var: impl Fn(&str) -> Option<String>) -> Option<String> {
-    for name in ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"] {
-        let Some(value) = var(name) else {
-            continue;
-        };
-        if value.trim().is_empty() {
-            continue;
-        }
-        if is_c_locale(&value) {
-            return None;
-        }
-        if parse_locale(&value).is_ok() {
-            return Some(value);
-        }
-    }
-    None
+    crate::host::parse_posix_locale(locale)
+        .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
 /// The host's preferred locale; see [`crate::host::HostEnvironment::locale`].
@@ -1037,36 +998,6 @@ mod tests {
         assert_eq!(parsed("en_US").as_deref(), Some("en-US"));
         // A `LANGUAGE` list: the first entry wins.
         assert_eq!(parsed("de:en_US").as_deref(), Some("de"));
-    }
-
-    #[test]
-    fn an_explicit_c_locale_ends_the_environment_search() {
-        let env = |vars: &'static [(&'static str, &'static str)]| {
-            move |name: &str| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            }
-        };
-        let found = |vars| {
-            locale_from_vars(env(vars))
-                .and_then(|value| parse_locale(&value).ok())
-                .map(|l| l.to_string())
-        };
-        assert_eq!(
-            found(&[("LC_ALL", "C.UTF-8"), ("LANG", "de_DE.UTF-8")]),
-            None
-        );
-        assert_eq!(
-            found(&[("LC_ALL", ""), ("LANG", "de_DE.UTF-8")]).as_deref(),
-            Some("de-DE")
-        );
-        assert_eq!(
-            found(&[("LC_MESSAGES", "not a locale!"), ("LANG", "fr_FR")]).as_deref(),
-            Some("fr-FR"),
-            "a malformed value is skipped"
-        );
-        assert_eq!(found(&[]), None);
     }
 
     #[test]
