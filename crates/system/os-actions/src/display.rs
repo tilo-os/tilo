@@ -157,12 +157,16 @@ impl AmbientBrightnessController {
 }
 
 fn get_brightness_in(root: &Path) -> Result<f32, String> {
-    let dev = preferred_device(root).ok_or("no backlight device")?;
-    let max = read_u32(&dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
+    get_backlight(&preferred_device(root).ok_or("no backlight device")?)
+}
+
+/// Read one backlight device as a `0.0..=1.0` fraction.
+pub(crate) fn get_backlight(dev: &Path) -> Result<f32, String> {
+    let max = read_u32(dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
     if max == 0 {
         return Err("backlight max_brightness is 0".to_string());
     }
-    let now = read_u32(&dev, "brightness").ok_or("backlight brightness unreadable")?;
+    let now = read_u32(dev, "brightness").ok_or("backlight brightness unreadable")?;
     #[allow(
         clippy::cast_precision_loss,
         reason = "backlight raw values are far below 2^24, so the f32 division loses no \
@@ -173,8 +177,12 @@ fn get_brightness_in(root: &Path) -> Result<f32, String> {
 }
 
 fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
-    let dev = preferred_device(root).ok_or("no backlight device")?;
-    let max = read_u32(&dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
+    set_backlight(&preferred_device(root).ok_or("no backlight device")?, pct)
+}
+
+/// Write `pct` percent to one backlight device.
+pub(crate) fn set_backlight(dev: &Path, pct: f32) -> Result<(), String> {
+    let max = read_u32(dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
     if max == 0 {
         return Err("backlight max_brightness is 0".to_string());
     }
@@ -197,7 +205,7 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
 /// firmware's generic interface, usually a no-op or coarse duplicate of the native one, so
 /// the native device (`intel_backlight`, `amdgpu_bl0`, `nv_backlight`, …) is preferred. Ties
 /// break on name so the choice is stable rather than following readdir order.
-fn preferred_device(root: &Path) -> Option<PathBuf> {
+pub(crate) fn preferred_device(root: &Path) -> Option<PathBuf> {
     let mut devices: Vec<PathBuf> = fs::read_dir(root)
         .ok()?
         .flatten()
