@@ -12,6 +12,7 @@
     )
 )]
 
+pub mod app_icons;
 pub mod bluetooth;
 pub mod bluetooth_prompt;
 pub mod collab;

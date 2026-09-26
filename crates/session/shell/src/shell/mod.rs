@@ -1227,6 +1227,7 @@ pub fn to_ui_window_group_with_inputs(
                     id: t.id,
                     title: t.title.clone(),
                     app_kind: Some(kind),
+                    icon: crate::app_icons::for_tile(&t.tile),
                 },
                 to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
             )
