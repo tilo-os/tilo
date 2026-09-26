@@ -6285,7 +6285,11 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if is_lock_chord(wev, test_control_ctx.modifiers) {
+                    } else if is_lock_chord(
+                        wev,
+                        test_control_ctx.modifiers,
+                        frame_builder.host().shortcut_config(),
+                    ) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
@@ -6548,6 +6552,9 @@ pub fn run() {
             {
                 tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
             }
+            frame_builder.host_mut().set_desktop_controls_config(
+                settings_store::hardware::DesktopControlsConfig::load(),
+            );
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
