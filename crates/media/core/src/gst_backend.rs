@@ -69,6 +69,7 @@ pub fn available_video_decoders() -> Vec<DecoderEntry> {
     if gst::init().is_err() {
         return Vec::new();
     }
+    crate::extensions::refresh_registry();
     let registry = gst::Registry::get();
     let mut out: Vec<DecoderEntry> = registry
         .features(gst::ElementFactory::static_type())
@@ -274,6 +275,9 @@ impl GstState {
     /// to the synthesized backend.
     pub fn new(acceptance: FrameAcceptance, policy: HwPolicy) -> Option<Self> {
         gst::init().ok()?;
+        // Pick up plugins a codec-pack merge added (or an unmerge removed)
+        // before ranking, so new hardware decoders get their rank too.
+        crate::extensions::refresh_registry();
         // Ranks are re-applied per pipeline rather than once per process.
         // GStreamer's registry ranks are global, so the most recently built
         // engine's policy is the one in force — but re-applying makes the
@@ -401,7 +405,9 @@ impl GstState {
         }
 
         // Another engine may have been built since, leaving the registry on
-        // its policy. Re-assert ours before the decoder is autoplugged.
+        // its policy, and extensions may have changed since this engine was
+        // built. Re-assert ours before the decoder is autoplugged.
+        crate::extensions::refresh_registry();
         apply_decoder_ranks(self.policy);
         self.set_drop_policy(false);
         let uri = match source.to_uri() {

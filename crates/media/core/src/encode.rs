@@ -553,7 +553,9 @@ impl EncodeReport {
 /// documented as safe to call repeatedly.
 #[cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
 pub fn registry_has(name: &str) -> bool {
-    let _ = gstreamer::init();
+    if gstreamer::init().is_ok() {
+        crate::extensions::refresh_registry();
+    }
     gstreamer::ElementFactory::find(name).is_some()
 }
 

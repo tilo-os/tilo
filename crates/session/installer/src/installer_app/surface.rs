@@ -66,6 +66,25 @@ fn nullary(id: &str, label: &str, operation: &Operation) -> ActionSpec {
     typed(id, label, Vec::new(), move |_| operation.clone())
 }
 
+/// An operation that switches one option on or off through its `enabled` flag.
+fn toggle(
+    id: &str,
+    label: &str,
+    description: &'static str,
+    build: impl Fn(bool) -> Operation + Send + Sync + 'static,
+) -> ActionSpec {
+    typed(
+        id,
+        label,
+        vec![ActionParam::required(
+            "enabled",
+            ParamType::Boolean,
+            description,
+        )],
+        move |args| build(args.boolean("enabled").unwrap_or(false)),
+    )
+}
+
 fn gate(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
     match blocked {
         Some((code, reason)) => spec.unavailable(code, reason),
@@ -583,17 +602,20 @@ impl InstallerApp {
                 on_step.clone(),
             ))
             .with_action(gate(
-                typed(
+                toggle(
                     "set-security-key",
                     "Enroll a security key",
-                    vec![ActionParam::required(
-                        "enabled",
-                        ParamType::Boolean,
-                        "Enroll a FIDO2 security key as another unlock factor",
-                    )],
-                    |args| Operation::SetSecurityKey {
-                        enabled: args.boolean("enabled").unwrap_or(false),
-                    },
+                    "Enroll a FIDO2 security key as another unlock factor",
+                    |enabled| Operation::SetSecurityKey { enabled },
+                ),
+                on_step.clone(),
+            ))
+            .with_action(gate(
+                toggle(
+                    "set-media-codecs",
+                    "Install media codecs",
+                    "Download RPM Fusion and Cisco codecs once the new system is online",
+                    |enabled| Operation::SetMediaCodecs { enabled },
                 ),
                 on_step.clone(),
             ))
@@ -1134,6 +1156,12 @@ impl InstallerApp {
             Operation::SetSecurityKey { enabled } => {
                 self.require_step(Step::Options)?;
                 self.fido2 = enabled;
+                self.dirty_structure = true;
+                done()
+            }
+            Operation::SetMediaCodecs { enabled } => {
+                self.require_step(Step::Options)?;
+                self.codecs = enabled;
                 self.dirty_structure = true;
                 done()
             }
