@@ -776,30 +776,19 @@ pub mod live {
     /// account from the vault. Refreshed tokens are sealed back so the next
     /// request reuses them.
     fn access_token_for(email: &str) -> Result<String, String> {
+        let domain = email.split_once('@').map_or("", |(_, d)| d);
+        let provider = oauth::OAuthProvider::from_domain(domain)
+            .ok_or("cannot refresh: unknown OAuth provider")?;
+        let client = provider
+            .client()
+            .ok_or_else(|| format!("set {} to refresh the token", provider.client_id_env()))?;
         let mut vault = SecretVault::open();
-        let id = AccountId::from(email.to_string());
-        let secret = vault
-            .get(&id)
-            .ok_or("not signed in (no OAuth token in vault)")?;
-        let mut tokens =
-            oauth::tokens_from_secret(&secret).ok_or("stored credential is not an OAuth token")?;
-        if tokens.needs_refresh() {
-            let domain = email.split_once('@').map_or("", |(_, d)| d);
-            let provider = oauth::OAuthProvider::from_domain(domain)
-                .ok_or("cannot refresh: unknown OAuth provider")?;
-            let client_id = provider
-                .client_id()
-                .ok_or_else(|| format!("set {} to refresh the token", provider.client_id_env()))?;
-            if tokens.refresh_token.is_empty() {
-                return Err("access token expired and no refresh token; sign in again".into());
-            }
-            tokens = oauth::refresh_tokens(provider, &client_id, &tokens.refresh_token)?;
-            vault.put(&id, &oauth::tokens_to_secret(&tokens));
-            vault.try_save().map_err(|error| {
-                format!("could not save refreshed sign-in credentials: {error}")
-            })?;
-        }
-        Ok(tokens.access_token)
+        let token = accounts::oauth::fresh_access_token(
+            &mut vault,
+            &AccountId::from(email.to_string()),
+            &client,
+        )?;
+        Ok(token.to_string())
     }
 
     /// Run the browser OAuth flow and seal the tokens under `account_id`.
@@ -808,12 +797,11 @@ pub mod live {
         provider: oauth::OAuthProvider,
         login_hint: &str,
     ) -> Result<(), String> {
-        let client_id = provider
-            .client_id()
+        let client = provider
+            .client()
             .ok_or_else(|| format!("set {} to sign in", provider.client_id_env()))?;
-        let tokens = oauth::run_loopback_authorization(
-            provider,
-            &client_id,
+        let tokens = accounts::oauth::run_loopback_authorization(
+            &client,
             login_hint,
             |url| ui::widget::try_open_external_url(url).map_err(|error| error.to_string()),
             std::time::Duration::from_secs(300),

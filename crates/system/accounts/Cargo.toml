@@ -32,12 +32,22 @@ getrandom.workspace = true
 zeroize.workspace = true
 uuid.workspace = true
 url.workspace = true
+# PKCE (S256 + base64url) for the one OAuth authorization-code flow.
+base64.workspace = true
+sha2.workspace = true
+# Token exchange and refresh; only consumers that sign in link an HTTP client.
+tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
+
+[features]
+http = ["dep:tilo-net", "dep:reqwest"]
 
 [dev-dependencies]
 # Tests stage and inspect key files through the vault's own private-file
 # checks, and edit Windows ACLs through a bounded `icacls` call.
 private-fs = { path = "../private-fs" }
 bounded-command = { path = "../../../crates/system/bounded-command" }
+hex.workspace = true
 
 [lints]
 workspace = true
