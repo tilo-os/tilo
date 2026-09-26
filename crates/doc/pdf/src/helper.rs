@@ -15,7 +15,7 @@
 //!
 //! Then it announces `Ready` and serves requests until the socket closes.
 //! If either confinement cannot be fully enforced it reports
-//! [`FailureKind::Sandbox`] and exits without reading a document; see
+//! `FailureKind::Sandbox` and exits without reading a document; see
 //! [When the sandbox cannot be enforced](crate#when-the-sandbox-cannot-be-enforced).
 //! A crash or hang here costs only this process; the client reports an
 //! error and starts a fresh helper.

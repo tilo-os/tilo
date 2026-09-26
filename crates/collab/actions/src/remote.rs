@@ -22,7 +22,7 @@
 //! host beside the message; nothing in a frame can name or change it.
 //!
 //! Descriptors, addresses, arguments, outputs and lifecycle updates are the
-//! same types the local action surface already uses ([`ActionDescriptor`],
+//! same types the local action surface already uses ([`ActionDescriptor`](crate::door::ActionDescriptor),
 //! [`ActionAddress`], [`InvocationUpdate`], [`ActionOutput`],
 //! [`ActionFailure`]), so a remote caller sees exactly what a local one does.
 

@@ -8,7 +8,7 @@
 //! author/date/kind in the `changes` container. qdoc *retains* deleted text in the body
 //! (struck, not removed) while ODF moves it into the changed-region's `text:deletion` and
 //! leaves a point `text:change` in the body: import splices the deleted text back in at the
-//! marker under a `del` mark, and export moves it out again (see [`move_deletions_out`]).
+//! marker under a `del` mark, and export moves it out again (see `move_deletions_out`).
 
 use crate::xml_escape::{escape_attr, escape_text};
 use qdoc::document::MarkSpan;

@@ -10,7 +10,7 @@
 //! variant so a peer running an older build keeps decoding what this one
 //! sends.
 //!
-//! The crate is pure data plus pure helpers ([`retention`]); it owns no
+//! The crate is pure data plus pure helpers ([`mod@retention`]); it owns no
 //! transport, runtime or state machine.
 
 #![cfg_attr(

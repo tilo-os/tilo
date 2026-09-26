@@ -5,7 +5,7 @@
 //! when the signed root hashes to the package id and commits to the exact
 //! manifest and payload collection (see [`crate::package`]), and payload
 //! bytes are checked against the collection by whoever reads them (the
-//! `.tapp` decoder, [`crate::unpack`], an installer). What remains is the
+//! `.tapp` decoder, [`crate::unpack()`], an installer). What remains is the
 //! signature and the trust policy:
 //!
 //! 1. The signed root carries a signature (not unsigned).
