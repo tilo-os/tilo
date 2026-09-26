@@ -96,11 +96,14 @@ if printf '%s\n' "$added" | grep -qE '(^|[^a-z_])dbg!\('; then
   fail=1
 fi
 
-# Require a manifest change alongside Cargo.lock changes; see AGENTS.md.
+# Require a manifest change alongside Cargo.lock changes; see AGENTS.md. The
+# one lock-only change admitted is a declared single-crate update,
+#   TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit
+# that cargo metadata --locked accepts and that moves nothing else
+# (tools/ci/check_lock_update.py).
 if git diff --cached --name-only | grep -qx 'Cargo.lock' \
    && ! git diff --cached --name-only | grep -qE '(^|/)Cargo\.toml$'; then
-  note "Cargo.lock changed with no Cargo.toml beside it — regenerating it is not supported here"
-  fail=1
+  python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
 fi
 # A vendored crate's own lock file is a build artifact, not ours.
 if git diff --cached --name-only | grep -qE '^vendor/[^/]+/Cargo\.lock$'; then

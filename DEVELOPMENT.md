@@ -1370,6 +1370,22 @@ manifest and rejects missing, duplicate, excluded, or stale workspace members.
 Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
 Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
 
+The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
+except a declared single-crate update. Name the `cargo update` you ran (several
+separated by `;`):
+
+```bash
+cargo update -p rustls --precise 0.23.31
+git add Cargo.lock
+TILO_CARGO_UPDATE='-p rustls --precise 0.23.31' git commit
+```
+
+`tools/ci/check_lock_update.py` then admits the lock only when
+`cargo metadata --locked` accepts the working tree (which must equal the staged
+lock and manifests), every package whose version moved is declared at its
+`--precise` version, and every entry added or removed is a dependency of a
+declared package's new or old version. Any other lock change stays refused.
+
 ### Linux PDF capture tests
 
 The PDF capture integration test requires native PDFium; text extraction alone

@@ -68,6 +68,7 @@ QUALITY_ONLY_HELPERS = {
     "scripts/ci-run.sh": "tools/tests/test_ci_run.py",
     "tools/ci/check-changed-rustfmt.sh": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
+    "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
