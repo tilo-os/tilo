@@ -35,6 +35,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use wire_frame::{FrameError, Framing};
 
 use super::{
     DirectMeshAuthorizer, FsTransportIdentity, PeerPolicy, RecordPlane, authenticate_connection,
@@ -206,28 +207,28 @@ pub enum SessionFrameV1 {
     ChangesetEnd,
 }
 
+/// Every request and response frame: a big-endian `u32` length, then the
+/// postcard encoding. Each read bounds the frame by what that step expects
+/// (see [`read_frame`]); nothing larger than the largest of those bounds is
+/// sent.
+const SESSION_FRAMING: Framing = Framing::big_endian(MAX_SYNC_FRAME_BYTES);
+
 async fn write_frame<T: Serialize + Sync>(send: &mut SendStream, value: &T) -> Result<()> {
-    let bytes = postcard::to_allocvec(value)?;
-    let length = u32::try_from(bytes.len()).map_err(|_| anyhow!("session frame too large"))?;
-    send.write_all(&length.to_be_bytes()).await?;
-    send.write_all(&bytes).await?;
+    SESSION_FRAMING.write_value_async(send, value).await?;
     Ok(())
 }
 
+/// The next frame, of at most `limit` bytes; the stream closing before it
+/// is an error.
 async fn read_frame<T: serde::de::DeserializeOwned>(
     recv: &mut RecvStream,
     limit: usize,
 ) -> Result<T> {
-    let mut prefix = [0_u8; 4];
-    recv.read_exact(&mut prefix).await?;
-    let length = u32::from_be_bytes(prefix) as usize;
-    anyhow::ensure!(
-        length <= limit,
-        "session frame of {length} bytes exceeds {limit}"
-    );
-    let mut bytes = vec![0_u8; length];
-    recv.read_exact(&mut bytes).await?;
-    Ok(postcard::from_bytes(&bytes)?)
+    Ok(SESSION_FRAMING
+        .with_max_len(limit)
+        .read_value_async(recv)
+        .await?
+        .ok_or(FrameError::Closed)?)
 }
 
 fn denied(peer: &AuthenticatedFsPeer, identity: &FsTransportIdentity) -> bool {
@@ -2012,4 +2013,56 @@ pub(super) async fn collect_replica_acks(
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn session_frames_are_big_endian_length_then_postcard() {
+        let mut wire = Vec::new();
+        SESSION_FRAMING
+            .write_value_async(&mut wire, &SessionFrameV1::Sync(b"ab".to_vec()))
+            .await
+            .unwrap();
+        assert_eq!(wire, [0, 0, 0, 4, 4, 2, b'a', b'b']);
+
+        let frame: Option<SessionFrameV1> = SESSION_FRAMING
+            .with_max_len(MAX_FRAME_BYTES)
+            .read_value_async(&mut &[0, 0, 0, 1, 8][..])
+            .await
+            .unwrap();
+        assert!(matches!(frame, Some(SessionFrameV1::Done)));
+    }
+
+    #[tokio::test]
+    async fn session_reads_are_bounded_by_the_step_limit() {
+        let over = u32::try_from(MAX_FRAME_BYTES + 1).unwrap().to_be_bytes();
+        assert!(matches!(
+            SESSION_FRAMING
+                .with_max_len(MAX_FRAME_BYTES)
+                .read_value_async::<_, SessionFrameV1>(&mut &over[..])
+                .await,
+            Err(FrameError::TooLarge(_))
+        ));
+        // A sync round may carry up to the larger sync bound.
+        assert!(matches!(
+            SESSION_FRAMING
+                .with_max_len(MAX_SYNC_FRAME_BYTES)
+                .read_value_async::<_, SessionFrameV1>(&mut &over[..])
+                .await,
+            Err(FrameError::Truncated)
+        ));
+        let too_big = u32::try_from(MAX_SYNC_FRAME_BYTES + 1)
+            .unwrap()
+            .to_be_bytes();
+        assert!(matches!(
+            SESSION_FRAMING
+                .with_max_len(MAX_SYNC_FRAME_BYTES)
+                .read_value_async::<_, SessionFrameV1>(&mut &too_big[..])
+                .await,
+            Err(FrameError::TooLarge(_))
+        ));
+    }
 }

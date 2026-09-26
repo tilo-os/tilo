@@ -3130,3 +3130,38 @@ async fn an_entitled_peer_still_bootstraps_and_hydrates() {
         .expect("an entitled peer hydrates content");
     assert_eq!(got.as_slice(), content, "and reads the host's real bytes");
 }
+
+#[tokio::test]
+async fn sync_frames_are_little_endian_length_then_raw_message() {
+    let mut wire = Vec::new();
+    SYNC_FRAMING.write_async(&mut wire, b"ab").await.unwrap();
+    SYNC_FRAMING.write_async(&mut wire, &[]).await.unwrap();
+    assert_eq!(wire, [2, 0, 0, 0, b'a', b'b', 0, 0, 0, 0]);
+
+    let mut reader = &[1, 0, 0, 0, 9, 0, 0, 0, 0][..];
+    assert_eq!(
+        SYNC_FRAMING.read_async(&mut reader).await.unwrap(),
+        Some(vec![9])
+    );
+    // An empty message means that side has nothing to send this round.
+    assert_eq!(
+        SYNC_FRAMING.read_async(&mut reader).await.unwrap(),
+        Some(Vec::new())
+    );
+    assert_eq!(SYNC_FRAMING.read_async(&mut reader).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn sync_frames_over_sixty_four_mebibytes_or_truncated_are_refused() {
+    let oversized = (64_u32 * 1024 * 1024 + 1).to_le_bytes();
+    assert!(matches!(
+        SYNC_FRAMING.read_async(&mut &oversized[..]).await,
+        Err(FrameError::TooLarge(_))
+    ));
+    for wire in [&[2, 0][..], &[2, 0, 0, 0, 1][..]] {
+        assert!(matches!(
+            SYNC_FRAMING.read_async(&mut &wire[..]).await,
+            Err(FrameError::Truncated)
+        ));
+    }
+}

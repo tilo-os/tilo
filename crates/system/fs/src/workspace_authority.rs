@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use collab_types::{CapOverride, Principal};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use wire_frame::{FrameError, Framing};
 
 use crate::sync::Ticket;
 use crate::{AclHandle, IdentityKey, WorkspaceAcl};
@@ -667,24 +668,22 @@ pub async fn local_authority_request(
     read_frame(&mut stream).await
 }
 
+/// Each authority and content-peer control message, over the local socket
+/// and the peer protocol alike: a little-endian `u32` length, then the
+/// postcard encoding.
+const AUTHORITY_FRAMING: Framing = Framing::little_endian(MAX_AUTHORITY_FRAME);
+
 /// Write one bounded authority control frame.
 ///
 /// # Errors
 ///
-/// Returns an error when serialization, length conversion, or the stream
-/// write fails.
+/// Returns an error when serialization, the frame bound, or the stream write
+/// fails.
 pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
 ) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let bytes = postcard::to_allocvec(value)?;
-    anyhow::ensure!(
-        bytes.len() <= MAX_AUTHORITY_FRAME,
-        "authority frame too large"
-    );
-    writer.write_u32_le(u32::try_from(bytes.len())?).await?;
-    writer.write_all(&bytes).await?;
+    AUTHORITY_FRAMING.write_value_async(writer, value).await?;
     Ok(())
 }
 
@@ -692,16 +691,15 @@ pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize +
 ///
 /// # Errors
 ///
-/// Returns an error when the stream, frame bound, or payload decoding fails.
+/// Returns an error when the stream, frame bound, or payload decoding fails,
+/// including when the stream closes before the frame.
 pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<T> {
-    use tokio::io::AsyncReadExt;
-    let len = usize::try_from(reader.read_u32_le().await?)?;
-    anyhow::ensure!(len <= MAX_AUTHORITY_FRAME, "authority frame too large");
-    let mut bytes = vec![0; len];
-    reader.read_exact(&mut bytes).await?;
-    Ok(postcard::from_bytes(&bytes)?)
+    Ok(AUTHORITY_FRAMING
+        .read_value_async(reader)
+        .await?
+        .ok_or(FrameError::Closed)?)
 }
 
 fn project(
@@ -720,6 +718,48 @@ fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn authority_frames_are_little_endian_length_then_postcard() {
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &AuthorityResponse { authority: None })
+            .await
+            .unwrap();
+        assert_eq!(wire, [1, 0, 0, 0, 0]);
+
+        let mut wire: Vec<u8> = vec![18, 0, 0, 0, 16];
+        wire.extend_from_slice(&[0x44; 16]);
+        wire.push(0);
+        let request: AuthorityRequest = read_frame(&mut wire.as_slice()).await.unwrap();
+        assert_eq!(request.workspace, uuid::Uuid::from_bytes([0x44; 16]));
+        assert!(request.publish.is_none());
+    }
+
+    #[tokio::test]
+    async fn authority_frames_reject_oversized_truncated_and_closed_streams() {
+        let oversized = u32::try_from(MAX_AUTHORITY_FRAME + 1)
+            .unwrap()
+            .to_le_bytes();
+        assert!(
+            read_frame::<_, AuthorityResponse>(&mut &oversized[..])
+                .await
+                .is_err()
+        );
+        for wire in [&[][..], &[1, 0][..], &[2, 0, 0, 0, 0][..]] {
+            let error = read_frame::<_, AuthorityResponse>(&mut &wire[..])
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<FrameError>().map(FrameError::kind),
+                Some(std::io::ErrorKind::UnexpectedEof),
+                "{wire:?}"
+            );
+        }
+        let oversized = vec![0_u8; MAX_AUTHORITY_FRAME];
+        let mut wire = Vec::new();
+        assert!(write_frame(&mut wire, &oversized).await.is_err());
+        assert!(wire.is_empty());
+    }
 
     #[test]
     fn persisted_peer_catalog_refreshes_and_reclaims_oldest_entry() {
