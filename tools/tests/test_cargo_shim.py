@@ -48,26 +48,17 @@ class CacheIncrementalPolicy(unittest.TestCase):
             self.assertTrue(record.exists(), "Cargo must actually invoke the wrapper")
             return set(record.read_text().splitlines())
 
-    def test_selected_sccache_disables_incremental(self):
-        self.assertEqual(self.run_build(), {"0"})
-
-    def test_existing_sccache_path_disables_incremental(self):
-        self.assertEqual(self.run_build(wrapper="sccache"), {"0"})
-
-    def test_custom_wrapper_preserves_native_incremental_policy(self):
-        self.assertEqual(self.run_build(wrapper="custom-wrapper"), {"unset"})
-
-    def test_explicit_incremental_choice_is_preserved(self):
-        self.assertEqual(self.run_build(incremental="1"), {"1"})
-
-    def test_path_fallback_applies_selected_cache_policy(self):
-        self.assertEqual(self.run_build(missing_cargo_home=True), {"0"})
-
-    def test_path_fallback_preserves_custom_wrapper_policy(self):
-        self.assertEqual(
-            self.run_build(wrapper="custom-wrapper", missing_cargo_home=True), {"unset"}
-        )
-
+    def test_incremental_policy_follows_the_selected_wrapper(self):
+        for expected, options in (
+            ({"0"}, {}),  # the shim's own sccache selection
+            ({"0"}, {"wrapper": "sccache"}),  # an existing sccache path
+            ({"unset"}, {"wrapper": "custom-wrapper"}),  # native policy for other wrappers
+            ({"1"}, {"incremental": "1"}),  # an explicit choice wins
+            ({"0"}, {"missing_cargo_home": True}),  # PATH fallback selects sccache
+            ({"unset"}, {"wrapper": "custom-wrapper", "missing_cargo_home": True}),
+        ):
+            with self.subTest(**options):
+                self.assertEqual(self.run_build(**options), expected)
 
 if __name__ == "__main__":
     unittest.main()
