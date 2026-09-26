@@ -13476,6 +13476,7 @@ impl ShellOverlayHost {
     /// directory, and realtime continuity.
     pub fn attach_collab_broker(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
         self.attach_recorder(broker);
+        self.attach_record_custody(broker);
         self.attach_replay(broker);
         let dispatcher = broker.follow_dispatcher();
         self.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
@@ -13514,6 +13515,44 @@ impl ShellOverlayHost {
         ));
     }
 
+    /// Serve the shell's own records to the rooms that reference them, and
+    /// reach the records other members serve.
+    fn attach_record_custody(&self, broker: &crate::shell::collab_broker::BrokerHandle) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let tree = chrome.borrow().tree_handle();
+        let custody = crate::shell::record_custody::RecordCustody::attach(&broker.fanout(), tree);
+        chrome.borrow_mut().set_custody(custody);
+    }
+
+    /// Sign what custody publishes with this device's certified key.
+    pub fn set_record_signer(
+        &self,
+        signer: std::sync::Arc<dyn crate::shell::record_custody::DeviceSigner>,
+    ) {
+        if let Some(custody) = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().custody().cloned())
+        {
+            custody.set_signer(signer);
+        }
+    }
+
+    /// Custody upkeep: serve referenced records, stop serving withdrawn ones,
+    /// and move fetches along.
+    fn pump_custody(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let chrome = chrome.borrow();
+        let Some(custody) = chrome.custody().cloned() else {
+            return false;
+        };
+        custody.pump(chrome.records())
+    }
+
     /// Attach the session's replay to `broker`: it plays records the
     /// recorder holds for review and records in this device's stores.
     pub fn attach_replay(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
@@ -13525,6 +13564,7 @@ impl ShellOverlayHost {
         replay.set_record_sources(
             chrome.borrow().recorder().cloned(),
             self.room_records.borrow().local_record_lookup(),
+            chrome.borrow().custody().cloned(),
         );
         broker.install_replay(std::sync::Arc::clone(&replay));
         chrome.borrow_mut().set_replay(replay);
@@ -16444,8 +16484,11 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
-        let presence_dirty =
-            self.pump_presence_requests() | self.pump_recorder() | self.pump_remark() | self.pump_replay();
+        let presence_dirty = self.pump_presence_requests()
+            | self.pump_recorder()
+            | self.pump_remark()
+            | self.pump_custody()
+            | self.pump_replay();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.

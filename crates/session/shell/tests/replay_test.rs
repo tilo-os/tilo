@@ -265,7 +265,7 @@ fn a_replayed_session_brings_a_following_app_to_the_recorded_document_and_view()
     .unwrap();
     let recorder = Recorder::attach(&broker, Arc::clone(&tree));
     let replay = ReplayController::attach(&broker, Arc::clone(&tree));
-    replay.set_record_sources(Some(Arc::clone(&recorder)), None);
+    replay.set_record_sources(Some(Arc::clone(&recorder)), None, None);
     let room = ROOM.to_string();
 
     // Record: a person types, opens the editor menu, closes it, types
@@ -306,7 +306,8 @@ fn a_replayed_session_brings_a_following_app_to_the_recorded_document_and_view()
     // Replay it for the same person into a replay room.
     let replay_room = replay
         .open_record(&checkout.id, &owner(), Presentation::Shown)
-        .expect("the recorded session replays");
+        .expect("the recorded session replays")
+        .expect("a session awaiting review is here, not fetched");
     let launches = replay.take_launches();
     assert_eq!(launches.apps, vec![APP.to_string()]);
     assert_eq!(launches.room, Some(replay_room));

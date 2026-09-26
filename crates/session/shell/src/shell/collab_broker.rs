@@ -436,6 +436,49 @@ impl FanoutState {
         out
     }
 
+    /// Take a document op this device authored inside the shell (record
+    /// custody) through the broker's own ingress: validated against the
+    /// route's channel like any op, kept in history, handed to the peer
+    /// network and fanned out on the route.
+    ///
+    /// # Errors
+    ///
+    /// When there is no typed broker, this device is not a member of the
+    /// route's room, or the op does not validate.
+    pub(crate) fn accept_shell_document(
+        &self,
+        route: &CrdtRoute,
+        envelope: collab_types::SignedOp,
+        person: [u8; 32],
+        from: &str,
+    ) -> Result<(), String> {
+        let capnp = self
+            .capnp_state()
+            .ok_or_else(|| "this session has no collaboration broker".to_string())?;
+        capnp.accept_shell_document(route, envelope, person, from)
+    }
+
+    /// Ask the holders of `route` on this device for its document.
+    pub(crate) fn request_route_snapshot(&self, route: &CrdtRoute) -> bool {
+        self.capnp_state()
+            .is_some_and(|capnp| capnp.request_document_snapshot(&route.channel_key(), u64::MAX))
+    }
+
+    /// What this device's history holds for `route`, newest page.
+    pub(crate) fn route_history(&self, route: &CrdtRoute) -> Vec<collab_types::SignedOp> {
+        self.capnp_state()
+            .map(|capnp| capnp.route_history(route))
+            .unwrap_or_default()
+    }
+
+    /// Ask the route's room for what its devices retained of `route`, and
+    /// have documents on it routed here.
+    pub(crate) fn request_route_history(&self, route: &CrdtRoute) {
+        if let Some(capnp) = self.capnp_state() {
+            capnp.request_route_history(route);
+        }
+    }
+
     /// Offer a late joiner's snapshot request for `route` to the in-process
     /// holders of its room. Returns whether one answered.
     pub(crate) fn offer_snapshot(&self, route: &CrdtRoute) -> bool {

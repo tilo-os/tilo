@@ -90,6 +90,7 @@ pub mod projection;
 mod projection_overlay;
 pub mod quick_settings;
 pub mod realtime_session;
+pub mod record_custody;
 pub mod recorder;
 pub mod remark;
 pub mod remote_action_link;

@@ -1475,6 +1475,29 @@ fn spawn_lan_discovery_forwarding(
     );
 }
 
+/// A shell-authored document op is signed like an app's: with this
+/// device's key, which the person's device certificate names. The key never
+/// leaves the network.
+impl crate::shell::record_custody::DeviceSigner for ShellNetwork {
+    fn author(&self) -> collab_types::Ed25519PublicKey {
+        collab_types::Ed25519PublicKey::from_bytes(*self.keypair.public().as_bytes())
+    }
+
+    fn person(&self) -> [u8; 32] {
+        self.host_identity
+            .as_ref()
+            .map_or([0; 32], |identity| identity.device_cert.user_public_key)
+    }
+
+    fn sign(&self, op: &mut collab_types::SignedOp) -> Result<(), String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or_else(|| "this device has no certified identity to sign with".to_string())?;
+        collab_types::sign_op(op, &identity.device_signing_key).map_err(|error| error.to_string())
+    }
+}
+
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
@@ -11923,21 +11946,24 @@ mod tests {
         held
     }
 
-    /// The acceptance path for the community room: the team creates a public
-    /// room, hands its host a Commenter-capped delegation and its standing
-    /// invitation, and goes offline. Two strangers then join through the host
-    /// alone — each is admitted by the host, learns the room is public from
-    /// the team's retained governance, and verifies the other's admission
-    /// against the team's root — and no MLS work happens anywhere.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    /// A public room the team owns, hosted on a `tilo-relay` with the team's
+    /// delegation and a standing Commenter invitation, the team having
+    /// connected once and gone offline.
+    struct HostedCommunity {
+        room: RoomId,
+        team_root: ed25519_dalek::SigningKey,
+        token: String,
+        _relay: tilo_relay::Relay,
+        _state: tempfile::TempDir,
+    }
+
     #[allow(
         clippy::too_many_lines,
-        reason = "one end-to-end scenario: host, owner, two joiners, and what each must see"
+        reason = "one host, one owner and one standing invitation, set up in order"
     )]
-    async fn strangers_join_a_public_room_through_its_host_while_its_owner_is_away() {
+    async fn hosted_community() -> HostedCommunity {
         use tilo_user_identity::DeviceCapabilities;
 
-        let _env = tilo_test_env::lock();
         let operator = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
         let team_root = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
         let host = certified_device(&operator, DeviceCapabilities::host(), "community-host");
@@ -12072,6 +12098,58 @@ mod tests {
             let _ = team_device;
         }
 
+        HostedCommunity {
+            room,
+            team_root,
+            token,
+            _relay: relay,
+            _state: state,
+        }
+    }
+
+    /// A person who redeems the community's standing invitation from a
+    /// fresh device.
+    async fn join_community(
+        community: &HostedCommunity,
+        label: &'static str,
+        seed: u8,
+    ) -> (ShellNetwork, ed25519_dalek::SigningKey, CertifiedDevice) {
+        let person_root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let device = certified_device(
+            &person_root,
+            tilo_user_identity::DeviceCapabilities::primary(),
+            label,
+        );
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace(label);
+        let net = Box::pin(networked_shell(tree, &device)).await;
+        assert!(net.join_default_workspace());
+        net.accept_invite(local, &community.token)
+            .expect("the standing invite is accepted");
+        (net, person_root, device)
+    }
+
+    /// The acceptance path for the community room: the team creates a public
+    /// room, hands its host a Commenter-capped delegation and its standing
+    /// invitation, and goes offline. Two strangers then join through the host
+    /// alone — each is admitted by the host, learns the room is public from
+    /// the team's retained governance, and verifies the other's admission
+    /// against the team's root — and no MLS work happens anywhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario: host, owner, two joiners, and what each must see"
+    )]
+    async fn strangers_join_a_public_room_through_its_host_while_its_owner_is_away() {
+        use tilo_user_identity::DeviceCapabilities;
+
+        let _env = tilo_test_env::lock();
+        let community = Box::pin(hosted_community()).await;
+        let (room, team_root, token) = (
+            community.room,
+            community.team_root.clone(),
+            community.token.clone(),
+        );
         let join = |label: &'static str, seed: u8| {
             let token = token.clone();
             async move {
@@ -12155,5 +12233,234 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    /// A trace with one recorded document, enough to replay.
+    fn recorded_trace(room: RoomId) -> session_trace::SessionTrace {
+        let mut doc = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "title", "Recorded")
+            .expect("put");
+        let frame = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(doc.save())
+                .encode()
+                .expect("snapshot"),
+            collab_types::ArtifactId(uuid::Uuid::nil()),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId(uuid::Uuid::nil()),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        session_trace::SessionTrace {
+            origin: session_trace::Origin::Explicit,
+            started_unix_ms: 0,
+            duration: session_trace::Offset(1_000),
+            environment: session_trace::Environment::default(),
+            snapshots: vec![session_trace::RouteSnapshot {
+                route: session_trace::Route::new("so.tilo.notes", room.to_string(), ""),
+                from: "ada".into(),
+                at: session_trace::Offset(0),
+                point: session_trace::SnapshotPoint::Start,
+                frames: vec![frame],
+            }],
+            timeline: Vec::new(),
+            tags: Vec::new(),
+            layer: session_trace::SessionLayer::Logic,
+            redactions: session_trace::Redactions::default(),
+            truncated: false,
+        }
+    }
+
+    /// Write a `session` record into `store`: a reviewed duplicate when
+    /// `reviewed`, else a recording as it was.
+    fn keep_session(
+        store: &ui::record::RecordStore,
+        id: &ui::record::RecordId,
+        trace: &session_trace::SessionTrace,
+        reviewed: bool,
+    ) {
+        let checkout = ui::record::RecordCheckout::new(
+            id.clone(),
+            ui::record::RecordKind::new(session_trace::SESSION_RECORD_KIND),
+        );
+        store.create_record(&checkout).expect("record");
+        store
+            .with(id, |doc| {
+                if reviewed {
+                    ui::record::add_reference(
+                        doc,
+                        &ui::record::RecordRef::new(
+                            ui::record::RecordId::minted(),
+                            session_trace::REDACTED_FROM_RELATION,
+                        ),
+                    );
+                }
+                session_trace::write(doc, trace)
+            })
+            .expect("open")
+            .expect("session record");
+    }
+
+    /// The rooms.md rule, across two devices: a member of a room reaches the
+    /// records that room references. Ada's reviewed recording, referenced
+    /// by the public room she reports into, is served by her device on the
+    /// room's route; Bea, another member on another device, reaches it
+    /// through the room and replays it. The recording Ada never reviewed is
+    /// referenced too and never leaves her device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario across two devices and a host"
+    )]
+    async fn a_member_reaches_a_record_the_room_references_on_another_device() {
+        use crate::shell::record_custody::{DeviceSigner, RecordCustody};
+
+        let _env = tilo_test_env::lock();
+        let community = Box::pin(hosted_community()).await;
+        let room = community.room;
+        let (ada, ada_root, ada_device) = Box::pin(join_community(&community, "Ada", 0xE1)).await;
+        let (bea, bea_root, _) = Box::pin(join_community(&community, "Bea", 0xE2)).await;
+        let ada = Arc::new(ada);
+        let bea = Arc::new(bea);
+        let members = [person_of(&ada_root), person_of(&bea_root)];
+        for net in [&ada, &bea] {
+            assert!(
+                tick_until(net, 60, |net| workspace_state(net, room).is_some_and(
+                    |(_, _, roster)| members
+                        .iter()
+                        .all(|member| roster.iter().any(|(who, _)| who == member))
+                ))
+                .await,
+                "both members are admitted: {:?}",
+                workspace_state(net, room)
+            );
+        }
+
+        let sockets = tempfile::tempdir().expect("sockets");
+        let ada_tree = ada.tree_handle().expect("tree");
+        let bea_tree = bea.tree_handle().expect("tree");
+        let ada_broker = crate::shell::collab_broker::spawn_native(
+            sockets.path().join("ada.sock"),
+            &Some(Arc::clone(&ada)),
+            Arc::clone(&ada_tree),
+        )
+        .expect("Ada's broker");
+        let bea_broker = crate::shell::collab_broker::spawn_native(
+            sockets.path().join("bea.sock"),
+            &Some(Arc::clone(&bea)),
+            Arc::clone(&bea_tree),
+        )
+        .expect("Bea's broker");
+        let ada_custody = RecordCustody::attach(&ada_broker.fanout(), Arc::clone(&ada_tree));
+        ada_custody.set_signer(Arc::clone(&ada) as Arc<dyn DeviceSigner>);
+        let bea_custody = RecordCustody::attach(&bea_broker.fanout(), Arc::clone(&bea_tree));
+        bea_custody.set_signer(Arc::clone(&bea) as Arc<dyn DeviceSigner>);
+
+        // Ada's reviewed recording and her unreviewed one, each her own
+        // comment record on the message it went with, in her shell's store.
+        let device = ada_device.key.verifying_key().to_bytes();
+        let message = |local: &str| {
+            ui::record::RecordId::for_comment(
+                device,
+                local,
+                &ui::record::RecordId::parse(&tilo_reference::chat_channel_record(
+                    tilo_reference::FEEDBACK_CHANNEL,
+                ))
+                .expect("channel record"),
+            )
+            .expect("message record")
+        };
+        let reviewed = ui::record::RecordId::for_comment(device, "recording", &message("m_1"))
+            .expect("recording record");
+        let unreviewed = ui::record::RecordId::for_comment(device, "recording", &message("m_2"))
+            .expect("recording record");
+        let ada_store = ui::record::RecordStore::in_memory();
+        let trace = recorded_trace(room);
+        keep_session(&ada_store, &reviewed, &trace, true);
+        keep_session(&ada_store, &unreviewed, &trace, false);
+        let bea_store = ui::record::RecordStore::in_memory();
+
+        // The room's index references both, as a sent remark leaves it.
+        for tree in [&ada_tree, &bea_tree] {
+            let mut tree = tree.write();
+            let held = tree.desktop.room_records_held.entry(room).or_default();
+            for id in [&reviewed, &unreviewed] {
+                held.insert(
+                    id.as_str().to_string(),
+                    session_trace::SESSION_RECORD_KIND.to_string(),
+                );
+            }
+            drop(tree);
+        }
+
+        let replay =
+            crate::shell::replay::ReplayController::attach(&bea_broker, Arc::clone(&bea_tree));
+        replay.set_record_sources(None, None, Some(Arc::clone(&bea_custody)));
+        let viewer = person_of(&bea_root);
+        assert_eq!(
+            replay
+                .open_record(
+                    &reviewed,
+                    &viewer,
+                    crate::shell::replay::Presentation::Offscreen
+                )
+                .expect("the room references the record"),
+            None,
+            "the record is not here yet; it arrives from the room"
+        );
+
+        let arrived = tick_until(&bea, 60, |_| {
+            ada.tick();
+            ada_custody.pump(&ada_store);
+            bea_custody.pump(&bea_store);
+            replay.pump(std::time::Instant::now());
+            replay.is_replaying()
+        })
+        .await;
+        assert!(
+            arrived,
+            "Bea reaches Ada's reviewed recording through the room and replays it"
+        );
+        assert_eq!(ada_custody.served_in(&reviewed), vec![room.to_string()]);
+        let fetched = bea_custody
+            .fetch(&reviewed)
+            .expect("reachable")
+            .expect("arrived");
+        assert_eq!(
+            session_trace::read(&fetched).expect("a session"),
+            trace,
+            "what arrives is the recording Ada kept"
+        );
+
+        // The unreviewed recording is referenced by the same room and is
+        // never served.
+        assert!(ada_custody.served_in(&unreviewed).is_empty());
+        let _ = tick_until(&bea, 3, |_| {
+            ada.tick();
+            ada_custody.pump(&ada_store);
+            bea_custody.pump(&bea_store);
+            false
+        })
+        .await;
+        assert!(
+            bea_custody
+                .fetch(&unreviewed)
+                .expect("referenced")
+                .is_none(),
+            "a recording nobody reviewed never leaves its device"
+        );
+
+        // Withdrawn from the room, it is served there no more.
+        ada_tree
+            .write()
+            .desktop
+            .room_records_held
+            .entry(room)
+            .or_default()
+            .remove(reviewed.as_str());
+        ada_custody.pump(&ada_store);
+        assert!(ada_custody.served_in(&reviewed).is_empty());
+        assert!(replay.close());
+        drop((ada_broker, bea_broker));
     }
 }

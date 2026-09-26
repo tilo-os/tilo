@@ -54,6 +54,7 @@ remark-blocked-no-destination = Choose where it goes
 remark-blocked-recording = Stop the recording first
 remark-blocked-capturing = Wait for the recording to finish
 remark-blocked-review = Review the recording before sending
+remark-blocked-no-identity = This device has no identity to share the recording as
 remark-sending = Sending…
 
 ## Pick mode

@@ -1155,7 +1155,10 @@ impl CapnpBrokerState {
             tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({ "room": replay_room.to_string() })),
+                    value: Some(match replay_room {
+                        Some(room) => serde_json::json!({ "room": room.to_string() }),
+                        None => serde_json::json!({ "fetching": true }),
+                    }),
                     resources: Vec::new(),
                 },
             },

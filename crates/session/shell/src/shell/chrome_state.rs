@@ -691,6 +691,8 @@ pub struct ChromeState {
     pub last_remark: Option<crate::shell::remark::Sending>,
     /// The session's replay and its transport, once the broker is up.
     replay: Option<std::sync::Arc<crate::shell::replay::ReplayController>>,
+    /// Serves the shell's own records to the rooms that reference them.
+    custody: Option<std::sync::Arc<crate::shell::record_custody::RecordCustody>>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -826,6 +828,7 @@ impl ChromeState {
             remark_requests: Vec::new(),
             last_remark: None,
             replay: None,
+            custody: None,
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -944,6 +947,17 @@ impl ChromeState {
 
     pub fn set_replay(&mut self, replay: std::sync::Arc<crate::shell::replay::ReplayController>) {
         self.replay = Some(replay);
+    }
+
+    pub fn set_custody(
+        &mut self,
+        custody: std::sync::Arc<crate::shell::record_custody::RecordCustody>,
+    ) {
+        self.custody = Some(custody);
+    }
+
+    pub fn custody(&self) -> Option<&std::sync::Arc<crate::shell::record_custody::RecordCustody>> {
+        self.custody.as_ref()
     }
 
     pub fn replay(&self) -> Option<&std::sync::Arc<crate::shell::replay::ReplayController>> {

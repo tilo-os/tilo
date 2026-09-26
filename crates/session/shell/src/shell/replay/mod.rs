@@ -132,6 +132,10 @@ pub struct ReplayController {
     /// recorder, else in this device's record stores.
     recorder: Mutex<Option<Arc<crate::shell::recorder::Recorder>>>,
     records: Mutex<Option<crate::shell::room_records::LocalRecordLookup>>,
+    /// Reaches records another member of a room serves.
+    custody: Mutex<Option<Arc<crate::shell::record_custody::RecordCustody>>>,
+    /// Replays waiting for their record to arrive from a room.
+    fetching: Mutex<Vec<(RecordId, UserId, Presentation)>>,
     /// What the last open or reload asks the frame loop to launch.
     launches: Mutex<Launches>,
 }
@@ -152,6 +156,8 @@ impl ReplayController {
             replay: Mutex::new(None),
             recorder: Mutex::new(None),
             records: Mutex::new(None),
+            custody: Mutex::new(None),
+            fetching: Mutex::new(Vec::new()),
             launches: Mutex::new(Launches::default()),
         })
     }
@@ -170,9 +176,11 @@ impl ReplayController {
         &self,
         recorder: Option<Arc<crate::shell::recorder::Recorder>>,
         records: Option<crate::shell::room_records::LocalRecordLookup>,
+        custody: Option<Arc<crate::shell::record_custody::RecordCustody>>,
     ) {
         *lock(&self.recorder) = recorder;
         *lock(&self.records) = records;
+        *lock(&self.custody) = custody;
     }
 
     /// The session trace of `record`: a session waiting for review, else a
@@ -182,22 +190,48 @@ impl ReplayController {
     ///
     /// When the record is not reachable or not a readable session.
     pub fn resolve(&self, record: &RecordId) -> Result<SessionTrace, TransportError> {
-        let document = lock(&self.recorder)
+        self.resolve_or_fetch(record)?
+            .ok_or_else(|| TransportError::UnknownRecord(record.as_str().to_string()))
+    }
+
+    /// The session trace of `record` if this device holds it, else from a
+    /// room this device is in whose index references it: `None` while it
+    /// is still arriving from the room's other devices.
+    fn resolve_or_fetch(&self, record: &RecordId) -> Result<Option<SessionTrace>, TransportError> {
+        let local = lock(&self.recorder)
             .as_ref()
             .and_then(|recorder| recorder.session_document(record))
             .or_else(|| {
                 lock(&self.records)
                     .as_ref()
                     .and_then(|records| records.load(record))
+            });
+        let document = if let Some(document) = local {
+            document
+        } else {
+            let custody = lock(&self.custody).clone();
+            let Some(custody) = custody else {
+                return Err(TransportError::UnknownRecord(record.as_str().to_string()));
+            };
+            match custody.fetch(record) {
+                Ok(Some(document)) => document,
+                Ok(None) => return Ok(None),
+                Err(_) => {
+                    return Err(TransportError::UnknownRecord(record.as_str().to_string()));
+                }
+            }
+        };
+        session_trace::read(&document)
+            .map(Some)
+            .map_err(|error| TransportError::NotASession {
+                record: record.as_str().to_string(),
+                reason: error.to_string(),
             })
-            .ok_or_else(|| TransportError::UnknownRecord(record.as_str().to_string()))?;
-        session_trace::read(&document).map_err(|error| TransportError::NotASession {
-            record: record.as_str().to_string(),
-            reason: error.to_string(),
-        })
     }
 
-    /// Replay the session record `record` for `owner`.
+    /// Replay the session record `record` for `owner`. `None` when the
+    /// record is still arriving from a room that references it; the replay
+    /// opens once it has.
     ///
     /// # Errors
     ///
@@ -207,9 +241,42 @@ impl ReplayController {
         record: &RecordId,
         owner: &UserId,
         presentation: Presentation,
-    ) -> Result<RoomId, TransportError> {
-        let trace = self.resolve(record)?;
-        self.open(trace, Some(record.clone()), owner, presentation)
+    ) -> Result<Option<RoomId>, TransportError> {
+        if let Some(trace) = self.resolve_or_fetch(record)? {
+            return self
+                .open(trace, Some(record.clone()), owner, presentation)
+                .map(Some);
+        }
+        let mut fetching = lock(&self.fetching);
+        fetching.retain(|(waiting, _, _)| waiting != record);
+        fetching.push((record.clone(), owner.clone(), presentation));
+        drop(fetching);
+        Ok(None)
+    }
+
+    /// Open the replays whose records arrived.
+    fn open_fetched(&self) -> bool {
+        let waiting: Vec<(RecordId, UserId, Presentation)> = lock(&self.fetching).clone();
+        let mut opened = false;
+        for (record, owner, presentation) in waiting {
+            match self.resolve_or_fetch(&record) {
+                Ok(None) => {}
+                Ok(Some(trace)) => {
+                    lock(&self.fetching).retain(|(waiting, _, _)| *waiting != record);
+                    match self.open(trace, Some(record.clone()), &owner, presentation) {
+                        Ok(_) => opened = true,
+                        Err(error) => {
+                            tracing::warn!(record = %record.as_str(), %error, "replay: the fetched session could not be replayed");
+                        }
+                    }
+                }
+                Err(error) => {
+                    lock(&self.fetching).retain(|(waiting, _, _)| *waiting != record);
+                    tracing::warn!(record = %record.as_str(), %error, "replay: the session could not be reached");
+                }
+            }
+        }
+        opened
     }
 
     /// What the frame loop must launch or clean up, taken once.
@@ -596,10 +663,11 @@ impl ReplayController {
     /// Frame-loop upkeep: publish what became due. Returns whether anything
     /// was published.
     pub fn pump(&self, now: Instant) -> bool {
+        let opened = self.open_fetched();
         let (peer, range) = {
             let mut guard = lock(&self.replay);
             let Some(replay) = guard.as_mut() else {
-                return false;
+                return opened;
             };
             let elapsed = replay
                 .last_tick
@@ -611,7 +679,7 @@ impl ReplayController {
             (peer, range)
         };
         if range.is_empty() {
-            return false;
+            return opened;
         }
         peer.publish(range);
         true

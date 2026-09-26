@@ -131,6 +131,27 @@ them, so removal stops future changes flowing, it does not un-share history.
 That limit is inherent to giving someone data, not a flaw in the model, and the
 UI must not imply otherwise.
 
+**Whoever holds a record serves it where it is referenced.** A reference
+moves no bytes, so reaching a record through a room means someone who holds
+it serves it on that room's route for it. For the records the shell itself
+owns (a remark's reviewed recording is the first), that is record custody
+(`crates/session/shell/src/shell/record_custody.rs`). For every room this
+device is in whose index references a record it holds, it serves the record
+on `(so.tilo.shell, room, record)`: it answers a late joiner on this device
+like any holder, and it publishes the document once, signed by this device's
+certified key, through the broker's own ingress, so the room's other devices
+and its host keep it. When the reference is removed it stops serving there.
+A member on another device reaches the record the same way. It asks the
+route's holders on its own device, then the room's devices for their
+retained history of the route.
+
+What leaves this way is still governed by the room. A record served into a
+room where its holder is only a Commenter must be a comment record that
+holder's device owns, which is why a reviewed recording is named as its
+reporter's comment on the message it travels with. A `session` record is
+only ever served as that reviewed, redacted duplicate, never as the recording
+itself.
+
 **Copying still exists, as a different verb.** "Duplicate here" forks a new
 record id with a provenance link to its origin. Two verbs, two names, two
 outcomes — the user is never left guessing which one a gesture did.

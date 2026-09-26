@@ -2463,11 +2463,23 @@ fn remark_spec(channel: &str, me: &str, feedback: bool) -> ActionSpec {
             ParamType::Array,
             "Further things it is about, when several were picked: ResourceRefs",
         ),
+        ActionParam::optional(
+            "message",
+            ParamType::Text,
+            "The id to post the message under, when the sender already named \
+             records after it (m_ and up to 62 of A-Z a-z 0-9 _ -)",
+        ),
     ];
     let build = move |args: &tilo_actions::ActionArgs| match remark_from_args(args) {
         Ok((text, reference, also, attachment, mentions)) => encode(&ChatAction::SendMessage {
             channel: channel.clone(),
-            id: format!("m_{}", uuid::Uuid::new_v4().simple()),
+            id: args
+                .text("message")
+                .filter(|id| tilo_reference::is_chat_message_id(id))
+                .map_or_else(
+                    || format!("m_{}", uuid::Uuid::new_v4().simple()),
+                    ToString::to_string,
+                ),
             author: me.clone(),
             ts: unix_now_i64(),
             text,
@@ -3907,8 +3919,14 @@ mod feedback_tests {
             "attachment".into(),
             serde_json::to_value(recording()).unwrap(),
         );
+        args.insert("message".into(), "m_named".into());
         perform_comment(&mut doc, &built(spec, &args));
         let m = ChatDoc::list_messages(&doc, "c_fb").remove(0);
+        assert_eq!(
+            m.id, "m_named",
+            "the message is posted under the id its recording was named after"
+        );
+        args.remove("message");
         assert_eq!(m.author, model::ME);
         assert_eq!(m.reference.unwrap().id, "mail.draft:d_42");
         assert_eq!(

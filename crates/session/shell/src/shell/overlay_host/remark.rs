@@ -1060,7 +1060,12 @@ impl ShellOverlayHost {
         if let Err(error) = opened {
             tracing::debug!(%error, "remark: the conversation could not be opened here; delivering to it as it is");
         }
-        let attachment = match self.persist_redacted_session() {
+        // Named before anything is written: the recording that travels with
+        // the message is a record named after it.
+        let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+        let recording = crate::shell::record_custody::device_public_key()
+            .and_then(|device| crate::shell::remark::recording_record(&option, &id, device));
+        let attachment = match self.persist_redacted_session(recording) {
             Ok(attachment) => attachment,
             Err(reason) => {
                 fail(&chrome, reason);
@@ -1091,7 +1096,6 @@ impl ShellOverlayHost {
             );
             return;
         };
-        let id = format!("m_{}", uuid::Uuid::new_v4().simple());
         let ts = tilo_clock::unix_now_i64();
         let delivery = match crate::shell::remark::plan_delivery(&remark, &option, &me, &id, ts) {
             Ok(delivery) => delivery,
@@ -1121,7 +1125,10 @@ impl ShellOverlayHost {
     /// Build the redacted duplicate of the attached session, persist it in
     /// this person's own room, and name it for the attachment. `None` when
     /// the remark has no recording.
-    fn persist_redacted_session(&self) -> Result<Option<tilo_reference::RecordAttachment>, String> {
+    fn persist_redacted_session(
+        &self,
+        recording: Option<ui::record::RecordId>,
+    ) -> Result<Option<tilo_reference::RecordAttachment>, String> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Ok(None);
         };
@@ -1166,7 +1173,7 @@ impl ShellOverlayHost {
         };
         let summary = review.summary(duplicate.layer);
         let checkout = ui::record::RecordCheckout::new(
-            ui::record::RecordId::minted(),
+            recording.ok_or_else(|| crate::shell::i18n::t("remark-blocked-no-identity"))?,
             ui::record::RecordKind::new(session_trace::SESSION_RECORD_KIND),
         );
         let mut reservation = st

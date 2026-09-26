@@ -2441,7 +2441,7 @@ impl CapnpBrokerState {
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
-    fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
+    pub(crate) fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
         // A participant inside the shell that holds this route's document
         // (a replay peer) answers first; it is where the room's state is.
         if let Some(fanout) = self.fanout.upgrade()
@@ -2479,6 +2479,96 @@ impl CapnpBrokerState {
     /// Ask for the late-joiner snapshot of every document route in `room` on
     /// behalf of `requester`, returning the routes a holder was asked on.
     /// The answer arrives like any other snapshot: fanned out on the route.
+    /// See [`FanoutState::accept_shell_document`].
+    pub(crate) fn accept_shell_document(
+        &self,
+        route: &CrdtRoute,
+        envelope: SignedOp,
+        person: [u8; 32],
+        from: &str,
+    ) -> Result<(), String> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "this broker has no workspace authority".to_string())?;
+        let admitted = admit_verified_join(
+            &membership.read(),
+            route,
+            VerifiedJoinIdentity {
+                user_public_key: person,
+                device_public_key: *envelope.author.as_bytes(),
+            },
+        )?;
+        collab_types::validate_document_payload_route(
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+            &envelope,
+        )
+        .map_err(|error| error.to_string())?;
+        let artifact = envelope.artifact;
+        {
+            let mut ch = self
+                .broker_channels
+                .lock()
+                .map_err(|_| "broker channels poisoned".to_string())?;
+            let state = ch.state_for(artifact);
+            state.artifacts.insert(artifact, ArtifactKind::Note);
+            state.artifact_apps.insert(artifact, route.app_id.clone());
+            validate_admitted_inbound_op(
+                &envelope,
+                admitted.role,
+                state,
+                std::time::SystemTime::now(),
+                Duration::from_secs(300),
+            )
+            .map_err(|error| error.to_string())?;
+            if !self.publisher.is_local_only(route) {
+                ch.record_history(&envelope);
+            }
+            ch.state_for(artifact).record_validated_op(envelope.clone());
+        }
+        self.publisher.local_route(route);
+        self.publisher.signed_document(route, envelope.clone());
+        if let Some(fanout) = self.fanout.upgrade() {
+            fanout.fanout_to_route(
+                &CollabEvent::Document {
+                    envelope: Box::new(envelope),
+                    from_user_id: from.to_string(),
+                    decrypted_payload: None,
+                },
+                u64::MAX,
+                route,
+            );
+        }
+        Ok(())
+    }
+
+    /// See [`FanoutState::route_history`].
+    pub(crate) fn route_history(&self, route: &CrdtRoute) -> Vec<SignedOp> {
+        let artifact =
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        self.broker_channels
+            .lock()
+            .map(|mut ch| ch.scrollback_page(artifact, u64::MAX, 256).0)
+            .unwrap_or_default()
+    }
+
+    /// See [`FanoutState::request_route_history`].
+    pub(crate) fn request_route_history(&self, route: &CrdtRoute) {
+        let artifact =
+            collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        self.publisher.local_route(route);
+        let ask = self
+            .broker_channels
+            .lock()
+            .is_ok_and(|mut ch| ch.request_peer_history(artifact, u64::MAX));
+        if ask {
+            self.publisher
+                .scrollback_request(route, artifact, u64::MAX, 256);
+        }
+    }
+
     /// Install the session's replay. Later calls are ignored.
     pub(crate) fn install_replay(&self, replay: Arc<crate::shell::replay::ReplayController>) {
         let _ = self.replay.set(replay);

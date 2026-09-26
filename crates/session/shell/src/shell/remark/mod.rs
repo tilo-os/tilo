@@ -673,6 +673,9 @@ impl Composer {
 pub struct Delivery {
     /// The room the chat conversation belongs to.
     pub room: String,
+    /// The id the message is posted under, named before anything is
+    /// written so the records that travel with it can be named after it.
+    pub message: String,
     /// The chat channel within it.
     pub channel: String,
     pub private: bool,
@@ -686,6 +689,7 @@ impl Delivery {
         let mut args = serde_json::json!({
             "text": self.remark.text,
             "reference": self.remark.reference,
+            "message": self.message,
         });
         if let Some(attachment) = &self.remark.attachment
             && let Some(object) = args.as_object_mut()
@@ -725,6 +729,51 @@ impl Delivery {
 ///
 /// [`Undeliverable`] when the remark's delivery and the option disagree, or
 /// the direct room is not the author's and the recipient's.
+/// The record the message `message` is addressed by once chat posts it
+/// where `option` says: this device's own comment record on the feedback
+/// channel in the community room, or the message's place in a room's
+/// conversation.
+pub fn message_record(
+    option: &DestinationOption,
+    message: &str,
+    device: [u8; 32],
+) -> Option<ui::record::RecordId> {
+    match &option.kind {
+        DestinationKind::Community { channel, .. } => ui::record::RecordId::for_comment(
+            device,
+            message,
+            &ui::record::RecordId::parse(&tilo_reference::chat_channel_record(channel))?,
+        ),
+        DestinationKind::Team { .. }
+        | DestinationKind::Person { .. }
+        | DestinationKind::Room { .. } => {
+            ui::record::RecordId::parse(&tilo_reference::chat_conversation_message_record(message))
+        }
+    }
+}
+
+/// The local name of a report's recording on its message.
+pub const RECORDING_LOCAL: &str = "recording";
+
+/// The record a remark's reviewed recording is written as: this device's
+/// own comment record on the message it travels with. The reporter owns
+/// their report everywhere, and a comment record is what a Commenter may
+/// write, so it can be served in any room the message goes to.
+pub fn recording_record(
+    option: &DestinationOption,
+    message: &str,
+    device: [u8; 32],
+) -> Option<ui::record::RecordId> {
+    ui::record::RecordId::for_comment(
+        device,
+        RECORDING_LOCAL,
+        &message_record(option, message, device)?,
+    )
+}
+
+/// # Errors
+///
+/// When the remark cannot be delivered where `option` says.
 pub fn plan_delivery(
     remark: &Remark,
     option: &DestinationOption,
@@ -753,6 +802,7 @@ pub fn plan_delivery(
     };
     Ok(Delivery {
         room,
+        message: id.to_string(),
         channel,
         private: option.is_private(),
         public: option.is_public(),
@@ -877,6 +927,59 @@ mod tests {
         assert_eq!(delivery.room, "community-room");
         assert_eq!(delivery.channel, "c_feedback");
         assert!(delivery.public && !delivery.private);
+    }
+
+    /// A report's recording is the reporter's own comment record on the
+    /// message it travels with, whether that goes to the community's
+    /// feedback channel or to a direct room: named before anything is
+    /// written, after the message chat posts it as.
+    #[test]
+    fn a_recording_is_named_as_the_reporters_comment_on_its_message() {
+        let device = [0x42; 32];
+        for (destination, message_record) in [
+            (
+                COMMUNITY,
+                ui::record::RecordId::for_comment(
+                    device,
+                    "m_3",
+                    &ui::record::RecordId::parse(&tilo_reference::chat_channel_record(
+                        "c_feedback",
+                    ))
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+            (
+                TEAM,
+                ui::record::RecordId::parse(&tilo_reference::chat_conversation_message_record(
+                    "m_3",
+                ))
+                .unwrap(),
+            ),
+        ] {
+            let option = option(destination);
+            let recording = recording_record(&option, "m_3", device).expect("a name");
+            assert_eq!(recording.comment_author(), Some(device), "{destination}");
+            assert_eq!(
+                recording.comment_parent(),
+                Some(message_record),
+                "{destination}: parented on the message chat posts"
+            );
+            assert_eq!(
+                collab_types::document_op_class_for_record(recording.as_str()),
+                collab_types::OpClass::Comment,
+                "{destination}: writable by a Commenter"
+            );
+            let remark = composer("It froze", destination)
+                .remark(&option, &[], None)
+                .unwrap();
+            let delivery = plan_delivery(&remark, &option, ME, "m_3", 42).unwrap();
+            assert_eq!(
+                delivery.arguments()["message"],
+                "m_3",
+                "{destination}: chat posts it under the id the recording is named after"
+            );
+        }
     }
 
     #[test]

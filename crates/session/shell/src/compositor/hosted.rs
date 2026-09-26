@@ -123,6 +123,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // follow, the live action directory and realtime continuity.
     if let Some(broker) = collab_broker.as_ref() {
         host.attach_collab_broker(broker);
+        if let Some(network) = peer_sync.as_ref() {
+            host.set_record_signer(Arc::clone(network) as _);
+        }
     }
     if let Some(network) = peer_sync.as_ref() {
         let follow_network = Arc::clone(network);

@@ -47,6 +47,33 @@ pub const ROOM_CONVERSATION: &str = "c_general";
 /// creates its feedback channel under this id, marked as a feedback channel.
 pub const FEEDBACK_CHANNEL: &str = "c_feedback";
 
+/// The conversation every member's Chat opens in a room. A record id names a
+/// document within one room, so the same id in every room is one
+/// conversation per room, never one across rooms.
+pub const CHAT_CONVERSATION_RECORD: &str = "uuid:5c4a7f10-3b2e-4d8a-9f61-0c2d4e6f8a13";
+
+/// The record a feedback channel's reports are comments on.
+pub fn chat_channel_record(channel: &str) -> String {
+    format!("derived:chat.channel.{channel}@{CHAT_CONVERSATION_RECORD}")
+}
+
+/// The record a message in the conversation document is addressed by.
+pub fn chat_conversation_message_record(message: &str) -> String {
+    format!("derived:chat.message.{message}@{CHAT_CONVERSATION_RECORD}")
+}
+
+/// Whether `id` may name a message: what chat mints, `m_` and 1–62 of
+/// `[A-Za-z0-9_-]`, so the id can also be a comment record's local name.
+pub fn is_chat_message_id(id: &str) -> bool {
+    id.strip_prefix("m_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 62
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    })
+}
+
 /// The payload key carrying the resource address; writer and reader must agree
 /// on it, and a chat build adopts it when it grows a chip of its own.
 const REFERENCE_KEY: &str = "reference";

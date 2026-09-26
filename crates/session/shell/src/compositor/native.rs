@@ -4448,8 +4448,15 @@ fn report_recording_outputs(
 fn attach_collab_broker_bridges(
     frame_builder: &mut FrameBuilder,
     broker: &crate::shell::collab_broker::BrokerHandle,
+    peer_sync: Option<&Arc<crate::shell::network::ShellNetwork>>,
 ) {
     frame_builder.host_mut().attach_collab_broker(broker);
+    // Records this shell serves to other devices are signed as this device.
+    if let Some(network) = peer_sync {
+        frame_builder
+            .host_mut()
+            .set_record_signer(Arc::clone(network) as _);
+    }
 }
 
 fn attach_peer_presence(
@@ -5479,7 +5486,7 @@ pub fn run() {
         .then(|| spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref()))
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
-        attach_collab_broker_bridges(&mut frame_builder, broker);
+        attach_collab_broker_bridges(&mut frame_builder, broker, peer_sync.as_ref());
     }
     let mut realtime_fabric_bridge = collab_broker
         .as_ref()
@@ -7620,7 +7627,7 @@ pub fn run() {
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
-                attach_collab_broker_bridges(&mut frame_builder, broker);
+                attach_collab_broker_bridges(&mut frame_builder, broker, peer_sync.as_ref());
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 if let (Some(runtime), Some(bridge)) = (
                     device_fabric_runtime.as_mut(),

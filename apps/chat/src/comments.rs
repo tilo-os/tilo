@@ -30,7 +30,7 @@ use crate::model::{Attachment, Message, Reaction};
 /// The conversation every member's Chat opens in a room. A record id names a
 /// document within one room, so the same id in every room is one
 /// conversation per room, never one across rooms.
-pub const CONVERSATION_RECORD: &str = "uuid:5c4a7f10-3b2e-4d8a-9f61-0c2d4e6f8a13";
+pub const CONVERSATION_RECORD: &str = tilo_reference::CHAT_CONVERSATION_RECORD;
 /// Record kind of the conversation document.
 pub const CONVERSATION_KIND: &str = "chat.conversation";
 /// Record kind of a message someone wrote in a feedback channel.
@@ -54,17 +54,13 @@ pub fn conversation() -> RecordCheckout {
 
 /// The record a feedback channel's reports are comments on.
 pub fn channel_record(channel: &str) -> Option<RecordId> {
-    RecordId::parse(&format!(
-        "derived:chat.channel.{channel}@{CONVERSATION_RECORD}"
-    ))
+    RecordId::parse(&tilo_reference::chat_channel_record(channel))
 }
 
 /// The record a message in the conversation document is addressed by, so a
 /// reaction on it can be a comment record too.
 fn conversation_message_record(message: &str) -> Option<RecordId> {
-    RecordId::parse(&format!(
-        "derived:chat.message.{message}@{CONVERSATION_RECORD}"
-    ))
+    RecordId::parse(&tilo_reference::chat_conversation_message_record(message))
 }
 
 /// A message as its author's record holds it: one authored value, like a

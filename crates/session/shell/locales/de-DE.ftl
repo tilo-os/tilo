@@ -54,6 +54,7 @@ remark-blocked-no-destination = Wähle, wohin es geht
 remark-blocked-recording = Stoppe zuerst die Aufzeichnung
 remark-blocked-capturing = Warte, bis die Aufzeichnung gesichert ist
 remark-blocked-review = Prüfe die Aufzeichnung vor dem Senden
+remark-blocked-no-identity = Dieses Gerät hat keine Identität, mit der es die Aufzeichnung teilen kann
 remark-sending = Wird gesendet…
 
 ## Auswählen

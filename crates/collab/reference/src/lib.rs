@@ -51,6 +51,7 @@ pub use record::{
 };
 pub use reference::{Referent, ResourceRef, Span, SpanUnit};
 pub use remark::{
-    CHAT_ACTION_TYPE, FEEDBACK_CHANNEL, ROOM_CONVERSATION, ReceivedRemark, Remark, Undeliverable,
-    read_chat_action,
+    CHAT_ACTION_TYPE, CHAT_CONVERSATION_RECORD, FEEDBACK_CHANNEL, ROOM_CONVERSATION,
+    ReceivedRemark, Remark, Undeliverable, chat_channel_record, chat_conversation_message_record,
+    is_chat_message_id, read_chat_action,
 };
