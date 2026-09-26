@@ -2003,6 +2003,92 @@ fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
     )
 }
 
+/// The keystrokes a controller intent stands for. Directional focus is the
+/// toolkit's Alt+arrow in an app, and a bare arrow once a shell surface owns
+/// the keyboard (palette, overview, guide), where arrows already navigate.
+fn controller_key_events(
+    key: crate::shell::overlay_host::ControllerKey,
+    chrome_captures: bool,
+) -> Vec<WindowEvent> {
+    use crate::compositor::controller_nav::NavDirection;
+    use crate::shell::overlay_host::ControllerKey;
+    let (named, alt) = match key {
+        ControllerKey::Move(direction) => (
+            match direction {
+                NavDirection::Up => NamedKey::ArrowUp,
+                NavDirection::Down => NamedKey::ArrowDown,
+                NavDirection::Left => NamedKey::ArrowLeft,
+                NavDirection::Right => NamedKey::ArrowRight,
+            },
+            !chrome_captures,
+        ),
+        ControllerKey::Activate => (NamedKey::Enter, false),
+        ControllerKey::Back => (NamedKey::Escape, false),
+    };
+    let alt_key = Key::Named(NamedKey::Alt);
+    let key = Key::Named(named);
+    let mut events = Vec::with_capacity(4);
+    if alt {
+        events.push(keyboard_input_event(&alt_key, true));
+    }
+    events.push(keyboard_input_event(&key, true));
+    events.push(keyboard_input_event(&key, false));
+    if alt {
+        events.push(keyboard_input_event(&alt_key, false));
+    }
+    events
+}
+
+/// Read local controllers and act on what they asked for: desktop-layout
+/// intents run in the shell, focus intents become keystrokes through the
+/// same client-first route physical keys take. Returns whether anything
+/// changed. Input is still drained on the lock screen so presses made there
+/// never replay after unlock.
+fn pump_controller_navigation(
+    runtime: &mut crate::compositor::controller_nav::ControllerNavRuntime,
+    state: &mut State,
+    frame_builder: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    locked: bool,
+) -> bool {
+    use crate::shell::overlay_host::ControllerDelivery;
+    let forwarded = crate::shell::physical_gamepad::forwarded_physical_gamepads();
+    let passthrough = state.fullscreen_target.is_some();
+    let intents = runtime.poll(Instant::now(), &forwarded, passthrough);
+    if locked || intents.is_empty() {
+        return false;
+    }
+    for (intent, family) in intents {
+        if let ControllerDelivery::Key(key) =
+            frame_builder.host_mut().apply_controller_intent(intent)
+        {
+            let captured = crate::shell::input_policy::chrome_captures_input(frame_builder);
+            for event in controller_key_events(key, captured) {
+                if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
+                    client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
+                }
+                let to_client = client_input_allowed(frame_builder)
+                    && client_input::route_input(state, frame_builder, &event, &ctx.modifiers);
+                if !to_client {
+                    let _ = frame_builder.dispatch_event(
+                        &event,
+                        &ctx.modifiers,
+                        &mut ctx.doc,
+                        &ctx.root_obj,
+                        &mut ctx.focus,
+                    );
+                }
+            }
+        }
+        // Chrome moves change the focused tab; move the Wayland seat before
+        // the next intent so it lands in the window now in front.
+        frame_builder.host_mut().flush_active_tab_writeback();
+        client_input::sync_keyboard_focus(state, frame_builder);
+        frame_builder.host_mut().note_controller_input(family);
+    }
+    true
+}
+
 /// Apply a `ModifiersState` mask (already assembled by the caller from a
 /// [`SetModifiers`] action) by overwriting `ctx.modifiers` — the host reads
 /// the snapshot inline on the next chord. Mirrors `ShellDriver::set_modifiers`.
@@ -5953,6 +6039,10 @@ pub fn run() {
     // new Settings write so changes take effect this session, not the next.
     let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
     let mut switch_control = SwitchControlRuntime::new(Instant::now());
+    // Local game controllers drive the desktop through the same input
+    // funnel; their evdev descriptors wake this loop like hardware input.
+    let mut controller_nav = crate::compositor::controller_nav::ControllerNavRuntime::default();
+    let mut controller_wakes: HashMap<u64, calloop::RegistrationToken> = HashMap::new();
     // Redraw gating: painting every tick regardless of change would pin a CPU
     // core at 100%. Repaint only when: a backend event arrived
     // (input/resize/focus/redraw); the widget tree is animating; the chrome
@@ -6545,6 +6635,42 @@ pub fn run() {
                 }
             }
             session_changed = true;
+        }
+
+        if pump_controller_navigation(
+            &mut controller_nav,
+            &mut state,
+            &mut frame_builder,
+            &mut test_control_ctx,
+            session.is_locked(),
+        ) {
+            session_changed = true;
+            for t in session.note_activity(Instant::now()) {
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+            }
+        }
+        for wake in controller_nav.take_wakes() {
+            use crate::compositor::controller_nav::ControllerWake;
+            match wake {
+                ControllerWake::Watch { key, fd } => match event_loop.handle().insert_source(
+                    // Edge-triggered: the runtime reads until the kernel
+                    // queue is empty or asks for an immediate next pass.
+                    Generic::new(fd, Interest::READ, Mode::Edge),
+                    |_, _, _| Ok(PostAction::Continue),
+                ) {
+                    Ok(token) => {
+                        controller_wakes.insert(key, token);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "controller input cannot wake the compositor");
+                    }
+                },
+                ControllerWake::Unwatch { key } => {
+                    if let Some(token) = controller_wakes.remove(&key) {
+                        event_loop.handle().remove(token);
+                    }
+                }
+            }
         }
 
         state.expire_host_launch_activations();
@@ -8346,6 +8472,7 @@ pub fn run() {
                 ),
                 lock_clock_deadline,
                 run_deadline,
+                controller_nav.next_deadline(park_now),
                 backend.next_service_deadline(),
                 wayland_client_service_deadline(wayland_client_wake, park_now),
             ],

@@ -29,9 +29,12 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings::actions::QsActions as _;
 
+mod controller;
 mod device_fabric;
 mod history;
 mod shortcuts;
+
+pub use controller::{ControllerDelivery, ControllerKey};
 
 pub use device_fabric::{
     BluetoothHandoffAuthorizationView, DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView,
@@ -19624,6 +19627,7 @@ impl ShellOverlayHost {
             TextWeight::Semibold,
         );
 
+        use crate::compositor::controller_nav::{FaceRole, face_button};
         use ui::input::{
             ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
             KeyboardModifier, TouchGesture,
@@ -19682,50 +19686,78 @@ impl ShellOverlayHost {
                     family,
                     theme,
                 );
+                let guide = ControllerButton::Guide.label(family);
                 text_renderer.draw_text(
                     scene,
-                    "Hold Guide for desktop controls. Release it and every button goes back to your game.",
+                    &format!(
+                        "Move with the stick or D-pad. Hold {guide} to arrange windows. \
+                         In a fullscreen game only {guide} chords reach the desktop."
+                    ),
                     theme.tokens.typography.scale.sm,
                     colors.text_primary,
-                    transform.pre_translate((body.x0 + 104.0, body.y0 + 14.0).into()),
+                    transform.pre_translate((body.x0 + 104.0, body.y0 + 8.0).into()),
                     Some(f64_to_f32_lossy(body.width() - 104.0)),
                 );
-                let rows = [
+                let one = |button| (vec![button], vec![button]);
+                let chord = |first, second| {
                     (
-                        "Windows",
-                        ControllerButton::DpadLeft,
-                        ControllerButton::DpadRight,
+                        vec![ControllerButton::Guide, first],
+                        vec![ControllerButton::Guide, second],
+                    )
+                };
+                type Choice = (Vec<ControllerButton>, Vec<ControllerButton>);
+                let rows: [(&str, Choice); 13] = [
+                    (
+                        "Move focus",
+                        (
+                            vec![ControllerButton::DpadLeft],
+                            vec![ControllerButton::DpadRight],
+                        ),
+                    ),
+                    ("Select", one(face_button(family, FaceRole::Confirm))),
+                    ("Back", one(face_button(family, FaceRole::Cancel))),
+                    (
+                        "Actions for this app",
+                        one(face_button(family, FaceRole::Third)),
+                    ),
+                    ("Search", one(face_button(family, FaceRole::Fourth))),
+                    (
+                        "Tabs",
+                        (
+                            vec![ControllerButton::LeftBumper],
+                            vec![ControllerButton::RightBumper],
+                        ),
                     ),
                     (
                         "Workspaces",
-                        ControllerButton::DpadUp,
-                        ControllerButton::DpadDown,
+                        (
+                            vec![ControllerButton::LeftTrigger],
+                            vec![ControllerButton::RightTrigger],
+                        ),
                     ),
+                    ("Overview", one(ControllerButton::Select)),
+                    ("This guide", one(ControllerButton::Start)),
                     (
-                        "Tabs",
-                        ControllerButton::LeftBumper,
-                        ControllerButton::RightBumper,
+                        "Windows",
+                        chord(ControllerButton::DpadLeft, ControllerButton::DpadRight),
                     ),
                     (
                         "Strips",
-                        ControllerButton::LeftTrigger,
-                        ControllerButton::RightTrigger,
+                        chord(ControllerButton::DpadUp, ControllerButton::DpadDown),
                     ),
-                    ("Overview", ControllerButton::South, ControllerButton::South),
                     (
-                        "This guide",
-                        ControllerButton::Start,
-                        ControllerButton::Start,
+                        "Move window",
+                        chord(ControllerButton::LeftBumper, ControllerButton::RightBumper),
                     ),
+                    ("Quick settings", one(ControllerButton::Guide)),
                 ];
-                let narrow = body.width() < 560.0;
-                for (index, (label, first, second)) in rows.iter().enumerate() {
-                    let column = if narrow { 0 } else { index % 2 };
-                    let row = if narrow { index } else { index / 2 };
+                let row_step = if compact_panel { 48.0 } else { 54.0 };
+                let per_column = rows.len().div_ceil(2);
+                for (index, (label, (first, second))) in rows.iter().enumerate() {
+                    let column = index.checked_div(per_column).unwrap_or(0);
+                    let row = index.checked_rem(per_column).unwrap_or(index);
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0
-                        + if narrow { 62.0 } else { 92.0 }
-                        + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
+                    let y = body.y0 + 66.0 + usize_to_f64_lossy(row) * row_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -19734,14 +19766,12 @@ impl ShellOverlayHost {
                         transform.pre_translate((x, y).into()),
                         None,
                     );
-                    let guide = ControllerBinding::new([ControllerButton::Guide, *first]);
-                    let other = ControllerBinding::new([ControllerButton::Guide, *second]);
                     InputHint::paint_controller_choice_at(
                         scene,
                         transform,
-                        Point::new(x, y + 25.0),
-                        &guide,
-                        &other,
+                        Point::new(x, y + 20.0),
+                        &ControllerBinding::new(first.iter().copied()),
+                        &ControllerBinding::new(second.iter().copied()),
                         platform,
                         self.interaction.keyboard_family,
                         family,
