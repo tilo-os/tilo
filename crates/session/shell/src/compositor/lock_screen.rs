@@ -411,6 +411,49 @@ pub fn draw_lock_scene_with_wallpaper(
     draw_lock_scene_at_time(outputs, theme, text, view, wallpaper, 0.0)
 }
 
+/// Paint the hardware-key readout (volume, brightness, playback) over the
+/// lock scene, centred on the primary output where the credential widget
+/// lives. Media keys stay live while locked; without this their only
+/// feedback would be hidden behind the lock surface.
+pub fn draw_lock_osd(
+    scene: &mut Scene,
+    outputs: &[LockOutput],
+    theme: &Theme,
+    text: &mut TextRenderer,
+    osd: crate::shell::osd::Osd,
+    now: std::time::Instant,
+) {
+    let Some(primary) = outputs.first() else {
+        return;
+    };
+    let viewport = Rect::new(
+        primary.origin.0,
+        primary.origin.1,
+        primary.origin.0 + primary.size.0,
+        primary.origin.1 + primary.size.1,
+    );
+    osd.draw(
+        scene,
+        Affine::IDENTITY,
+        text,
+        theme,
+        viewport,
+        osd.alpha_at(now),
+    );
+}
+
+/// Whether a readout shown over the lock surface needs a frame at `now`:
+/// every tick of its fade, plus the overdue expiry boundary so the final
+/// clearing frame is painted. The opaque hold needs no frames.
+pub fn lock_osd_frame_due(osd: Option<crate::shell::osd::Osd>, now: std::time::Instant) -> bool {
+    osd.is_some_and(|osd| {
+        osd.needs_animation_frame_at(now)
+            || osd
+                .next_wake_deadline_at(now)
+                .is_some_and(|deadline| deadline <= now)
+    })
+}
+
 /// Live renderer with an explicit monotonic animation time. Keeping time out
 /// of `LockView` prevents animation frames from changing authentication state
 /// or the accessibility tree, and makes offscreen frames reproducible.
@@ -1028,6 +1071,37 @@ mod tests {
         assert!(
             !scene.encoding().is_empty(),
             "lock overlay must produce a non-empty scene so it hides app content"
+        );
+    }
+
+    #[test]
+    fn media_key_readout_paints_over_the_lock_scene_and_schedules_its_fade() {
+        use crate::shell::osd::{OSD_FADE, OSD_HOLD, Osd};
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let outputs = single(1600.0, 900.0);
+        let mut scene = draw_lock_scene(&outputs, &theme, &mut text, &view());
+        let before = scene.encoding().n_paths;
+        let osd = Osd::volume(0.4, false);
+        draw_lock_osd(&mut scene, &outputs, &theme, &mut text, osd, osd.raised_at);
+        assert!(
+            scene.encoding().n_paths > before,
+            "a live readout must add paint on top of the lock scene"
+        );
+
+        let raised = osd.raised_at;
+        assert!(!lock_osd_frame_due(None, raised));
+        assert!(
+            !lock_osd_frame_due(Some(osd), raised),
+            "the opaque hold needs no frames"
+        );
+        assert!(lock_osd_frame_due(
+            Some(osd),
+            raised + OSD_HOLD.saturating_sub(OSD_FADE) + std::time::Duration::from_millis(1)
+        ));
+        assert!(
+            lock_osd_frame_due(Some(osd), raised + OSD_HOLD),
+            "the overdue expiry boundary still needs its clearing frame"
         );
     }
 
