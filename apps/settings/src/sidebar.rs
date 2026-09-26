@@ -130,7 +130,7 @@ pub struct RowGeometry {
 impl RowGeometry {
     /// Resolve the row geometry for a row of `rect` whose icon glyph measured
     /// `glyph_w` wide and whose label shaped to a line box `line_height` tall
-    /// at [`ROW_TEXT_SIZE`]. Every inset and gap is a step of the theme's
+    /// at `ROW_TEXT_SIZE`. Every inset and gap is a step of the theme's
     /// spacing scale, so the pill and the shell's search field share an edge
     /// by construction rather than by coincidence.
     pub fn compute(

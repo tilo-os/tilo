@@ -153,6 +153,13 @@ authorization.
   evdev codes, keyboard events, and pointer events are not representable on the
   wire. Both compositors continuously enforce the exact focused app and
   workspace and neutralize the virtual controller when that binding changes.
+- **Shared clock** rides on the shell-owned health probe. Each round trip
+  carries four `CLOCK_MONOTONIC` microsecond timestamps, and the prober keeps a
+  per-peer NTP-style estimate of offset and skew: lowest-delay samples from a
+  sliding window, a Theil–Sen fit for rate, an error bound, and a synced flag.
+  Probes run every ten seconds; a consumer that needs synchronised playback
+  holds a `FabricClockSync` handle, which raises that peer to 4 Hz until the
+  last handle drops.
 
 The Devices surface exposes these capabilities individually. Disabling a
 capability tears down its active leases; disabling continuity tears down all of

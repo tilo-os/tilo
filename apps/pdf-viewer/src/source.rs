@@ -1130,7 +1130,7 @@ impl RasterBackend {
     }
 
     /// Drop oversized stale zoom levels. Smaller safe buckets (including a
-    /// tall page capped by [`MAX_RASTER_PIXELS`]) and thumbnails may stay until
+    /// tall page capped by `MAX_RASTER_PIXELS`) and thumbnails may stay until
     /// the LRU byte budget evicts them, so this never churns a freshly rendered
     /// page. Called once per frame.
     pub fn prune(&mut self, keep_bucket: u32) {

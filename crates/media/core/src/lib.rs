@@ -53,6 +53,9 @@
 //!   frames stamped on the leader's clock play at a shared presentation time
 //!   through a jitter buffer and a drift-steered resampler, mapped to the
 //!   member's channel role.
+//! * [`calibration`] — acoustic calibration of a speaker group: a log sweep,
+//!   its deconvolution into each speaker's impulse response, and the delay,
+//!   level and room-EQ trims that make the members sound as one.
 
 #![cfg_attr(
     test,
@@ -70,6 +73,7 @@
 pub mod audio;
 pub mod audio_runtime;
 pub mod cache;
+pub mod calibration;
 pub mod dmabuf;
 pub mod encode;
 pub mod engine;

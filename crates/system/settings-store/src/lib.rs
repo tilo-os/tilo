@@ -49,6 +49,8 @@ pub mod continuity;
 pub mod hardware;
 pub mod notification_policy;
 pub mod roaming_provenance;
+#[cfg(feature = "watch")]
+pub mod watch;
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";

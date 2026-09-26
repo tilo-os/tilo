@@ -325,7 +325,7 @@ pub struct Video {
     pub id: VideoId,
     pub title: String,
     /// `DeArrow` community-sourced, non-clickbait title. When `DeArrow` is
-    /// enabled this replaces [`title`]; an indicator badge marks it.
+    /// enabled this replaces `title`; an indicator badge marks it.
     #[serde(default)]
     pub dearrow_title: Option<String>,
     pub channel_id: ChannelId,
@@ -612,30 +612,30 @@ pub struct TubeModel {
     /// Provenance of the on-screen catalogue (sample vs live).
     #[serde(default)]
     pub data_source: DataSource,
-    /// The query whose live results are held in [`search_hits`]. Lets the
+    /// The query whose live results are held in `search_hits`. Lets the
     /// search screen render the backend's exact ordered result set (which a
     /// local substring filter would otherwise mangle for multi-word queries)
     /// while still falling back to the local filter when there are no live
     /// hits.
     #[serde(default)]
     pub search_hits_query: String,
-    /// Ordered video ids returned by the live backend for [`search_hits_query`].
+    /// Ordered video ids returned by the live backend for `search_hits_query`.
     #[serde(default)]
     pub search_hits: Vec<VideoId>,
-    /// Ordered playlist ids returned by the live backend for [`search_hits_query`].
+    /// Ordered playlist ids returned by the live backend for `search_hits_query`.
     #[serde(default)]
     pub search_playlist_hits: Vec<PlaylistId>,
     /// Ordered creator/channel ids returned by the live backend for
-    /// [`search_hits_query`].
+    /// `search_hits_query`.
     #[serde(default)]
     pub search_channel_hits: Vec<ChannelId>,
     /// The active multi-select type filter on the search results.
     #[serde(default)]
     pub search_type_filter: SearchTypeFilter,
-    /// The video whose live "up next" list is held in [`related_hits`].
+    /// The video whose live "up next" list is held in `related_hits`.
     #[serde(default)]
     pub related_of: VideoId,
-    /// Ordered related-video ids returned by the live backend for [`related_of`].
+    /// Ordered related-video ids returned by the live backend for `related_of`.
     #[serde(default)]
     pub related_hits: Vec<VideoId>,
     /// Crowdsourced dislike counts (Return `YouTube` Dislike), keyed by video id.

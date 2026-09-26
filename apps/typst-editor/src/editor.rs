@@ -1,6 +1,6 @@
 //! The source editor pane.
 //!
-//! The text-editing surface itself is the shared [`ui::CodeEditor`] — one caret
+//! The text-editing surface itself is the shared `ui::CodeEditor` — one caret
 //! / selection / clipboard / undo / IME / a11y implementation, a line-number
 //! gutter, and Typst syntax highlighting supplied by the toolkit's built-in
 //! `Language::Typst` highlighter. This module is now a thin shell that owns that

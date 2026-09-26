@@ -251,6 +251,18 @@ Configure the headless viewport via env var (defaults to 1600×900):
 TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
 ```
 
+For multi-monitor behaviour, replace the one output with a real arrangement
+instead (the two variables are mutually exclusive):
+```bash
+# A named fixture: docked-laptop, vertical-stack, portrait-plus-4k, mixed-scale-offset
+TILO_HEADLESS_OUTPUTS=docked-laptop cargo run --bin shell -- --backend headless
+# Or a spec: WxH mode, then optional @SCALE, ~HZ, rDEGREES, +X+Y per output
+TILO_HEADLESS_OUTPUTS=2560x1600@2,1920x1080@1+2560+0 cargo run --bin shell -- --backend headless
+```
+Each output gets its own `wl_output`; snapshots cover the combined extent.
+`shots --outputs <fixture|spec>` renders the shell chrome across the same
+arrangement, and `tests/multi_output.rs` reads what clients see of it.
+
 ## End-to-end recipe — "click, snapshot, look"
 
 **The fastest path: run the example script.**

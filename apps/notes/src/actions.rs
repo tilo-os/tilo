@@ -162,7 +162,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<NotesOpe
 /// A serializable snapshot of a page's metadata, in exactly the representation
 /// the document stores (ids as strings, an absent parent as `""`). Carrying the
 /// document shape keeps [`Action::apply`] a pure write and makes
-/// [`Self::from_meta`]/[`Self::to_meta`] lossless round-trips.
+/// [`Self::from_meta`]/`Self::to_meta` lossless round-trips.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageData {
     /// Page uuid (string form), minted at authoring time.

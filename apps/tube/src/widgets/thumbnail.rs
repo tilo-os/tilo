@@ -87,7 +87,7 @@ impl Thumbnail {
     }
 
     /// Resolve the thumbnail image **lazily** from `store` at `url` (looked up in
-    /// [`sync`]). Empty `url` / `None` store keeps the seed gradient. This is the
+    /// [`sync`](crate::sync)). Empty `url` / `None` store keeps the seed gradient. This is the
     /// live path — it avoids the build-time `imgs.get()` that made every decode
     /// completion rebuild the whole widget tree.
     #[must_use]

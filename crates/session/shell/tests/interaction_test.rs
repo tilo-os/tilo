@@ -346,19 +346,14 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     reason = "one end-to-end sandbox scenario: spawn, wait for the window, drive input and assert, in order"
 )]
 fn test_click_interaction_in_sandbox() {
-    // 1. Build
-    let _ = std::process::Command::new("cargo")
-        .arg("build")
-        .arg("--locked")
-        .arg("--bin")
-        .arg("click_test_client")
-        .status();
-
+    // Cargo builds every binary target of the package before its integration
+    // tests and hands us the path as CARGO_BIN_EXE_click_test_client; a nested
+    // `cargo build` here would only recompile the crate under another profile.
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (input_tx, input_tx_rx) = mpsc::unbounded_channel();
 
-    // 2. Start Server
+    // 1. Start Server
     spawn_wayland_server(tx, started_tx, input_tx_rx);
 
     let socket_name = started_rx
@@ -379,7 +374,7 @@ fn test_click_interaction_in_sandbox() {
     );
     let log_dir = tempfile::tempdir().unwrap();
 
-    // 3. Spawn Client
+    // 2. Spawn Client
     let app = container
         .spawn_logging_to(
             log_dir.path(),
@@ -391,11 +386,11 @@ fn test_click_interaction_in_sandbox() {
     let log_path = app.log_path;
     let mut child = ChildGuard(app.child);
 
-    // 4. Wait for Window/Frame
+    // 3. Wait for Window/Frame
     let surface_id = wait_for_ready_surface(&mut rx, Duration::from_secs(10))
         .expect("Test client did not become ready");
 
-    // 5. Send Input
+    // 4. Send Input
     let test_x = 123.0;
     let test_y = 45.0;
 
@@ -468,7 +463,7 @@ fn test_click_interaction_in_sandbox() {
 
     thread::sleep(Duration::from_secs(2));
 
-    // 6. Verify Log
+    // 5. Verify Log
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
     println!("DEBUG: Final Client Log:\n{log_content}");

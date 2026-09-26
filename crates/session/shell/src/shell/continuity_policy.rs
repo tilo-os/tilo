@@ -126,6 +126,7 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::RemoteAudioDecision { .. }
             | PersonalFabricAction::RemoteAudioFrame { .. }
             | PersonalFabricAction::RemoteAudioStop { .. }
+            | PersonalFabricAction::RemoteAudioKeepalive { .. }
             | PersonalFabricAction::RemoteAudioCancel { .. }
             | PersonalFabricAction::RemoteCaptureSignal { .. }
             | PersonalFabricAction::RemoteCaptureChunk { .. }
