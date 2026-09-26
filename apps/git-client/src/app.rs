@@ -3043,7 +3043,7 @@ impl Widget for GitClientApp {
     }
 
     /// Publish the open repository and its view-preference actions to the
-    /// shell's Ctrl+K palette (delegates to the [`ResourceProvider`] impl in
+    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
     /// [`crate::actions`]). Empty when no repository is open.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)

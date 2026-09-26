@@ -1,7 +1,7 @@
 //! Low-level Vello drawing helpers shared across the Camera screens.
 //!
 //! Everything here is theme-driven at the call site — these helpers take
-//! explicit colors so callers can pull them from the [`Theme`]. No color is
+//! explicit colors so callers can pull them from the `Theme`. No color is
 //! hard-coded in a way that escapes the caller's control.
 
 pub use ui::paint::{fill_rect, fill_round, stroke_rect, stroke_round};

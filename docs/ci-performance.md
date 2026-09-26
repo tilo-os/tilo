@@ -46,19 +46,25 @@ as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
 workspace on both architectures. Submit the updated task branch/PR normally;
 the [scheduler owns admission and runner slots](../AGENTS.md#ci).
 
-Each shard runs as three parallel jobs: `test` (nextest on the shard's tested
-packages, on `runner-large` when a tilo-ui test link needs it), `check` (the
-all-target check and the portable tilo-ui check) and `clippy` (the
-differential Clippy gate, x86-64 rows only). Before this split they ran one
-after another in one job. Run #21842, a 74-package shard, took about 29 minutes
-that way: 12.5 of test execution after a 3-minute test compile, 2.6 of check and
-8.5 of Clippy. Now the critical path is the test job alone. `check` and
-`clippy` use the architecture's ordinary runner because they link nothing. The
-three jobs no longer share a warm target tree. Each fetches dependency
-artifacts from sccache instead, and compiles proc-macro and build-script
-crates, which sccache does not store, once per job. That is the CPU cost of the
-shorter wall time. The `checks` aggregate accepts the three only when all
-succeed, or when all were skipped because Rust is not applicable.
+Each x86-64 shard runs as two parallel jobs: `test` (nextest on the shard's
+tested packages, on `runner-large` when a tilo-ui test link needs it) and
+`clippy` (the Clippy gate over every target, then the portable tilo-ui check).
+Clippy type-checks every target it lints with the same flags, so it is also
+the shard's all-target check; a separate `cargo check --all-targets` job
+repeated that compilation on a third runner and could not fail where Clippy
+passed. Architectures that are not linted (the ARM rows of full
+qualification) keep a standalone `check` job with the all-target and portable
+tilo-ui checks. Before the jobs were split they ran one after another in one
+job. Run #21842, a 74-package shard, took about 29 minutes that way: 12.5 of
+test execution after a 3-minute test compile, 2.6 of check and 8.5 of Clippy.
+Now the critical path is the test job alone. `check` and `clippy` use the
+architecture's ordinary runner because they link nothing. The jobs no longer
+share a warm target tree. Each fetches dependency artifacts from sccache
+instead, and compiles proc-macro and build-script crates, which sccache does
+not store, once per job. That is the CPU cost of the shorter wall time. The
+`checks` aggregate accepts them only when all selected jobs succeed (the
+standalone check only where the selector requires it), or when all were
+skipped because Rust is not applicable.
 
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing

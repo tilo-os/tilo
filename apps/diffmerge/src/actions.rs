@@ -265,7 +265,7 @@ pub fn register(registry: &mut ActionRegistry) {
 ///
 /// Every [`DiffmergeAction`] variant carries only plain `String`/`usize`/enum
 /// fields, which `serde_json` cannot fail to serialize — see
-/// [`crate::actions::immediate_choice`] for the same contract on the palette
+/// `crate::actions::immediate_choice` for the same contract on the palette
 /// side.
 ///
 /// # Panics

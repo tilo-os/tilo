@@ -2706,7 +2706,7 @@ impl ContainersApp {
     }
 
     /// The current (animated) navigation-rail width. Eased between fully
-    /// expanded ([`RAIL_WIDTH`]) and a thin collapsed strip that still shows
+    /// expanded (`RAIL_WIDTH`) and a thin collapsed strip that still shows
     /// the section icons, using the shared `ui` flap kernel.
     pub fn rail_width(&self) -> f64 {
         let reveal = self.sidebar_flap.reveal();

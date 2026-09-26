@@ -624,6 +624,10 @@ def make_plan(
         # Clippy's lint result is architecture-independent; lint each package
         # set once, on x86_64.
         "clippy_matrix": {"include": [row for row in matrix if row["arch"] == "x86_64"]},
+        # Clippy type-checks every target it lints with the same flags, so on
+        # x86_64 it is the all-target check. Other architectures, which are
+        # not linted, keep a standalone all-target check.
+        "check_matrix": {"include": [row for row in matrix if row["arch"] != "x86_64"]},
     }
 
 
@@ -633,6 +637,9 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"matrix={compact_matrix}\n")
         compact_clippy_matrix = json.dumps(plan["clippy_matrix"], separators=(",", ":"))
         handle.write(f"clippy_matrix={compact_clippy_matrix}\n")
+        compact_check_matrix = json.dumps(plan["check_matrix"], separators=(",", ":"))
+        handle.write(f"check_matrix={compact_check_matrix}\n")
+        handle.write(f"check_required={'true' if plan['check_matrix']['include'] else 'false'}\n")
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")

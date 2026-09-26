@@ -53,6 +53,7 @@ use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::Widget;
 
 use crate::futo::FutoSwipeModel;
+use crate::imclient::{content_hint, may_learn};
 use crate::inject::Symbol;
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 use crate::output::{OskOutput, TextMirror};
@@ -120,6 +121,15 @@ pub struct OskWidget {
     /// The field intent the keyboard is currently serving. Drives which layout
     /// is active and whether the shift/symbols affordances make sense.
     purpose: InputPurpose,
+    /// The focused field's content hints ([`content_hint`] bits): secrecy and
+    /// capitalization.
+    hints: u32,
+    /// Whether the caret follows a sentence end (or the field start), for
+    /// automatic capitalization.
+    sentence_start: bool,
+    /// Whether the last committed text ended a sentence with `.`, `!` or `?`
+    /// that no space has followed yet.
+    sentence_end: bool,
     /// Whether the symbols layer is currently displayed instead of letters.
     showing_symbols: bool,
     /// Current shift / caps state.
@@ -245,6 +255,9 @@ impl OskWidget {
             active_letter: "qwerty".to_string(),
             preferred_text_layout: "qwerty".to_string(),
             purpose: InputPurpose::Text,
+            hints: content_hint::NONE,
+            sentence_start: true,
+            sentence_end: false,
             showing_symbols: false,
             shift: ShiftState::Off,
             toolbar: OskToolbarItem::default_set(),
@@ -473,6 +486,68 @@ impl OskWidget {
         self.apply_purpose(purpose);
         self.showing_symbols = false;
         self.structure_dirty = true;
+        self.enforce_secrecy();
+        self.apply_hint_case();
+    }
+
+    /// Apply the focused field's content hints ([`content_hint`] bits). A
+    /// secret field drops any composition and suggestions immediately;
+    /// capitalization hints set the shift state.
+    pub fn set_content_hints(&mut self, hints: u32) {
+        self.hints = hints;
+        self.enforce_secrecy();
+        self.apply_hint_case();
+    }
+
+    /// The focused field's content hints.
+    pub fn content_hints(&self) -> u32 {
+        self.hints
+    }
+
+    /// Whether the focused field holds a secret: nothing typed there is
+    /// composed, suggested from or learned.
+    pub fn is_secret_field(&self) -> bool {
+        !may_learn(self.purpose, self.hints)
+    }
+
+    fn enforce_secrecy(&mut self) {
+        if !self.is_secret_field() {
+            return;
+        }
+        if !self.current_word.is_empty() {
+            self.current_word.clear();
+            self.emit(OskOutput::SetPreedit(String::new()));
+        }
+        self.word_from_swipe = false;
+        self.current_word_overflowed = false;
+        self.prev_word = None;
+        self.suggestions.clear();
+    }
+
+    /// Set the shift state a field's case hints ask for at a fresh start.
+    fn apply_hint_case(&mut self) {
+        if self.hints & content_hint::UPPERCASE != 0 {
+            self.shift = ShiftState::CapsLock;
+        } else if self.hints & content_hint::LOWERCASE != 0 {
+            self.shift = ShiftState::Off;
+        } else {
+            self.auto_capitalize();
+        }
+    }
+
+    /// One-shot shift at a sentence start in a field asking for automatic
+    /// capitalization.
+    fn auto_capitalize(&mut self) {
+        let wanted = self.hints & content_hint::AUTO_CAPITALIZATION != 0
+            && self.hints & content_hint::LOWERCASE == 0;
+        if wanted
+            && self.sentence_start
+            && self.current_word.is_empty()
+            && self.shift == ShiftState::Off
+            && !self.is_secret_field()
+        {
+            self.shift = ShiftState::Shift;
+        }
     }
 
     /// Start hidden (builder). Used by the auto-show input-method mode, where
@@ -755,6 +830,12 @@ impl OskWidget {
                 self.select_text_layout(name);
             }
         }
+        if matches!(
+            action,
+            KeyAction::Char(_) | KeyAction::Space | KeyAction::Enter | KeyAction::Backspace
+        ) {
+            self.auto_capitalize();
+        }
         if self.key_log.len() == MAX_KEY_LOG_ENTRIES {
             self.key_log.pop_front();
             self.dropped_key_actions = self.dropped_key_actions.saturating_add(1);
@@ -764,6 +845,7 @@ impl OskWidget {
 
     /// Send one output to the field (callback, bounded queue, mirror).
     fn emit(&mut self, output: OskOutput) {
+        self.track_sentence(&output);
         self.mirror.apply(&output);
         if self.output.len() == MAX_OUTPUT_ENTRIES {
             self.output.pop_front();
@@ -775,11 +857,49 @@ impl OskWidget {
         }
     }
 
+    fn track_sentence(&mut self, output: &OskOutput) {
+        match output {
+            OskOutput::SetPreedit(_) => {}
+            OskOutput::Commit(text) => {
+                for c in text.chars() {
+                    match c {
+                        '.' | '!' | '?' => {
+                            self.sentence_end = true;
+                            self.sentence_start = false;
+                        }
+                        ' ' => self.sentence_start |= self.sentence_end,
+                        '\n' => {
+                            self.sentence_start = true;
+                            self.sentence_end = false;
+                        }
+                        _ => {
+                            self.sentence_start = false;
+                            self.sentence_end = false;
+                        }
+                    }
+                }
+            }
+            OskOutput::Key(Symbol::Return) => {
+                self.sentence_start = true;
+                self.sentence_end = false;
+            }
+            OskOutput::Key(_) => {
+                self.sentence_start = false;
+                self.sentence_end = false;
+            }
+        }
+    }
+
     /// Add typed letters to the composing word. A swiped word in front of them
-    /// is committed first with a separating space.
+    /// is committed first with a separating space. In a secret field letters
+    /// are committed as typed, never composed.
     fn extend_word(&mut self, letters: &str) {
         if self.word_from_swipe {
             self.finish_word(" ");
+        }
+        if self.is_secret_field() {
+            self.emit(OskOutput::Commit(letters.to_string()));
+            return;
         }
         let fits = self
             .current_word
@@ -814,7 +934,7 @@ impl OskWidget {
         }
         self.word_from_swipe = false;
         self.current_word_overflowed = false;
-        if !word.is_empty() {
+        if !word.is_empty() && !self.is_secret_field() {
             let committed = word.to_lowercase();
             if self.personalization_enabled {
                 self.predictor
@@ -845,21 +965,29 @@ impl OskWidget {
         self.refresh_completion_suggestions();
     }
 
-    /// Drop the composition and next-word context. The focused field changed
-    /// (or went away), so neither belongs to what the user edits next.
+    /// Drop the composition, next-word context and every in-memory trace of
+    /// typed text (mirror, output queue, key log). The focused field changed
+    /// (or went away), so none of it belongs to what the user edits next — and
+    /// a password typed there must not outlive the field.
     pub fn reset_composition(&mut self) {
         self.current_word.clear();
         self.word_from_swipe = false;
         self.current_word_overflowed = false;
         self.prev_word = None;
         self.mirror.clear();
+        self.output.clear();
+        self.key_log.clear();
+        self.sentence_start = true;
+        self.sentence_end = false;
+        self.shift = ShiftState::Off;
         self.refresh_next_word_suggestions();
+        self.apply_hint_case();
     }
 
     /// Refill the bar with completions of the in-progress word (biased by the
     /// previous word). Called as the user types letters.
     fn refresh_completion_suggestions(&mut self) {
-        if !self.suggestions_enabled {
+        if !self.suggestions_enabled || self.is_secret_field() {
             self.suggestions.clear();
             return;
         }
@@ -880,7 +1008,7 @@ impl OskWidget {
 
     /// Refill the bar with next-word predictions for the previous word.
     fn refresh_next_word_suggestions(&mut self) {
-        if !self.suggestions_enabled {
+        if !self.suggestions_enabled || self.is_secret_field() {
             self.suggestions.clear();
             return;
         }
@@ -917,6 +1045,11 @@ impl OskWidget {
     /// previously swiped one with a space) and show the ranked alternatives in
     /// the bar. Returns whether the swipe produced a word.
     fn decode_and_apply_swipe(&mut self, path: &[Point]) -> bool {
+        // A swiped word is composed and suggested from; a secret field takes
+        // taps only.
+        if self.is_secret_field() {
+            return false;
+        }
         let layout = self.current_layout().clone();
         let cands = self
             .swipe_model
@@ -1850,7 +1983,8 @@ impl Widget for OskWidget {
     ///
     /// * `osk:show` / `osk:hide` — apply the compositor's show/hide decision.
     /// * `osk:field` — a text field gained or lost focus; drop the composition
-    ///   that belonged to the previous one.
+    ///   and typed-text traces that belonged to the previous one.
+    /// * `osk:hints:<bits>` — the focused field's content hints.
     /// * `osk:purpose:<name>` — switch to the layout for an [`InputPurpose`]
     ///   (`text`, `number`, `decimal`, `phone`, `url`, `email`, `pin`,
     ///   `password`, `date`, `time`). An unknown name is ignored.
@@ -1867,6 +2001,10 @@ impl Widget for OskWidget {
                     && let Some(purpose) = input_purpose_from_name(name)
                 {
                     self.set_purpose(purpose);
+                } else if let Some(bits) = other.strip_prefix("osk:hints:")
+                    && let Ok(hints) = bits.parse::<u32>()
+                {
+                    self.set_content_hints(hints);
                 }
             }
         }
@@ -2478,6 +2616,79 @@ mod tests {
         assert_eq!(out[0], pre("x"));
         assert_eq!(out.len(), 2, "no commit of the replaced prefix: {out:?}");
         assert_eq!(osk.pending_text(), osk.current_word());
+    }
+
+    #[test]
+    fn password_field_never_composes_suggests_or_learns() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.set_purpose(InputPurpose::Password);
+        let before = osk.predictor.learned_context_count();
+        for c in ["h", "u", "n", "t", "e", "r"] {
+            osk.apply_action(KeyAction::Char(c.into()));
+        }
+        osk.apply_action(KeyAction::Space);
+        for c in ["t", "w", "o"] {
+            osk.apply_action(KeyAction::Char(c.into()));
+        }
+        osk.apply_action(KeyAction::Enter);
+        assert_eq!(osk.predictor.learned_context_count(), before);
+        assert!(osk.suggestions().is_empty());
+        assert_eq!(osk.current_word(), "");
+        assert!(
+            osk.take_output()
+                .iter()
+                .all(|o| !matches!(o, OskOutput::SetPreedit(_))),
+            "a secret is never shown as preedit"
+        );
+        let path = path_through(&osk, "quick");
+        assert!(!osk.swipe(&path), "no swiping into a secret field");
+    }
+
+    #[test]
+    fn sensitive_hint_is_secret_in_any_purpose() {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("a".into()));
+        osk.set_content_hints(content_hint::SENSITIVE_DATA);
+        assert!(osk.is_secret_field());
+        assert_eq!(osk.current_word(), "");
+        assert_eq!(osk.take_output().last(), Some(&pre("")));
+        assert!(osk.suggestions().is_empty());
+        let before = osk.predictor.learned_context_count();
+        osk.apply_action(KeyAction::Char("b".into()));
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.predictor.learned_context_count(), before);
+    }
+
+    #[test]
+    fn blur_clears_typed_text_traces() {
+        let mut osk = OskWidget::new();
+        osk.set_purpose(InputPurpose::Password);
+        osk.apply_action(KeyAction::Char("s".into()));
+        let mut doc = AutoCommit::new();
+        osk.on_external_event("osk:field", &mut doc, &automerge::ROOT);
+        assert_eq!(osk.pending_text(), "");
+        assert!(osk.take_output().is_empty());
+        assert!(osk.take_key_actions().is_empty());
+    }
+
+    #[test]
+    fn auto_capitalization_shifts_at_sentence_starts() {
+        let mut osk = OskWidget::new();
+        let mut doc = AutoCommit::new();
+        let hints = content_hint::AUTO_CAPITALIZATION;
+        osk.on_external_event(&format!("osk:hints:{hints}"), &mut doc, &automerge::ROOT);
+        assert_eq!(osk.shift_state(), ShiftState::Shift);
+        lay_out(&mut osk, 800.0, 360.0);
+        for label in ["h", "i", ".", "space", "o", "k", "space"] {
+            osk.activate_label(label);
+        }
+        assert_eq!(osk.pending_text(), "Hi. Ok ");
+        assert_eq!(osk.shift_state(), ShiftState::Off);
+
+        osk.set_content_hints(content_hint::AUTO_CAPITALIZATION | content_hint::LOWERCASE);
+        osk.on_external_event("osk:field", &mut doc, &automerge::ROOT);
+        assert_eq!(osk.shift_state(), ShiftState::Off);
     }
 
     #[test]

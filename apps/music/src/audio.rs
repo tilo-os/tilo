@@ -25,7 +25,7 @@
 //! **bounded** byte ranges. So the engine stages the stream to a temp file
 //! with `reqwest` using bounded `Range` requests instead, then plays that
 //! local file through the ordinary playbin path — see
-//! [`spawn_stream_download`] and [`AudioEngine::pump`]. A `file://` uri (a
+//! `spawn_stream_download` and [`AudioEngine::pump`]. A `file://` uri (a
 //! cached track) plays directly. The engine also services the `GStreamer` bus
 //! so a genuinely failed pipeline is never reported as still playing.
 //!

@@ -173,7 +173,7 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // focus in the live session — driving it from a test harness would inject
     // keystrokes into the user's desktop.
 
-    let (state, autosave) = ui::persist::open("so.tilo.osk");
+    let (state, autosave) = ui::persist::open(osk::KEYBOARD_APP_ID);
     let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .with_autosave(autosave)
         .with_window_app_id(osk::KEYBOARD_APP_ID);
@@ -211,8 +211,11 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
         widget.set_purpose(p);
     }
 
-    let state = ui::State::new();
+    // Layout and suggestion preferences live in the same persisted document
+    // as on the always-visible path; typed text never enters it.
+    let (state, autosave) = ui::persist::open(osk::KEYBOARD_APP_ID);
     let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
+        .with_autosave(autosave)
         .with_window_app_id(osk::KEYBOARD_APP_ID);
 
     // Spawn the input-method reader once the event loop proxy exists, so it can
@@ -249,6 +252,15 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
                         if proxy.send_event(UserEvent::External(cmd)).is_err() {
                             return;
                         }
+                    }
+                    // Hints after purpose: a purpose change resets shift, and
+                    // the hints decide secrecy and capitalization on top.
+                    if let Some(hints) = t.hints_changed
+                        && proxy
+                            .send_event(UserEvent::External(format!("osk:hints:{hints}")))
+                            .is_err()
+                    {
+                        return;
                     }
                     if let Some(visible) = t.visibility_changed {
                         let cmd = if visible { "osk:show" } else { "osk:hide" };

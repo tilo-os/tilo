@@ -1652,7 +1652,7 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Go up to the parent directory (alias of [`back`] kept explicit for
+    /// Go up to the parent directory (alias of `back` kept explicit for
     /// the toolbar's distinct Up affordance).
     pub fn go_up(&mut self) {
         self.back();
