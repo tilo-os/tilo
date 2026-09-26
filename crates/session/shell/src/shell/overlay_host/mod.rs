@@ -12033,6 +12033,7 @@ impl ShellOverlayHost {
             ShortcutAction::DetachTab,
             ShortcutAction::AttachTabLeft,
             ShortcutAction::AttachTabRight,
+            ShortcutAction::ReopenClosedTab,
         ];
         if let Some(action) = navigation
             .into_iter()
@@ -12063,6 +12064,11 @@ impl ShellOverlayHost {
                 ShortcutAction::AttachTabRight => {
                     if !repeat {
                         let _ = self.attach_focused_tab(1);
+                    }
+                }
+                ShortcutAction::ReopenClosedTab => {
+                    if !repeat && let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().reopen_closed_tab();
                     }
                 }
                 ShortcutAction::ResizeNarrower => {
@@ -27403,7 +27409,7 @@ mod palette_dispatch_tests {
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
             "Close tab:Alt+F4  /  Super+W",
-            "Change workspace:Super+Page Up / Down",
+            "Reopen closed tab:Super+Shift+T",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
@@ -27479,7 +27485,7 @@ mod palette_dispatch_tests {
             "Screenshot",
             "Switch windows",
             "Close tab",
-            "Change workspace",
+            "Reopen closed tab",
         ] {
             assert!(rows.iter().any(|(label, _)| *label == essential));
         }

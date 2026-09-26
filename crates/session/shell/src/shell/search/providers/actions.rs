@@ -169,20 +169,18 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         "peer.invite" | "peer.connect" => contract = ActionContract::view(),
         // Moving a tab between groups is layout, undone by moving it back;
-        // closing one is not — its content is gone from the workspace.
+        // a close is undone by `tab.reopen`, which puts it back in place.
         "text.insert"
         | "record.bring"
         | "tab.new.terminal.here"
         | "window.new.terminal"
         | "tab.duplicate"
         | "tab.split-right"
-        | "tab.move-to-new-group" => {
+        | "tab.move-to-new-group"
+        | "tab.close"
+        | "tab.reopen" => {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
-        }
-        "tab.close" => {
-            contract.permission = PermissionRequirement::Write;
-            contract.reversible = false;
         }
         "notifications.dnd.toggle" => {
             contract.permission = PermissionRequirement::Write;
@@ -1330,6 +1328,16 @@ impl Action {
                     let message = err.user_message().to_string();
                     st.push_warning_notification("Can't close this tab", &message);
                     ActionError::Refused(message)
+                })
+            },
+        ),
+        chrome(
+            "tab.reopen",
+            "Reopen closed tab",
+            "Bring back the tab closed most recently in this workspace, where it was",
+            |st, _| {
+                st.reopen_closed_tab().map(|_| ()).ok_or_else(|| {
+                    ActionError::Refused("no closed tab to reopen in this workspace".into())
                 })
             },
         ),

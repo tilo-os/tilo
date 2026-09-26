@@ -47,52 +47,56 @@ fn app_id(tile: &TileContent) -> Option<&str> {
     }
 }
 
-fn close_tab(chrome: &Chrome, expected_group: GroupId, tab_id: TabId) -> Result<(), ActionError> {
-    let mut state = chrome.borrow_mut();
-    let surface = {
-        let tree = state.tree();
-        let Some(group) = tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .find(|group| group.id == expected_group)
-        else {
-            return Err(ActionError::Refused(format!(
-                "window group {expected_group} is no longer present"
-            )));
-        };
-        let Some(tab) = group.tabs.iter().find(|tab| tab.id == tab_id) else {
-            return Err(ActionError::Refused(format!(
-                "tab {tab_id} is no longer in window group {expected_group}"
-            )));
-        };
-        let surface = match &tab.tile {
-            TileContent::Foreign { surface_id, .. } => Some(*surface_id),
-            _ => None,
-        };
-        drop(tree);
-        surface
-    };
-    if !crate::shell::tab_binding::remove_tab(&mut state.tree_mut(), tab_id) {
+fn tab_in_group(
+    chrome: &Chrome,
+    expected_group: GroupId,
+    tab_id: TabId,
+) -> Result<(), ActionError> {
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let Some(group) = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .find(|group| group.id == expected_group)
+    else {
         return Err(ActionError::Refused(format!(
-            "tab {tab_id} could not be removed from durable desktop state"
+            "window group {expected_group} is no longer present"
+        )));
+    };
+    if !group.tabs.iter().any(|tab| tab.id == tab_id) {
+        return Err(ActionError::Refused(format!(
+            "tab {tab_id} is no longer in window group {expected_group}"
         )));
     }
-    state.tree().flush_to_disk();
-    if let Some(surface) = surface {
-        state.request_surface_close(surface);
-    }
-    state.bump();
+    drop(tree);
+    drop(state);
     Ok(())
 }
 
+fn refused(tab_id: TabId) -> ActionError {
+    ActionError::Refused(format!(
+        "tab {tab_id} could not be removed from durable desktop state"
+    ))
+}
+
+/// Closes through the one tab lifecycle, so the close can be undone.
+fn close_tab(chrome: &Chrome, expected_group: GroupId, tab_id: TabId) -> Result<(), ActionError> {
+    tab_in_group(chrome, expected_group, tab_id)?;
+    crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab_id)
+        .map_err(|_| refused(tab_id))
+}
+
+/// Closes every tab and remembers the group as one close, so a single
+/// reopen brings the whole group back.
 fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
-    let tabs = {
+    let (tabs, closed) = {
         let state = chrome.borrow();
         let tree = state.tree();
-        tree.desktop
+        let tabs = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -101,10 +105,19 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
             .map(|group| group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>())
             .ok_or_else(|| {
                 ActionError::Refused(format!("window group {group_id} is no longer present"))
-            })?
+            })?;
+        let closed = crate::shell::closed_tabs::capture_group(&tree, group_id);
+        drop(tree);
+        drop(state);
+        (tabs, closed)
     };
     for tab in tabs {
-        close_tab(chrome, group_id, tab)?;
+        tab_in_group(chrome, group_id, tab)?;
+        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), tab)
+            .map_err(|_| refused(tab))?;
+    }
+    if let Some(entry) = closed {
+        chrome.borrow_mut().remember_closed_tab(entry);
     }
     Ok(())
 }
