@@ -18,6 +18,8 @@
 //! The URL-building + format-selection logic is always compiled and unit-tested
 //! (no network); the live [`resolve_rangeable`] fetch probes real instances and
 //! commits only to one whose proxy actually serves bytes.
+//!
+//! [`resolve_rangeable`]: crate::backend::proxy::resolve_rangeable
 
 use std::time::{Duration, Instant};
 

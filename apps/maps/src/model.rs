@@ -196,7 +196,7 @@ impl TravelMode {
     }
 
     /// OSRM public-server profile path component. Only meaningful for the road
-    /// modes; `Transit` never routes via OSRM (guarded by [`is_transit`]).
+    /// modes; `Transit` never routes via OSRM (guarded by `is_transit`).
     pub fn osrm_profile(self) -> &'static str {
         match self {
             // `Transit` never actually routes via OSRM (guarded by

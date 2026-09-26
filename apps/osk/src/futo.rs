@@ -1,10 +1,10 @@
 //! `FutoSwipeModel` — the real FUTO `ExecuTorch` swipe decoder, wired into the
-//! OSK's [`SwipeModel`](crate::swipe::SwipeModel) seam via the `swipe`
+//! OSK's [`SwipeModel`] seam via the `swipe`
 //! crate (C++/ExecuTorch over FFI).
 //!
 //! The encoder is universal; we pair it with the `en_qwerty` decoder + the
 //! dictionary. The OSK's on-screen letter keys are normalized into the
-//! model's [0,1] layout space (both are standard QWERTY, so the bounding-box
+//! model's `0,1` layout space (both are standard QWERTY, so the bounding-box
 //! normalization aligns them).
 //!
 //! [`FutoSwipeModel::default_load`] returns `None` when the FUTO libs aren't

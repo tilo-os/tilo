@@ -2,7 +2,7 @@
 //!
 //! A leaf `ui` widget the browser chrome positions directly under the
 //! address [`ui::widget::TextInput`]. It renders the ranked
-//! [`HistoryEntry`](crate::history::HistoryEntry) rows produced by
+//! [`HistoryEntry`] rows produced by
 //! [`History::suggest`](crate::history::History::suggest) — each row shows
 //! the page title in primary text with the URL dimmed beneath it — and
 //! highlights the current selection.

@@ -587,7 +587,7 @@ impl Core {
 
     /// Open a saved city by id: select it, reset the forecast scroll, refresh
     /// its forecast, and raise the show-detail push intent — the same path a
-    /// tap on the city list takes ([`OverAction::SelectLocation`]). Returns
+    /// tap on the city list takes (`OverAction::SelectLocation`). Returns
     /// `false` (touching nothing) for an id that is not a saved city. Used by
     /// the app's Ctrl+K search activation.
     pub fn open_location(&mut self, id: LocationId) -> bool {

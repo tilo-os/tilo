@@ -1474,7 +1474,7 @@ impl TerminalWidget {
 
     /// Set the local find text for a host or screenshot. Production typing
     /// routes through the same [`TextInput`] then calls
-    /// [`refresh_find_matches`](Self::refresh_find_matches).
+    /// `refresh_find_matches`.
     pub fn set_find_query(&mut self, query: &str) {
         let bounded: String = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
         self.find_input.set_text(&bounded);
@@ -5483,7 +5483,7 @@ pub struct TerminalPerformer<'a> {
     /// O(doc) write *per character*, so a screenful of output was O(n²) — the
     /// exact per-keystroke document rewrite HIG §6 forbids, and enough to freeze
     /// a debug build on a bulk paste / `cat`. Any non-`print` action flushes the
-    /// buffer first (see [`flush_print_buf`](TerminalPerformer::flush_print_buf))
+    /// buffer first (see `flush_print_buf`)
     /// so it never observes stale grid state.
     pub print_buf: Option<PrintBuf>,
 }
@@ -6924,7 +6924,7 @@ impl TerminalBackend {
     /// grants. See `crates/runtime/ush`.
     ///
     /// Three routes, and the order is the trust boundary. The route is chosen by
-    /// [`confinement_route`] from a capability probe, not by trying each in turn
+    /// `confinement_route` from a capability probe, not by trying each in turn
     /// and hoping — so a machine that cannot host a guest is never handed one to
     /// fail in, and confinement is never silently downgraded on Tilo.
     ///
@@ -6949,8 +6949,8 @@ impl TerminalBackend {
     ///    process already has, so it runs truly unconfined only on a truly
     ///    unconfined host — and this route is unreachable whenever route 1 is.
     ///
-    /// The two kernel-feature probes ([`seccomp_filtered`],
-    /// [`unprivileged_userns_enabled`]) are the robust discriminator between "I
+    /// The two kernel-feature probes (`seccomp_filtered`,
+    /// `unprivileged_userns_enabled`) are the robust discriminator between "I
     /// am a confined Tilo app" and "I am on a normal host": a seccomp filter
     /// cannot be removed once installed, so an attacker inside the sandbox
     /// cannot flip route 2 on to escape, and cannot reach an *escalated*

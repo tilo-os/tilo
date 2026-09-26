@@ -3,7 +3,7 @@
 //! `ui` owns the canonical toolkit; these are Tube-specific primitives we
 //! either can't express with the stock widgets (a `SponsorBlock` seek bar, a
 //! gradient thumbnail, vector icons) or want clickable in our own
-//! [`ActionBus`] dialect (`Flex`, `Switch`). The free helpers at the bottom
+//! [`ActionBus`](crate::action::ActionBus) dialect (`Flex`, `Switch`). The free helpers at the bottom
 //! cut the boilerplate of wrapping `ui::Text` and building spacers.
 
 pub mod channel_avatar;

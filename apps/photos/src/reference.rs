@@ -32,9 +32,9 @@
 //! ## Where this is invoked from
 //!
 //! Nothing in this crate calls [`image_reference`] yet: the compose surface
-//! that would raise it on a right-click ([`ui::widget::RemarkCompose`]) has not
+//! that would raise it on a right-click (`ui::widget::RemarkCompose`) has not
 //! landed in the shared toolkit. The trait implementation stands on its own —
-//! any caller that already holds a [`PhotosApp`](crate::app::PhotosApp) and a
+//! any caller that already holds a [`PhotosApp`] and a
 //! document can resolve what it is showing to an address today — and is ready
 //! for that surface the moment it exists.
 

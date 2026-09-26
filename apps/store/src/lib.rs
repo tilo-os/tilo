@@ -17,11 +17,11 @@
 //!
 //! Module map:
 //!
-//!   * [`model`]           — [`StoreItem`], [`Source`], [`ActionKind`]
+//!   * [`model`]           — [`StoreItem`], `Source`, [`ActionKind`]
 //!     and the filter enum shared across the app.
 //!   * [`registry_client`] — HTTP client for the Tilo registry protocol.
 //!   * [`flathub_client`]  — HTTP client for the Flathub JSON API.
-//!   * [`installed`]       — compatibility parser for legacy install registries.
+//!   * `installed`       — compatibility parser for legacy install registries.
 //!   * [`config`]          — read/write user config for configured registries.
 //!   * [`sources`]         — merges the two feeds + installed state into
 //!     one [`StoreItem`] stream.

@@ -1,6 +1,6 @@
 //! Snippets as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the snippet manager
+//! Mirrors the reference wiring in `apps/contacts`: the snippet manager
 //! declares its searchable type through a persistent incremental catalogue,
 //! so a snippet is findable from the unified Ctrl+K
 //! palette by title, language, folder, tag, description or body. Snippet hits

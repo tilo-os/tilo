@@ -282,7 +282,7 @@ pub struct BookSearchProvider {
 
 impl BookSearchProvider {
     /// Compatibility constructor for small callers and tests. The live app
-    /// uses [`Self::new_shared`] so its content cache is not copied.
+    /// uses `Self::new_shared` so its content cache is not copied.
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
         Self::new_shared(
             Arc::new(books.iter().cloned().map(Arc::new).collect()),

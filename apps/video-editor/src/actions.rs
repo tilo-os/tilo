@@ -202,7 +202,7 @@ pub fn decode_operation(
 /// A serializable snapshot of a clip's scalar fields, in exactly the
 /// representation [`crate::doc`] stores (ids as strings, transition as its
 /// stable tag). Carrying the document shape keeps [`Action::apply`] a pure
-/// write with no re-derivation, and makes [`Self::from_clip`]/[`Self::to_clip`]
+/// write with no re-derivation, and makes [`Self::from_clip`]/`Self::to_clip`
 /// lossless round-trips.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClipData {
