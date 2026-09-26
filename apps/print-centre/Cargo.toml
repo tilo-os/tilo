@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 os-actions = { path = "../../crates/system/os-actions" }
 tilo-ocr = { path = "../../crates/media/ocr" }

@@ -187,30 +187,33 @@ mod tests {
     use crate::widget::Text;
 
     #[test]
-    fn stack_has_no_edge_spacers_and_one_gap_between_items() {
-        let empty = Section::new(Vec::new());
-        assert_eq!(empty.inner.as_ref().children().len(), 0);
+    fn stack_spacing_uses_one_clamped_gap_and_no_edge_spacers() {
+        // Case `stack_has_no_edge_spacers_and_one_gap_between_items`.
+        {
+            let empty = Section::new(Vec::new());
+            assert_eq!(empty.inner.as_ref().children().len(), 0);
 
-        let one = Section::new(vec![Box::new(Text::new("one"))]);
-        assert_eq!(one.inner.as_ref().children().len(), 1);
+            let one = Section::new(vec![Box::new(Text::new("one"))]);
+            assert_eq!(one.inner.as_ref().children().len(), 1);
 
-        let three = Section::with_gap(
-            vec![
-                Box::new(Text::new("one")),
-                Box::new(Text::new("two")),
-                Box::new(Text::new("three")),
-            ],
-            20.0,
-        );
-        assert_eq!(three.inner.as_ref().children().len(), 5);
-    }
+            let three = Section::with_gap(
+                vec![
+                    Box::new(Text::new("one")),
+                    Box::new(Text::new("two")),
+                    Box::new(Text::new("three")),
+                ],
+                20.0,
+            );
+            assert_eq!(three.inner.as_ref().children().len(), 5);
+        }
 
-    #[test]
-    fn negative_gap_is_clamped_and_does_not_add_spacers() {
-        let section = Section::with_gap(
-            vec![Box::new(Text::new("one")), Box::new(Text::new("two"))],
-            -4.0,
-        );
-        assert_eq!(section.inner.as_ref().children().len(), 2);
+        // Case `negative_gap_is_clamped_and_does_not_add_spacers`.
+        {
+            let section = Section::with_gap(
+                vec![Box::new(Text::new("one")), Box::new(Text::new("two"))],
+                -4.0,
+            );
+            assert_eq!(section.inner.as_ref().children().len(), 2);
+        }
     }
 }

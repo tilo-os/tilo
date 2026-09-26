@@ -470,6 +470,10 @@ pub trait Decorator {
         self.inner().cursor_shape(point)
     }
 
+    fn claims_raw_touch(&self, point: vello::kurbo::Point) -> bool {
+        self.inner().claims_raw_touch(point)
+    }
+
     fn tooltip(&self) -> Option<&str> {
         self.inner().tooltip()
     }
@@ -652,6 +656,14 @@ pub trait Decorator {
 
     fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
         self.inner_mut().restore_view_state(view);
+    }
+
+    fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
+        self.inner().dev_route()
+    }
+
+    fn restore_dev_route(&mut self, route: &super::router::RouteSnapshot) -> bool {
+        self.inner_mut().restore_dev_route(route)
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
@@ -1236,6 +1248,10 @@ impl<T: Decorator> Widget for T {
         Decorator::cursor_shape(self, point)
     }
 
+    fn claims_raw_touch(&self, point: vello::kurbo::Point) -> bool {
+        Decorator::claims_raw_touch(self, point)
+    }
+
     fn tooltip(&self) -> Option<&str> {
         Decorator::tooltip(self)
     }
@@ -1414,6 +1430,14 @@ impl<T: Decorator> Widget for T {
 
     fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
         Decorator::restore_view_state(self, view);
+    }
+
+    fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
+        Decorator::dev_route(self)
+    }
+
+    fn restore_dev_route(&mut self, route: &super::router::RouteSnapshot) -> bool {
+        Decorator::restore_dev_route(self, route)
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {

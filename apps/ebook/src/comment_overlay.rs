@@ -685,104 +685,108 @@ mod tests {
         a
     }
 
+    /// Card controls win over the dismiss hit, close clears stale geometry, and the editor uses shared selection editing and submit.
     #[test]
-    fn card_controls_win_over_the_full_window_dismiss_hit() {
-        let group = Uuid::new_v4();
-        let comment = annotation(AnnoKind::Note, group, "Useful thought");
-        let annotations = [annotation(AnnoKind::Highlight, group, ""), comment.clone()];
-        let mut overlay = CommentOverlay::default();
-        overlay.open(group);
-        overlay.set_anchor(Some((200.0, 180.0, 300.0, 200.0)));
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        overlay.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            Rect::new(0.0, 0.0, 800.0, 700.0),
-            Point::ZERO,
-            &annotations,
-            HiColor::Yellow,
-        );
+    fn comment_overlay_hit_testing_and_editing() {
+        // --- phase: card_controls_win_over_the_full_window_dismiss_hit ---
+        {
+            let group = Uuid::new_v4();
+            let comment = annotation(AnnoKind::Note, group, "Useful thought");
+            let annotations = [annotation(AnnoKind::Highlight, group, ""), comment.clone()];
+            let mut overlay = CommentOverlay::default();
+            overlay.open(group);
+            overlay.set_anchor(Some((200.0, 180.0, 300.0, 200.0)));
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            overlay.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                Rect::new(0.0, 0.0, 800.0, 700.0),
+                Point::ZERO,
+                &annotations,
+                HiColor::Yellow,
+            );
 
-        let edit = overlay
-            .action_center(|a| a == CommentAction::Edit(comment.id))
-            .unwrap();
-        assert_eq!(
-            overlay.hit_test(edit),
-            Some(CommentAction::Edit(comment.id))
-        );
-        assert_eq!(
-            overlay.hit_test(Point::new(4.0, 690.0)),
-            Some(CommentAction::Close)
-        );
-    }
+            let edit = overlay
+                .action_center(|a| a == CommentAction::Edit(comment.id))
+                .unwrap();
+            assert_eq!(
+                overlay.hit_test(edit),
+                Some(CommentAction::Edit(comment.id))
+            );
+            assert_eq!(
+                overlay.hit_test(Point::new(4.0, 690.0)),
+                Some(CommentAction::Close)
+            );
+        }
 
-    #[test]
-    fn close_clears_geometry_and_prevents_stale_hits() {
-        let group = Uuid::new_v4();
-        let annotations = [annotation(AnnoKind::Highlight, group, "")];
-        let mut overlay = CommentOverlay::default();
-        overlay.open(group);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        overlay.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            Rect::new(0.0, 0.0, 600.0, 500.0),
-            Point::ZERO,
-            &annotations,
-            HiColor::Yellow,
-        );
-        assert!(overlay.hit_test(Point::ZERO).is_some());
-        overlay.begin_frame();
-        assert!(
-            overlay.hit_test(Point::ZERO).is_none(),
-            "a frame that does not draw the overlay cannot retain modal hits"
-        );
-        overlay.close();
-        assert!(!overlay.is_open());
-        assert!(overlay.hit_test(Point::ZERO).is_none());
-    }
+        // --- phase: close_clears_geometry_and_prevents_stale_hits ---
+        {
+            let group = Uuid::new_v4();
+            let annotations = [annotation(AnnoKind::Highlight, group, "")];
+            let mut overlay = CommentOverlay::default();
+            overlay.open(group);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            overlay.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::dark(),
+                Rect::new(0.0, 0.0, 600.0, 500.0),
+                Point::ZERO,
+                &annotations,
+                HiColor::Yellow,
+            );
+            assert!(overlay.hit_test(Point::ZERO).is_some());
+            overlay.begin_frame();
+            assert!(
+                overlay.hit_test(Point::ZERO).is_none(),
+                "a frame that does not draw the overlay cannot retain modal hits"
+            );
+            overlay.close();
+            assert!(!overlay.is_open());
+            assert!(overlay.hit_test(Point::ZERO).is_none());
+        }
 
-    #[test]
-    fn comment_editor_uses_shared_selection_editing_and_submit() {
-        let id = Uuid::new_v4();
-        let mut overlay = CommentOverlay::default();
-        overlay.begin_editing(id, "hello");
-        overlay.editor.select_all();
-        let mut doc = AutoCommit::new();
-        let taffy = TaffyTree::new();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
+        // --- phase: comment_editor_uses_shared_selection_editing_and_submit ---
+        {
+            let id = Uuid::new_v4();
+            let mut overlay = CommentOverlay::default();
+            overlay.begin_editing(id, "hello");
+            overlay.editor.select_all();
+            let mut doc = AutoCommit::new();
+            let taffy = TaffyTree::new();
+            let modifiers = Modifiers::default();
+            let mut handled = false;
 
-        let (changed, submitted) = overlay.handle_event(&mut InputEventCtx {
-            event: &key(Key::Character("world".into())),
-            scale_factor: 1.0,
-            modifiers,
-            state: &mut doc,
-            root: &automerge::ROOT,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-            handled: &mut handled,
-        });
-        assert_eq!(changed, Some((id, "world".into())));
-        assert!(!submitted);
+            let (changed, submitted) = overlay.handle_event(&mut InputEventCtx {
+                event: &key(Key::Character("world".into())),
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut doc,
+                root: &automerge::ROOT,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+                handled: &mut handled,
+            });
+            assert_eq!(changed, Some((id, "world".into())));
+            assert!(!submitted);
 
-        let (_, submitted) = overlay.handle_event(&mut InputEventCtx {
-            event: &key(Key::Named(NamedKey::Enter)),
-            scale_factor: 1.0,
-            modifiers,
-            state: &mut doc,
-            root: &automerge::ROOT,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-            handled: &mut handled,
-        });
-        assert!(submitted);
-        assert_eq!(overlay.editing_id(), None);
+            let (_, submitted) = overlay.handle_event(&mut InputEventCtx {
+                event: &key(Key::Named(NamedKey::Enter)),
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut doc,
+                root: &automerge::ROOT,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+                handled: &mut handled,
+            });
+            assert!(submitted);
+            assert_eq!(overlay.editing_id(), None);
+        }
     }
 }

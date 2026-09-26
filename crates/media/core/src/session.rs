@@ -286,130 +286,134 @@ mod tests {
     }
 
     #[test]
-    fn the_same_file_reached_two_ways_shares_one_session_key() {
-        // A clip imported by absolute path and the same clip named through the
-        // workspace mount must not stand up two decoders for one file.
-        let p = scratch("key");
-        let a = Source::LocalFile(p.clone());
-        let b = Source::Workspace(p.clone());
-        assert_eq!(session_key(&a), session_key(&b), "one file, one pipeline");
-
-        let other = Source::Remote {
-            url: "https://cdn.test/v.mp4".into(),
-        };
-        assert_ne!(session_key(&a), session_key(&other));
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn asking_twice_for_a_source_returns_the_same_session_not_a_second_pipeline() {
-        // The bug this pool exists to fix: a whole engine per thumbnail.
-        let p = scratch("reuse");
-        let mut pool =
-            SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
-        let src = Source::LocalFile(p.clone());
-        let a = pool.session(&src);
-        let b = pool.session(&src);
-        assert!(Arc::ptr_eq(&a, &b), "one decode pipeline per source");
-        assert_eq!(pool.len(), 1);
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn distinct_sources_get_distinct_sessions_up_to_the_cap() {
-        let base = scratch("cap");
-        let dir = base.parent().unwrap().to_path_buf();
-        let mut pool =
-            SessionPool::new(EngineConfig::default().silent(), 2, Duration::from_secs(30));
-        let mut handles = Vec::new();
-        for i in 0..2 {
-            let p = dir.join(format!("c{i}.mp4"));
-            std::fs::write(&p, b"x").unwrap();
-            handles.push(pool.session(&Source::LocalFile(p)));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn sessions_are_shared_per_source_capped_pruned_and_retired() {
+        // Phase `changing_the_frame_rate_retires_buckets_measured_at_the_old_width`.
+        fn changing_the_frame_rate_retires_buckets_measured_at_the_old_width() {
+            // A bucket index means nothing without the width it was computed at;
+            // keeping entries across a change would return the wrong picture.
+            let p = scratch("fps");
+            let key: SourceKey = Arc::from(session_key(&Source::LocalFile(p.clone())).as_str());
+            let mut s = EngineSession::open(
+                Source::LocalFile(p.clone()),
+                key,
+                EngineConfig::default().silent(),
+            );
+            assert_eq!(
+                s.bucket_ms(),
+                1,
+                "unknown frame rate never conflates two times"
+            );
+            s.set_fps(30.0);
+            assert_eq!(s.bucket_ms(), bucket_ms_for_fps(30.0));
+            s.set_fps(30.0);
+            assert_eq!(
+                s.bucket_ms(),
+                bucket_ms_for_fps(30.0),
+                "an unchanged rate is a no-op"
+            );
+            s.set_fps(60.0);
+            assert_eq!(s.bucket_ms(), bucket_ms_for_fps(60.0));
+            std::fs::remove_dir_all(p.parent().unwrap()).ok();
         }
-        assert_eq!(pool.len(), 2, "distinct sources are distinct sessions");
-        assert!(
-            !Arc::ptr_eq(&handles[0], &handles[1]),
-            "two sources must not be handed the same decode pipeline"
-        );
+        // Phase `the_same_file_reached_two_ways_shares_one_session_key`.
+        {
+            // A clip imported by absolute path and the same clip named through the
+            // workspace mount must not stand up two decoders for one file.
+            let p = scratch("key");
+            let a = Source::LocalFile(p.clone());
+            let b = Source::Workspace(p.clone());
+            assert_eq!(session_key(&a), session_key(&b), "one file, one pipeline");
 
-        // A third source must evict rather than grow the pool: every live
-        // pipeline holds a decoder.
-        let p = dir.join("c2.mp4");
-        std::fs::write(&p, b"x").unwrap();
-        let _third = pool.session(&Source::LocalFile(p));
-        assert!(
-            pool.len() <= 2,
-            "the cap bounds live pipelines, got {}",
-            pool.len()
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
+            let other = Source::Remote {
+                url: "https://cdn.test/v.mp4".into(),
+            };
+            assert_ne!(session_key(&a), session_key(&other));
+            std::fs::remove_dir_all(p.parent().unwrap()).ok();
+        }
+        // Phase `asking_twice_for_a_source_returns_the_same_session_not_a_second_pipeline`.
+        {
+            // The bug this pool exists to fix: a whole engine per thumbnail.
+            let p = scratch("reuse");
+            let mut pool =
+                SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
+            let src = Source::LocalFile(p.clone());
+            let a = pool.session(&src);
+            let b = pool.session(&src);
+            assert!(Arc::ptr_eq(&a, &b), "one decode pipeline per source");
+            assert_eq!(pool.len(), 1);
+            std::fs::remove_dir_all(p.parent().unwrap()).ok();
+        }
+        // Phase `distinct_sources_get_distinct_sessions_up_to_the_cap`.
+        {
+            let base = scratch("cap");
+            let dir = base.parent().unwrap().to_path_buf();
+            let mut pool =
+                SessionPool::new(EngineConfig::default().silent(), 2, Duration::from_secs(30));
+            let mut handles = Vec::new();
+            for i in 0..2 {
+                let p = dir.join(format!("c{i}.mp4"));
+                std::fs::write(&p, b"x").unwrap();
+                handles.push(pool.session(&Source::LocalFile(p)));
+            }
+            assert_eq!(pool.len(), 2, "distinct sources are distinct sessions");
+            assert!(
+                !Arc::ptr_eq(&handles[0], &handles[1]),
+                "two sources must not be handed the same decode pipeline"
+            );
 
-    #[test]
-    fn closing_a_source_drops_its_session() {
-        let p = scratch("close");
-        let mut pool =
-            SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
-        let src = Source::LocalFile(p.clone());
-        let _ = pool.session(&src);
-        assert_eq!(pool.len(), 1);
-        pool.close(&src);
-        assert!(pool.is_empty());
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
+            // A third source must evict rather than grow the pool: every live
+            // pipeline holds a decoder.
+            let p = dir.join("c2.mp4");
+            std::fs::write(&p, b"x").unwrap();
+            let _third = pool.session(&Source::LocalFile(p));
+            assert!(
+                pool.len() <= 2,
+                "the cap bounds live pipelines, got {}",
+                pool.len()
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `closing_a_source_drops_its_session`.
+        {
+            let p = scratch("close");
+            let mut pool =
+                SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
+            let src = Source::LocalFile(p.clone());
+            let _ = pool.session(&src);
+            assert_eq!(pool.len(), 1);
+            pool.close(&src);
+            assert!(pool.is_empty());
+            std::fs::remove_dir_all(p.parent().unwrap()).ok();
+        }
+        // Phase `prune_drops_only_sessions_past_the_idle_limit`.
+        {
+            let p = scratch("prune");
+            // Zero idle tolerance: everything untouched is immediately stale.
+            let mut pool = SessionPool::new(EngineConfig::default().silent(), 4, Duration::ZERO);
+            let _ = pool.session(&Source::LocalFile(p.clone()));
+            assert_eq!(pool.len(), 1);
+            pool.prune();
+            assert!(
+                pool.is_empty(),
+                "an idle session is closed rather than held open"
+            );
 
-    #[test]
-    fn prune_drops_only_sessions_past_the_idle_limit() {
-        let p = scratch("prune");
-        // Zero idle tolerance: everything untouched is immediately stale.
-        let mut pool = SessionPool::new(EngineConfig::default().silent(), 4, Duration::ZERO);
-        let _ = pool.session(&Source::LocalFile(p.clone()));
-        assert_eq!(pool.len(), 1);
-        pool.prune();
-        assert!(
-            pool.is_empty(),
-            "an idle session is closed rather than held open"
-        );
-
-        // With a generous limit the same session survives.
-        let mut pool = SessionPool::new(
-            EngineConfig::default().silent(),
-            4,
-            Duration::from_secs(600),
-        );
-        let _ = pool.session(&Source::LocalFile(p.clone()));
-        pool.prune();
-        assert_eq!(pool.len(), 1, "a fresh session is not pruned");
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn changing_the_frame_rate_retires_buckets_measured_at_the_old_width() {
-        // A bucket index means nothing without the width it was computed at;
-        // keeping entries across a change would return the wrong picture.
-        let p = scratch("fps");
-        let key: SourceKey = Arc::from(session_key(&Source::LocalFile(p.clone())).as_str());
-        let mut s = EngineSession::open(
-            Source::LocalFile(p.clone()),
-            key,
-            EngineConfig::default().silent(),
-        );
-        assert_eq!(
-            s.bucket_ms(),
-            1,
-            "unknown frame rate never conflates two times"
-        );
-        s.set_fps(30.0);
-        assert_eq!(s.bucket_ms(), bucket_ms_for_fps(30.0));
-        s.set_fps(30.0);
-        assert_eq!(
-            s.bucket_ms(),
-            bucket_ms_for_fps(30.0),
-            "an unchanged rate is a no-op"
-        );
-        s.set_fps(60.0);
-        assert_eq!(s.bucket_ms(), bucket_ms_for_fps(60.0));
-        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+            // With a generous limit the same session survives.
+            let mut pool = SessionPool::new(
+                EngineConfig::default().silent(),
+                4,
+                Duration::from_secs(600),
+            );
+            let _ = pool.session(&Source::LocalFile(p.clone()));
+            pool.prune();
+            assert_eq!(pool.len(), 1, "a fresh session is not pruned");
+            std::fs::remove_dir_all(p.parent().unwrap()).ok();
+        }
+        // Phase `changing_the_frame_rate_retires_buckets_measured_at_the_old_width` (defined above).
+        changing_the_frame_rate_retires_buckets_measured_at_the_old_width();
     }
 }

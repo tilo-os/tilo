@@ -810,95 +810,102 @@ mod tests {
         Rect::new(0.0, 60.0, w, 860.0)
     }
 
+    /// The history sidebar docks open on the right when wide, collapses by default
+    /// when narrow and opens there as an overlay drawer with a dismiss scrim that
+    /// captures clicks over it, and an explicit user hide survives relayout when
+    /// wide. Fresh screen per phase.
     #[test]
-    fn wide_window_docks_sidebar_open_by_default() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(1200.0), &m);
-        assert!(
-            s.sidebar_open(),
-            "wide window should default to history shown"
-        );
-        assert!(s.drawer.is_docked(), "wide window should dock, not overlay");
-        assert!(s.sidebar_rect.width() > 0.0);
-        // Docked on the RIGHT: the history column hugs the right edge.
-        assert!(
-            (s.sidebar_rect.x1 - body(1200.0).x1).abs() < 0.5,
-            "history docks on the right edge"
-        );
-    }
+    fn history_sidebar_docks_wide_overlays_narrow_and_honours_user_choice() {
+        // phase wide_window_docks_sidebar_open_by_default
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(1200.0), &m);
+            assert!(
+                s.sidebar_open(),
+                "wide window should default to history shown"
+            );
+            assert!(s.drawer.is_docked(), "wide window should dock, not overlay");
+            assert!(s.sidebar_rect.width() > 0.0);
+            // Docked on the RIGHT: the history column hugs the right edge.
+            assert!(
+                (s.sidebar_rect.x1 - body(1200.0).x1).abs() < 0.5,
+                "history docks on the right edge"
+            );
+        }
 
-    #[test]
-    fn narrow_window_collapses_sidebar_by_default() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(520.0), &m);
-        assert!(
-            !s.sidebar_open(),
-            "narrow window must NOT force the sidebar open"
-        );
-        assert!(
-            s.drawer.is_overlay(),
-            "narrow window uses the overlay drawer mode"
-        );
-        assert_eq!(
-            s.history_viewport(),
-            Rect::ZERO,
-            "collapsed → no history viewport"
-        );
-    }
+        // phase narrow_window_collapses_sidebar_by_default
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(520.0), &m);
+            assert!(
+                !s.sidebar_open(),
+                "narrow window must NOT force the sidebar open"
+            );
+            assert!(
+                s.drawer.is_overlay(),
+                "narrow window uses the overlay drawer mode"
+            );
+            assert_eq!(
+                s.history_viewport(),
+                Rect::ZERO,
+                "collapsed → no history viewport"
+            );
+        }
 
-    #[test]
-    fn narrow_window_opens_as_overlay_with_scrim() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(520.0), &m);
-        // user taps the toggle to open the drawer (snap to settle deterministically)
-        s.toggle_sidebar();
-        s.snap_sidebar(true);
-        s.layout(body(520.0), &m);
-        assert!(s.sidebar_open());
-        assert!(s.drawer.is_overlay(), "still an overlay at this width");
-        assert!(
-            s.drawer.scrim_rect().width() > 0.0,
-            "overlay must lay down a dismiss scrim"
-        );
-        // a scrim tap (left of the right-anchored drawer) dismisses it
-        let scrim_pt = Point::new(body(520.0).x0 + 10.0, s.drawer.scrim_rect().center().y);
-        assert!(s.scrim_at(scrim_pt));
-        s.close_sidebar();
-        s.layout(body(520.0), &m);
-        assert!(!s.sidebar_open());
-    }
+        // phase narrow_window_opens_as_overlay_with_scrim
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(520.0), &m);
+            // user taps the toggle to open the drawer (snap to settle deterministically)
+            s.toggle_sidebar();
+            s.snap_sidebar(true);
+            s.layout(body(520.0), &m);
+            assert!(s.sidebar_open());
+            assert!(s.drawer.is_overlay(), "still an overlay at this width");
+            assert!(
+                s.drawer.scrim_rect().width() > 0.0,
+                "overlay must lay down a dismiss scrim"
+            );
+            // a scrim tap (left of the right-anchored drawer) dismisses it
+            let scrim_pt = Point::new(body(520.0).x0 + 10.0, s.drawer.scrim_rect().center().y);
+            assert!(s.scrim_at(scrim_pt));
+            s.close_sidebar();
+            s.layout(body(520.0), &m);
+            assert!(!s.sidebar_open());
+        }
 
-    #[test]
-    fn overlay_drawer_captures_clicks_over_it() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(520.0), &m);
-        s.toggle_sidebar();
-        s.snap_sidebar(true);
-        s.layout(body(520.0), &m);
-        // a point inside the drawer is not a keypad/mem press
-        let over = Point::new(s.sidebar_rect.center().x, s.sidebar_rect.center().y);
-        assert_eq!(
-            s.key_at(over),
-            None,
-            "drawer must not press the key behind it"
-        );
-        assert_eq!(s.mem_at(over), None);
-    }
+        // phase overlay_drawer_captures_clicks_over_it
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(520.0), &m);
+            s.toggle_sidebar();
+            s.snap_sidebar(true);
+            s.layout(body(520.0), &m);
+            // a point inside the drawer is not a keypad/mem press
+            let over = Point::new(s.sidebar_rect.center().x, s.sidebar_rect.center().y);
+            assert_eq!(
+                s.key_at(over),
+                None,
+                "drawer must not press the key behind it"
+            );
+            assert_eq!(s.mem_at(over), None);
+        }
 
-    #[test]
-    fn user_choice_overrides_breakpoint_default_when_wide() {
-        let mut s = CalcScreen::default();
-        let m = CalcModel::seeded();
-        s.layout(body(1200.0), &m);
-        assert!(s.sidebar_open());
-        // user explicitly hides it; that choice sticks across redraws
-        s.toggle_sidebar();
-        s.layout(body(1200.0), &m);
-        assert!(!s.sidebar_open(), "explicit hide must survive a relayout");
+        // phase user_choice_overrides_breakpoint_default_when_wide
+        {
+            let mut s = CalcScreen::default();
+            let m = CalcModel::seeded();
+            s.layout(body(1200.0), &m);
+            assert!(s.sidebar_open());
+            // user explicitly hides it; that choice sticks across redraws
+            s.toggle_sidebar();
+            s.layout(body(1200.0), &m);
+            assert!(!s.sidebar_open(), "explicit hide must survive a relayout");
+        }
     }
 
     #[test]

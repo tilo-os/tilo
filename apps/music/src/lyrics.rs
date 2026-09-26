@@ -603,196 +603,217 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_lrc_extracts_timestamps() {
-        let lr = parse_lrc("[00:08.50] hello\n[01:00.00] world");
-        assert!(lr.synced);
-        assert_eq!(lr.lines.len(), 2);
-        assert_eq!(lr.lines[0].at_ms, Some(8_500));
-        assert_eq!(lr.lines[0].text, "hello");
-        assert_eq!(lr.lines[1].at_ms, Some(60_000));
-    }
-
-    #[test]
-    fn parse_lrc_skips_metadata_tags() {
-        let lr = parse_lrc("[ar:Aurora]\n[ti:Glasslight]\n[00:01.00] first line");
-        assert_eq!(lr.lines.len(), 1);
-        assert_eq!(lr.lines[0].text, "first line");
-    }
-
-    #[test]
-    fn current_line_tracks_playhead() {
-        let lr = parse_lrc("[00:00.00] a\n[00:10.00] b\n[00:20.00] c");
-        assert_eq!(lr.current_line(0), Some(0));
-        assert_eq!(lr.current_line(9_999), Some(0));
-        assert_eq!(lr.current_line(10_000), Some(1));
-        assert_eq!(lr.current_line(25_000), Some(2));
-    }
-
-    #[test]
-    fn plain_lyrics_have_no_current_line() {
-        let lr = plain("just\nsome\nwords");
-        assert!(!lr.synced);
-        assert_eq!(lr.lines.len(), 3);
-        assert_eq!(lr.current_line(5_000), None);
-    }
-
-    #[test]
-    fn bundled_glasslight_is_synced() {
-        let lr = bundled::for_track("tk_g1").expect("bundled lyrics for tk_g1");
-        assert!(lr.synced);
-        assert!(lr.lines.len() >= 6);
-        // A later playhead lands on a later line.
-        assert!(lr.current_line(60_000).unwrap() > lr.current_line(10_000).unwrap());
-    }
-
-    #[test]
-    fn bundled_pulsewidth_is_plain() {
-        let lr = bundled::for_track("tk_u1").expect("bundled lyrics for tk_u1");
-        assert!(!lr.synced);
-        assert!(!lr.is_empty());
-    }
-
-    #[test]
-    fn unknown_track_has_no_bundled_lyrics() {
-        assert!(bundled::for_track("tk_does_not_exist").is_none());
-    }
-
-    #[test]
-    fn lrclib_url_encodes_query() {
-        let meta = TrackMeta {
-            track_id: "x".into(),
-            title: "Neon Mileage".into(),
-            artist: "Midnight Transit".into(),
-            album: "After Hours Drive".into(),
-            duration_s: 252,
-        };
-        let url = lrclib_url(&meta);
-        assert!(url.starts_with("https://lrclib.net/api/get?"));
-        assert!(url.contains("track_name=Neon%20Mileage"));
-        assert!(url.contains("artist_name=Midnight%20Transit"));
-        assert!(url.contains("duration=252"));
-    }
-
-    #[test]
-    fn normalize_title_strips_youtube_tags_but_keeps_real_parentheticals() {
-        assert_eq!(
-            normalize_title("Californication (Official Music Video)"),
-            "Californication"
-        );
-        assert_eq!(normalize_title("Otherside [Remastered 2011]"), "Otherside");
-        assert_eq!(
-            normalize_title("Scar Tissue (Official Audio)"),
-            "Scar Tissue"
-        );
-        assert_eq!(
-            normalize_title("Say It Right feat. Nelly Furtado"),
-            "Say It Right"
-        );
-        assert_eq!(
-            normalize_title("Under the Bridge (feat. Someone)"),
-            "Under the Bridge"
-        );
-        // A genuine version parenthetical is preserved.
-        assert_eq!(
-            normalize_title("Californication (Acoustic)"),
-            "Californication (Acoustic)"
-        );
-        // Already clean → unchanged (idempotent).
-        assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
-    }
-
-    #[test]
-    fn normalize_artist_strips_topic_suffix() {
-        assert_eq!(
-            normalize_artist("Red Hot Chili Peppers - Topic"),
-            "Red Hot Chili Peppers"
-        );
-        assert_eq!(
-            normalize_artist("Red Hot Chili Peppers"),
-            "Red Hot Chili Peppers"
-        );
-        assert_eq!(
-            normalize_artist("  Midnight   Transit  "),
-            "Midnight Transit"
-        );
-    }
-
-    /// A YouTube-flavoured title + a `… - Topic` artist must produce a
-    /// well-formed, normalised LRCLIB query, not one that carries the raw
-    /// noise through and misses on `/api/get`.
-    #[test]
-    fn lrclib_query_normalizes_youtube_metadata() {
-        let meta = TrackMeta {
-            track_id: "yt:abc".into(),
-            title: "Californication (Official Music Video)".into(),
-            artist: "Red Hot Chili Peppers - Topic".into(),
-            album: "Californication (Remastered)".into(),
-            duration_s: 329,
-        };
-        let url = lrclib_url(&meta);
-        assert!(url.starts_with("https://lrclib.net/api/get?"));
-        assert!(
-            url.contains("track_name=Californication&"),
-            "title tag stripped: {url}"
-        );
-        assert!(
-            url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"),
-            "topic suffix stripped: {url}"
-        );
-        assert!(
-            url.contains("album_name=Californication&"),
-            "album tag stripped: {url}"
-        );
-        assert!(url.ends_with("duration=329"), "{url}");
-    }
-
-    #[cfg(any(feature = "lyrics", feature = "live"))]
-    #[test]
-    fn lrclib_search_url_uses_normalized_metadata() {
-        let meta = TrackMeta {
-            track_id: "yt:abc".into(),
-            title: "Californication (Official Music Video)".into(),
-            artist: "Red Hot Chili Peppers - Topic".into(),
-            album: String::new(),
-            duration_s: 329,
-        };
-        let url = lrclib_search_url(&meta);
-        assert!(url.starts_with("https://lrclib.net/api/search?"));
-        assert!(url.contains("track_name=Californication"), "{url}");
-        assert!(
-            url.contains("artist_name=Red%20Hot%20Chili%20Peppers"),
-            "{url}"
-        );
-    }
-
-    #[test]
-    fn resolve_prefers_bundled() {
-        let meta = TrackMeta {
-            track_id: "tk_g1".into(),
-            ..Default::default()
-        };
-        let lr = resolve(&meta).expect("bundled resolves offline");
-        assert!(lr.synced);
-    }
-
-    #[test]
-    fn worker_delivers_bundled_lyrics() {
-        let w = LyricsWorker::new();
-        w.request(TrackMeta {
-            track_id: "tk_g1".into(),
-            ..Default::default()
-        });
-        // Poll briefly for the worker thread to resolve + deliver.
-        let mut got = None;
-        for _ in 0..200 {
-            if let Some(r) = w.poll() {
-                got = Some(r);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn lrc_parsing_and_current_line_tracking() {
+        // Phase `parse_lrc_extracts_timestamps`.
+        {
+            let lr = parse_lrc("[00:08.50] hello\n[01:00.00] world");
+            assert!(lr.synced);
+            assert_eq!(lr.lines.len(), 2);
+            assert_eq!(lr.lines[0].at_ms, Some(8_500));
+            assert_eq!(lr.lines[0].text, "hello");
+            assert_eq!(lr.lines[1].at_ms, Some(60_000));
         }
-        let (id, lyrics) = got.expect("worker delivered lyrics");
-        assert_eq!(id, "tk_g1");
-        assert!(lyrics.synced);
+
+        // Phase `parse_lrc_skips_metadata_tags`.
+        {
+            let lr = parse_lrc("[ar:Aurora]\n[ti:Glasslight]\n[00:01.00] first line");
+            assert_eq!(lr.lines.len(), 1);
+            assert_eq!(lr.lines[0].text, "first line");
+        }
+
+        // Phase `current_line_tracks_playhead`.
+        {
+            let lr = parse_lrc("[00:00.00] a\n[00:10.00] b\n[00:20.00] c");
+            assert_eq!(lr.current_line(0), Some(0));
+            assert_eq!(lr.current_line(9_999), Some(0));
+            assert_eq!(lr.current_line(10_000), Some(1));
+            assert_eq!(lr.current_line(25_000), Some(2));
+        }
+
+        // Phase `plain_lyrics_have_no_current_line`.
+        {
+            let lr = plain("just\nsome\nwords");
+            assert!(!lr.synced);
+            assert_eq!(lr.lines.len(), 3);
+            assert_eq!(lr.current_line(5_000), None);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn bundled_lyrics_resolve_first_and_reach_the_worker() {
+        // Phase `bundled_glasslight_is_synced`.
+        {
+            let lr = bundled::for_track("tk_g1").expect("bundled lyrics for tk_g1");
+            assert!(lr.synced);
+            assert!(lr.lines.len() >= 6);
+            // A later playhead lands on a later line.
+            assert!(lr.current_line(60_000).unwrap() > lr.current_line(10_000).unwrap());
+        }
+
+        // Phase `bundled_pulsewidth_is_plain`.
+        {
+            let lr = bundled::for_track("tk_u1").expect("bundled lyrics for tk_u1");
+            assert!(!lr.synced);
+            assert!(!lr.is_empty());
+        }
+
+        // Phase `unknown_track_has_no_bundled_lyrics`.
+        {
+            assert!(bundled::for_track("tk_does_not_exist").is_none());
+        }
+
+        // Phase `resolve_prefers_bundled`.
+        {
+            let meta = TrackMeta {
+                track_id: "tk_g1".into(),
+                ..Default::default()
+            };
+            let lr = resolve(&meta).expect("bundled resolves offline");
+            assert!(lr.synced);
+        }
+
+        // Phase `worker_delivers_bundled_lyrics`.
+        {
+            let w = LyricsWorker::new();
+            w.request(TrackMeta {
+                track_id: "tk_g1".into(),
+                ..Default::default()
+            });
+            // Poll briefly for the worker thread to resolve + deliver.
+            let mut got = None;
+            for _ in 0..200 {
+                if let Some(r) = w.poll() {
+                    got = Some(r);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let (id, lyrics) = got.expect("worker delivered lyrics");
+            assert_eq!(id, "tk_g1");
+            assert!(lyrics.synced);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn lrclib_queries_normalise_youtube_metadata_and_encode() {
+        // Phase `lrclib_url_encodes_query`.
+        {
+            let meta = TrackMeta {
+                track_id: "x".into(),
+                title: "Neon Mileage".into(),
+                artist: "Midnight Transit".into(),
+                album: "After Hours Drive".into(),
+                duration_s: 252,
+            };
+            let url = lrclib_url(&meta);
+            assert!(url.starts_with("https://lrclib.net/api/get?"));
+            assert!(url.contains("track_name=Neon%20Mileage"));
+            assert!(url.contains("artist_name=Midnight%20Transit"));
+            assert!(url.contains("duration=252"));
+        }
+
+        // Phase `normalize_title_strips_youtube_tags_but_keeps_real_parentheticals`.
+        {
+            assert_eq!(
+                normalize_title("Californication (Official Music Video)"),
+                "Californication"
+            );
+            assert_eq!(normalize_title("Otherside [Remastered 2011]"), "Otherside");
+            assert_eq!(
+                normalize_title("Scar Tissue (Official Audio)"),
+                "Scar Tissue"
+            );
+            assert_eq!(
+                normalize_title("Say It Right feat. Nelly Furtado"),
+                "Say It Right"
+            );
+            assert_eq!(
+                normalize_title("Under the Bridge (feat. Someone)"),
+                "Under the Bridge"
+            );
+            // A genuine version parenthetical is preserved.
+            assert_eq!(
+                normalize_title("Californication (Acoustic)"),
+                "Californication (Acoustic)"
+            );
+            // Already clean → unchanged (idempotent).
+            assert_eq!(normalize_title("Neon Mileage"), "Neon Mileage");
+        }
+
+        // Phase `normalize_artist_strips_topic_suffix`.
+        {
+            assert_eq!(
+                normalize_artist("Red Hot Chili Peppers - Topic"),
+                "Red Hot Chili Peppers"
+            );
+            assert_eq!(
+                normalize_artist("Red Hot Chili Peppers"),
+                "Red Hot Chili Peppers"
+            );
+            assert_eq!(
+                normalize_artist("  Midnight   Transit  "),
+                "Midnight Transit"
+            );
+        }
+
+        // Phase `lrclib_query_normalizes_youtube_metadata`.
+        // A YouTube-flavoured title + a `… - Topic` artist must produce a
+        // well-formed, normalised LRCLIB query, not one that carries the raw
+        // noise through and misses on `/api/get`.
+        {
+            let meta = TrackMeta {
+                track_id: "yt:abc".into(),
+                title: "Californication (Official Music Video)".into(),
+                artist: "Red Hot Chili Peppers - Topic".into(),
+                album: "Californication (Remastered)".into(),
+                duration_s: 329,
+            };
+            let url = lrclib_url(&meta);
+            assert!(url.starts_with("https://lrclib.net/api/get?"));
+            assert!(
+                url.contains("track_name=Californication&"),
+                "title tag stripped: {url}"
+            );
+            assert!(
+                url.contains("artist_name=Red%20Hot%20Chili%20Peppers&"),
+                "topic suffix stripped: {url}"
+            );
+            assert!(
+                url.contains("album_name=Californication&"),
+                "album tag stripped: {url}"
+            );
+            assert!(url.ends_with("duration=329"), "{url}");
+        }
+
+        // Phase `lrclib_search_url_uses_normalized_metadata`.
+        #[cfg(any(feature = "lyrics", feature = "live"))]
+        {
+            let meta = TrackMeta {
+                track_id: "yt:abc".into(),
+                title: "Californication (Official Music Video)".into(),
+                artist: "Red Hot Chili Peppers - Topic".into(),
+                album: String::new(),
+                duration_s: 329,
+            };
+            let url = lrclib_search_url(&meta);
+            assert!(url.starts_with("https://lrclib.net/api/search?"));
+            assert!(url.contains("track_name=Californication"), "{url}");
+            assert!(
+                url.contains("artist_name=Red%20Hot%20Chili%20Peppers"),
+                "{url}"
+            );
+        }
     }
 }

@@ -180,69 +180,72 @@ mod tests {
     }
 
     #[test]
-    fn matches_the_textbook_algorithm_across_eras() {
-        // Several 400-year eras either side of the epoch, every day.
-        for days in -800_000..=800_000 {
-            assert_eq!(
-                civil_from_days(days),
-                reference_civil_from_days(days),
-                "{days}"
-            );
-            let (y, m, d) = reference_civil_from_days(days);
-            assert_eq!(days_from_civil(y, m, d), days);
-            assert_eq!(
-                days_from_civil(y, m, d),
-                reference_days_from_civil(y, i64::from(m), i64::from(d))
-            );
-        }
-    }
-
-    #[test]
-    fn known_anchors() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 1, 1), 10_957);
-        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
-        assert_eq!(civil_from_days(19_723), (2024, 1, 1));
-        assert_eq!(civil_from_days(-719_468), (0, 3, 1));
-    }
-
-    #[test]
-    fn weekday_known_dates() {
-        assert_eq!(weekday(days_from_civil(1970, 1, 1)), 4);
-        assert_eq!(weekday(days_from_civil(2000, 1, 1)), 6);
-        assert_eq!(weekday(days_from_civil(1815, 12, 10)), 0);
-        for days in -1_000..1_000 {
-            assert!(weekday(days) < 7);
-            assert_eq!((weekday(days) + 1) % 7, weekday(days + 1));
-        }
-    }
-
-    #[test]
-    fn days_in_month_matches_the_calendar() {
-        for year in 1_590..2_410 {
-            for month in 1..=12 {
-                let next = if month == 12 {
-                    days_from_civil(year + 1, 1, 1)
-                } else {
-                    days_from_civil(year, month + 1, 1)
-                };
-                let len = next - days_from_civil(year, month, 1);
-                assert_eq!(i64::from(days_in_month(year, month)), len);
+    fn civil_date_arithmetic_matches_the_calendar_and_saturates() {
+        // Case `matches_the_textbook_algorithm_across_eras`.
+        {
+            // Several 400-year eras either side of the epoch, every day.
+            for days in -800_000..=800_000 {
+                assert_eq!(
+                    civil_from_days(days),
+                    reference_civil_from_days(days),
+                    "{days}"
+                );
+                let (y, m, d) = reference_civil_from_days(days);
+                assert_eq!(days_from_civil(y, m, d), days);
+                assert_eq!(
+                    days_from_civil(y, m, d),
+                    reference_days_from_civil(y, i64::from(m), i64::from(d))
+                );
             }
         }
-        assert_eq!(days_in_month(2023, 0), 30);
-        assert_eq!(days_in_month(2023, 13), 30);
-    }
 
-    #[test]
-    fn absurd_inputs_saturate_instead_of_wrapping() {
-        let far = days_from_civil(i64::MAX, 12, 31);
-        assert!(far > days_from_civil(1_000_000, 1, 1));
-        let (y, m, d) = civil_from_days(i64::MIN);
-        assert!(y < -1_000_000);
-        assert!((1..=12).contains(&m) && (1..=31).contains(&d));
-        let (y, m, d) = civil_from_days(i64::MAX);
-        assert!(y > 1_000_000);
-        assert!((1..=12).contains(&m) && (1..=31).contains(&d));
+        // Case `known_anchors`.
+        {
+            assert_eq!(days_from_civil(1970, 1, 1), 0);
+            assert_eq!(days_from_civil(2000, 1, 1), 10_957);
+            assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+            assert_eq!(civil_from_days(19_723), (2024, 1, 1));
+            assert_eq!(civil_from_days(-719_468), (0, 3, 1));
+        }
+
+        // Case `weekday_known_dates`.
+        {
+            assert_eq!(weekday(days_from_civil(1970, 1, 1)), 4);
+            assert_eq!(weekday(days_from_civil(2000, 1, 1)), 6);
+            assert_eq!(weekday(days_from_civil(1815, 12, 10)), 0);
+            for days in -1_000..1_000 {
+                assert!(weekday(days) < 7);
+                assert_eq!((weekday(days) + 1) % 7, weekday(days + 1));
+            }
+        }
+
+        // Case `days_in_month_matches_the_calendar`.
+        {
+            for year in 1_590..2_410 {
+                for month in 1..=12 {
+                    let next = if month == 12 {
+                        days_from_civil(year + 1, 1, 1)
+                    } else {
+                        days_from_civil(year, month + 1, 1)
+                    };
+                    let len = next - days_from_civil(year, month, 1);
+                    assert_eq!(i64::from(days_in_month(year, month)), len);
+                }
+            }
+            assert_eq!(days_in_month(2023, 0), 30);
+            assert_eq!(days_in_month(2023, 13), 30);
+        }
+
+        // Case `absurd_inputs_saturate_instead_of_wrapping`.
+        {
+            let far = days_from_civil(i64::MAX, 12, 31);
+            assert!(far > days_from_civil(1_000_000, 1, 1));
+            let (y, m, d) = civil_from_days(i64::MIN);
+            assert!(y < -1_000_000);
+            assert!((1..=12).contains(&m) && (1..=31).contains(&d));
+            let (y, m, d) = civil_from_days(i64::MAX);
+            assert!(y > 1_000_000);
+            assert!((1..=12).contains(&m) && (1..=31).contains(&d));
+        }
     }
 }

@@ -673,263 +673,319 @@ mod tests {
         doc
     }
 
-    /// Each profile action writes its absolute value into `root["profile"]`.
+    /// Profile field actions, normalisation and concurrent merges.
     #[test]
-    fn profile_actions_write_the_profile() {
-        let mut doc = seeded();
-        assert_eq!(ImagerDoc::profile(&doc).mode, InstallMode::Live);
-        assert!(!ImagerDoc::profile(&doc).encrypt);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn profile_actions_write_fields_and_normalise_without_clobbering() {
+        // Phase `profile_actions_write_the_profile`.
+        // Each profile action writes its absolute value into `root["profile"]`.
+        {
+            let mut doc = seeded();
+            assert_eq!(ImagerDoc::profile(&doc).mode, InstallMode::Live);
+            assert!(!ImagerDoc::profile(&doc).encrypt);
 
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetInstallMode {
-                mode: "persistent".into(),
-            },
-        );
-        dispatch(&mut doc, &ImagerAction::SetEncrypt { on: true });
-        dispatch(&mut doc, &ImagerAction::SetAutologin { on: true });
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetHostname {
-                value: "lab01".into(),
-            },
-        );
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetFullName {
-                value: "Ada Lovelace".into(),
-            },
-        );
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetUsername {
-                value: "ada".into(),
-            },
-        );
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetLocale {
-                value: "nl_NL.UTF-8".into(),
-            },
-        );
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetTimezone {
-                value: "Europe/Amsterdam".into(),
-            },
-        );
-        dispatch(&mut doc, &ImagerAction::SetKeyboard { value: "nl".into() });
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetFilesystem {
-                filesystem: Filesystem::Xfs,
-            },
-        );
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetInstallMode {
+                    mode: "persistent".into(),
+                },
+            );
+            dispatch(&mut doc, &ImagerAction::SetEncrypt { on: true });
+            dispatch(&mut doc, &ImagerAction::SetAutologin { on: true });
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetHostname {
+                    value: "lab01".into(),
+                },
+            );
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetFullName {
+                    value: "Ada Lovelace".into(),
+                },
+            );
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetUsername {
+                    value: "ada".into(),
+                },
+            );
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetLocale {
+                    value: "nl_NL.UTF-8".into(),
+                },
+            );
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetTimezone {
+                    value: "Europe/Amsterdam".into(),
+                },
+            );
+            dispatch(&mut doc, &ImagerAction::SetKeyboard { value: "nl".into() });
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetFilesystem {
+                    filesystem: Filesystem::Xfs,
+                },
+            );
 
-        let p = ImagerDoc::profile(&doc);
-        assert_eq!(p.mode, InstallMode::Persistent);
-        assert!(p.encrypt);
-        assert!(p.user.autologin);
-        assert_eq!(p.hostname, "lab01");
-        assert_eq!(p.user.full_name, "Ada Lovelace");
-        assert_eq!(p.user.username, "ada");
-        assert!(
-            p.user.password.is_empty(),
-            "secrets are never collaborative"
-        );
-        assert_eq!(p.locale, "nl_NL.UTF-8");
-        assert_eq!(p.timezone, "Europe/Amsterdam");
-        assert_eq!(p.keyboard, "nl");
-        assert_eq!(p.filesystem, Filesystem::Xfs);
+            let p = ImagerDoc::profile(&doc);
+            assert_eq!(p.mode, InstallMode::Persistent);
+            assert!(p.encrypt);
+            assert!(p.user.autologin);
+            assert_eq!(p.hostname, "lab01");
+            assert_eq!(p.user.full_name, "Ada Lovelace");
+            assert_eq!(p.user.username, "ada");
+            assert!(
+                p.user.password.is_empty(),
+                "secrets are never collaborative"
+            );
+            assert_eq!(p.locale, "nl_NL.UTF-8");
+            assert_eq!(p.timezone, "Europe/Amsterdam");
+            assert_eq!(p.keyboard, "nl");
+            assert_eq!(p.filesystem, Filesystem::Xfs);
+        }
+
+        // Phase `field_set_preserves_the_other_fields`.
+        // A single field-set leaves every *other* profile field untouched — the
+        // action is a surgical set, not a whole-profile clobber.
+        {
+            let mut doc = seeded();
+            let before = ImagerDoc::profile(&doc);
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetHostname {
+                    value: "only-host".into(),
+                },
+            );
+            let after = ImagerDoc::profile(&doc);
+            assert_eq!(after.hostname, "only-host");
+            assert_eq!(after.user.username, before.user.username);
+            assert_eq!(after.timezone, before.timezone);
+            assert_eq!(after.mode, before.mode);
+            assert_eq!(after.encrypt, before.encrypt);
+        }
+
+        // Phase `malformed_install_mode_normalises_instead_of_wedging`.
+        // A malformed install-mode payload normalises to the canonical default
+        // rather than erroring, so an out-of-range replay lands on a valid mode.
+        {
+            let mut doc = seeded();
+            dispatch(
+                &mut doc,
+                &ImagerAction::SetInstallMode {
+                    mode: "nonsense".into(),
+                },
+            );
+            assert_eq!(
+                ImagerDoc::profile(&doc).mode,
+                InstallMode::Live,
+                "an unknown mode falls back to the canonical default"
+            );
+        }
+
+        // Phase `concurrent_profile_fields_merge_without_a_whole_profile_clobber`.
+        {
+            let mut left = seeded();
+            let bytes = left.save();
+            let mut right = AutoCommit::load(&bytes).unwrap();
+            ImagerAction::SetHostname {
+                value: "studio".into(),
+            }
+            .apply(&mut left)
+            .unwrap();
+            ImagerAction::SetKeyboard { value: "de".into() }
+                .apply(&mut right)
+                .unwrap();
+            left.commit();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
+            let profile = ImagerDoc::profile(&left);
+            assert_eq!(profile.hostname, "studio");
+            assert_eq!(profile.keyboard, "de");
+        }
     }
 
-    /// A single field-set leaves every *other* profile field untouched — the
-    /// action is a surgical set, not a whole-profile clobber.
+    /// Palette and resource publication.
     #[test]
-    fn field_set_preserves_the_other_fields() {
-        let mut doc = seeded();
-        let before = ImagerDoc::profile(&doc);
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetHostname {
-                value: "only-host".into(),
-            },
-        );
-        let after = ImagerDoc::profile(&doc);
-        assert_eq!(after.hostname, "only-host");
-        assert_eq!(after.user.username, before.user.username);
-        assert_eq!(after.timezone, before.timezone);
-        assert_eq!(after.mode, before.mode);
-        assert_eq!(after.encrypt, before.encrypt);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn published_resources_and_palette_advertise_only_transported_choices() {
+        // Phase `ctrl_k_publishes_the_customization_and_profile_actions`.
+        // Ctrl+K on an open customizable image publishes the customization resource
+        // exporting the profile actions. Drives the real resource builder.
+        {
+            let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
+            assert!(
+                resources[0]
+                    .actions
+                    .iter()
+                    .all(|action| action.contract.reversible
+                        && action.contract.retry == RetryPolicy::Idempotent)
+            );
+            assert_eq!(resources.len(), 1, "one customization root");
+            let root = &resources[0];
+            assert_eq!(root.kind, "imager.customization");
+            assert_eq!(root.label, "Customize Tilo 1.0");
+            assert_eq!(root.id.as_str(), "imager.customization:Tilo 1.0");
 
-    /// A malformed install-mode payload normalises to the canonical default
-    /// rather than erroring, so an out-of-range replay lands on a valid mode.
-    #[test]
-    fn malformed_install_mode_normalises_instead_of_wedging() {
-        let mut doc = seeded();
-        dispatch(
-            &mut doc,
-            &ImagerAction::SetInstallMode {
-                mode: "nonsense".into(),
-            },
-        );
-        assert_eq!(
-            ImagerDoc::profile(&doc).mode,
-            InstallMode::Live,
-            "an unknown mode falls back to the canonical default"
-        );
-    }
+            let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                vec![
+                    "locale",
+                    "hostname",
+                    "full-name",
+                    "username",
+                    "timezone",
+                    "keyboard",
+                    "filesystem",
+                ],
+            );
+            // The password is deliberately never a palette row.
+            assert!(
+                !ids.contains(&"password"),
+                "the secret is not exposed via Ctrl+K"
+            );
+        }
 
-    /// Ctrl+K on an open customizable image publishes the customization resource
-    /// exporting the profile actions. Drives the real resource builder.
-    #[test]
-    fn ctrl_k_publishes_the_customization_and_profile_actions() {
-        let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
-        assert!(
-            resources[0]
+        // Phase `plain_iso_publishes_no_resources`.
+        // A plain ISO stays a first-class source resource, but never publishes a
+        // Tilo customization resource it cannot apply.
+        {
+            use crate::app::ImagerApp;
+            let mut app = ImagerApp::new();
+            let mut doc = seeded();
+            app.sync(&mut doc, &automerge::ROOT);
+            // Seeded source is an installable Tilo image → it publishes.
+            assert!(!ResourceProvider::resources(&app, &doc).is_empty());
+
+            // Switch to a plain, non-installable ISO → nothing to customize.
+            let iso = Source {
+                kind: SourceKind::IsoFile,
+                path: "/home/user/plain.iso".into(),
+                name: "plain.iso".into(),
+                size: 1_000_000,
+                label: "PLAIN".into(),
+                installable: false,
+                identity: None,
+                expected_sha256: None,
+            };
+            ImagerDoc::set_source(&mut doc, Some(&iso));
+            app.sync(&mut doc, &automerge::ROOT);
+            let resources = ResourceProvider::resources(&app, &doc);
+            assert!(resources.iter().any(|resource| {
+                resource.kind == "imager.source"
+                    || resource
+                        .children
+                        .iter()
+                        .any(|child| child.kind == "imager.source")
+            }));
+            assert!(
+                !resources
+                    .iter()
+                    .any(|resource| resource.kind == "imager.customization")
+            );
+        }
+
+        // Phase `palette_does_not_advertise_untransported_choices`.
+        // Choices outside the secret-free media contract remain decodable for old
+        // documents but are not offered as if the live installer would apply them.
+        {
+            let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
+            let ids = resources[0]
                 .actions
                 .iter()
-                .all(|action| action.contract.reversible
-                    && action.contract.retry == RetryPolicy::Idempotent)
-        );
-        assert_eq!(resources.len(), 1, "one customization root");
-        let root = &resources[0];
-        assert_eq!(root.kind, "imager.customization");
-        assert_eq!(root.label, "Customize Tilo 1.0");
-        assert_eq!(root.id.as_str(), "imager.customization:Tilo 1.0");
-
-        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "locale",
-                "hostname",
-                "full-name",
-                "username",
-                "timezone",
-                "keyboard",
-                "filesystem",
-            ],
-        );
-        // The password is deliberately never a palette row.
-        assert!(
-            !ids.contains(&"password"),
-            "the secret is not exposed via Ctrl+K"
-        );
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>();
+            assert!(!ids.contains(&"install-mode"));
+            assert!(!ids.contains(&"encrypt"));
+            assert!(!ids.contains(&"autologin"));
+        }
     }
 
+    /// Write operation availability, confirmation and cancellation.
     #[test]
-    fn write_operation_requires_typed_device_admin_and_destructive_confirmation() {
-        let resource = operation_resource(Some("/dev/sdz"), true, false, true);
-        let write = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .unwrap();
-        assert!(write.contract.availability.is_available());
-        assert_eq!(write.contract.permission, PermissionRequirement::Admin);
-        assert_eq!(write.contract.risk, RiskLevel::Destructive);
-        assert_eq!(
-            write.contract.confirmation,
-            ConfirmationPolicy::Phrase {
-                phrase: "/dev/sdz".into()
-            }
-        );
-        assert_eq!(write.params().len(), 1);
-        assert_eq!(write.params()[0].name.as_ref(), "confirmation");
-        let encoded = write
-            .build_args([(
-                "confirmation".to_string(),
-                tilo_actions::ArgValue::Text("/dev/sdz".into()),
-            )])
-            .unwrap();
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(ImagerOperation::Write {
-                device: "/dev/sdz".into(),
-                confirmation: "/dev/sdz".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn write_operation_is_unavailable_when_the_real_backend_is_disabled() {
-        let resource = operation_resource(Some("/dev/sdz"), true, false, false);
-        let write = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .unwrap();
-        assert!(!write.contract.availability.is_available());
-        assert!(matches!(
-            &write.contract.availability,
-            tilo_actions::Availability::Unavailable { code, .. }
-                if code == "write_backend_disabled"
-        ));
-    }
-
-    #[test]
-    fn automatic_verify_is_unavailable_and_active_write_can_be_cancelled() {
-        let resource = operation_resource(Some("/dev/sdz"), true, true, true);
-        let verify = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "verify")
-            .unwrap();
-        assert!(!verify.contract.availability.is_available());
-        let cancel = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "cancel")
-            .unwrap();
-        assert!(cancel.contract.availability.is_available());
-        assert_eq!(cancel.contract.permission, PermissionRequirement::Write);
-        let status = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "status")
-            .unwrap();
-        assert_eq!(status.contract.discovery, DiscoveryScope::Launchable);
-    }
-
-    /// A plain ISO stays a first-class source resource, but never publishes a
-    /// Tilo customization resource it cannot apply.
-    #[test]
-    fn plain_iso_publishes_no_resources() {
-        use crate::app::ImagerApp;
-        let mut app = ImagerApp::new();
-        let mut doc = seeded();
-        app.sync(&mut doc, &automerge::ROOT);
-        // Seeded source is an installable Tilo image → it publishes.
-        assert!(!ResourceProvider::resources(&app, &doc).is_empty());
-
-        // Switch to a plain, non-installable ISO → nothing to customize.
-        let iso = Source {
-            kind: SourceKind::IsoFile,
-            path: "/home/user/plain.iso".into(),
-            name: "plain.iso".into(),
-            size: 1_000_000,
-            label: "PLAIN".into(),
-            installable: false,
-            identity: None,
-            expected_sha256: None,
-        };
-        ImagerDoc::set_source(&mut doc, Some(&iso));
-        app.sync(&mut doc, &automerge::ROOT);
-        let resources = ResourceProvider::resources(&app, &doc);
-        assert!(resources.iter().any(|resource| {
-            resource.kind == "imager.source"
-                || resource
-                    .children
-                    .iter()
-                    .any(|child| child.kind == "imager.source")
-        }));
-        assert!(
-            !resources
+    fn write_operation_is_confirmed_admin_gated_and_cancellable() {
+        // Phase `write_operation_requires_typed_device_admin_and_destructive_confirmation`.
+        {
+            let resource = operation_resource(Some("/dev/sdz"), true, false, true);
+            let write = resource
+                .actions
                 .iter()
-                .any(|resource| resource.kind == "imager.customization")
-        );
+                .find(|action| action.id == "write")
+                .unwrap();
+            assert!(write.contract.availability.is_available());
+            assert_eq!(write.contract.permission, PermissionRequirement::Admin);
+            assert_eq!(write.contract.risk, RiskLevel::Destructive);
+            assert_eq!(
+                write.contract.confirmation,
+                ConfirmationPolicy::Phrase {
+                    phrase: "/dev/sdz".into()
+                }
+            );
+            assert_eq!(write.params().len(), 1);
+            assert_eq!(write.params()[0].name.as_ref(), "confirmation");
+            let encoded = write
+                .build_args([(
+                    "confirmation".to_string(),
+                    tilo_actions::ArgValue::Text("/dev/sdz".into()),
+                )])
+                .unwrap();
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(ImagerOperation::Write {
+                    device: "/dev/sdz".into(),
+                    confirmation: "/dev/sdz".into(),
+                })
+            );
+        }
+
+        // Phase `write_operation_is_unavailable_when_the_real_backend_is_disabled`.
+        {
+            let resource = operation_resource(Some("/dev/sdz"), true, false, false);
+            let write = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "write")
+                .unwrap();
+            assert!(!write.contract.availability.is_available());
+            assert!(matches!(
+                &write.contract.availability,
+                tilo_actions::Availability::Unavailable { code, .. }
+                    if code == "write_backend_disabled"
+            ));
+        }
+
+        // Phase `automatic_verify_is_unavailable_and_active_write_can_be_cancelled`.
+        {
+            let resource = operation_resource(Some("/dev/sdz"), true, true, true);
+            let verify = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "verify")
+                .unwrap();
+            assert!(!verify.contract.availability.is_available());
+            let cancel = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "cancel")
+                .unwrap();
+            assert!(cancel.contract.availability.is_available());
+            assert_eq!(cancel.contract.permission, PermissionRequirement::Write);
+            let status = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "status")
+                .unwrap();
+            assert_eq!(status.contract.discovery, DiscoveryScope::Launchable);
+        }
     }
 
     /// What a peer holding `doc` publishes: the collaborative source and
@@ -980,98 +1036,66 @@ mod tests {
         ],
     }
 
+    /// Source MRU order and concurrent tie-breaking.
     #[test]
-    fn concurrent_profile_fields_merge_without_a_whole_profile_clobber() {
-        let mut left = seeded();
-        let bytes = left.save();
-        let mut right = AutoCommit::load(&bytes).unwrap();
-        ImagerAction::SetHostname {
-            value: "studio".into(),
+    fn source_history_orders_by_recency_with_stable_ties() {
+        // Phase `sequential_source_reselection_moves_the_previous_source_to_mru_front`.
+        {
+            let mut doc = seeded();
+            let first = crate::model::sample_source();
+            let second = crate::model::sample_recent_sources()[1].clone();
+            ImagerAction::SelectSource {
+                source: Box::new(second.clone()),
+                previous: Some(Box::new(first.clone())),
+                recent_rank: -10,
+            }
+            .apply(&mut doc)
+            .unwrap();
+            ImagerAction::SelectSource {
+                source: Box::new(first),
+                previous: Some(Box::new(second.clone())),
+                recent_rank: -11,
+            }
+            .apply(&mut doc)
+            .unwrap();
+            assert_eq!(
+                ImagerDoc::recent(&doc).first().map(|source| &source.path),
+                Some(&second.path)
+            );
         }
-        .apply(&mut left)
-        .unwrap();
-        ImagerAction::SetKeyboard { value: "de".into() }
+
+        // Phase `concurrent_equal_rank_history_entries_have_stable_id_tie_breaking`.
+        {
+            let mut left = seeded();
+            let mut right = AutoCommit::load(&left.save()).unwrap();
+            let a = crate::model::sample_recent_sources()[1].clone();
+            let b = crate::model::sample_recent_sources()[2].clone();
+            ImagerAction::SelectSource {
+                source: Box::new(a.clone()),
+                previous: Some(Box::new(b.clone())),
+                recent_rank: -77,
+            }
+            .apply(&mut left)
+            .unwrap();
+            ImagerAction::SelectSource {
+                source: Box::new(b.clone()),
+                previous: Some(Box::new(a.clone())),
+                recent_rank: -77,
+            }
             .apply(&mut right)
             .unwrap();
-        left.commit();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-        let profile = ImagerDoc::profile(&left);
-        assert_eq!(profile.hostname, "studio");
-        assert_eq!(profile.keyboard, "de");
-    }
-
-    #[test]
-    fn sequential_source_reselection_moves_the_previous_source_to_mru_front() {
-        let mut doc = seeded();
-        let first = crate::model::sample_source();
-        let second = crate::model::sample_recent_sources()[1].clone();
-        ImagerAction::SelectSource {
-            source: Box::new(second.clone()),
-            previous: Some(Box::new(first.clone())),
-            recent_rank: -10,
+            left.commit();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
+            let head = ImagerDoc::recent(&left);
+            assert_eq!(
+                head[0].path,
+                if ImagerDoc::source_id(&a) < ImagerDoc::source_id(&b) {
+                    a.path
+                } else {
+                    b.path
+                }
+            );
         }
-        .apply(&mut doc)
-        .unwrap();
-        ImagerAction::SelectSource {
-            source: Box::new(first),
-            previous: Some(Box::new(second.clone())),
-            recent_rank: -11,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert_eq!(
-            ImagerDoc::recent(&doc).first().map(|source| &source.path),
-            Some(&second.path)
-        );
-    }
-
-    #[test]
-    fn concurrent_equal_rank_history_entries_have_stable_id_tie_breaking() {
-        let mut left = seeded();
-        let mut right = AutoCommit::load(&left.save()).unwrap();
-        let a = crate::model::sample_recent_sources()[1].clone();
-        let b = crate::model::sample_recent_sources()[2].clone();
-        ImagerAction::SelectSource {
-            source: Box::new(a.clone()),
-            previous: Some(Box::new(b.clone())),
-            recent_rank: -77,
-        }
-        .apply(&mut left)
-        .unwrap();
-        ImagerAction::SelectSource {
-            source: Box::new(b.clone()),
-            previous: Some(Box::new(a.clone())),
-            recent_rank: -77,
-        }
-        .apply(&mut right)
-        .unwrap();
-        left.commit();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-        let head = ImagerDoc::recent(&left);
-        assert_eq!(
-            head[0].path,
-            if ImagerDoc::source_id(&a) < ImagerDoc::source_id(&b) {
-                a.path
-            } else {
-                b.path
-            }
-        );
-    }
-
-    /// Choices outside the secret-free media contract remain decodable for old
-    /// documents but are not offered as if the live installer would apply them.
-    #[test]
-    fn palette_does_not_advertise_untransported_choices() {
-        let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
-        let ids = resources[0]
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect::<Vec<_>>();
-        assert!(!ids.contains(&"install-mode"));
-        assert!(!ids.contains(&"encrypt"));
-        assert!(!ids.contains(&"autologin"));
     }
 }

@@ -43,94 +43,190 @@ fn fill_pages(path: &std::path::Path) {
 }
 
 #[test]
-fn revoked_root_rejects_existing_descendant_handle() {
-    let (temp, authority, session, root) = granted_root();
-    std::fs::write(temp.path().join("draft"), b"before").unwrap();
-    let file = file(session.lookup(&root, &name("draft")).unwrap());
-    assert_eq!(session.read_at(&file, 0, 16).unwrap(), b"before");
-    let cloned = file.clone();
-    authority.revoke_directory(&root).unwrap();
-    assert!(matches!(
-        session.read_at(&file, 0, u32::MAX),
-        Err(FsError::Revoked)
-    ));
-    assert!(matches!(
-        session.read_at(&cloned, 0, 16),
-        Err(FsError::Revoked)
-    ));
-    assert!(matches!(
-        session.metadata(&GrantedEntry::File(file)),
-        Err(FsError::Revoked)
-    ));
-    assert!(matches!(
-        session.lookup(&root, &name("draft")),
-        Err(FsError::Revoked)
-    ));
-    assert!(matches!(session.list(&root, None), Err(FsError::Revoked)));
-    assert!(matches!(
-        session.check_directory(&root),
-        Err(FsError::Revoked)
-    ));
-    assert_eq!(std::fs::read(temp.path().join("draft")).unwrap(), b"before");
-}
-
-#[test]
-fn wrong_owner_cannot_list() {
-    let (_temp, authority, _session, root) = granted_root();
-    let mut wrong_workspace = files_owner();
-    wrong_workspace.workspace = "other".into();
-    let mut wrong_app = files_owner();
-    wrong_app.app_id = "other".into();
-    for owner in [wrong_workspace, wrong_app] {
+fn revocation_invalidates_every_derived_handle_and_binding() {
+    // phase: revoked_root_rejects_existing_descendant_handle
+    {
+        let (temp, authority, session, root) = granted_root();
+        std::fs::write(temp.path().join("draft"), b"before").unwrap();
+        let file = file(session.lookup(&root, &name("draft")).unwrap());
+        assert_eq!(session.read_at(&file, 0, 16).unwrap(), b"before");
+        let cloned = file.clone();
+        authority.revoke_directory(&root).unwrap();
         assert!(matches!(
-            authority.bind(owner, MOUNT_B, std::slice::from_ref(&root), &[]),
+            session.read_at(&file, 0, u32::MAX),
+            Err(FsError::Revoked)
+        ));
+        assert!(matches!(
+            session.read_at(&cloned, 0, 16),
+            Err(FsError::Revoked)
+        ));
+        assert!(matches!(
+            session.metadata(&GrantedEntry::File(file)),
+            Err(FsError::Revoked)
+        ));
+        assert!(matches!(
+            session.lookup(&root, &name("draft")),
+            Err(FsError::Revoked)
+        ));
+        assert!(matches!(session.list(&root, None), Err(FsError::Revoked)));
+        assert!(matches!(
+            session.check_directory(&root),
+            Err(FsError::Revoked)
+        ));
+        assert_eq!(std::fs::read(temp.path().join("draft")).unwrap(), b"before");
+    }
+    // phase: revoked_subdirectory_invalidates_descendants_but_not_siblings
+    {
+        let (temp, authority, session, root) = granted_root();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        std::fs::write(temp.path().join("child/file"), b"child").unwrap();
+        std::fs::write(temp.path().join("sibling"), b"sibling").unwrap();
+        let child = directory(session.lookup(&root, &name("child")).unwrap());
+        let descendant = file(session.lookup(&child, &name("file")).unwrap());
+        let scoped = bind(&authority, &child, MOUNT_B);
+        authority.revoke_directory(&child).unwrap();
+        assert!(matches!(
+            session.read_at(&descendant, 0, 20),
+            Err(FsError::Revoked)
+        ));
+        assert!(matches!(scoped.list(&child, None), Err(FsError::Revoked)));
+        session.check_directory(&root).unwrap();
+        assert_eq!(
+            session
+                .read_at(
+                    &file(session.lookup(&root, &name("sibling")).unwrap()),
+                    0,
+                    20
+                )
+                .unwrap(),
+            b"sibling"
+        );
+    }
+    // phase: foreign_authority_and_revoked_grants_cannot_bind
+    {
+        let (temp, authority, _session, root) = granted_root();
+        let foreign = NativeGrantAuthority::new();
+        assert!(matches!(
+            foreign.bind(files_owner(), MOUNT_B, std::slice::from_ref(&root), &[]),
             Err(FsError::Denied)
+        ));
+        authority.revoke_directory(&root).unwrap();
+        assert!(matches!(
+            authority.bind(files_owner(), MOUNT_B, &[root], &[]),
+            Err(FsError::Revoked)
+        ));
+        std::fs::write(temp.path().join("direct"), b"direct").unwrap();
+        let direct = authority
+            .admit_file(
+                std::fs::File::open(temp.path().join("direct")).unwrap(),
+                files_owner(),
+                vec![FsRight::Read],
+            )
+            .unwrap();
+        let reader = authority
+            .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&direct))
+            .unwrap();
+        authority.revoke_file(&direct).unwrap();
+        assert!(matches!(
+            reader.read_at(&direct, 0, 10),
+            Err(FsError::Revoked)
+        ));
+        assert!(matches!(
+            authority.bind(files_owner(), MOUNT_B, &[], &[direct]),
+            Err(FsError::Revoked)
         ));
     }
 }
 
 #[test]
-fn same_owner_disjoint_sessions_cannot_use_each_others_roots() {
-    let temp = tempfile::tempdir().unwrap();
-    for child in ["left", "right"] {
-        std::fs::create_dir(temp.path().join(child)).unwrap();
-        std::fs::write(temp.path().join(child).join(format!("{child}.txt")), child).unwrap();
+fn grants_confine_each_owner_session_and_right() {
+    // phase: wrong_owner_cannot_list
+    {
+        let (_temp, authority, _session, root) = granted_root();
+        let mut wrong_workspace = files_owner();
+        wrong_workspace.workspace = "other".into();
+        let mut wrong_app = files_owner();
+        wrong_app.app_id = "other".into();
+        for owner in [wrong_workspace, wrong_app] {
+            assert!(matches!(
+                authority.bind(owner, MOUNT_B, std::slice::from_ref(&root), &[]),
+                Err(FsError::Denied)
+            ));
+        }
     }
-    let authority = NativeGrantAuthority::new();
-    let left = admit(&authority, &temp.path().join("left"));
-    let right = admit(&authority, &temp.path().join("right"));
-    let a = bind(&authority, &left, MOUNT_A);
-    let b = bind(&authority, &right, MOUNT_B);
-    assert!(matches!(a.list(&right, None), Err(FsError::Denied)));
-    assert!(matches!(b.list(&left, None), Err(FsError::Denied)));
-    assert_eq!(a.list(&left, None).unwrap().entries.len(), 1);
-    assert_eq!(b.list(&right, None).unwrap().entries.len(), 1);
-    let left_file = file(a.lookup(&left, &name("left.txt")).unwrap());
-    assert!(matches!(b.read_at(&left_file, 0, 4), Err(FsError::Denied)));
-}
-
-#[test]
-fn isolated_file_cannot_enumerate_parent() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("only.txt"), b"only").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let parent = admit(&authority, temp.path());
-    let grant = authority
-        .admit_file(
-            std::fs::File::open(temp.path().join("only.txt")).unwrap(),
-            files_owner(),
-            vec![FsRight::Read],
-        )
-        .unwrap();
-    let session = authority
-        .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
-        .unwrap();
-    assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"only");
-    assert_eq!(
-        session.metadata(&GrantedEntry::File(grant)).unwrap().kind,
-        EntryKind::File
-    );
-    assert!(matches!(session.list(&parent, None), Err(FsError::Denied)));
+    // phase: same_owner_disjoint_sessions_cannot_use_each_others_roots
+    {
+        let temp = tempfile::tempdir().unwrap();
+        for child in ["left", "right"] {
+            std::fs::create_dir(temp.path().join(child)).unwrap();
+            std::fs::write(temp.path().join(child).join(format!("{child}.txt")), child).unwrap();
+        }
+        let authority = NativeGrantAuthority::new();
+        let left = admit(&authority, &temp.path().join("left"));
+        let right = admit(&authority, &temp.path().join("right"));
+        let a = bind(&authority, &left, MOUNT_A);
+        let b = bind(&authority, &right, MOUNT_B);
+        assert!(matches!(a.list(&right, None), Err(FsError::Denied)));
+        assert!(matches!(b.list(&left, None), Err(FsError::Denied)));
+        assert_eq!(a.list(&left, None).unwrap().entries.len(), 1);
+        assert_eq!(b.list(&right, None).unwrap().entries.len(), 1);
+        let left_file = file(a.lookup(&left, &name("left.txt")).unwrap());
+        assert!(matches!(b.read_at(&left_file, 0, 4), Err(FsError::Denied)));
+    }
+    // phase: isolated_file_cannot_enumerate_parent
+    {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("only.txt"), b"only").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let parent = admit(&authority, temp.path());
+        let grant = authority
+            .admit_file(
+                std::fs::File::open(temp.path().join("only.txt")).unwrap(),
+                files_owner(),
+                vec![FsRight::Read],
+            )
+            .unwrap();
+        let session = authority
+            .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&grant))
+            .unwrap();
+        assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"only");
+        assert_eq!(
+            session.metadata(&GrantedEntry::File(grant)).unwrap().kind,
+            EntryKind::File
+        );
+        assert!(matches!(session.list(&parent, None), Err(FsError::Denied)));
+    }
+    // phase: enumerate_only_cannot_read
+    {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("alpha.txt"), b"alpha").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let root = authority
+            .admit_directory(
+                std::fs::File::open(temp.path()).unwrap(),
+                files_owner(),
+                vec![FsRight::Enumerate],
+            )
+            .unwrap();
+        let session = bind(&authority, &root, MOUNT_A);
+        assert_eq!(session.list(&root, None).unwrap().entries.len(), 1);
+        let grant = file(session.lookup(&root, &name("alpha.txt")).unwrap());
+        assert!(matches!(
+            session.read_at(&grant, 0, u32::MAX),
+            Err(FsError::Denied)
+        ));
+        let direct = authority
+            .admit_file(
+                std::fs::File::open(temp.path().join("alpha.txt")).unwrap(),
+                files_owner(),
+                vec![FsRight::Read],
+            )
+            .unwrap();
+        let reader = authority
+            .bind(files_owner(), MOUNT_B, &[], std::slice::from_ref(&direct))
+            .unwrap();
+        assert_eq!(reader.read_at(&direct, 0, 10).unwrap(), b"alpha");
+    }
 }
 
 fn symlink_lab() -> (
@@ -163,17 +259,36 @@ fn symlink_lab() -> (
 }
 
 #[test]
-fn symlink_escape_is_denied() {
-    let (_temp, _authority, session, root) = symlink_lab();
-    let listing = session.list(&root, None).unwrap();
-    for label in ["escape-link", "absolute-link"] {
-        assert!(
-            listing
-                .entries
-                .iter()
-                .any(|row| row.name == name(label) && row.metadata.kind == EntryKind::Symlink)
-        );
-        let grant = file(session.lookup(&root, &name(label)).unwrap());
+fn symlinks_resolve_only_inside_the_session_root() {
+    // phase: symlink_escape_is_denied
+    {
+        let (_temp, _authority, session, root) = symlink_lab();
+        let listing = session.list(&root, None).unwrap();
+        for label in ["escape-link", "absolute-link"] {
+            assert!(
+                listing
+                    .entries
+                    .iter()
+                    .any(|row| row.name == name(label) && row.metadata.kind == EntryKind::Symlink)
+            );
+            let grant = file(session.lookup(&root, &name(label)).unwrap());
+            assert_eq!(
+                session
+                    .metadata(&GrantedEntry::File(grant.clone()))
+                    .unwrap()
+                    .kind,
+                EntryKind::Symlink
+            );
+            assert!(matches!(
+                session.read_at(&grant, 0, 100),
+                Err(FsError::Denied)
+            ));
+        }
+    }
+    // phase: in_root_relative_symlink_reads_target
+    {
+        let (_temp, _authority, session, root) = symlink_lab();
+        let grant = file(session.lookup(&root, &name("inside-link")).unwrap());
         assert_eq!(
             session
                 .metadata(&GrantedEntry::File(grant.clone()))
@@ -181,34 +296,141 @@ fn symlink_escape_is_denied() {
                 .kind,
             EntryKind::Symlink
         );
+        assert_eq!(session.read_at(&grant, 0, 100).unwrap(), b"inside");
+    }
+    // phase: dangling_symlink_is_listable_but_not_readable
+    {
+        let (_temp, _authority, session, root) = symlink_lab();
+        assert!(
+            session
+                .list(&root, None)
+                .unwrap()
+                .entries
+                .iter()
+                .any(|row| row.name == name("dangling-link")
+                    && row.metadata.kind == EntryKind::Symlink)
+        );
+        let grant = file(session.lookup(&root, &name("dangling-link")).unwrap());
         assert!(matches!(
-            session.read_at(&grant, 0, 100),
+            session.read_at(&grant, 0, 10),
+            Err(FsError::NotFound)
+        ));
+    }
+    // phase: nested_symlink_obeys_session_root_and_retains_target
+    {
+        let (temp, authority, session, root) = granted_root();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        std::fs::write(temp.path().join("sibling"), b"original").unwrap();
+        symlink("../sibling", temp.path().join("child/link")).unwrap();
+        let child = directory(session.lookup(&root, &name("child")).unwrap());
+        let link = file(session.lookup(&child, &name("link")).unwrap());
+        assert_eq!(session.read_at(&link, 0, 20).unwrap(), b"original");
+        let narrowed = bind(&authority, &child, MOUNT_B);
+        let narrowed_link = file(narrowed.lookup(&child, &name("link")).unwrap());
+        assert!(matches!(
+            narrowed.read_at(&narrowed_link, 0, 20),
             Err(FsError::Denied)
         ));
+        assert!(matches!(
+            narrowed.read_at(&link, 0, 20),
+            Err(FsError::Denied)
+        ));
+        let overlapping = authority
+            .bind(
+                files_owner(),
+                uuid::Uuid::from_u128(0xc33),
+                &[root, child.clone()],
+                &[],
+            )
+            .unwrap();
+        let overlapping_link = file(overlapping.lookup(&child, &name("link")).unwrap());
+        assert_eq!(
+            overlapping.read_at(&overlapping_link, 0, 20).unwrap(),
+            b"original"
+        );
+        std::fs::rename(temp.path().join("sibling"), temp.path().join("held")).unwrap();
+        std::fs::write(temp.path().join("sibling"), b"replacement").unwrap();
+        assert_eq!(session.read_at(&link, 0, 20).unwrap(), b"original");
+        assert_eq!(
+            overlapping.read_at(&overlapping_link, 0, 20).unwrap(),
+            b"original"
+        );
     }
 }
 
 #[test]
-fn renamed_root_does_not_switch_to_replacement() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(temp.path().join("selected")).unwrap();
-    std::fs::write(temp.path().join("selected/old.txt"), b"old").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let root = admit(&authority, &temp.path().join("selected"));
-    let session = bind(&authority, &root, MOUNT_A);
-    std::fs::rename(temp.path().join("selected"), temp.path().join("moved")).unwrap();
-    std::fs::create_dir(temp.path().join("selected")).unwrap();
-    std::fs::write(temp.path().join("selected/attacker.txt"), b"attacker").unwrap();
-    let page = session.list(&root, None).unwrap();
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries.first().unwrap().name, name("old.txt"));
-    let old = file(session.lookup(&root, &name("old.txt")).unwrap());
-    assert_eq!(session.read_at(&old, 0, 100).unwrap(), b"old");
-    assert!(matches!(
-        session.lookup(&root, &name("attacker.txt")),
-        Err(FsError::NotFound)
-    ));
-    session.check_directory(&root).unwrap();
+fn grants_keep_their_descriptor_when_a_path_is_replaced() {
+    // phase: renamed_root_does_not_switch_to_replacement
+    {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("selected")).unwrap();
+        std::fs::write(temp.path().join("selected/old.txt"), b"old").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let root = admit(&authority, &temp.path().join("selected"));
+        let session = bind(&authority, &root, MOUNT_A);
+        std::fs::rename(temp.path().join("selected"), temp.path().join("moved")).unwrap();
+        std::fs::create_dir(temp.path().join("selected")).unwrap();
+        std::fs::write(temp.path().join("selected/attacker.txt"), b"attacker").unwrap();
+        let page = session.list(&root, None).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries.first().unwrap().name, name("old.txt"));
+        let old = file(session.lookup(&root, &name("old.txt")).unwrap());
+        assert_eq!(session.read_at(&old, 0, 100).unwrap(), b"old");
+        assert!(matches!(
+            session.lookup(&root, &name("attacker.txt")),
+            Err(FsError::NotFound)
+        ));
+        session.check_directory(&root).unwrap();
+    }
+    // phase: listed_grant_does_not_switch_to_replacement
+    {
+        let (temp, _authority, session, root) = granted_root();
+        std::fs::write(temp.path().join("draft"), b"old").unwrap();
+        let grant = file(session.list(&root, None).unwrap().entries.remove(0).grant);
+        std::fs::rename(temp.path().join("draft"), temp.path().join("held")).unwrap();
+        std::fs::write(temp.path().join("draft"), b"new").unwrap();
+        assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"old");
+        assert_eq!(
+            session
+                .read_at(&file(session.lookup(&root, &name("draft")).unwrap()), 0, 10)
+                .unwrap(),
+            b"new"
+        );
+        std::fs::remove_file(temp.path().join("held")).unwrap();
+        assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"old");
+    }
+    // phase: swapped_parent_uses_derived_descriptor
+    {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("root/parent")).unwrap();
+        std::fs::create_dir(temp.path().join("outside")).unwrap();
+        std::fs::write(temp.path().join("root/parent/inside.txt"), b"inside").unwrap();
+        std::fs::write(temp.path().join("outside/secret.txt"), b"secret").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let root = admit(&authority, &temp.path().join("root"));
+        let session = bind(&authority, &root, MOUNT_A);
+        let parent = directory(session.lookup(&root, &name("parent")).unwrap());
+        std::fs::rename(
+            temp.path().join("root/parent"),
+            temp.path().join("root/held"),
+        )
+        .unwrap();
+        symlink("../outside", temp.path().join("root/parent")).unwrap();
+        assert_eq!(
+            session
+                .read_at(
+                    &file(session.lookup(&parent, &name("inside.txt")).unwrap()),
+                    0,
+                    20
+                )
+                .unwrap(),
+            b"inside"
+        );
+        assert!(matches!(
+            session.lookup(&parent, &name("secret.txt")),
+            Err(FsError::NotFound)
+        ));
+    }
 }
 
 #[test]
@@ -267,405 +489,196 @@ fn non_utf8_names_remain_distinct() {
 }
 
 #[test]
-fn missing_is_not_empty() {
-    let (temp, _authority, session, root) = granted_root();
-    std::fs::create_dir(temp.path().join("empty")).unwrap();
-    let empty = directory(session.lookup(&root, &name("empty")).unwrap());
-    assert!(session.list(&empty, None).unwrap().entries.is_empty());
-    assert!(matches!(
-        session.lookup(&empty, &name("absent")),
-        Err(FsError::NotFound)
-    ));
-}
-
-#[test]
-fn directory_pages_are_complete_bounded_and_stable() {
-    let (temp, _authority, session, root) = granted_root();
-    fill_pages(temp.path());
-    let first = session.list(&root, None).unwrap();
-    let generation = first.generation;
-    assert_eq!(first.entries.len(), 256);
-    assert!(first.next.is_some());
-    std::fs::write(temp.path().join("later"), b"later").unwrap();
-    let mut page = first;
-    let mut names = HashSet::new();
-    loop {
-        assert!(page.entries.len() <= 256);
-        assert_eq!(page.generation, generation);
-        for row in page.entries {
-            assert!(names.insert(row.name));
-        }
-        let Some(cursor) = page.next else { break };
-        page = session.list(&root, Some(cursor)).unwrap();
-    }
-    assert_eq!(
-        names,
-        (0..257).map(|i| name(&format!("page-{i:03}"))).collect()
-    );
-}
-
-#[test]
-fn page_cursor_is_session_scoped() {
-    let (temp, authority, session, root) = granted_root();
-    fill_pages(temp.path());
-    let other = bind(&authority, &root, MOUNT_B);
-    let cursor = session.list(&root, None).unwrap().next.unwrap();
-    assert!(matches!(
-        other.list(&root, Some(cursor.clone())),
-        Err(FsError::StalePage)
-    ));
-    std::fs::create_dir(temp.path().join("child")).unwrap();
-    let child = directory(session.lookup(&root, &name("child")).unwrap());
-    assert!(matches!(
-        session.list(&child, Some(cursor.clone())),
-        Err(FsError::StalePage)
-    ));
-    authority.revoke_directory(&root).unwrap();
-    assert!(matches!(
-        session.list(&root, Some(cursor.clone())),
-        Err(FsError::Revoked)
-    ));
-    session.close();
-    assert!(matches!(
-        session.list(&root, Some(cursor)),
-        Err(FsError::Closed)
-    ));
-}
-
-#[test]
-fn in_root_relative_symlink_reads_target() {
-    let (_temp, _authority, session, root) = symlink_lab();
-    let grant = file(session.lookup(&root, &name("inside-link")).unwrap());
-    assert_eq!(
-        session
-            .metadata(&GrantedEntry::File(grant.clone()))
-            .unwrap()
-            .kind,
-        EntryKind::Symlink
-    );
-    assert_eq!(session.read_at(&grant, 0, 100).unwrap(), b"inside");
-}
-
-#[test]
-fn dangling_symlink_is_listable_but_not_readable() {
-    let (_temp, _authority, session, root) = symlink_lab();
-    assert!(session.list(&root, None).unwrap().entries.iter().any(|row| row.name == name("dangling-link") && row.metadata.kind == EntryKind::Symlink));
-    let grant = file(session.lookup(&root, &name("dangling-link")).unwrap());
-    assert!(matches!(
-        session.read_at(&grant, 0, 10),
-        Err(FsError::NotFound)
-    ));
-}
-
-#[test]
-fn swapped_parent_uses_derived_descriptor() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(temp.path().join("root/parent")).unwrap();
-    std::fs::create_dir(temp.path().join("outside")).unwrap();
-    std::fs::write(temp.path().join("root/parent/inside.txt"), b"inside").unwrap();
-    std::fs::write(temp.path().join("outside/secret.txt"), b"secret").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let root = admit(&authority, &temp.path().join("root"));
-    let session = bind(&authority, &root, MOUNT_A);
-    let parent = directory(session.lookup(&root, &name("parent")).unwrap());
-    std::fs::rename(
-        temp.path().join("root/parent"),
-        temp.path().join("root/held"),
-    )
-    .unwrap();
-    symlink("../outside", temp.path().join("root/parent")).unwrap();
-    assert_eq!(
-        session
-            .read_at(
-                &file(session.lookup(&parent, &name("inside.txt")).unwrap()),
-                0,
-                20
-            )
-            .unwrap(),
-        b"inside"
-    );
-    assert!(matches!(
-        session.lookup(&parent, &name("secret.txt")),
-        Err(FsError::NotFound)
-    ));
-}
-
-#[test]
-fn listed_grant_does_not_switch_to_replacement() {
-    let (temp, _authority, session, root) = granted_root();
-    std::fs::write(temp.path().join("draft"), b"old").unwrap();
-    let grant = file(session.list(&root, None).unwrap().entries.remove(0).grant);
-    std::fs::rename(temp.path().join("draft"), temp.path().join("held")).unwrap();
-    std::fs::write(temp.path().join("draft"), b"new").unwrap();
-    assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"old");
-    assert_eq!(
-        session
-            .read_at(&file(session.lookup(&root, &name("draft")).unwrap()), 0, 10)
-            .unwrap(),
-        b"new"
-    );
-    std::fs::remove_file(temp.path().join("held")).unwrap();
-    assert_eq!(session.read_at(&grant, 0, 10).unwrap(), b"old");
-}
-
-#[test]
-fn enumerate_only_cannot_read() {
-    let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("alpha.txt"), b"alpha").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let root = authority
-        .admit_directory(
-            std::fs::File::open(temp.path()).unwrap(),
-            files_owner(),
-            vec![FsRight::Enumerate],
-        )
-        .unwrap();
-    let session = bind(&authority, &root, MOUNT_A);
-    assert_eq!(session.list(&root, None).unwrap().entries.len(), 1);
-    let grant = file(session.lookup(&root, &name("alpha.txt")).unwrap());
-    assert!(matches!(
-        session.read_at(&grant, 0, u32::MAX),
-        Err(FsError::Denied)
-    ));
-    let direct = authority
-        .admit_file(
-            std::fs::File::open(temp.path().join("alpha.txt")).unwrap(),
-            files_owner(),
-            vec![FsRight::Read],
-        )
-        .unwrap();
-    let reader = authority
-        .bind(files_owner(), MOUNT_B, &[], std::slice::from_ref(&direct))
-        .unwrap();
-    assert_eq!(reader.read_at(&direct, 0, 10).unwrap(), b"alpha");
-}
-
-#[test]
-fn session_close_is_terminal_and_fresh_mount_is_independent() {
-    let (temp, authority, session, root) = granted_root();
-    std::fs::write(temp.path().join("alpha.txt"), b"alpha").unwrap();
-    let grant = file(session.lookup(&root, &name("alpha.txt")).unwrap());
-    let clone = session.clone();
-    session.close();
-    assert!(matches!(
-        clone.read_at(&grant, 0, u32::MAX),
-        Err(FsError::Closed)
-    ));
-    assert!(matches!(
-        session.metadata(&GrantedEntry::File(grant)),
-        Err(FsError::Closed)
-    ));
-    assert!(matches!(session.list(&root, None), Err(FsError::Closed)));
-    assert!(matches!(
-        session.lookup(&root, &name("alpha.txt")),
-        Err(FsError::Closed)
-    ));
-    assert!(matches!(
-        session.check_directory(&root),
-        Err(FsError::Closed)
-    ));
-    assert!(matches!(
-        session.attach_lifetime(Arc::new(|| true)),
-        Err(FsError::Closed)
-    ));
-    let fresh = bind(&authority, &root, MOUNT_B);
-    assert_eq!(fresh.mount_id(), MOUNT_B);
-    assert_eq!(fresh.owner(), &files_owner());
-    assert_eq!(fresh.list(&root, None).unwrap().entries.len(), 1);
-}
-
-#[test]
-fn attached_lifetime_closes_before_syscall() {
-    let (_temp, _authority, session, root) = granted_root();
-    let alive = Arc::new(AtomicBool::new(true));
-    let predicate = Arc::clone(&alive);
-    session
-        .attach_lifetime(Arc::new(move || predicate.load(Ordering::SeqCst)))
-        .unwrap();
-    session.check_directory(&root).unwrap();
-    alive.store(false, Ordering::SeqCst);
-    assert!(matches!(session.list(&root, None), Err(FsError::Closed)));
-    alive.store(true, Ordering::SeqCst);
-    assert!(matches!(
-        session.check_directory(&root),
-        Err(FsError::Closed)
-    ));
-}
-
-#[test]
-fn read_at_caps_chunks_and_handles_boundaries() {
-    let (temp, _authority, session, root) = granted_root();
-    let bytes = vec![0x5a; MAX_READ_CHUNK as usize + 17];
-    std::fs::write(temp.path().join("chunk.bin"), &bytes).unwrap();
-    let grant = file(session.lookup(&root, &name("chunk.bin")).unwrap());
-    assert_eq!(
-        session.read_at(&grant, 0, u32::MAX).unwrap(),
-        vec![0x5a; MAX_READ_CHUNK as usize]
-    );
-    assert_eq!(
-        session
-            .read_at(&grant, u64::from(MAX_READ_CHUNK), 100)
-            .unwrap(),
-        vec![0x5a; 17]
-    );
-    for (offset, len) in [
-        (0, 0),
-        (u64::from(MAX_READ_CHUNK) + 17, 1),
-        (u64::from(MAX_READ_CHUNK) + 30, 10),
-    ] {
-        assert!(session.read_at(&grant, offset, len).unwrap().is_empty());
-    }
-}
-
-#[test]
-fn special_entry_read_is_unsupported() {
-    let (temp, _authority, session, root) = granted_root();
-    let _listener =
-        std::os::unix::net::UnixListener::bind(temp.path().join("control.sock")).unwrap();
-    let row = session.list(&root, None).unwrap().entries.remove(0);
-    assert_eq!(row.metadata.kind, EntryKind::Other);
-    assert!(matches!(
-        session.read_at(&file(row.grant), 0, 10),
-        Err(FsError::Unsupported(_))
-    ));
-}
-
-#[test]
-fn invalid_entry_names_are_rejected_before_syscall() {
-    for value in ["", ".", "..", "/", "a/b", "a\0b", "a/"] {
+fn directory_pages_are_complete_and_cursors_are_scoped() {
+    // phase: missing_is_not_empty
+    {
+        let (temp, _authority, session, root) = granted_root();
+        std::fs::create_dir(temp.path().join("empty")).unwrap();
+        let empty = directory(session.lookup(&root, &name("empty")).unwrap());
+        assert!(session.list(&empty, None).unwrap().entries.is_empty());
         assert!(matches!(
-            EntryName::new(value.into()),
-            Err(FsError::InvalidName)
+            session.lookup(&empty, &name("absent")),
+            Err(FsError::NotFound)
         ));
     }
-    assert!(EntryName::new(OsString::from_vec(vec![0xff])).is_ok());
-    assert!(EntryName::new("a\\b".into()).is_ok());
+    // phase: directory_pages_are_complete_bounded_and_stable
+    {
+        let (temp, _authority, session, root) = granted_root();
+        fill_pages(temp.path());
+        let first = session.list(&root, None).unwrap();
+        let generation = first.generation;
+        assert_eq!(first.entries.len(), 256);
+        assert!(first.next.is_some());
+        std::fs::write(temp.path().join("later"), b"later").unwrap();
+        let mut page = first;
+        let mut names = HashSet::new();
+        loop {
+            assert!(page.entries.len() <= 256);
+            assert_eq!(page.generation, generation);
+            for row in page.entries {
+                assert!(names.insert(row.name));
+            }
+            let Some(cursor) = page.next else { break };
+            page = session.list(&root, Some(cursor)).unwrap();
+        }
+        assert_eq!(
+            names,
+            (0..257).map(|i| name(&format!("page-{i:03}"))).collect()
+        );
+    }
+    // phase: page_cursor_is_session_scoped
+    {
+        let (temp, authority, session, root) = granted_root();
+        fill_pages(temp.path());
+        let other = bind(&authority, &root, MOUNT_B);
+        let cursor = session.list(&root, None).unwrap().next.unwrap();
+        assert!(matches!(
+            other.list(&root, Some(cursor.clone())),
+            Err(FsError::StalePage)
+        ));
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        let child = directory(session.lookup(&root, &name("child")).unwrap());
+        assert!(matches!(
+            session.list(&child, Some(cursor.clone())),
+            Err(FsError::StalePage)
+        ));
+        authority.revoke_directory(&root).unwrap();
+        assert!(matches!(
+            session.list(&root, Some(cursor.clone())),
+            Err(FsError::Revoked)
+        ));
+        session.close();
+        assert!(matches!(
+            session.list(&root, Some(cursor)),
+            Err(FsError::Closed)
+        ));
+    }
+    // phase: page_cursor_cannot_cross_authorities
+    {
+        let (left_temp, _left_authority, left_session, left_root) = granted_root();
+        let (right_temp, _right_authority, right_session, right_root) = granted_root();
+        fill_pages(left_temp.path());
+        fill_pages(right_temp.path());
+        let foreign = left_session.list(&left_root, None).unwrap().next.unwrap();
+        let local = right_session.list(&right_root, None).unwrap().next.unwrap();
+        assert!(matches!(
+            right_session.list(&right_root, Some(foreign)),
+            Err(FsError::StalePage)
+        ));
+        assert_eq!(
+            right_session
+                .list(&right_root, Some(local))
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+    }
 }
 
 #[test]
-fn foreign_authority_and_revoked_grants_cannot_bind() {
-    let (temp, authority, _session, root) = granted_root();
-    let foreign = NativeGrantAuthority::new();
-    assert!(matches!(
-        foreign.bind(files_owner(), MOUNT_B, std::slice::from_ref(&root), &[]),
-        Err(FsError::Denied)
-    ));
-    authority.revoke_directory(&root).unwrap();
-    assert!(matches!(
-        authority.bind(files_owner(), MOUNT_B, &[root], &[]),
-        Err(FsError::Revoked)
-    ));
-    std::fs::write(temp.path().join("direct"), b"direct").unwrap();
-    let direct = authority
-        .admit_file(
-            std::fs::File::open(temp.path().join("direct")).unwrap(),
-            files_owner(),
-            vec![FsRight::Read],
-        )
-        .unwrap();
-    let reader = authority
-        .bind(files_owner(), MOUNT_A, &[], std::slice::from_ref(&direct))
-        .unwrap();
-    authority.revoke_file(&direct).unwrap();
-    assert!(matches!(
-        reader.read_at(&direct, 0, 10),
-        Err(FsError::Revoked)
-    ));
-    assert!(matches!(
-        authority.bind(files_owner(), MOUNT_B, &[], &[direct]),
-        Err(FsError::Revoked)
-    ));
-}
-
-#[test]
-fn page_cursor_cannot_cross_authorities() {
-    let (left_temp, _left_authority, left_session, left_root) = granted_root();
-    let (right_temp, _right_authority, right_session, right_root) = granted_root();
-    fill_pages(left_temp.path());
-    fill_pages(right_temp.path());
-    let foreign = left_session.list(&left_root, None).unwrap().next.unwrap();
-    let local = right_session.list(&right_root, None).unwrap().next.unwrap();
-    assert!(matches!(
-        right_session.list(&right_root, Some(foreign)),
-        Err(FsError::StalePage)
-    ));
-    assert_eq!(
-        right_session
-            .list(&right_root, Some(local))
-            .unwrap()
-            .entries
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn nested_symlink_obeys_session_root_and_retains_target() {
-    let (temp, authority, session, root) = granted_root();
-    std::fs::create_dir(temp.path().join("child")).unwrap();
-    std::fs::write(temp.path().join("sibling"), b"original").unwrap();
-    symlink("../sibling", temp.path().join("child/link")).unwrap();
-    let child = directory(session.lookup(&root, &name("child")).unwrap());
-    let link = file(session.lookup(&child, &name("link")).unwrap());
-    assert_eq!(session.read_at(&link, 0, 20).unwrap(), b"original");
-    let narrowed = bind(&authority, &child, MOUNT_B);
-    let narrowed_link = file(narrowed.lookup(&child, &name("link")).unwrap());
-    assert!(matches!(
-        narrowed.read_at(&narrowed_link, 0, 20),
-        Err(FsError::Denied)
-    ));
-    assert!(matches!(
-        narrowed.read_at(&link, 0, 20),
-        Err(FsError::Denied)
-    ));
-    let overlapping = authority
-        .bind(
-            files_owner(),
-            uuid::Uuid::from_u128(0xc33),
-            &[root, child.clone()],
-            &[],
-        )
-        .unwrap();
-    let overlapping_link = file(overlapping.lookup(&child, &name("link")).unwrap());
-    assert_eq!(
-        overlapping.read_at(&overlapping_link, 0, 20).unwrap(),
-        b"original"
-    );
-    std::fs::rename(temp.path().join("sibling"), temp.path().join("held")).unwrap();
-    std::fs::write(temp.path().join("sibling"), b"replacement").unwrap();
-    assert_eq!(session.read_at(&link, 0, 20).unwrap(), b"original");
-    assert_eq!(
-        overlapping.read_at(&overlapping_link, 0, 20).unwrap(),
-        b"original"
-    );
-}
-
-#[test]
-fn revoked_subdirectory_invalidates_descendants_but_not_siblings() {
-    let (temp, authority, session, root) = granted_root();
-    std::fs::create_dir(temp.path().join("child")).unwrap();
-    std::fs::write(temp.path().join("child/file"), b"child").unwrap();
-    std::fs::write(temp.path().join("sibling"), b"sibling").unwrap();
-    let child = directory(session.lookup(&root, &name("child")).unwrap());
-    let descendant = file(session.lookup(&child, &name("file")).unwrap());
-    let scoped = bind(&authority, &child, MOUNT_B);
-    authority.revoke_directory(&child).unwrap();
-    assert!(matches!(
-        session.read_at(&descendant, 0, 20),
-        Err(FsError::Revoked)
-    ));
-    assert!(matches!(scoped.list(&child, None), Err(FsError::Revoked)));
-    session.check_directory(&root).unwrap();
-    assert_eq!(
+fn closed_sessions_and_lifetimes_are_terminal() {
+    // phase: session_close_is_terminal_and_fresh_mount_is_independent
+    {
+        let (temp, authority, session, root) = granted_root();
+        std::fs::write(temp.path().join("alpha.txt"), b"alpha").unwrap();
+        let grant = file(session.lookup(&root, &name("alpha.txt")).unwrap());
+        let clone = session.clone();
+        session.close();
+        assert!(matches!(
+            clone.read_at(&grant, 0, u32::MAX),
+            Err(FsError::Closed)
+        ));
+        assert!(matches!(
+            session.metadata(&GrantedEntry::File(grant)),
+            Err(FsError::Closed)
+        ));
+        assert!(matches!(session.list(&root, None), Err(FsError::Closed)));
+        assert!(matches!(
+            session.lookup(&root, &name("alpha.txt")),
+            Err(FsError::Closed)
+        ));
+        assert!(matches!(
+            session.check_directory(&root),
+            Err(FsError::Closed)
+        ));
+        assert!(matches!(
+            session.attach_lifetime(Arc::new(|| true)),
+            Err(FsError::Closed)
+        ));
+        let fresh = bind(&authority, &root, MOUNT_B);
+        assert_eq!(fresh.mount_id(), MOUNT_B);
+        assert_eq!(fresh.owner(), &files_owner());
+        assert_eq!(fresh.list(&root, None).unwrap().entries.len(), 1);
+    }
+    // phase: attached_lifetime_closes_before_syscall
+    {
+        let (_temp, _authority, session, root) = granted_root();
+        let alive = Arc::new(AtomicBool::new(true));
+        let predicate = Arc::clone(&alive);
         session
-            .read_at(
-                &file(session.lookup(&root, &name("sibling")).unwrap()),
-                0,
-                20
-            )
-            .unwrap(),
-        b"sibling"
-    );
+            .attach_lifetime(Arc::new(move || predicate.load(Ordering::SeqCst)))
+            .unwrap();
+        session.check_directory(&root).unwrap();
+        alive.store(false, Ordering::SeqCst);
+        assert!(matches!(session.list(&root, None), Err(FsError::Closed)));
+        alive.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            session.check_directory(&root),
+            Err(FsError::Closed)
+        ));
+    }
+}
+
+#[test]
+fn reads_and_entry_names_are_bounded_and_validated() {
+    // phase: read_at_caps_chunks_and_handles_boundaries
+    {
+        let (temp, _authority, session, root) = granted_root();
+        let bytes = vec![0x5a; MAX_READ_CHUNK as usize + 17];
+        std::fs::write(temp.path().join("chunk.bin"), &bytes).unwrap();
+        let grant = file(session.lookup(&root, &name("chunk.bin")).unwrap());
+        assert_eq!(
+            session.read_at(&grant, 0, u32::MAX).unwrap(),
+            vec![0x5a; MAX_READ_CHUNK as usize]
+        );
+        assert_eq!(
+            session
+                .read_at(&grant, u64::from(MAX_READ_CHUNK), 100)
+                .unwrap(),
+            vec![0x5a; 17]
+        );
+        for (offset, len) in [
+            (0, 0),
+            (u64::from(MAX_READ_CHUNK) + 17, 1),
+            (u64::from(MAX_READ_CHUNK) + 30, 10),
+        ] {
+            assert!(session.read_at(&grant, offset, len).unwrap().is_empty());
+        }
+    }
+    // phase: special_entry_read_is_unsupported
+    {
+        let (temp, _authority, session, root) = granted_root();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(temp.path().join("control.sock")).unwrap();
+        let row = session.list(&root, None).unwrap().entries.remove(0);
+        assert_eq!(row.metadata.kind, EntryKind::Other);
+        assert!(matches!(
+            session.read_at(&file(row.grant), 0, 10),
+            Err(FsError::Unsupported(_))
+        ));
+    }
+    // phase: invalid_entry_names_are_rejected_before_syscall
+    {
+        for value in ["", ".", "..", "/", "a/b", "a\0b", "a/"] {
+            assert!(matches!(
+                EntryName::new(value.into()),
+                Err(FsError::InvalidName)
+            ));
+        }
+        assert!(EntryName::new(OsString::from_vec(vec![0xff])).is_ok());
+        assert!(EntryName::new("a\\b".into()).is_ok());
+    }
 }
 
 // Every target and adversarial link remains below this owned TempDir.
@@ -699,23 +712,18 @@ fn assert_symlink_directory_requirement(file_target: &str, directory_target: &st
 }
 
 #[test]
-fn symlink_file_trailing_slash_requires_directory() {
-    assert_symlink_directory_requirement("data/", "folder/");
-}
-
-#[test]
-fn symlink_file_trailing_dot_requires_directory() {
-    assert_symlink_directory_requirement("data/.", "folder/.");
-}
-
-#[test]
-fn nested_symlink_preserves_trailing_directory_requirement() {
+fn a_symlink_with_a_trailing_directory_component_requires_a_directory() {
+    // (file target, directory target): trailing slash, trailing dot, and the
+    // nested links that preserve the trailing directory requirement.
     for (file_target, directory_target) in [
+        ("data/", "folder/"),
+        ("data/.", "folder/."),
         ("file-alias/", "directory-alias/"),
         ("file-alias/.", "directory-alias/."),
         ("file-slash", "directory-slash"),
         ("file-dot", "directory-dot"),
     ] {
+        eprintln!("case: {file_target} / {directory_target}");
         assert_symlink_directory_requirement(file_target, directory_target);
     }
 }

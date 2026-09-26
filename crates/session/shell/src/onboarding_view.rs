@@ -3746,764 +3746,20 @@ mod tests {
     }
 
     #[test]
-    fn journal_is_durable_before_identity_action_and_removed_only_after_finish() {
-        let directory = TempDir::new().expect("progress directory");
-        let identity_dir = directory.path().join("fresh").join("identity");
-        let observed_precommit = Arc::new(AtomicBool::new(false));
-        let observed_in_minter = Arc::clone(&observed_precommit);
-        let progress_dir = identity_dir.clone();
-        let mut view = OnboardingView::with_minter(Box::new(move || {
-            observed_in_minter.store(
-                matches!(
-                    load_progress(&progress_dir),
-                    Ok(Some(PersistedStage::AcquiringIdentity))
-                ),
-                Ordering::SeqCst,
-            );
-            Ok(MintedIdentity {
-                fingerprint: "ab".repeat(32),
-                path: progress_dir.join("primary.json"),
-            })
-        }));
-        view.identity_dir = Some(identity_dir.clone());
-        let mut document = AutoCommit::new();
-
-        finish_identity(&mut view, &mut document);
-        assert!(
-            observed_precommit.load(Ordering::SeqCst),
-            "the crash journal must reach disk before the minter can write an identity"
-        );
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::IdentityReady)
-        );
-        #[cfg(unix)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn setup_journal_is_durable_resumable_and_fails_closed() {
+        // Phase `journal_is_durable_before_identity_action_and_removed_only_after_finish`.
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                std::fs::metadata(progress_path(&identity_dir))
-                    .expect("progress metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-            assert_eq!(
-                std::fs::metadata(&identity_dir)
-                    .expect("identity directory metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o700
-            );
-        }
-
-        // The keyboard/action route carries the same guard as the disabled
-        // button. A stale or malicious document action cannot silently skip
-        // the only recovery decision.
-        press(&mut document, KEY_BACKUP_CONTINUE);
-        view.sync(&mut document, &automerge::ROOT);
-        assert!(
-            !view.identity_ready_page,
-            "continuing without a backup requires an explicit acknowledgement"
-        );
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::IdentityReady)
-        );
-
-        press(&mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-        view.sync(&mut document, &automerge::ROOT);
-        press(&mut document, KEY_BACKUP_CONTINUE);
-        view.sync(&mut document, &automerge::ROOT);
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::ReadyToEnter)
-        );
-        press(&mut document, KEY_FINISH);
-        view.sync(&mut document, &automerge::ROOT);
-        assert!(view.finished());
-        assert!(!has_pending_progress(&identity_dir));
-    }
-
-    #[test]
-    fn verified_pre_acquisition_journal_is_cleared_without_discarding_later_progress() {
-        let directory = TempDir::new().expect("progress directory");
-        let identity_dir = directory.path().join("identity");
-
-        store_progress(&identity_dir, PersistedStage::AcquiringIdentity)
-            .expect("store pre-acquisition progress");
-        assert!(
-            clear_verified_pre_acquisition_progress(&identity_dir)
-                .expect("clear verified pre-acquisition progress")
-        );
-        assert_eq!(load_progress(&identity_dir).expect("load progress"), None);
-
-        store_progress(&identity_dir, PersistedStage::IdentityReady)
-            .expect("store post-acquisition progress");
-        assert!(
-            !clear_verified_pre_acquisition_progress(&identity_dir)
-                .expect("retain post-acquisition progress")
-        );
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::IdentityReady),
-            "successful verification must not skip backup or tour completion"
-        );
-    }
-
-    #[test]
-    fn restart_resumes_backup_ready_and_exact_tour_page_without_recreating_identity() {
-        let directory = TempDir::new().expect("progress directory");
-        write_fixture_identity(directory.path());
-
-        store_progress(directory.path(), PersistedStage::IdentityReady).expect("backup journal");
-        let mut backup = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(backup.flow().screen(), Screen::Done);
-        assert!(!backup.identity_ready_page);
-        let mut blocked_finish = AutoCommit::new();
-        press(&mut blocked_finish, KEY_FINISH);
-        backup.sync(&mut blocked_finish, &automerge::ROOT);
-        assert!(!backup.finished(), "backup choice cannot be bypassed");
-
-        store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
-            .expect("verified-backup journal");
-        let backed_up = OnboardingView::new(directory.path().to_path_buf());
-        assert!(!backed_up.identity_ready_page);
-        assert!(backed_up.backup_was_verified);
-
-        store_progress(directory.path(), PersistedStage::ReadyToEnter).expect("ready journal");
-
-        let mut done = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(done.flow().screen(), Screen::Done);
-        assert!(done.flow().is_done());
-        assert_eq!(
-            done.flow()
-                .minted()
-                .map(|identity| identity.fingerprint.as_str()),
-            Some("abababababababababababababababababababababababababababababababab")
-        );
-        assert!(!done.flow().can_create(), "resume never reopens creation");
-
-        let mut document = AutoCommit::new();
-        press(&mut document, KEY_TOUR_START);
-        done.sync(&mut document, &automerge::ROOT);
-        assert_eq!(done.tour_page, Some(TourPage::Navigate));
-        assert!(
-            done.presents_desktop_context(),
-            "the first-login tour must explain the desktop over the real desktop"
-        );
-        assert_eq!(
-            load_progress(directory.path()).expect("tour journal"),
-            Some(PersistedStage::TourNavigate)
-        );
-
-        let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
-        press(&mut document, KEY_TOUR_NEXT);
-        navigate_restart.sync(&mut document, &automerge::ROOT);
-        assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
-
-        let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
-        press(&mut document, KEY_TOUR_NEXT);
-        organise_restart.sync(&mut document, &automerge::ROOT);
-        assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
-
-        let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
-        press(&mut document, KEY_TOUR_NEXT);
-        collaborate_restart.sync(&mut document, &automerge::ROOT);
-        assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
-
-        let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(start_restart.tour_page, Some(TourPage::Start));
-        press(&mut document, KEY_FINISH);
-        start_restart.sync(&mut document, &automerge::ROOT);
-        assert!(start_restart.finished());
-        assert!(!has_pending_progress(directory.path()));
-
-        let established = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(
-            established.flow().screen(),
-            Screen::Intro,
-            "without a pending journal startup leaves an established user alone"
-        );
-    }
-
-    #[test]
-    fn unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup() {
-        let directory = TempDir::new().expect("progress directory");
-        atomic_file::write_with_mode(
-            &progress_path(directory.path()),
-            br#"{"version":99,"stage":"identity-ready"}"#,
-            0o600,
-        )
-        .expect("future-version journal");
-        assert!(has_pending_progress(directory.path()));
-        assert!(load_progress(directory.path()).is_err());
-        write_fixture_identity(directory.path());
-        let resumed = OnboardingView::new(directory.path().to_path_buf());
-        assert_eq!(resumed.flow().screen(), Screen::Done);
-        assert!(resumed.progress_error.is_some());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            std::fs::remove_file(progress_path(directory.path())).expect("remove journal");
-            symlink("primary.json", progress_path(directory.path())).expect("journal symlink");
-            assert!(has_pending_progress(directory.path()));
-            assert!(load_progress(directory.path()).is_err());
-        }
-    }
-
-    #[test]
-    fn a_journal_write_failure_prevents_identity_creation() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let called = Arc::clone(&calls);
-        let mut view = OnboardingView::with_minter(Box::new(move || {
-            called.fetch_add(1, Ordering::SeqCst);
-            Ok(MintedIdentity {
-                fingerprint: "ab".repeat(32),
-                path: PathBuf::from("/identity/primary.json"),
-            })
-        }));
-        let directory = TempDir::new().expect("progress directory");
-        let blocked_parent = directory.path().join("not-a-directory");
-        std::fs::write(&blocked_parent, b"block directory creation").expect("write blocker");
-        view.identity_dir = Some(blocked_parent.join("identity"));
-        let mut document = AutoCommit::new();
-        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(&mut document, key);
-            view.sync(&mut document, &automerge::ROOT);
-        }
-
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(view.flow().screen(), Screen::NoRecovery);
-        assert!(view.progress_error.is_some());
-    }
-
-    #[test]
-    fn structure_and_focus_invalidations_are_consumed_independently() {
-        let mut invalidation = Invalidation::default();
-        invalidation.both();
-
-        assert!(invalidation.take_structure());
-        assert!(!invalidation.take_structure());
-        assert!(invalidation.take_focus());
-        assert!(!invalidation.take_focus());
-
-        invalidation.both();
-        assert!(invalidation.take_focus());
-        assert!(invalidation.take_structure());
-    }
-
-    /// The whole point: clicking through without ticking the box must not produce a key.
-    #[test]
-    fn pressing_create_without_acknowledging_mints_nothing() {
-        let (mut v, calls) = view();
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_BEGIN);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.flow().screen(), Screen::NoRecovery);
-
-        press(&mut doc, KEY_CREATE);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "no key was minted");
-        assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the gate");
-    }
-
-    #[test]
-    fn acknowledging_then_creating_mints_exactly_once() {
-        let (mut v, calls) = view();
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_BEGIN);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_UNDERSTOOD);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert!(v.flow().can_create());
-        press(&mut doc, KEY_CREATE);
-        v.sync(&mut doc, &automerge::ROOT);
-        // A second sync must not re-fire — the key is consumed.
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(v.flow().screen(), Screen::Done);
-        assert!(v.flow().is_done());
-    }
-
-    #[test]
-    fn unticking_the_box_closes_the_gate_again() {
-        let (mut v, calls) = view();
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_BEGIN);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_UNDERSTOOD);
-        v.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_UNDERSTOOD,
-            ScalarValue::Boolean(false),
-        );
-        v.sync(&mut doc, &automerge::ROOT);
-        assert!(!v.flow().can_create());
-        press(&mut doc, KEY_CREATE);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-    }
-
-    /// A minting failure must be shown, not swallowed into a desktop that silently has no identity.
-    #[test]
-    fn a_failed_mint_is_surfaced_rather_than_hidden() {
-        let mut v = OnboardingView::with_minter(Box::new(|| Err("disk full".to_string())));
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_BEGIN);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_UNDERSTOOD);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_CREATE);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.error(), Some("disk full"));
-        assert_eq!(
-            v.flow().screen(),
-            Screen::NoRecovery,
-            "a failed write is not a completed identity"
-        );
-        assert!(!v.flow().is_done());
-        press(&mut doc, KEY_FINISH);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert!(!v.finished(), "failure must not release the desktop");
-    }
-
-    #[test]
-    fn finishing_releases_the_desktop() {
-        let (mut v, _) = view();
-        let mut doc = AutoCommit::new();
-        assert!(!v.finished());
-        press(&mut doc, KEY_BEGIN);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_UNDERSTOOD);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_CREATE);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_BACKUP_CONTINUE);
-        v.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_FINISH);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert!(v.finished());
-    }
-
-    #[test]
-    fn desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end() {
-        let (mut view, _) = view();
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_BEGIN);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_UNDERSTOOD);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_CREATE);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_BACKUP_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
-
-        press(&mut doc, KEY_TOUR_START);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Navigate));
-        assert!(!view.finished());
-
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Organise));
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            !view.finished(),
-            "the tour cannot finish before its hand-off page"
-        );
-
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Start));
-
-        press(&mut doc, KEY_TOUR_BACK);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.finished());
-    }
-
-    #[test]
-    fn every_tour_page_exposes_an_explicit_skip_action() {
-        let mut view = OnboardingView::new_tour();
-        let mut doc = AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
-
-        for page in [
-            TourPage::Navigate,
-            TourPage::Organise,
-            TourPage::Collaborate,
-        ] {
-            assert_eq!(view.tour_page, Some(page));
-            let actions = OnboardingView::tour_actions(page);
-            let node = accessibility_for_id(actions.as_ref(), "onboarding.tour.skip.button")
-                .expect("tour page exposes Skip tour");
-            assert_eq!(node.name.as_deref(), Some("Skip tour"));
-            if page != TourPage::Collaborate {
-                press(&mut doc, KEY_TOUR_NEXT);
-                view.sync(&mut doc, &automerge::ROOT);
-            }
-        }
-
-        press(&mut doc, KEY_TOUR_SKIP);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.finished(), "Skip tour dismisses a reopened tour");
-    }
-
-    #[test]
-    fn first_use_skip_works_on_every_tour_page_and_clears_progress() {
-        for (stage, page) in [
-            (PersistedStage::TourNavigate, TourPage::Navigate),
-            (PersistedStage::TourOrganise, TourPage::Organise),
-            (PersistedStage::TourCollaborate, TourPage::Collaborate),
-            (PersistedStage::TourStart, TourPage::Start),
-        ] {
             let directory = TempDir::new().expect("progress directory");
-            write_fixture_identity(directory.path());
-            store_progress(directory.path(), stage).expect("tour progress");
-            let mut view = OnboardingView::new(directory.path().to_path_buf());
-            let mut document = AutoCommit::new();
-
-            assert_eq!(view.tour_page, Some(page));
-            press(&mut document, KEY_TOUR_SKIP);
-            view.sync(&mut document, &automerge::ROOT);
-
-            assert!(view.finished(), "Skip tour must work from {page:?}");
-            assert!(
-                !has_pending_progress(directory.path()),
-                "skipping {page:?} must durably complete first use"
-            );
-        }
-    }
-
-    #[test]
-    fn escape_dismisses_a_reopened_tour_from_every_page() {
-        for next_presses in 0..=3 {
-            let mut view = OnboardingView::new_tour();
-            let mut document = AutoCommit::new();
-            for _ in 0..next_presses {
-                press(&mut document, KEY_TOUR_NEXT);
-                view.sync(&mut document, &automerge::ROOT);
-            }
-
-            assert!(dispatch_escape(&mut view, &mut document));
-            view.sync(&mut document, &automerge::ROOT);
-            assert!(
-                view.finished(),
-                "Escape must close a reopened tour after {next_presses} advances"
-            );
-        }
-    }
-
-    #[test]
-    fn reopened_tour_has_no_identity_gate_and_can_be_dismissed() {
-        let mut view = OnboardingView::new_tour();
-        let mut doc = AutoCommit::new();
-        assert_eq!(view.tour_page, Some(TourPage::Navigate));
-        assert!(
-            !view.flow().is_done(),
-            "reopening must not forge identity state"
-        );
-
-        press(&mut doc, KEY_TOUR_BACK);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            view.finished(),
-            "Back on the first page closes a reopened tour"
-        );
-
-        let mut view = OnboardingView::new_tour();
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_TOUR_NEXT);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_FINISH);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.finished(), "Done closes the reopened tour");
-    }
-
-    #[test]
-    fn desktop_tour_teaches_the_real_keyboard_and_gesture_contract() {
-        let navigation = NAVIGATE_CARDS
-            .iter()
-            .flat_map(|(title, body)| [*title, *body])
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        if cfg!(target_os = "macos") {
-            assert!(navigation.contains("Command+K"));
-            assert!(navigation.contains("Option+Space"));
-        } else {
-            assert!(navigation.contains("Super+K"));
-            assert!(navigation.contains("Super+Space"));
-        }
-        assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
-        assert!(navigation.contains("Super+Tab"));
-        assert!(navigation.contains("four-finger swipe"));
-        assert!(navigation.contains("Super+arrow keys"));
-        assert!(navigation.contains("three-finger swipe"));
-        assert!(navigation.contains("Up and down switch workspaces"));
-        assert!(navigation.contains("Left and right step between tiled windows"));
-        assert!(
-            !navigation.contains("Super+W"),
-            "Super+W closes the focused tab; teaching it as Overview would be destructive"
-        );
-
-        assert_eq!(
-            ORGANISE_CARDS
-                .iter()
-                .map(|(title, _)| *title)
-                .collect::<Vec<_>>(),
-            ["Workspace", "Strip", "Window group", "Tab"],
-            "the tour must name every level of the desktop hierarchy"
-        );
-    }
-
-    #[test]
-    fn desktop_tour_ends_with_a_concrete_collaboration_handoff() {
-        let handoff = START_CARDS
-            .iter()
-            .flat_map(|(title, body)| [*title, *body])
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        for real_surface in [
-            "Workspace Settings",
-            "Notes",
-            "Calendar",
-            "Chat",
-            "Invite people",
-            "Activity",
-        ] {
-            assert!(
-                handoff.contains(real_surface),
-                "first-use handoff must name the real {real_surface} surface"
-            );
-        }
-        assert!(handoff.contains("undo only the change"));
-    }
-
-    #[test]
-    fn onboarding_secret_fields_have_stable_spoken_names() {
-        let buffer = Arc::new(Mutex::new(String::new()));
-        let input = secret_input(
-            "onboarding.test.secret",
-            &buffer,
-            "Backup passphrase",
-            "Twelve or more characters",
-        );
-        let node = Widget::accessibility(&input).expect("text input accessibility node");
-
-        assert_eq!(node.name.as_deref(), Some("Backup passphrase"));
-        assert!(
-            node.state.protected,
-            "passphrases must be exposed as protected"
-        );
-    }
-
-    #[test]
-    fn nearby_pairing_updates_share_one_polite_live_region() {
-        let (mut view, _) = view();
-        view.flow.begin_connect();
-        let theme = Theme::dark();
-
-        for status in [
-            "Looking for a trusted device nearby…",
-            "Code 123456 · waiting for approval on your trusted device",
-            "Connected. Your workspaces will appear automatically.",
-        ] {
-            view.nearby_status = Some(status.into());
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let node = accessibility_for_id(&view, "onboarding.nearby.status")
-                .expect("nearby status accessibility node");
-
-            assert_eq!(node.role, ui::a11y::Role::StaticText);
-            assert_eq!(node.name.as_deref(), Some(status));
-            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
-        }
-    }
-
-    #[test]
-    fn resumed_tour_preserves_focus_reset_and_reduced_motion_navigation() {
-        let directory = TempDir::new().expect("progress directory");
-        write_fixture_identity(directory.path());
-        store_progress(directory.path(), PersistedStage::TourOrganise).expect("organise journal");
-        let mut view = OnboardingView::new(directory.path().to_path_buf());
-
-        assert_eq!(view.tour_page, Some(TourPage::Organise));
-        assert!(
-            view.take_focus_reset(),
-            "a restored page must place keyboard focus inside its rebuilt controls"
-        );
-        assert!(!view.take_focus_reset(), "the focus edge is one-shot");
-
-        let theme = Theme::dark().with_reduce_motion(true);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
-        assert!(view.reduce_motion);
-        assert!(
-            !view.needs_animation_frame(),
-            "restoring a tour must not restart entrance animation under reduced motion"
-        );
-
-        let mut document = AutoCommit::new();
-        press(&mut document, KEY_TOUR_NEXT);
-        view.sync(&mut document, &automerge::ROOT);
-        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-        assert_eq!(
-            load_progress(directory.path()).expect("updated tour journal"),
-            Some(PersistedStage::TourCollaborate)
-        );
-        assert!(
-            view.take_focus_reset(),
-            "keyboard navigation must move focus into the newly restored stage"
-        );
-        assert!(!view.needs_animation_frame());
-    }
-
-    #[test]
-    fn host_desktop_context_keeps_the_identity_creation_gate() {
-        let mut view = OnboardingView::with_all_handlers_in_context(
-            Box::new(|| {
-                Ok(MintedIdentity {
-                    fingerprint: "ab".repeat(32),
-                    path: PathBuf::from("/identity/primary.json"),
-                })
-            }),
-            Box::new(|_, _| Err("unused".into())),
-            Box::new(|_, _, _| Err("unused".into())),
-            OnboardingContext::HostDesktop,
-        );
-        assert_eq!(view.context, OnboardingContext::HostDesktop);
-        assert!(!view.flow.can_create());
-        view.flow.begin();
-        assert!(!view.flow.can_create());
-        view.flow.set_acknowledged(true);
-        assert!(view.flow.can_create());
-    }
-
-    #[test]
-    fn host_desktop_copy_does_not_claim_to_replace_the_linux_login() {
-        let copy = HOST_DESKTOP_INTRO_BODY.to_ascii_lowercase();
-        assert!(copy.contains("already signed in"));
-        assert!(copy.contains("does not replace your linux login"));
-        assert!(copy.contains("does not") && copy.contains("online account"));
-        assert!(copy.contains("not all cryptographically signed"));
-    }
-
-    #[test]
-    fn screen_transitions_track_forward_and_back_direction() {
-        let (mut view, _) = view();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        view.sync(&mut doc, &root);
-        let _ = doc.put(&root, KEY_BEGIN, true);
-        view.sync(&mut doc, &root);
-        assert_eq!(view.transition_direction, 1.0);
-        let _ = doc.put(&root, KEY_BACK, true);
-        view.sync(&mut doc, &root);
-        assert_eq!(view.transition_direction, -1.0);
-    }
-
-    #[test]
-    fn escape_follows_back_on_reversible_identity_steps_only() {
-        let (mut view, _) = view();
-        let mut document = AutoCommit::new();
-
-        assert!(
-            !dispatch_escape(&mut view, &mut document),
-            "intro must not be dismissible before an identity exists"
-        );
-        press(&mut document, KEY_CONNECT);
-        view.sync(&mut document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Connect);
-        assert!(dispatch_escape(&mut view, &mut document));
-        view.sync(&mut document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Intro);
-
-        press(&mut document, KEY_BEGIN);
-        view.sync(&mut document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::NoRecovery);
-        assert!(dispatch_escape(&mut view, &mut document));
-        view.sync(&mut document, &automerge::ROOT);
-        assert_eq!(view.flow.screen(), Screen::Intro);
-    }
-
-    #[test]
-    fn reduced_motion_does_not_request_transition_frames() {
-        let (mut view, _) = view();
-        view.reduce_motion = true;
-        view.composed = None;
-        view.picker = None;
-        assert!(!view.needs_animation_frame());
-    }
-
-    #[test]
-    fn connect_existing_imports_without_minting() {
-        let imported = Arc::new(AtomicUsize::new(0));
-        let imported_for_handler = imported.clone();
-        let mut view = OnboardingView::with_handlers(
-            Box::new(|| Err("create should not run".to_string())),
-            Box::new(move |path, _| {
-                imported_for_handler.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(path, &PathBuf::from("/media/backup/primary.json"));
-                Ok(MintedIdentity {
-                    fingerprint: "cd".repeat(32),
-                    path: PathBuf::from("/home/user/.config/tilo/identity/cd.json"),
-                })
-            }),
-        );
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_CONNECT);
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_CONNECT_PATH,
-            ScalarValue::Str("/media/backup/primary.json".into()),
-        );
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.flow().screen(), Screen::Connect);
-        press(&mut doc, KEY_IMPORT);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(imported.load(Ordering::SeqCst), 1);
-        assert_eq!(view.flow().screen(), Screen::Done);
-        assert!(view.flow().is_done());
-    }
-
-    #[test]
-    fn connect_journals_before_import_and_keeps_setup_pending_afterward() {
-        let directory = TempDir::new().expect("progress directory");
-        let identity_dir = directory.path().join("identity");
-        let observed_precommit = Arc::new(AtomicBool::new(false));
-        let observed_in_importer = Arc::clone(&observed_precommit);
-        let progress_dir = identity_dir.clone();
-        let mut view = OnboardingView::with_handlers(
-            Box::new(|| Err("create should not run".to_string())),
-            Box::new(move |_, _| {
-                observed_in_importer.store(
+            let identity_dir = directory.path().join("fresh").join("identity");
+            let observed_precommit = Arc::new(AtomicBool::new(false));
+            let observed_in_minter = Arc::clone(&observed_precommit);
+            let progress_dir = identity_dir.clone();
+            let mut view = OnboardingView::with_minter(Box::new(move || {
+                observed_in_minter.store(
                     matches!(
                         load_progress(&progress_dir),
                         Ok(Some(PersistedStage::AcquiringIdentity))
@@ -4511,242 +3767,1031 @@ mod tests {
                     Ordering::SeqCst,
                 );
                 Ok(MintedIdentity {
-                    fingerprint: "cd".repeat(32),
+                    fingerprint: "ab".repeat(32),
                     path: progress_dir.join("primary.json"),
                 })
-            }),
-        );
-        view.identity_dir = Some(identity_dir.clone());
-        let mut document = AutoCommit::new();
+            }));
+            view.identity_dir = Some(identity_dir.clone());
+            let mut document = AutoCommit::new();
 
-        press(&mut document, KEY_CONNECT);
-        let _ = document.put(
-            &automerge::ROOT,
-            KEY_CONNECT_PATH,
-            ScalarValue::Str("/media/backup/primary.json".into()),
-        );
-        view.sync(&mut document, &automerge::ROOT);
-        press(&mut document, KEY_IMPORT);
-        view.sync(&mut document, &automerge::ROOT);
-
-        assert!(
-            observed_precommit.load(Ordering::SeqCst),
-            "the crash journal must reach disk before an import can write the identity"
-        );
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::IdentityReady)
-        );
-        assert_eq!(view.flow().screen(), Screen::Done);
-    }
-
-    #[test]
-    fn failed_connect_stays_on_connect_screen_and_shows_error() {
-        let mut view = OnboardingView::with_handlers(
-            Box::new(|| Err("create should not run".to_string())),
-            Box::new(|_, _| Err("not a Tilo identity".to_string())),
-        );
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_CONNECT);
-        view.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_CONNECT_PATH,
-            ScalarValue::Str("/media/identity.tilo-identity".into()),
-        );
-        press(&mut doc, KEY_IMPORT);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.flow().screen(), Screen::Connect);
-        assert_eq!(view.error(), Some("not a Tilo identity"));
-    }
-
-    #[test]
-    fn connect_requires_a_selected_file_before_importing() {
-        let mut view = OnboardingView::with_handlers(
-            Box::new(|| Err("create should not run".to_string())),
-            Box::new(|_, _| Err("importer must not run without a path".to_string())),
-        );
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_CONNECT);
-        view.sync(&mut doc, &automerge::ROOT);
-        let theme = Theme::dark();
-        let disabled = accessibility_for_id(
-            &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
-            "onboarding.import.button",
-        )
-        .expect("restore action is exposed to accessibility");
-        assert!(
-            disabled.state.disabled,
-            "restore must be visibly and semantically disabled without a selected source"
-        );
-        press(&mut doc, KEY_IMPORT);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(view.flow().screen(), Screen::Connect);
-        assert_eq!(
-            view.error(),
-            Some("Choose an encrypted backup or legacy identity file first.")
-        );
-
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_CONNECT_PATH,
-            ScalarValue::Str("/media/identity.tilo-identity".into()),
-        );
-        view.sync(&mut doc, &automerge::ROOT);
-        let enabled = accessibility_for_id(
-            &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
-            "onboarding.import.button",
-        )
-        .expect("restore action remains exposed");
-        assert!(
-            !enabled.state.disabled,
-            "selecting a source must enable the restore action"
-        );
-    }
-
-    #[test]
-    fn connect_browse_opens_a_shell_owned_modal_picker() {
-        let (mut view, _) = view();
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_CONNECT);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_CONNECT_BROWSE);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.picker.is_some());
-
-        view.picker.as_mut().expect("picker").1.click_cancel();
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.picker.is_none());
-        assert_eq!(view.flow().screen(), Screen::Connect);
-    }
-
-    #[test]
-    fn portable_backup_requires_matching_strong_passphrases_and_reports_success() {
-        let progress = TempDir::new().expect("backup progress directory");
-        let exports = Arc::new(AtomicUsize::new(0));
-        let exports_for_handler = Arc::clone(&exports);
-        let mut view = OnboardingView::with_all_handlers(
-            Box::new(|| Err("unused".to_string())),
-            Box::new(|_, _| Err("unused".to_string())),
-            Box::new(move |identity, destination, passphrase| {
-                assert_eq!(identity, &PathBuf::from("/identity/primary.json"));
+            finish_identity(&mut view, &mut document);
+            assert!(
+                observed_precommit.load(Ordering::SeqCst),
+                "the crash journal must reach disk before the minter can write an identity"
+            );
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::IdentityReady)
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
                 assert_eq!(
-                    destination.file_name().and_then(|name| name.to_str()),
-                    Some("tilo-identity-backup.tilo-identity")
+                    std::fs::metadata(progress_path(&identity_dir))
+                        .expect("progress metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
                 );
-                assert_eq!(passphrase, b"correct horse battery staple");
-                exports_for_handler.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }),
-        );
-        view.flow.begin();
-        view.flow.set_acknowledged(true);
-        assert!(view.flow.complete(MintedIdentity {
-            fingerprint: "ef".repeat(32),
-            path: PathBuf::from("/identity/primary.json"),
-        }));
-        view.identity_dir = Some(progress.path().to_path_buf());
-        let mut doc = AutoCommit::new();
+                assert_eq!(
+                    std::fs::metadata(&identity_dir)
+                        .expect("identity directory metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o700
+                );
+            }
 
-        *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
-        *view.backup_confirmation.lock().unwrap() = "does not match".into();
-        press(&mut doc, KEY_BACKUP_BROWSE);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.picker.is_none());
-        assert!(
-            view.backup_error
-                .as_deref()
-                .unwrap()
-                .contains("do not match")
-        );
+            // The keyboard/action route carries the same guard as the disabled
+            // button. A stale or malicious document action cannot silently skip
+            // the only recovery decision.
+            press(&mut document, KEY_BACKUP_CONTINUE);
+            view.sync(&mut document, &automerge::ROOT);
+            assert!(
+                !view.identity_ready_page,
+                "continuing without a backup requires an explicit acknowledgement"
+            );
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::IdentityReady)
+            );
 
-        *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
-        press(&mut doc, KEY_BACKUP_BROWSE);
-        view.sync(&mut doc, &automerge::ROOT);
-        view.picker.as_mut().expect("save picker").1.click_cancel();
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.picker.is_none());
-        assert_eq!(exports.load(Ordering::SeqCst), 0);
+            press(&mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&mut document, &automerge::ROOT);
+            press(&mut document, KEY_BACKUP_CONTINUE);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::ReadyToEnter)
+            );
+            press(&mut document, KEY_FINISH);
+            view.sync(&mut document, &automerge::ROOT);
+            assert!(view.finished());
+            assert!(!has_pending_progress(&identity_dir));
+        }
+        // Phase `verified_pre_acquisition_journal_is_cleared_without_discarding_later_progress`.
+        {
+            let directory = TempDir::new().expect("progress directory");
+            let identity_dir = directory.path().join("identity");
 
-        press(&mut doc, KEY_BACKUP_BROWSE);
-        view.sync(&mut doc, &automerge::ROOT);
-        view.picker.as_mut().expect("save picker").1.click_open();
-        view.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(exports.load(Ordering::SeqCst), 1);
-        assert!(view.backup_saved.is_some());
-        assert!(view.backup_error.is_none());
-        assert_eq!(
-            load_progress(progress.path()).expect("verified backup progress"),
-            Some(PersistedStage::IdentityReadyBackedUp)
-        );
-        assert!(view.backup_passphrase.lock().unwrap().is_empty());
-        assert!(view.backup_confirmation.lock().unwrap().is_empty());
+            store_progress(&identity_dir, PersistedStage::AcquiringIdentity)
+                .expect("store pre-acquisition progress");
+            assert!(
+                clear_verified_pre_acquisition_progress(&identity_dir)
+                    .expect("clear verified pre-acquisition progress")
+            );
+            assert_eq!(load_progress(&identity_dir).expect("load progress"), None);
 
-        press(&mut doc, KEY_BACKUP_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(view.identity_ready_page);
-        assert_eq!(
-            load_progress(progress.path()).expect("ready progress"),
-            Some(PersistedStage::ReadyToEnterBackedUp)
-        );
+            store_progress(&identity_dir, PersistedStage::IdentityReady)
+                .expect("store post-acquisition progress");
+            assert!(
+                !clear_verified_pre_acquisition_progress(&identity_dir)
+                    .expect("retain post-acquisition progress")
+            );
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::IdentityReady),
+                "successful verification must not skip backup or tour completion"
+            );
+        }
+        // Phase `restart_resumes_backup_ready_and_exact_tour_page_without_recreating_identity`.
+        {
+            let directory = TempDir::new().expect("progress directory");
+            write_fixture_identity(directory.path());
+
+            store_progress(directory.path(), PersistedStage::IdentityReady)
+                .expect("backup journal");
+            let mut backup = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(backup.flow().screen(), Screen::Done);
+            assert!(!backup.identity_ready_page);
+            let mut blocked_finish = AutoCommit::new();
+            press(&mut blocked_finish, KEY_FINISH);
+            backup.sync(&mut blocked_finish, &automerge::ROOT);
+            assert!(!backup.finished(), "backup choice cannot be bypassed");
+
+            store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
+                .expect("verified-backup journal");
+            let backed_up = OnboardingView::new(directory.path().to_path_buf());
+            assert!(!backed_up.identity_ready_page);
+            assert!(backed_up.backup_was_verified);
+
+            store_progress(directory.path(), PersistedStage::ReadyToEnter).expect("ready journal");
+
+            let mut done = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(done.flow().screen(), Screen::Done);
+            assert!(done.flow().is_done());
+            assert_eq!(
+                done.flow()
+                    .minted()
+                    .map(|identity| identity.fingerprint.as_str()),
+                Some("abababababababababababababababababababababababababababababababab")
+            );
+            assert!(!done.flow().can_create(), "resume never reopens creation");
+
+            let mut document = AutoCommit::new();
+            press(&mut document, KEY_TOUR_START);
+            done.sync(&mut document, &automerge::ROOT);
+            assert_eq!(done.tour_page, Some(TourPage::Navigate));
+            assert!(
+                done.presents_desktop_context(),
+                "the first-login tour must explain the desktop over the real desktop"
+            );
+            assert_eq!(
+                load_progress(directory.path()).expect("tour journal"),
+                Some(PersistedStage::TourNavigate)
+            );
+
+            let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
+            press(&mut document, KEY_TOUR_NEXT);
+            navigate_restart.sync(&mut document, &automerge::ROOT);
+            assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
+
+            let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
+            press(&mut document, KEY_TOUR_NEXT);
+            organise_restart.sync(&mut document, &automerge::ROOT);
+            assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
+
+            let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
+            press(&mut document, KEY_TOUR_NEXT);
+            collaborate_restart.sync(&mut document, &automerge::ROOT);
+            assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
+
+            let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(start_restart.tour_page, Some(TourPage::Start));
+            press(&mut document, KEY_FINISH);
+            start_restart.sync(&mut document, &automerge::ROOT);
+            assert!(start_restart.finished());
+            assert!(!has_pending_progress(directory.path()));
+
+            let established = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(
+                established.flow().screen(),
+                Screen::Intro,
+                "without a pending journal startup leaves an established user alone"
+            );
+        }
+        // Phase `unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup`.
+        {
+            let directory = TempDir::new().expect("progress directory");
+            atomic_file::write_with_mode(
+                &progress_path(directory.path()),
+                br#"{"version":99,"stage":"identity-ready"}"#,
+                0o600,
+            )
+            .expect("future-version journal");
+            assert!(has_pending_progress(directory.path()));
+            assert!(load_progress(directory.path()).is_err());
+            write_fixture_identity(directory.path());
+            let resumed = OnboardingView::new(directory.path().to_path_buf());
+            assert_eq!(resumed.flow().screen(), Screen::Done);
+            assert!(resumed.progress_error.is_some());
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                std::fs::remove_file(progress_path(directory.path())).expect("remove journal");
+                symlink("primary.json", progress_path(directory.path())).expect("journal symlink");
+                assert!(has_pending_progress(directory.path()));
+                assert!(load_progress(directory.path()).is_err());
+            }
+        }
+        // Phase `a_journal_write_failure_prevents_identity_creation`.
+        {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let called = Arc::clone(&calls);
+            let mut view = OnboardingView::with_minter(Box::new(move || {
+                called.fetch_add(1, Ordering::SeqCst);
+                Ok(MintedIdentity {
+                    fingerprint: "ab".repeat(32),
+                    path: PathBuf::from("/identity/primary.json"),
+                })
+            }));
+            let directory = TempDir::new().expect("progress directory");
+            let blocked_parent = directory.path().join("not-a-directory");
+            std::fs::write(&blocked_parent, b"block directory creation").expect("write blocker");
+            view.identity_dir = Some(blocked_parent.join("identity"));
+            let mut document = AutoCommit::new();
+            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+                press(&mut document, key);
+                view.sync(&mut document, &automerge::ROOT);
+            }
+
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(view.flow().screen(), Screen::NoRecovery);
+            assert!(view.progress_error.is_some());
+        }
     }
 
     #[test]
-    fn existing_identity_backup_entry_reuses_the_verified_backup_screen() {
-        let mut view = OnboardingView::with_all_handlers(
-            Box::new(|| Err("unused".to_string())),
-            Box::new(|_, _| Err("unused".to_string())),
-            Box::new(|_, _, _| Ok(())),
-        );
+    fn identity_creation_is_gated_on_acknowledgement_and_mints_once() {
+        // Phase `structure_and_focus_invalidations_are_consumed_independently`.
+        {
+            let mut invalidation = Invalidation::default();
+            invalidation.both();
 
-        view.begin_portable_backup_for(MintedIdentity {
-            fingerprint: "ab".repeat(32),
-            path: PathBuf::from("/identity/primary.json"),
-        });
+            assert!(invalidation.take_structure());
+            assert!(!invalidation.take_structure());
+            assert!(invalidation.take_focus());
+            assert!(!invalidation.take_focus());
 
-        assert_eq!(view.flow().screen(), Screen::Done);
-        assert!(!view.identity_ready_page);
-        assert!(!view.backup_was_verified);
-        assert!(!view.finished());
-        let theme = Theme::dark();
-        let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
-        assert!(
-            accessibility_for_id(&*composition, "onboarding.backup.button").is_some(),
-            "the existing identity route must expose the same shell-owned export control"
-        );
+            invalidation.both();
+            assert!(invalidation.take_focus());
+            assert!(invalidation.take_structure());
+        }
+        // Phase `pressing_create_without_acknowledging_mints_nothing`.
+        // The whole point: clicking through without ticking the box must not produce a key.
+        {
+            let (mut v, calls) = view();
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_BEGIN);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.flow().screen(), Screen::NoRecovery);
+
+            press(&mut doc, KEY_CREATE);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "no key was minted");
+            assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the gate");
+        }
+        // Phase `acknowledging_then_creating_mints_exactly_once`.
+        {
+            let (mut v, calls) = view();
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_BEGIN);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_UNDERSTOOD);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert!(v.flow().can_create());
+            press(&mut doc, KEY_CREATE);
+            v.sync(&mut doc, &automerge::ROOT);
+            // A second sync must not re-fire — the key is consumed.
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(v.flow().screen(), Screen::Done);
+            assert!(v.flow().is_done());
+        }
+        // Phase `unticking_the_box_closes_the_gate_again`.
+        {
+            let (mut v, calls) = view();
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_BEGIN);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_UNDERSTOOD);
+            v.sync(&mut doc, &automerge::ROOT);
+            let _ = doc.put(
+                &automerge::ROOT,
+                KEY_UNDERSTOOD,
+                ScalarValue::Boolean(false),
+            );
+            v.sync(&mut doc, &automerge::ROOT);
+            assert!(!v.flow().can_create());
+            press(&mut doc, KEY_CREATE);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+        // Phase `a_failed_mint_is_surfaced_rather_than_hidden`.
+        // A minting failure must be shown, not swallowed into a desktop that silently has no identity.
+        {
+            let mut v = OnboardingView::with_minter(Box::new(|| Err("disk full".to_string())));
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_BEGIN);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_UNDERSTOOD);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_CREATE);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.error(), Some("disk full"));
+            assert_eq!(
+                v.flow().screen(),
+                Screen::NoRecovery,
+                "a failed write is not a completed identity"
+            );
+            assert!(!v.flow().is_done());
+            press(&mut doc, KEY_FINISH);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert!(!v.finished(), "failure must not release the desktop");
+        }
+        // Phase `finishing_releases_the_desktop`.
+        {
+            let (mut v, _) = view();
+            let mut doc = AutoCommit::new();
+            assert!(!v.finished());
+            press(&mut doc, KEY_BEGIN);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_UNDERSTOOD);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_CREATE);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_BACKUP_CONTINUE);
+            v.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_FINISH);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert!(v.finished());
+        }
     }
 
     #[test]
-    fn verified_existing_identity_backup_returns_directly_to_desktop() {
-        let progress = TempDir::new().expect("backup progress directory");
-        let mut view = OnboardingView::with_all_handlers(
-            Box::new(|| Err("unused".to_string())),
-            Box::new(|_, _| Err("unused".to_string())),
-            Box::new(|_, _, _| Ok(())),
-        );
-        view.begin_portable_backup_for(MintedIdentity {
-            fingerprint: "cd".repeat(32),
-            path: PathBuf::from("/identity/primary.json"),
-        });
-        view.identity_dir = Some(progress.path().to_path_buf());
-        view.backup_was_verified = true;
-        store_progress(progress.path(), PersistedStage::IdentityReadyBackedUp)
-            .expect("verified backup progress");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn desktop_tour_is_navigable_skippable_and_dismissable() {
+        // Phase `desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end`.
+        {
+            let (mut view, _) = view();
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_BEGIN);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_UNDERSTOOD);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_CREATE);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&mut doc, &automerge::ROOT);
 
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_BACKUP_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_TOUR_START);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.tour_page, Some(TourPage::Navigate));
+            assert!(!view.finished());
 
-        assert!(view.finished());
-        assert!(!view.identity_ready_page);
-        assert!(view.tour_page.is_none());
-        assert!(
-            !has_pending_progress(progress.path()),
-            "leaving Settings after verification must not resurrect first-login setup"
-        );
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.tour_page, Some(TourPage::Organise));
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+
+            press(&mut doc, KEY_FINISH);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                !view.finished(),
+                "the tour cannot finish before its hand-off page"
+            );
+
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.tour_page, Some(TourPage::Start));
+
+            press(&mut doc, KEY_TOUR_BACK);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_FINISH);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.finished());
+        }
+        // Phase `every_tour_page_exposes_an_explicit_skip_action`.
+        {
+            let mut view = OnboardingView::new_tour();
+            let mut doc = AutoCommit::new();
+            view.sync(&mut doc, &automerge::ROOT);
+
+            for page in [
+                TourPage::Navigate,
+                TourPage::Organise,
+                TourPage::Collaborate,
+            ] {
+                assert_eq!(view.tour_page, Some(page));
+                let actions = OnboardingView::tour_actions(page);
+                let node = accessibility_for_id(actions.as_ref(), "onboarding.tour.skip.button")
+                    .expect("tour page exposes Skip tour");
+                assert_eq!(node.name.as_deref(), Some("Skip tour"));
+                if page != TourPage::Collaborate {
+                    press(&mut doc, KEY_TOUR_NEXT);
+                    view.sync(&mut doc, &automerge::ROOT);
+                }
+            }
+
+            press(&mut doc, KEY_TOUR_SKIP);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.finished(), "Skip tour dismisses a reopened tour");
+        }
+        // Phase `first_use_skip_works_on_every_tour_page_and_clears_progress`.
+        {
+            for (stage, page) in [
+                (PersistedStage::TourNavigate, TourPage::Navigate),
+                (PersistedStage::TourOrganise, TourPage::Organise),
+                (PersistedStage::TourCollaborate, TourPage::Collaborate),
+                (PersistedStage::TourStart, TourPage::Start),
+            ] {
+                let directory = TempDir::new().expect("progress directory");
+                write_fixture_identity(directory.path());
+                store_progress(directory.path(), stage).expect("tour progress");
+                let mut view = OnboardingView::new(directory.path().to_path_buf());
+                let mut document = AutoCommit::new();
+
+                assert_eq!(view.tour_page, Some(page));
+                press(&mut document, KEY_TOUR_SKIP);
+                view.sync(&mut document, &automerge::ROOT);
+
+                assert!(view.finished(), "Skip tour must work from {page:?}");
+                assert!(
+                    !has_pending_progress(directory.path()),
+                    "skipping {page:?} must durably complete first use"
+                );
+            }
+        }
+        // Phase `escape_dismisses_a_reopened_tour_from_every_page`.
+        {
+            for next_presses in 0..=3 {
+                let mut view = OnboardingView::new_tour();
+                let mut document = AutoCommit::new();
+                for _ in 0..next_presses {
+                    press(&mut document, KEY_TOUR_NEXT);
+                    view.sync(&mut document, &automerge::ROOT);
+                }
+
+                assert!(dispatch_escape(&mut view, &mut document));
+                view.sync(&mut document, &automerge::ROOT);
+                assert!(
+                    view.finished(),
+                    "Escape must close a reopened tour after {next_presses} advances"
+                );
+            }
+        }
+        // Phase `reopened_tour_has_no_identity_gate_and_can_be_dismissed`.
+        {
+            let mut view = OnboardingView::new_tour();
+            let mut doc = AutoCommit::new();
+            assert_eq!(view.tour_page, Some(TourPage::Navigate));
+            assert!(
+                !view.flow().is_done(),
+                "reopening must not forge identity state"
+            );
+
+            press(&mut doc, KEY_TOUR_BACK);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(
+                view.finished(),
+                "Back on the first page closes a reopened tour"
+            );
+
+            let mut view = OnboardingView::new_tour();
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_TOUR_NEXT);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_FINISH);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.finished(), "Done closes the reopened tour");
+        }
+        // Phase `resumed_tour_preserves_focus_reset_and_reduced_motion_navigation`.
+        {
+            let directory = TempDir::new().expect("progress directory");
+            write_fixture_identity(directory.path());
+            store_progress(directory.path(), PersistedStage::TourOrganise)
+                .expect("organise journal");
+            let mut view = OnboardingView::new(directory.path().to_path_buf());
+
+            assert_eq!(view.tour_page, Some(TourPage::Organise));
+            assert!(
+                view.take_focus_reset(),
+                "a restored page must place keyboard focus inside its rebuilt controls"
+            );
+            assert!(!view.take_focus_reset(), "the focus edge is one-shot");
+
+            let theme = Theme::dark().with_reduce_motion(true);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            assert!(view.reduce_motion);
+            assert!(
+                !view.needs_animation_frame(),
+                "restoring a tour must not restart entrance animation under reduced motion"
+            );
+
+            let mut document = AutoCommit::new();
+            press(&mut document, KEY_TOUR_NEXT);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+            assert_eq!(
+                load_progress(directory.path()).expect("updated tour journal"),
+                Some(PersistedStage::TourCollaborate)
+            );
+            assert!(
+                view.take_focus_reset(),
+                "keyboard navigation must move focus into the newly restored stage"
+            );
+            assert!(!view.needs_animation_frame());
+        }
     }
 
-    /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
+    #[test]
+    fn onboarding_copy_and_live_regions_speak_the_real_contract() {
+        // Phase `desktop_tour_teaches_the_real_keyboard_and_gesture_contract`.
+        {
+            let navigation = NAVIGATE_CARDS
+                .iter()
+                .flat_map(|(title, body)| [*title, *body])
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            if cfg!(target_os = "macos") {
+                assert!(navigation.contains("Command+K"));
+                assert!(navigation.contains("Option+Space"));
+            } else {
+                assert!(navigation.contains("Super+K"));
+                assert!(navigation.contains("Super+Space"));
+            }
+            assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
+            assert!(navigation.contains("Super+Tab"));
+            assert!(navigation.contains("four-finger swipe"));
+            assert!(navigation.contains("Super+arrow keys"));
+            assert!(navigation.contains("three-finger swipe"));
+            assert!(navigation.contains("Up and down switch workspaces"));
+            assert!(navigation.contains("Left and right step between tiled windows"));
+            assert!(
+                !navigation.contains("Super+W"),
+                "Super+W closes the focused tab; teaching it as Overview would be destructive"
+            );
+
+            assert_eq!(
+                ORGANISE_CARDS
+                    .iter()
+                    .map(|(title, _)| *title)
+                    .collect::<Vec<_>>(),
+                ["Workspace", "Strip", "Window group", "Tab"],
+                "the tour must name every level of the desktop hierarchy"
+            );
+        }
+        // Phase `desktop_tour_ends_with_a_concrete_collaboration_handoff`.
+        {
+            let handoff = START_CARDS
+                .iter()
+                .flat_map(|(title, body)| [*title, *body])
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            for real_surface in [
+                "Workspace Settings",
+                "Notes",
+                "Calendar",
+                "Chat",
+                "Invite people",
+                "Activity",
+            ] {
+                assert!(
+                    handoff.contains(real_surface),
+                    "first-use handoff must name the real {real_surface} surface"
+                );
+            }
+            assert!(handoff.contains("undo only the change"));
+        }
+        // Phase `onboarding_secret_fields_have_stable_spoken_names`.
+        {
+            let buffer = Arc::new(Mutex::new(String::new()));
+            let input = secret_input(
+                "onboarding.test.secret",
+                &buffer,
+                "Backup passphrase",
+                "Twelve or more characters",
+            );
+            let node = Widget::accessibility(&input).expect("text input accessibility node");
+
+            assert_eq!(node.name.as_deref(), Some("Backup passphrase"));
+            assert!(
+                node.state.protected,
+                "passphrases must be exposed as protected"
+            );
+        }
+        // Phase `nearby_pairing_updates_share_one_polite_live_region`.
+        {
+            let (mut view, _) = view();
+            view.flow.begin_connect();
+            let theme = Theme::dark();
+
+            for status in [
+                "Looking for a trusted device nearby…",
+                "Code 123456 · waiting for approval on your trusted device",
+                "Connected. Your workspaces will appear automatically.",
+            ] {
+                view.nearby_status = Some(status.into());
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let node = accessibility_for_id(&view, "onboarding.nearby.status")
+                    .expect("nearby status accessibility node");
+
+                assert_eq!(node.role, ui::a11y::Role::StaticText);
+                assert_eq!(node.name.as_deref(), Some(status));
+                assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+            }
+        }
+        // Phase `host_desktop_copy_does_not_claim_to_replace_the_linux_login`.
+        {
+            let copy = HOST_DESKTOP_INTRO_BODY.to_ascii_lowercase();
+            assert!(copy.contains("already signed in"));
+            assert!(copy.contains("does not replace your linux login"));
+            assert!(copy.contains("does not") && copy.contains("online account"));
+            assert!(copy.contains("not all cryptographically signed"));
+        }
+    }
+
+    #[test]
+    fn screen_navigation_follows_context_direction_escape_and_motion_preferences() {
+        // Phase `host_desktop_context_keeps_the_identity_creation_gate`.
+        {
+            let mut view = OnboardingView::with_all_handlers_in_context(
+                Box::new(|| {
+                    Ok(MintedIdentity {
+                        fingerprint: "ab".repeat(32),
+                        path: PathBuf::from("/identity/primary.json"),
+                    })
+                }),
+                Box::new(|_, _| Err("unused".into())),
+                Box::new(|_, _, _| Err("unused".into())),
+                OnboardingContext::HostDesktop,
+            );
+            assert_eq!(view.context, OnboardingContext::HostDesktop);
+            assert!(!view.flow.can_create());
+            view.flow.begin();
+            assert!(!view.flow.can_create());
+            view.flow.set_acknowledged(true);
+            assert!(view.flow.can_create());
+        }
+        // Phase `screen_transitions_track_forward_and_back_direction`.
+        {
+            let (mut view, _) = view();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            view.sync(&mut doc, &root);
+            let _ = doc.put(&root, KEY_BEGIN, true);
+            view.sync(&mut doc, &root);
+            assert_eq!(view.transition_direction, 1.0);
+            let _ = doc.put(&root, KEY_BACK, true);
+            view.sync(&mut doc, &root);
+            assert_eq!(view.transition_direction, -1.0);
+        }
+        // Phase `escape_follows_back_on_reversible_identity_steps_only`.
+        {
+            let (mut view, _) = view();
+            let mut document = AutoCommit::new();
+
+            assert!(
+                !dispatch_escape(&mut view, &mut document),
+                "intro must not be dismissible before an identity exists"
+            );
+            press(&mut document, KEY_CONNECT);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Connect);
+            assert!(dispatch_escape(&mut view, &mut document));
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Intro);
+
+            press(&mut document, KEY_BEGIN);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::NoRecovery);
+            assert!(dispatch_escape(&mut view, &mut document));
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Intro);
+        }
+        // Phase `reduced_motion_does_not_request_transition_frames`.
+        {
+            let (mut view, _) = view();
+            view.reduce_motion = true;
+            view.composed = None;
+            view.picker = None;
+            assert!(!view.needs_animation_frame());
+        }
+        // Phase `recovery_mode_starts_on_restore_and_never_offers_creation`.
+        {
+            let identity = tempfile::tempdir().expect("identity directory");
+            let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
+            assert!(recovery.recovery_only);
+            assert_eq!(recovery.flow.screen(), Screen::Connect);
+            let mut document = AutoCommit::new();
+            press(&mut document, KEY_BACK);
+            recovery.sync(&mut document, &automerge::ROOT);
+            assert_eq!(recovery.flow.screen(), Screen::Connect);
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = recovery.build_layout(&mut taffy, &theme, &mut node_map);
+            assert!(
+                accessibility_for_id(&recovery, "onboarding.connect.retry.button").is_some(),
+                "recovery must expose a keyring retry action"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn connecting_an_existing_identity_journals_and_imports_without_minting() {
+        // Phase `connect_existing_imports_without_minting`.
+        {
+            let imported = Arc::new(AtomicUsize::new(0));
+            let imported_for_handler = imported.clone();
+            let mut view = OnboardingView::with_handlers(
+                Box::new(|| Err("create should not run".to_string())),
+                Box::new(move |path, _| {
+                    imported_for_handler.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(path, &PathBuf::from("/media/backup/primary.json"));
+                    Ok(MintedIdentity {
+                        fingerprint: "cd".repeat(32),
+                        path: PathBuf::from("/home/user/.config/tilo/identity/cd.json"),
+                    })
+                }),
+            );
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_CONNECT);
+            let _ = doc.put(
+                &automerge::ROOT,
+                KEY_CONNECT_PATH,
+                ScalarValue::Str("/media/backup/primary.json".into()),
+            );
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.flow().screen(), Screen::Connect);
+            press(&mut doc, KEY_IMPORT);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(imported.load(Ordering::SeqCst), 1);
+            assert_eq!(view.flow().screen(), Screen::Done);
+            assert!(view.flow().is_done());
+        }
+        // Phase `connect_journals_before_import_and_keeps_setup_pending_afterward`.
+        {
+            let directory = TempDir::new().expect("progress directory");
+            let identity_dir = directory.path().join("identity");
+            let observed_precommit = Arc::new(AtomicBool::new(false));
+            let observed_in_importer = Arc::clone(&observed_precommit);
+            let progress_dir = identity_dir.clone();
+            let mut view = OnboardingView::with_handlers(
+                Box::new(|| Err("create should not run".to_string())),
+                Box::new(move |_, _| {
+                    observed_in_importer.store(
+                        matches!(
+                            load_progress(&progress_dir),
+                            Ok(Some(PersistedStage::AcquiringIdentity))
+                        ),
+                        Ordering::SeqCst,
+                    );
+                    Ok(MintedIdentity {
+                        fingerprint: "cd".repeat(32),
+                        path: progress_dir.join("primary.json"),
+                    })
+                }),
+            );
+            view.identity_dir = Some(identity_dir.clone());
+            let mut document = AutoCommit::new();
+
+            press(&mut document, KEY_CONNECT);
+            let _ = document.put(
+                &automerge::ROOT,
+                KEY_CONNECT_PATH,
+                ScalarValue::Str("/media/backup/primary.json".into()),
+            );
+            view.sync(&mut document, &automerge::ROOT);
+            press(&mut document, KEY_IMPORT);
+            view.sync(&mut document, &automerge::ROOT);
+
+            assert!(
+                observed_precommit.load(Ordering::SeqCst),
+                "the crash journal must reach disk before an import can write the identity"
+            );
+            assert_eq!(
+                load_progress(&identity_dir).expect("load progress"),
+                Some(PersistedStage::IdentityReady)
+            );
+            assert_eq!(view.flow().screen(), Screen::Done);
+        }
+        // Phase `failed_connect_stays_on_connect_screen_and_shows_error`.
+        {
+            let mut view = OnboardingView::with_handlers(
+                Box::new(|| Err("create should not run".to_string())),
+                Box::new(|_, _| Err("not a Tilo identity".to_string())),
+            );
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_CONNECT);
+            view.sync(&mut doc, &automerge::ROOT);
+            let _ = doc.put(
+                &automerge::ROOT,
+                KEY_CONNECT_PATH,
+                ScalarValue::Str("/media/identity.tilo-identity".into()),
+            );
+            press(&mut doc, KEY_IMPORT);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.flow().screen(), Screen::Connect);
+            assert_eq!(view.error(), Some("not a Tilo identity"));
+        }
+        // Phase `connect_requires_a_selected_file_before_importing`.
+        {
+            let mut view = OnboardingView::with_handlers(
+                Box::new(|| Err("create should not run".to_string())),
+                Box::new(|_, _| Err("importer must not run without a path".to_string())),
+            );
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_CONNECT);
+            view.sync(&mut doc, &automerge::ROOT);
+            let theme = Theme::dark();
+            let disabled = accessibility_for_id(
+                &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
+                "onboarding.import.button",
+            )
+            .expect("restore action is exposed to accessibility");
+            assert!(
+                disabled.state.disabled,
+                "restore must be visibly and semantically disabled without a selected source"
+            );
+            press(&mut doc, KEY_IMPORT);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(view.flow().screen(), Screen::Connect);
+            assert_eq!(
+                view.error(),
+                Some("Choose an encrypted backup or legacy identity file first.")
+            );
+
+            let _ = doc.put(
+                &automerge::ROOT,
+                KEY_CONNECT_PATH,
+                ScalarValue::Str("/media/identity.tilo-identity".into()),
+            );
+            view.sync(&mut doc, &automerge::ROOT);
+            let enabled = accessibility_for_id(
+                &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
+                "onboarding.import.button",
+            )
+            .expect("restore action remains exposed");
+            assert!(
+                !enabled.state.disabled,
+                "selecting a source must enable the restore action"
+            );
+        }
+        // Phase `connect_browse_opens_a_shell_owned_modal_picker`.
+        {
+            let (mut view, _) = view();
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_CONNECT);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_CONNECT_BROWSE);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.picker.is_some());
+
+            view.picker.as_mut().expect("picker").1.click_cancel();
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.picker.is_none());
+            assert_eq!(view.flow().screen(), Screen::Connect);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn portable_backup_verifies_passphrases_and_returns_to_the_desktop() {
+        // Phase `portable_backup_requires_matching_strong_passphrases_and_reports_success`.
+        {
+            let progress = TempDir::new().expect("backup progress directory");
+            let exports = Arc::new(AtomicUsize::new(0));
+            let exports_for_handler = Arc::clone(&exports);
+            let mut view = OnboardingView::with_all_handlers(
+                Box::new(|| Err("unused".to_string())),
+                Box::new(|_, _| Err("unused".to_string())),
+                Box::new(move |identity, destination, passphrase| {
+                    assert_eq!(identity, &PathBuf::from("/identity/primary.json"));
+                    assert_eq!(
+                        destination.file_name().and_then(|name| name.to_str()),
+                        Some("tilo-identity-backup.tilo-identity")
+                    );
+                    assert_eq!(passphrase, b"correct horse battery staple");
+                    exports_for_handler.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }),
+            );
+            view.flow.begin();
+            view.flow.set_acknowledged(true);
+            assert!(view.flow.complete(MintedIdentity {
+                fingerprint: "ef".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            }));
+            view.identity_dir = Some(progress.path().to_path_buf());
+            let mut doc = AutoCommit::new();
+
+            *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
+            *view.backup_confirmation.lock().unwrap() = "does not match".into();
+            press(&mut doc, KEY_BACKUP_BROWSE);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.picker.is_none());
+            assert!(
+                view.backup_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("do not match")
+            );
+
+            *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
+            press(&mut doc, KEY_BACKUP_BROWSE);
+            view.sync(&mut doc, &automerge::ROOT);
+            view.picker.as_mut().expect("save picker").1.click_cancel();
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.picker.is_none());
+            assert_eq!(exports.load(Ordering::SeqCst), 0);
+
+            press(&mut doc, KEY_BACKUP_BROWSE);
+            view.sync(&mut doc, &automerge::ROOT);
+            view.picker.as_mut().expect("save picker").1.click_open();
+            view.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(exports.load(Ordering::SeqCst), 1);
+            assert!(view.backup_saved.is_some());
+            assert!(view.backup_error.is_none());
+            assert_eq!(
+                load_progress(progress.path()).expect("verified backup progress"),
+                Some(PersistedStage::IdentityReadyBackedUp)
+            );
+            assert!(view.backup_passphrase.lock().unwrap().is_empty());
+            assert!(view.backup_confirmation.lock().unwrap().is_empty());
+
+            press(&mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&mut doc, &automerge::ROOT);
+            assert!(view.identity_ready_page);
+            assert_eq!(
+                load_progress(progress.path()).expect("ready progress"),
+                Some(PersistedStage::ReadyToEnterBackedUp)
+            );
+        }
+        // Phase `existing_identity_backup_entry_reuses_the_verified_backup_screen`.
+        {
+            let mut view = OnboardingView::with_all_handlers(
+                Box::new(|| Err("unused".to_string())),
+                Box::new(|_, _| Err("unused".to_string())),
+                Box::new(|_, _, _| Ok(())),
+            );
+
+            view.begin_portable_backup_for(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            });
+
+            assert_eq!(view.flow().screen(), Screen::Done);
+            assert!(!view.identity_ready_page);
+            assert!(!view.backup_was_verified);
+            assert!(!view.finished());
+            let theme = Theme::dark();
+            let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.backup.button").is_some(),
+                "the existing identity route must expose the same shell-owned export control"
+            );
+        }
+        // Phase `verified_existing_identity_backup_returns_directly_to_desktop`.
+        {
+            let progress = TempDir::new().expect("backup progress directory");
+            let mut view = OnboardingView::with_all_handlers(
+                Box::new(|| Err("unused".to_string())),
+                Box::new(|_, _| Err("unused".to_string())),
+                Box::new(|_, _, _| Ok(())),
+            );
+            view.begin_portable_backup_for(MintedIdentity {
+                fingerprint: "cd".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            });
+            view.identity_dir = Some(progress.path().to_path_buf());
+            view.backup_was_verified = true;
+            store_progress(progress.path(), PersistedStage::IdentityReadyBackedUp)
+                .expect("verified backup progress");
+
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&mut doc, &automerge::ROOT);
+
+            assert!(view.finished());
+            assert!(!view.identity_ready_page);
+            assert!(view.tour_page.is_none());
+            assert!(
+                !has_pending_progress(progress.path()),
+                "leaving Settings after verification must not resurrect first-login setup"
+            );
+        }
+        // Phase `verified_backup_reveals_copy_form_only_after_the_optional_action`.
+        {
+            let (mut view, _) = view();
+            view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
+            assert!(!view.backup_copy_form_open);
+
+            let mut document = AutoCommit::new();
+            press(&mut document, KEY_BACKUP_ANOTHER);
+            view.sync(&mut document, &automerge::ROOT);
+
+            assert!(
+                view.backup_copy_form_open,
+                "the optional copy action, rather than the verified state itself, reveals passphrase inputs"
+            );
+        }
+    }
+
     /// A fake helper: `status` is the status file, and the runner rewrites it
     /// the way the unit would before returning `outcome`.
     struct FakeCodecs {
@@ -5030,55 +5075,122 @@ mod tests {
     }
 
     #[test]
-    fn every_screen_builds_a_layout() {
-        let (mut v, _) = view();
-        let mut doc = AutoCommit::new();
-        for step in [
-            None,
-            Some(KEY_BEGIN),
-            Some(KEY_UNDERSTOOD),
-            Some(KEY_CREATE),
-            Some(KEY_BACKUP_SKIP_ACKNOWLEDGED),
-            Some(KEY_BACKUP_CONTINUE),
-        ] {
-            if let Some(k) = step {
-                press(&mut doc, k);
-                v.sync(&mut doc, &automerge::ROOT);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn every_screen_lays_out_inside_the_viewport() {
+        // Phase `every_screen_builds_a_layout`.
+        // Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
+        {
+            let (mut v, _) = view();
+            let mut doc = AutoCommit::new();
+            for step in [
+                None,
+                Some(KEY_BEGIN),
+                Some(KEY_UNDERSTOOD),
+                Some(KEY_CREATE),
+                Some(KEY_BACKUP_SKIP_ACKNOWLEDGED),
+                Some(KEY_BACKUP_CONTINUE),
+            ] {
+                if let Some(k) = step {
+                    press(&mut doc, k);
+                    v.sync(&mut doc, &automerge::ROOT);
+                }
+                let theme = Theme::dark();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
             }
+
+            let (mut connect, _) = view();
+            let mut connect_doc = AutoCommit::new();
+            press(&mut connect_doc, KEY_CONNECT);
+            connect.sync(&mut connect_doc, &automerge::ROOT);
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
+            let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
         }
+        // Phase `narrow_layout_keeps_the_setup_surface_inside_the_viewport`.
+        {
+            let (mut view, _) = view();
+            let theme = Theme::dark();
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(420.0),
+                        height: taffy::AvailableSpace::Definite(640.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        node_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                                (*ptr).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("narrow setup layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let panel = view.composed.as_ref().expect("composition").get_rect();
+            assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
+            assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
+        }
+        // Phase `tour_backdrop_only_scrims_the_covered_desktop`.
+        {
+            for theme in [Theme::dark(), Theme::high_contrast()] {
+                let mut view = OnboardingView::new_tour();
+                view.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+                let mut scene = Scene::new();
+                view.draw_backdrop(&mut scene, Affine::IDENTITY, &theme);
 
-        let (mut connect, _) = view();
-        let mut connect_doc = AutoCommit::new();
-        press(&mut connect_doc, KEY_CONNECT);
-        connect.sync(&mut connect_doc, &automerge::ROOT);
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
-    #[test]
-    fn recovery_mode_starts_on_restore_and_never_offers_creation() {
-        let identity = tempfile::tempdir().expect("identity directory");
-        let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
-        assert!(recovery.recovery_only);
-        assert_eq!(recovery.flow.screen(), Screen::Connect);
-        let mut document = AutoCommit::new();
-        press(&mut document, KEY_BACK);
-        recovery.sync(&mut document, &automerge::ROOT);
-        assert_eq!(recovery.flow.screen(), Screen::Connect);
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = recovery.build_layout(&mut taffy, &theme, &mut node_map);
-        assert!(
-            accessibility_for_id(&recovery, "onboarding.connect.retry.button").is_some(),
-            "recovery must expose a keyring retry action"
-        );
+                assert_eq!(
+                    scene.encoding().n_paths,
+                    1,
+                    "a modal tour backdrop must not add a detached desktop focus target"
+                );
+            }
+        }
+        // Phase `introduction_uses_a_compact_panel_on_a_large_display`.
+        {
+            let (mut view, _) = view();
+            let theme = Theme::dark();
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(1600.0),
+                        height: taffy::AvailableSpace::Definite(900.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        node_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                                (*ptr).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("large setup layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let panel = view.composed.as_ref().expect("composition").get_rect();
+            assert!(
+                panel.height() <= f64::from(INTRO_PANEL_HEIGHT) + 0.5,
+                "intro should not inherit the taller recovery panel: {panel:?}"
+            );
+            assert!(
+                panel.height() >= 300.0,
+                "intro content must retain a readable surface: {panel:?}"
+            );
+        }
     }
 
     #[test]
@@ -5391,184 +5503,89 @@ mod tests {
     }
 
     #[test]
-    fn acknowledgement_label_is_the_checkbox_click_target() {
-        let (mut view, _) = view();
-        let mut document = AutoCommit::new();
-        press(&mut document, KEY_BEGIN);
-        view.sync(&mut document, &automerge::ROOT);
-
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-                |known, available, node_id, _, _| {
-                    measure_map
-                        .get(&node_id)
-                        .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                            (*pointer).measure(known, available, &mut text)
-                        })
-                },
-            )
-            .expect("host acknowledgement layout");
-        view.apply_layout(&taffy, node, Point::ZERO);
-        let row = node_map
-            .values()
-            .find_map(|&pointer| unsafe {
-                ((*pointer).test_id() == Some("onboarding.understood.row"))
-                    .then(|| (*pointer).get_rect())
-            })
-            .expect("labelled acknowledgement row");
-        let label_point = Point::new(row.x1 - 8.0, row.center().y);
-        assert!(
-            label_point.x > row.x0 + 44.0,
-            "test point must be in the label, not the checkbox face"
-        );
-
-        let mut focus = None;
-        for event in [pointer_event(label_point), primary_press_event()] {
-            let mut handled = false;
-            view.handle_event(
-                &event,
-                1.0,
-                &Modifiers::default(),
-                &mut document,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
-            assert!(handled, "the labelled checkbox row must handle {event:?}");
-        }
-        assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
-    }
-
-    #[test]
-    fn continue_without_backup_pointer_target_advances_to_ready_page() {
-        let (mut view, _) = view();
-        let mut document = AutoCommit::new();
-        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(&mut document, key);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn pointer_targets_hit_the_acknowledgement_and_continue_actions() {
+        // Phase `acknowledgement_label_is_the_checkbox_click_target`.
+        {
+            let (mut view, _) = view();
+            let mut document = AutoCommit::new();
+            press(&mut document, KEY_BEGIN);
             view.sync(&mut document, &automerge::ROOT);
-        }
-        document
-            .put(
-                &automerge::ROOT,
-                KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                ScalarValue::Boolean(true),
-            )
-            .expect("acknowledge backup risk");
-        view.sync(&mut document, &automerge::ROOT);
 
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-                |known, available, node_id, _, _| {
-                    measure_map
-                        .get(&node_id)
-                        .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                            (*pointer).measure(known, available, &mut text)
-                        })
-                },
-            )
-            .expect("backup continuation layout");
-        view.apply_layout(&taffy, node, Point::ZERO);
-        let button = node_map
-            .values()
-            .find_map(|&pointer| unsafe {
-                ((*pointer).test_id() == Some("onboarding.backup.continue.button"))
-                    .then(|| (*pointer).get_rect())
-            })
-            .expect("continue without backup button");
-        assert!(
-            button.width() >= 44.0 && button.height() >= 40.0,
-            "backup continuation needs a practical pointer target: {button:?}"
-        );
-
-        let mut focus = None;
-        for event in [
-            pointer_event(button.center()),
-            primary_press_event(),
-            primary_release_event(),
-        ] {
-            let mut handled = false;
-            view.handle_event(
-                &event,
-                1.0,
-                &Modifiers::default(),
-                &mut document,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+            let theme = Theme::dark();
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let measure_map = node_map.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        measure_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                (*pointer).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("host acknowledgement layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let row = node_map
+                .values()
+                .find_map(|&pointer| unsafe {
+                    ((*pointer).test_id() == Some("onboarding.understood.row"))
+                        .then(|| (*pointer).get_rect())
+                })
+                .expect("labelled acknowledgement row");
+            let label_point = Point::new(row.x1 - 8.0, row.center().y);
+            assert!(
+                label_point.x > row.x0 + 44.0,
+                "test point must be in the label, not the checkbox face"
             );
-            if !matches!(event, WindowEvent::CursorMoved { .. }) {
-                assert!(
-                    handled,
-                    "the backup continuation button must handle {event:?}"
+
+            let mut focus = None;
+            for event in [pointer_event(label_point), primary_press_event()] {
+                let mut handled = false;
+                view.handle_event(
+                    &event,
+                    1.0,
+                    &Modifiers::default(),
+                    &mut document,
+                    &automerge::ROOT,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    &taffy,
                 );
+                assert!(handled, "the labelled checkbox row must handle {event:?}");
             }
+            assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
         }
-        view.sync(&mut document, &automerge::ROOT);
-        assert!(
-            view.identity_ready_page,
-            "pointer activation must reach Ready"
-        );
-    }
+        // Phase `continue_without_backup_pointer_target_advances_to_ready_page`.
+        {
+            let (mut view, _) = view();
+            let mut document = AutoCommit::new();
+            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+                press(&mut document, key);
+                view.sync(&mut document, &automerge::ROOT);
+            }
+            document
+                .put(
+                    &automerge::ROOT,
+                    KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                    ScalarValue::Boolean(true),
+                )
+                .expect("acknowledge backup risk");
+            view.sync(&mut document, &automerge::ROOT);
 
-    #[test]
-    fn narrow_layout_keeps_the_setup_surface_inside_the_viewport() {
-        let (mut view, _) = view();
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(420.0),
-                    height: taffy::AvailableSpace::Definite(640.0),
-                },
-                |known, available, node_id, _, _| {
-                    node_map
-                        .get(&node_id)
-                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                            (*ptr).measure(known, available, &mut text)
-                        })
-                },
-            )
-            .expect("narrow setup layout");
-        view.apply_layout(&taffy, node, Point::ZERO);
-        let panel = view.composed.as_ref().expect("composition").get_rect();
-        assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
-        assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
-    }
-
-    #[test]
-    fn first_frames_do_not_hide_backup_recovery_or_final_tour_tasks() {
-        fn initial_scroll_offset(view: &mut OnboardingView) -> f32 {
             let theme = Theme::dark();
             let mut text = ui::text_render::TextRenderer::new();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -5590,415 +5607,311 @@ mod tests {
                             })
                     },
                 )
-                .expect("laptop-height onboarding layout");
+                .expect("backup continuation layout");
             view.apply_layout(&taffy, node, Point::ZERO);
-            let scroll_pointer = node_map
+            let button = node_map
                 .values()
-                .copied()
-                .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
-                .expect("onboarding body scroll viewport");
-            unsafe {
-                (*scroll_pointer)
-                    .as_any_mut()
-                    .and_then(|widget| widget.downcast_mut::<Scrollable>())
-                    .expect("onboarding scroll geometry")
-                    .max_offset_y()
-            }
-        }
-
-        let mut backup = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
-            Ok(MintedIdentity {
-                fingerprint: "ab".repeat(32),
-                path: PathBuf::from("/identity/primary.json"),
-            })
-        }));
-        backup.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
-        assert!(
-            initial_scroll_offset(&mut backup) <= 160.0,
-            "Backup may scroll its secondary explanation, but the first frame must keep the recovery operation dominant and the overflow bounded"
-        );
-
-        let mut final_tour = OnboardingView::new_tour();
-        final_tour.tour_page = Some(TourPage::Start);
-        let final_tour_overflow = initial_scroll_offset(&mut final_tour);
-        assert!(
-            final_tour_overflow <= 20.0,
-            "every first-five-minutes task must be visible before a person discovers scrolling; only the content gutter may extend below the viewport (overflow={final_tour_overflow})"
-        );
-    }
-
-    #[test]
-    fn tour_backdrop_only_scrims_the_covered_desktop() {
-        for theme in [Theme::dark(), Theme::high_contrast()] {
-            let mut view = OnboardingView::new_tour();
-            view.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let mut scene = Scene::new();
-            view.draw_backdrop(&mut scene, Affine::IDENTITY, &theme);
-
-            assert_eq!(
-                scene.encoding().n_paths,
-                1,
-                "a modal tour backdrop must not add a detached desktop focus target"
-            );
-        }
-    }
-
-    #[test]
-    fn introduction_uses_a_compact_panel_on_a_large_display() {
-        let (mut view, _) = view();
-        let theme = Theme::dark();
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1600.0),
-                    height: taffy::AvailableSpace::Definite(900.0),
-                },
-                |known, available, node_id, _, _| {
-                    node_map
-                        .get(&node_id)
-                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                            (*ptr).measure(known, available, &mut text)
-                        })
-                },
-            )
-            .expect("large setup layout");
-        view.apply_layout(&taffy, node, Point::ZERO);
-        let panel = view.composed.as_ref().expect("composition").get_rect();
-        assert!(
-            panel.height() <= f64::from(INTRO_PANEL_HEIGHT) + 0.5,
-            "intro should not inherit the taller recovery panel: {panel:?}"
-        );
-        assert!(
-            panel.height() >= 300.0,
-            "intro content must retain a readable surface: {panel:?}"
-        );
-    }
-
-    #[test]
-    fn done_exit_action_stays_visible_at_laptop_height_with_large_text() {
-        let (mut view, _) = view();
-        let mut doc = AutoCommit::new();
-        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(&mut doc, key);
-            view.sync(&mut doc, &automerge::ROOT);
-        }
-        assert_eq!(view.flow().screen(), Screen::Done);
-        press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-        view.sync(&mut doc, &automerge::ROOT);
-        press(&mut doc, KEY_BACKUP_CONTINUE);
-        view.sync(&mut doc, &automerge::ROOT);
-
-        let theme = Theme::dark().with_text_scale(1.3);
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1000.0),
-                    height: taffy::AvailableSpace::Definite(720.0),
-                },
-                |known, available, node_id, _, _| {
-                    measure_map
-                        .get(&node_id)
-                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                            (*ptr).measure(known, available, &mut text)
-                        })
-                },
-            )
-            .expect("large-text done layout");
-        view.apply_layout(&taffy, node, Point::ZERO);
-
-        let panel = view.composed.as_ref().expect("composition").get_rect();
-        assert!(
-            panel.height() > f64::from(PANEL_MAX_HEIGHT),
-            "large-text setup should use otherwise-empty viewport height before clipping: {panel:?}",
-        );
-
-        for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
-            let action = node_map
-                .values()
-                .find_map(|&ptr| unsafe {
-                    ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                .find_map(|&pointer| unsafe {
+                    ((*pointer).test_id() == Some("onboarding.backup.continue.button"))
+                        .then(|| (*pointer).get_rect())
                 })
-                .unwrap_or_else(|| panic!("Done screen exposes {id}"));
-            assert!(action.area() > 0.0, "action={action:?}");
+                .expect("continue without backup button");
             assert!(
-                action.x0 >= 0.0 && action.x1 <= 1000.0 && action.y0 >= 0.0 && action.y1 <= 720.0,
-                "the action must stay fully in the viewport, id={id}, action={action:?}"
+                button.width() >= 44.0 && button.height() >= 40.0,
+                "backup continuation needs a practical pointer target: {button:?}"
             );
-        }
-    }
 
-    #[test]
-    fn large_text_backup_action_keeps_a_clear_gap_below_confirmation() {
-        let (mut view, _) = view();
-        let mut document = AutoCommit::new();
-        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(&mut document, key);
+            let mut focus = None;
+            for event in [
+                pointer_event(button.center()),
+                primary_press_event(),
+                primary_release_event(),
+            ] {
+                let mut handled = false;
+                view.handle_event(
+                    &event,
+                    1.0,
+                    &Modifiers::default(),
+                    &mut document,
+                    &automerge::ROOT,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    &taffy,
+                );
+                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        handled,
+                        "the backup continuation button must handle {event:?}"
+                    );
+                }
+            }
             view.sync(&mut document, &automerge::ROOT);
-        }
-        assert_eq!(view.flow().screen(), Screen::Done);
-
-        let theme = Theme::dark().with_text_scale(1.3);
-        let mut text = ui::text_render::TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(720.0),
-                },
-                |known, available, node_id, _, _| {
-                    measure_map
-                        .get(&node_id)
-                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                            (*ptr).measure(known, available, &mut text)
-                        })
-                },
-            )
-            .expect("large-text backup layout");
-        view.apply_layout(&taffy, node, Point::ZERO);
-        let widget_rect = |id: &str| {
-            node_map
-                .values()
-                .find_map(|&ptr| unsafe {
-                    ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
-                })
-                .unwrap_or_else(|| panic!("backup page exposes {id}"))
-        };
-        let confirmation = widget_rect("onboarding.backup.confirmation");
-        let action = widget_rect("onboarding.backup.button");
-        assert!(
-            action.y0 - confirmation.y1 >= f64::from(theme.tokens.spacing.s2) - 0.5,
-            "backup action must not visually merge with confirmation input: confirmation={confirmation:?}, action={action:?}"
-        );
-    }
-
-    #[test]
-    fn backup_recovery_controls_are_first_frame_visible_at_review_sizes() {
-        for (width, height, theme) in [
-            (1280.0, 800.0, Theme::dark()),
-            (960.0, 540.0, Theme::dark().with_text_scale(1.3)),
-        ] {
-            let (mut view, _) = view();
-            view.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let measure_map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(width),
-                        height: taffy::AvailableSpace::Definite(height),
-                    },
-                    |known, available, node_id, _, _| {
-                        measure_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                (*pointer).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("backup review-size layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
-            let rect = |id: &str| {
-                node_map
-                    .values()
-                    .find_map(|&pointer| unsafe {
-                        ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
-                    })
-                    .unwrap_or_else(|| panic!("backup page exposes {id}"))
-            };
-            let passphrase = rect("onboarding.backup.passphrase");
-            let confirmation = rect("onboarding.backup.confirmation");
-            let passphrase_label = rect("onboarding.backup.passphrase.label");
-            let confirmation_label = rect("onboarding.backup.confirmation.label");
-            let save = rect("onboarding.backup.button");
-            let skip = rect("onboarding.backup.skip-acknowledged.row");
-            for (label_id, label, field_id, field) in [
-                (
-                    "passphrase label",
-                    passphrase_label,
-                    "passphrase",
-                    passphrase,
-                ),
-                (
-                    "confirmation label",
-                    confirmation_label,
-                    "confirmation",
-                    confirmation,
-                ),
-            ] {
-                assert!(
-                    label.area() > 0.0
-                        && label.x0 >= 0.0
-                        && label.x1 <= f64::from(width)
-                        && label.y0 >= 0.0
-                        && label.y1 <= f64::from(height)
-                        && label.y1 <= field.y0,
-                    "{label_id} must remain visible above {field_id} at {width}x{height}: label={label:?}, field={field:?}"
-                );
-            }
-            for (id, control) in [
-                ("passphrase", passphrase),
-                ("confirmation", confirmation),
-                ("save", save),
-                ("skip", skip),
-            ] {
-                assert!(
-                    control.area() > 0.0
-                        && control.x0 >= 0.0
-                        && control.x1 <= f64::from(width)
-                        && control.y0 >= 0.0
-                        && control.y1 <= f64::from(height),
-                    "{id} must be fully visible at {width}x{height}: {control:?}"
-                );
-            }
-            assert!(passphrase.y1 <= confirmation.y0);
-            assert!(confirmation.y1 <= save.y0);
             assert!(
-                save.y1 <= skip.y0,
-                "recovery stays primary and must not overlap skip at {width}x{height}: save={save:?}, skip={skip:?}"
+                view.identity_ready_page,
+                "pointer activation must reach Ready"
             );
         }
     }
 
     #[test]
-    fn verified_backup_status_and_completion_are_visible_at_review_sizes() {
-        for (width, height) in [(1280.0, 800.0), (800.0, 600.0)] {
-            let (mut view, _) = view();
-            view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
-            let theme = Theme::dark();
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let measure_map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(width),
-                        height: taffy::AvailableSpace::Definite(height),
-                    },
-                    |known, available, node_id, _, _| {
-                        measure_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                (*pointer).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("verified backup review-size layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
-            let rect = |id: &str| {
-                node_map
-                    .values()
-                    .find_map(|&pointer| unsafe {
-                        ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
-                    })
-                    .unwrap_or_else(|| panic!("verified backup page exposes {id}"))
-            };
-            let another = rect("onboarding.backup.another.button");
-            let continue_button = rect("onboarding.backup.continue.button");
-            for (id, control) in [("another", another), ("continue", continue_button)] {
-                assert!(
-                    control.area() > 0.0
-                        && control.x0 >= 0.0
-                        && control.x1 <= f64::from(width)
-                        && control.y0 >= 0.0
-                        && control.y1 <= f64::from(height),
-                    "verified backup {id} action must be visible at {width}x{height}: {control:?}"
-                );
-            }
-            assert!(
-                (another.center().y - continue_button.center().y).abs() <= 0.5
-                    && another.x1 <= continue_button.x0,
-                "optional copy action must precede the primary Continue action: another={another:?}, continue={continue_button:?}"
-            );
-            assert!(
-                !node_map.values().any(|&pointer| unsafe {
-                    matches!(
-                        (*pointer).test_id(),
-                        Some("onboarding.backup.passphrase" | "onboarding.backup.confirmation")
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn backup_and_recovery_tasks_are_visible_in_the_first_frame_at_review_sizes() {
+        // Phase `first_frames_do_not_hide_backup_recovery_or_final_tour_tasks`.
+        {
+            fn initial_scroll_offset(view: &mut OnboardingView) -> f32 {
+                let theme = Theme::dark();
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let measure_map = node_map.clone();
+                taffy
+                    .compute_layout_with_measure(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(1280.0),
+                            height: taffy::AvailableSpace::Definite(800.0),
+                        },
+                        |known, available, node_id, _, _| {
+                            measure_map
+                                .get(&node_id)
+                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                    (*pointer).measure(known, available, &mut text)
+                                })
+                        },
                     )
-                }),
-                "verified backup should expose its confirmed state before asking for another passphrase"
+                    .expect("laptop-height onboarding layout");
+                view.apply_layout(&taffy, node, Point::ZERO);
+                let scroll_pointer = node_map
+                    .values()
+                    .copied()
+                    .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
+                    .expect("onboarding body scroll viewport");
+                unsafe {
+                    (*scroll_pointer)
+                        .as_any_mut()
+                        .and_then(|widget| widget.downcast_mut::<Scrollable>())
+                        .expect("onboarding scroll geometry")
+                        .max_offset_y()
+                }
+            }
+
+            let mut backup = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
+                Ok(MintedIdentity {
+                    fingerprint: "ab".repeat(32),
+                    path: PathBuf::from("/identity/primary.json"),
+                })
+            }));
+            backup.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
+            assert!(
+                initial_scroll_offset(&mut backup) <= 160.0,
+                "Backup may scroll its secondary explanation, but the first frame must keep the recovery operation dominant and the overflow bounded"
             );
-            let scroll_pointer = node_map
-                .values()
-                .copied()
-                .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
-                .expect("verified backup scroll viewport");
-            let scroll = unsafe {
-                (*scroll_pointer)
-                    .as_any_mut()
-                    .and_then(|widget| widget.downcast_mut::<Scrollable>())
-                    .expect("Scrollable exposes geometry to the regression harness")
-            };
-            assert_eq!(
-                scroll.max_offset_y(),
-                0.0,
-                "verified backup explanation must be fully visible before scrolling at {width}x{height}"
+
+            let mut final_tour = OnboardingView::new_tour();
+            final_tour.tour_page = Some(TourPage::Start);
+            let final_tour_overflow = initial_scroll_offset(&mut final_tour);
+            assert!(
+                final_tour_overflow <= 20.0,
+                "every first-five-minutes task must be visible before a person discovers scrolling; only the content gutter may extend below the viewport (overflow={final_tour_overflow})"
             );
+        }
+        // Phase `backup_recovery_controls_are_first_frame_visible_at_review_sizes`.
+        {
+            for (width, height, theme) in [
+                (1280.0, 800.0, Theme::dark()),
+                (960.0, 540.0, Theme::dark().with_text_scale(1.3)),
+            ] {
+                let (mut view, _) = view();
+                view.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let measure_map = node_map.clone();
+                taffy
+                    .compute_layout_with_measure(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(width),
+                            height: taffy::AvailableSpace::Definite(height),
+                        },
+                        |known, available, node_id, _, _| {
+                            measure_map
+                                .get(&node_id)
+                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                    (*pointer).measure(known, available, &mut text)
+                                })
+                        },
+                    )
+                    .expect("backup review-size layout");
+                view.apply_layout(&taffy, node, Point::ZERO);
+                let rect = |id: &str| {
+                    node_map
+                        .values()
+                        .find_map(|&pointer| unsafe {
+                            ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
+                        })
+                        .unwrap_or_else(|| panic!("backup page exposes {id}"))
+                };
+                let passphrase = rect("onboarding.backup.passphrase");
+                let confirmation = rect("onboarding.backup.confirmation");
+                let passphrase_label = rect("onboarding.backup.passphrase.label");
+                let confirmation_label = rect("onboarding.backup.confirmation.label");
+                let save = rect("onboarding.backup.button");
+                let skip = rect("onboarding.backup.skip-acknowledged.row");
+                for (label_id, label, field_id, field) in [
+                    (
+                        "passphrase label",
+                        passphrase_label,
+                        "passphrase",
+                        passphrase,
+                    ),
+                    (
+                        "confirmation label",
+                        confirmation_label,
+                        "confirmation",
+                        confirmation,
+                    ),
+                ] {
+                    assert!(
+                        label.area() > 0.0
+                            && label.x0 >= 0.0
+                            && label.x1 <= f64::from(width)
+                            && label.y0 >= 0.0
+                            && label.y1 <= f64::from(height)
+                            && label.y1 <= field.y0,
+                        "{label_id} must remain visible above {field_id} at {width}x{height}: label={label:?}, field={field:?}"
+                    );
+                }
+                for (id, control) in [
+                    ("passphrase", passphrase),
+                    ("confirmation", confirmation),
+                    ("save", save),
+                    ("skip", skip),
+                ] {
+                    assert!(
+                        control.area() > 0.0
+                            && control.x0 >= 0.0
+                            && control.x1 <= f64::from(width)
+                            && control.y0 >= 0.0
+                            && control.y1 <= f64::from(height),
+                        "{id} must be fully visible at {width}x{height}: {control:?}"
+                    );
+                }
+                assert!(passphrase.y1 <= confirmation.y0);
+                assert!(confirmation.y1 <= save.y0);
+                assert!(
+                    save.y1 <= skip.y0,
+                    "recovery stays primary and must not overlap skip at {width}x{height}: save={save:?}, skip={skip:?}"
+                );
+            }
+        }
+        // Phase `verified_backup_status_and_completion_are_visible_at_review_sizes`.
+        {
+            for (width, height) in [(1280.0, 800.0), (800.0, 600.0)] {
+                let (mut view, _) = view();
+                view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
+                let theme = Theme::dark();
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let measure_map = node_map.clone();
+                taffy
+                    .compute_layout_with_measure(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(width),
+                            height: taffy::AvailableSpace::Definite(height),
+                        },
+                        |known, available, node_id, _, _| {
+                            measure_map
+                                .get(&node_id)
+                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                    (*pointer).measure(known, available, &mut text)
+                                })
+                        },
+                    )
+                    .expect("verified backup review-size layout");
+                view.apply_layout(&taffy, node, Point::ZERO);
+                let rect = |id: &str| {
+                    node_map
+                        .values()
+                        .find_map(|&pointer| unsafe {
+                            ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
+                        })
+                        .unwrap_or_else(|| panic!("verified backup page exposes {id}"))
+                };
+                let another = rect("onboarding.backup.another.button");
+                let continue_button = rect("onboarding.backup.continue.button");
+                for (id, control) in [("another", another), ("continue", continue_button)] {
+                    assert!(
+                        control.area() > 0.0
+                            && control.x0 >= 0.0
+                            && control.x1 <= f64::from(width)
+                            && control.y0 >= 0.0
+                            && control.y1 <= f64::from(height),
+                        "verified backup {id} action must be visible at {width}x{height}: {control:?}"
+                    );
+                }
+                assert!(
+                    (another.center().y - continue_button.center().y).abs() <= 0.5
+                        && another.x1 <= continue_button.x0,
+                    "optional copy action must precede the primary Continue action: another={another:?}, continue={continue_button:?}"
+                );
+                assert!(
+                    !node_map.values().any(|&pointer| unsafe {
+                        matches!(
+                            (*pointer).test_id(),
+                            Some("onboarding.backup.passphrase" | "onboarding.backup.confirmation")
+                        )
+                    }),
+                    "verified backup should expose its confirmed state before asking for another passphrase"
+                );
+                let scroll_pointer = node_map
+                    .values()
+                    .copied()
+                    .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
+                    .expect("verified backup scroll viewport");
+                let scroll = unsafe {
+                    (*scroll_pointer)
+                        .as_any_mut()
+                        .and_then(|widget| widget.downcast_mut::<Scrollable>())
+                        .expect("Scrollable exposes geometry to the regression harness")
+                };
+                assert_eq!(
+                    scroll.max_offset_y(),
+                    0.0,
+                    "verified backup explanation must be fully visible before scrolling at {width}x{height}"
+                );
+            }
         }
     }
 
     #[test]
-    fn verified_backup_reveals_copy_form_only_after_the_optional_action() {
-        let (mut view, _) = view();
-        view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
-        assert!(!view.backup_copy_form_open);
-
-        let mut document = AutoCommit::new();
-        press(&mut document, KEY_BACKUP_ANOTHER);
-        view.sync(&mut document, &automerge::ROOT);
-
-        assert!(
-            view.backup_copy_form_open,
-            "the optional copy action, rather than the verified state itself, reveals passphrase inputs"
-        );
-    }
-
-    #[test]
-    fn tour_navigation_stays_visible_on_every_page_at_narrow_large_text_size() {
-        const WIDTH: f32 = 420.0;
-        const HEIGHT: f32 = 640.0;
-
-        for next_presses in 0..=3 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn large_text_keeps_every_primary_action_visible() {
+        // Phase `done_exit_action_stays_visible_at_laptop_height_with_large_text`.
+        {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
-            for key in [
-                KEY_BEGIN,
-                KEY_UNDERSTOOD,
-                KEY_CREATE,
-                KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                KEY_BACKUP_CONTINUE,
-                KEY_TOUR_START,
-            ] {
+            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                 press(&mut doc, key);
                 view.sync(&mut doc, &automerge::ROOT);
             }
-            for _ in 0..next_presses {
-                press(&mut doc, KEY_TOUR_NEXT);
-                view.sync(&mut doc, &automerge::ROOT);
-            }
+            assert_eq!(view.flow().screen(), Screen::Done);
+            press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&mut doc, &automerge::ROOT);
+            press(&mut doc, KEY_BACKUP_CONTINUE);
+            view.sync(&mut doc, &automerge::ROOT);
 
             let theme = Theme::dark().with_text_scale(1.3);
             let mut text = ui::text_render::TextRenderer::new();
@@ -6010,8 +5923,8 @@ mod tests {
                 .compute_layout_with_measure(
                     node,
                     taffy::Size {
-                        width: taffy::AvailableSpace::Definite(WIDTH),
-                        height: taffy::AvailableSpace::Definite(HEIGHT),
+                        width: taffy::AvailableSpace::Definite(1000.0),
+                        height: taffy::AvailableSpace::Definite(720.0),
                     },
                     |known, available, node_id, _, _| {
                         measure_map
@@ -6021,40 +5934,161 @@ mod tests {
                             })
                     },
                 )
-                .expect("narrow large-text tour layout");
+                .expect("large-text done layout");
             view.apply_layout(&taffy, node, Point::ZERO);
 
-            let mut action_rects = Vec::new();
-            for id in [
-                "onboarding.tour.skip.button",
-                "onboarding.tour.back.button",
-                "onboarding.tour.next.button",
-            ] {
+            let panel = view.composed.as_ref().expect("composition").get_rect();
+            assert!(
+                panel.height() > f64::from(PANEL_MAX_HEIGHT),
+                "large-text setup should use otherwise-empty viewport height before clipping: {panel:?}",
+            );
+
+            for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
                 let action = node_map
                     .values()
                     .find_map(|&ptr| unsafe {
                         ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
                     })
-                    .unwrap_or_else(|| panic!("tour page exposes {id}"));
-                assert!(
-                    action.area() > 0.0,
-                    "page={next_presses}, action={action:?}"
-                );
+                    .unwrap_or_else(|| panic!("Done screen exposes {id}"));
+                assert!(action.area() > 0.0, "action={action:?}");
                 assert!(
                     action.x0 >= 0.0
-                        && action.x1 <= f64::from(WIDTH)
+                        && action.x1 <= 1000.0
                         && action.y0 >= 0.0
-                        && action.y1 <= f64::from(HEIGHT),
-                    "sticky tour action must stay in the viewport, page={next_presses}, id={id}, action={action:?}"
+                        && action.y1 <= 720.0,
+                    "the action must stay fully in the viewport, id={id}, action={action:?}"
                 );
-                action_rects.push(action);
             }
+        }
+        // Phase `large_text_backup_action_keeps_a_clear_gap_below_confirmation`.
+        {
+            let (mut view, _) = view();
+            let mut document = AutoCommit::new();
+            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+                press(&mut document, key);
+                view.sync(&mut document, &automerge::ROOT);
+            }
+            assert_eq!(view.flow().screen(), Screen::Done);
+
+            let theme = Theme::dark().with_text_scale(1.3);
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let measure_map = node_map.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(720.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        measure_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                                (*ptr).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("large-text backup layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let widget_rect = |id: &str| {
+                node_map
+                    .values()
+                    .find_map(|&ptr| unsafe {
+                        ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                    })
+                    .unwrap_or_else(|| panic!("backup page exposes {id}"))
+            };
+            let confirmation = widget_rect("onboarding.backup.confirmation");
+            let action = widget_rect("onboarding.backup.button");
             assert!(
-                action_rects
-                    .windows(2)
-                    .all(|pair| pair[0].x1 <= pair[1].x0 && (pair[0].y0 - pair[1].y0).abs() < 1.0),
-                "compact tour actions must remain one ordered row, page={next_presses}, rects={action_rects:?}"
+                action.y0 - confirmation.y1 >= f64::from(theme.tokens.spacing.s2) - 0.5,
+                "backup action must not visually merge with confirmation input: confirmation={confirmation:?}, action={action:?}"
             );
+        }
+        // Phase `tour_navigation_stays_visible_on_every_page_at_narrow_large_text_size`.
+        {
+            const WIDTH: f32 = 420.0;
+            const HEIGHT: f32 = 640.0;
+
+            for next_presses in 0..=3 {
+                let (mut view, _) = view();
+                let mut doc = AutoCommit::new();
+                for key in [
+                    KEY_BEGIN,
+                    KEY_UNDERSTOOD,
+                    KEY_CREATE,
+                    KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                    KEY_BACKUP_CONTINUE,
+                    KEY_TOUR_START,
+                ] {
+                    press(&mut doc, key);
+                    view.sync(&mut doc, &automerge::ROOT);
+                }
+                for _ in 0..next_presses {
+                    press(&mut doc, KEY_TOUR_NEXT);
+                    view.sync(&mut doc, &automerge::ROOT);
+                }
+
+                let theme = Theme::dark().with_text_scale(1.3);
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let measure_map = node_map.clone();
+                taffy
+                    .compute_layout_with_measure(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(WIDTH),
+                            height: taffy::AvailableSpace::Definite(HEIGHT),
+                        },
+                        |known, available, node_id, _, _| {
+                            measure_map
+                                .get(&node_id)
+                                .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                                    (*ptr).measure(known, available, &mut text)
+                                })
+                        },
+                    )
+                    .expect("narrow large-text tour layout");
+                view.apply_layout(&taffy, node, Point::ZERO);
+
+                let mut action_rects = Vec::new();
+                for id in [
+                    "onboarding.tour.skip.button",
+                    "onboarding.tour.back.button",
+                    "onboarding.tour.next.button",
+                ] {
+                    let action = node_map
+                        .values()
+                        .find_map(|&ptr| unsafe {
+                            ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                        })
+                        .unwrap_or_else(|| panic!("tour page exposes {id}"));
+                    assert!(
+                        action.area() > 0.0,
+                        "page={next_presses}, action={action:?}"
+                    );
+                    assert!(
+                        action.x0 >= 0.0
+                            && action.x1 <= f64::from(WIDTH)
+                            && action.y0 >= 0.0
+                            && action.y1 <= f64::from(HEIGHT),
+                        "sticky tour action must stay in the viewport, page={next_presses}, id={id}, action={action:?}"
+                    );
+                    action_rects.push(action);
+                }
+                assert!(
+                    action_rects
+                        .windows(2)
+                        .all(|pair| pair[0].x1 <= pair[1].x0
+                            && (pair[0].y0 - pair[1].y0).abs() < 1.0),
+                    "compact tour actions must remain one ordered row, page={next_presses}, rects={action_rects:?}"
+                );
+            }
         }
     }
 }

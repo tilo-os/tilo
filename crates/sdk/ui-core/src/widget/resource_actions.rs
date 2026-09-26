@@ -667,48 +667,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn action_form_connects_controls_discovery_and_external_invocation() {
-        let name = crate::LocalState::new(String::from("Ada"));
-        let enabled = crate::LocalState::new(true);
-        let form = ActionForm::new("profile", "Profile", "save", "Save")
-            .field("name", "Display name", &name)
-            .field("enabled", "Enabled", &enabled);
+    fn action_form_validates_controls_and_connects_invocation() {
+        // Case `action_form_connects_controls_discovery_and_external_invocation`.
+        {
+            let name = crate::LocalState::new(String::from("Ada"));
+            let enabled = crate::LocalState::new(true);
+            let form = ActionForm::new("profile", "Profile", "save", "Save")
+                .field("name", "Display name", &name)
+                .field("enabled", "Enabled", &enabled);
 
-        let invocation = form
-            .binding::<String>("name")
-            .expect("text binding")
-            .invoke(String::from("Grace"))
-            .expect("valid invocation");
-        assert_eq!(invocation.arguments["name"], "Grace");
-        assert_eq!(invocation.arguments["enabled"], true);
+            let invocation = form
+                .binding::<String>("name")
+                .expect("text binding")
+                .invoke(String::from("Grace"))
+                .expect("valid invocation");
+            assert_eq!(invocation.arguments["name"], "Grace");
+            assert_eq!(invocation.arguments["enabled"], true);
 
-        form.apply(br#"{"name":"Lin","enabled":false}"#)
-            .expect("valid external invocation");
-        assert_eq!(name.get(), "Lin");
-        assert!(!enabled.get());
+            form.apply(br#"{"name":"Lin","enabled":false}"#)
+                .expect("valid external invocation");
+            assert_eq!(name.get(), "Lin");
+            assert!(!enabled.get());
 
-        name.set(String::from("Changed"));
-        let reset = form
-            .reset_binding()
-            .expect("reset binding")
-            .invoke(())
-            .expect("reset invocation");
-        assert_eq!(reset.arguments["name"], "Ada");
-        assert_eq!(reset.arguments["enabled"], true);
-    }
+            name.set(String::from("Changed"));
+            let reset = form
+                .reset_binding()
+                .expect("reset binding")
+                .invoke(())
+                .expect("reset invocation");
+            assert_eq!(reset.arguments["name"], "Ada");
+            assert_eq!(reset.arguments["enabled"], true);
+        }
 
-    #[test]
-    fn action_form_rejects_wrong_control_types_before_mounting() {
-        let value = crate::LocalState::new(String::new());
-        let form = ActionForm::new("profile", "Profile", "save", "Save").field(
-            "name",
-            "Display name",
-            &value,
-        );
-        let error = form
-            .binding::<bool>("name")
-            .err()
-            .expect("wrong field type must fail");
-        assert!(error.contains("text, not boolean"));
+        // Case `action_form_rejects_wrong_control_types_before_mounting`.
+        {
+            let value = crate::LocalState::new(String::new());
+            let form = ActionForm::new("profile", "Profile", "save", "Save").field(
+                "name",
+                "Display name",
+                &value,
+            );
+            let error = form
+                .binding::<bool>("name")
+                .err()
+                .expect("wrong field type must fail");
+            assert!(error.contains("text, not boolean"));
+        }
     }
 }

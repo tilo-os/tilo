@@ -173,14 +173,33 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
     }
 }
 
+/// Three and ten stacked dispatches, a stack with an active patch log, and stacked `apply_local`
+/// all converge deterministically.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn stacked_dispatches_are_deterministic() {
+    three_stacked_dispatches_are_deterministic();
+    ten_stacked_dispatches_are_deterministic();
+    stacked_dispatch_with_active_patch_log_is_deterministic();
+    stacked_apply_local_is_deterministic();
+}
+
 fn three_stacked_dispatches_are_deterministic() {
     stacked_dispatch_converges(3, 200);
 }
 
-#[test]
 fn ten_stacked_dispatches_are_deterministic() {
     stacked_dispatch_converges(10, 100);
+}
+
+/// A no-op action, an empty mutation and an erroring action (which rolls back) leave the
+/// executor uncorrupted.
+/// Runs each phase below in order; every phase builds its own fixture.
+#[test]
+fn odd_actions_in_a_stack_do_not_corrupt_the_executor() {
+    noop_action_in_a_stack_does_not_corrupt_the_executor();
+    empty_mutation_in_a_stack_does_not_corrupt_the_executor();
+    erroring_action_rolls_back_without_corrupting_the_executor();
 }
 
 /// The same stack via `apply_local` directly (the `ClientLocal` origin
@@ -193,7 +212,6 @@ fn ten_stacked_dispatches_are_deterministic() {
 /// dispatch reconciling the automerge patch log used to panic
 /// (`PatchLogMismatch`) on the pruned "ghost" actor. Stacking a
 /// well-behaved no-op must stay deterministic.
-#[test]
 fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
     for iter in 0..200 {
         let (mut a, mut b) = two_replicas();
@@ -250,7 +268,6 @@ fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
 /// The same stacking on a document whose patch log is *active* and never
 /// drained between dispatches — the state a rendering host leaves the
 /// CRDT in (`update_diff_cursor` armed, no frame drawn in between).
-#[test]
 fn stacked_dispatch_with_active_patch_log_is_deterministic() {
     for iter in 0..200 {
         let mut a = AutoCommit::new();
@@ -300,7 +317,6 @@ fn stacked_dispatch_with_active_patch_log_is_deterministic() {
 
 /// A mutating-but-empty action stacked between real ones must not
 /// strand a ghost actor either.
-#[test]
 fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
     for iter in 0..200 {
         let (mut a, mut b) = two_replicas();
@@ -350,7 +366,6 @@ fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
 /// An action that writes an op and then errors must roll back cleanly:
 /// later dispatches must not panic, and the failed action must leave no
 /// trace in the document.
-#[test]
 fn erroring_action_rolls_back_without_corrupting_the_executor() {
     for iter in 0..200 {
         let (mut a, mut b) = two_replicas();
@@ -411,7 +426,6 @@ fn erroring_action_rolls_back_without_corrupting_the_executor() {
     }
 }
 
-#[test]
 fn stacked_apply_local_is_deterministic() {
     for iter in 0..200 {
         let (mut a, mut b) = two_replicas();

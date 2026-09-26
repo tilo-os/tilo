@@ -451,37 +451,39 @@ mod incoming_geometry_tests {
     }
 
     #[test]
-    fn geometry_applies_horizontal_scroll_to_every_column() {
-        let columns = [column(10.0), column(20.0)];
-        let geometry = StripGeometry::new(
-            Rect::new(100.0, 0.0, 300.0, 180.0),
-            &columns,
-            80.0,
-            30.0,
-            &ui::tokens::Spacing::BASE,
-            1.0,
-        );
+    fn incoming_chart_geometry_is_scrolled_and_finite() {
+        // Case `geometry_applies_horizontal_scroll_to_every_column`.
+        {
+            let columns = [column(10.0), column(20.0)];
+            let geometry = StripGeometry::new(
+                Rect::new(100.0, 0.0, 300.0, 180.0),
+                &columns,
+                80.0,
+                30.0,
+                &ui::tokens::Spacing::BASE,
+                1.0,
+            );
 
-        assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
-        assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
-    }
+            assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
+            assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
+        }
+        // Case `flat_temperature_series_still_has_a_finite_curve_range`.
+        {
+            let columns = [column(12.0), column(12.0)];
+            let geometry = StripGeometry::new(
+                Rect::new(0.0, 0.0, 200.0, 180.0),
+                &columns,
+                80.0,
+                0.0,
+                &ui::tokens::Spacing::BASE,
+                1.0,
+            );
 
-    #[test]
-    fn flat_temperature_series_still_has_a_finite_curve_range() {
-        let columns = [column(12.0), column(12.0)];
-        let geometry = StripGeometry::new(
-            Rect::new(0.0, 0.0, 200.0, 180.0),
-            &columns,
-            80.0,
-            0.0,
-            &ui::tokens::Spacing::BASE,
-            1.0,
-        );
-
-        let y = geometry.y_at(12.0);
-        assert!(y.is_finite());
-        assert!(
-            (y - f64::midpoint(geometry.curve_top, geometry.curve_bottom)).abs() < f64::EPSILON
-        );
+            let y = geometry.y_at(12.0);
+            assert!(y.is_finite());
+            assert!(
+                (y - f64::midpoint(geometry.curve_top, geometry.curve_bottom)).abs() < f64::EPSILON
+            );
+        }
     }
 }

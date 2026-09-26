@@ -414,41 +414,51 @@ mod tests {
         response
     }
 
+    /// Answers go out in order with requests recorded, a body streams without Content-Length, and a
+    /// silent responder detects no connection.
     #[test]
-    fn answers_in_order_and_records_requests() {
-        let responder = Responder::start(vec![
-            Reply::status(207).header("ETag", "\"v1\"").body("<x/>"),
-            Reply::status(204),
-        ]);
-        let first = roundtrip(
-            responder.port(),
-            "PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\nContent-Length: 4\r\n\r\nbody",
-        );
-        assert!(
-            first.starts_with("HTTP/1.1 207 Multi-Status\r\n"),
-            "{first}"
-        );
-        assert!(first.contains("ETag: \"v1\""));
-        assert!(first.ends_with("<x/>"));
-        let second = roundtrip(responder.port(), "DELETE /dav/a HTTP/1.1\r\n\r\n");
-        assert!(second.starts_with("HTTP/1.1 204"));
+    fn the_test_server_answers_streams_and_detects_silence() {
+        // Phase: answers_in_order_and_records_requests.
+        {
+            let responder = Responder::start(vec![
+                Reply::status(207).header("ETag", "\"v1\"").body("<x/>"),
+                Reply::status(204),
+            ]);
+            let first = roundtrip(
+                responder.port(),
+                "PROPFIND /dav/ HTTP/1.1\r\nDepth: 1\r\nContent-Length: 4\r\n\r\nbody",
+            );
+            assert!(
+                first.starts_with("HTTP/1.1 207 Multi-Status\r\n"),
+                "{first}"
+            );
+            assert!(first.contains("ETag: \"v1\""));
+            assert!(first.ends_with("<x/>"));
+            let second = roundtrip(responder.port(), "DELETE /dav/a HTTP/1.1\r\n\r\n");
+            assert!(second.starts_with("HTTP/1.1 204"));
 
-        let propfind = responder.next_request();
-        assert_eq!(propfind.method, "PROPFIND");
-        assert_eq!(propfind.target, "/dav/");
-        assert_eq!(propfind.header("depth"), Some("1"));
-        assert_eq!(propfind.body_text(), "body");
-        assert_eq!(responder.next_request().method, "DELETE");
-    }
+            let propfind = responder.next_request();
+            assert_eq!(propfind.method, "PROPFIND");
+            assert_eq!(propfind.target, "/dav/");
+            assert_eq!(propfind.header("depth"), Some("1"));
+            assert_eq!(propfind.body_text(), "body");
+            assert_eq!(responder.next_request().method, "DELETE");
+        }
 
-    #[test]
-    fn streams_a_body_without_content_length() {
-        let responder = Responder::start(vec![
-            Reply::status(200).body("abc").without_content_length(),
-        ]);
-        let response = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
-        assert!(!response.to_ascii_lowercase().contains("content-length"));
-        assert!(response.ends_with("abc"));
+        // Phase: streams_a_body_without_content_length.
+        {
+            let responder = Responder::start(vec![
+                Reply::status(200).body("abc").without_content_length(),
+            ]);
+            let response = roundtrip(responder.port(), "GET / HTTP/1.1\r\n\r\n");
+            assert!(!response.to_ascii_lowercase().contains("content-length"));
+            assert!(response.ends_with("abc"));
+        }
+
+        // Phase: silent_responder_detects_no_connection.
+        {
+            Responder::silent().assert_untouched();
+        }
     }
 
     #[test]
@@ -479,10 +489,5 @@ mod tests {
         assert!(chunked.ends_with("/c:abcde"), "{chunked}");
         assert_eq!(roundtrip(port, "DROP / HTTP/1.1\r\n\r\n"), "");
         assert_eq!(responder.drain_requests().len(), 6);
-    }
-
-    #[test]
-    fn silent_responder_detects_no_connection() {
-        Responder::silent().assert_untouched();
     }
 }

@@ -2799,113 +2799,223 @@ mod palette_launcher_tests {
         (t, n)
     }
 
-    #[test]
-    fn compact_breakpoint_preserves_tablet_desktop_but_protects_large_text() {
-        let normal = ui::theme::Theme::dark();
-        let large = ui::theme::Theme::dark().with_text_scale(2.0);
-        assert!(
-            !ContainersApp::compact_layout_for(768.0, normal.tokens.typography.scale.base),
-            "a normal-size tablet keeps the familiar split layout"
-        );
-        assert!(
-            ContainersApp::compact_layout_for(390.0, normal.tokens.typography.scale.base),
-            "a phone never receives a squeezed sidebar"
-        );
-        assert!(
-            ContainersApp::compact_layout_for(768.0, large.tokens.typography.scale.base),
-            "200% text gets a readable single-pane layout even on tablet"
-        );
-    }
-
-    #[test]
+    /// The compact breakpoint preserves tablet and desktop while protecting large text, and compact selection is a full-page drill-in.
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
     )]
-    fn compact_selection_is_a_full_page_drill_in() {
-        let mut app = ContainersApp::new(false);
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        app.view.selected = app
-            .engine
-            .containers
-            .first()
-            .map(|container| container.id.clone());
-        let theme = ui::theme::Theme::dark();
-
-        assert!(app.uses_compact_layout(&theme));
-        assert!(app.uses_single_pane_detail(&theme));
-        assert_eq!(app.header_height(&theme), 120.0);
-        assert_eq!(ContainersApp::row_height(&theme), ROW_HEIGHT);
-
-        let large = ui::theme::Theme::dark().with_text_scale(2.0);
-        app.rect = Rect::new(0.0, 0.0, 768.0, 900.0);
-        assert!(app.uses_single_pane_detail(&large));
-        assert_eq!(ContainersApp::row_height(&large), 84.0);
-    }
-
-    /// Opening the app-scoped palette seeds it from the app's *real*
-    /// containers — the search rows are the app's resources, not a
-    /// bespoke in-app search UI. Empty stays empty otherwise.
     #[test]
-    fn open_palette_seeds_one_row_per_container() {
-        let mut app = ContainersApp::new(false);
-        assert!(!app.palette_open);
-        let count = app.engine.containers.len();
-        assert!(count > 0, "sample engine has containers to search");
+    fn compact_layout_drills_in_and_protects_large_text() {
+        // --- phase: compact_breakpoint_preserves_tablet_desktop_but_protects_large_text ---
+        {
+            let normal = ui::theme::Theme::dark();
+            let large = ui::theme::Theme::dark().with_text_scale(2.0);
+            assert!(
+                !ContainersApp::compact_layout_for(768.0, normal.tokens.typography.scale.base),
+                "a normal-size tablet keeps the familiar split layout"
+            );
+            assert!(
+                ContainersApp::compact_layout_for(390.0, normal.tokens.typography.scale.base),
+                "a phone never receives a squeezed sidebar"
+            );
+            assert!(
+                ContainersApp::compact_layout_for(768.0, large.tokens.typography.scale.base),
+                "200% text gets a readable single-pane layout even on tablet"
+            );
+        }
 
-        app.open_container_palette();
-        assert!(app.palette_open, "the launcher opens the shared palette");
-
-        let rows: Vec<String> = app
-            .palette
-            .visible_entries()
-            .iter()
-            .map(|e| e.label.clone())
-            .collect();
-        assert_eq!(rows.len(), count, "one palette row per container");
-        assert!(
-            app.engine
+        // --- phase: compact_selection_is_a_full_page_drill_in ---
+        {
+            let mut app = ContainersApp::new(false);
+            app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+            app.view.selected = app
+                .engine
                 .containers
-                .iter()
-                .all(|c| rows.iter().any(|r| r.contains(&c.name))),
-            "every container is reachable through the shared palette"
-        );
+                .first()
+                .map(|container| container.id.clone());
+            let theme = ui::theme::Theme::dark();
+
+            assert!(app.uses_compact_layout(&theme));
+            assert!(app.uses_single_pane_detail(&theme));
+            assert_eq!(app.header_height(&theme), 120.0);
+            assert_eq!(ContainersApp::row_height(&theme), ROW_HEIGHT);
+
+            let large = ui::theme::Theme::dark().with_text_scale(2.0);
+            app.rect = Rect::new(0.0, 0.0, 768.0, 900.0);
+            assert!(app.uses_single_pane_detail(&large));
+            assert_eq!(ContainersApp::row_height(&large), 84.0);
+        }
     }
 
-    /// Enter on a palette row routes through the real `handle_event`
-    /// path and selects that container — proving the palette (not the
-    /// app's own search) drives selection.
+    /// The palette seeds one row per container and Enter selects it; confirm and prompt dialogs remove images and create volumes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn enter_on_a_palette_row_selects_that_container() {
-        let mut app = ContainersApp::new(false);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
+    fn palette_and_dialogs_drive_container_operations() {
+        // --- phase: open_palette_seeds_one_row_per_container ---
+        // Opening the app-scoped palette seeds it from the app's *real*
+        // containers — the search rows are the app's resources, not a
+        // bespoke in-app search UI. Empty stays empty otherwise.
+        {
+            let mut app = ContainersApp::new(false);
+            assert!(!app.palette_open);
+            let count = app.engine.containers.len();
+            assert!(count > 0, "sample engine has containers to search");
 
-        app.open_container_palette();
-        let expected = app.engine.containers[0].id.clone();
+            app.open_container_palette();
+            assert!(app.palette_open, "the launcher opens the shared palette");
 
-        let (taffy, node) = dummy_layout();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            &key_press(Key::Named(NamedKey::Enter)),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        app.dispatch_palette_invocation_for_test(&mut doc);
+            let rows: Vec<String> = app
+                .palette
+                .visible_entries()
+                .iter()
+                .map(|e| e.label.clone())
+                .collect();
+            assert_eq!(rows.len(), count, "one palette row per container");
+            assert!(
+                app.engine
+                    .containers
+                    .iter()
+                    .all(|c| rows.iter().any(|r| r.contains(&c.name))),
+                "every container is reachable through the shared palette"
+            );
+        }
 
-        assert!(!app.palette_open, "Enter closes the palette");
-        assert_eq!(
-            ViewDoc::selected(&mut doc).as_deref(),
-            Some(expected.as_str()),
-            "activating a palette row selects that container"
-        );
+        // --- phase: enter_on_a_palette_row_selects_that_container ---
+        // Enter on a palette row routes through the real `handle_event`
+        // path and selects that container — proving the palette (not the
+        // app's own search) drives selection.
+        {
+            let mut app = ContainersApp::new(false);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+
+            app.open_container_palette();
+            let expected = app.engine.containers[0].id.clone();
+
+            let (taffy, node) = dummy_layout();
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                &key_press(Key::Named(NamedKey::Enter)),
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            app.dispatch_palette_invocation_for_test(&mut doc);
+
+            assert!(!app.palette_open, "Enter closes the palette");
+            assert_eq!(
+                ViewDoc::selected(&mut doc).as_deref(),
+                Some(expected.as_str()),
+                "activating a palette row selects that container"
+            );
+        }
+
+        // --- phase: confirm_dialog_primary_removes_image_and_escape_cancels ---
+        // The destructive confirm routes through the shared `ModalDialog`: a click
+        // on its danger primary performs the real removal and closes; Escape on a
+        // fresh one cancels without touching the engine.
+        {
+            let mut app = ContainersApp::new(false);
+            app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let reference = app.engine.images[0].reference();
+            let before = app.engine.images.len();
+            app.confirm = Some(Confirm {
+                name: reference.clone(),
+                verb: "Remove image".into(),
+                target: ConfirmTarget::Image { reference },
+            });
+            // A cursor move builds + lays out the dialog so its primary rect resolves.
+            dispatch(
+                &mut app,
+                &mut doc,
+                &root,
+                &cursor_at(Point::new(10.0, 10.0)),
+            );
+            let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
+            dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
+            dispatch(&mut app, &mut doc, &root, &left_press());
+            assert!(
+                app.confirm.is_none(),
+                "confirm closed after the primary click"
+            );
+            assert!(app.confirm_dialog.is_none());
+            assert_eq!(
+                app.engine.images.len(),
+                before - 1,
+                "the image was removed on confirm"
+            );
+
+            let mut b = ContainersApp::new(false);
+            b.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+            let refb = b.engine.images[0].reference();
+            let beforeb = b.engine.images.len();
+            b.confirm = Some(Confirm {
+                name: refb.clone(),
+                verb: "Remove image".into(),
+                target: ConfirmTarget::Image { reference: refb },
+            });
+            dispatch(
+                &mut b,
+                &mut doc,
+                &root,
+                &key_press(Key::Named(NamedKey::Escape)),
+            );
+            assert!(b.confirm.is_none(), "Escape cancelled the confirm");
+            assert_eq!(b.engine.images.len(), beforeb, "Escape removed nothing");
+        }
+
+        // --- phase: prompt_dialog_creates_volume_from_typed_field ---
+        // The text prompt routes through the shared `ModalDialog` hosting a real
+        // `TextInput`: characters typed land in the field, and the primary button
+        // commits that value (creating a volume named from the typed text).
+        {
+            let mut app = ContainersApp::new(false);
+            app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let before = app.engine.volumes.len();
+            app.prompt = Some(Prompt {
+                kind: PromptKind::NewVolume,
+                title: "New volume".into(),
+                placeholder: "my-volume".into(),
+                value: String::new(),
+                context: String::new(),
+            });
+            dispatch(
+                &mut app,
+                &mut doc,
+                &root,
+                &cursor_at(Point::new(10.0, 10.0)),
+            );
+            for ch in ["d", "a", "t", "a"] {
+                dispatch(&mut app, &mut doc, &root, &char_press(ch));
+            }
+            assert_eq!(
+                app.prompt_dialog.as_ref().unwrap().dialog.content().value(),
+                "data",
+                "keystrokes land in the embedded real TextInput",
+            );
+            let primary = app.prompt_dialog.as_ref().unwrap().dialog.primary_rect();
+            dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
+            dispatch(&mut app, &mut doc, &root, &left_press());
+            assert!(app.prompt.is_none(), "prompt closed after submit");
+            assert_eq!(app.engine.volumes.len(), before + 1, "a volume was created");
+            assert!(
+                app.engine.volumes.iter().any(|v| v.name == "data"),
+                "the volume is named from the typed field value",
+            );
+        }
     }
 
     // --- shared-ModalDialog confirm / prompt routing --------------------
@@ -2954,162 +3064,69 @@ mod palette_launcher_tests {
         );
     }
 
-    /// The destructive confirm routes through the shared `ModalDialog`: a click
-    /// on its danger primary performs the real removal and closes; Escape on a
-    /// fresh one cancels without touching the engine.
+    /// Lifecycle controls emit the exported effect instead of running podman inline, and the resource snapshot is bounded with lazy identity resolution.
     #[test]
-    fn confirm_dialog_primary_removes_image_and_escape_cancels() {
-        let mut app = ContainersApp::new(false);
-        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let reference = app.engine.images[0].reference();
-        let before = app.engine.images.len();
-        app.confirm = Some(Confirm {
-            name: reference.clone(),
-            verb: "Remove image".into(),
-            target: ConfirmTarget::Image { reference },
-        });
-        // A cursor move builds + lays out the dialog so its primary rect resolves.
-        dispatch(
-            &mut app,
-            &mut doc,
-            &root,
-            &cursor_at(Point::new(10.0, 10.0)),
-        );
-        let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
-        dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
-        dispatch(&mut app, &mut doc, &root, &left_press());
-        assert!(
-            app.confirm.is_none(),
-            "confirm closed after the primary click"
-        );
-        assert!(app.confirm_dialog.is_none());
-        assert_eq!(
-            app.engine.images.len(),
-            before - 1,
-            "the image was removed on confirm"
-        );
-
-        let mut b = ContainersApp::new(false);
-        b.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-        let refb = b.engine.images[0].reference();
-        let beforeb = b.engine.images.len();
-        b.confirm = Some(Confirm {
-            name: refb.clone(),
-            verb: "Remove image".into(),
-            target: ConfirmTarget::Image { reference: refb },
-        });
-        dispatch(
-            &mut b,
-            &mut doc,
-            &root,
-            &key_press(Key::Named(NamedKey::Escape)),
-        );
-        assert!(b.confirm.is_none(), "Escape cancelled the confirm");
-        assert_eq!(b.engine.images.len(), beforeb, "Escape removed nothing");
-    }
-
-    /// The text prompt routes through the shared `ModalDialog` hosting a real
-    /// `TextInput`: characters typed land in the field, and the primary button
-    /// commits that value (creating a volume named from the typed text).
-    #[test]
-    fn prompt_dialog_creates_volume_from_typed_field() {
-        let mut app = ContainersApp::new(false);
-        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let before = app.engine.volumes.len();
-        app.prompt = Some(Prompt {
-            kind: PromptKind::NewVolume,
-            title: "New volume".into(),
-            placeholder: "my-volume".into(),
-            value: String::new(),
-            context: String::new(),
-        });
-        dispatch(
-            &mut app,
-            &mut doc,
-            &root,
-            &cursor_at(Point::new(10.0, 10.0)),
-        );
-        for ch in ["d", "a", "t", "a"] {
-            dispatch(&mut app, &mut doc, &root, &char_press(ch));
+    fn lifecycle_effects_and_resources_are_exported_and_bounded() {
+        // --- phase: lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline ---
+        {
+            let mut app = ContainersApp::new(false);
+            app.engine.live = true;
+            let id = app.engine.containers[0].id.clone();
+            app.apply_action(Action::Stop, &id);
+            let intent = app
+                .take_control_invocation()
+                .expect("the host receives an inert resource intent");
+            assert_eq!(
+                intent.address,
+                ActionAddress::new(format!("container:{id}"), "stop")
+            );
+            assert!(intent.arguments.is_empty());
+            assert_eq!(
+                app.engine.find(&id).map(|container| container.status),
+                Some(crate::model::ContainerStatus::Running),
+                "the control does not mutate the engine before host authorization"
+            );
         }
-        assert_eq!(
-            app.prompt_dialog.as_ref().unwrap().dialog.content().value(),
-            "data",
-            "keystrokes land in the embedded real TextInput",
-        );
-        let primary = app.prompt_dialog.as_ref().unwrap().dialog.primary_rect();
-        dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
-        dispatch(&mut app, &mut doc, &root, &left_press());
-        assert!(app.prompt.is_none(), "prompt closed after submit");
-        assert_eq!(app.engine.volumes.len(), before + 1, "a volume was created");
-        assert!(
-            app.engine.volumes.iter().any(|v| v.name == "data"),
-            "the volume is named from the typed field value",
-        );
-    }
 
-    #[test]
-    fn lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline() {
-        let mut app = ContainersApp::new(false);
-        app.engine.live = true;
-        let id = app.engine.containers[0].id.clone();
-        app.apply_action(Action::Stop, &id);
-        let intent = app
-            .take_control_invocation()
-            .expect("the host receives an inert resource intent");
-        assert_eq!(
-            intent.address,
-            ActionAddress::new(format!("container:{id}"), "stop")
-        );
-        assert!(intent.arguments.is_empty());
-        assert_eq!(
-            app.engine.find(&id).map(|container| container.status),
-            Some(crate::model::ContainerStatus::Running),
-            "the control does not mutate the engine before host authorization"
-        );
-    }
+        // --- phase: resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily ---
+        {
+            let mut app = ContainersApp::new(false);
+            let template = app.engine.containers[0].clone();
+            app.engine.containers.clear();
+            for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
+                let mut container = template.clone();
+                container.id = format!("durable-{index:03}");
+                container.name = format!("Container {index:03}");
+                app.engine.containers.push(container);
+            }
+            app.search_index.sync(&app.engine);
 
-    #[test]
-    fn resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily() {
-        let mut app = ContainersApp::new(false);
-        let template = app.engine.containers[0].clone();
-        app.engine.containers.clear();
-        for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
-            let mut container = template.clone();
-            container.id = format!("durable-{index:03}");
-            container.name = format!("Container {index:03}");
-            app.engine.containers.push(container);
+            let doc = AutoCommit::new();
+            let root = Widget::resources(&app, &doc).remove(0);
+            assert_eq!(root.children.len(), RESOURCE_SNAPSHOT_LIMIT);
+            let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
+            assert!(
+                root.children
+                    .iter()
+                    .all(|resource| resource.id.0 != omitted)
+            );
+            assert_eq!(
+                Widget::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
+                Some(omitted.clone())
+            );
+
+            app.engine
+                .containers
+                .retain(|container| format!("container:{}", container.id) != omitted);
+            app.search_index.sync(&app.engine);
+            assert!(
+                Widget::resource(&app, &doc, &omitted).is_none(),
+                "a stale palette address cannot recreate removed authority"
+            );
+            assert!(
+                ui::search::SearchProvider::search(&app.search_index.provider(), &omitted,)
+                    .is_empty()
+            );
         }
-        app.search_index.sync(&app.engine);
-
-        let doc = AutoCommit::new();
-        let root = Widget::resources(&app, &doc).remove(0);
-        assert_eq!(root.children.len(), RESOURCE_SNAPSHOT_LIMIT);
-        let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
-        assert!(
-            root.children
-                .iter()
-                .all(|resource| resource.id.0 != omitted)
-        );
-        assert_eq!(
-            Widget::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
-            Some(omitted.clone())
-        );
-
-        app.engine
-            .containers
-            .retain(|container| format!("container:{}", container.id) != omitted);
-        app.search_index.sync(&app.engine);
-        assert!(
-            Widget::resource(&app, &doc, &omitted).is_none(),
-            "a stale palette address cannot recreate removed authority"
-        );
-        assert!(
-            ui::search::SearchProvider::search(&app.search_index.provider(), &omitted,).is_empty()
-        );
     }
 }

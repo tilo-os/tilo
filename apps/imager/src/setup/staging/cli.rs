@@ -262,55 +262,59 @@ mod tests {
         v.iter().map(|x| (*x).to_string()).collect()
     }
 
+    /// CLI parsing.
     #[test]
-    fn parses_stage_and_remove_forms_strictly() {
-        let a = parse(&s(&[
-            "--manifest",
-            "m.json",
-            "--component",
-            "staging-esp=e.img",
-            "--component",
-            "staging-root=r.img",
-            "--target-bytes",
-            "36507222016",
-            "--out",
-            "req.json",
-        ]))
-        .unwrap();
-        assert_eq!(a.esp.as_deref(), Some("e.img"));
-        assert_eq!(a.target_bytes, Some(36_507_222_016));
-        assert_eq!(a.action, None);
-        let r = parse(&s(&["--action", "remove", "--record", "op", "--out", "x"])).unwrap();
-        assert_eq!(r.action, Some(Action::Remove));
-        assert!(parse(&s(&["--component", "boot=x"])).is_err());
-        assert!(parse(&s(&["--out", "a", "--out", "b"])).is_err());
-        assert!(parse(&s(&["--bogus"])).is_err());
-        assert!(parse(&s(&["--target-bytes", "lots"])).is_err());
-        assert!(parse(&s(&["--manifest"])).is_err());
-    }
+    fn staging_cli_parses_only_exact_strict_forms() {
+        // Phase `parses_stage_and_remove_forms_strictly`.
+        {
+            let a = parse(&s(&[
+                "--manifest",
+                "m.json",
+                "--component",
+                "staging-esp=e.img",
+                "--component",
+                "staging-root=r.img",
+                "--target-bytes",
+                "36507222016",
+                "--out",
+                "req.json",
+            ]))
+            .unwrap();
+            assert_eq!(a.esp.as_deref(), Some("e.img"));
+            assert_eq!(a.target_bytes, Some(36_507_222_016));
+            assert_eq!(a.action, None);
+            let r = parse(&s(&["--action", "remove", "--record", "op", "--out", "x"])).unwrap();
+            assert_eq!(r.action, Some(Action::Remove));
+            assert!(parse(&s(&["--component", "boot=x"])).is_err());
+            assert!(parse(&s(&["--out", "a", "--out", "b"])).is_err());
+            assert!(parse(&s(&["--bogus"])).is_err());
+            assert!(parse(&s(&["--target-bytes", "lots"])).is_err());
+            assert!(parse(&s(&["--manifest"])).is_err());
+        }
 
-    #[test]
-    fn only_the_exact_mode_argument_enters_the_cli() {
-        assert_eq!(maybe_run_staging_request(&s(&["imager"])).unwrap(), None);
-        assert!(maybe_run_staging_request(&s(&["imager", STAGING_REQUEST_ARG])).is_err());
-    }
+        // Phase `only_the_exact_mode_argument_enters_the_cli`.
+        {
+            assert_eq!(maybe_run_staging_request(&s(&["imager"])).unwrap(), None);
+            assert!(maybe_run_staging_request(&s(&["imager", STAGING_REQUEST_ARG])).is_err());
+        }
 
-    #[test]
-    fn remove_without_a_record_is_an_error_not_a_request() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("req.json");
-        let code = maybe_run_staging_request(&s(&[
-            "imager",
-            STAGING_REQUEST_ARG,
-            "--action",
-            "remove",
-            "--record",
-            "missing-operation",
-            "--out",
-            out.to_str().unwrap(),
-        ]))
-        .unwrap();
-        assert_eq!(code, Some(1));
-        assert!(!out.exists());
+        // Phase `remove_without_a_record_is_an_error_not_a_request`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("req.json");
+            let code = maybe_run_staging_request(&s(&[
+                "imager",
+                STAGING_REQUEST_ARG,
+                "--action",
+                "remove",
+                "--record",
+                "missing-operation",
+                "--out",
+                out.to_str().unwrap(),
+            ]))
+            .unwrap();
+            assert_eq!(code, Some(1));
+            assert!(!out.exists());
+        }
     }
 }

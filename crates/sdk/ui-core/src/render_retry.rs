@@ -166,223 +166,231 @@ pub(crate) fn next_wake(
 mod tests {
     use super::*;
     #[test]
-    fn occlusion_backoff_caps_and_eventually_probes_without_exposure() {
-        let mut state = RenderRetryState::default();
-        let mut now = crate::time::now();
-        for delay in [
-            16_666_667,
-            33_333_334,
-            66_666_668,
-            133_333_336,
-            250_000_000,
-            250_000_000,
-        ] {
-            state.observe(FrameOutcome::Occluded, now);
-            let due = now + Duration::from_nanos(delay);
-            assert_eq!(state.deadline(), Some(due));
-            assert!(state.occlusion_blocked(now));
-            assert!(!state.allows(due - Duration::from_nanos(1)));
-            assert!(state.allows(due));
-            state.admitted();
-            now = due;
+    fn occlusion_backoff_caps_probes_and_survives_unrelated_outcomes() {
+        // Case `occlusion_backoff_caps_and_eventually_probes_without_exposure`.
+        {
+            let mut state = RenderRetryState::default();
+            let mut now = crate::time::now();
+            for delay in [
+                16_666_667,
+                33_333_334,
+                66_666_668,
+                133_333_336,
+                250_000_000,
+                250_000_000,
+            ] {
+                state.observe(FrameOutcome::Occluded, now);
+                let due = now + Duration::from_nanos(delay);
+                assert_eq!(state.deadline(), Some(due));
+                assert!(state.occlusion_blocked(now));
+                assert!(!state.allows(due - Duration::from_nanos(1)));
+                assert!(state.allows(due));
+                state.admitted();
+                now = due;
+            }
         }
-    }
-    #[test]
-    fn non_occlusion_outcomes_preserve_cadence_and_reset_streak() {
-        let now = crate::time::now();
-        for outcome in [
-            FrameOutcome::Skipped,
-            FrameOutcome::Reconfigured,
-            FrameOutcome::Presented,
-        ] {
+
+        // Case `non_occlusion_outcomes_preserve_cadence_and_reset_streak`.
+        {
+            let now = crate::time::now();
+            for outcome in [
+                FrameOutcome::Skipped,
+                FrameOutcome::Reconfigured,
+                FrameOutcome::Presented,
+            ] {
+                let mut state = RenderRetryState::default();
+                for _ in 0..8 {
+                    state.observe(FrameOutcome::Occluded, now);
+                }
+                state.observe(outcome, now);
+                assert!(!state.occlusion_blocked(now));
+                assert_eq!(
+                    state.deadline(),
+                    if outcome == FrameOutcome::Presented {
+                        None
+                    } else {
+                        Some(now + FRAME_INTERVAL)
+                    }
+                );
+                state.observe(FrameOutcome::Occluded, now);
+                assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
+            }
+        }
+
+        // Case `explicit_probe_survives_old_outcomes_and_buffer_deferral`.
+        {
+            let now = crate::time::now();
             let mut state = RenderRetryState::default();
             for _ in 0..8 {
                 state.observe(FrameOutcome::Occluded, now);
             }
-            state.observe(outcome, now);
-            assert!(!state.occlusion_blocked(now));
-            assert_eq!(
-                state.deadline(),
-                if outcome == FrameOutcome::Presented {
-                    None
-                } else {
-                    Some(now + FRAME_INTERVAL)
-                }
-            );
+            state.request_probe();
+            state.observe(FrameOutcome::Occluded, now);
+            assert!(state.allows(now));
+            assert_eq!(state.deadline(), None);
+            // Buffer admission may defer repeatedly without consuming the request.
+            assert!(state.allows(now));
+            state.admitted();
             state.observe(FrameOutcome::Occluded, now);
             assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
         }
-    }
-    #[test]
-    fn explicit_probe_survives_old_outcomes_and_buffer_deferral() {
-        let now = crate::time::now();
-        let mut state = RenderRetryState::default();
-        for _ in 0..8 {
-            state.observe(FrameOutcome::Occluded, now);
-        }
-        state.request_probe();
-        state.observe(FrameOutcome::Occluded, now);
-        assert!(state.allows(now));
-        assert_eq!(state.deadline(), None);
-        // Buffer admission may defer repeatedly without consuming the request.
-        assert!(state.allows(now));
-        state.admitted();
-        state.observe(FrameOutcome::Occluded, now);
-        assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
-    }
-    #[test]
-    fn blocked_render_only_demand_does_not_poll_but_visible_sibling_and_model_do() {
-        // Startup, tooltip, animation and overdue widget work share this gate.
-        for _kind in ["startup", "tooltip", "animation", "widget"] {
-            assert!(!presentation_demand(true, true));
-            assert!(presentation_demand(false, true));
-        }
-        let hidden = presentation_demand(true, true);
-        let sibling = presentation_demand(false, true);
-        assert!(hidden || sibling, "visible sibling keeps its cadence");
-        let model_work = true;
-        assert!(
-            model_work || hidden,
-            "collaboration work remains independent"
-        );
-    }
 
+        // Case `visible_sibling_limits_retry_without_erasing_occlusion_history`.
+        {
+            let now = crate::time::now();
+            let mut state = RenderRetryState::default();
+            for _ in 0..8 {
+                state.observe(FrameOutcome::Occluded, now);
+            }
+            state.keep_shared_cadence(now);
+            assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
+            assert!(state.known_occluded());
+            state.admitted();
+            assert!(state.known_occluded());
+            state.observe_for_shared_root(FrameOutcome::Occluded, now, true);
+            assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
+            state.observe_for_shared_root(FrameOutcome::Occluded, now, false);
+            assert_eq!(state.deadline(), Some(now + Duration::from_millis(250)));
+        }
+    }
     #[test]
-    fn selected_wait_defers_each_render_demand_but_preserves_model_and_visible_sibling() {
-        let now = crate::time::now();
-        let retry = now + Duration::from_millis(250);
-        for demand in [
-            WakeDemand {
-                primary_startup: true,
+    fn retry_waits_defer_render_demand_but_keep_model_sibling_and_timer_work() {
+        // Case `blocked_render_only_demand_does_not_poll_but_visible_sibling_and_model_do`.
+        {
+            // Startup, tooltip, animation and overdue widget work share this gate.
+            for _kind in ["startup", "tooltip", "animation", "widget"] {
+                assert!(!presentation_demand(true, true));
+                assert!(presentation_demand(false, true));
+            }
+            let hidden = presentation_demand(true, true);
+            let sibling = presentation_demand(false, true);
+            assert!(hidden || sibling, "visible sibling keeps its cadence");
+            let model_work = true;
+            assert!(
+                model_work || hidden,
+                "collaboration work remains independent"
+            );
+        }
+
+        // Case `selected_wait_defers_each_render_demand_but_preserves_model_and_visible_sibling`.
+        {
+            let now = crate::time::now();
+            let retry = now + Duration::from_millis(250);
+            for demand in [
+                WakeDemand {
+                    primary_startup: true,
+                    ..Default::default()
+                },
+                WakeDemand {
+                    tooltip: true,
+                    ..Default::default()
+                },
+                WakeDemand {
+                    typing: true,
+                    ..Default::default()
+                },
+                WakeDemand {
+                    widget_due: true,
+                    ..Default::default()
+                },
+                WakeDemand {
+                    animation: true,
+                    ..Default::default()
+                },
+            ] {
+                assert_eq!(
+                    next_wake(
+                        now,
+                        Some(retry),
+                        false,
+                        demand,
+                        Some(now),
+                        Some(retry),
+                        Some(now + FRAME_INTERVAL)
+                    ),
+                    Some(retry)
+                );
+            }
+            let model = WakeDemand {
+                model: true,
                 ..Default::default()
-            },
-            WakeDemand {
-                tooltip: true,
-                ..Default::default()
-            },
-            WakeDemand {
-                typing: true,
-                ..Default::default()
-            },
-            WakeDemand {
-                widget_due: true,
-                ..Default::default()
-            },
-            WakeDemand {
+            };
+            assert_eq!(
+                next_wake(now, Some(retry), false, model, Some(now), Some(retry), None),
+                Some(now + FRAME_INTERVAL)
+            );
+            let animation = WakeDemand {
                 animation: true,
                 ..Default::default()
-            },
-        ] {
+            };
             assert_eq!(
                 next_wake(
                     now,
                     Some(retry),
-                    false,
-                    demand,
+                    true,
+                    animation,
                     Some(now),
                     Some(retry),
                     Some(now + FRAME_INTERVAL)
                 ),
-                Some(retry)
+                Some(now + FRAME_INTERVAL)
+            );
+            let aux = WakeDemand {
+                auxiliary_startup: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                next_wake(now, Some(retry), true, aux, None, Some(retry), None),
+                Some(now + FRAME_INTERVAL)
+            );
+            assert_eq!(
+                next_wake(
+                    now,
+                    None,
+                    true,
+                    WakeDemand::default(),
+                    Some(now + Duration::from_secs(1)),
+                    None,
+                    None
+                ),
+                Some(now + Duration::from_secs(1))
             );
         }
-        let model = WakeDemand {
-            model: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            next_wake(now, Some(retry), false, model, Some(now), Some(retry), None),
-            Some(now + FRAME_INTERVAL)
-        );
-        let animation = WakeDemand {
-            animation: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            next_wake(
-                now,
-                Some(retry),
-                true,
-                animation,
-                Some(now),
-                Some(retry),
-                Some(now + FRAME_INTERVAL)
-            ),
-            Some(now + FRAME_INTERVAL)
-        );
-        let aux = WakeDemand {
-            auxiliary_startup: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            next_wake(now, Some(retry), true, aux, None, Some(retry), None),
-            Some(now + FRAME_INTERVAL)
-        );
-        assert_eq!(
-            next_wake(
-                now,
-                None,
-                true,
-                WakeDemand::default(),
-                Some(now + Duration::from_secs(1)),
-                None,
-                None
-            ),
-            Some(now + Duration::from_secs(1))
-        );
-    }
 
-    #[test]
-    fn explicit_events_preserve_normal_idle_but_request_retry_recovery() {
-        let now = crate::time::now();
-        let mut state = RenderRetryState::default();
-        assert!(
-            !state.request_probe(),
-            "ordinary pointer motion must not force an extra paint"
-        );
-        state.observe(FrameOutcome::Occluded, now);
-        assert!(
-            state.allows(now),
-            "latch survives a previously unobserved completion"
-        );
-        state.admitted();
-        state.observe(FrameOutcome::Occluded, now);
-        assert!(
-            state.request_probe(),
-            "known retry requires a recovery redraw"
-        );
-    }
-
-    #[test]
-    fn visible_sibling_limits_retry_without_erasing_occlusion_history() {
-        let now = crate::time::now();
-        let mut state = RenderRetryState::default();
-        for _ in 0..8 {
+        // Case `explicit_events_preserve_normal_idle_but_request_retry_recovery`.
+        {
+            let now = crate::time::now();
+            let mut state = RenderRetryState::default();
+            assert!(
+                !state.request_probe(),
+                "ordinary pointer motion must not force an extra paint"
+            );
             state.observe(FrameOutcome::Occluded, now);
+            assert!(
+                state.allows(now),
+                "latch survives a previously unobserved completion"
+            );
+            state.admitted();
+            state.observe(FrameOutcome::Occluded, now);
+            assert!(
+                state.request_probe(),
+                "known retry requires a recovery redraw"
+            );
         }
-        state.keep_shared_cadence(now);
-        assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
-        assert!(state.known_occluded());
-        state.admitted();
-        assert!(state.known_occluded());
-        state.observe_for_shared_root(FrameOutcome::Occluded, now, true);
-        assert_eq!(state.deadline(), Some(now + FRAME_INTERVAL));
-        state.observe_for_shared_root(FrameOutcome::Occluded, now, false);
-        assert_eq!(state.deadline(), Some(now + Duration::from_millis(250)));
-    }
 
-    #[test]
-    fn overdue_widget_timer_waits_for_probe_without_losing_deadline() {
-        let now = crate::time::now();
-        let retry = now + Duration::from_millis(250);
-        assert_eq!(
-            widget_deadline(Some(now - FRAME_INTERVAL), Some(retry)),
-            Some(retry)
-        );
-        assert_eq!(
-            widget_deadline(Some(now + Duration::from_secs(2)), Some(retry)),
-            Some(now + Duration::from_secs(2))
-        );
-        assert_eq!(widget_deadline(Some(now), None), Some(now));
+        // Case `overdue_widget_timer_waits_for_probe_without_losing_deadline`.
+        {
+            let now = crate::time::now();
+            let retry = now + Duration::from_millis(250);
+            assert_eq!(
+                widget_deadline(Some(now - FRAME_INTERVAL), Some(retry)),
+                Some(retry)
+            );
+            assert_eq!(
+                widget_deadline(Some(now + Duration::from_secs(2)), Some(retry)),
+                Some(now + Duration::from_secs(2))
+            );
+            assert_eq!(widget_deadline(Some(now), None), Some(now));
+        }
     }
 }

@@ -404,104 +404,107 @@ mod tests {
     use tilo_app_package::pack::{SigningIdentity, pack};
 
     #[test]
-    fn default_review_policy_enforces_the_app_limit_before_download() {
-        let policy = InspectionPolicy::default();
-        assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_TAPP_BYTES);
+    fn review_fetch_policy_refuses_before_network_io() {
+        // phase: default_review_policy_enforces_the_app_limit_before_download
+        {
+            let policy = InspectionPolicy::default();
+            assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_TAPP_BYTES);
 
-        let mut entry = sample_entry("https://example.com/app.tapp");
-        entry.versions[0].tapp_size_bytes = app_registry::MAX_APP_TAPP_BYTES + 1;
-        assert!(matches!(
-            inspect_entry(&entry, policy),
-            Err(BundleReviewError::TooLarge { limit, .. })
-                if limit == app_registry::MAX_APP_TAPP_BYTES
-        ));
+            let mut entry = sample_entry("https://example.com/app.tapp");
+            entry.versions[0].tapp_size_bytes = app_registry::MAX_APP_TAPP_BYTES + 1;
+            assert!(matches!(
+                inspect_entry(&entry, policy),
+                Err(BundleReviewError::TooLarge { limit, .. })
+                    if limit == app_registry::MAX_APP_TAPP_BYTES
+            ));
+        }
+        // phase: review_fetch_refuses_local_and_credentialed_urls_before_network_io
+        {
+            let mut entry = sample_entry("http://127.0.0.1/app.tapp");
+            assert!(matches!(
+                inspect_entry(&entry, InspectionPolicy::default()),
+                Err(BundleReviewError::Url { .. })
+            ));
+            entry.versions[0].tapp_url = "https://user@example.com/app.tapp".into();
+            assert!(matches!(
+                inspect_entry(&entry, InspectionPolicy::default()),
+                Err(BundleReviewError::Url { .. })
+            ));
+            entry.versions[0].tapp_url = "https://127.0.0.1/app.tapp".into();
+            assert!(matches!(
+                inspect_entry(&entry, InspectionPolicy::default()),
+                Err(BundleReviewError::PrivateAddress(_))
+            ));
+        }
+        // phase: public_address_classification_covers_special_ranges
+        {
+            assert!(!public_ip("127.0.0.1".parse().unwrap()));
+            assert!(!public_ip("169.254.1.2".parse().unwrap()));
+            assert!(!public_ip("100.64.0.1".parse().unwrap()));
+            assert!(!public_ip("2001:db8::1".parse().unwrap()));
+            assert!(public_ip("1.1.1.1".parse().unwrap()));
+            assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
+        }
     }
 
     #[test]
-    fn review_fetch_refuses_local_and_credentialed_urls_before_network_io() {
-        let mut entry = sample_entry("http://127.0.0.1/app.tapp");
-        assert!(matches!(
-            inspect_entry(&entry, InspectionPolicy::default()),
-            Err(BundleReviewError::Url { .. })
-        ));
-        entry.versions[0].tapp_url = "https://user@example.com/app.tapp".into();
-        assert!(matches!(
-            inspect_entry(&entry, InspectionPolicy::default()),
-            Err(BundleReviewError::Url { .. })
-        ));
-        entry.versions[0].tapp_url = "https://127.0.0.1/app.tapp".into();
-        assert!(matches!(
-            inspect_entry(&entry, InspectionPolicy::default()),
-            Err(BundleReviewError::PrivateAddress(_))
-        ));
-    }
+    fn artifact_inspection_binds_identity_manifest_size_and_isa() {
+        // phase: package_inspection_verifies_identity_manifest_and_size
+        {
+            let identity = SigningIdentity::generate();
+            let (bytes, package_id) = signed_tapp(&identity);
+            let mut entry = sample_entry("https://example.com/app.tapp");
+            entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+            entry.versions[0].tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+            entry.versions[0].tapp_size_bytes = bytes.len() as u64;
+            entry.versions[0].tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
 
-    #[test]
-    fn public_address_classification_covers_special_ranges() {
-        assert!(!public_ip("127.0.0.1".parse().unwrap()));
-        assert!(!public_ip("169.254.1.2".parse().unwrap()));
-        assert!(!public_ip("100.64.0.1".parse().unwrap()));
-        assert!(!public_ip("2001:db8::1".parse().unwrap()));
-        assert!(public_ip("1.1.1.1".parse().unwrap()));
-        assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
-    }
+            let inspected = inspect_bytes(&entry, &entry.versions[0], &bytes).unwrap();
+            assert_eq!(inspected.version, "1.0.0");
+            assert_eq!(inspected.package_id, package_id.to_string());
+            assert_eq!(inspected.sandbox["landlock"], "strict");
 
-    #[test]
-    fn package_inspection_verifies_identity_manifest_and_size() {
-        let identity = SigningIdentity::generate();
-        let (bytes, package_id) = signed_tapp(&identity);
-        let mut entry = sample_entry("https://example.com/app.tapp");
-        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-        entry.versions[0].tapp_root_hash_hex = hex::encode(package_id.as_bytes());
-        entry.versions[0].tapp_size_bytes = bytes.len() as u64;
-        entry.versions[0].tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+            let mut wrong_size = entry.versions[0].clone();
+            wrong_size.tapp_size_bytes += 1;
+            assert!(matches!(
+                inspect_bytes(&entry, &wrong_size, &bytes),
+                Err(BundleReviewError::SizeMismatch { .. })
+            ));
 
-        let inspected = inspect_bytes(&entry, &entry.versions[0], &bytes).unwrap();
-        assert_eq!(inspected.version, "1.0.0");
-        assert_eq!(inspected.package_id, package_id.to_string());
-        assert_eq!(inspected.sandbox["landlock"], "strict");
+            let mut wrong_publisher = entry.clone();
+            wrong_publisher.publisher_pubkey_hex = "aa".repeat(32);
+            assert!(matches!(
+                inspect_bytes(&wrong_publisher, &wrong_publisher.versions[0], &bytes),
+                Err(BundleReviewError::Verify { .. })
+            ));
 
-        let mut wrong_size = entry.versions[0].clone();
-        wrong_size.tapp_size_bytes += 1;
-        assert!(matches!(
-            inspect_bytes(&entry, &wrong_size, &bytes),
-            Err(BundleReviewError::SizeMismatch { .. })
-        ));
-
-        let mut wrong_publisher = entry.clone();
-        wrong_publisher.publisher_pubkey_hex = "aa".repeat(32);
-        assert!(matches!(
-            inspect_bytes(&wrong_publisher, &wrong_publisher.versions[0], &bytes),
-            Err(BundleReviewError::Verify { .. })
-        ));
-
-        let mut wrong_manifest = entry.clone();
-        wrong_manifest.package_id = "so.tilo.other".into();
-        assert!(matches!(
-            inspect_bytes(&wrong_manifest, &wrong_manifest.versions[0], &bytes),
-            Err(BundleReviewError::ManifestMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn arm_artifact_inspection_binds_architecture_and_isa() {
-        let identity = SigningIdentity::generate();
-        let (bytes, package_id) = signed_tapp_arch(&identity, "aarch64 = \"v8.2-a\"");
-        let mut entry = sample_entry("https://example.com/arm.tapp");
-        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-        let version = &mut entry.versions[0];
-        version.tapp_root_hash_hex = hex::encode(package_id.as_bytes());
-        version.tapp_size_bytes = bytes.len() as u64;
-        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
-        let target = &mut version.target;
-        target.architecture = "aarch64".into();
-        target.isa = "aarch64-v8.2".into();
-        assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-        entry.versions[0].target.isa = "aarch64-v9".into();
-        assert!(matches!(
-            inspect_bytes(&entry, &entry.versions[0], &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
+            let mut wrong_manifest = entry.clone();
+            wrong_manifest.package_id = "so.tilo.other".into();
+            assert!(matches!(
+                inspect_bytes(&wrong_manifest, &wrong_manifest.versions[0], &bytes),
+                Err(BundleReviewError::ManifestMismatch { .. })
+            ));
+        }
+        // phase: arm_artifact_inspection_binds_architecture_and_isa
+        {
+            let identity = SigningIdentity::generate();
+            let (bytes, package_id) = signed_tapp_arch(&identity, "aarch64 = \"v8.2-a\"");
+            let mut entry = sample_entry("https://example.com/arm.tapp");
+            entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+            let version = &mut entry.versions[0];
+            version.tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+            version.tapp_size_bytes = bytes.len() as u64;
+            version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+            let target = &mut version.target;
+            target.architecture = "aarch64".into();
+            target.isa = "aarch64-v8.2".into();
+            assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
+            entry.versions[0].target.isa = "aarch64-v9".into();
+            assert!(matches!(
+                inspect_bytes(&entry, &entry.versions[0], &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
+        }
     }
 
     fn signed_tapp(identity: &SigningIdentity) -> (Vec<u8>, tilo_app_package::PackageId) {

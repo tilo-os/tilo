@@ -422,14 +422,15 @@ mod tests {
         dir
     }
 
-    /// The whole point of the mirror: a guest can create a file anywhere the base has a directory, without copying up a root-owned one.
     #[test]
-    fn creating_a_layer_mirrors_every_base_directory() {
+    fn creating_a_layer_mirrors_the_base_shape_and_seeds_state_once() {
         let base = fake_base();
         let store = tempfile::tempdir().unwrap();
         let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
         layer.create(base.path()).unwrap();
 
+        // The whole point of the mirror: a guest can create a file anywhere the
+        // base has a directory, without copying up a root-owned one.
         for d in ["usr/bin", "usr/lib64", "usr/share/terminfo/x", "etc/dnf"] {
             assert!(
                 layer.path().join(d).is_dir(),
@@ -442,45 +443,26 @@ mod tests {
             !layer.path().join("usr/bin/bash").exists(),
             "the mirror copied a file; it must copy shape, not content"
         );
-    }
 
-    /// The seeded state is what makes the layer a delta, and rpm's database writable at all.
-    #[test]
-    fn creating_a_layer_seeds_the_package_manager_state() {
-        let base = fake_base();
-        let store = tempfile::tempdir().unwrap();
-        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
-        layer.create(base.path()).unwrap();
-
+        // The seeded state is what makes the layer a delta, and rpm's database writable at all.
         let db = layer.path().join("usr/share/rpm/rpmdb.sqlite");
         assert!(db.is_file(), "the rpm database was not seeded");
         assert_eq!(std::fs::read(&db).unwrap(), b"BASE-RPMDB");
-
         let hist = layer
             .path()
             .join("usr/lib/sysimage/libdnf5/transaction_history.sqlite");
         assert!(hist.is_file(), "dnf's transaction history was not seeded");
-    }
 
-    /// `var` must not become a shadowed base subtree: the store lives inside
-    /// `$HOME`, itself inside `/var` on a bootc system, and overlayfs refuses an upperdir nested in its lowerdir.
-    #[test]
-    fn var_is_not_a_shadowed_base_subtree() {
+        // `var` must not become a shadowed base subtree: the store lives inside
+        // `$HOME`, itself inside `/var` on a bootc system, and overlayfs refuses
+        // an upperdir nested in its lowerdir.
         assert!(
             !BASE_SUBTREES.contains(&"var"),
             "shadowing /var makes the overlay unmountable wherever $HOME is under /var"
         );
         assert_eq!(BASE_SUBTREES, &["usr", "etc"]);
-    }
 
-    #[test]
-    fn create_is_idempotent_and_does_not_re_seed() {
-        let base = fake_base();
-        let store = tempfile::tempdir().unwrap();
-        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
-        layer.create(base.path()).unwrap();
-
-        let db = layer.path().join("usr/share/rpm/rpmdb.sqlite");
+        // Create is idempotent and does not re-seed.
         std::fs::write(&db, b"MODIFIED-BY-A-TRANSACTION").unwrap();
         layer.create(base.path()).unwrap();
         assert_eq!(
@@ -492,121 +474,130 @@ mod tests {
     }
 
     #[test]
-    fn diff_names_added_and_shadowed_files_and_skips_mirrored_directories() {
-        let base = fake_base();
-        let store = tempfile::tempdir().unwrap();
-        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
-        layer.create(base.path()).unwrap();
+    fn diff_and_size_count_only_layer_content() {
+        // phase: diff_names_added_and_shadowed_files_and_skips_mirrored_directories
+        {
+            let base = fake_base();
+            let store = tempfile::tempdir().unwrap();
+            let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+            layer.create(base.path()).unwrap();
 
-        // Baseline: a fresh layer holds only the state it was seeded with.
-        let seeded = layer.diff(base.path());
-        assert!(
-            seeded.iter().all(|c| c.kind == ChangeKind::Shadowed),
-            "a fresh layer must only shadow the state files it seeded: {seeded:?}"
-        );
-        assert!(
-            !seeded.iter().any(|c| c.path.ends_with("bin")),
-            "diff reported a mirrored directory: {seeded:?}"
-        );
+            // Baseline: a fresh layer holds only the state it was seeded with.
+            let seeded = layer.diff(base.path());
+            assert!(
+                seeded.iter().all(|c| c.kind == ChangeKind::Shadowed),
+                "a fresh layer must only shadow the state files it seeded: {seeded:?}"
+            );
+            assert!(
+                !seeded.iter().any(|c| c.path.ends_with("bin")),
+                "diff reported a mirrored directory: {seeded:?}"
+            );
 
-        std::fs::write(layer.path().join("usr/bin/htop"), b"HTOP").unwrap();
-        std::fs::write(layer.path().join("usr/bin/bash"), b"REPLACED").unwrap();
+            std::fs::write(layer.path().join("usr/bin/htop"), b"HTOP").unwrap();
+            std::fs::write(layer.path().join("usr/bin/bash"), b"REPLACED").unwrap();
 
-        let changes = layer.diff(base.path());
-        let added = changes
-            .iter()
-            .find(|c| c.path == Path::new("/usr/bin/htop"))
-            .expect("added file missing from diff");
-        assert_eq!(added.kind, ChangeKind::Added);
-        assert_eq!(added.bytes, 4);
+            let changes = layer.diff(base.path());
+            let added = changes
+                .iter()
+                .find(|c| c.path == Path::new("/usr/bin/htop"))
+                .expect("added file missing from diff");
+            assert_eq!(added.kind, ChangeKind::Added);
+            assert_eq!(added.bytes, 4);
 
-        let shadowed = changes
-            .iter()
-            .find(|c| c.path == Path::new("/usr/bin/bash"))
-            .expect("shadowed file missing from diff");
-        assert_eq!(
-            shadowed.kind,
-            ChangeKind::Shadowed,
-            "a path that exists in the base is shadowed, not added"
-        );
+            let shadowed = changes
+                .iter()
+                .find(|c| c.path == Path::new("/usr/bin/bash"))
+                .expect("shadowed file missing from diff");
+            assert_eq!(
+                shadowed.kind,
+                ChangeKind::Shadowed,
+                "a path that exists in the base is shadowed, not added"
+            );
+        }
+        // phase: size_counts_layer_content_only
+        {
+            let base = fake_base();
+            let store = tempfile::tempdir().unwrap();
+            let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+            layer.create(base.path()).unwrap();
+            let seeded = layer.size_bytes(base.path());
+            std::fs::write(layer.path().join("usr/bin/htop"), vec![0u8; 1024]).unwrap();
+            assert_eq!(layer.size_bytes(base.path()), seeded + 1024);
+        }
     }
 
-    /// A store on `/tmp` mounts and then dies at the overlay with `Invalid
-    /// argument`; naming the filesystem and the fix-it variable turns that into a diagnosable error.
     #[test]
-    fn a_layer_on_tmpfs_is_refused_with_an_explanation() {
-        // `/dev/shm` is tmpfs on every Linux this runs on.
-        let shm = Path::new("/dev/shm");
-        if !shm.is_dir() {
-            eprintln!("no /dev/shm on this machine; tmpfs rejection not exercised");
-            return;
-        }
-        let layer = Layer::new(shm.join("ush-fs-probe"), LayerKind::Persistent);
-        match upper_filesystem_supported(layer.path()) {
-            Err(LayerError::UnusableFilesystem { fs, env, .. }) => {
-                assert_eq!(fs, "tmpfs");
-                assert_eq!(env, crate::store::STORE_ENV);
+    fn the_layer_filesystem_is_checked_before_anything_is_written() {
+        // phase: a_layer_on_tmpfs_is_refused_with_an_explanation
+        // A store on `/tmp` mounts and then dies at the overlay with `Invalid
+        // argument`; naming the filesystem and the fix-it variable turns that into a diagnosable error.
+        {
+            fn phase_a_layer_on_tmpfs_is_refused_with_an_explanation() {
+                // `/dev/shm` is tmpfs on every Linux this runs on.
+                let shm = Path::new("/dev/shm");
+                if !shm.is_dir() {
+                    eprintln!("no /dev/shm on this machine; tmpfs rejection not exercised");
+                    return;
+                }
+                let layer = Layer::new(shm.join("ush-fs-probe"), LayerKind::Persistent);
+                match upper_filesystem_supported(layer.path()) {
+                    Err(LayerError::UnusableFilesystem { fs, env, .. }) => {
+                        assert_eq!(fs, "tmpfs");
+                        assert_eq!(env, crate::store::STORE_ENV);
+                    }
+                    other => panic!("tmpfs must be refused as a layer location: {other:?}"),
+                }
+                assert!(
+                    !layer.path().exists(),
+                    "the check must run before anything is written"
+                );
             }
-            other => panic!("tmpfs must be refused as a layer location: {other:?}"),
+            phase_a_layer_on_tmpfs_is_refused_with_an_explanation();
         }
-        assert!(
-            !layer.path().exists(),
-            "the check must run before anything is written"
-        );
+        // phase: an_ordinary_directory_is_accepted
+        {
+            // The data directory, not `/tmp` (often tmpfs, which is what's under test).
+            // It may not exist yet — a container running as root has a bare `/root` —
+            // so create it first, or a missing parent looks like a rejected filesystem.
+            let base = xdg_paths::data_dir().unwrap_or_else(|| PathBuf::from("."));
+            std::fs::create_dir_all(&base).expect("the data directory must be creatable");
+            let dir = tempfile::TempDir::with_prefix_in("ush-fs-", &base).expect("tempdir on disk");
+            upper_filesystem_supported(&dir.path().join("layers/persistent"))
+                .expect("an ordinary data directory must be usable");
+        }
     }
 
     #[test]
-    fn an_ordinary_directory_is_accepted() {
-        // The data directory, not `/tmp` (often tmpfs, which is what's under test).
-        // It may not exist yet — a container running as root has a bare `/root` —
-        // so create it first, or a missing parent looks like a rejected filesystem.
-        let base = xdg_paths::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&base).expect("the data directory must be creatable");
-        let dir = tempfile::TempDir::with_prefix_in("ush-fs-", &base).expect("tempdir on disk");
-        upper_filesystem_supported(&dir.path().join("layers/persistent"))
-            .expect("an ordinary data directory must be usable");
-    }
+    fn burn_destroys_only_a_marked_layer() {
+        // phase: burn_destroys_the_layer
+        {
+            let base = fake_base();
+            let store = tempfile::tempdir().unwrap();
+            let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+            layer.create(base.path()).unwrap();
+            std::fs::write(layer.path().join("usr/bin/htop"), b"HTOP").unwrap();
+            assert!(layer.exists());
 
-    #[test]
-    fn burn_destroys_the_layer() {
-        let base = fake_base();
-        let store = tempfile::tempdir().unwrap();
-        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
-        layer.create(base.path()).unwrap();
-        std::fs::write(layer.path().join("usr/bin/htop"), b"HTOP").unwrap();
-        assert!(layer.exists());
+            layer.burn().unwrap();
+            assert!(!layer.exists());
+            assert!(!layer.path().exists());
+        }
+        // phase: burn_refuses_a_directory_that_is_not_a_layer
+        // `burn` is `rm -rf` on a path. The marker is the only thing standing
+        // between a mistyped store root and someone's home directory.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let precious = dir.path().join("Documents");
+            std::fs::create_dir_all(&precious).unwrap();
+            std::fs::write(precious.join("thesis.md"), b"years of work").unwrap();
 
-        layer.burn().unwrap();
-        assert!(!layer.exists());
-        assert!(!layer.path().exists());
-    }
-
-    /// `burn` is `rm -rf` on a path. The marker is the only thing standing
-    /// between a mistyped store root and someone's home directory.
-    #[test]
-    fn burn_refuses_a_directory_that_is_not_a_layer() {
-        let dir = tempfile::tempdir().unwrap();
-        let precious = dir.path().join("Documents");
-        std::fs::create_dir_all(&precious).unwrap();
-        std::fs::write(precious.join("thesis.md"), b"years of work").unwrap();
-
-        let layer = Layer::new(&precious, LayerKind::Persistent);
-        let err = layer.burn().unwrap_err();
-        assert!(matches!(err, LayerError::NotALayer(_)), "{err:?}");
-        assert!(
-            precious.join("thesis.md").is_file(),
-            "burn deleted a directory it did not create"
-        );
-    }
-
-    #[test]
-    fn size_counts_layer_content_only() {
-        let base = fake_base();
-        let store = tempfile::tempdir().unwrap();
-        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
-        layer.create(base.path()).unwrap();
-        let seeded = layer.size_bytes(base.path());
-        std::fs::write(layer.path().join("usr/bin/htop"), vec![0u8; 1024]).unwrap();
-        assert_eq!(layer.size_bytes(base.path()), seeded + 1024);
+            let layer = Layer::new(&precious, LayerKind::Persistent);
+            let err = layer.burn().unwrap_err();
+            assert!(matches!(err, LayerError::NotALayer(_)), "{err:?}");
+            assert!(
+                precious.join("thesis.md").is_file(),
+                "burn deleted a directory it did not create"
+            );
+        }
     }
 }

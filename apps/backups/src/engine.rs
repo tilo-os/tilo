@@ -767,7 +767,19 @@ mod tests {
         );
     }
 
+    /// Recursive destinations, corrupt snapshots, targets inside the repository,
+    /// non-empty folders and a failed stage publish are all refused without
+    /// clobbering data; each case uses its own temp dir.
     #[test]
+    fn unsafe_or_corrupt_operations_are_refused_without_writing() {
+        rejects_recursive_destinations();
+        corruption_is_reported_and_not_restored();
+        restore_refuses_a_target_inside_the_repository_before_writing_it();
+        restore_refuses_nonempty_folder_by_default();
+        failed_stage_publish_restores_the_previous_target();
+    }
+
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn rejects_recursive_destinations() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -778,7 +790,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn corruption_is_reported_and_not_restored() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -804,7 +816,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn restore_refuses_a_target_inside_the_repository_before_writing_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -824,7 +836,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn restore_refuses_nonempty_folder_by_default() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -842,7 +854,7 @@ mod tests {
         assert_eq!(fs::read(restored.join("file")).unwrap(), b"existing");
     }
 
-    #[test]
+    /// Case of `unsafe_or_corrupt_operations_are_refused_without_writing`.
     fn failed_stage_publish_restores_the_previous_target() {
         let temp = tempfile::tempdir().unwrap();
         let target = temp.path().join("restore");
@@ -865,8 +877,19 @@ mod tests {
         assert!(stage.join("restored").exists());
     }
 
-    #[cfg(unix)]
+    /// Source symlinks are stored as links, a malicious restore ancestor link is
+    /// replaced, and a repository symlink is rejected; each case uses its own
+    /// temp dir.
     #[test]
+    #[cfg(unix)]
+    fn symlinks_are_preserved_or_rejected_but_never_followed() {
+        source_symlinks_are_preserved_without_following_them();
+        overwrite_replaces_a_malicious_symlink_ancestor_without_following_it();
+        repository_symlink_is_rejected();
+    }
+
+    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
+    #[cfg(unix)]
     fn source_symlinks_are_preserved_without_following_them() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -892,8 +915,8 @@ mod tests {
         );
     }
 
+    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
-    #[test]
     fn overwrite_replaces_a_malicious_symlink_ancestor_without_following_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -911,8 +934,8 @@ mod tests {
         assert_eq!(fs::read(restore.join("folder/file")).unwrap(), b"safe");
     }
 
+    /// Case of `symlinks_are_preserved_or_rejected_but_never_followed`.
     #[cfg(unix)]
-    #[test]
     fn repository_symlink_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");

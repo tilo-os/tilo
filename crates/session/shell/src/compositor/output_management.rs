@@ -15,15 +15,20 @@
 //! it. A tool that picks a mode the panel cannot show leaves a black screen
 //! for fifteen seconds, not for the rest of the session. `succeeded` is
 //! sent once the backend has applied the plan, `failed` when it rejects it.
+//!
+//! The shell asks the person to keep or revert each applied change (see
+//! [`OutputManagementState::take_confirmation`]). A tool they chose to
+//! trust — keyed by the executable behind the connection — has its changes
+//! kept without asking, unless the change would leave no display on.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{
     DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState, OutputMode,
     OutputTransform,
 };
-use smithay::output::Output as SmithayOutput;
 use smithay::reexports::wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_configuration_head_v1::{self, ZwlrOutputConfigurationHeadV1},
     zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1},
@@ -36,7 +41,7 @@ use smithay::reexports::wayland_protocols_wlr::output_power_management::v1::serv
     zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
 use smithay::reexports::wayland_server::backend::{ClientId, GlobalId};
-use smithay::reexports::wayland_server::protocol::wl_output::{self, WlOutput};
+use smithay::reexports::wayland_server::protocol::wl_output;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
 };
@@ -110,6 +115,16 @@ struct BoundManager {
 struct PendingApply {
     configuration: ZwlrOutputConfigurationV1,
     transaction: u64,
+    tool: Option<DisplayTool>,
+}
+
+/// A tool's display change the backend applied and the person has to keep
+/// or revert before the transaction's deadline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayConfirmation {
+    pub transaction: u64,
+    /// The program that asked for it, when its connection revealed one.
+    pub tool: Option<DisplayTool>,
 }
 
 /// Server-side state of both protocols.
@@ -126,7 +141,7 @@ pub struct OutputManagementState {
     /// Outputs a client has switched off. Absent means on.
     powered_off: BTreeSet<OutputId>,
     power_requests: Vec<(OutputId, bool)>,
-    staged_by_tool: bool,
+    confirmation: Option<DisplayConfirmation>,
 }
 
 impl OutputManagementState {
@@ -143,7 +158,7 @@ impl OutputManagementState {
             powers: Vec::new(),
             powered_off: BTreeSet::new(),
             power_requests: Vec::new(),
-            staged_by_tool: false,
+            confirmation: None,
         }
     }
 
@@ -195,25 +210,35 @@ impl OutputManagementState {
         std::mem::take(&mut self.power_requests)
     }
 
-    /// Whether a tool staged a display change since the last call. The
-    /// shell tells the user how to keep it.
-    pub fn take_staged_by_tool(&mut self) -> bool {
-        std::mem::take(&mut self.staged_by_tool)
+    /// A tool's applied display change the person must now keep or
+    /// revert, once per change.
+    pub fn take_confirmation(&mut self) -> Option<DisplayConfirmation> {
+        self.confirmation.take()
     }
 
     /// Report the outcome of staged configurations from the current
     /// transaction. Called after the backend reconciled a settings change.
+    ///
+    /// A change the backend applied is kept at once when it came from a
+    /// trusted tool and leaves a display on; otherwise the person is asked.
     pub fn resolve_transactions(&mut self, current: Option<&DisplayTransaction>) {
+        let heads = &self.heads;
+        let confirmation = &mut self.confirmation;
         self.applies.retain(|apply| {
             let state = current
                 .filter(|transaction| transaction.id == apply.transaction)
                 .map(|transaction| transaction.state);
             match state {
                 Some(DisplayTransactionState::Requested) => true,
+                Some(DisplayTransactionState::AwaitingConfirmation) => {
+                    apply.configuration.succeeded();
+                    if let Some(transaction) = current {
+                        *confirmation = confirm_or_ask(transaction, apply.tool.as_ref(), heads);
+                    }
+                    false
+                }
                 Some(
-                    DisplayTransactionState::AwaitingConfirmation
-                    | DisplayTransactionState::ConfirmRequested
-                    | DisplayTransactionState::Confirmed,
+                    DisplayTransactionState::ConfirmRequested | DisplayTransactionState::Confirmed,
                 ) => {
                     apply.configuration.succeeded();
                     false
@@ -240,17 +265,23 @@ impl OutputManagementState {
         DisplaySet::of_descriptors(&descriptors)
     }
 
-    fn stage(&mut self, configuration: ZwlrOutputConfigurationV1, plan: DisplayConfig) {
+    fn stage(
+        &mut self,
+        configuration: ZwlrOutputConfigurationV1,
+        plan: DisplayConfig,
+        tool: Option<DisplayTool>,
+    ) {
         match DisplayTransaction::request(self.display_set(), plan) {
             Ok(transaction) => {
                 tracing::info!(
                     transaction = transaction.id,
+                    tool = tool.as_ref().map(DisplayTool::name),
                     "output management: staged an external display configuration"
                 );
-                self.staged_by_tool = true;
                 self.applies.push(PendingApply {
                     configuration,
                     transaction: transaction.id,
+                    tool,
                 });
             }
             Err(error) => {
@@ -274,6 +305,46 @@ impl OutputManagementState {
             power.mode(power_mode(on));
         }
     }
+}
+
+/// Keep an applied change from a trusted tool, or hand it to the person.
+///
+/// A change that leaves every head off is never kept on the tool's word:
+/// with no display showing, nobody could see what was kept.
+fn confirm_or_ask(
+    transaction: &DisplayTransaction,
+    tool: Option<&DisplayTool>,
+    heads: &[OutputHead],
+) -> Option<DisplayConfirmation> {
+    let trusted = tool.is_some_and(|tool| TrustedDisplayTools::load().contains(tool));
+    if trusted && leaves_a_display_on(&transaction.candidate, heads) {
+        let mut transaction = transaction.clone();
+        match transaction.request_confirmation() {
+            Ok(()) => {
+                tracing::info!(
+                    transaction = transaction.id,
+                    tool = tool.map(DisplayTool::name),
+                    "output management: kept a trusted tool's display change"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "output management: could not keep a trusted change");
+            }
+        }
+    }
+    Some(DisplayConfirmation {
+        transaction: transaction.id,
+        tool: tool.cloned(),
+    })
+}
+
+/// Whether `plan` keeps at least one of `heads` enabled.
+fn leaves_a_display_on(plan: &DisplayConfig, heads: &[OutputHead]) -> bool {
+    heads.iter().any(|head| {
+        plan.output_for(head.name())
+            .is_some_and(|output| output.enabled)
+    })
 }
 
 /// Bring one client's view of the heads up to date, then `done`.
@@ -443,17 +514,6 @@ fn lock(pending: &Mutex<PendingConfiguration>) -> std::sync::MutexGuard<'_, Pend
     pending.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Map a client's `wl_output` to the backend output. `OutputGlobals` names
-/// its outputs `Tilo-<OutputId>`; anything else is not ours.
-fn output_id(output: &WlOutput) -> Option<OutputId> {
-    SmithayOutput::from_resource(output)?
-        .name()
-        .strip_prefix("Tilo-")?
-        .parse::<u32>()
-        .ok()
-        .map(OutputId)
-}
-
 impl GlobalDispatch<ZwlrOutputManagerV1, ()> for State {
     fn bind(
         state: &mut Self,
@@ -548,7 +608,7 @@ impl Dispatch<ZwlrOutputModeV1, ModeData> for State {
 impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
     fn request(
         state: &mut Self,
-        _client: &Client,
+        client: &Client,
         configuration: &ZwlrOutputConfigurationV1,
         request: zwlr_output_configuration_v1::Request,
         data: &ConfigurationData,
@@ -629,7 +689,13 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
                     &management.heads,
                     &requests,
                 ) {
-                    Ok(plan) if apply => management.stage(configuration.clone(), plan),
+                    Ok(plan) if apply => {
+                        let tool = client
+                            .get_data::<super::state::ClientState>()
+                            .and_then(|data| data.executable.clone())
+                            .map(DisplayTool::new);
+                        management.stage(configuration.clone(), plan, tool);
+                    }
                     Ok(_) => configuration.succeeded(),
                     Err(error) => {
                         log_refusal(&error);
@@ -806,7 +872,7 @@ impl Dispatch<ZwlrOutputPowerManagerV1, ()> for State {
     ) {
         if let zwlr_output_power_manager_v1::Request::GetOutputPower { id, output } = request {
             let management = &mut state.output_management;
-            let live = output_id(&output).filter(|output| {
+            let live = super::output_globals::output_id_of(&output).filter(|output| {
                 management
                     .heads
                     .iter()

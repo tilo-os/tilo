@@ -103,6 +103,8 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "input_method_wire.rs"]
+mod input_method_wire;
 #[path = "interaction_test.rs"]
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
@@ -127,6 +129,8 @@ mod output_management_protocol;
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "per_output_groups.rs"]
+mod per_output_groups;
 #[path = "per_output_scale.rs"]
 mod per_output_scale;
 #[path = "permission_prompt_pump.rs"]
@@ -153,6 +157,8 @@ mod real_apps_visual;
 mod remote_cursors_test;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
+#[path = "runtime_daemon_process.rs"]
+mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]
@@ -179,6 +185,8 @@ mod system_monitor_test;
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
+#[path = "toplevel_icon_protocol.rs"]
+mod toplevel_icon_protocol;
 #[path = "transient_sheets.rs"]
 mod transient_sheets;
 #[path = "two_netns_share.rs"]

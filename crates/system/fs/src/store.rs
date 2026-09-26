@@ -55,6 +55,7 @@ mod files;
 mod serve;
 
 pub use area::{FileArea, Retention};
+#[cfg(feature = "filesystem")]
 pub(crate) use content::copy_part;
 
 #[cfg(feature = "filesystem")]
@@ -1182,543 +1183,418 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingest_roundtrips_locally() {
-        let store = ContentStore::memory();
-        let data = Bytes::from_static(b"the quick brown fox");
-        let hash = store.ingest(data.clone()).await.unwrap();
+    async fn blobs_ingest_fetch_and_share_hashes_with_owned_tags() {
+        // Phase `ingest_roundtrips_locally`.
+        {
+            let store = ContentStore::memory();
+            let data = Bytes::from_static(b"the quick brown fox");
+            let hash = store.ingest(data.clone()).await.unwrap();
 
-        assert!(store.has(hash).await);
-        let got = store.local(hash).await.expect("bytes present locally");
-        assert_eq!(got, data);
+            assert!(store.has(hash).await);
+            let got = store.local(hash).await.expect("bytes present locally");
+            assert_eq!(got, data);
+        }
+        // Phase `missing_hash_is_none`.
+        {
+            let store = ContentStore::memory();
+            let absent = Hash::from([42u8; 32]);
+            assert!(!store.has(absent).await);
+            assert!(store.local(absent).await.is_none());
+        }
+        // Phase `identical_bytes_share_a_hash`.
+        {
+            let store = ContentStore::memory();
+            let a = store.ingest(Bytes::from_static(b"dedup me")).await.unwrap();
+            let b = store.ingest(Bytes::from_static(b"dedup me")).await.unwrap();
+            assert_eq!(a, b, "content addressing: same bytes -> same hash");
+        }
+        // Phase `ingest_and_fetch_use_only_deterministic_owned_tags`.
+        {
+            let store = ContentStore::memory();
+            let first = store.ingest(Bytes::from_static(b"ingested")).await.unwrap();
+            let fetched_bytes = Bytes::from_static(b"fetched");
+            let fetched = Hash::new(&fetched_bytes);
+            store.store_fetched(fetched, fetched_bytes).await.unwrap();
+
+            let mut names = tag_names(store.store()).await;
+            names.sort();
+            let mut expected = vec![
+                owned_blob_tag(first, BlobFormat::Raw).into_bytes(),
+                owned_blob_tag(fetched, BlobFormat::Raw).into_bytes(),
+            ];
+            expected.sort();
+            assert_eq!(names, expected);
+            assert!(
+                store
+                    .store()
+                    .tags()
+                    .list_temp_tags()
+                    .await
+                    .unwrap()
+                    .next()
+                    .await
+                    .is_none(),
+                "temporary protection must be released after owned-tag promotion"
+            );
+        }
+        // Phase `fetched_hash_mismatch_does_not_persist_or_cache_bytes`.
+        {
+            let store = ContentStore::memory();
+            let claimed = Hash::from([9; 32]);
+            assert!(
+                store
+                    .store_fetched(claimed, Bytes::from_static(b"different"))
+                    .await
+                    .is_err()
+            );
+            assert!(tag_names(store.store()).await.is_empty());
+            assert!(!store.has(claimed).await);
+            assert!(!store.has(Hash::new(b"different")).await);
+        }
     }
 
     #[tokio::test]
-    async fn missing_hash_is_none() {
-        let store = ContentStore::memory();
-        let absent = Hash::from([42u8; 32]);
-        assert!(!store.has(absent).await);
-        assert!(store.local(absent).await.is_none());
+    async fn persistent_stores_migrate_tags_evict_selectively_and_survive_restart() {
+        // Phase `persistent_selective_eviction_preserves_other_content_after_restart`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            // Exceed the backend's inline threshold so this also exercises native
+            // blob files, not just rows inside its metadata database.
+            let kept_bytes = Bytes::from(vec![0x61; 1_048_576]);
+            let (kept, selected) = {
+                let store = ContentStore::open(directory.path()).await.unwrap();
+                let kept = store.ingest(kept_bytes.clone()).await.unwrap();
+                let selected = store
+                    .ingest(Bytes::from(vec![0x62; 1_048_576]))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    store.evict_blobs(&HashSet::from([selected])).await.unwrap(),
+                    1
+                );
+                assert_eq!(store.local(kept).await, Some(kept_bytes.clone()));
+                assert!(store.local(selected).await.is_none());
+                store.store().shutdown().await.unwrap();
+                (kept, selected)
+            };
+            let reopened = ContentStore::open(directory.path()).await.unwrap();
+            assert_eq!(reopened.local(kept).await, Some(kept_bytes));
+            assert!(reopened.local(selected).await.is_none());
+            reopened.store().shutdown().await.unwrap();
+        }
+        // Phase `persistent_store_migrates_auto_tags_and_survives_restart`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let bytes = Bytes::from_static(b"legacy persistent blob");
+            let legacy_hash = {
+                let legacy = FsStore::load(temp.path()).await.unwrap();
+                let tag = legacy.blobs().add_bytes(bytes.clone()).await.unwrap();
+                assert!(tag.name.as_ref().starts_with(b"auto-"));
+                let hash = tag.hash;
+                legacy.shutdown().await.unwrap();
+                drop(legacy);
+                hash
+            };
+
+            {
+                let store = ContentStore::open(temp.path()).await.unwrap();
+                assert_eq!(store.local(legacy_hash).await, Some(bytes.clone()));
+                assert_eq!(
+                    tag_names(store.store()).await,
+                    vec![owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes()]
+                );
+                assert_eq!(
+                    std::fs::read(temp.path().join(OWNED_TAG_MIGRATION_MARKER)).unwrap(),
+                    OWNED_TAG_MIGRATION_MARKER_CONTENTS
+                );
+                store.store().shutdown().await.unwrap();
+            }
+
+            // A valid marker is not permission to trust the tag set blindly. If an
+            // older binary writes another auto tag, the next startup rescans and
+            // converges it as well.
+            let late_bytes = Bytes::from_static(b"written by an older binary");
+            let late_hash = {
+                let legacy = FsStore::load(temp.path()).await.unwrap();
+                let tag = legacy.blobs().add_bytes(late_bytes.clone()).await.unwrap();
+                assert!(tag.name.as_ref().starts_with(b"auto-"));
+                legacy.shutdown().await.unwrap();
+                tag.hash
+            };
+
+            let reopened = ContentStore::open(temp.path()).await.unwrap();
+            assert_eq!(reopened.local(legacy_hash).await, Some(bytes));
+            assert_eq!(reopened.local(late_hash).await, Some(late_bytes));
+            let mut names = tag_names(reopened.store()).await;
+            names.sort();
+            let mut expected = vec![
+                owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes(),
+                owned_blob_tag(late_hash, BlobFormat::Raw).into_bytes(),
+            ];
+            expected.sort();
+            assert_eq!(names, expected);
+        }
+        // Phase `corrupt_owned_tag_migration_marker_fails_closed`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            atomic_file::write(
+                &temp.path().join(OWNED_TAG_MIGRATION_MARKER),
+                b"unknown migration state\n",
+            )
+            .unwrap();
+
+            let error = ContentStore::open(temp.path())
+                .await
+                .err()
+                .expect("corrupt migration marker must reject startup");
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid owned blob tag migration marker")
+            );
+        }
     }
 
     #[tokio::test]
-    async fn identical_bytes_share_a_hash() {
-        let store = ContentStore::memory();
-        let a = store.ingest(Bytes::from_static(b"dedup me")).await.unwrap();
-        let b = store.ingest(Bytes::from_static(b"dedup me")).await.unwrap();
-        assert_eq!(a, b, "content addressing: same bytes -> same hash");
-    }
+    #[cfg(feature = "filesystem")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn backend_residency_and_manifests_decide_what_is_durable_or_evicted() {
+        // Phase `version_inspection_uses_backend_residency_and_exact_manifest`.
+        {
+            let store = ContentStore::memory();
+            let data = vec![7u8; 100_000];
+            let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
+            let payload = store
+                .inspect_version_payload(
+                    collab_types::FileRecordId::new(),
+                    collab_types::FileVersionId::new(),
+                    manifest_hash,
+                )
+                .await
+                .unwrap();
+            assert_eq!(payload.manifest.hash, manifest_hash);
+            assert!(!payload.chunks.is_empty());
+            assert!(
+                payload
+                    .chunks
+                    .iter()
+                    .all(|chunk| chunk.resident_bytes.is_some())
+            );
+            assert_eq!(
+                payload
+                    .chunks
+                    .iter()
+                    .filter_map(|chunk| chunk.resident_bytes)
+                    .sum::<u64>(),
+                data.len() as u64
+            );
+        }
+        // Phase `durable_revision_rejects_a_complete_manifest_with_any_missing_chunk`.
+        {
+            let store = ContentStore::memory();
+            let missing = iroh_blobs::Hash::new(b"not persisted");
+            let manifest = crate::content::Manifest::legacy(vec![crate::content::ChunkRef {
+                hash: *missing.as_bytes(),
+                len: 13,
+            }]);
+            let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
+            let revision = collab_types::ContentRevisionV1 {
+                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                record_id: collab_types::FileRecordId::new(),
+                version_id: collab_types::FileVersionId::new(),
+                content_hash: Some(collab_types::ContentHash(*manifest_hash.as_bytes())),
+                byte_len: 13,
+                metadata_hash: collab_types::ContentHash([1; 32]),
+            };
+            assert!(store.verify_durable_revision(&revision).await.is_err());
+        }
+        // Phase `unsupported_execution_never_claims_to_delete`.
+        {
+            use crate::eviction::{EvictionMode, EvictionPlan};
 
-    #[tokio::test]
-    async fn persistent_selective_eviction_preserves_other_content_after_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        // Exceed the backend's inline threshold so this also exercises native
-        // blob files, not just rows inside its metadata database.
-        let kept_bytes = Bytes::from(vec![0x61; 1_048_576]);
-        let (kept, selected) = {
-            let store = ContentStore::open(directory.path()).await.unwrap();
-            let kept = store.ingest(kept_bytes.clone()).await.unwrap();
-            let selected = store
-                .ingest(Bytes::from(vec![0x62; 1_048_576]))
+            let store = ContentStore::memory();
+            let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
+            let plan = EvictionPlan {
+                record_id: collab_types::FileRecordId::new(),
+                version_id: collab_types::FileVersionId::new(),
+                mode: EvictionMode::DestructiveOverride,
+                reclaimable: vec![BlobExtent {
+                    hash,
+                    locally_present: true,
+                    resident_bytes: Some(7),
+                }],
+                shared_and_protected: Vec::new(),
+                already_absent: Vec::new(),
+                reclaimable_bytes: 7,
+                unaccounted_reclaimable_blobs: 0,
+                protected_shared_bytes: 0,
+                unaccounted_protected_shared_blobs: 0,
+            };
+
+            assert!(matches!(
+                store.execute_eviction(&plan),
+                Err(StoreEvictionError::ExplicitDeletionUnsupported)
+            ));
+            assert!(
+                store.has(hash).await,
+                "an unsupported action must not mutate storage"
+            );
+        }
+        // Phase `eviction_observation_completes_only_for_backend_absence`.
+        {
+            use crate::eviction::{
+                EvictionMode, EvictionPlan, EvictionQueue, EvictionRequestState,
+            };
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let store = ContentStore::memory();
+            let present = store.ingest(Bytes::from_static(b"present")).await.unwrap();
+            let absent = Hash::from([91; 32]);
+            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
+
+            let make_plan = |hash| EvictionPlan {
+                record_id: collab_types::FileRecordId::new(),
+                version_id: collab_types::FileVersionId::new(),
+                mode: EvictionMode::Safe,
+                reclaimable: vec![BlobExtent {
+                    hash,
+                    locally_present: true,
+                    resident_bytes: Some(7),
+                }],
+                shared_and_protected: Vec::new(),
+                already_absent: Vec::new(),
+                reclaimable_bytes: 7,
+                unaccounted_reclaimable_blobs: 0,
+                protected_shared_bytes: 0,
+                unaccounted_protected_shared_blobs: 0,
+            };
+
+            let present_id = queue.enqueue(&make_plan(present), 1).unwrap().id;
+            let present_observation = store
+                .observe_eviction_request(&mut queue, present_id, 2)
                 .await
                 .unwrap();
             assert_eq!(
-                store.evict_blobs(&HashSet::from([selected])).await.unwrap(),
-                1
+                present_observation.state,
+                EvictionRequestState::AwaitingBackendGc
             );
-            assert_eq!(store.local(kept).await, Some(kept_bytes.clone()));
-            assert!(store.local(selected).await.is_none());
-            store.store().shutdown().await.unwrap();
-            (kept, selected)
-        };
-        let reopened = ContentStore::open(directory.path()).await.unwrap();
-        assert_eq!(reopened.local(kept).await, Some(kept_bytes));
-        assert!(reopened.local(selected).await.is_none());
-        reopened.store().shutdown().await.unwrap();
-    }
+            assert_eq!(present_observation.remaining_hashes, vec![present]);
 
-    #[tokio::test]
-    async fn ingest_and_fetch_use_only_deterministic_owned_tags() {
-        let store = ContentStore::memory();
-        let first = store.ingest(Bytes::from_static(b"ingested")).await.unwrap();
-        let fetched_bytes = Bytes::from_static(b"fetched");
-        let fetched = Hash::new(&fetched_bytes);
-        store.store_fetched(fetched, fetched_bytes).await.unwrap();
-
-        let mut names = tag_names(store.store()).await;
-        names.sort();
-        let mut expected = vec![
-            owned_blob_tag(first, BlobFormat::Raw).into_bytes(),
-            owned_blob_tag(fetched, BlobFormat::Raw).into_bytes(),
-        ];
-        expected.sort();
-        assert_eq!(names, expected);
-        assert!(
-            store
-                .store()
-                .tags()
-                .list_temp_tags()
+            let absent_id = queue.enqueue(&make_plan(absent), 1).unwrap().id;
+            let absent_observation = store
+                .observe_eviction_request(&mut queue, absent_id, 3)
                 .await
-                .unwrap()
-                .next()
-                .await
-                .is_none(),
-            "temporary protection must be released after owned-tag promotion"
-        );
-    }
-
-    #[tokio::test]
-    async fn fetched_hash_mismatch_does_not_persist_or_cache_bytes() {
-        let store = ContentStore::memory();
-        let claimed = Hash::from([9; 32]);
-        assert!(
-            store
-                .store_fetched(claimed, Bytes::from_static(b"different"))
-                .await
-                .is_err()
-        );
-        assert!(tag_names(store.store()).await.is_empty());
-        assert!(!store.has(claimed).await);
-        assert!(!store.has(Hash::new(b"different")).await);
-    }
-
-    #[tokio::test]
-    async fn persistent_store_migrates_auto_tags_and_survives_restart() {
-        let temp = tempfile::tempdir().unwrap();
-        let bytes = Bytes::from_static(b"legacy persistent blob");
-        let legacy_hash = {
-            let legacy = FsStore::load(temp.path()).await.unwrap();
-            let tag = legacy.blobs().add_bytes(bytes.clone()).await.unwrap();
-            assert!(tag.name.as_ref().starts_with(b"auto-"));
-            let hash = tag.hash;
-            legacy.shutdown().await.unwrap();
-            drop(legacy);
-            hash
-        };
-
-        {
-            let store = ContentStore::open(temp.path()).await.unwrap();
-            assert_eq!(store.local(legacy_hash).await, Some(bytes.clone()));
+                .unwrap();
             assert_eq!(
-                tag_names(store.store()).await,
-                vec![owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes()]
+                absent_observation.state,
+                EvictionRequestState::Completed { observed_at_ms: 3 }
             );
-            assert_eq!(
-                std::fs::read(temp.path().join(OWNED_TAG_MIGRATION_MARKER)).unwrap(),
-                OWNED_TAG_MIGRATION_MARKER_CONTENTS
-            );
-            store.store().shutdown().await.unwrap();
         }
-
-        // A valid marker is not permission to trust the tag set blindly. If an
-        // older binary writes another auto tag, the next startup rescans and
-        // converges it as well.
-        let late_bytes = Bytes::from_static(b"written by an older binary");
-        let late_hash = {
-            let legacy = FsStore::load(temp.path()).await.unwrap();
-            let tag = legacy.blobs().add_bytes(late_bytes.clone()).await.unwrap();
-            assert!(tag.name.as_ref().starts_with(b"auto-"));
-            legacy.shutdown().await.unwrap();
-            tag.hash
-        };
-
-        let reopened = ContentStore::open(temp.path()).await.unwrap();
-        assert_eq!(reopened.local(legacy_hash).await, Some(bytes));
-        assert_eq!(reopened.local(late_hash).await, Some(late_bytes));
-        let mut names = tag_names(reopened.store()).await;
-        names.sort();
-        let mut expected = vec![
-            owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes(),
-            owned_blob_tag(late_hash, BlobFormat::Raw).into_bytes(),
-        ];
-        expected.sort();
-        assert_eq!(names, expected);
-    }
-
-    #[tokio::test]
-    async fn corrupt_owned_tag_migration_marker_fails_closed() {
-        let temp = tempfile::tempdir().unwrap();
-        atomic_file::write(
-            &temp.path().join(OWNED_TAG_MIGRATION_MARKER),
-            b"unknown migration state\n",
-        )
-        .unwrap();
-
-        let error = ContentStore::open(temp.path())
-            .await
-            .err()
-            .expect("corrupt migration marker must reject startup");
-        assert!(
-            error
-                .to_string()
-                .contains("invalid owned blob tag migration marker")
-        );
     }
 
     #[tokio::test]
     #[cfg(feature = "filesystem")]
-    async fn version_inspection_uses_backend_residency_and_exact_manifest() {
-        let store = ContentStore::memory();
-        let data = vec![7u8; 100_000];
-        let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
-        let payload = store
-            .inspect_version_payload(
-                collab_types::FileRecordId::new(),
-                collab_types::FileVersionId::new(),
-                manifest_hash,
-            )
-            .await
-            .unwrap();
-        assert_eq!(payload.manifest.hash, manifest_hash);
-        assert!(!payload.chunks.is_empty());
-        assert!(
-            payload
-                .chunks
-                .iter()
-                .all(|chunk| chunk.resident_bytes.is_some())
-        );
-        assert_eq!(
-            payload
-                .chunks
-                .iter()
-                .filter_map(|chunk| chunk.resident_bytes)
-                .sum::<u64>(),
-            data.len() as u64
-        );
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "filesystem")]
-    async fn durable_revision_rejects_a_complete_manifest_with_any_missing_chunk() {
-        let store = ContentStore::memory();
-        let missing = iroh_blobs::Hash::new(b"not persisted");
-        let manifest = crate::content::Manifest::legacy(vec![crate::content::ChunkRef {
-            hash: *missing.as_bytes(),
-            len: 13,
-        }]);
-        let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
-        let revision = collab_types::ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id: collab_types::FileRecordId::new(),
-            version_id: collab_types::FileVersionId::new(),
-            content_hash: Some(collab_types::ContentHash(*manifest_hash.as_bytes())),
-            byte_len: 13,
-            metadata_hash: collab_types::ContentHash([1; 32]),
-        };
-        assert!(store.verify_durable_revision(&revision).await.is_err());
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "filesystem")]
-    async fn unsupported_execution_never_claims_to_delete() {
-        use crate::eviction::{EvictionMode, EvictionPlan};
-
-        let store = ContentStore::memory();
-        let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
-        let plan = EvictionPlan {
-            record_id: collab_types::FileRecordId::new(),
-            version_id: collab_types::FileVersionId::new(),
-            mode: EvictionMode::DestructiveOverride,
-            reclaimable: vec![BlobExtent {
-                hash,
-                locally_present: true,
-                resident_bytes: Some(7),
-            }],
-            shared_and_protected: Vec::new(),
-            already_absent: Vec::new(),
-            reclaimable_bytes: 7,
-            unaccounted_reclaimable_blobs: 0,
-            protected_shared_bytes: 0,
-            unaccounted_protected_shared_blobs: 0,
-        };
-
-        assert!(matches!(
-            store.execute_eviction(&plan),
-            Err(StoreEvictionError::ExplicitDeletionUnsupported)
-        ));
-        assert!(
-            store.has(hash).await,
-            "an unsupported action must not mutate storage"
-        );
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "filesystem")]
-    async fn eviction_observation_completes_only_for_backend_absence() {
-        use crate::eviction::{EvictionMode, EvictionPlan, EvictionQueue, EvictionRequestState};
-
-        let temp = tempfile::TempDir::new().unwrap();
-        let store = ContentStore::memory();
-        let present = store.ingest(Bytes::from_static(b"present")).await.unwrap();
-        let absent = Hash::from([91; 32]);
-        let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-
-        let make_plan = |hash| EvictionPlan {
-            record_id: collab_types::FileRecordId::new(),
-            version_id: collab_types::FileVersionId::new(),
-            mode: EvictionMode::Safe,
-            reclaimable: vec![BlobExtent {
-                hash,
-                locally_present: true,
-                resident_bytes: Some(7),
-            }],
-            shared_and_protected: Vec::new(),
-            already_absent: Vec::new(),
-            reclaimable_bytes: 7,
-            unaccounted_reclaimable_blobs: 0,
-            protected_shared_bytes: 0,
-            unaccounted_protected_shared_blobs: 0,
-        };
-
-        let present_id = queue.enqueue(&make_plan(present), 1).unwrap().id;
-        let present_observation = store
-            .observe_eviction_request(&mut queue, present_id, 2)
-            .await
-            .unwrap();
-        assert_eq!(
-            present_observation.state,
-            EvictionRequestState::AwaitingBackendGc
-        );
-        assert_eq!(present_observation.remaining_hashes, vec![present]);
-
-        let absent_id = queue.enqueue(&make_plan(absent), 1).unwrap().id;
-        let absent_observation = store
-            .observe_eviction_request(&mut queue, absent_id, 3)
-            .await
-            .unwrap();
-        assert_eq!(
-            absent_observation.state,
-            EvictionRequestState::Completed { observed_at_ms: 3 }
-        );
-    }
-
-    #[tokio::test]
     #[allow(
         clippy::too_many_lines,
         reason = "multi-phase backend eviction lifecycle scenario"
     )]
-    #[cfg(feature = "filesystem")]
-    async fn queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed() {
-        use crate::availability::{RecordAvailability, RecordKind, Residency};
-        use crate::eviction::{
-            EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestState, VersionPayload,
-            plan_destructive_eviction,
-        };
+    async fn backend_eviction_releases_only_owned_tags_for_fresh_roots() {
+        // Phase `queued_eviction_releases_only_owned_target_tags_and_gc_completion_is_observed`.
+        {
+            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::eviction::{
+                EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestState, VersionPayload,
+                plan_destructive_eviction,
+            };
 
-        let temp = tempfile::TempDir::new().unwrap();
-        let store = ContentStore::open_with_gc_interval(
-            temp.path().join("blobs"),
-            Duration::from_secs(60 * 60),
-        )
-        .await
-        .unwrap();
-        // Larger than FsStore's inline threshold, so this also proves the
-        // physical data file is reclaimed rather than only a metadata row.
-        let target_bytes = Bytes::from(vec![0x5a; 64 * 1024]);
-        let target_only = store.ingest(target_bytes.clone()).await.unwrap();
-        let target_data_path = temp
-            .path()
-            .join("blobs/data")
-            .join(format!("{}.data", target_only.to_hex()));
-        assert!(target_data_path.exists());
-        let shared = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
-        let other_only = store
-            .ingest(Bytes::from_static(b"other only"))
-            .await
-            .unwrap();
-
-        let target_id = collab_types::FileRecordId::new();
-        let target_version = collab_types::FileVersionId::new();
-        let other_id = collab_types::FileRecordId::new();
-        let other_version = collab_types::FileVersionId::new();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let mut target = RecordAvailability::new(target_id, RecordKind::File);
-        target.current_version = Some(target_version);
-        target.residency = Residency::Resident {
-            bytes: target_bytes.len() as u64 + 6,
-        };
-        registry.put(target).unwrap();
-        let mut other = RecordAvailability::new(other_id, RecordKind::File);
-        other.current_version = Some(other_version);
-        other.residency = Residency::Resident { bytes: 16 };
-        registry.put(other).unwrap();
-        let extent = |hash, bytes| BlobExtent {
-            hash,
-            locally_present: true,
-            resident_bytes: Some(bytes),
-        };
-        let catalog = EvictionCatalog::new([
-            VersionPayload {
-                record_id: target_id,
-                version_id: target_version,
-                manifest: extent(target_only, target_bytes.len() as u64),
-                chunks: vec![extent(shared, 6)],
-            },
-            VersionPayload {
-                record_id: other_id,
-                version_id: other_version,
-                manifest: extent(other_only, 10),
-                chunks: vec![extent(shared, 6)],
-            },
-        ])
-        .unwrap();
-        let plan = plan_destructive_eviction(
-            &registry,
-            &catalog,
-            target_id,
-            1,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        assert_eq!(plan.mode, EvictionMode::DestructiveOverride);
-        assert_eq!(
-            plan.reclaimable
-                .iter()
-                .map(|blob| blob.hash)
-                .collect::<Vec<_>>(),
-            vec![target_only]
-        );
-        assert_eq!(
-            plan.shared_and_protected
-                .iter()
-                .map(|blob| blob.hash)
-                .collect::<Vec<_>>(),
-            vec![shared]
-        );
-
-        let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-        let id = queue.enqueue(&plan, 1).unwrap().id;
-        let released = store
-            .release_eviction_to_backend_gc(
-                &queue,
-                id,
-                &registry,
-                &catalog,
-                2,
-                EvictionRequirements::default(),
+            let temp = tempfile::TempDir::new().unwrap();
+            let store = ContentStore::open_with_gc_interval(
+                temp.path().join("blobs"),
+                Duration::from_secs(60 * 60),
             )
             .await
             .unwrap();
-        assert_eq!(released.authorized_hashes, vec![target_only]);
-        assert_eq!(released.released_owned_tags, 1);
-
-        // The tag release is a durable handoff, not process-local state. GC
-        // may therefore finish it after a clean service restart.
-        store.store().shutdown().await.unwrap();
-        drop(store);
-        let store = ContentStore::open_with_gc_interval(
-            temp.path().join("blobs"),
-            Duration::from_millis(10),
-        )
-        .await
-        .unwrap();
-
-        let mut completion = None;
-        for observed_at_ms in 3..=203 {
-            let observation = store
-                .observe_eviction_request(&mut queue, id, observed_at_ms)
+            // Larger than FsStore's inline threshold, so this also proves the
+            // physical data file is reclaimed rather than only a metadata row.
+            let target_bytes = Bytes::from(vec![0x5a; 64 * 1024]);
+            let target_only = store.ingest(target_bytes.clone()).await.unwrap();
+            let target_data_path = temp
+                .path()
+                .join("blobs/data")
+                .join(format!("{}.data", target_only.to_hex()));
+            assert!(target_data_path.exists());
+            let shared = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
+            let other_only = store
+                .ingest(Bytes::from_static(b"other only"))
                 .await
                 .unwrap();
-            if matches!(observation.state, EvictionRequestState::Completed { .. }) {
-                completion = Some(observation);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            completion.is_some(),
-            "configured GC did not sweep released blob"
-        );
-        assert!(!store.has(target_only).await);
-        assert!(
-            !target_data_path.exists(),
-            "persistent GC must remove the external data file"
-        );
-        assert_eq!(
-            store.local(shared).await,
-            Some(Bytes::from_static(b"shared"))
-        );
-        assert_eq!(
-            store.local(other_only).await,
-            Some(Bytes::from_static(b"other only"))
-        );
-        assert!(matches!(
-            EvictionQueue::open(temp.path().join("evictions.json"))
-                .unwrap()
-                .get(id)
-                .unwrap()
-                .state,
-            EvictionRequestState::Completed { .. }
-        ));
-    }
 
-    #[tokio::test]
-    #[cfg(feature = "filesystem")]
-    async fn backend_handoff_refuses_stale_shared_root_without_releasing_tag() {
-        use crate::availability::{RecordAvailability, RecordKind, Residency};
-        use crate::eviction::{
-            EvictionCatalog, EvictionQueue, VersionPayload, plan_destructive_eviction,
-        };
-
-        let temp = tempfile::TempDir::new().unwrap();
-        let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
-        let hash = store
-            .ingest(Bytes::from_static(b"becomes shared"))
-            .await
+            let target_id = collab_types::FileRecordId::new();
+            let target_version = collab_types::FileVersionId::new();
+            let other_id = collab_types::FileRecordId::new();
+            let other_version = collab_types::FileVersionId::new();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let mut target = RecordAvailability::new(target_id, RecordKind::File);
+            target.current_version = Some(target_version);
+            target.residency = Residency::Resident {
+                bytes: target_bytes.len() as u64 + 6,
+            };
+            registry.put(target).unwrap();
+            let mut other = RecordAvailability::new(other_id, RecordKind::File);
+            other.current_version = Some(other_version);
+            other.residency = Residency::Resident { bytes: 16 };
+            registry.put(other).unwrap();
+            let extent = |hash, bytes| BlobExtent {
+                hash,
+                locally_present: true,
+                resident_bytes: Some(bytes),
+            };
+            let catalog = EvictionCatalog::new([
+                VersionPayload {
+                    record_id: target_id,
+                    version_id: target_version,
+                    manifest: extent(target_only, target_bytes.len() as u64),
+                    chunks: vec![extent(shared, 6)],
+                },
+                VersionPayload {
+                    record_id: other_id,
+                    version_id: other_version,
+                    manifest: extent(other_only, 10),
+                    chunks: vec![extent(shared, 6)],
+                },
+            ])
             .unwrap();
-        let other_hash = store
-            .ingest(Bytes::from_static(b"other root"))
-            .await
+            let plan = plan_destructive_eviction(
+                &registry,
+                &catalog,
+                target_id,
+                1,
+                EvictionRequirements::default(),
+            )
             .unwrap();
-        let target_id = collab_types::FileRecordId::new();
-        let target_version = collab_types::FileVersionId::new();
-        let other_id = collab_types::FileRecordId::new();
-        let other_version = collab_types::FileVersionId::new();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let mut target = RecordAvailability::new(target_id, RecordKind::File);
-        target.current_version = Some(target_version);
-        target.residency = Residency::Resident { bytes: 14 };
-        registry.put(target).unwrap();
-        let mut other = RecordAvailability::new(other_id, RecordKind::File);
-        other.current_version = Some(other_version);
-        other.residency = Residency::NotResident;
-        registry.put(other.clone()).unwrap();
-        let extent = |hash, bytes| BlobExtent {
-            hash,
-            locally_present: true,
-            resident_bytes: Some(bytes),
-        };
-        let catalog = EvictionCatalog::new([
-            VersionPayload {
-                record_id: target_id,
-                version_id: target_version,
-                manifest: extent(hash, 14),
-                chunks: Vec::new(),
-            },
-            VersionPayload {
-                record_id: other_id,
-                version_id: other_version,
-                manifest: extent(other_hash, 10),
-                chunks: vec![extent(hash, 14)],
-            },
-        ])
-        .unwrap();
-        let plan = plan_destructive_eviction(
-            &registry,
-            &catalog,
-            target_id,
-            1,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-        let id = queue.enqueue(&plan, 1).unwrap().id;
+            assert_eq!(plan.mode, EvictionMode::DestructiveOverride);
+            assert_eq!(
+                plan.reclaimable
+                    .iter()
+                    .map(|blob| blob.hash)
+                    .collect::<Vec<_>>(),
+                vec![target_only]
+            );
+            assert_eq!(
+                plan.shared_and_protected
+                    .iter()
+                    .map(|blob| blob.hash)
+                    .collect::<Vec<_>>(),
+                vec![shared]
+            );
 
-        other.residency = Residency::Resident { bytes: 24 };
-        registry.put(other).unwrap();
-        assert!(matches!(
-            store
+            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
+            let id = queue.enqueue(&plan, 1).unwrap().id;
+            let released = store
                 .release_eviction_to_backend_gc(
                     &queue,
                     id,
@@ -1727,280 +1603,408 @@ mod tests {
                     2,
                     EvictionRequirements::default(),
                 )
-                .await,
-            Err(StoreEvictionError::Authorization(_))
-        ));
-        tokio::time::sleep(Duration::from_millis(35)).await;
-        assert!(store.has(hash).await);
-        assert!(
+                .await
+                .unwrap();
+            assert_eq!(released.authorized_hashes, vec![target_only]);
+            assert_eq!(released.released_owned_tags, 1);
+
+            // The tag release is a durable handoff, not process-local state. GC
+            // may therefore finish it after a clean service restart.
+            store.store().shutdown().await.unwrap();
+            drop(store);
+            let store = ContentStore::open_with_gc_interval(
+                temp.path().join("blobs"),
+                Duration::from_millis(10),
+            )
+            .await
+            .unwrap();
+
+            let mut completion = None;
+            for observed_at_ms in 3..=203 {
+                let observation = store
+                    .observe_eviction_request(&mut queue, id, observed_at_ms)
+                    .await
+                    .unwrap();
+                if matches!(observation.state, EvictionRequestState::Completed { .. }) {
+                    completion = Some(observation);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                completion.is_some(),
+                "configured GC did not sweep released blob"
+            );
+            assert!(!store.has(target_only).await);
+            assert!(
+                !target_data_path.exists(),
+                "persistent GC must remove the external data file"
+            );
+            assert_eq!(
+                store.local(shared).await,
+                Some(Bytes::from_static(b"shared"))
+            );
+            assert_eq!(
+                store.local(other_only).await,
+                Some(Bytes::from_static(b"other only"))
+            );
+            assert!(matches!(
+                EvictionQueue::open(temp.path().join("evictions.json"))
+                    .unwrap()
+                    .get(id)
+                    .unwrap()
+                    .state,
+                EvictionRequestState::Completed { .. }
+            ));
+        }
+        // Phase `backend_handoff_refuses_stale_shared_root_without_releasing_tag`.
+        {
+            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::eviction::{
+                EvictionCatalog, EvictionQueue, VersionPayload, plan_destructive_eviction,
+            };
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
+            let hash = store
+                .ingest(Bytes::from_static(b"becomes shared"))
+                .await
+                .unwrap();
+            let other_hash = store
+                .ingest(Bytes::from_static(b"other root"))
+                .await
+                .unwrap();
+            let target_id = collab_types::FileRecordId::new();
+            let target_version = collab_types::FileVersionId::new();
+            let other_id = collab_types::FileRecordId::new();
+            let other_version = collab_types::FileVersionId::new();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let mut target = RecordAvailability::new(target_id, RecordKind::File);
+            target.current_version = Some(target_version);
+            target.residency = Residency::Resident { bytes: 14 };
+            registry.put(target).unwrap();
+            let mut other = RecordAvailability::new(other_id, RecordKind::File);
+            other.current_version = Some(other_version);
+            other.residency = Residency::NotResident;
+            registry.put(other.clone()).unwrap();
+            let extent = |hash, bytes| BlobExtent {
+                hash,
+                locally_present: true,
+                resident_bytes: Some(bytes),
+            };
+            let catalog = EvictionCatalog::new([
+                VersionPayload {
+                    record_id: target_id,
+                    version_id: target_version,
+                    manifest: extent(hash, 14),
+                    chunks: Vec::new(),
+                },
+                VersionPayload {
+                    record_id: other_id,
+                    version_id: other_version,
+                    manifest: extent(other_hash, 10),
+                    chunks: vec![extent(hash, 14)],
+                },
+            ])
+            .unwrap();
+            let plan = plan_destructive_eviction(
+                &registry,
+                &catalog,
+                target_id,
+                1,
+                EvictionRequirements::default(),
+            )
+            .unwrap();
+            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
+            let id = queue.enqueue(&plan, 1).unwrap().id;
+
+            other.residency = Residency::Resident { bytes: 24 };
+            registry.put(other).unwrap();
+            assert!(matches!(
+                store
+                    .release_eviction_to_backend_gc(
+                        &queue,
+                        id,
+                        &registry,
+                        &catalog,
+                        2,
+                        EvictionRequirements::default(),
+                    )
+                    .await,
+                Err(StoreEvictionError::Authorization(_))
+            ));
+            tokio::time::sleep(Duration::from_millis(35)).await;
+            assert!(store.has(hash).await);
+            assert!(
+                store
+                    .store()
+                    .tags()
+                    .get(owned_blob_tag(hash, BlobFormat::Raw))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        // Phase `eviction_never_releases_foreign_tags_or_claims_their_blob_was_deleted`.
+        {
+            use crate::availability::{RecordAvailability, RecordKind, Residency};
+            use crate::eviction::{
+                EvictionCatalog, EvictionQueue, EvictionRequestState, VersionPayload,
+                plan_destructive_eviction,
+            };
+
+            let temp = tempfile::TempDir::new().unwrap();
+            let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
+            let hash = store
+                .ingest(Bytes::from_static(b"externally protected"))
+                .await
+                .unwrap();
             store
                 .store()
                 .tags()
-                .get(owned_blob_tag(hash, BlobFormat::Raw))
+                .set(
+                    "another-application/keep",
+                    iroh_blobs::HashAndFormat {
+                        hash,
+                        format: BlobFormat::Raw,
+                    },
+                )
                 .await
-                .unwrap()
-                .is_some()
-        );
+                .unwrap();
+
+            let record_id = collab_types::FileRecordId::new();
+            let version_id = collab_types::FileVersionId::new();
+            let mut registry =
+                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
+            let mut record = RecordAvailability::new(record_id, RecordKind::File);
+            record.current_version = Some(version_id);
+            record.residency = Residency::Resident { bytes: 20 };
+            registry.put(record).unwrap();
+            let catalog = EvictionCatalog::new([VersionPayload {
+                record_id,
+                version_id,
+                manifest: BlobExtent {
+                    hash,
+                    locally_present: true,
+                    resident_bytes: Some(20),
+                },
+                chunks: Vec::new(),
+            }])
+            .unwrap();
+            let plan = plan_destructive_eviction(
+                &registry,
+                &catalog,
+                record_id,
+                1,
+                EvictionRequirements::default(),
+            )
+            .unwrap();
+            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
+            let id = queue.enqueue(&plan, 1).unwrap().id;
+            let release = store
+                .release_eviction_to_backend_gc(
+                    &queue,
+                    id,
+                    &registry,
+                    &catalog,
+                    2,
+                    EvictionRequirements::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(release.released_owned_tags, 1);
+
+            tokio::time::sleep(Duration::from_millis(35)).await;
+            let observation = store
+                .observe_eviction_request(&mut queue, id, 3)
+                .await
+                .unwrap();
+            assert_eq!(observation.state, EvictionRequestState::AwaitingBackendGc);
+            assert_eq!(observation.remaining_hashes, vec![hash]);
+            assert!(store.has(hash).await);
+            assert!(
+                store
+                    .store()
+                    .tags()
+                    .get("another-application/keep")
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                store
+                    .store()
+                    .tags()
+                    .get(owned_blob_tag(hash, BlobFormat::Raw))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[tokio::test]
     #[cfg(feature = "filesystem")]
-    async fn eviction_never_releases_foreign_tags_or_claims_their_blob_was_deleted() {
-        use crate::availability::{RecordAvailability, RecordKind, Residency};
-        use crate::eviction::{
-            EvictionCatalog, EvictionQueue, EvictionRequestState, VersionPayload,
-            plan_destructive_eviction,
-        };
-
-        let temp = tempfile::TempDir::new().unwrap();
-        let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
-        let hash = store
-            .ingest(Bytes::from_static(b"externally protected"))
-            .await
-            .unwrap();
-        store
-            .store()
-            .tags()
-            .set(
-                "another-application/keep",
-                iroh_blobs::HashAndFormat {
-                    hash,
-                    format: BlobFormat::Raw,
-                },
-            )
-            .await
-            .unwrap();
-
-        let record_id = collab_types::FileRecordId::new();
-        let version_id = collab_types::FileVersionId::new();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let mut record = RecordAvailability::new(record_id, RecordKind::File);
-        record.current_version = Some(version_id);
-        record.residency = Residency::Resident { bytes: 20 };
-        registry.put(record).unwrap();
-        let catalog = EvictionCatalog::new([VersionPayload {
-            record_id,
-            version_id,
-            manifest: BlobExtent {
-                hash,
-                locally_present: true,
-                resident_bytes: Some(20),
-            },
-            chunks: Vec::new(),
-        }])
-        .unwrap();
-        let plan = plan_destructive_eviction(
-            &registry,
-            &catalog,
-            record_id,
-            1,
-            EvictionRequirements::default(),
-        )
-        .unwrap();
-        let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-        let id = queue.enqueue(&plan, 1).unwrap().id;
-        let release = store
-            .release_eviction_to_backend_gc(
-                &queue,
-                id,
-                &registry,
-                &catalog,
-                2,
-                EvictionRequirements::default(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(release.released_owned_tags, 1);
-
-        tokio::time::sleep(Duration::from_millis(35)).await;
-        let observation = store
-            .observe_eviction_request(&mut queue, id, 3)
-            .await
-            .unwrap();
-        assert_eq!(observation.state, EvictionRequestState::AwaitingBackendGc);
-        assert_eq!(observation.remaining_hashes, vec![hash]);
-        assert!(store.has(hash).await);
-        assert!(
-            store
-                .store()
-                .tags()
-                .get("another-application/keep")
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            store
-                .store()
-                .tags()
-                .get(owned_blob_tag(hash, BlobFormat::Raw))
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
     #[allow(
         clippy::too_many_lines,
         reason = "every reverse-lookup source is one matrix"
     )]
-    #[cfg(feature = "filesystem")]
-    async fn blob_reverse_lookup_covers_roots_chunks_thumbnails_and_live_records_only() {
-        let store = ContentStore::memory();
-        let shared_chunk = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
-        let first_only_chunk = store.ingest(Bytes::from_static(b"first")).await.unwrap();
-        let second_only_chunk = store.ingest(Bytes::from_static(b"second")).await.unwrap();
-        let manifest = |unique: Hash| {
-            crate::content::Manifest::legacy(vec![
-                crate::content::ChunkRef {
-                    hash: *shared_chunk.as_bytes(),
-                    len: 6,
-                },
-                crate::content::ChunkRef {
-                    hash: *unique.as_bytes(),
-                    len: 6,
-                },
-            ])
-        };
-        let first_manifest = store
-            .ingest(Bytes::from(manifest(first_only_chunk).encode()))
-            .await
-            .unwrap();
-        let second_manifest = store
-            .ingest(Bytes::from(manifest(second_only_chunk).encode()))
-            .await
-            .unwrap();
-        let thumbnail = store
-            .ingest(Bytes::from_static(b"thumbnail"))
-            .await
-            .unwrap();
+    async fn blob_reverse_lookup_is_complete_bounded_and_fail_closed() {
+        // Phase `blob_reverse_lookup_covers_roots_chunks_thumbnails_and_live_records_only`.
+        {
+            let store = ContentStore::memory();
+            let shared_chunk = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
+            let first_only_chunk = store.ingest(Bytes::from_static(b"first")).await.unwrap();
+            let second_only_chunk = store.ingest(Bytes::from_static(b"second")).await.unwrap();
+            let manifest = |unique: Hash| {
+                crate::content::Manifest::legacy(vec![
+                    crate::content::ChunkRef {
+                        hash: *shared_chunk.as_bytes(),
+                        len: 6,
+                    },
+                    crate::content::ChunkRef {
+                        hash: *unique.as_bytes(),
+                        len: 6,
+                    },
+                ])
+            };
+            let first_manifest = store
+                .ingest(Bytes::from(manifest(first_only_chunk).encode()))
+                .await
+                .unwrap();
+            let second_manifest = store
+                .ingest(Bytes::from(manifest(second_only_chunk).encode()))
+                .await
+                .unwrap();
+            let thumbnail = store
+                .ingest(Bytes::from_static(b"thumbnail"))
+                .await
+                .unwrap();
 
-        let mut namespace = Namespace::new("a").unwrap();
-        let first = namespace
-            .create_file(
-                crate::namespace::ROOT_INO,
-                "first",
-                Some(&first_manifest),
-                100_000,
-                1,
-            )
-            .unwrap();
-        let second = namespace
-            .create_file(
-                crate::namespace::ROOT_INO,
-                "second",
-                Some(&second_manifest),
-                100_000,
-                1,
-            )
-            .unwrap();
-        let first_record = namespace.record_id_for(first).unwrap();
-        let second_record = namespace.record_id_for(second).unwrap();
-        assert!(namespace.set_thumb(first, &thumbnail));
-        let limits = BlobRecordLookupLimits::default();
-
-        assert_eq!(
-            store
-                .live_record_ids_for_blob(&namespace, first_manifest, limits)
-                .await
-                .unwrap(),
-            vec![first_record]
-        );
-        assert_eq!(
-            store
-                .live_record_ids_for_blob(&namespace, shared_chunk, limits)
-                .await
-                .unwrap(),
-            vec![first_record, second_record]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            store
-                .live_record_ids_for_blob(&namespace, second_only_chunk, limits)
-                .await
-                .unwrap(),
-            vec![second_record]
-        );
-        assert_eq!(
-            store
-                .live_record_ids_for_blob(&namespace, thumbnail, limits)
-                .await
-                .unwrap(),
-            vec![first_record]
-        );
-        assert!(
-            store
-                .live_record_ids_for_blob(&namespace, Hash::from([88; 32]), limits)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        let mut tight_limits = limits;
-        tight_limits.max_chunks_per_record = 1;
-        assert!(matches!(
-            store
-                .live_record_ids_for_blob(&namespace, shared_chunk, tight_limits)
-                .await,
-            Err(BlobRecordLookupError::TooManyChunks { limit: 1, .. })
-        ));
-
-        assert!(namespace.remove(first));
-        assert_eq!(
-            store
-                .live_record_ids_for_blob(&namespace, shared_chunk, limits)
-                .await
-                .unwrap(),
-            vec![second_record]
-        );
-        assert_eq!(namespace.record_id_for(second), Some(second_record));
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "filesystem")]
-    async fn blob_reverse_lookup_is_bounded_and_fails_closed_on_missing_manifest() {
-        let store = ContentStore::memory();
-        let missing = Hash::from([66; 32]);
-        let mut namespace = Namespace::new("a").unwrap();
-        let ino = namespace
-            .create_file(
-                crate::namespace::ROOT_INO,
-                "projected",
-                Some(&missing),
-                1,
-                1,
-            )
-            .unwrap();
-        let record_id = namespace.record_id_for(ino).unwrap();
-        assert!(matches!(
-            store
-                .live_record_ids_for_blob(
-                    &namespace,
-                    missing,
-                    BlobRecordLookupLimits::default()
+            let mut namespace = Namespace::new("a").unwrap();
+            let first = namespace
+                .create_file(
+                    crate::namespace::ROOT_INO,
+                    "first",
+                    Some(&first_manifest),
+                    100_000,
+                    1,
                 )
-                .await,
-            Err(BlobRecordLookupError::ManifestUnavailable {
-                record_id: found,
-                manifest: found_manifest,
-            }) if found == record_id && found_manifest == missing
-        ));
+                .unwrap();
+            let second = namespace
+                .create_file(
+                    crate::namespace::ROOT_INO,
+                    "second",
+                    Some(&second_manifest),
+                    100_000,
+                    1,
+                )
+                .unwrap();
+            let first_record = namespace.record_id_for(first).unwrap();
+            let second_record = namespace.record_id_for(second).unwrap();
+            assert!(namespace.set_thumb(first, &thumbnail));
+            let limits = BlobRecordLookupLimits::default();
 
-        let limits = BlobRecordLookupLimits {
-            max_live_records: 0,
-            ..BlobRecordLookupLimits::default()
-        };
-        assert!(matches!(
-            store
-                .live_record_ids_for_blob(&namespace, missing, limits)
-                .await,
-            Err(BlobRecordLookupError::Namespace(
-                LiveRecordBlobScanError::InvalidLimit
-            ))
-        ));
+            assert_eq!(
+                store
+                    .live_record_ids_for_blob(&namespace, first_manifest, limits)
+                    .await
+                    .unwrap(),
+                vec![first_record]
+            );
+            assert_eq!(
+                store
+                    .live_record_ids_for_blob(&namespace, shared_chunk, limits)
+                    .await
+                    .unwrap(),
+                vec![first_record, second_record]
+                    .into_iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                store
+                    .live_record_ids_for_blob(&namespace, second_only_chunk, limits)
+                    .await
+                    .unwrap(),
+                vec![second_record]
+            );
+            assert_eq!(
+                store
+                    .live_record_ids_for_blob(&namespace, thumbnail, limits)
+                    .await
+                    .unwrap(),
+                vec![first_record]
+            );
+            assert!(
+                store
+                    .live_record_ids_for_blob(&namespace, Hash::from([88; 32]), limits)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut tight_limits = limits;
+            tight_limits.max_chunks_per_record = 1;
+            assert!(matches!(
+                store
+                    .live_record_ids_for_blob(&namespace, shared_chunk, tight_limits)
+                    .await,
+                Err(BlobRecordLookupError::TooManyChunks { limit: 1, .. })
+            ));
+
+            assert!(namespace.remove(first));
+            assert_eq!(
+                store
+                    .live_record_ids_for_blob(&namespace, shared_chunk, limits)
+                    .await
+                    .unwrap(),
+                vec![second_record]
+            );
+            assert_eq!(namespace.record_id_for(second), Some(second_record));
+        }
+        // Phase `blob_reverse_lookup_is_bounded_and_fails_closed_on_missing_manifest`.
+        {
+            let store = ContentStore::memory();
+            let missing = Hash::from([66; 32]);
+            let mut namespace = Namespace::new("a").unwrap();
+            let ino = namespace
+                .create_file(
+                    crate::namespace::ROOT_INO,
+                    "projected",
+                    Some(&missing),
+                    1,
+                    1,
+                )
+                .unwrap();
+            let record_id = namespace.record_id_for(ino).unwrap();
+            assert!(matches!(
+                store
+                    .live_record_ids_for_blob(
+                        &namespace,
+                        missing,
+                        BlobRecordLookupLimits::default()
+                    )
+                    .await,
+                Err(BlobRecordLookupError::ManifestUnavailable {
+                    record_id: found,
+                    manifest: found_manifest,
+                }) if found == record_id && found_manifest == missing
+            ));
+
+            let limits = BlobRecordLookupLimits {
+                max_live_records: 0,
+                ..BlobRecordLookupLimits::default()
+            };
+            assert!(matches!(
+                store
+                    .live_record_ids_for_blob(&namespace, missing, limits)
+                    .await,
+                Err(BlobRecordLookupError::Namespace(
+                    LiveRecordBlobScanError::InvalidLimit
+                ))
+            ));
+        }
     }
 }

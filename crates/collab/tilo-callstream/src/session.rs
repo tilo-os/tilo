@@ -272,11 +272,20 @@ mod tests {
         out
     }
 
+    /// Captured RGBA streams end to end through the shared stack, the first frame is a keyframe,
+    /// and the keyframe probe tells IDR from non-IDR.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn captured_frames_stream_end_to_end_starting_with_a_keyframe() {
+        captured_rgba_streams_end_to_end_through_the_shared_stack();
+        first_frame_is_flagged_a_keyframe();
+        keyframe_probe_detects_idr_and_rejects_non_idr();
+    }
+
     /// A captured RGBA frame runs the full
     /// shared stack (throttle + encoder → framed bytes → reframe + decoder →
     /// RGBA) and lands as a same-sized decoded frame — the same path a chat
     /// screen-share tile runs.
-    #[test]
     fn captured_rgba_streams_end_to_end_through_the_shared_stack() {
         const W: u32 = 128;
         const H: u32 = 96;
@@ -295,7 +304,20 @@ mod tests {
         assert_eq!(frames[0].rgba.len(), (W * H * 4) as usize);
     }
 
+    /// A second frame inside the throttle interval, a wrong-sized buffer and an exhausted sequence
+    /// all yield no frame (the last as a visible, non-wrapping error).
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_session_refuses_frames_it_must_not_send() {
+        throttle_rejects_a_second_frame_within_the_interval();
+        wrong_sized_buffer_yields_no_frame();
+        video_sender_sequence_exhaustion_is_a_visible_non_wrapping_error();
+    }
+
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test phase: arithmetic on small fixed test values cannot overflow"
+    )]
     fn throttle_rejects_a_second_frame_within_the_interval() {
         const W: u32 = 32;
         const H: u32 = 32;
@@ -323,7 +345,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn first_frame_is_flagged_a_keyframe() {
         const W: u32 = 64;
         const H: u32 = 64;
@@ -339,7 +360,6 @@ mod tests {
         assert_eq!(frame.sequence, 0);
     }
 
-    #[test]
     fn wrong_sized_buffer_yields_no_frame() {
         let mut sender = VideoStreamSender::new(StreamCodec::Vp9, 32, 32, 30).expect("sender");
         // RGB (3 bytes/px), not RGBA — size mismatch folds to None.
@@ -351,7 +371,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn keyframe_probe_detects_idr_and_rejects_non_idr() {
         // 4-byte start code + nal_unit_type 5 (IDR).
         assert!(is_h264_keyframe(&[0, 0, 0, 1, 0x65]));
@@ -361,7 +380,6 @@ mod tests {
         assert!(!is_h264_keyframe(&[0xAA, 0xBB, 0xCC]));
     }
 
-    #[test]
     fn video_sender_sequence_exhaustion_is_a_visible_non_wrapping_error() {
         let mut sender = VideoStreamSender::new(StreamCodec::Vp9, 32, 32, 30).expect("sender");
         sender.sequence = u64::MAX;

@@ -1139,10 +1139,16 @@ One engine moves record operations, file content, CRDT segments and packages.
 **What the transfer engine implements** (`crates/system/fs/src/sync/session.rs`,
 `hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
 
-- `tilo-fs-session/1`: one connection per peer, authenticated once, a
+- `tilo-fs-session/2`: one connection per peer, authenticated once, a
   QUIC stream per request, every request authorised against the live
   policy and certification. It carries the namespace (Automerge sync
   between writers; changes since the reader's heads for read-only peers),
+  each payload bound to the requesting workspace by the sender's device
+  signature over the workspace, the payload kind and the digest of its
+  bytes, and applied only from a device the receiver's policy lets read
+  (or, for sync, write) the whole workspace
+  (`crates/system/fs/src/namespace_binding.rs`; `tilo-fs-sync/1` does the
+  same),
   range-based reconciliation of record stream heads, pulls of up to 1024
   streams per request with files up to 4 KiB inline, batched replica
   receipts (only for revisions not acknowledged recently), the authority
@@ -1296,7 +1302,11 @@ mmap-written). [R9]
 - Lease-class detection: a file whose journal shows a write without a create
   or rename, whose inode survived the epoch, and whose new version still
   shares extents with the previous snapshot (FIEMAP). A truncate-and-rewrite
-  allocates new extents and is not lease-class.
+  allocates new extents and is not lease-class. A small file can have every
+  block rewritten in place (an update of a two-page SQLite database rewrites
+  the header page and the one table page); when no extent is shared, the
+  rewritten ranges are compared in 512-byte sectors, and a file that kept
+  non-zero sectors at their offsets while others changed is lease-class too.
 - The lease is a `WriteLease {holder, epoch, expires_ms}` carried in the
   namespace (one root-level register per record), so every device sees it in
   causal order with the file's changes. A change of holder raises the epoch;

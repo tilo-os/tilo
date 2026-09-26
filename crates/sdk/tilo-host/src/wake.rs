@@ -298,23 +298,62 @@ mod tests {
     use std::sync::mpsc::{self, Receiver, TryRecvError};
 
     #[test]
-    fn queue_notifications_preserve_model_dirty_wakes_before_binding() {
-        for model_changed in [false, true] {
-            let mut scope = WakeScope::new();
-            scope.handle().notify_events();
-            if model_changed {
-                scope.handle().wake();
+    fn wakes_coalesce_before_binding_and_bind_only_once() {
+        // Case `queue_notifications_preserve_model_dirty_wakes_before_binding`.
+        {
+            for model_changed in [false, true] {
+                let mut scope = WakeScope::new();
+                scope.handle().notify_events();
+                if model_changed {
+                    scope.handle().wake();
+                }
+                scope.handle().notify_events();
+                let (tx, rx) = mpsc::channel();
+                scope
+                    .bind(move |event| {
+                        tx.send(event).unwrap();
+                    })
+                    .unwrap();
+                let event = rx.try_recv().unwrap();
+                assert_eq!(event.requires_sync(), model_changed);
+                assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
             }
-            scope.handle().notify_events();
+        }
+
+        // Case `pending_wakes_coalesce_before_the_sink_is_bound`.
+        {
+            let mut scope = WakeScope::new();
+            let worker = scope.handle();
+            std::thread::spawn(move || {
+                for _ in 0..8 {
+                    worker.wake();
+                }
+            })
+            .join()
+            .unwrap();
             let (tx, rx) = mpsc::channel();
             scope
                 .bind(move |event| {
                     tx.send(event).unwrap();
                 })
                 .unwrap();
-            let event = rx.try_recv().unwrap();
-            assert_eq!(event.requires_sync(), model_changed);
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            scope.handle().wake();
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
+        }
+
+        // Case `binding_twice_cannot_replace_the_destination`.
+        {
+            let (mut scope, rx) = bound_scope();
+            assert_eq!(
+                scope.bind(|_| panic!("replacement sink called")),
+                Err(WakeBindError::AlreadyBound)
+            );
+            scope.handle().wake();
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
+            scope.close();
+            assert_eq!(scope.bind(|_| {}), Err(WakeBindError::Closed));
         }
     }
 
@@ -330,213 +369,186 @@ mod tests {
     }
 
     #[test]
-    fn captured_handles_keep_their_owner_across_threads_and_other_hosts() {
-        let (mut a, a_rx) = bound_scope();
-        let (b, b_rx) = bound_scope();
-        let a_handle = {
-            let _entry = a.enter();
-            WakeHandle::new()
-        };
-        let b_handle = {
-            let _entry = b.enter();
-            WakeHandle::default()
-        };
-        std::thread::spawn(move || a_handle.wake()).join().unwrap();
-        let a_event = a_rx.try_recv().unwrap();
-        assert!(a.accepts(&a_event));
-        assert!(!b.accepts(&a_event));
-        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
-        a.close();
-        b_handle.wake();
-        assert!(b.accepts(&b_rx.try_recv().unwrap()));
-    }
-
-    #[test]
-    fn pending_wakes_coalesce_before_the_sink_is_bound() {
-        let mut scope = WakeScope::new();
-        let worker = scope.handle();
-        std::thread::spawn(move || {
-            for _ in 0..8 {
-                worker.wake();
-            }
-        })
-        .join()
-        .unwrap();
-        let (tx, rx) = mpsc::channel();
-        scope
-            .bind(move |event| {
-                tx.send(event).unwrap();
-            })
-            .unwrap();
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        scope.handle().wake();
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-    }
-
-    #[test]
-    fn binding_twice_cannot_replace_the_destination() {
-        let (mut scope, rx) = bound_scope();
-        assert_eq!(
-            scope.bind(|_| panic!("replacement sink called")),
-            Err(WakeBindError::AlreadyBound)
-        );
-        scope.handle().wake();
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-        scope.close();
-        assert_eq!(scope.bind(|_| {}), Err(WakeBindError::Closed));
-    }
-
-    #[test]
-    fn a_closed_mount_and_its_replacement_reject_the_old_queued_event() {
-        let (mut old, rx) = bound_scope();
-        let old_handle = old.handle();
-        old_handle.wake();
-        let queued = rx.try_recv().unwrap();
-        assert!(old.accepts(&queued));
-        old.close();
-        let replacement = WakeScope::new();
-        assert!(!old.accepts(&queued));
-        assert!(!replacement.accepts(&queued));
-        assert!(!old_handle.is_active());
-        assert!(!old_handle.authorize_publication());
-        old_handle.wake();
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn close_does_not_wait_for_an_already_authorized_operation() {
-        let mut scope = WakeScope::new();
-        let handle = scope.handle();
-        assert!(handle.authorize_publication());
-        scope.close();
-        assert!(!handle.authorize_publication());
-        assert!(!handle.is_active());
-        scope.close(); // idempotent
-    }
-
-    #[test]
-    fn detached_handles_never_attach_to_a_later_host() {
-        let detached = WakeHandle::new();
-        let (scope, rx) = bound_scope();
-        let _entry = scope.enter();
-        let explicit = WakeHandle::detached();
-        assert!(detached.is_active());
-        assert!(detached.authorize_publication());
-        assert!(explicit.authorize_publication());
-        detached.wake();
-        explicit.wake();
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        WakeHandle::new().wake();
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-    }
-
-    #[test]
-    fn nested_entry_and_unwind_restore_the_previous_context() {
-        let (a, a_rx) = bound_scope();
-        let (b, b_rx) = bound_scope();
+    fn handles_keep_their_owner_and_never_keep_a_scope_alive() {
+        // Case `captured_handles_keep_their_owner_across_threads_and_other_hosts`.
         {
-            let _outer = a.enter();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _inner = b.enter();
-                WakeHandle::new().wake();
-                panic!("exercise scope restoration");
-            }));
-            assert!(result.is_err());
-            WakeHandle::new().wake();
+            let (mut a, a_rx) = bound_scope();
+            let (b, b_rx) = bound_scope();
+            let a_handle = {
+                let _entry = a.enter();
+                WakeHandle::new()
+            };
+            let b_handle = {
+                let _entry = b.enter();
+                WakeHandle::default()
+            };
+            std::thread::spawn(move || a_handle.wake()).join().unwrap();
+            let a_event = a_rx.try_recv().unwrap();
+            assert!(a.accepts(&a_event));
+            assert!(!b.accepts(&a_event));
+            assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+            a.close();
+            b_handle.wake();
+            assert!(b.accepts(&b_rx.try_recv().unwrap()));
         }
-        assert!(a.accepts(&a_rx.try_recv().unwrap()));
-        assert!(b.accepts(&b_rx.try_recv().unwrap()));
-        WakeHandle::new().wake();
-        assert!(matches!(a_rx.try_recv(), Err(TryRecvError::Empty)));
-        assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
-    }
 
-    #[test]
-    fn detached_entry_masks_an_outer_scope_and_restores_it() {
-        let (outer, rx) = bound_scope();
-        let _outer = outer.enter();
-        let detached = {
-            let _detached = WakeScope::enter_detached();
-            let handle = WakeHandle::new();
-            handle.wake();
-            handle
-        };
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        assert!(detached.authorize_publication());
-        detached.wake();
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        WakeHandle::new().wake();
-        assert!(outer.accepts(&rx.try_recv().unwrap()));
-    }
-
-    #[test]
-    fn detached_entry_restores_an_outer_scope_after_unwind() {
-        let (outer, rx) = bound_scope();
-        let _outer = outer.enter();
-        let result = std::panic::catch_unwind(|| {
-            let _detached = WakeScope::enter_detached();
+        // Case `detached_handles_never_attach_to_a_later_host`.
+        {
+            let detached = WakeHandle::new();
+            let (scope, rx) = bound_scope();
+            let _entry = scope.enter();
+            let explicit = WakeHandle::detached();
+            assert!(detached.is_active());
+            assert!(detached.authorize_publication());
+            assert!(explicit.authorize_publication());
+            detached.wake();
+            explicit.wake();
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
             WakeHandle::new().wake();
-            panic!("detached callback failed");
-        });
-        assert!(result.is_err());
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        WakeHandle::new().wake();
-        assert!(outer.accepts(&rx.try_recv().unwrap()));
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
+        }
+
+        // Case `construction_under_a_dropped_owner_stays_closed_not_detached`.
+        {
+            let scope = WakeScope::new();
+            let entry = scope.enter();
+            drop(scope);
+            let captured = WakeHandle::new();
+            assert!(!captured.is_active());
+            assert!(!captured.authorize_publication());
+            drop(entry);
+            assert!(WakeHandle::new().is_active());
+        }
+
+        // Case `workers_and_queued_events_do_not_keep_a_scope_or_sink_alive`.
+        {
+            let resource = Arc::new(());
+            let weak_resource = Arc::downgrade(&resource);
+            let mut scope = WakeScope::new();
+            let (tx, rx) = mpsc::channel();
+            scope
+                .bind(move |event| {
+                    std::hint::black_box(&resource);
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            let handle = scope.handle();
+            handle.wake();
+            let event = rx.try_recv().unwrap();
+            drop(scope);
+            assert!(weak_resource.upgrade().is_none());
+            assert!(!handle.is_active());
+            assert!(!handle.authorize_publication());
+            let replacement = WakeScope::new();
+            assert!(!replacement.accepts(&event));
+        }
     }
 
     #[test]
-    fn workers_and_queued_events_do_not_keep_a_scope_or_sink_alive() {
-        let resource = Arc::new(());
-        let weak_resource = Arc::downgrade(&resource);
-        let mut scope = WakeScope::new();
-        let (tx, rx) = mpsc::channel();
-        scope
-            .bind(move |event| {
-                std::hint::black_box(&resource);
-                tx.send(event).unwrap();
-            })
-            .unwrap();
-        let handle = scope.handle();
-        handle.wake();
-        let event = rx.try_recv().unwrap();
-        drop(scope);
-        assert!(weak_resource.upgrade().is_none());
-        assert!(!handle.is_active());
-        assert!(!handle.authorize_publication());
-        let replacement = WakeScope::new();
-        assert!(!replacement.accepts(&event));
+    fn closing_rejects_stale_events_without_blocking_or_holding_the_lock() {
+        // Case `a_closed_mount_and_its_replacement_reject_the_old_queued_event`.
+        {
+            let (mut old, rx) = bound_scope();
+            let old_handle = old.handle();
+            old_handle.wake();
+            let queued = rx.try_recv().unwrap();
+            assert!(old.accepts(&queued));
+            old.close();
+            let replacement = WakeScope::new();
+            assert!(!old.accepts(&queued));
+            assert!(!replacement.accepts(&queued));
+            assert!(!old_handle.is_active());
+            assert!(!old_handle.authorize_publication());
+            old_handle.wake();
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Case `close_does_not_wait_for_an_already_authorized_operation`.
+        {
+            let mut scope = WakeScope::new();
+            let handle = scope.handle();
+            assert!(handle.authorize_publication());
+            scope.close();
+            assert!(!handle.authorize_publication());
+            assert!(!handle.is_active());
+            scope.close(); // idempotent
+        }
+
+        // Case `callbacks_run_outside_the_route_lock`.
+        {
+            let mut scope = WakeScope::new();
+            let reentrant_handle = scope.handle();
+            let first = Arc::new(AtomicBool::new(true));
+            let (tx, rx) = mpsc::channel();
+            scope
+                .bind(move |event| {
+                    if first.swap(false, Ordering::AcqRel) {
+                        reentrant_handle.wake();
+                    }
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            scope.handle().wake();
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
+            assert!(scope.accepts(&rx.try_recv().unwrap()));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
     }
 
     #[test]
-    fn construction_under_a_dropped_owner_stays_closed_not_detached() {
-        let scope = WakeScope::new();
-        let entry = scope.enter();
-        drop(scope);
-        let captured = WakeHandle::new();
-        assert!(!captured.is_active());
-        assert!(!captured.authorize_publication());
-        drop(entry);
-        assert!(WakeHandle::new().is_active());
-    }
+    fn entry_masks_and_restores_the_outer_context_even_on_unwind() {
+        // Case `nested_entry_and_unwind_restore_the_previous_context`.
+        {
+            let (a, a_rx) = bound_scope();
+            let (b, b_rx) = bound_scope();
+            {
+                let _outer = a.enter();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _inner = b.enter();
+                    WakeHandle::new().wake();
+                    panic!("exercise scope restoration");
+                }));
+                assert!(result.is_err());
+                WakeHandle::new().wake();
+            }
+            assert!(a.accepts(&a_rx.try_recv().unwrap()));
+            assert!(b.accepts(&b_rx.try_recv().unwrap()));
+            WakeHandle::new().wake();
+            assert!(matches!(a_rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+        }
 
-    #[test]
-    fn callbacks_run_outside_the_route_lock() {
-        let mut scope = WakeScope::new();
-        let reentrant_handle = scope.handle();
-        let first = Arc::new(AtomicBool::new(true));
-        let (tx, rx) = mpsc::channel();
-        scope
-            .bind(move |event| {
-                if first.swap(false, Ordering::AcqRel) {
-                    reentrant_handle.wake();
-                }
-                tx.send(event).unwrap();
-            })
-            .unwrap();
-        scope.handle().wake();
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-        assert!(scope.accepts(&rx.try_recv().unwrap()));
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        // Case `detached_entry_masks_an_outer_scope_and_restores_it`.
+        {
+            let (outer, rx) = bound_scope();
+            let _outer = outer.enter();
+            let detached = {
+                let _detached = WakeScope::enter_detached();
+                let handle = WakeHandle::new();
+                handle.wake();
+                handle
+            };
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(detached.authorize_publication());
+            detached.wake();
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            WakeHandle::new().wake();
+            assert!(outer.accepts(&rx.try_recv().unwrap()));
+        }
+
+        // Case `detached_entry_restores_an_outer_scope_after_unwind`.
+        {
+            let (outer, rx) = bound_scope();
+            let _outer = outer.enter();
+            let result = std::panic::catch_unwind(|| {
+                let _detached = WakeScope::enter_detached();
+                WakeHandle::new().wake();
+                panic!("detached callback failed");
+            });
+            assert!(result.is_err());
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            WakeHandle::new().wake();
+            assert!(outer.accepts(&rx.try_recv().unwrap()));
+        }
     }
 }

@@ -44,7 +44,8 @@ mod tests {
     use automerge::{ROOT, transaction::Transactable};
 
     #[test]
-    fn migration_removes_only_legacy_transient_keys() {
+    fn legacy_prune_removes_only_transient_keys_and_never_materializes_state() {
+        // Migration removes only legacy transient keys.
         let mut doc = AutoCommit::new();
         let _ = doc.put(&ROOT, "search", "old query");
         let _ = doc.put(&ROOT, "selected_entry", "logs.entry.old");
@@ -55,10 +56,8 @@ mod tests {
         assert!(doc.get(&ROOT, "search").unwrap().is_none());
         assert!(doc.get(&ROOT, "selected_entry").unwrap().is_none());
         assert!(doc.get(&ROOT, "unrelated").unwrap().is_some());
-    }
 
-    #[test]
-    fn fresh_logs_viewer_does_not_materialize_document_state() {
+        // A fresh Logs viewer does not materialize document state.
         let mut doc = AutoCommit::new();
         LogsDoc::prune_legacy_view_state(&mut doc, &ROOT);
         assert!(doc.keys(&ROOT).next().is_none());

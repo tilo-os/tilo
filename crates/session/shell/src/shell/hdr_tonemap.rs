@@ -301,96 +301,101 @@ mod tests {
         code << 6
     }
 
-    /// A mid-code PQ value lands well below mid-luminance (PQ is
-    /// perceptual), so this should land near mid-gray after Hable.
     #[test]
-    fn mid_gray_pq_maps_to_reasonable_sdr_gray() {
-        let width = 4;
-        let height = 4;
-        let luma_code = 512; // ~0.5 in normalised limited range
-        let neutral_chroma = 512;
+    fn hdr_tonemap_maps_pq_to_sdr_from_mastering_metadata_monotonically() {
+        /// A mid-code PQ value lands well below mid-luminance (PQ is
+        /// perceptual), so this should land near mid-gray after Hable.
+        fn mid_gray_pq_maps_to_reasonable_sdr_gray() {
+            let width = 4;
+            let height = 4;
+            let luma_code = 512; // ~0.5 in normalised limited range
+            let neutral_chroma = 512;
 
-        let y = vec![p010(luma_code); (width * height) as usize];
-        let uv = vec![p010(neutral_chroma); (width / 2 * height / 2) as usize * 2];
+            let y = vec![p010(luma_code); (width * height) as usize];
+            let uv = vec![p010(neutral_chroma); (width / 2 * height / 2) as usize * 2];
 
-        let colorimetry = Colorimetry {
-            primaries: ColorPrimaries::Bt2020,
-            transfer: TransferCharacteristics::SmpteSt2084,
-            matrix: MatrixCoefficients::Bt2020NonConstant,
-            range: ColorRange::Limited,
-        };
-        let cfg = HdrTonemapConfig {
-            source_peak_nits: 1000.0,
-            target_peak_nits: 100.0,
-        };
-        let rgba = tonemap_p010_to_rgba8(
-            &y,
-            &uv,
-            width,
-            width, // uv stride = width for 4:2:0 interleaved
-            width,
-            height,
-            colorimetry,
-            cfg,
-        );
-        assert_eq!(rgba.len(), (width * height * 4) as usize);
-        for (i, chunk) in rgba.chunks_exact(4).enumerate() {
-            assert_eq!(chunk[3], 0xFF, "pixel {i} has non-full alpha");
+            let colorimetry = Colorimetry {
+                primaries: ColorPrimaries::Bt2020,
+                transfer: TransferCharacteristics::SmpteSt2084,
+                matrix: MatrixCoefficients::Bt2020NonConstant,
+                range: ColorRange::Limited,
+            };
+            let cfg = HdrTonemapConfig {
+                source_peak_nits: 1000.0,
+                target_peak_nits: 100.0,
+            };
+            let rgba = tonemap_p010_to_rgba8(
+                &y,
+                &uv,
+                width,
+                width, // uv stride = width for 4:2:0 interleaved
+                width,
+                height,
+                colorimetry,
+                cfg,
+            );
+            assert_eq!(rgba.len(), (width * height * 4) as usize);
+            for (i, chunk) in rgba.chunks_exact(4).enumerate() {
+                assert_eq!(chunk[3], 0xFF, "pixel {i} has non-full alpha");
+            }
+            let r = rgba[0];
+            let g = rgba[1];
+            let b = rgba[2];
+            assert!(
+                (i32::from(r) - i32::from(g)).abs() <= 6
+                    && (i32::from(g) - i32::from(b)).abs() <= 6,
+                "neutral chroma should produce ~gray, got ({r}, {g}, {b})",
+            );
+            assert!(r > 10, "PQ mid-code shouldn't crush to black: got {r}");
+            assert!(r < 245, "PQ mid-code shouldn't blow out to white: got {r}");
         }
-        let r = rgba[0];
-        let g = rgba[1];
-        let b = rgba[2];
-        assert!(
-            (i32::from(r) - i32::from(g)).abs() <= 6 && (i32::from(g) - i32::from(b)).abs() <= 6,
-            "neutral chroma should produce ~gray, got ({r}, {g}, {b})",
-        );
-        assert!(r > 10, "PQ mid-code shouldn't crush to black: got {r}");
-        assert!(r < 245, "PQ mid-code shouldn't blow out to white: got {r}");
-    }
 
-    #[test]
-    fn tonemap_config_from_metadata_reads_mastering_peak() {
-        use crate::collab::hdr_metadata::{
-            ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
-        };
-        let md = Hdr10Metadata {
-            mastering: MasteringDisplayColorVolume {
-                display_primaries: [(0, 0); 3],
-                white_point: (0, 0),
-                max_display_mastering_luminance: 40_000_000, // 4000 cd/m² in 1/10000 units
-                min_display_mastering_luminance: 500,
-            },
-            light: ContentLightLevel::unknown(),
-        };
-        let cfg = HdrTonemapConfig::from_metadata(Some(md));
-        assert!((cfg.source_peak_nits - 4000.0).abs() < 0.1);
+        fn tonemap_config_from_metadata_reads_mastering_peak() {
+            use crate::collab::hdr_metadata::{
+                ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
+            };
+            let md = Hdr10Metadata {
+                mastering: MasteringDisplayColorVolume {
+                    display_primaries: [(0, 0); 3],
+                    white_point: (0, 0),
+                    max_display_mastering_luminance: 40_000_000, // 4000 cd/m² in 1/10000 units
+                    min_display_mastering_luminance: 500,
+                },
+                light: ContentLightLevel::unknown(),
+            };
+            let cfg = HdrTonemapConfig::from_metadata(Some(md));
+            assert!((cfg.source_peak_nits - 4000.0).abs() < 0.1);
 
-        let cfg = HdrTonemapConfig::from_metadata(None); // absent -> default 1000
-        assert!((cfg.source_peak_nits - 1000.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn pq_eotf_roundtrips_reference_points() {
-        // PQ is perceptual — mid-code lands well below mid-luminance.
-        let y = pq_eotf(0.5);
-        assert!(y > 10.0 && y < 250.0, "PQ(0.5) unexpectedly {y}");
-        assert!(pq_eotf(0.0) < 0.01, "PQ(0) should be near zero");
-        assert!(
-            (pq_eotf(1.0) - 10_000.0).abs() < 1.0,
-            "PQ(1) should be 10 000 nits, got {}",
-            pq_eotf(1.0)
-        );
-    }
-
-    #[test]
-    fn hable_is_monotonic_and_bounded() {
-        let mut prev = -1.0f32;
-        for i in 0..20_i16 {
-            let x = f32::from(i) / 10.0;
-            let y = hable(x);
-            assert!((0.0..=1.0).contains(&y), "hable({x}) out of range: {y}");
-            assert!(y >= prev, "hable not monotonic at {x}: prev={prev} y={y}");
-            prev = y;
+            let cfg = HdrTonemapConfig::from_metadata(None); // absent -> default 1000
+            assert!((cfg.source_peak_nits - 1000.0).abs() < 0.1);
         }
+
+        fn pq_eotf_roundtrips_reference_points() {
+            // PQ is perceptual — mid-code lands well below mid-luminance.
+            let y = pq_eotf(0.5);
+            assert!(y > 10.0 && y < 250.0, "PQ(0.5) unexpectedly {y}");
+            assert!(pq_eotf(0.0) < 0.01, "PQ(0) should be near zero");
+            assert!(
+                (pq_eotf(1.0) - 10_000.0).abs() < 1.0,
+                "PQ(1) should be 10 000 nits, got {}",
+                pq_eotf(1.0)
+            );
+        }
+
+        fn hable_is_monotonic_and_bounded() {
+            let mut prev = -1.0f32;
+            for i in 0..20_i16 {
+                let x = f32::from(i) / 10.0;
+                let y = hable(x);
+                assert!((0.0..=1.0).contains(&y), "hable({x}) out of range: {y}");
+                assert!(y >= prev, "hable not monotonic at {x}: prev={prev} y={y}");
+                prev = y;
+            }
+        }
+
+        mid_gray_pq_maps_to_reasonable_sdr_gray();
+        tonemap_config_from_metadata_reads_mastering_peak();
+        pq_eotf_roundtrips_reference_points();
+        hable_is_monotonic_and_bounded();
     }
 }

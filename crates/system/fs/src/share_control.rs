@@ -525,138 +525,142 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creates_named_and_bearer_then_revokes_over_requesting_stream() {
-        let fixture = Fixture::new();
-        let (_, recipient) = generate_keypair();
-        let named = fixture
-            .transact(ShareControlOperationV1::CreateNamed {
-                record_id: fixture.record_id,
-                person: recipient,
-                recipient_devices: vec![recipient],
-                permission: FilePermission::Edit,
-                expires_at_ms: Some(NOW + 1_000),
-            })
-            .await;
-        let grant_id = match named.result {
-            ShareControlResultV1::NamedCreated(metadata) => {
-                assert_eq!(metadata.workspace_id, fixture.workspace_id);
-                assert_eq!(metadata.person, recipient);
-                metadata.grant_id
-            }
-            other => panic!("unexpected response: {other:?}"),
-        };
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn share_control_creates_and_revokes_only_known_records_with_redacted_bounded_frames() {
+        // Phase `creates_named_and_bearer_then_revokes_over_requesting_stream`.
+        {
+            let fixture = Fixture::new();
+            let (_, recipient) = generate_keypair();
+            let named = fixture
+                .transact(ShareControlOperationV1::CreateNamed {
+                    record_id: fixture.record_id,
+                    person: recipient,
+                    recipient_devices: vec![recipient],
+                    permission: FilePermission::Edit,
+                    expires_at_ms: Some(NOW + 1_000),
+                })
+                .await;
+            let grant_id = match named.result {
+                ShareControlResultV1::NamedCreated(metadata) => {
+                    assert_eq!(metadata.workspace_id, fixture.workspace_id);
+                    assert_eq!(metadata.person, recipient);
+                    metadata.grant_id
+                }
+                other => panic!("unexpected response: {other:?}"),
+            };
 
-        let bearer = fixture
-            .transact(ShareControlOperationV1::CreateBearerV2 {
-                record_id: fixture.record_id,
-                permission: FilePermission::View,
-                expires_at_ms: NOW + 1_000,
-                max_uses: None,
-            })
-            .await;
-        let uri = match bearer.result {
-            ShareControlResultV1::BearerCreatedV2 { uri } => uri,
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let decoded = crate::FileShareLinkV2::decode_uri_at(&uri, NOW).unwrap();
-        assert_eq!(decoded.invite.record_id, fixture.record_id);
-        assert_eq!(decoded.invite.max_redemptions, Some(1));
+            let bearer = fixture
+                .transact(ShareControlOperationV1::CreateBearerV2 {
+                    record_id: fixture.record_id,
+                    permission: FilePermission::View,
+                    expires_at_ms: NOW + 1_000,
+                    max_uses: None,
+                })
+                .await;
+            let uri = match bearer.result {
+                ShareControlResultV1::BearerCreatedV2 { uri } => uri,
+                other => panic!("unexpected response: {other:?}"),
+            };
+            let decoded = crate::FileShareLinkV2::decode_uri_at(&uri, NOW).unwrap();
+            assert_eq!(decoded.invite.record_id, fixture.record_id);
+            assert_eq!(decoded.invite.max_redemptions, Some(1));
 
-        let revoked = fixture
-            .transact(ShareControlOperationV1::Revoke { grant_id })
-            .await;
-        assert_eq!(
-            revoked.result,
-            ShareControlResultV1::Revoked {
-                grant_id,
-                revoked: true
-            }
-        );
-        assert_eq!(
-            fixture
-                .authority
-                .projection(fixture.record_id, NOW)
-                .grants
-                .iter()
-                .find(|grant| grant.grant_id == grant_id)
-                .unwrap()
-                .status,
-            ShareGrantStatus::Revoked
-        );
-    }
-
-    #[tokio::test]
-    async fn unknown_record_cannot_create_any_authority_state() {
-        let fixture = Fixture::new();
-        let (_, recipient) = generate_keypair();
-        let response = fixture
-            .transact(ShareControlOperationV1::CreateNamed {
-                record_id: FileRecordId::new(),
-                person: recipient,
-                recipient_devices: vec![recipient],
-                permission: FilePermission::View,
-                expires_at_ms: None,
-            })
-            .await;
-        assert_eq!(
-            response.result,
-            ShareControlResultV1::Error {
-                code: ShareControlErrorCode::RecordNotFound
-            }
-        );
-        assert_eq!(
-            fixture
-                .authority
-                .projection(fixture.record_id, NOW)
-                .grants
-                .len(),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn oversized_frame_is_rejected_before_payload_allocation() {
-        let fixture = Fixture::new();
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
-        let server = fixture.server.clone();
-        let task = tokio::spawn(async move { server.handle_connection(server_stream).await });
-        client
-            .write_all(
-                &u32::try_from(MAX_SHARE_CONTROL_FRAME_BYTES + 1)
+            let revoked = fixture
+                .transact(ShareControlOperationV1::Revoke { grant_id })
+                .await;
+            assert_eq!(
+                revoked.result,
+                ShareControlResultV1::Revoked {
+                    grant_id,
+                    revoked: true
+                }
+            );
+            assert_eq!(
+                fixture
+                    .authority
+                    .projection(fixture.record_id, NOW)
+                    .grants
+                    .iter()
+                    .find(|grant| grant.grant_id == grant_id)
                     .unwrap()
-                    .to_be_bytes(),
-            )
-            .await
-            .unwrap();
-        let response = read_share_control_response(&mut client).await.unwrap();
-        assert_eq!(
-            response.result,
-            ShareControlResultV1::Error {
-                code: ShareControlErrorCode::FrameTooLarge
-            }
-        );
-        task.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn bearer_uri_is_redacted_from_every_response_debug_path() {
-        let fixture = Fixture::new();
-        let response = fixture
-            .transact(ShareControlOperationV1::CreateBearerV2 {
-                record_id: fixture.record_id,
-                permission: FilePermission::View,
-                expires_at_ms: NOW + 1_000,
-                max_uses: Some(2),
-            })
-            .await;
-        let uri = match &response.result {
-            ShareControlResultV1::BearerCreatedV2 { uri } => uri,
-            other => panic!("unexpected response: {other:?}"),
-        };
-        let fragment = uri.split_once('#').unwrap().1;
-        let debug = format!("{response:?}");
-        assert!(!debug.contains(uri));
-        assert!(!debug.contains(fragment));
-        assert!(debug.contains("<redacted>"));
+                    .status,
+                ShareGrantStatus::Revoked
+            );
+        }
+        // Phase `unknown_record_cannot_create_any_authority_state`.
+        {
+            let fixture = Fixture::new();
+            let (_, recipient) = generate_keypair();
+            let response = fixture
+                .transact(ShareControlOperationV1::CreateNamed {
+                    record_id: FileRecordId::new(),
+                    person: recipient,
+                    recipient_devices: vec![recipient],
+                    permission: FilePermission::View,
+                    expires_at_ms: None,
+                })
+                .await;
+            assert_eq!(
+                response.result,
+                ShareControlResultV1::Error {
+                    code: ShareControlErrorCode::RecordNotFound
+                }
+            );
+            assert_eq!(
+                fixture
+                    .authority
+                    .projection(fixture.record_id, NOW)
+                    .grants
+                    .len(),
+                0
+            );
+        }
+        // Phase `oversized_frame_is_rejected_before_payload_allocation`.
+        {
+            let fixture = Fixture::new();
+            let (mut client, server_stream) = UnixStream::pair().unwrap();
+            let server = fixture.server.clone();
+            let task = tokio::spawn(async move { server.handle_connection(server_stream).await });
+            client
+                .write_all(
+                    &u32::try_from(MAX_SHARE_CONTROL_FRAME_BYTES + 1)
+                        .unwrap()
+                        .to_be_bytes(),
+                )
+                .await
+                .unwrap();
+            let response = read_share_control_response(&mut client).await.unwrap();
+            assert_eq!(
+                response.result,
+                ShareControlResultV1::Error {
+                    code: ShareControlErrorCode::FrameTooLarge
+                }
+            );
+            task.await.unwrap().unwrap();
+        }
+        // Phase `bearer_uri_is_redacted_from_every_response_debug_path`.
+        {
+            let fixture = Fixture::new();
+            let response = fixture
+                .transact(ShareControlOperationV1::CreateBearerV2 {
+                    record_id: fixture.record_id,
+                    permission: FilePermission::View,
+                    expires_at_ms: NOW + 1_000,
+                    max_uses: Some(2),
+                })
+                .await;
+            let uri = match &response.result {
+                ShareControlResultV1::BearerCreatedV2 { uri } => uri,
+                other => panic!("unexpected response: {other:?}"),
+            };
+            let fragment = uri.split_once('#').unwrap().1;
+            let debug = format!("{response:?}");
+            assert!(!debug.contains(uri));
+            assert!(!debug.contains(fragment));
+            assert!(debug.contains("<redacted>"));
+        }
     }
 }
