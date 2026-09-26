@@ -18,13 +18,16 @@
 #     dev-only components (`dev-*` layers), tilo-control and tilo-vmd, are
 #     built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
-#   * The production builder's toolchain, installed into the image. The binaries
-#     above are compiled with it, and so are in-VM builds. The package list is
-#     generated from os/Containerfile's `builder` stage into
+#   * A build toolchain, installed into the image. The binaries above are
+#     compiled with it, and so are in-VM builds. The Rust compiler is the
+#     release rust-toolchain.toml pins, the one CI checks and tests the
+#     workspace with, copied from the digest-pinned CI builder image
+#     (RUST_TOOLCHAIN_IMAGE). Everything else is the production builder's: the
+#     package list is generated from os/Containerfile's `builder` stage into
 #     os/scripts/builder-packages.txt (os/Containerfile is not in the build
 #     context), checked against it by the dev image contract, and installed from
-#     the same frozen RPM snapshot, so the compiler and -devel libraries cannot
-#     drift from the production builder's.
+#     the same frozen RPM snapshot, so the C toolchain and -devel libraries
+#     cannot drift from the production builder's.
 #   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
 #     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
@@ -54,8 +57,18 @@ ARG BASE_IMAGE=localhost/tilo:latest
 # .forgejo/workflows/dev-disk.yml pass RPMS_REF from os/rpms-snapshot.env, so a
 # build of any commit installs what that commit's production builder installed.
 ARG RPMS_REF
+# Where the Rust toolchain comes from: a code.podesta.ai/qos/tilo-builder index,
+# pinned by digest. .forgejo/workflows/build-builder-image.yml installs the
+# channel rust-toolchain.toml names into it, through dist/ci/install-build-deps.sh's
+# checksum-pinned rustup bootstrap, for both architectures. The dev-toolchain
+# stage takes exactly the channel rust-toolchain.toml pins out of it and fails
+# when the image lacks it, so a toolchain bump that forgets this pin cannot
+# build a dev image with a different compiler. Fedora's rust package is not an
+# option: its version moves whenever the RPM snapshot is refreshed.
+ARG RUST_TOOLCHAIN_IMAGE=code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 FROM ${RPMS_REF} AS rpms
+FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
 
 # The build scripts and inputs the stages below run, staged through a scratch
 # stage and bind-mounted from it, so no stage mounts the build context itself
@@ -64,7 +77,7 @@ FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py /tilo/os/scripts/
-COPY Cargo.lock /tilo/
+COPY Cargo.lock rust-toolchain.toml /tilo/
 
 # ---- The base, unsealed, with the builder's toolchain -------------------------
 FROM ${BASE_IMAGE} AS dev-toolchain
@@ -88,9 +101,35 @@ RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
 
+# The pinned Rust release, under /usr so it updates with the image (/usr/local
+# is /var/usrlocal on bootc, which an image update never touches). Linked into
+# /usr/bin rather than behind rustup proxies: tilo-vmd runs in-VM builds with
+# systemd's PATH, and without rustup nothing reinterprets rust-toolchain.toml.
+RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' /run/tilo-dev/rust-toolchain.toml)" \
+    && [ -n "$channel" ] \
+    && toolchain="$channel-$(uname -m)-unknown-linux-gnu" \
+    && if [ ! -x "/run/tilo-rust-toolchains/$toolchain/bin/rustc" ]; then \
+         printf 'RUST_TOOLCHAIN_IMAGE has no %s toolchain, which rust-toolchain.toml pins (it has: %s).\n' \
+           "$toolchain" "$(ls /run/tilo-rust-toolchains | tr '\n' ' ')" >&2; \
+         printf 'Pin a tilo-builder index built from this rust-toolchain.toml (build-builder-image.yml tags it %s).\n' \
+           "$channel" >&2; \
+         exit 1; \
+       fi \
+    && cp -a "/run/tilo-rust-toolchains/$toolchain" /usr/lib/rust-toolchain \
+    && for tool in /usr/lib/rust-toolchain/bin/*; do ln -s "$tool" "/usr/bin/${tool##*/}"; done \
+    && actual="$(rustc --version | awk '{print $2}')" \
+    && if [ "$actual" != "$channel" ]; then \
+         printf 'the dev image compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$channel" >&2; \
+         exit 1; \
+       fi \
+    && cargo --version
+
 # sshd for `tilo-vm`, rsync for worktree sync, and the production builder's
-# packages. openssh-server is the one package the production image removes on
-# purpose (the runtime crypto policy forbids an SSH server there). The sealed
+# packages but for its Rust compiler (above). openssh-server is the one package
+# the production image removes on purpose (the runtime crypto policy forbids an
+# SSH server there). The sealed
 # base also removes openssh, so the frozen repo must carry its exact matching
 # core RPM even when the snapshot's original base already had it installed.
 # tilo-rpm-snapshot-package: openssh
@@ -172,12 +211,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
          find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
        fi
-RUN /build/os/scripts/verify-elf-hardening.sh /out \
-    && pinned="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)" \
-    && actual="$(rustc --version | awk '{print $2}')" \
-    && if [ "$pinned" != "$actual" ]; then \
-         printf 'WARNING: the image builder compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$pinned" >&2; \
-       fi
+RUN /build/os/scripts/verify-elf-hardening.sh /out
 
 # ---- Dev components, placed by the manifest ---------------------------------
 FROM dev-toolchain AS dev-component-files
