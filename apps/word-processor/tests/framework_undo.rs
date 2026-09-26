@@ -73,6 +73,27 @@ fn bold(spans: Vec<Span>, on: bool) -> RichTextAction {
 }
 
 #[test]
+fn undo_takes_back_only_your_own_steps_around_a_collaborators_words() {
+    use tilo_actions::Action as _;
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("hello");
+    app.harness().key("Enter");
+    assert_eq!(texts(&app), ["hello", ""]);
+    // A collaborator types into the new paragraph.
+    let new = snapshot(&app).blocks[1].id.clone();
+    app.merge_peer_edit(|doc| {
+        splice(&new, 0, 0, "their words").apply(doc).unwrap();
+    });
+    assert_eq!(texts(&app), ["hello", "their words"]);
+
+    // Undo the Enter, then the word: the collaborator's words stay.
+    assert!(app.undo());
+    assert!(app.undo());
+    assert_eq!(texts(&app), ["", "their words"]);
+}
+
+#[test]
 fn undoing_a_group_of_splices_around_a_bold_run_restores_its_text() {
     let mut app = open_with(
         "Project Falcon remains the largest investment.\n\nStaffing for Project Falcon was confirmed.\n",
