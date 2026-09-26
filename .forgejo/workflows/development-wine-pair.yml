@@ -7,7 +7,7 @@ on:
         description: Immutable native Wine tools image
         required: true
         type: string
-        default: code.podesta.ai/qos/wine-tools@sha256:2a85681f640ebfbe0a15e6e92bd181b13bc674f10ca98b136fed448a754d12d8
+        default: registry.tilo.so/tilo/wine-tools@sha256:2a85681f640ebfbe0a15e6e92bd181b13bc674f10ca98b136fed448a754d12d8
       x64_candidate:
         description: Immutable retained x86-64 Wine RPM artifact
         required: true
@@ -39,9 +39,9 @@ jobs:
       - name: Log in to candidate artifact registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate both artifacts and merge equivalent noarch packages
         env:
@@ -51,9 +51,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = x86_64
-          [[ "$WINE_RUNTIME_IMAGE" =~ ^code\.podesta\.ai/qos/wine-tools@sha256:[0-9a-f]{64}$ ]]
+          [[ "$WINE_RUNTIME_IMAGE" =~ ^registry\.tilo\.so/tilo/wine-tools@sha256:[0-9a-f]{64}$ ]]
           for ref in "$X64_REF" "$X86_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/wine-rpms@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^registry\.tilo\.so/tilo/wine-rpms@sha256:[0-9a-f]{64}$ ]]
           done
           containers=()
           cleanup() {
@@ -71,7 +71,7 @@ jobs:
           docker cp os/dev/wine-source.json "$merger:/tilo/wine-source.json"
           for arch in x86_64 i686; do
             case "$arch" in x86_64) ref="$X64_REF";; i686) ref="$X86_REF";; esac
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/wine-rpms@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^registry\.tilo\.so/tilo/wine-rpms@sha256:[0-9a-f]{64}$ ]]
             docker pull "$ref"
             input=$(docker create "$ref" /unused)
             containers+=("$input")
@@ -84,7 +84,7 @@ jobs:
           docker exec "$merger" python3 /tilo/merge-wine-rpms.py \
             --x64 /tmp/x86_64 --x86 /tmp/i686 --x64-ref "$x64" --x86-ref "$x86" \
             --pin /tilo/wine-source.json --output /wine-paired
-          tag="code.podesta.ai/qos/wine-paired:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          tag="registry.tilo.so/tilo/wine-paired:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker exec "$merger" tar -C / -cf - wine-paired | docker import --platform linux/amd64 - "$tag"
           docker push "$tag"
           mkdir -p paired-evidence

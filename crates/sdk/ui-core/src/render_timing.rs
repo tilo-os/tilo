@@ -88,17 +88,6 @@ pub(crate) fn enabled() -> bool {
     })
 }
 
-/// Presentation profiling needs support, an explicit `profile == "1"`, and a
-/// native scenario to profile.
-#[cfg(feature = "native")]
-pub(crate) fn gate(
-    supported: bool,
-    profile: Option<&str>,
-    scenario: Option<&std::ffi::OsStr>,
-) -> bool {
-    supported && profile == Some("1") && scenario.is_some_and(|path| !path.is_empty())
-}
-
 pub(crate) fn capture() -> Option<HostClockBracket> {
     host_clock::sample().1
 }
@@ -124,7 +113,7 @@ fn around_with<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, ffi::OsStr};
+    use std::cell::RefCell;
 
     #[test]
     fn main_stages_keep_chronological_named_bounds_and_frame_identity() {
@@ -183,20 +172,6 @@ mod tests {
             );
         }
         assert!(row["cpu_frame_id"].is_null());
-    }
-
-    #[test]
-    fn gate_requires_supported_native_scenario_and_explicit_feedback() {
-        assert!(gate(true, Some("1"), Some(OsStr::new("scenario.json"))));
-        for (supported, profile, scenario) in [
-            (false, Some("1"), Some(OsStr::new("scenario.json"))),
-            (true, None, Some(OsStr::new("scenario.json"))),
-            (true, Some("0"), Some(OsStr::new("scenario.json"))),
-            (true, Some("1"), None),
-            (true, Some("1"), Some(OsStr::new(""))),
-        ] {
-            assert!(!gate(supported, profile, scenario));
-        }
     }
 
     #[test]

@@ -17,12 +17,17 @@ CRATE_CLIPPY = ROOT_CLIPPY + 'disallowed-methods = ["std::time::Instant::now"]\n
 
 
 class UiClockContractTests(unittest.TestCase):
-    def fixture(self, files: dict[str, str], crate_clippy: str | None = CRATE_CLIPPY) -> Path:
+    def fixture(
+        self,
+        files: dict[str, str],
+        crate_clippy: str | None = CRATE_CLIPPY,
+        crate_path: str = "crates/sdk/ui-core",
+    ) -> Path:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         (root / "clippy.toml").write_text(ROOT_CLIPPY, encoding="utf-8")
-        crate = root / "crates/sdk/ui-core"
+        crate = root / crate_path
         (crate / "src").mkdir(parents=True)
         if crate_clippy is not None:
             (crate / "clippy.toml").write_text(crate_clippy, encoding="utf-8")
@@ -37,9 +42,30 @@ class UiClockContractTests(unittest.TestCase):
             {
                 "time.rs": "pub use std::time::{Instant, SystemTime};\n",
                 "lib.rs": "use crate::time::Instant;\nuse std::time::Duration;\n",
-            }
+            },
+            crate_path="crates/sdk/tilo-host",
         )
         self.assertEqual(contract.audit(root), [])
+
+    def test_the_clock_module_lives_in_the_host_crate_only(self):
+        root = self.fixture({"time.rs": "pub use std::time::Instant;\n"})
+        paths = [Path(v.path).as_posix() for v in contract.audit(root)]
+        self.assertEqual(paths, ["crates/sdk/ui-core/src/time.rs"])
+
+    def test_every_toolkit_crate_is_audited(self):
+        root = self.fixture({"a.rs": "use std::time::Instant;\n"})
+        host = root / "crates/sdk/tilo-host"
+        (host / "src").mkdir(parents=True)
+        (host / "src/b.rs").write_text("use std::time::SystemTime;\n", encoding="utf-8")
+        audited = sorted(Path(v.path).as_posix() for v in contract.audit(root))
+        self.assertEqual(
+            audited,
+            [
+                "crates/sdk/tilo-host/clippy.toml",
+                "crates/sdk/tilo-host/src/b.rs",
+                "crates/sdk/ui-core/src/a.rs",
+            ],
+        )
 
     def test_std_clock_paths_fail(self):
         root = self.fixture(

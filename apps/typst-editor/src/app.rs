@@ -591,7 +591,7 @@ impl TypstApp {
     // ----- file I/O -------------------------------------------------------
 
     fn save_dir() -> Option<PathBuf> {
-        if let Some(dir) = std::env::var_os("QOS_TYPST_LIBRARY_DIR") {
+        if let Some(dir) = std::env::var_os("TILO_TYPST_LIBRARY_DIR") {
             return Some(PathBuf::from(dir));
         }
         xdg_paths::document_dir()

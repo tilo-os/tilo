@@ -174,6 +174,23 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
         ShortcutAction::MoveGroupRight => "move the group right",
         ShortcutAction::ResizeNarrower => "make the window narrower",
         ShortcutAction::ResizeWider => "make the window wider",
+        ShortcutAction::ReopenClosedTab => "reopen the tab you closed last",
+        ShortcutAction::FocusGroup1 => "focus the first window in the strip",
+        ShortcutAction::FocusGroup2 => "focus the second window in the strip",
+        ShortcutAction::FocusGroup3 => "focus the third window in the strip",
+        ShortcutAction::FocusGroup4 => "focus the fourth window in the strip",
+        ShortcutAction::FocusGroup5 => "focus the fifth window in the strip",
+        ShortcutAction::FocusGroup6 => "focus the sixth window in the strip",
+        ShortcutAction::FocusGroup7 => "focus the seventh window in the strip",
+        ShortcutAction::FocusGroup8 => "focus the eighth window in the strip",
+        ShortcutAction::FocusGroup9 => "focus the ninth window in the strip",
+        ShortcutAction::OpenFiles => "open Files",
+        ShortcutAction::OpenTerminal => "open a terminal",
+        ShortcutAction::ClipboardHistory => "open clipboard history",
+        ShortcutAction::Notifications => "open notifications",
+        ShortcutAction::ToggleFullscreen => "make the window full screen or restore it",
+        ShortcutAction::ToggleMagnifier => "turn the magnifier on or off",
+        ShortcutAction::PowerMenu => "open the power menu",
     }
 }
 
@@ -195,7 +212,9 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
     [
         fixed(FixedChordAction::SwitchWindows),
         fixed(FixedChordAction::CloseTab),
-        fixed(FixedChordAction::ChangeWorkspace),
+        // Changing workspace is already an editable navigation pair above;
+        // its essentials slot names how to undo a close instead.
+        editable("Reopen closed tab", ShortcutAction::ReopenClosedTab),
         fixed(FixedChordAction::NewWindow),
         fixed(FixedChordAction::AddTab),
         fixed(FixedChordAction::DuplicateTab),
@@ -206,7 +225,7 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
         fixed(FixedChordAction::WorkspaceWheel),
         editable("Lock", ShortcutAction::Lock),
         fixed(FixedChordAction::Screenshot),
-        fixed(FixedChordAction::WirelessDisplay),
+        fixed(FixedChordAction::DisplayLayout),
         fixed(FixedChordAction::CaptureScreenshot),
         fixed(FixedChordAction::OpenTerminal),
         fixed(FixedChordAction::PictureInPicture),
@@ -215,6 +234,31 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// The chords bound to published actions, as the guide lists them: what
+/// each runs, then its chord.
+pub(super) fn shortcut_action_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
+    shortcuts
+        .actions
+        .iter()
+        .map(|bound| (bound.label.clone(), shortcut_guide_chord(&bound.chord)))
+        .collect()
+}
+
+/// One line for the guide naming every action chord, or `None` when there
+/// is none.
+pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<String> {
+    let rows = shortcut_action_rows(shortcuts);
+    (!rows.is_empty()).then(|| {
+        format!(
+            "Your shortcuts: {}",
+            rows.into_iter()
+                .map(|(label, chord)| format!("{label} · {chord}"))
+                .collect::<Vec<_>>()
+                .join("   ")
+        )
+    })
 }
 
 pub(super) fn shortcut_reference_columns(_body_width: f64) -> usize {

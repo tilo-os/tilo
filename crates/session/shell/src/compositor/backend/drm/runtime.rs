@@ -40,6 +40,9 @@ use winit::keyboard::{
 };
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
+use super::access_keys::{
+    BounceKeys, BounceVerdict, ButtonEdge, MouseKeys, MouseKeysOutput, PointerButton,
+};
 use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
 #[cfg(test)]
 use super::gestures::GestureAction;
@@ -53,13 +56,14 @@ use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
     CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DirectScanoutTargets,
-    DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles, physical_card_identity,
-    resolve_connector_config_keys,
+    DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles, is_builtin_connector,
+    physical_card_identity, resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, TouchEvent as TiloTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
+    TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -230,6 +234,10 @@ pub struct DrmDispatchState {
     pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
     /// Sticky modifiers stay logically down through the next non-modifier.
     pub sticky_latched: ModifiersState,
+    /// Swallows contact bounce ahead of every other key handling.
+    bounce_keys: BounceKeys,
+    /// The numeric keypad as a pointer, while mouse keys is on.
+    mouse_keys: MouseKeys,
     pub physical_modifiers: ModifiersState,
     /// Winit synthesises repeat presses for the hosted backend. Bare libinput
     /// only supplies key edges, so the DRM adapter mirrors that established
@@ -256,6 +264,12 @@ pub struct DrmDispatchState {
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
+    /// The capability snapshot last published for Settings, kept so
+    /// output-management heads never force-probe connectors themselves.
+    pub display_capabilities: Vec<settings_store::hardware::DisplayOutputSnapshot>,
+    /// The built-in panel's orientation from the accelerometer, overriding
+    /// its configured transform while set. `None` on machines without one.
+    pub device_rotation: Option<settings_store::hardware::OutputTransform>,
     /// Current pointer position in scene coordinates (physical pixels of
     /// the combined texture): where the cursor is drawn and what the shell
     /// hit-tests. Always derived from [`Self::logical_pointer`].
@@ -267,12 +281,20 @@ pub struct DrmDispatchState {
     pub logical_pointer: (f64, f64),
     /// Primary output size (px) — needed to transform libinput's absolute (0..1) coordinates and to clamp relative motion.
     pub output_size: (i32, i32),
+    /// The monitors attached at the last probe — which saved layout applies.
+    pub display_set: settings_store::hardware::DisplaySet,
     /// Hardware-cursor multiplexer across all outputs — one plane per
     /// output whose KMS cursor plane is active. libinput motion handlers
     /// call `move_to(global_x, global_y)`, and [`CursorPlanes`] routes to
     /// the plane of the output the pointer is over (hiding the one it left),
     /// all at input rate with no framebuffer redraw. Empty → software cursor from `pointer`.
     pub hw_cursor: CursorPlanes,
+    /// What the pointer shows, applied to every scanout (including ones a
+    /// hotplug adds later).
+    pub pointer_image: crate::compositor::cursor::PointerImage,
+    /// Where local motion may take the pointer while a client locks or
+    /// confines it.
+    pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -472,6 +494,8 @@ pub struct LiveEntry {
     pub config_key: String,
     pub size: (u32, u32),
     pub physical_mm: Option<(u32, u32)>,
+    /// EDID identity, advertised to clients through `wl_output`.
+    pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     pub crtc: smithay::reexports::drm::control::crtc::Handle,
     /// Top-left in the scene the presenter paints (physical pixels).
     pub position: (i32, i32),
@@ -507,6 +531,12 @@ pub enum ScanoutCommand {
         dpms_on: bool,
     },
     SetCursorSize(u32),
+    SetPointerImage(crate::compositor::cursor::PointerImage),
+    /// Switch one panel off or back on for an output-power client.
+    SetOutputPower {
+        output: OutputId,
+        on: bool,
+    },
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -640,19 +670,41 @@ fn release_masters_for_pause<'a, T: KmsMasterControl + 'a>(
     apply_master_action(active.into_iter().chain(retiring), MasterAction::Release);
 }
 
+/// Every probed connector, as display-set matching sees it.
+fn display_set_of<'a>(
+    snapshots: impl IntoIterator<Item = &'a ConnectorSnapshot>,
+) -> settings_store::hardware::DisplaySet {
+    settings_store::hardware::DisplaySet::of(snapshots.into_iter().map(|snapshot| {
+        settings_store::hardware::AttachedOutput {
+            connector: &snapshot.config_key,
+            connector_label: &snapshot.connector_name,
+            monitor: snapshot.monitor.as_ref(),
+        }
+    }))
+}
+
 /// Probe every retained card, then resolve connector keys over the *whole*
 /// seat before looking up display intent.  Per-card configuration lookup is
 /// wrong for a hybrid laptop because both cards may legitimately have an
 /// `HDMI-A-1`; this one path is shared by startup, hotplug, Settings
 /// publication and transaction validation.
+///
+/// Intent is the layout saved for the attached set of monitors. The set's
+/// key does not depend on connector keys, so the layout found under the raw
+/// labels decides key qualification, and the final keys then place each
+/// remembered monitor.
 fn configured_connectors(
     cards: &BTreeMap<u64, CardHandle>,
-) -> BTreeMap<u64, Vec<ConnectorSnapshot>> {
+) -> (
+    BTreeMap<u64, Vec<ConnectorSnapshot>>,
+    settings_store::hardware::DisplaySet,
+) {
     let mut snapshots: BTreeMap<u64, Vec<_>> = cards
         .iter()
         .map(|(&device_id, card)| (device_id, card.connected()))
         .collect();
-    let config = settings_store::hardware::DisplayConfig::load_effective();
+    let provisional = display_set_of(snapshots.values().flatten());
+    let config = settings_store::hardware::DisplayConfig::load_effective(&provisional);
     let keys = resolve_connector_config_keys(
         snapshots.iter().flat_map(|(&device_id, outputs)| {
             let card_identity = cards
@@ -672,7 +724,7 @@ fn configured_connectors(
     for (&device_id, outputs) in &mut snapshots {
         for output in outputs {
             let raw = output.connector_name.clone();
-            let config_key = keys
+            output.config_key = keys
                 .get(&DrmOutputKey {
                     device: device_id,
                     connector: output.connector_id,
@@ -681,10 +733,15 @@ fn configured_connectors(
                 // Every entry above creates a candidate. Retaining the raw
                 // label is just defensive for a future partial probe.
                 .unwrap_or(raw);
-            CardHandle::apply_output_config(output, config_key, &config);
         }
     }
-    snapshots
+    let set = display_set_of(snapshots.values().flatten());
+    let config = settings_store::hardware::DisplayConfig::load_effective(&set);
+    for output in snapshots.values_mut().flatten() {
+        let config_key = output.config_key.clone();
+        CardHandle::apply_output_config(output, config_key, &config);
+    }
+    (snapshots, set)
 }
 
 /// Build the Settings capability contract from the same topology that chose
@@ -694,7 +751,7 @@ fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
     profiles: &BTreeMap<String, String>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
-    let snapshots = configured_connectors(cards);
+    let (snapshots, _) = configured_connectors(cards);
     let mut outputs: Vec<_> = cards
         .iter()
         .flat_map(|(&device_id, card)| {
@@ -744,6 +801,20 @@ fn reconcile_capability_topology(
 }
 
 impl DrmDispatchState {
+    /// Keep the cursor planes' offset in step with the image they show.
+    fn sync_cursor_hotspot(&mut self) {
+        let hotspot = self
+            .pointer_image
+            .bitmap(self.accessibility.effective_cursor_size())
+            .map_or((0, 0), |bitmap| {
+                (
+                    i32::try_from(bitmap.hotspot.0).unwrap_or(0),
+                    i32::try_from(bitmap.hotspot.1).unwrap_or(0),
+                )
+            });
+        self.hw_cursor.set_hotspot(hotspot);
+    }
+
     /// Build the initial dispatch state from everything [`DrmRuntime::new`]
     /// gathered before it — the seat's active session, every retained KMS
     /// card, and the persisted settings. Every other field
@@ -788,6 +859,8 @@ impl DrmDispatchState {
             accessibility,
             slow_pending: HashMap::new(),
             sticky_latched: ModifiersState::empty(),
+            bounce_keys: BounceKeys::default(),
+            mouse_keys: MouseKeys::default(),
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
             devices: Vec::new(),
@@ -800,10 +873,15 @@ impl DrmDispatchState {
             direct_touch: DirectTouchOwnership::default(),
             outputs_changed: false,
             output_meta: HashMap::new(),
+            display_capabilities: Vec::new(),
+            device_rotation: None,
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
+            display_set: settings_store::hardware::DisplaySet::default(),
             hw_cursor: CursorPlanes::default(),
+            pointer_image: crate::compositor::cursor::PointerImage::default(),
+            pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -866,8 +944,29 @@ impl DrmDispatchState {
     /// Publish the live hardware contract for Settings. Failure is benign in
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
-    fn publish_display_snapshot(&self) {
+    fn publish_display_snapshot(&mut self) {
         let outputs = display_capabilities(&self.cards, &self.color_profiles);
+        let layout = self
+            .live
+            .iter()
+            .map(|entry| {
+                let (width, height) = logical_output_size(entry.size, entry.transform);
+                settings_store::hardware::LiveOutputPlacement {
+                    connector: entry.config_key.clone(),
+                    x: entry.position.0,
+                    y: entry.position.1,
+                    width,
+                    height,
+                }
+            })
+            .collect();
+        if outputs != self.display_capabilities {
+            self.display_capabilities.clone_from(&outputs);
+            // A disabled connector appearing changes the heads external
+            // configuration tools see, even with no modeset to report.
+            self.outputs_changed = true;
+            self.push(BackendEvent::OutputsChanged);
+        }
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
@@ -876,6 +975,7 @@ impl DrmDispatchState {
                 settings_store::hardware::process_start_ticks(std::process::id())
                     .unwrap_or_default(),
             outputs,
+            layout,
         };
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM display: could not publish capability snapshot");
@@ -912,7 +1012,9 @@ impl DrmDispatchState {
         reason: &str,
         removal_ack: Option<(u64, Sender<u64>)>,
     ) {
-        let snapshots = configured_connectors(&self.cards);
+        let (snapshots, display_set) = configured_connectors(&self.cards);
+        let display_set_changed = self.display_set != display_set;
+        self.display_set = display_set;
         let config_keys: BTreeMap<_, _> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
@@ -931,7 +1033,10 @@ impl DrmDispatchState {
             &mut self.capability_topology,
             config_keys.keys().copied().collect(),
         );
-        let live_config_changed = reconcile_live_config_keys(&mut self.live, &config_keys);
+        // Another set of monitors reads another saved layout even when no
+        // connector needs a modeset (the same port, a different monitor).
+        let live_config_changed =
+            reconcile_live_config_keys(&mut self.live, &config_keys) || display_set_changed;
         let connected: Vec<ConnectedOutput> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
@@ -1076,7 +1181,8 @@ impl DrmDispatchState {
     /// Returns entries for the scanout owner; `position` is provisional — [`Self::relayout_outputs`] fixes it for the whole set, and `Reconfigure` carries the final table.
     fn adopt_builds(&mut self, builds: Vec<ScanoutBuild>) -> Vec<ScanoutEntry> {
         let mut entries = Vec::with_capacity(builds.len());
-        for build in builds {
+        for mut build in builds {
+            build.scanout.set_pointer_image(self.pointer_image.clone());
             let key = DrmOutputKey {
                 device: build.device_id,
                 connector: build.connector_id,
@@ -1094,6 +1200,7 @@ impl DrmDispatchState {
                 config_key: build.config_key,
                 size: build.scanout.size(),
                 physical_mm: build.physical_mm,
+                monitor: build.monitor,
                 crtc: build.crtc,
                 position: (0, 0),
                 logical_position: (0, 0),
@@ -1111,20 +1218,30 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_unavailable: None,
+                powered_off: false,
                 scanout: build.scanout,
             });
         }
         entries
     }
 
-    /// Apply configured topology (falling back to side-by-side), re-derive
-    /// scales, and bring the pointer and cursor planes back onto a live
-    /// output. Called after any change to the connector set or display plan.
+    /// Apply the layout saved for the attached monitors, re-derive scales,
+    /// and bring the pointer and cursor planes back onto a live output.
+    /// Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
-        let config = settings_store::hardware::DisplayConfig::load_effective();
+        let config = settings_store::hardware::DisplayConfig::load_effective(&self.display_set);
+        self.relayout_with(&config);
+    }
+
+    /// Lay out the live outputs from `config`. An output it does not
+    /// mention — every output of a set never arranged before — is placed
+    /// side by side, built-in panel first on the left and externals to its
+    /// right, at the scale its pixel density calls for.
+    fn relayout_with(&mut self, config: &settings_store::hardware::DisplayConfig) {
         self.live.sort_by_key(|l| {
             (
                 !config.outputs.get(&l.config_key).is_some_and(|c| c.primary),
+                !is_builtin_connector(&l.connector_name),
                 l.id.0,
             )
         });
@@ -1135,6 +1252,13 @@ impl DrmDispatchState {
                 .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
                     c.transform
                 });
+            // The accelerometer is in the built-in panel's lid: its reading
+            // turns that panel and never an external monitor.
+            if let Some(rotation) = self.device_rotation
+                && is_builtin_connector(&entry.connector_name)
+            {
+                entry.transform = rotation;
+            }
         }
         // Scale first: an output's logical extent — what the arrangement
         // is made of — is its mode over its scale.
@@ -1149,7 +1273,7 @@ impl DrmDispatchState {
             .iter()
             .map(|entry| layout::logical_extent(entry.size, entry.scale, entry.transform))
             .collect();
-        let positions = self.logical_positions(&config, &logical_sizes);
+        let positions = self.logical_positions(config, &logical_sizes);
         let scene_sizes: Vec<(u32, u32)> = self
             .live
             .iter()
@@ -1172,7 +1296,7 @@ impl DrmDispatchState {
         let logical_pointer = layout::clamp_to_outputs(&self.placements(), self.logical_pointer);
         self.set_pointer_logical(logical_pointer);
 
-        self.output_meta = self.output_meta_for(&config);
+        self.output_meta = self.output_meta_for(config);
         self.rebuild_cursor_routing();
     }
 
@@ -1263,6 +1387,11 @@ impl DrmDispatchState {
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
                         refresh_mhz: l.refresh.and_then(crate::compositor::backend::interval_to_mhz),
+                        identity: OutputIdentity::from_monitor(
+                            &l.connector_name,
+                            l.monitor.as_ref(),
+                            l.physical_mm,
+                        ),
                     },
                 )
             })
@@ -1298,6 +1427,19 @@ impl DrmDispatchState {
 
     /// Relative pointer motion, in logical pixels. Returns the new scene
     /// position.
+    /// Keep a confined pointer inside its region after it moved from
+    /// `previous`, returning where it ends up (scene coordinates).
+    fn confine_pointer(&mut self, previous: (f64, f64)) -> (f64, f64) {
+        let moved = self.pointer;
+        match self.pointer_constraint.constrain(previous, moved) {
+            Some(confined) if confined != moved => {
+                self.set_pointer_scene(confined);
+                confined
+            }
+            _ => moved,
+        }
+    }
+
     fn move_pointer_by(&mut self, delta: (f64, f64)) -> (f64, f64) {
         let logical = layout::move_pointer(&self.placements(), self.logical_pointer, delta);
         self.set_pointer_logical(logical);
@@ -1391,6 +1533,8 @@ impl DrmDispatchState {
         self.handle_direct_touch_cancel();
         self.key_repeat.cancel();
         self.slow_pending.clear();
+        self.bounce_keys.reset();
+        self.release_mouse_keys();
         self.sticky_latched = ModifiersState::empty();
         self.physical_modifiers = ModifiersState::empty();
         if let Some(keyboard) = self.keyboard.as_mut() {
@@ -1462,12 +1606,28 @@ impl DrmDispatchState {
                 AccelProfile::Adaptive
             });
         }
+        if let Some(method) = plan.click_method {
+            use smithay::reexports::input::ClickMethod;
+            let _ = device.config_click_set_method(match method {
+                input_config::ClickMethod::ButtonAreas => ClickMethod::ButtonAreas,
+                input_config::ClickMethod::Clickfinger => ClickMethod::Clickfinger,
+            });
+        }
+        if let Some(method) = plan.scroll_method {
+            use smithay::reexports::input::ScrollMethod;
+            let _ = device.config_scroll_set_method(match method {
+                input_config::ScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
+                input_config::ScrollMethod::Edge => ScrollMethod::Edge,
+            });
+        }
         tracing::info!(
             device = device.name(),
             touchpad = caps.is_touchpad(),
             tap = ?plan.tap,
             natural_scroll = ?plan.natural_scroll,
             accel = ?plan.accel_speed(),
+            click_method = ?plan.click_method,
+            scroll_method = ?plan.scroll_method,
             "DRM input: configured device"
         );
     }
@@ -1567,6 +1727,28 @@ impl DrmDispatchState {
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
     fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        let evdev = keycode.raw().saturating_sub(8);
+        let now = std::time::Instant::now();
+        if self.accessibility.bounce_keys {
+            let verdict = if pressed {
+                self.bounce_keys
+                    .press(evdev, now, self.accessibility.bounce_window())
+            } else {
+                self.bounce_keys.release(evdev, now)
+            };
+            if verdict == BounceVerdict::Reject {
+                if pressed && self.accessibility.bounce_keys_alert {
+                    self.push(BackendEvent::VisualAlert);
+                }
+                return;
+            }
+        }
+        if self.accessibility.mouse_keys
+            && let Some(output) = self.mouse_keys.key(evdev, pressed, now)
+        {
+            self.apply_mouse_keys(output);
+            return;
+        }
         if self.accessibility.slow_keys {
             if pressed {
                 self.slow_pending.insert(keycode, std::time::Instant::now());
@@ -1593,6 +1775,61 @@ impl DrmDispatchState {
             }
         } else {
             self.key_repeat.release(keycode);
+        }
+    }
+
+    /// Deliver what mouse keys produced: a nudge moves the pointer exactly as
+    /// relative device motion would, and button edges arrive as clicks.
+    fn apply_mouse_keys(&mut self, output: MouseKeysOutput) {
+        self.move_pointer_from_keys(output.motion);
+        for edge in output.buttons {
+            self.push_mouse_keys_button(edge);
+        }
+    }
+
+    fn move_pointer_from_keys(&mut self, (dx, dy): (f64, f64)) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let (x, y) = self.move_pointer_by((dx, dy));
+        // Synthetic motion has no acceleration curve, and libinput stamps
+        // real motion on CLOCK_MONOTONIC, so the keys do the same.
+        self.push(BackendEvent::RelativePointerMotion {
+            dx,
+            dy,
+            dx_unaccel: dx,
+            dy_unaccel: dy,
+            time_usec: crate::shell::network::fabric_monotonic_us(),
+        });
+        self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
+    fn push_mouse_keys_button(&mut self, edge: ButtonEdge) {
+        let button = match edge.button {
+            PointerButton::Left => MouseButton::Left,
+            PointerButton::Middle => MouseButton::Middle,
+            PointerButton::Right => MouseButton::Right,
+        };
+        let state = if edge.pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        };
+        self.push(BackendEvent::Input(mouse_input_event(state, button)));
+    }
+
+    /// Stop any glide and release every button mouse keys is holding, so
+    /// switching it off mid-drag never leaves a button stuck down.
+    fn release_mouse_keys(&mut self) {
+        for edge in self.mouse_keys.reset() {
+            self.push_mouse_keys_button(edge);
+        }
+    }
+
+    fn pump_mouse_keys(&mut self, now: std::time::Instant) {
+        if self.accessibility.mouse_keys {
+            let motion = self.mouse_keys.motion(now);
+            self.move_pointer_from_keys(motion);
         }
     }
 
@@ -2029,6 +2266,8 @@ impl DrmDispatchState {
                 self.key_repeat.cancel();
                 self.slow_pending.clear();
                 if device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard) {
+                    self.bounce_keys.reset();
+                    self.release_mouse_keys();
                     // A vanished keyboard cannot send the releases which
                     // clear Smithay's seat XKB state. Tell the compositor
                     // boundary to retire those keys before another device
@@ -2068,19 +2307,34 @@ impl DrmDispatchState {
                         .map(|p| p.logical_size)
                         .collect::<Vec<_>>(),
                 );
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
-                let (x, y) = self.pointer;
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
             InputEvent::PointerMotion { event } => {
-                let (x, y) = self.move_pointer_by((event.delta_x(), event.delta_y()));
                 self.push(BackendEvent::RelativePointerMotion {
                     dx: event.delta_x(),
                     dy: event.delta_y(),
+                    dx_unaccel: event.delta_x_unaccel(),
+                    dy_unaccel: event.delta_y_unaccel(),
+                    time_usec: event.time(),
                 });
+                // A locked pointer stays put; a confined one slides along
+                // its region's edge. Relative motion above is reported
+                // either way — that is what a game reads.
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
+                self.move_pointer_by((event.delta_x(), event.delta_y()));
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             InputEvent::PointerButton { event } => {
@@ -2093,8 +2347,11 @@ impl DrmDispatchState {
                 }
             }
             InputEvent::PointerAxis { event } => {
-                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
+                // The user's scroll speed scales wheel and finger scrolling
+                // alike, before either becomes a line or pixel delta.
+                let speed = self.input.scroll_speed;
+                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0) * speed;
+                let dy = event.amount(Axis::Vertical).unwrap_or(0.0) * speed;
                 // Keep finger/continuous scrolling in pixel units. Converting
                 // it to line deltas quantises short touchpad movements and
                 // makes kinetic scrolling look laggy; only a wheel has a
@@ -2396,6 +2653,9 @@ pub struct ScanoutEntry {
     /// Permanent failure for this output generation. Cleared only when a
     /// lifecycle/topology boundary makes reprobe meaningful.
     pub direct_unavailable: Option<String>,
+    /// An output-power client switched this panel off. It is neither
+    /// painted nor lit by a session wake until switched back on.
+    pub powered_off: bool,
     pub scanout: DrmScanout,
 }
 
@@ -2455,6 +2715,7 @@ fn bring_up_all_devices(
     BTreeMap<u64, CardHandle>,
     Option<PathBuf>,
     Vec<ScanoutBuild>,
+    settings_store::hardware::DisplaySet,
 ) {
     let mut cards = BTreeMap::new();
     let mut card_order = Vec::new();
@@ -2491,7 +2752,7 @@ fn bring_up_all_devices(
     // Every card must be open before configuration is selected: a connector
     // name that looked unique on card0 may collide with one on card1. This is
     // the startup counterpart to `rescan_outputs`' card-wide reconciliation.
-    let snapshots = configured_connectors(&cards);
+    let (snapshots, display_set) = configured_connectors(&cards);
     let mut all_builds = Vec::new();
     for (device_id, path) in card_order {
         let Some(card) = cards.get(&device_id) else {
@@ -2520,7 +2781,7 @@ fn bring_up_all_devices(
         }
         all_builds.extend(builds);
     }
-    (cards, primary_gpu, all_builds)
+    (cards, primary_gpu, all_builds, display_set)
 }
 
 /// Register the three loop-wide event sources: session (VT switch), udev
@@ -2603,7 +2864,17 @@ impl DrmRuntime {
     /// source today; exposing it lets the parent compositor block on the
     /// nested calloop fd when otherwise idle without delaying held keys.
     pub fn next_service_deadline(&self) -> Option<std::time::Instant> {
-        self.dispatch.key_repeat.next_deadline()
+        let repeat = self.dispatch.key_repeat.next_deadline();
+        let glide = self
+            .dispatch
+            .accessibility
+            .mouse_keys
+            .then(|| self.dispatch.mouse_keys.next_deadline())
+            .flatten();
+        match (repeat, glide) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
@@ -2647,7 +2918,8 @@ impl DrmRuntime {
         // Retain and drive every usable KMS card.  The CPU bridge renders the
         // combined scene once, then each card scans its own XRGB dumb buffer;
         // no unsafe cross-GPU texture import is needed for this path.
-        let (cards, primary_gpu, scanout_builds) = bring_up_all_devices(&session, &kms_gpus);
+        let (cards, primary_gpu, scanout_builds, display_set) =
+            bring_up_all_devices(&session, &kms_gpus);
         if scanout_builds.is_empty() {
             // `--backend headless` is the explicit display-free mode. A real
             // DRM login that cannot drive a connector must return control to
@@ -2704,6 +2976,7 @@ impl DrmRuntime {
             tx,
             keyboard,
         );
+        dispatch.display_set = display_set;
         // Adopt the connectors already live at startup — the same path a
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
@@ -2748,6 +3021,33 @@ impl DrmRuntime {
     /// Queue cancellation for every active direct-touch contact. The session
     /// lock uses this before it hides client input, because a physical release
     /// after that boundary cannot be relied upon to arrive.
+    /// Show `image` as the pointer on every output.
+    pub fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        if self.dispatch.pointer_image == image {
+            return;
+        }
+        self.dispatch.pointer_image = image.clone();
+        self.dispatch.sync_cursor_hotspot();
+        self.dispatch
+            .command(ScanoutCommand::SetPointerImage(image));
+    }
+
+    pub fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.dispatch.pointer_constraint = constraint;
+    }
+
+    /// Place the pointer at global `(x, y)` (clamped to the outputs) and
+    /// tell the compositor, as if it had moved there.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        let dispatch = &mut self.dispatch;
+        dispatch.set_pointer_scene((x, y));
+        let (x, y) = dispatch.pointer;
+        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
     pub fn cancel_touch(&mut self) {
         self.dispatch.handle_direct_touch_cancel();
     }
@@ -2790,12 +3090,19 @@ impl DrmRuntime {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
                 accessibility.effective_cursor_size(),
             ));
+            self.dispatch.sync_cursor_hotspot();
         }
         if !accessibility.sticky_keys {
             self.dispatch.sticky_latched = ModifiersState::empty();
         }
         if !accessibility.slow_keys {
             self.dispatch.slow_pending.clear();
+        }
+        if !accessibility.bounce_keys {
+            self.dispatch.bounce_keys.reset();
+        }
+        if !accessibility.mouse_keys {
+            self.dispatch.release_mouse_keys();
         }
         self.dispatch.gestures.set_config(GestureConfig {
             natural_scroll: input.natural_scroll_for(true),
@@ -2880,7 +3187,7 @@ impl DrmRuntime {
     /// effective configuration. Validation uses the compositor-published
     /// descriptor set, never values supplied by Settings.
     fn reconcile_display_transaction(&self) {
-        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+        use settings_store::hardware::{DisplaySet, DisplayTransaction, DisplayTransactionState};
 
         let Some(mut transaction) = DisplayTransaction::load() else {
             return;
@@ -2901,6 +3208,11 @@ impl DrmRuntime {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
                         Some("No compositor-owned DRM capability snapshot is available".into());
+                } else if DisplaySet::of_descriptors(&descriptors).key != transaction.set.key {
+                    transaction.state = DisplayTransactionState::Rejected;
+                    transaction.message = Some(
+                        "The attached displays changed before the arrangement was applied".into(),
+                    );
                 } else if let Err(error) = transaction.candidate.validate_for(&descriptors) {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -2919,7 +3231,7 @@ impl DrmRuntime {
                 }
             }
             DisplayTransactionState::ConfirmRequested => {
-                if let Err(error) = transaction.candidate.save() {
+                if let Err(error) = transaction.candidate.save_for(&transaction.set) {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message = Some(format!("Could not commit display plan: {error}"));
                 } else {
@@ -2930,7 +3242,7 @@ impl DrmRuntime {
                 let _ = transaction.save();
             }
             DisplayTransactionState::RevertRequested => {
-                if let Err(error) = transaction.previous.save() {
+                if let Err(error) = transaction.previous.save_for(&transaction.set) {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message = Some(format!("Could not restore display plan: {error}"));
                 } else {
@@ -2949,6 +3261,58 @@ impl DrmRuntime {
         }
     }
 
+    /// Every attached connector as output-management heads: the cached
+    /// capability snapshot joined with the outputs being driven and the
+    /// effective intent for the ones that are off.
+    pub fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        let live: Vec<crate::compositor::output_heads::LiveHead> = self
+            .dispatch
+            .live
+            .iter()
+            .filter_map(|entry| {
+                let output = self.dispatch.output_meta.get(&entry.id)?;
+                Some(crate::compositor::output_heads::LiveHead {
+                    key: entry.config_key.clone(),
+                    output: output.clone(),
+                    physical_size_mm: entry.physical_mm,
+                })
+            })
+            .collect();
+        crate::compositor::output_heads::heads_from_capabilities(
+            &self.dispatch.display_capabilities,
+            &settings_store::hardware::DisplayConfig::load_effective(&self.dispatch.display_set),
+            &live,
+        )
+    }
+
+    /// Turn the built-in panel to follow the device. Touch input follows
+    /// automatically: it is mapped through each live output's transform.
+    pub fn set_device_rotation(
+        &mut self,
+        rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+        if self.dispatch.device_rotation == rotation {
+            return;
+        }
+        self.dispatch.device_rotation = rotation;
+        self.dispatch.relayout_outputs();
+        self.dispatch.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs: self.dispatch.output_table(),
+            removal_ack: None,
+        });
+        self.dispatch.outputs_changed = true;
+        self.dispatch.push(BackendEvent::OutputsChanged);
+        self.dispatch.push(BackendEvent::Redraw);
+    }
+
+    /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_output_power(&self, output: OutputId, on: bool) {
+        self.dispatch
+            .command(ScanoutCommand::SetOutputPower { output, on });
+    }
+
     /// Drain pending events from the internal calloop — non-blocking, a zero timeout so the outer compositor loop owns the cadence.
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
@@ -2960,8 +3324,9 @@ impl DrmRuntime {
             self.dispatch
                 .rescan_outputs("udev card re-added after teardown");
         }
-        self.dispatch
-            .pump_keyboard_repeat(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.dispatch.pump_keyboard_repeat(now);
+        self.dispatch.pump_mouse_keys(now);
     }
 
     /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state with the given output set already populated, used by `super::mod` tests to verify `DrmBackend::outputs()` without real hardware.
@@ -2997,6 +3362,27 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_flat_acceleration: device
             .config_accel_profiles()
             .contains(&smithay::reexports::input::AccelProfile::Flat),
+        supports_click_areas: device
+            .config_click_methods()
+            .contains(&smithay::reexports::input::ClickMethod::ButtonAreas),
+        supports_clickfinger: device
+            .config_click_methods()
+            .contains(&smithay::reexports::input::ClickMethod::Clickfinger),
+        default_click_method: match device.config_click_default_method() {
+            Some(smithay::reexports::input::ClickMethod::ButtonAreas) => {
+                Some(input_config::ClickMethod::ButtonAreas)
+            }
+            Some(smithay::reexports::input::ClickMethod::Clickfinger) => {
+                Some(input_config::ClickMethod::Clickfinger)
+            }
+            _ => None,
+        },
+        supports_two_finger_scroll: device
+            .config_scroll_methods()
+            .contains(&smithay::reexports::input::ScrollMethod::TwoFinger),
+        supports_edge_scroll: device
+            .config_scroll_methods()
+            .contains(&smithay::reexports::input::ScrollMethod::Edge),
     }
 }
 
@@ -3421,7 +3807,9 @@ fn keysym_to_winit_key(raw: u32) -> Key {
         keysyms::KEY_ISO_Prev_Group => Some(NamedKey::GroupPrevious),
         keysyms::KEY_Pause => Some(NamedKey::Pause),
         keysyms::KEY_Help => Some(NamedKey::Help),
-        keysyms::KEY_Print => Some(NamedKey::PrintScreen),
+        // The stock `pc` keymap turns Alt+Print into Sys_Req; it is still
+        // the Print Screen key, and Alt+Print is the focused-window capture.
+        keysyms::KEY_Print | keysyms::KEY_Sys_Req => Some(NamedKey::PrintScreen),
         keysyms::KEY_Shift_L | keysyms::KEY_Shift_R => Some(NamedKey::Shift),
         keysyms::KEY_Control_L | keysyms::KEY_Control_R => Some(NamedKey::Control),
         keysyms::KEY_Alt_L | keysyms::KEY_Alt_R => Some(NamedKey::Alt),
@@ -3818,6 +4206,20 @@ mod tests {
                 keysym_to_winit_key(raw),
                 Key::Named(want),
                 "keysym {raw:#x} must map to {want:?}"
+            );
+        }
+    }
+
+    /// Alt+Print arrives as `Sys_Req` under the stock keymap; it must still
+    /// reach the Print Screen handler, as it does under winit.
+    #[test]
+    fn alt_print_is_still_print_screen() {
+        use smithay::input::keyboard::keysyms as ks;
+        for raw in [ks::KEY_Print, ks::KEY_Sys_Req] {
+            assert_eq!(
+                keysym_to_winit_key(raw),
+                Key::Named(NamedKey::PrintScreen),
+                "keysym {raw:#x}"
             );
         }
     }
@@ -4347,6 +4749,7 @@ mod tests {
             config_key: format!("TEST-{connector}"),
             size,
             physical_mm: mm,
+            monitor: None,
             // Test ids are always small literals; `saturating_add` just
             // avoids a raw `+` clippy can't see is bounded.
             crtc: crtc(id.saturating_add(1)),
@@ -4767,6 +5170,123 @@ mod tests {
         assert_eq!(table[1].scale, 1.0);
     }
 
+    fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
+        entry.connector_name = connector.into();
+        entry.config_key = connector.into();
+        entry
+    }
+
+    fn monitor(make: &str, model: &str, serial: &str) -> settings_store::hardware::MonitorIdentity {
+        settings_store::hardware::MonitorIdentity {
+            make: make.into(),
+            model: model.into(),
+            serial: serial.into(),
+            physical_size_mm: None,
+        }
+    }
+
+    #[test]
+    fn an_unarranged_set_puts_the_built_in_panel_left_at_its_own_scale() {
+        let (mut state, _rx) = dispatch_with_channel();
+        // The external monitor enumerated first, yet the laptop panel is
+        // still the leftmost display.
+        state.live = vec![
+            named(entry(0, 10, (2560, 1440), Some((597, 336))), "DP-1"),
+            named(entry(1, 11, (1920, 1080), Some((294, 165))), "eDP-1"),
+        ];
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        let panel = state
+            .live
+            .iter()
+            .find(|l| l.connector_name == "eDP-1")
+            .unwrap();
+        let external = state
+            .live
+            .iter()
+            .find(|l| l.connector_name == "DP-1")
+            .unwrap();
+        assert_eq!(panel.logical_position, (0, 0));
+        // 1920 px at 1.5 is 1280 logical pixels wide.
+        assert_eq!(external.logical_position, (1280, 0));
+        assert_eq!(panel.scale, 1.5);
+        assert_eq!(external.scale, 1.0);
+    }
+
+    #[test]
+    fn swapping_the_monitor_on_a_port_swaps_to_that_sets_layout() {
+        use settings_store::hardware::{
+            AttachedOutput, DisplayConfig, DisplayProfiles, DisplaySet, OutputConfig,
+        };
+
+        let panel = monitor("BOE", "NE135FBM-N41", "");
+        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+        let visitor = monitor("Samsung", "LS27A600U", "H4ZR");
+        let set_with = |external: &settings_store::hardware::MonitorIdentity| {
+            DisplaySet::of([
+                AttachedOutput {
+                    connector: "eDP-1",
+                    connector_label: "eDP-1",
+                    monitor: Some(&panel),
+                },
+                AttachedOutput {
+                    connector: "DP-2",
+                    connector_label: "DP-2",
+                    monitor: Some(external),
+                },
+            ])
+        };
+
+        // At the office the external monitor stands left of the laptop.
+        let mut office_layout = DisplayConfig::default();
+        office_layout.outputs.insert(
+            "DP-2".into(),
+            OutputConfig {
+                x: -2560,
+                primary: true,
+                ..OutputConfig::default()
+            },
+        );
+        office_layout.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                scale: 1.25,
+                ..OutputConfig::default()
+            },
+        );
+        let mut profiles = DisplayProfiles::default();
+        profiles.remember(&set_with(&office), &office_layout);
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            named(entry(0, 10, (1920, 1080), Some((294, 165))), "eDP-1"),
+            named(entry(1, 11, (2560, 1440), Some((597, 336))), "DP-2"),
+        ];
+        let at = |state: &DrmDispatchState, connector: &str| {
+            let entry = state
+                .live
+                .iter()
+                .find(|l| l.connector_name == connector)
+                .expect("live output");
+            (entry.logical_position, entry.scale)
+        };
+
+        let office_config = profiles.layout_for(&set_with(&office)).expect("saved");
+        state.relayout_with(&office_config);
+        assert_eq!(at(&state, "DP-2"), ((0, 0), 1.0));
+        assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
+
+        // Someone else's monitor on the same port inherits none of it.
+        let visitor_config = profiles.layout_for(&set_with(&visitor)).unwrap_or_default();
+        state.relayout_with(&visitor_config);
+        assert_eq!(at(&state, "eDP-1"), ((0, 0), 1.5));
+        assert_eq!(at(&state, "DP-2"), ((1280, 0), 1.0));
+
+        // Back at the office, the office arrangement returns.
+        state.relayout_with(&profiles.layout_for(&set_with(&office)).expect("saved"));
+        assert_eq!(at(&state, "DP-2"), ((0, 0), 1.0));
+        assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
+    }
+
     #[test]
     fn a_display_scale_setting_overrides_every_output() {
         let (mut state, _rx) = dispatch_with_channel();
@@ -4904,6 +5424,111 @@ mod tests {
                 .any(|e| matches!(e, BackendEvent::Redraw)),
             "and force a full repaint"
         );
+    }
+
+    fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
+        let (mut state, _rx) = dispatch_with_channel();
+        state.keyboard = Some(
+            KeyboardXkb::from_settings(&KeyboardSettings::default())
+                .expect("the default test keymap must compile"),
+        );
+        state.accessibility = accessibility;
+        state
+    }
+
+    fn typed_keys(state: &DrmDispatchState) -> usize {
+        state
+            .events
+            .iter()
+            .filter(|e| matches!(e, BackendEvent::Input(WindowEvent::KeyboardInput { .. })))
+            .count()
+    }
+
+    #[test]
+    fn bounce_keys_swallow_a_rebound_press_and_flash_when_asked() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            bounce_keys: true,
+            bounce_keys_alert: true,
+            ..Default::default()
+        });
+        let a = xkb::Keycode::new(38); // KEY_A + 8
+        state.handle_keyboard_key(a, true);
+        state.handle_keyboard_key(a, false);
+        assert_eq!(typed_keys(&state), 2, "the first keystroke is real");
+        state.events.clear();
+
+        // Pressed again well inside the 300 ms default window.
+        state.handle_keyboard_key(a, true);
+        state.handle_keyboard_key(a, false);
+        assert_eq!(typed_keys(&state), 0, "press and release both swallowed");
+        assert_eq!(
+            state
+                .events
+                .iter()
+                .filter(|e| matches!(e, BackendEvent::VisualAlert))
+                .count(),
+            1,
+            "one flash per swallowed press"
+        );
+    }
+
+    #[test]
+    fn mouse_keys_turn_the_keypad_into_clicks_instead_of_typing() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            mouse_keys: true,
+            ..Default::default()
+        });
+        let kp5 = xkb::Keycode::new(76 + 8);
+        state.handle_keyboard_key(kp5, true);
+        state.handle_keyboard_key(kp5, false);
+        let clicks: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::Input(WindowEvent::MouseInput { state, button, .. }) => {
+                    Some((*state, *button))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            clicks,
+            [
+                (ElementState::Pressed, MouseButton::Left),
+                (ElementState::Released, MouseButton::Left)
+            ]
+        );
+        assert_eq!(typed_keys(&state), 0);
+
+        state.events.clear();
+        state.accessibility.mouse_keys = false;
+        state.handle_keyboard_key(kp5, true);
+        state.handle_keyboard_key(kp5, false);
+        assert_eq!(
+            typed_keys(&state),
+            2,
+            "with mouse keys off the keypad types"
+        );
+    }
+
+    #[test]
+    fn switching_mouse_keys_off_mid_drag_releases_the_button() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            mouse_keys: true,
+            ..Default::default()
+        });
+        let kp0 = xkb::Keycode::new(82 + 8);
+        state.handle_keyboard_key(kp0, true);
+        state.events.clear();
+        state.release_mouse_keys();
+        assert!(state.events.iter().any(|e| matches!(
+            e,
+            BackendEvent::Input(WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            })
+        )));
     }
 
     #[test]
@@ -5568,6 +6193,7 @@ mod tests {
             is_pointer: true,
             supports_left_handed: true,
             supports_flat_acceleration: true,
+            ..DeviceCaps::default()
         };
         let plan = input_config::plan_for(&state.input, &caps);
         assert_eq!(plan.tap, Some(true));

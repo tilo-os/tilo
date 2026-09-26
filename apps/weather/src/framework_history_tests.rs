@@ -382,8 +382,8 @@ fn pinned_preview_recreation_retains_local_navigation_and_never_reads_live_updat
 }
 #[test]
 fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync() {
-    if let Ok(stage) = std::env::var("QOS_WEATHER_SAVED_STAGE") {
-        let kind = std::env::var("QOS_WEATHER_SAVED_KIND").unwrap();
+    if let Ok(stage) = std::env::var("TILO_WEATHER_SAVED_STAGE") {
+        let kind = std::env::var("TILO_WEATHER_SAVED_KIND").unwrap();
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.weather").unwrap();
         if stage == "write" {
             let mut target = match kind.as_str() {
@@ -449,7 +449,7 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
             std::env::temp_dir().join(format!("weather-history-{kind}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         for stage in ["write", "read"] {
-            let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync","--nocapture"]).env("QOS_WEATHER_SAVED_STAGE",stage).env("QOS_WEATHER_SAVED_KIND",kind).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","so.tilo.weather").output().unwrap();
+            let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync","--nocapture"]).env("TILO_WEATHER_SAVED_STAGE",stage).env("TILO_WEATHER_SAVED_KIND",kind).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","so.tilo.weather").output().unwrap();
             assert!(
                 out.status.success(),
                 "{kind}/{stage}: {} {}",

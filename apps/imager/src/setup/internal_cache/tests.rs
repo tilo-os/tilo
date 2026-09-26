@@ -6,20 +6,27 @@ fn selected() -> SelectedManifest {
     let bytes = super::super::internal_bundle::tests::bytes(
         &super::super::internal_bundle::tests::fixture(),
     );
-    let release = InternalRelease::transport_fixture(
-        &bytes,
-        "https://code.podesta.ai/releases/manifest.json",
-    );
+    let release =
+        InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json");
     SelectedManifest::from_bytes(&release, bytes).unwrap()
 }
 #[test]
 fn working_names_exclude_all_selected_final_names_and_unsafe_leaves() {
     let selected = selected();
-    assert!(validate_leaf(&selected, ".qos-part-0123456789abcdef0123456789abcdef").is_ok());
+    assert!(validate_leaf(&selected, ".tilo-part-0123456789abcdef0123456789abcdef").is_ok());
+    // Whatever a provider mints must pass the check it is held to.
+    for name in [0, 1, u128::MAX, 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef] {
+        let leaf = working_leaf(name);
+        assert!(validate_leaf(&selected, &leaf).is_ok(), "refused {leaf:?}");
+    }
     for leaf in [
         "../payload",
         "",
-        ".qos-part-ABCDEF0123456789abcdef0123456789",
+        ".tilo-part-ABCDEF0123456789abcdef0123456789",
+        ".tilo-part-0123456789abcdef0123456789abcde",
+        ".tilo-part-0123456789abcdef0123456789abcdef0",
+        // Right length, wrong prefix.
+        ".tilo-pack-0123456789abcdef0123456789abcdef",
     ] {
         assert!(validate_leaf(&selected, leaf).is_err(), "accepted {leaf:?}");
     }
@@ -126,7 +133,7 @@ pub(in crate::setup) struct DiskProvider {
 impl DiskProvider {
     pub fn new(root: &Path) -> (Self, File) {
         fs::create_dir(root.join("journal")).unwrap();
-        let leaf = ".qos-part-0123456789abcdef0123456789abcdef";
+        let leaf = ".tilo-part-0123456789abcdef0123456789abcdef";
         let file = OpenOptions::new()
             .create_new(true)
             .read(true)
@@ -481,16 +488,16 @@ fn reserved_working_namespace_is_disjoint_from_both_authenticated_final_names() 
     for index in 0..2 {
         let mut value = super::super::internal_bundle::tests::fixture();
         value["components"][index]["filename"] =
-            serde_json::json!(".qos-part-0123456789abcdef0123456789abcdef");
+            serde_json::json!(".tilo-part-0123456789abcdef0123456789abcdef");
         let bytes = super::super::internal_bundle::tests::bytes(&value);
         let release = InternalRelease::transport_fixture(
             &bytes,
-            "https://code.podesta.ai/releases/manifest.json",
+            "https://code.tilo.so/releases/manifest.json",
         );
         assert!(SelectedManifest::from_bytes(&release, bytes).is_err());
         let normal = selected();
-        assert!(validate_leaf(&normal, ".qos-part-0123456789abcdef0123456789abcdef").is_ok());
-        assert!(validate_leaf(&normal, ".qos-part-fedcba9876543210fedcba9876543210").is_ok());
+        assert!(validate_leaf(&normal, ".tilo-part-0123456789abcdef0123456789abcdef").is_ok());
+        assert!(validate_leaf(&normal, ".tilo-part-fedcba9876543210fedcba9876543210").is_ok());
     }
 }
 #[cfg(unix)]
@@ -551,21 +558,21 @@ fn malformed_unknown_stale_and_overflow_records_never_mutate_payload_or_survivor
                 b.pop();
             }
             1 => b.push(0),
-            2 => b[8] = 99,
-            3 => b[9] ^= 1,
-            4 => b[41] ^= 1,
-            5 => b[73] ^= 1,
-            6 => b[105] = b'/',
-            7 => b[147..155].copy_from_slice(&u64::MAX.to_le_bytes()),
-            8 => b[155..163].copy_from_slice(&8u64.to_le_bytes()),
-            9 => b[163..171].copy_from_slice(&4097u64.to_le_bytes()),
-            10 => b[179] ^= 1,
+            2 => b[layout::KIND] = 99,
+            3 => b[layout::BINDING] ^= 1,
+            4 => b[layout::PARENT] ^= 1,
+            5 => b[layout::FILE] ^= 1,
+            6 => b[layout::LEAF] = b'/',
+            7 => b[layout::GENERATION..layout::EPOCH].copy_from_slice(&u64::MAX.to_le_bytes()),
+            8 => b[layout::EPOCH..layout::LENGTH].copy_from_slice(&8u64.to_le_bytes()),
+            9 => b[layout::LENGTH..layout::FULL_SIZE].copy_from_slice(&4097u64.to_le_bytes()),
+            10 => b[layout::DIGEST] ^= 1,
             11 => b[0] = b'X',
             12 => {
                 b.resize(4097, 0);
             }
             13 => {
-                b[147..155].copy_from_slice(&1u64.to_le_bytes());
+                b[layout::GENERATION..layout::EPOCH].copy_from_slice(&1u64.to_le_bytes());
             }
             _ => unreachable!(),
         }
@@ -680,20 +687,20 @@ fn bounded_scan_conflicting_histories_and_generation_exhaustion_refuse_without_m
         }
         if case == 1 {
             let mut b = latest.clone();
-            b[147..155].copy_from_slice(&4u64.to_le_bytes());
+            b[layout::GENERATION..layout::EPOCH].copy_from_slice(&4u64.to_le_bytes());
             rewrite_checksum(&mut b);
             fs::write(dir.path().join("journal/record-2"), b).unwrap();
         }
         if case == 2 {
             let mut b = latest.clone();
-            b[155..163].copy_from_slice(&1u64.to_le_bytes());
+            b[layout::EPOCH..layout::LENGTH].copy_from_slice(&1u64.to_le_bytes());
             rewrite_checksum(&mut b);
             fs::write(dir.path().join("journal/record-2"), b).unwrap();
         }
         if case == 3 {
             fs::remove_file(dir.path().join("journal/record-1")).unwrap();
             let mut b = latest.clone();
-            b[147..155].copy_from_slice(&(u32::MAX as u64).to_le_bytes());
+            b[layout::GENERATION..layout::EPOCH].copy_from_slice(&(u32::MAX as u64).to_le_bytes());
             rewrite_checksum(&mut b);
             fs::write(dir.path().join("journal/record-2"), b).unwrap();
         }
@@ -775,7 +782,7 @@ fn surviving_previous_digest_is_checked_in_the_same_restart_pass() {
     let previous = dir.path().join("journal/record-2");
     let original = fs::read(&previous).unwrap();
     let mut corrupt = original.clone();
-    corrupt[179] ^= 1;
+    corrupt[layout::DIGEST] ^= 1;
     rewrite_checksum(&mut corrupt);
     fs::write(&previous, &corrupt).unwrap();
     let (p, mut f) = DiskProvider::reopen(dir.path(), own.clone());
@@ -831,10 +838,10 @@ fn duplicate_prefix_transition_refuses_without_consuming_generation() {
 fn fixed_record_parser_has_platform_independent_bounded_positive_and_negative_controls() {
     use super::checkpoint::Record;
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"QOSCP001");
+    bytes.extend_from_slice(b"TILOCP01");
     bytes.push(1);
     bytes.extend_from_slice(&[0; 96]);
-    bytes.extend_from_slice(b".qos-part-0123456789abcdef0123456789abcdef");
+    bytes.extend_from_slice(b".tilo-part-0123456789abcdef0123456789abcdef");
     for value in [1u64, 0, 0, 4096] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -849,19 +856,19 @@ fn fixed_record_parser_has_platform_independent_bounded_positive_and_negative_co
                 bad.pop();
             }
             1 => bad.push(0),
-            2 => bad[8] = 0,
+            2 => bad[layout::KIND] = 0,
             3 => bad[0] ^= 1,
-            4 => bad[211] ^= 1,
-            5 => bad[147..155].copy_from_slice(&u64::MAX.to_le_bytes()),
-            6 => bad[163..171].copy_from_slice(&4097u64.to_le_bytes()),
+            4 => bad[layout::CHECKSUM] ^= 1,
+            5 => bad[layout::GENERATION..layout::EPOCH].copy_from_slice(&u64::MAX.to_le_bytes()),
+            6 => bad[layout::LENGTH..layout::FULL_SIZE].copy_from_slice(&4097u64.to_le_bytes()),
             7 => bad.resize(4097, 0),
-            8 => bad[8] = 2, // reset cannot have epoch zero
+            8 => bad[layout::KIND] = 2, // reset cannot have epoch zero
             9 => {
-                bad[147..155].copy_from_slice(&2u64.to_le_bytes());
-                bad[155..163].copy_from_slice(&2u64.to_le_bytes());
-                bad[163..171].copy_from_slice(&4u64.to_le_bytes());
+                bad[layout::GENERATION..layout::EPOCH].copy_from_slice(&2u64.to_le_bytes());
+                bad[layout::EPOCH..layout::LENGTH].copy_from_slice(&2u64.to_le_bytes());
+                bad[layout::LENGTH..layout::FULL_SIZE].copy_from_slice(&4u64.to_le_bytes());
             }
-            10 => bad[163..171].copy_from_slice(&4u64.to_le_bytes()), // generation one is the initial zero record
+            10 => bad[layout::LENGTH..layout::FULL_SIZE].copy_from_slice(&4u64.to_le_bytes()), // generation one is the initial zero record
             _ => unreachable!(),
         }
         if [2, 3, 5, 6, 8, 9, 10].contains(&case) {
@@ -906,10 +913,10 @@ pub(in crate::setup) fn test_prepared(parts: TransferParts<'_>) -> PreparedPrefi
 fn standalone_epoch_record(kind: u8, generation: u64, epoch: u64) -> Vec<u8> {
     let length = if kind == 3 { 4096u64 } else { 4 };
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"QOSCP001");
+    bytes.extend_from_slice(b"TILOCP01");
     bytes.push(kind);
     bytes.extend_from_slice(&[0; 96]);
-    bytes.extend_from_slice(b".qos-part-0123456789abcdef0123456789abcdef");
+    bytes.extend_from_slice(b".tilo-part-0123456789abcdef0123456789abcdef");
     for value in [generation, epoch, length, 4096] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -958,8 +965,9 @@ fn impossible_nonreset_epoch_refuses_recovery_before_any_tail_trim() {
             let path = dir.path().join("journal/record-1");
             let mut record = fs::read(&path).unwrap();
             let fields = standalone_epoch_record(kind, generation, 1);
-            record[8] = kind;
-            record[147..211].copy_from_slice(&fields[147..211]);
+            record[layout::KIND] = kind;
+            record[layout::GENERATION..layout::CHECKSUM]
+                .copy_from_slice(&fields[layout::GENERATION..layout::CHECKSUM]);
             rewrite_checksum(&mut record);
             fs::write(&path, &record).unwrap();
             assert_eq!(fs::read_dir(dir.path().join("journal")).unwrap().count(), 1);
@@ -1006,9 +1014,9 @@ fn bootstrap_hint_checks_selection_size_and_leaf_without_minting_ownership() {
     for case in 0..3 {
         let mut bad = bytes.clone();
         match case {
-            0 => bad[9] ^= 1,
-            1 => bad[171..179].copy_from_slice(&4095u64.to_le_bytes()),
-            2 => bad[105] = b'/',
+            0 => bad[layout::BINDING] ^= 1,
+            1 => bad[layout::FULL_SIZE..layout::DIGEST].copy_from_slice(&4095u64.to_le_bytes()),
+            2 => bad[layout::LEAF] = b'/',
             _ => unreachable!(),
         }
         rewrite_checksum(&mut bad);
@@ -1174,13 +1182,13 @@ fn post_scan_preparation_failures_revoke_without_mutating_rejected_evidence() {
         if corrupt_prefix {
             let path = journal.join("record-3");
             let mut bytes = fs::read(&path).unwrap();
-            bytes[179] ^= 1;
+            bytes[layout::DIGEST] ^= 1;
             rewrite_checksum(&mut bytes);
             fs::write(path, bytes).unwrap();
         } else {
             let path = journal.join("record-3");
             let mut bytes = fs::read(&path).unwrap();
-            bytes[147..155].copy_from_slice(&4u64.to_le_bytes());
+            bytes[layout::GENERATION..layout::EPOCH].copy_from_slice(&4u64.to_le_bytes());
             rewrite_checksum(&mut bytes);
             fs::remove_file(path).unwrap();
             fs::write(journal.join("record-4"), bytes).unwrap();
@@ -1429,8 +1437,11 @@ fn independent_fresh_settlements_preserve_cancellation_and_require_normal_prepar
             record.hint_for(&selected, index).unwrap().file_digest,
             &own.file
         );
-        assert_eq!(&before[0].1[147..155], &1u64.to_le_bytes());
-        assert_eq!(&before[0].1[155..171], &[0; 16]); // epoch and committed length
+        assert_eq!(
+            &before[0].1[layout::GENERATION..layout::EPOCH],
+            &1u64.to_le_bytes()
+        );
+        assert_eq!(&before[0].1[layout::EPOCH..layout::FULL_SIZE], &[0; 16]); // epoch and committed length
         let mut session = Session::new(&selected, index, index as u64 + 1, &mut p).unwrap();
         assert!(session.prepare(&selected, &mut f, &cancel).is_err());
         drop(session);
@@ -1470,7 +1481,7 @@ fn fresh_settlement_refuses_wrong_selection_ownership_nonempty_history_and_reope
     changed_bytes.push(b' ');
     let release = InternalRelease::transport_fixture(
         &changed_bytes,
-        "https://code.podesta.ai/releases/manifest.json",
+        "https://code.tilo.so/releases/manifest.json",
     );
     let changed = SelectedManifest::from_bytes(&release, changed_bytes).unwrap();
     for case in 0..10 {

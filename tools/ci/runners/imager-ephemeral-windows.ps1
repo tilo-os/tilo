@@ -17,7 +17,7 @@ $Runner = if ($env:TILO_FORGEJO_RUNNER) {
 } else {
     Join-Path $env:ProgramFiles "Forgejo Runner\forgejo-runner.exe"
 }
-$Server = if ($env:TILO_FORGEJO_URL) { $env:TILO_FORGEJO_URL } else { "https://code.podesta.ai" }
+$Server = if ($env:TILO_FORGEJO_URL) { $env:TILO_FORGEJO_URL } else { "https://code.tilo.so" }
 $MaxWaitText = if ($env:TILO_RUNNER_MAX_WAIT_SECONDS) { $env:TILO_RUNNER_MAX_WAIT_SECONDS } else { "21600" }
 
 function Resolve-TiloWindowsRunnerLabel([int[]]$ProcessorArchitectures) {
@@ -121,7 +121,7 @@ $SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)
 $Process = $null
 try {
     if ($UuidItem.FullName -ceq $TokenItem.FullName) { throw "UUID and token paths must differ" }
-    if ($Server -notin @("https://code.podesta.ai", "https://code.podesta.ai/")) {
+    if ($Server -notin @("https://code.tilo.so", "https://code.tilo.so/")) {
         throw "Forgejo URL must be the pinned Tilo origin"
     }
     $MaxWait = [int]::Parse($MaxWaitText, [Globalization.CultureInfo]::InvariantCulture)

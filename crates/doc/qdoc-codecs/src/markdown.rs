@@ -1071,7 +1071,7 @@ mod tests {
     #[test]
     fn borrowed_views_match_document_export() {
         let cases = [
-            "---\ntitle: \"Notes: café\"\nauthor: Ada\nlang: fr\n---\n\n# Résumé\n\nHello **世界** and *é* with [link](https://qos.dev/).\n",
+            "---\ntitle: \"Notes: café\"\nauthor: Ada\nlang: fr\n---\n\n# Résumé\n\nHello **世界** and *é* with [link](https://tilo.dev/).\n",
             "| Name | Value |\n| --- | --- |\n| **α** | café |\n\n```rust\nlet café = 1;\n```\n",
             "Text[^second] and again[^second], then[^first].\n\n[^first]: First note.\n\n[^second]: Unicode café note.\n",
             "- [x] done\n- [ ] pending\n\n1. ordered\n2. next\n",

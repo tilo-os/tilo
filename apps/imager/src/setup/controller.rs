@@ -19,7 +19,7 @@ pub enum SetupPage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FolderDestination {
-    /// Task 5 resolves and revalidates the actual qOS-managed local target.
+    /// Task 5 resolves and revalidates the actual Tilo-managed local target.
     Unresolved,
     Resolved(PathBuf),
 }
@@ -355,9 +355,9 @@ mod tests {
     use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
 
     #[cfg(windows)]
-    const TEST_ROOT: &str = r"C:\qos-setup-controller-tests";
+    const TEST_ROOT: &str = r"C:\tilo-setup-controller-tests";
     #[cfg(not(windows))]
-    const TEST_ROOT: &str = "/qos-setup-controller-tests";
+    const TEST_ROOT: &str = "/tilo-setup-controller-tests";
 
     fn test_path(name: &str) -> PathBuf {
         PathBuf::from(TEST_ROOT).join(name)
@@ -406,7 +406,7 @@ mod tests {
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
-            .add_folder(scan("source/Documents", 12), test_path("qos/Documents"))
+            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
             .unwrap();
         setup.next().unwrap();
 
@@ -423,16 +423,16 @@ mod tests {
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
-            .add_folder(scan("source/one", 1), test_path("qos/one"))
+            .add_folder(scan("source/one", 1), test_path("tilo/one"))
             .unwrap();
         setup
-            .add_folder(scan("source/two", 2), test_path("qos/two"))
+            .add_folder(scan("source/two", 2), test_path("tilo/two"))
             .unwrap();
         setup
-            .add_folder(scan("source/three", 3), test_path("qos/three"))
+            .add_folder(scan("source/three", 3), test_path("tilo/three"))
             .unwrap();
         setup
-            .add_folder(scan("source/four", 4), test_path("qos/four"))
+            .add_folder(scan("source/four", 4), test_path("tilo/four"))
             .unwrap();
         assert!(setup.set_folder_mode(1, FolderMode::Copy));
         assert!(setup.set_folder_mode(2, FolderMode::Connected));
@@ -464,7 +464,7 @@ mod tests {
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
-            .add_folder(scan("source/Documents", 12), test_path("qos/Documents"))
+            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
             .unwrap();
 
         setup.set_mode(FolderMode::Later);
@@ -484,7 +484,7 @@ mod tests {
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
-            .add_folder(scan("source/Documents", 12), test_path("qos/Documents"))
+            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
             .unwrap();
         setup.next().unwrap();
         assert_eq!(setup.page(), SetupPage::Review);
@@ -502,10 +502,10 @@ mod tests {
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
-            .add_folder(scan("source/one", 7), test_path("qos/one"))
+            .add_folder(scan("source/one", 7), test_path("tilo/one"))
             .unwrap();
         setup
-            .add_folder(scan("source/two", 9), test_path("qos/two"))
+            .add_folder(scan("source/two", 9), test_path("tilo/two"))
             .unwrap();
         assert!(setup.set_folder_mode(0, FolderMode::Connected));
         assert!(setup.clear_folder_mode_override(0));
@@ -525,13 +525,13 @@ mod tests {
     fn duplicate_and_nested_destinations_are_rejected() {
         let mut setup = SetupController::new(linux_desktop());
         setup
-            .add_folder(scan("source/one", 1), test_path("qos/Documents"))
+            .add_folder(scan("source/one", 1), test_path("tilo/Documents"))
             .unwrap();
 
         for (source, destination) in [
-            ("source/two", "qos/Documents"),
-            ("source/three", "qos/Documents/Projects"),
-            ("source/four", "qos"),
+            ("source/two", "tilo/Documents"),
+            ("source/three", "tilo/Documents/Projects"),
+            ("source/four", "tilo"),
         ] {
             let error = setup
                 .add_folder(scan(source, 1), test_path(destination))
@@ -548,7 +548,7 @@ mod tests {
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
-            .add_folder(scan("source/Documents", 12), test_path("qos/Documents"))
+            .add_folder(scan("source/Documents", 12), test_path("tilo/Documents"))
             .unwrap();
         setup.back();
 

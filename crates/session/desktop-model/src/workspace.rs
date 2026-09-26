@@ -81,6 +81,17 @@ pub struct Workspace {
     /// an app's collaborative document.
     #[serde(default)]
     pub effect_receipts: Vec<WorkspaceEffectReceipt>,
+    /// Shortcuts saved in this workspace: a person's own in their personal
+    /// workspace, shared ones in a collaborative one. Projected as a CRDT
+    /// map keyed by shortcut id, so they reach every desktop the workspace
+    /// reaches.
+    #[serde(default)]
+    pub shortcuts: Vec<tilo_automation::Shortcut>,
+    /// Which of the saver's devices took the latest fire time of each
+    /// scheduled shortcut, so a schedule runs once across them. Projected
+    /// beside the shortcuts, one map key per schedule.
+    #[serde(default)]
+    pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -784,6 +795,8 @@ impl Workspace {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -843,6 +856,8 @@ impl Default for Workspace {
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
+            shortcuts: Vec::new(),
+            schedule_claims: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }

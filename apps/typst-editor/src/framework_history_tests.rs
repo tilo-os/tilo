@@ -35,7 +35,7 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
     reason = "one isolated write/read subprocess custody test"
 )]
 fn production_library_persisted_restore_and_fresh_reopen() {
-    if let Ok(stage) = std::env::var("QOS_SLICE5_TYPST_STAGE") {
+    if let Ok(stage) = std::env::var("TILO_SLICE5_TYPST_STAGE") {
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.typst-editor").unwrap();
         if stage == "write" {
             let (mut doc, selected, _) = fixture();
@@ -140,7 +140,7 @@ fn production_library_persisted_restore_and_fresh_reopen() {
         return;
     }
     let dir = std::env::temp_dir().join(format!(
-        "qos-slice5-typst-production-{}",
+        "tilo-slice5-typst-production-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
@@ -156,8 +156,8 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 "framework_history_tests::production_library_persisted_restore_and_fresh_reopen",
                 "--nocapture",
             ])
-            .env("QOS_SLICE5_TYPST_STAGE", stage)
-            .env("QOS_TYPST_LIBRARY_DIR", &dir)
+            .env("TILO_SLICE5_TYPST_STAGE", stage)
+            .env("TILO_TYPST_LIBRARY_DIR", &dir)
             .env("XDG_DATA_HOME", &dir)
             .output()
             .unwrap();

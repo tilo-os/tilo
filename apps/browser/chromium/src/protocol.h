@@ -4,7 +4,7 @@
 #include <istream>
 #include <stdexcept>
 #include <string>
-namespace qos {
+namespace tilo {
 constexpr uint32_t kMaxPacket = 64 * 1024 * 1024;
 constexpr uint32_t kMaxDimension = 8192;
 struct Packet { uint8_t kind = 0; std::string data; };

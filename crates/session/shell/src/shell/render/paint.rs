@@ -381,6 +381,10 @@ pub struct RetainedGpuTarget {
     completion_markers: usize,
     #[cfg(test)]
     completion_test: Option<CompletionTest>,
+    /// Replaces the Linux per-phase completion allowance for correctness fixtures that must
+    /// wait for the GPU to finish rather than for a production frame budget.
+    #[cfg(test)]
+    phase_wait_override: Option<Duration>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
     /// Offscreen render target. Recreated on resize.
@@ -458,6 +462,8 @@ impl RetainedGpuTarget {
             completion_markers: 0,
             #[cfg(test)]
             completion_test: None,
+            #[cfg(test)]
+            phase_wait_override: None,
             size: (width, height),
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
@@ -614,6 +620,19 @@ impl RetainedGpuTarget {
             return clock.now();
         }
         Instant::now()
+    }
+
+    /// The allowance for one Linux completion phase: `nominal` outside correctness fixtures.
+    #[allow(
+        clippy::unused_self,
+        reason = "correctness fixtures replace the allowance on this actual target instance"
+    )]
+    fn linux_phase_wait(&self, nominal: Duration) -> Duration {
+        #[cfg(test)]
+        if let Some(wait) = self.phase_wait_override {
+            return wait;
+        }
+        nominal
     }
 
     fn eligible_sparse_damage(
@@ -926,12 +945,14 @@ impl RetainedGpuTarget {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
+        let fence_wait = self.linux_phase_wait(LINUX_FENCE_WAIT);
+        let callback_wait = self.linux_phase_wait(LINUX_MAP_CALLBACK_WAIT);
         let result = (|| {
             #[cfg(test)]
-            self.before_wait(WaitPhase::Fence, LINUX_FENCE_WAIT)?;
+            self.before_wait(WaitPhase::Fence, fence_wait)?;
             let waited = self.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
-                timeout: Some(LINUX_FENCE_WAIT),
+                timeout: Some(fence_wait),
             });
             self.check_health()?;
             waited.map_err(|error| {
@@ -939,8 +960,8 @@ impl RetainedGpuTarget {
             })?;
             // A fresh one-second callback allowance follows the independent one-second fence.
             #[cfg(test)]
-            self.before_wait(WaitPhase::MapCallback, LINUX_MAP_CALLBACK_WAIT)?;
-            rx.recv_timeout(LINUX_MAP_CALLBACK_WAIT)
+            self.before_wait(WaitPhase::MapCallback, callback_wait)?;
+            rx.recv_timeout(callback_wait)
                 .map_err(|error| {
                     BridgeError::Map(format!("LinuxPerPhase map_async channel: {error}"))
                 })?
@@ -959,7 +980,7 @@ impl RetainedGpuTarget {
             CompletionPolicy::Absolute(deadline) => deadline,
             CompletionPolicy::LinuxPerPhase => self
                 .now()
-                .checked_add(BUMP_SETTLEMENT_WAIT)
+                .checked_add(self.linux_phase_wait(BUMP_SETTLEMENT_WAIT))
                 .ok_or_else(|| {
                     BridgeError::BumpReadback("counter deadline out of range".to_owned())
                 })?,
@@ -1252,7 +1273,7 @@ impl RetainedGpuTarget {
         height: u32,
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("quick-desktop-drm-paint-target"),
+            label: Some("tilo-desktop-drm-paint-target"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -1468,6 +1489,72 @@ impl VelloDrmBridge {
         self.xrgb_history_epoch = self
             .xrgb_history_epoch
             .and_then(|epoch| epoch.checked_add(1));
+    }
+
+    /// Wait for each Linux completion phase until the GPU actually finishes, bounded only by a
+    /// generous backstop, instead of the production one-second allowance.
+    ///
+    /// On a shared CI host llvmpipe competes with every other test for CPU, so a frame whose
+    /// pixels a fixture checks can legitimately miss the per-phase budget. Fixtures that assert
+    /// what is rendered, not how fast, opt in here; device loss still fails immediately.
+    #[cfg(test)]
+    pub(crate) fn wait_for_gpu_completion_for_test(&mut self) {
+        self.target.phase_wait_override = Some(Duration::from_secs(120));
+    }
+
+    /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start
+    /// over from an invalidated target and a new history epoch.
+    ///
+    /// llvmpipe builds compute variants at first dispatch. On a cold shader cache that takes
+    /// longer than the Linux per-phase fence allowance, so a fixture asserting on
+    /// deadline-bound frames warms the renderer first instead of timing the compiler.
+    #[cfg(test)]
+    pub(crate) fn warm_renderer_for_test(&mut self) {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::Fill;
+
+        let (width, height) = self.target.size;
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x80, 0x80, 0x80),
+            None,
+            &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(60))
+            .expect("warm-up deadline fits Instant");
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                deadline,
+            )
+            .expect("warm-up full render");
+        let region = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: width.min(16),
+            height: height.min(16),
+        }];
+        self.target
+            .render_until(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&region),
+                },
+                deadline,
+            )
+            .expect("warm-up sparse render");
+        self.invalidate_retained();
+        self.bump_xrgb_history_epoch();
     }
 
     /// Refuse to submit another frame while a timed-out software-rendered submission drains.
@@ -3431,7 +3518,7 @@ impl VelloDrmBridge {
         let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
         let readback_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quick-desktop-drm-paint-readback"),
+            label: Some("tilo-desktop-drm-paint-readback"),
             size: readback_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,

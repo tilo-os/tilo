@@ -29,6 +29,22 @@ fn tab(id: u64, title: &str, content: TileContent) -> Tab {
     }
 }
 
+/// A saved shortcut, and one of its schedule's fire times claimed.
+fn saved_shortcuts() -> (
+    Vec<tilo_automation::Shortcut>,
+    Vec<tilo_automation::ScheduleClaim>,
+) {
+    (
+        serde_json::from_str(r#"[{"id":"tidy","name":"Tidy","steps":[]}]"#).unwrap(),
+        vec![tilo_automation::ScheduleClaim {
+            shortcut: "tidy".into(),
+            trigger: 0,
+            due_ms: 1_790_326_800_000,
+            device: "laptop".into(),
+        }],
+    )
+}
+
 /// Every persisted field holding something, including the integer-keyed
 /// maps a JSON object can only carry as string keys.
 fn populated_tree() -> WorkspaceTree {
@@ -57,6 +73,7 @@ fn populated_tree() -> WorkspaceTree {
         updated_at: 20,
         audit: Vec::new(),
     });
+    (ws.shortcuts, ws.schedule_claims) = saved_shortcuts();
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(WindowGroup {
         id: 3,

@@ -7,7 +7,7 @@ described below does not qualify the packaging workflow. This reuses
 latest-pending state machine. There is no second queue implementation or service.
 The private fixture adapter and its ten regression tests remain supported.
 
-`tools/app_packaging_product.py` targets only repository ID 23 (`qos/qos`) and
+`tools/app_packaging_product.py` targets only repository ID 23 (`tilo/tilo`) and
 `release-apps.yml`. It always dispatches a full source SHA and `publish=false`.
 The receipt identity includes the exact builder digest, collection, architecture
 list and trusted policy hash. API receipt validation checks the source, workflow,
@@ -48,7 +48,7 @@ artifacts, then return:
   "run_id": 123,
   "desired": {
     "source_sha": "<40 lowercase hex>",
-    "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:<64 hex>",
+    "builder_image": "code.tilo.so/tilo/tilo-builder@sha256:<64 hex>",
     "collection": "default",
     "architectures": ["x86_64", "aarch64"],
     "policy_sha256": "<64 hex>"

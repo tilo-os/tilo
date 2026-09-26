@@ -31,7 +31,7 @@ pub(in crate::setup) fn final_component_path(
     #[cfg(windows)]
     let base = windows::cache_base()?;
     Ok(base
-        .join("qos-internal-install")
+        .join("tilo-internal-install")
         .join(selected.manifest_sha256())
         .join("payload")
         .join(component.filename))

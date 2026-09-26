@@ -106,6 +106,7 @@ pub struct SettingsApp {
     account_resources: Vec<accounts::Account>,
     account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
     device_mesh_commands: ui::LocalState<Option<crate::actions::DeviceMeshOperation>>,
+    speaker_commands: ui::LocalState<Option<crate::actions::SpeakerOperation>>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     local_operation: Option<tilo_actions::InvocationId>,
@@ -168,6 +169,7 @@ impl SettingsApp {
             account_root,
             account_commands: ui::LocalState::new(None),
             device_mesh_commands: ui::LocalState::new(None),
+            speaker_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             local_operation: None,
@@ -436,6 +438,10 @@ impl SettingsApp {
     }
 
     /// Dispatch to the per-category pane body.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match constructs every category's pane"
+    )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
             // A capture never waits for NetworkManager; it renders the
@@ -463,6 +469,11 @@ impl SettingsApp {
             Category::Sound => Box::new(
                 panes::audio::AudioPane::new()
                     .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            Category::Speakers => Box::new(
+                panes::speakers::SpeakersPane::new()
+                    .with_command_state(&self.speaker_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Displays if self.deterministic_hardware_for_shot => {
@@ -846,7 +857,30 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::AudioOperation::SetMono { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetMono { .. }
+                    | crate::actions::AudioOperation::SetEchoCancellation { .. }
+                    | crate::actions::AudioOperation::SetSystemSounds { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetSystemSoundVolume { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("system sound volume must be between 0 and 1".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::AudioOperation::SetSoundTheme { theme } => {
+                        if media::event_sound::installed_themes()
+                            .iter()
+                            .any(|installed| installed.id == theme)
+                        {
+                            Ok(())
+                        } else {
+                            Err("that sound theme is not installed".into())
+                        }
+                    }
+                    crate::actions::AudioOperation::SetEventSound { event, .. } => {
+                        settings_store::system_sounds::SystemSoundEvent::from_key(&event)
+                            .map(|_| ())
+                            .ok_or_else(|| "unknown system sound event".to_string())
+                    }
                     crate::actions::AudioOperation::SetDeviceProfile {
                         device_id,
                         profile_index,
@@ -1007,7 +1041,8 @@ impl SettingsApp {
                         Ok(())
                     }
                     crate::actions::DisplayOperation::SetAutoBrightness { .. }
-                    | crate::actions::DisplayOperation::SetNightLight { .. } => Ok(()),
+                    | crate::actions::DisplayOperation::SetNightLight { .. }
+                    | crate::actions::DisplayOperation::SetNightLightSchedule { .. } => Ok(()),
                     crate::actions::DisplayOperation::SetNightLightTemperature { label } => {
                         if !["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
                             .contains(&label.as_str())
@@ -1128,7 +1163,16 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::DisplayOperation::Apply
+                    crate::actions::DisplayOperation::MoveOutput { connector, x, y } => {
+                        let _ = output(&connector)?;
+                        let bound = crate::actions::MAX_DISPLAY_COORDINATE;
+                        if !(-bound..=bound).contains(&x) || !(-bound..=bound).contains(&y) {
+                            return Err("display position is outside the desktop".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::DisplayOperation::Identify
+                    | crate::actions::DisplayOperation::Apply
                     | crate::actions::DisplayOperation::Confirm
                     | crate::actions::DisplayOperation::Revert => Ok(()),
                 };
@@ -1228,6 +1272,20 @@ impl SettingsApp {
                 self.device_mesh_commands.set(Some(operation));
                 Ok(())
             }
+            crate::actions::SPEAKER_OPERATION_TYPE => {
+                let operation: crate::actions::SpeakerOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if operation.command().valid() {
+                    self.select(Category::Speakers);
+                    self.speaker_commands.set(Some(operation));
+                    Ok(())
+                } else {
+                    Err(
+                        "that speaker request is incomplete: check the names, members and ids"
+                            .to_string(),
+                    )
+                }
+            }
             _ => return Ok(None),
         };
         accepted?;
@@ -1273,6 +1331,10 @@ impl SettingsApp {
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over the closed InputOperation catalogue"
+    )]
     fn apply_input_operation(operation: crate::actions::InputOperation) -> Result<String, String> {
         let mut prefs = crate::prefs::SystemPrefs::load();
         let message = match operation {
@@ -1321,6 +1383,24 @@ impl SettingsApp {
             crate::actions::InputOperation::SetTouchpadGestures { enabled } => {
                 prefs.input.touchpad_gestures = enabled;
                 "touchpad gestures updated"
+            }
+            crate::actions::InputOperation::SetTouchpadClickMethod { method } => {
+                prefs.input.touchpad_click_method =
+                    crate::panes::mouse_keyboard::click_method_for_label(&method)
+                        .ok_or_else(|| "unsupported touchpad click method".to_string())?;
+                "touchpad click method updated"
+            }
+            crate::actions::InputOperation::SetTouchpadScrollMethod { method } => {
+                prefs.input.touchpad_scroll_method =
+                    crate::panes::mouse_keyboard::scroll_method_for_label(&method)
+                        .ok_or_else(|| "unsupported touchpad scroll method".to_string())?;
+                "touchpad scroll method updated"
+            }
+            crate::actions::InputOperation::SetScrollSpeed { value } => {
+                prefs.input.scroll_speed = settings_store::hardware::scroll_speed_from_slider(
+                    valid_input_fraction(value)?,
+                );
+                "scroll speed updated"
             }
             crate::actions::InputOperation::SetAccelerationProfile { profile } => {
                 if !["Adaptive", "Flat"].contains(&profile.as_str()) {
@@ -2527,6 +2607,13 @@ mod tests {
                 })
                 .unwrap(),
             ),
+            (
+                crate::actions::SPEAKER_OPERATION_TYPE,
+                serde_json::to_vec(&crate::actions::SpeakerOperation::Delete {
+                    group: "ab".repeat(16),
+                })
+                .unwrap(),
+            ),
         ];
         let mut covered = BTreeSet::new();
         for (type_id, payload) in cases {
@@ -2546,6 +2633,7 @@ mod tests {
             covered.insert(type_id);
             app.local_pane_command.set(None);
             app.device_mesh_commands.set(None);
+            app.speaker_commands.set(None);
             app.local_operation_status
                 .set(crate::actions::LocalOperationStatus::Idle);
             app.local_operation_token = None;

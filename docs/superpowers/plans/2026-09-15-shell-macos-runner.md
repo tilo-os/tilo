@@ -1,6 +1,6 @@
 # macOS shell runner
 
-**Goal:** Run the existing qOS shell as a native macOS application window.
+**Goal:** Run the existing Tilo shell as a native macOS application window.
 
 **Design:** Retain the Linux entry point and compositor behind the Linux target.
 A macOS entry point constructs the existing `ShellOverlayHost`, workspace tree,
@@ -32,12 +32,12 @@ external-window substitute qualifies as this runner.
   state preservation, CLI validation and Command-K/Escape through the shared
   UI event driver. Input verification is through that driver, not OS-injected keys.
 - `cargo clippy --locked -p shell --bin shell --no-default-features`: passed.
-- `bash shell/build-macos.sh`: built and ad-hoc signed `target/macos/qOS.app`.
+- `bash shell/build-macos.sh`: built and ad-hoc signed `target/macos/Tilo.app`.
   `codesign --verify --deep --strict` and `plutil -lint`: passed.
-- Rendered and visually inspected `/tmp/qos-macos-shell.png` from the actual
+- Rendered and visually inspected `/tmp/tilo-macos-shell.png` from the actual
   shell host. Final render succeeded without the Linux runtime-path warning.
 - Launched the app through Launch Services. CoreGraphics confirmed an onscreen
-  qOS window (800 × 632 including window decoration), PID 53185; process remained
+  Tilo window (800 × 632 including window decoration), PID 53185; process remained
   alive after startup.
 - Independent review found silent shutdown record-save failures; changed to
   `RecordStore::try_flush` and reran tests/Clippy. No other findings.

@@ -34,8 +34,8 @@ def summarize_render_boundaries(lines, expected_cpu_ids):
     if (not expected or len(expected)!=len(expected_cpu_ids)
             or any(type(i) is not int or i<0 for i in expected)):
         raise ValueError('Invalid expected render CPU identities')
-    groups=[rows(lines,prefix) for prefix in ('qos-native-send ','qos-native-worker ',
-                                            'qos-native-present-call ')]
+    groups=[rows(lines,prefix) for prefix in ('tilo-native-send ','tilo-native-worker ',
+                                            'tilo-native-present-call ')]
     if not any(groups):
         return dict(available=False,performance_certified=False,
                     reason='Common-clock render boundaries unavailable')
@@ -79,7 +79,7 @@ def summarize_render_boundaries(lines, expected_cpu_ids):
     feedback=summarize_presentation(lines,expected_cpu_ids)
     if not feedback['feedback_complete']:
         raise ValueError('Incomplete positive display evidence for render boundaries')
-    callbacks={r['cpu_frame_id']:r for r in rows(lines,'qos-display-frame ')}
+    callbacks={r['cpu_frame_id']:r for r in rows(lines,'tilo-display-frame ')}
     frames=[]
     for cpu in sorted(expected):
         send,worker,present=[group[cpu] for group in maps]

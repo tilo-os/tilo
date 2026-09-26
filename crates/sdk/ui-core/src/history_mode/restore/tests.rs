@@ -80,13 +80,13 @@ fn restores_text_in_one_owned_pending_transaction_without_losing_history() {
 #[test]
 fn preserves_current_noncontent_values_objects_and_conflicts() {
     let (mut doc, _, _) = text_fixture();
-    let metadata = doc.put_object(ROOT, "qos:record", ObjType::Map).unwrap();
+    let metadata = doc.put_object(ROOT, "tilo:record", ObjType::Map).unwrap();
     doc.put(&metadata, "id", "record-live").unwrap();
     for key in [
         "future_root",
         "notes_import_v1",
-        "qos:group:a",
-        "qos:run:a",
+        "tilo:group:a",
+        "tilo:run:a",
         "editor_disk_base",
     ] {
         doc.put(ROOT, key, "old").unwrap();
@@ -101,8 +101,8 @@ fn preserves_current_noncontent_values_objects_and_conflicts() {
     for key in [
         "future_root",
         "notes_import_v1",
-        "qos:group:a",
-        "qos:run:a",
+        "tilo:group:a",
+        "tilo:run:a",
         "editor_disk_base",
     ] {
         doc.put(ROOT, key, "current").unwrap();
@@ -118,13 +118,13 @@ fn preserves_current_noncontent_values_objects_and_conflicts() {
     let prepared = prepare_content_restore(&doc, &TEXT, &live, &target).unwrap();
     apply_prepared_content_restore(&mut doc, &prepared).unwrap();
     assert_eq!(content_text(&doc), "two");
-    assert_eq!(doc.get(ROOT, "qos:record").unwrap().unwrap().1, metadata);
+    assert_eq!(doc.get(ROOT, "tilo:record").unwrap().unwrap().1, metadata);
     assert_eq!(doc.get_all(&metadata, "id").unwrap(), conflict);
     for key in [
         "future_root",
         "notes_import_v1",
-        "qos:group:a",
-        "qos:run:a",
+        "tilo:group:a",
+        "tilo:run:a",
         "editor_disk_base",
     ] {
         assert_eq!(
@@ -279,7 +279,7 @@ fn rejects_invalid_schema_and_conflicted_target_content() {
         &[][..],
         &[TEXT.roots[0], TEXT.roots[0]][..],
         &[HistoryRestoreRoot {
-            key: "qos:record",
+            key: "tilo:record",
             ..TEXT.roots[0]
         }][..],
         &[HistoryRestoreRoot {
@@ -330,7 +330,7 @@ fn unchanged_content_creates_no_transaction_even_when_metadata_differs() {
 fn apply_rechecks_exact_heads_and_refuses_pending_work() {
     let (mut doc, target, live) = text_fixture();
     let prepared = prepare_content_restore(&doc, &TEXT, &live, &target).unwrap();
-    doc.put(ROOT, "qos:run:new", "metadata only").unwrap();
+    doc.put(ROOT, "tilo:run:new", "metadata only").unwrap();
     let mut before = doc.clone();
     assert_eq!(
         apply_prepared_content_restore(&mut doc, &prepared).unwrap_err(),

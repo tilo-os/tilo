@@ -56,6 +56,10 @@ policies! {
         "tilo.accessibility.on_screen_keyboard",
         "tilo.accessibility.sticky_keys",
         "tilo.accessibility.slow_keys",
+        "tilo.accessibility.bounce_keys",
+        "tilo.accessibility.bounce_keys_delay_ms",
+        "tilo.accessibility.bounce_keys_alert",
+        "tilo.accessibility.mouse_keys",
         "tilo.accessibility.visual_alerts",
         "tilo.accessibility.color_filter",
         "tilo.accessibility.magnifier_zoom",
@@ -67,6 +71,11 @@ policies! {
         "tilo.accessibility.screen_reader_rate",
         "tilo.accessibility.screen_reader_voice",
         "tilo.appearance.theme",
+        "tilo.appearance.schedule",
+        "tilo.appearance.sunrise",
+        "tilo.appearance.sunset",
+        "tilo.appearance.wallpaper_scope",
+        "tilo.appearance.wallpaper_target",
         "tilo.appearance.high_contrast",
         "tilo.appearance.reduce_motion",
         "tilo.appearance.text_scale",
@@ -103,14 +112,17 @@ policies! {
         "tilo.input.left_handed",
         "tilo.input.accel_profile",
         "tilo.input.touchpad_gestures",
+        "tilo.input.touchpad_click_method",
+        "tilo.input.touchpad_scroll_method",
+        "tilo.input.scroll_speed",
         "tilo.input.compose_key",
         "tilo.input.keyboard_layouts",
-        "tilo.audio.event_sounds",
-        "tilo.audio.chat_join",
-        "tilo.audio.chat_leave",
+        "tilo.audio.system_sounds",
         "tilo.audio.balance",
         "tilo.audio.mono_output",
+        "tilo.audio.echo_cancellation",
         "tilo.display.night_light",
+        "tilo.display.night_light_schedule",
         "tilo.display.night_light_temperature",
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
@@ -156,9 +168,10 @@ policies! {
         "tilo.continuity.app_continuations",
         // Connector identities, modes, calibration and staged apply state
         // are meaningful only on the machine that owns the hardware.
-        "tilo.display_outputs.outputs",
+        "tilo.display_profiles.profiles",
         "tilo.display_transaction.id",
         "tilo.display_transaction.state",
+        "tilo.display_transaction.set",
         "tilo.display_transaction.previous",
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
@@ -354,7 +367,7 @@ mod tests {
                 "wallpaper_path": "/home/me/private.png",
                 "future_value": "must stay local"
             },
-            "display_outputs": {"outputs": {"DP-1": {"scale": 2.0}}},
+            "display_profiles": {"profiles": {"edid:Dell|DELL U2720Q|7XK2P13": {"config": {}}}},
             "agent_providers": {"config": {"profiles": [{"endpoint": "http://127.0.0.1:8000"}]}},
             "security": {"local_credential": {"pin": "never"}}
         });
@@ -375,10 +388,11 @@ mod tests {
         // apps/settings/src/prefs.rs. Keeping the other writer shapes here
         // makes a new cross-crate leaf fail until its ownership is reviewed.
         let document = serde_json::json!({
-            "display_outputs": {"outputs": {}},
+            "display_profiles": {"profiles": {}},
             "display_transaction": {
                 "id": 1,
                 "state": "requested",
+                "set": {},
                 "previous": {},
                 "candidate": {},
                 "deadline_unix_ms": null,

@@ -7,13 +7,13 @@ class NativeDeliveryTests(unittest.TestCase):
     def fixture(self):
         scenario = {"steps": [{"kind": "click", "x": 20.0, "y": 20.0}] * 3,
                     "interval_us": 1000, "warmup_steps": 1}
-        lines = ["qos-native-input " + json.dumps({"id": i, "warmup": i == 0,
+        lines = ["tilo-native-input " + json.dumps({"id": i, "warmup": i == 0,
                  "input": scenario["steps"][i], "scheduled_us": i * 1000,
                  "dispatch_start_us": i * 1000 + 10, "lateness_us": 10}) for i in range(3)]
-        lines += ['qos-native-frame {"cpu_frame_id":19,"input_ids":[0]}',
-                  'qos-native-frame {"cpu_frame_id":20,"input_ids":[1,2]}',
-                  'qos-render-frame {"cpu_frame_id":19,"outcome":"Presented"}',
-                  'qos-render-frame {"cpu_frame_id":20,"outcome":"Skipped"}']
+        lines += ['tilo-native-frame {"cpu_frame_id":19,"input_ids":[0]}',
+                  'tilo-native-frame {"cpu_frame_id":20,"input_ids":[1,2]}',
+                  'tilo-render-frame {"cpu_frame_id":19,"outcome":"Presented"}',
+                  'tilo-render-frame {"cpu_frame_id":20,"outcome":"Skipped"}']
         frames = [{"frame":19,"total_us":100}, {"frame":20,"total_us":200}]
         return scenario, lines, frames
 
@@ -30,7 +30,7 @@ class NativeDeliveryTests(unittest.TestCase):
         scenario, lines, frames = self.fixture()
         for i in range(3):
             row=json.loads(lines[i].split(' ',1)[1]);row['sent_us']=i*1000+3
-            lines[i]='qos-native-input '+json.dumps(row)
+            lines[i]='tilo-native-input '+json.dumps(row)
         report=summarize_native_delivery(scenario,lines,frames)
         self.assertEqual(report['scheduler_lateness']['p99_ms'],0.003)
         self.assertEqual(report['delivery_to_dispatch']['p99_ms'],0.007)
@@ -38,10 +38,10 @@ class NativeDeliveryTests(unittest.TestCase):
         self.assertIsNone(old['scheduler_lateness'])
         for bad in [-1, True, 100, None]:
             changed=list(lines);row=json.loads(changed[0].split(' ',1)[1]);row['sent_us']=bad
-            changed[0]='qos-native-input '+json.dumps(row)
+            changed[0]='tilo-native-input '+json.dumps(row)
             with self.assertRaises(ValueError):summarize_native_delivery(scenario,changed,frames)
         changed=list(lines);row=json.loads(changed[1].split(' ',1)[1]);del row['sent_us']
-        changed[1]='qos-native-input '+json.dumps(row)
+        changed[1]='tilo-native-input '+json.dumps(row)
         with self.assertRaises(ValueError):summarize_native_delivery(scenario,changed,frames)
 
     def test_actual_input_cadence_excludes_warmup_and_keeps_sender_jitter(self):
@@ -50,7 +50,7 @@ class NativeDeliveryTests(unittest.TestCase):
             row = json.loads(lines[i].split(' ', 1)[1])
             row.update(sent_us=sent, dispatch_start_us=dispatched,
                        lateness_us=dispatched-i*1000)
-            lines[i] = 'qos-native-input ' + json.dumps(row)
+            lines[i] = 'tilo-native-input ' + json.dumps(row)
         report = summarize_native_delivery(scenario, lines, frames)
         cadence = report['input_cadence']
         self.assertEqual(cadence['scheduled_intervals']['n'], 1)
@@ -68,7 +68,7 @@ class NativeDeliveryTests(unittest.TestCase):
             row = json.loads(lines[i].split(' ', 1)[1])
             row.update(sent_us=sent, dispatch_start_us=sent+10,
                        lateness_us=sent+10-i*1000)
-            lines[i] = 'qos-native-input ' + json.dumps(row)
+            lines[i] = 'tilo-native-input ' + json.dumps(row)
         with self.assertRaises(ValueError):
             summarize_native_delivery(scenario, lines, frames)
 
@@ -88,9 +88,9 @@ class NativeDeliveryTests(unittest.TestCase):
     def test_malformed_times_or_reordered_inputs_fail(self):
         scenario, lines, frames = self.fixture()
         changed = list(lines)
-        row = json.loads(changed[0][len("qos-native-input "):])
+        row = json.loads(changed[0][len("tilo-native-input "):])
         row.update(dispatch_start_us=-1, lateness_us=0)
-        changed[0] = "qos-native-input " + json.dumps(row)
+        changed[0] = "tilo-native-input " + json.dumps(row)
         with self.assertRaises(ValueError):
             summarize_native_delivery(scenario, changed, frames)
         reordered = [lines[1], lines[0], *lines[2:]]
@@ -108,7 +108,7 @@ class ScrollEffectTests(unittest.TestCase):
         effects = [{"id": i, "before": {"offset_y": a}, "after": {"offset_y": b}}
                    for i, (a, b) in enumerate([(100, 100), (100, 196), (196, 100)])]
         def lines(values):
-            return ["qos-native-effect " + json.dumps(v) for v in values]
+            return ["tilo-native-effect " + json.dumps(v) for v in values]
         self.assertEqual(validate_scroll_effects(scenario, lines(effects)), 2)
         for invalid in [100, 90, float("nan"), True]:
             changed = json.loads(json.dumps(effects))
@@ -138,8 +138,8 @@ class FrameScrollStateTests(unittest.TestCase):
 
     def check(self, scenario, effects, frames):
         from native_delivery import validate_frame_scroll_states
-        lines = ["qos-native-effect " + json.dumps(row) for row in effects]
-        lines += ["qos-native-frame " + json.dumps(row) for row in frames]
+        lines = ["tilo-native-effect " + json.dumps(row) for row in effects]
+        lines += ["tilo-native-frame " + json.dumps(row) for row in frames]
         return validate_frame_scroll_states(scenario, lines)
 
     def test_valid_coalesced_last_effect_survives(self):

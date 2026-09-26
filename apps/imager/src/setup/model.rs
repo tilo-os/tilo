@@ -261,9 +261,9 @@ mod tests {
     use super::*;
 
     #[cfg(windows)]
-    const TEST_ROOT: &str = r"C:\qos-setup-model-tests";
+    const TEST_ROOT: &str = r"C:\tilo-setup-model-tests";
     #[cfg(not(windows))]
-    const TEST_ROOT: &str = "/qos-setup-model-tests";
+    const TEST_ROOT: &str = "/tilo-setup-model-tests";
 
     fn test_path(path: &str) -> PathBuf {
         match path.strip_prefix('/') {
@@ -356,10 +356,10 @@ mod tests {
     #[test]
     fn storage_counts_copy_and_connected_but_not_later() {
         let plan = plan(vec![
-            folder("/source/copy", "/qos/copy", 7, FolderMode::Copy),
+            folder("/source/copy", "/tilo/copy", 7, FolderMode::Copy),
             folder(
                 "/source/connected",
-                "/qos/connected",
+                "/tilo/connected",
                 11,
                 FolderMode::Connected,
             ),
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn copy_requires_a_readable_source() {
-        let mut selection = folder("/source", "/qos/source", 1, FolderMode::Copy);
+        let mut selection = folder("/source", "/tilo/source", 1, FolderMode::Copy);
         selection.readable = false;
 
         assert_eq!(
@@ -420,14 +420,14 @@ mod tests {
 
     #[test]
     fn connected_requires_readability_and_safe_sync() {
-        let mut unreadable = folder("/source", "/qos/source", 1, FolderMode::Connected);
+        let mut unreadable = folder("/source", "/tilo/source", 1, FolderMode::Connected);
         unreadable.readable = false;
         assert_eq!(
             plan(vec![unreadable]).validate(&full_os_caps(), 56),
             Err(ReviewError::InaccessibleSource { folder_index: 0 })
         );
 
-        let mut unsafe_sync = folder("/source", "/qos/source", 1, FolderMode::Connected);
+        let mut unsafe_sync = folder("/source", "/tilo/source", 1, FolderMode::Connected);
         unsafe_sync.safe_sync = false;
         assert_eq!(
             plan(vec![unsafe_sync]).validate(&full_os_caps(), 56),
@@ -452,10 +452,10 @@ mod tests {
     #[test]
     fn active_paths_must_be_absolute_without_parent_traversal() {
         let cases = [
-            ("relative/source", "/qos/source", FolderPath::Source),
+            ("relative/source", "/tilo/source", FolderPath::Source),
             ("/source", "relative/destination", FolderPath::Destination),
-            ("/source/../private", "/qos/source", FolderPath::Source),
-            ("/source", "/qos/../private", FolderPath::Destination),
+            ("/source/../private", "/tilo/source", FolderPath::Source),
+            ("/source", "/tilo/../private", FolderPath::Destination),
         ];
 
         for (source, destination, path) in cases {
@@ -473,8 +473,8 @@ mod tests {
     #[test]
     fn source_and_destination_must_not_overlap() {
         let cases = [
-            ("/home/user/Documents", "/home/user/Documents/qos"),
-            ("/home/user/Documents/qos", "/home/user/Documents"),
+            ("/home/user/Documents", "/home/user/Documents/tilo"),
+            ("/home/user/Documents/tilo", "/home/user/Documents"),
             ("/home/user/Documents", "/home/user/Documents"),
         ];
 
@@ -500,8 +500,8 @@ mod tests {
             "/home/user/Documents/work",
         ] {
             let selections = vec![
-                folder("/home/user/Documents", "/qos/first", 1, FolderMode::Copy),
-                folder(second_source, "/qos/second", 1, FolderMode::Copy),
+                folder("/home/user/Documents", "/tilo/first", 1, FolderMode::Copy),
+                folder(second_source, "/tilo/second", 1, FolderMode::Copy),
             ];
             assert_eq!(
                 plan(selections).validate(&full_os_caps(), 57),
@@ -517,9 +517,9 @@ mod tests {
 
     #[test]
     fn active_destinations_must_not_duplicate_or_overlap() {
-        for second_destination in ["/qos", "/qos/first", "/qos/first/nested"] {
+        for second_destination in ["/tilo", "/tilo/first", "/tilo/first/nested"] {
             let selections = vec![
-                folder("/source/first", "/qos/first", 1, FolderMode::Copy),
+                folder("/source/first", "/tilo/first", 1, FolderMode::Copy),
                 folder("/source/second", second_destination, 1, FolderMode::Copy),
             ];
             assert_eq!(
@@ -537,8 +537,8 @@ mod tests {
     #[test]
     fn source_destination_overlap_across_selections_is_rejected() {
         let selections = vec![
-            folder("/source/first", "/qos/first", 1, FolderMode::Copy),
-            folder("/qos", "/target/second", 1, FolderMode::Copy),
+            folder("/source/first", "/tilo/first", 1, FolderMode::Copy),
+            folder("/tilo", "/target/second", 1, FolderMode::Copy),
         ];
 
         assert_eq!(
@@ -555,8 +555,8 @@ mod tests {
     #[test]
     fn path_comparisons_use_components_not_string_prefixes() {
         let selections = vec![
-            folder("/home/a", "/qos/a", 1, FolderMode::Copy),
-            folder("/home/ab", "/qos/ab", 1, FolderMode::Copy),
+            folder("/home/a", "/tilo/a", 1, FolderMode::Copy),
+            folder("/home/ab", "/tilo/ab", 1, FolderMode::Copy),
         ];
 
         assert_eq!(plan(selections).validate(&full_os_caps(), 57), Ok(()));
@@ -565,8 +565,8 @@ mod tests {
     #[test]
     fn later_entries_do_not_reserve_paths() {
         let selections = vec![
-            folder("/source", "/qos/source", 1, FolderMode::Copy),
-            folder("/source", "/qos/source", u64::MAX, FolderMode::Later),
+            folder("/source", "/tilo/source", 1, FolderMode::Copy),
+            folder("/source", "/tilo/source", u64::MAX, FolderMode::Later),
         ];
 
         assert_eq!(plan(selections).validate(&full_os_caps(), 56), Ok(()));

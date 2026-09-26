@@ -11,13 +11,13 @@
 #include <map>
 #include <unistd.h>
 
-namespace qos {
+namespace tilo {
 // Trace-only snapshots of three existing numeric Chromium counters. This never
 // reads Keychain itself, emits raw DevTools payloads, or opens a debug endpoint.
 class StartupDiagnostics final : public CefDevToolsMessageObserver {
  public:
   static bool Enabled() {
-    const char* value=std::getenv("QOS_WEBVIEW_PROFILE");
+    const char* value=std::getenv("TILO_WEBVIEW_PROFILE");
     return value && std::strcmp(value,"trace")==0;
   }
   explicit StartupDiagnostics(CefRefPtr<CefBrowser> browser):browser_(browser) {}

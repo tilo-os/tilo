@@ -53,11 +53,10 @@ executable stand-alone; the higher-level flow is described below.
 ## What's blocked
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against
-  the baseline requires pulling the digest-pinned frozen RPM repo,
-  which lives on a private registry (`code.podesta.ai/qos/rpms`). To
-  run locally: `podman login code.podesta.ai` first. In CI the
-  `.forgejo/workflows/build-image.yml` job already has the token; the
-  rebuilt image + qcow2 flow through the release channel.
+  the baseline requires pulling the digest-pinned frozen RPM repo
+  (`registry.tilo.so/tilo/rpms`, anonymously readable). In CI the
+  `.forgejo/workflows/build-image.yml` job rebuilds it; the rebuilt
+  image + qcow2 flow through the release channel.
 
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;

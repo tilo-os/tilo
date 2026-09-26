@@ -1,4 +1,4 @@
-# Guided qOS setup and migration
+# Guided Tilo setup and migration
 
 Date: 2026-09-16
 Status: Approved for implementation by the user's request to implement the app
@@ -6,7 +6,7 @@ for Windows and Linux. Platform feasibility and release validation remain gates.
 
 ## Outcome and scope
 
-Provide one “Set up qOS” application for people starting on Windows or Linux.
+Provide one “Set up Tilo” application for people starting on Windows or Linux.
 Users choose an experience, select folders, review the result, and let setup
 handle payload selection, downloading, verification, and installation preparation.
 No external installation drive is required on configurations explicitly supported
@@ -14,12 +14,12 @@ by the new internal-installation path. Unsupported configurations receive an
 explanation before any disk or boot changes; support is never inferred solely
 from CPU architecture or the ability to mount an image.
 
-The first release preserves the existing operating system. Full qOS means native
-dual boot. Erase-and-replace installation, a Windows-hosted qOS desktop, macOS
+The first release preserves the existing operating system. Full Tilo means native
+dual boot. Erase-and-replace installation, a Windows-hosted Tilo desktop, macOS
 migration, and direct writable links to source folders are outside this scope.
 
-On supported Linux distributions, offer qOS Desktop and Full qOS. On Windows,
-offer Full qOS and explain that the desktop-only installation is available on
+On supported Linux distributions, offer Tilo Desktop and Full Tilo. On Windows,
+offer Full Tilo and explain that the desktop-only installation is available on
 supported Linux distributions. Do not present an unavailable Desktop choice as
 actionable. Use the repository's desktop-session compatibility contract as the
 starting point, subject to release validation.
@@ -28,7 +28,7 @@ starting point, subject to release validation.
 
 Relevant existing components are `apps/imager` (host setup, release downloads,
 verification, profiles, privileged helpers), `crates/session/installer` and
-`os/usr/libexec/qos-install` (target installation), and `shell/src/onboarding.rs`
+`os/usr/libexec/tilo-install` (target installation), and `shell/src/onboarding.rs`
 (first-login setup). Existing packaging supplies Linux desktop sessions.
 
 `docs/install-contract.json` and `docs/installer-walkthrough.md` currently describe
@@ -41,46 +41,46 @@ belongs to a separately validated host-side operation.
 
 ## User journey
 
-1. **Choose an experience.** Desktop keeps the Linux installation and adds a qOS
-   session. Full qOS installs alongside the current OS.
+1. **Choose an experience.** Desktop keeps the Linux installation and adds a Tilo
+   session. Full Tilo installs alongside the current OS.
 2. **Check this computer.** Detect OS, architecture, firmware, boot configuration,
    storage layout, encryption, and source-folder access. Identify unsupported
    conditions before downloading large payloads or making changes.
 3. **Choose folders and behavior.** Offer the modes below, display source and
    destination, and calculate space. Recalculate storage recommendations when
    selections change.
-4. **Allocate space for Full qOS.** Recommend an allocation with an adjustable
+4. **Allocate space for Full Tilo.** Recommend an allocation with an adjustable
    size. Include system space, selected local files, installer staging, and
    working headroom without double-counting shared staging data. Prefer existing
    unallocated space. Where space creation is not supported, explain the required
    host-side preparation and recheck afterward; do not imply automatic shrinking.
 5. **Prepare automatically.** Select the correct authenticated payload, download
    with resume support, verify it, and stage required installation and migration
-   state on storage that survives installation. Desktop uses packages; Full qOS
+   state on storage that survives installation. Desktop uses packages; Full Tilo
    uses a bootable installation payload. Image format and mounting are internal
    implementation details.
 6. **Review once.** Summarize the retained OS, disk allocation, folders and modes,
    download/storage requirements, and restart requirement. Present applicable
    encryption/recovery instructions before boot changes. Backend revalidation
    remains required immediately before privileged operations.
-7. **Restart and install Full qOS.** Enter a one-time internal installer without
+7. **Restart and install Full Tilo.** Enter a one-time internal installer without
    repeating completed choices. Target-local account and encryption secrets stay
    within their existing secure setup boundary. Review any changed facts again.
-8. **Finish in qOS.** Continue migration, open completed folders, and show pending
+8. **Finish in Tilo.** Continue migration, open completed folders, and show pending
    folders explicitly. The desktop can open while files are still copying;
    migration is not marked complete until verification succeeds.
 9. **Choose an OS at startup.** Provide an understandable boot choice. Preserve
    the existing OS as the persistent default, use an explicit one-time boot for
-   qOS onboarding, and offer “Make qOS my default” after the user tries it.
+   Tilo onboarding, and offer “Make Tilo my default” after the user tries it.
 
 ## Folder choices
 
-Present “Bring your files into qOS” with three choices:
+Present “Bring your files into Tilo” with three choices:
 
 | Choice | User-facing explanation | Behavior |
 | --- | --- | --- |
-| Copy selected folders — recommended | Start with a copy. Your originals stay where they are; changes will not carry between systems. | One-time verified copy into qOS-managed local storage. |
-| Keep selected folders connected | Keep a local copy in qOS. Changes carry over when synchronization runs. | Two-way synchronization when the source is safely accessible. |
+| Copy selected folders — recommended | Start with a copy. Your originals stay where they are; changes will not carry between systems. | One-time verified copy into Tilo-managed local storage. |
+| Keep selected folders connected | Keep a local copy in Tilo. Changes carry over when synchronization runs. | Two-way synchronization when the source is safely accessible. |
 | Decide later | Start with an empty workspace. Add folders anytime. | No import or synchronization is scheduled. |
 
 Suggest Documents, Desktop, Pictures, and Downloads, plus a native custom-folder
@@ -91,7 +91,7 @@ coverage. Exclude system folders and do not silently traverse links outside the
 selected scope. Source deletion is never part of a one-time copy.
 
 “Help me choose” asks whether the user will continue working on those files in
-the old OS. Trying qOS or uncertainty recommends Copy; continued use of both
+the old OS. Trying Tilo or uncertainty recommends Copy; continued use of both
 systems recommends Keep connected only where supported. Copy is also the default
 for Desktop in this unified flow; opening existing local files directly remains
 an ordinary file-access action, not a migration mode.
@@ -121,7 +121,7 @@ Permanent user-requested deletion is a separate explicit action.
 
 Report “Up to date,” “Changes pending,” and “Source unavailable,” with actionable
 details for errors. “Up to date” requires a successful comparison with the source.
-Disconnecting stops synchronization and retains both the qOS copy and originals.
+Disconnecting stops synchronization and retains both the Tilo copy and originals.
 
 Before enabling a connection, verify read and write access, supported filesystem
 semantics, source identity, and a safe mount state. Encrypted, locked, hibernated,
@@ -215,9 +215,9 @@ review, and implementation plan:
 
 ## Acceptance and validation
 
-- A new user can explain Desktop versus Full qOS, Copy versus Keep connected,
+- A new user can explain Desktop versus Full Tilo, Copy versus Keep connected,
   and which OS/files remain after installation using the review screen alone.
-- Windows offers Full qOS; supported Linux offers both experiences. Unsupported
+- Windows offers Full Tilo; supported Linux offers both experiences. Unsupported
   configurations stop before storage mutation with an actionable explanation.
 - On every advertised internal-install configuration, setup works without USB,
   preserves existing partitions outside reviewed changes, and boots both systems.

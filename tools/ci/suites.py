@@ -53,11 +53,24 @@ class Group:
 
 
 @dataclass(frozen=True)
+class ReaderScope:
+    """The tests that observe some of a package's outside inputs.
+
+    When a change touches only these inputs, only `filter` within the `test`
+    target can see it, so the package's other tests have nothing new to say.
+    """
+    inputs: tuple[str, ...]
+    test: str
+    filter: str
+
+
+@dataclass(frozen=True)
 class CargoReader:
     """A Cargo package whose code reads repository files outside its directory."""
     package: str
     inputs: tuple[str, ...]
     readers: tuple[str, ...]
+    scope: ReaderScope | None = None
 
 
 @dataclass(frozen=True)
@@ -136,8 +149,9 @@ def parse(text: str) -> Manifest:
     packages: set[str] = set()
     for index, entry in enumerate(data.get("cargo", [])):
         where = f"cargo entry {index + 1}"
-        if not isinstance(entry, dict) or set(entry) != {"package", "inputs", "readers"}:
-            raise ValueError(f"{where} must have exactly package, inputs and readers")
+        if (not isinstance(entry, dict)
+                or not {"package", "inputs", "readers"} <= set(entry) <= {"package", "inputs", "readers", "scope"}):
+            raise ValueError(f"{where} must have package, inputs and readers, and may have a scope")
         package = entry["package"]
         if not isinstance(package, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", package) or package in packages:
             raise ValueError(f"{where} has an invalid or duplicate package: {package!r}")
@@ -148,7 +162,21 @@ def parse(text: str) -> Manifest:
             if not reader.endswith(".rs"):
                 raise ValueError(f"{reader}: readers must be .rs files")
             claim(reader, f"cargo {package}")
-        cargo.append(CargoReader(package, inputs, readers))
+        scope = None
+        if "scope" in entry:
+            raw = entry["scope"]
+            if not isinstance(raw, dict) or set(raw) != {"inputs", "test", "filter"}:
+                raise ValueError(f"{where} scope must have exactly inputs, test and filter")
+            scoped = _strings(raw["inputs"], f"{where} scope inputs")
+            if not set(scoped) <= set(inputs):
+                raise ValueError(f"{where} scope inputs must be a subset of its inputs")
+            test, test_filter = raw["test"], raw["filter"]
+            if not isinstance(test, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", test):
+                raise ValueError(f"{where} scope test must name one test target")
+            if not isinstance(test_filter, str) or not test_filter.strip() or "\n" in test_filter:
+                raise ValueError(f"{where} scope filter must be a one-line nextest filterset")
+            scope = ReaderScope(scoped, test, test_filter)
+        cargo.append(CargoReader(package, inputs, readers, scope))
     cargo_exempt: dict[str, str] = {}
     for entry in data.get("cargo-exempt", []):
         if not isinstance(entry, dict) or set(entry) != {"file", "reason"}:
@@ -199,6 +227,27 @@ def select_packages(manifest: Manifest, changes: list[str]) -> list[str]:
         for entry in manifest.cargo
         if any(matches(path, pattern) for path in changes for pattern in entry.inputs)
     )
+
+
+def select_package_scopes(manifest: Manifest, changes: list[str]) -> dict[str, ReaderScope | None]:
+    """Like select_packages, with the narrowest tests that observe the change.
+
+    A package maps to its scope when every changed path among its inputs is a
+    scoped input, and to None (its whole suite) otherwise.
+    """
+    selected: dict[str, ReaderScope | None] = {}
+    for entry in manifest.cargo:
+        touched = [path for path in changes
+                   if any(matches(path, pattern) for pattern in entry.inputs)]
+        if not touched:
+            continue
+        scope = entry.scope
+        if scope is not None and all(
+                any(matches(path, pattern) for pattern in scope.inputs) for path in touched):
+            selected[entry.package] = scope
+        else:
+            selected[entry.package] = None
+    return dict(sorted(selected.items()))
 
 
 def command(suite: str) -> list[str]:

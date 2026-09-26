@@ -4,7 +4,7 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
@@ -81,7 +81,7 @@ use crate::compositor::accessibility::{NativeAccessibility, Request as Accessibi
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
-    combined_geometry, headless, output_geometry,
+    combined_geometry, headless, logical_geometry, output_geometry,
 };
 use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
@@ -97,6 +97,7 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+use crate::compositor::screen_dim::{Backlight, ScreenDimmer};
 use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
@@ -184,6 +185,8 @@ struct NativeRedrawReasons {
     keepalive: bool,
     lock_clock: bool,
     lock_animation: bool,
+    /// A media-key readout drawn over the lock surface is fading or due to clear.
+    lock_osd: bool,
 }
 
 impl NativeRedrawReasons {
@@ -201,7 +204,7 @@ impl NativeRedrawReasons {
                     || self.presentation
                     || self.capture))
             || (!session_locked && self.keepalive)
-            || (session_locked && (self.lock_clock || self.lock_animation))
+            || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
 }
 
@@ -276,6 +279,87 @@ fn widget_deadline_for_presenter(
 // carry the pending frame; future animation deadlines still wake the idle loop.
 fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
     deadline.filter(|deadline| *deadline > now)
+}
+
+/// How often a locked session re-reads its players, so the lock card follows
+/// a track change or a pause made elsewhere.
+const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
+
+/// Every output the lock overlay covers, or one spanning the viewport before
+/// any output has been reported.
+fn lock_outputs(
+    outputs: &[crate::compositor::backend::Output],
+    viewport: (f64, f64),
+) -> Vec<LockOutput> {
+    let outputs: Vec<LockOutput> = outputs
+        .iter()
+        .map(|o| LockOutput {
+            origin: (f64::from(o.position.0), f64::from(o.position.1)),
+            size: (f64::from(o.size.0), f64::from(o.size.1)),
+            scale: f64::from(o.scale),
+        })
+        .collect();
+    if outputs.is_empty() {
+        vec![LockOutput {
+            origin: (0.0, 0.0),
+            size: viewport,
+            scale: 1.0,
+        }]
+    } else {
+        outputs
+    }
+}
+
+/// The player the lock screen shows: the one the now-playing card would,
+/// among players that are playing or paused. A stopped player has nothing
+/// to control from a locked screen.
+fn lock_now_playing() -> Option<crate::shell::now_playing::PlayerSnapshot> {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource, PlaybackStatus, active_index};
+    let source = MprisSource;
+    source.refresh();
+    let players: Vec<_> = source
+        .players()
+        .into_iter()
+        .filter(|player| player.status != PlaybackStatus::Stopped)
+        .collect();
+    let index = active_index(&players, None)?;
+    players.into_iter().nth(index)
+}
+
+/// Whether the lock card must repaint: anything it shows changed. The
+/// playhead is not shown on the lock screen, so its movement is not a change.
+fn lock_media_changed(
+    before: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    after: Option<&crate::shell::now_playing::PlayerSnapshot>,
+) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(before), Some(after)) => {
+            before.bus_name != after.bus_name
+                || before.status != after.status
+                || before.title != after.title
+                || before.artist != after.artist
+                || before.artwork != after.artwork
+                || before.can_play != after.can_play
+                || before.can_pause != after.can_pause
+                || before.can_go_next != after.can_go_next
+                || before.can_go_previous != after.can_go_previous
+        }
+        _ => true,
+    }
+}
+
+/// Send one lock-screen transport command to exactly the player the lock
+/// card shows. Transport is all a locked session may do to media.
+fn send_lock_transport(
+    player: Option<&crate::shell::now_playing::PlayerSnapshot>,
+    transport: crate::shell::quick_settings::now_playing::Transport,
+) -> bool {
+    use crate::shell::now_playing::{MprisSource, NowPlayingSource};
+    let Some(player) = player.filter(|player| transport.enabled(player)) else {
+        return false;
+    };
+    MprisSource.send(&player.bus_name, transport.command())
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -913,15 +997,7 @@ fn floating_output_rects(outputs: &[Output], fallback_size: (u32, u32)) -> Vec<R
     let mut rects = outputs
         .iter()
         .filter(|output| output.size.0 > 0 && output.size.1 > 0)
-        .map(|output| {
-            Rect::from_origin_size(
-                vello::kurbo::Point::new(
-                    f64::from(output.position.0),
-                    f64::from(output.position.1),
-                ),
-                vello::kurbo::Size::new(f64::from(output.size.0), f64::from(output.size.1)),
-            )
-        })
+        .map(Output::logical_rect)
         .collect::<Vec<_>>();
     if rects.is_empty() {
         rects.push(Rect::new(
@@ -1071,7 +1147,6 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
-const TEST_CONTROL_WAKE_ENV: &str = "TILO_TEST_CONTROL_WAKE_FD";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1270,6 +1345,9 @@ fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    /// Wakes the compositor loop when request bytes arrive on this stream;
+    /// removed from the loop together with the connection.
+    wake: Option<calloop::RegistrationToken>,
     closed: bool,
     pending_invocation: Option<PendingTestControlInvocation>,
     output: Vec<u8>,
@@ -1309,11 +1387,37 @@ impl TestControlConn {
         }
         Some(Self {
             reader: BufReader::new(stream),
+            wake: None,
             closed: false,
             pending_invocation: None,
             output: Vec::new(),
             output_offset: 0,
         })
+    }
+
+    /// Register this stream with `handle` as an edge-triggered wake. A
+    /// driver's `connect` makes the listener readable and is accepted at
+    /// once; its request line arrives separately, possibly only after this
+    /// iteration has already found the stream empty. Without its own wake
+    /// an idle compositor would sleep on the unread request until some
+    /// unrelated event. Edge-triggered, because every pump drains the stream
+    /// until it would block, and a level registration would spin on a peer
+    /// that half-closed while it waits for its response.
+    fn watch(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        let clone = match self.reader.get_ref().try_clone() {
+            Ok(clone) => clone,
+            Err(error) => {
+                eprintln!("tilo compositor: test_control conn wake clone: {error}");
+                return;
+            }
+        };
+        match handle.insert_source(
+            Generic::new(clone, Interest::READ, Mode::Edge),
+            |_, _, _| Ok(PostAction::Continue),
+        ) {
+            Ok(token) => self.wake = Some(token),
+            Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
+        }
     }
 
     fn peer_disconnected(&self) -> bool {
@@ -1332,7 +1436,7 @@ impl TestControlConn {
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
-            eprintln!("nirios compositor: test_control connection check: {error}");
+            eprintln!("tilo compositor: test_control connection check: {error}");
             return true;
         }
         descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -1493,6 +1597,15 @@ impl ControlState for FrameBuilderControlState<'_> {
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
+                        // Dialogs shown on this tile, bottom to top, where they are drawn.
+                        "sheets": store.sheet_rects(tab.surface_id).into_iter().map(|(link, r)| {
+                            serde_json::json!({
+                                "surface_id": link.surface,
+                                "parent": link.parent,
+                                "modal": link.modal,
+                                "rect": { "x": r.x0, "y": r.y0, "w": r.width(), "h": r.height() },
+                            })
+                        }).collect::<Vec<_>>(),
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
                         "rect": placement,
@@ -1749,6 +1862,9 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
             },
+            // What the pointer shows: a drawn shape, the focused client's
+            // own surface, or nothing because the client hid it.
+            "pointer": self.fb.pointer_image().describe(),
             "search_scope": format!("{:?}", chrome.search_scope),
             // Applications' status-notifier items and their menus, as the top bar shows them.
             "tray": crate::tray::Tray::global().state_json(),
@@ -1785,6 +1901,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
             "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
+            // The compositor-owned sheet on screen (portal review, polkit,
+            // network secrets); masked values appear only as their length.
+            "portal_dialog": self.fb.host().portal_dialog_state_json(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
@@ -2122,6 +2241,31 @@ fn post_codec_pack_notices(frame_builder: &mut FrameBuilder) -> bool {
         chrome.bump();
     });
     true
+}
+
+/// Start XDG autostart entries once per login, as soon as there is a
+/// workspace to attribute them to (and whose X11 display they may use).
+fn run_autostart_once(frame_builder: &FrameBuilder) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.load(std::sync::atomic::Ordering::Relaxed)
+        || !crate::compositor::session_env::is_tilo_login()
+    {
+        return;
+    }
+    let Some(room) = frame_builder
+        .chrome()
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
+    else {
+        return;
+    };
+    STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    match crate::shell::host_apps::launch_autostart(Some(&room)) {
+        Ok(started) => tracing::info!(started, "started XDG autostart entries"),
+        Err(error) => tracing::warn!(%error, "XDG autostart entries were not started"),
+    }
 }
 
 /// Host palette actions are queued by chrome, then launched here so the
@@ -2668,8 +2812,8 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
 ) {
-    let (w, h) = fb.viewport();
-    // Viewport dimensions are always non-negative pixel counts; clamped rather
+    let (w, h) = fb.scene_size();
+    // Scene dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
     #[allow(
         clippy::cast_possible_truncation,
@@ -2694,7 +2838,15 @@ fn write_snapshot_png(
     let mut scene = fb.paint_settled();
     if let Some((cursor, visual)) = drag {
         let theme = fb.theme().clone();
-        drag_feedback::draw(&mut scene, cursor, &visual, &theme, fb.text_renderer_mut());
+        let mut feedback = vello::Scene::new();
+        drag_feedback::draw(
+            &mut feedback,
+            cursor,
+            &visual,
+            &theme,
+            fb.text_renderer_mut(),
+        );
+        fb.compose_layout_scene(&feedback, &mut scene);
     }
     let scene = scene;
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
@@ -2795,7 +2947,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
         let pending = &conn.output[conn.output_offset..];
         match conn.reader.get_mut().write(pending) {
             Ok(0) => {
-                eprintln!("nirios compositor: test_control write: disconnected");
+                eprintln!("tilo compositor: test_control write: disconnected");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2804,7 +2956,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 return PendingConnectionProgress::OutputPending;
             }
             Err(error) => {
-                eprintln!("nirios compositor: test_control write: {error}");
+                eprintln!("tilo compositor: test_control write: {error}");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -3028,6 +3180,8 @@ fn pump_test_control_conn(
 
 /// Turn a [`SessionTransition`] into a real backend effect.
 ///
+/// `Dimmed`/`Undimmed` lower and restore the backlight, or switch the paint
+/// path's dimming overlay where there is none ([`ScreenDimmer`]);
 /// `Blanked`/`Woke` drive the backend's DPMS (no-op on winit/headless);
 /// `Locked`/`Unlocked` are pure state the paint path reads via
 /// `SessionManager::is_locked`, needing no backend call. On a render thread,
@@ -3036,8 +3190,11 @@ fn apply_session_transition(
     transition: SessionTransition,
     backend: &mut dyn Backend,
     pipe: Option<&present::PresentPipe>,
+    dimmer: &mut ScreenDimmer<impl Backlight>,
 ) {
     match transition {
+        SessionTransition::Dimmed => dimmer.dim(),
+        SessionTransition::Undimmed => dimmer.restore(),
         SessionTransition::Blanked => {
             backend.set_dpms(false);
             if let Some(p) = pipe {
@@ -3648,6 +3805,7 @@ fn power_notification_to_incoming(
         caller: None,
         badge_count: None,
         contact_endpoint: None,
+        sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
     }
 }
 
@@ -3688,6 +3846,62 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: Modifiers) -> Option<i32> {
         _ => return None,
     };
     Some(n)
+}
+
+/// Where the compositor sends an input event before any client or shell
+/// chrome is offered it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PriorityRoute {
+    /// The session lock captures the event for its password field.
+    LockScreen,
+    /// A hardware media/brightness key acts on the machine itself.
+    MediaKey(crate::shell::media_keys::MediaKey),
+    PowerKey,
+    VtSwitch(i32),
+    RemoteInputKillSwitch,
+    LockSession,
+    /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
+    /// focus, since the person who needs it may have no other pointer.
+    ToggleMouseKeys,
+    /// Nothing claims the event ahead of spatial forwarding, input capture
+    /// and ordinary client/chrome routing.
+    Continue,
+}
+
+/// The compositor's fixed input priority order, pure so it can be checked
+/// without a seat.
+///
+/// Media keys are the one exception to the lock capturing everything:
+/// volume, mute, brightness and playback belong to the machine, not the
+/// session, so they keep working on the lock screen. They reveal nothing
+/// behind it and their feedback is drawn on the lock surface itself.
+fn priority_route(
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    locked: bool,
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> PriorityRoute {
+    let media_key = crate::shell::media_keys::classify(event);
+    if locked {
+        return media_key
+            .filter(|key| key.acts_while_locked())
+            .map_or(PriorityRoute::LockScreen, PriorityRoute::MediaKey);
+    }
+    if is_power_key(event) {
+        PriorityRoute::PowerKey
+    } else if let Some(vt) = vt_switch_chord(event, modifiers) {
+        PriorityRoute::VtSwitch(vt)
+    } else if is_remote_input_kill_switch(event, modifiers) {
+        PriorityRoute::RemoteInputKillSwitch
+    } else if is_lock_chord(event, modifiers, shortcuts) {
+        PriorityRoute::LockSession
+    } else if is_mouse_keys_toggle(event, modifiers) {
+        PriorityRoute::ToggleMouseKeys
+    } else if let Some(key) = media_key {
+        PriorityRoute::MediaKey(key)
+    } else {
+        PriorityRoute::Continue
+    }
 }
 
 /// How long an invite minted from the palette stays valid.
@@ -3854,6 +4068,8 @@ fn spawn_session_collab_broker(
                 capnp_path.display(),
                 peer_sync.is_some()
             );
+            crate::shell::channel_encryption::ChannelKeyProvider::session()
+                .set(handle.channel_encryption());
             chrome.borrow_mut().clear_collab_unavailable();
             Some(handle)
         }
@@ -4038,6 +4254,37 @@ fn install_device_fabric_bridge(
                         &fabric_net,
                         session_id,
                     )?;
+                }
+                DeviceFabricUiAction::ResolveSpeakerGroupConsent { group, approved } => {
+                    crate::shell::device_fabric_runtime::require_speaker_groups()?;
+                    crate::shell::speaker_group_runtime::resolve_consent(
+                        &fabric_net,
+                        group,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::LeaveSpeakerGroup { group } => {
+                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group)?;
+                }
+                DeviceFabricUiAction::StartSpeakerGroupAudio {
+                    source_token,
+                    group,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_speaker_group_audio(
+                        &fabric_net,
+                        source_token,
+                        group,
+                    )?;
+                }
+                DeviceFabricUiAction::PlayMediaOnSpeakerGroup { session_id, group } => {
+                    let _ = crate::shell::device_fabric_runtime::play_media_on_speaker_group(
+                        &fabric_net,
+                        &session_id,
+                        group,
+                    )?;
+                }
+                DeviceFabricUiAction::StopSpeakerGroupSession { session_id } => {
+                    crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
                 }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
                     let binding = active_physical_gamepad_binding(&tree_handle.read())
@@ -4256,11 +4503,15 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)
@@ -4453,7 +4704,11 @@ fn spawn_session_identity_broker(
         return None;
     }
     let tree = chrome.borrow().tree_handle();
-    match crate::identity_broker::spawn(path.clone(), tree) {
+    match crate::identity_broker::spawn(
+        path.clone(),
+        tree,
+        crate::shell::channel_encryption::ChannelKeyProvider::session(),
+    ) {
         Ok(handle) => {
             tracing::info!(path = %path.display(), "identity: broker ready");
             Some(handle)
@@ -5164,6 +5419,21 @@ pub fn run() {
         std::process::exit(1);
     }
     crate::compositor::foreign::install_completion_ping(&capture_ping);
+    // Convertibles: the accelerometer turns the built-in panel. The ping
+    // only wakes the loop; the change itself is drained below.
+    let device_rotation = match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => crate::compositor::device_rotation::spawn(move || ping.ping()),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the device rotation wake source");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the device rotation wake source");
+            None
+        }
+    };
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -5172,9 +5442,9 @@ pub fn run() {
     // Per-frame scene production, shared with offscreen tooling via
     // `FrameBuilder` — chrome in the host window is byte-identical to `cargo run --bin shots`.
     //
-    // Scene is sized to the bounding box spanning every output; each output
-    // presents its own sub-rect, so single-monitor layout is unchanged.
-    let initial_size = match combined_geometry(backend.outputs()) {
+    // The shell lays out the logical desktop spanning every output; each
+    // output then draws its part into its own sub-rect of the scene.
+    let initial_size = match logical_geometry(backend.outputs()) {
         (0, 0) => (1600, 900),
         size => size,
     };
@@ -5339,7 +5609,14 @@ pub fn run() {
     // The xdg-desktop-portal backend, served from *this* process on the tree
     // it owns — see `start_portal_backend` for why not the separate daemon.
     let notif_bridge = crate::notifications::NotificationBridge::new();
-    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    frame_builder.with_chrome(|st| {
+        st.set_notification_bridge(notif_bridge.clone());
+        if let Some(store) =
+            crate::shell::notification_history::NotificationHistoryStore::for_user()
+        {
+            st.attach_notification_history_store(store);
+        }
+    });
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
     frame_builder
         .host_mut()
@@ -5440,6 +5717,11 @@ pub fn run() {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    crate::compositor::session_env::export(&public_socket_path);
+    // Host tools started before the first open still see Tilo's defaults.
+    let _ = std::thread::Builder::new()
+        .name("tilo-mimeapps-publish".to_string())
+        .spawn(crate::shell::launcher::publish_host_mimeapps);
     let mut desktop_continuation = if crate::compositor::parse_install_mode_from_args()
         == crate::compositor::InstallMode::HostDesktop
     {
@@ -5450,7 +5732,7 @@ pub fn run() {
         let uid = unsafe { libc::getuid() };
         let pending = xdg_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
-                &data.join("qos-imager/migrations/desktop-continuation.json"),
+                &data.join("tilo-imager/migrations/desktop-continuation.json"),
                 uid,
             )
         });
@@ -5624,11 +5906,10 @@ pub fn run() {
     // of the listener as a wake token so a driver which connects to an idle
     // compositor is serviced immediately.  Accepting and executing requests
     // stays below on the compositor thread; this source only prevents the
-    // outer calloop from sleeping through the listener's readability.
-    //
-    // The inherited eventfd below remains useful for older harnesses which
-    // write to an already-connected stream, but a plain Unix-socket client
-    // must never depend on that private side channel.
+    // outer calloop from sleeping through the listener's readability.  Each
+    // accepted stream gets its own wake (see `TestControlConn::watch`), because
+    // a connection is accepted as soon as it exists, which is often before
+    // the request bytes that follow it have arrived.
     let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
         let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
         if duplicate < 0 {
@@ -5652,69 +5933,6 @@ pub fn run() {
             }
         }
     });
-    // Test drivers pass an inherited eventfd and increment it after writing a
-    // command. That gives this manually-pumped protocol a proper outer-loop
-    // wake without registering a persistent Unix stream as permanently
-    // readable. The release build ignores test-control environment overrides.
-    let _test_control_wake = if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
-        std::env::var(TEST_CONTROL_WAKE_ENV)
-            .ok()
-            .and_then(|raw| raw.parse::<std::os::fd::RawFd>().ok())
-            .filter(|raw| *raw >= 0)
-            .and_then(|raw| {
-                // Duplicate rather than adopting the inherited number: the
-                // pre-existing Rust/Python process machinery may also own an
-                // object at that numeric fd. The duplicate gives calloop
-                // unambiguous lifetime ownership while preserving the same
-                // eventfd counter shared with the driver.
-                let duplicate = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 3) };
-                if duplicate < 0 {
-                    eprintln!(
-                        "tilo compositor: test_control duplicate wake fd {raw}: {}",
-                        std::io::Error::last_os_error()
-                    );
-                    return None;
-                }
-                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-                match event_loop.handle().insert_source(
-                    Generic::new(fd, Interest::READ, Mode::Level),
-                    |_, fd, _| {
-                        let mut value = 0u64;
-                        // SAFETY: eventfd's read ABI is exactly one native
-                        // u64. Drain through EAGAIN to clear level readiness.
-                        let result = unsafe {
-                            libc::read(
-                                fd.as_raw_fd(),
-                                (&raw mut value).cast::<libc::c_void>(),
-                                std::mem::size_of::<u64>(),
-                            )
-                        };
-                        if result < 0
-                            && std::io::Error::last_os_error().kind()
-                                != std::io::ErrorKind::WouldBlock
-                        {
-                            eprintln!(
-                                "tilo compositor: test_control wake read: {}",
-                                std::io::Error::last_os_error()
-                            );
-                        }
-                        Ok(PostAction::Continue)
-                    },
-                ) {
-                    Ok(token) => {
-                        eprintln!("tilo compositor: test_control wake fd {raw} registered");
-                        Some(token)
-                    }
-                    Err(error) => {
-                        eprintln!("tilo compositor: test_control wake source: {error}");
-                        None
-                    }
-                }
-            })
-    } else {
-        None
-    };
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
@@ -5763,6 +5981,7 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -5798,6 +6017,8 @@ pub fn run() {
     // Other devices' focus changes arrive over the network at human pace;
     // copying the feed into chrome a few times a second is plenty.
     let mut continuity_feed_polled: Option<Instant> = None;
+    let mut screen_dimmer = ScreenDimmer::default();
+    let mut prev_dim_overlay = None;
     // Set by PrepareForSleep and cleared only after the compositor's lock
     // frame has retired from the presenter (or DPMS is already off).
     let mut sleep_lock_frame_pending = false;
@@ -5829,9 +6050,9 @@ pub fn run() {
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
     let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
-    let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
+    let system_sounds = crate::shell::system_sounds::SystemSounds::new();
     frame_builder.with_chrome(|st| {
-        st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
+        st.set_notification_runtime(system_sounds.clone(), priority_contacts.clone());
     });
     // The session runtime keeps driving zbus dispatch in the background for
     // the life of the process.
@@ -5905,6 +6126,40 @@ pub fn run() {
                     crate::tray::WATCHER_BUS_NAME
                 );
             },
+        )
+    });
+
+    // polkit authentication agent: administrator prompts from pkexec,
+    // GNOME Disks, virt-manager and system Flatpak installs become a sheet
+    // only the compositor draws. Registered on the system bus for this login
+    // session; without polkit or logind the requests fail as before.
+    let polkit_agent: Option<
+        crate::session_runtime::Registration<crate::polkit_agent::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "polkit agent",
+            crate::polkit_agent::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+            ),
+            |_| tracing::info!("polkit: authentication agent registered for this session"),
+        )
+    });
+
+    // NetworkManager secret agent: a Wi-Fi password that changed, 802.1X
+    // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
+    // draws, instead of a connection that silently fails.
+    let network_secret_agent: Option<
+        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "network secret agent",
+            crate::network_secrets::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+                crate::network_secrets::store::RoamingWifiSlot::global(),
+            ),
+            |_| tracing::info!("network: secret agent registered with NetworkManager"),
         )
     });
 
@@ -5993,6 +6248,7 @@ pub fn run() {
             &outs,
             refresh_mhz_of(&*backend),
         );
+        state.set_output_heads(backend.output_heads());
     }
     // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
@@ -6017,6 +6273,9 @@ pub fn run() {
     let mut last_lock_animation_frame = lock_animation_epoch;
     let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
+    let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
+    let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -6133,7 +6392,15 @@ pub fn run() {
         // nested DRM/libinput and test-control fds. Drain the backend now,
         // before any frame decision, so its level-triggered poll fd is cleared
         // in this same iteration instead of immediately waking calloop again.
-        backend.poll_events(&mut |event| pending_events.push_back(event));
+        // Backends report positions in the scene; the shell and clients work
+        // in the logical desktop, so input crosses over here, once.
+        let input_placements = crate::compositor::backend::layout::placements(backend.outputs());
+        backend.poll_events(&mut |event| {
+            pending_events.push_back(crate::compositor::backend::layout::event_to_logical(
+                &input_placements,
+                event,
+            ));
+        });
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
             tracing::warn!(
@@ -6209,9 +6476,17 @@ pub fn run() {
                     }
                     if session.is_locked() {
                         // The lock owns a deliberately tiny, non-leaking tree.
-                        // Only its password field is actionable; stale ids from
-                        // the hidden desktop are rejected here.
-                        if request.target_node == lock_screen::LOCK_PASSWORD_ID {
+                        // Only its password field and the now-playing
+                        // transport are actionable; stale ids from the hidden
+                        // desktop are rejected here.
+                        if let Some(transport) =
+                            lock_screen::transport_for_node(request.target_node)
+                        {
+                            if request.action == ui::accesskit::Action::Click {
+                                session_changed |=
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                            }
+                        } else if request.target_node == lock_screen::LOCK_PASSWORD_ID {
                             match (request.action, request.data.as_ref()) {
                                 (
                                     ui::accesskit::Action::SetValue,
@@ -6273,7 +6548,7 @@ pub fn run() {
                                 .set_zones(input_capture_zones(backend.outputs()));
                         }
                         // Keep the fullscreen-configure size in sync so a fullscreened client fills the current output.
-                        state.output_size = size_to_signed(size);
+                        state.output_size = size_to_signed(logical_geometry(backend.outputs()));
                         // The swap chain lives on the render thread now, so the reconfigure
                         // travels with the frames rather than inline, keeping it ordered against any frame already queued at the old size.
                         if let Some(pipe) = present_pipe.as_ref() {
@@ -6313,20 +6588,38 @@ pub fn run() {
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
+                    // A lone Super tap opens global search. Observed ahead of every
+                    // branch below, so a chord one of them handles still disarms it.
+                    if super_tap.observe(wev) && !session.is_locked() {
+                        frame_builder
+                            .host_mut()
+                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                        session_changed = true;
+                    }
 
-                    if session.is_locked() {
+                    let locked = session.is_locked();
+                    let route = priority_route(
+                        wev,
+                        test_control_ctx.modifiers,
+                        locked,
+                        frame_builder.host().shortcut_config(),
+                    );
+                    if locked {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {
                             spatial_control = None;
                         }
-                        // Locked: every input is captured by the lock surface, into the password
-                        // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
                             // Keep both chord routing and Smithay's XKB state in step even
                             // while the lock owns the visible key.  Dropping a release here
@@ -6337,11 +6630,44 @@ pub fn run() {
                             );
                             client_input::consume_keyboard_while_captured(&mut state, wev);
                         }
+                    }
+                    if route == PriorityRoute::LockScreen {
+                        // Locked: every input is captured by the lock surface, into the password
+                        // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        match wev {
+                            WindowEvent::CursorMoved { position, .. } => {
+                                lock_pointer =
+                                    Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::MouseInput {
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                let outputs =
+                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                let view = LockView {
+                                    now_playing: lock_player.as_ref(),
+                                    ..LockView::default()
+                                };
+                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                    lock_screen::transport_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                }) {
+                                    send_lock_transport(lock_player.as_ref(), transport);
+                                }
+                            }
+                            _ => {}
+                        }
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
-                    } else if is_power_key(wev) {
+                    } else if route == PriorityRoute::PowerKey {
                         // Hardware power key resolves per the power policy (logind delegates via
                         // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
                         match power_policy.on_power_key() {
@@ -6357,16 +6683,17 @@ pub fn run() {
                                         t,
                                         backend.as_mut(),
                                         present_pipe.as_ref(),
+                                        &mut screen_dimmer,
                                     );
                                 }
                             }
                             Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
-                    } else if let Some(vt) = vt_switch_chord(wev, test_control_ctx.modifiers) {
+                    } else if let PriorityRoute::VtSwitch(vt) = route {
                         // Ahead of every other chord, never offered to a client: leaving the
                         // terminal must work even with a grabbed keyboard, or a client can strand the user.
                         backend.switch_vt(vt);
-                    } else if is_remote_input_kill_switch(wev, test_control_ctx.modifiers) {
+                    } else if route == PriorityRoute::RemoteInputKillSwitch {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
@@ -6376,18 +6703,47 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if is_lock_chord(
-                        wev,
-                        test_control_ctx.modifiers,
-                        frame_builder.host().shortcut_config(),
-                    ) {
+                    } else if state.pointer_lock.is_engaged()
+                        && crate::compositor::pointer_lock::is_release_chord(
+                            wev,
+                            test_control_ctx.modifiers,
+                        )
+                    {
+                        // Ctrl+Alt+Esc: always gets the pointer back from a
+                        // game that locked or confined it — ahead of the
+                        // client router, so the game cannot swallow it.
+                        if let Some(change) = state.release_pointer_constraint() {
+                            apply_pointer_constraint_change(backend.as_mut(), change);
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        session_changed = true;
+                    } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                &mut screen_dimmer,
+                            );
                         }
-                    } else if let Some(mk) = crate::shell::media_keys::classify(wev) {
+                    } else if route == PriorityRoute::ToggleMouseKeys {
+                        // The compositor applies the flipped preference on its
+                        // next settings poll; the readout confirms it now.
+                        if let Some(osd) = settings_store::settings_path()
+                            .as_deref()
+                            .and_then(crate::shell::media_keys::toggle_mouse_keys)
+                        {
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+                            session_changed = true;
+                        }
+                    } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
-                        // whichever client holds focus — handled before client routing for that reason.
+                        // whichever client holds focus — handled before client routing for that
+                        // reason. While locked only `MediaKey::acts_while_locked` keys get
+                        // here, and the lock paint draws their OSD.
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
                         let settings = settings_store::settings_path();
@@ -6487,15 +6843,37 @@ pub fn run() {
                         }
                     }
                 }
-                BackendEvent::RelativePointerMotion { dx, dy } => {
+                BackendEvent::RelativePointerMotion {
+                    dx,
+                    dy,
+                    dx_unaccel,
+                    dy_unaccel,
+                    time_usec,
+                } => {
                     if session.is_locked() {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {
                             spatial_control = None;
                         }
-                    } else if let Some(network) = peer_sync.as_ref() {
-                        let _ = move_spatial_pointer(&state, network, &mut spatial_control, dx, dy);
+                    } else if state.pointer_lock.is_engaged() {
+                        // A game holding the pointer reads every delta; the
+                        // pointer must not wander onto another device.
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
+                    } else if peer_sync.as_ref().is_some_and(|network| {
+                        move_spatial_pointer(&state, network, &mut spatial_control, dx, dy)
+                    }) {
+                        // The pointer is on an adjacent device.
+                    } else {
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
                     }
                 }
                 BackendEvent::ModifiersChanged(modifiers) => {
@@ -6532,7 +6910,12 @@ pub fn run() {
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
                         for t in session.note_activity(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                &mut screen_dimmer,
+                            );
                         }
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
@@ -6594,6 +6977,10 @@ pub fn run() {
                         }
                     }
                 }
+                BackendEvent::VisualAlert => {
+                    frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
+                    session_changed = true;
+                }
                 BackendEvent::Redraw => {
                     // Redraw is implicit: the native loop paints every tick.
                 }
@@ -6637,7 +7024,12 @@ pub fn run() {
         ) {
             session_changed = true;
             for t in session.note_activity(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
         }
         for wake in controller_nav.take_wakes() {
@@ -6670,6 +7062,7 @@ pub fn run() {
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
+        run_autostart_once(&frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
         // client starts auto-repeat after a press and only stops once it sees the
@@ -6709,6 +7102,11 @@ pub fn run() {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            // The backend has now reconciled any staged display plan; tell
+            // the output-management clients that asked for it how it went.
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
             if let Some(xwayland) = xwayland.as_mut() {
                 xwayland.reload_keyboard_settings();
             }
@@ -6730,6 +7128,7 @@ pub fn run() {
             frame_builder.host_mut().set_desktop_controls_config(
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
+            frame_builder.host_mut().poll_display_identify();
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
@@ -6744,6 +7143,24 @@ pub fn run() {
         if let Some(service) = osk_service.as_mut() {
             service.tick();
         }
+        for (output, on) in state.output_management.take_power_requests() {
+            backend.set_output_power(output, on);
+        }
+        if let Some(rotation) = device_rotation
+            .as_ref()
+            .and_then(|changes| changes.try_iter().last())
+        {
+            backend.set_device_rotation(Some(rotation));
+        }
+        if state.output_management.take_staged_by_tool() {
+            frame_builder.with_chrome(|chrome| {
+                chrome.push_notification(
+                    "Keep the new display layout?",
+                    "A display tool changed your screens. Choose Keep in Settings › Displays \
+                     within 15 seconds, or the previous layout comes back.",
+                );
+            });
+        }
 
         // Re-derive everything depending on the output set once, after the whole
         // batch — a dock plug raises several udev edges, and per-edge re-derivation would advertise globals the next edge immediately supersedes.
@@ -6757,9 +7174,10 @@ pub fn run() {
                 "compositor: display configuration changed"
             );
             if combined.0 > 0 && combined.1 > 0 {
+                let logical = logical_geometry(&outs);
                 frame_builder.set_viewport(combined);
-                native_accessibility.set_viewport(combined);
-                state.output_size = size_to_signed(combined);
+                native_accessibility.set_viewport(logical);
+                state.output_size = size_to_signed(logical);
                 if let Some(pipe) = present_pipe.as_ref() {
                     pipe.resize(combined);
                 }
@@ -6796,6 +7214,7 @@ pub fn run() {
                 &outs,
                 refresh_mhz_of(&*backend),
             );
+            state.set_output_heads(backend.output_heads());
             if refresh_override.is_none()
                 && let Some(interval) = backend.refresh_interval()
                 && frame_clock.set_interval(interval)
@@ -6835,7 +7254,12 @@ pub fn run() {
         });
         if shell_lock_requested {
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
             session_changed = true;
         }
@@ -6858,7 +7282,12 @@ pub fn run() {
                     power_bridge.request_suspend();
                 }
             } else {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
             // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
             session_changed = true;
@@ -6871,7 +7300,12 @@ pub fn run() {
             match sig {
                 tilo_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                 }
                 tilo_power_mgmt::PowerSignal::PreparingForSleep => {
@@ -6880,7 +7314,12 @@ pub fn run() {
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
                     for t in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
@@ -6898,7 +7337,12 @@ pub fn run() {
                     // user lock when CanSuspend is refused.
                     if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
                         for t in session.request_unlock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                &mut screen_dimmer,
+                            );
                         }
                     }
                     sleep_lock_was_locked = false;
@@ -6907,7 +7351,12 @@ pub fn run() {
                 tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
                     for t in session.resume_from_sleep(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
@@ -6972,7 +7421,12 @@ pub fn run() {
         if state.session_lock.take_lock_requested() {
             session_changed = true;
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
         }
         // Async unlock: pick up an in-flight credential verify's result from the
@@ -6984,7 +7438,12 @@ pub fn run() {
             session_changed = true;
             if outcome == UnlockOutcome::Unlocked {
                 for t in session.request_unlock(Instant::now()) {
-                    apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                    apply_session_transition(
+                        t,
+                        backend.as_mut(),
+                        present_pipe.as_ref(),
+                        &mut screen_dimmer,
+                    );
                 }
             }
         }
@@ -7019,10 +7478,19 @@ pub fn run() {
             }
         }
         prev_locked = session.is_locked();
+        // The dimming overlay is part of the scene, so switching it needs a frame.
+        if screen_dimmer.overlay_alpha() != prev_dim_overlay {
+            prev_dim_overlay = screen_dimmer.overlay_alpha();
+            session_changed = true;
+        }
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
+        let device_sounds = frame_builder.host().drain_audio_device_sounds();
         frame_builder.with_chrome(|st| {
+            for event in device_sounds {
+                let _ = st.play_system_sound(event);
+            }
             st.set_session_locked(session.is_locked());
             st.set_active_exposures(
                 state
@@ -7083,6 +7551,14 @@ pub fn run() {
                 {
                     toplevel.send_close();
                 }
+                state.close_sheets_over(surface_id);
+            }
+            let mut fullscreen_toggle = false;
+            frame_builder.with_chrome(|chrome| {
+                fullscreen_toggle = chrome.take_fullscreen_toggle_request();
+            });
+            if fullscreen_toggle {
+                toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
@@ -7151,6 +7627,24 @@ pub fn run() {
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
         client_input::publish_remote_input_view(&mut state, &frame_builder, session.is_locked());
+        if let Some(image) =
+            client_input::sync_pointer_image(&state, &mut frame_builder, session.is_locked())
+        {
+            backend.set_pointer_image(image);
+            // A software cursor is drawn into the frame, so it needs one.
+            injected_redraw_pending = true;
+        }
+        if let Some(change) =
+            client_input::sync_pointer_constraint(&mut state, &frame_builder, session.is_locked())
+        {
+            if change.engaged {
+                frame_builder.with_chrome(|chrome| {
+                    chrome.show_osd(crate::shell::osd::Osd::pointer_held(true));
+                });
+                injected_redraw_pending = true;
+            }
+            apply_pointer_constraint_change(backend.as_mut(), change);
+        }
 
         // Per-output HiDPI: tell each client the scale of its current display.
         // Every tick, since a window dragged to another monitor's density is otherwise unobserved.
@@ -7216,7 +7710,9 @@ pub fn run() {
             if let Some(remote_capture) = remote_capture_runtime.as_ref() {
                 runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
             }
-            let (width, height) = combined_geometry(backend.outputs());
+            // The desktop a cross-device pointer crosses into: the logical
+            // one it moves in.
+            let (width, height) = logical_geometry(backend.outputs());
             let display =
                 (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
                     x: 0,
@@ -7599,7 +8095,7 @@ pub fn run() {
             && let Err(error) = crate::shell::desktop_continuation::launch_request()
                 .and_then(crate::shell::host_apps::queue_launch)
         {
-            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to Tilo");
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
@@ -7700,6 +8196,19 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
+        if session.is_locked() {
+            if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
+                last_lock_media_poll = iter_t0;
+                let player = lock_now_playing();
+                if lock_media_changed(lock_player.as_ref(), player.as_ref()) {
+                    session_changed = true;
+                }
+                lock_player = player;
+            }
+        } else {
+            lock_player = None;
+            lock_pointer = None;
+        }
         let pump_done = Instant::now();
         let pump_total = pump_done
             .duration_since(iter_t0)
@@ -7769,6 +8278,7 @@ pub fn run() {
                 last_lock_animation_frame,
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
+            lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
         }
         .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
@@ -7890,7 +8400,7 @@ pub fn run() {
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.viewport();
+                    let vp = frame_builder.scene_size();
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
@@ -7909,6 +8419,7 @@ pub fn run() {
                     date: &date,
                     notification_count: frame_builder.chrome().notification_count(),
                     verifying: lock.is_verifying(),
+                    now_playing: lock_player.as_ref(),
                 };
                 native_accessibility.update_if_active(|| {
                     lock_screen::build_accessibility_tree(
@@ -7941,7 +8452,7 @@ pub fn run() {
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.viewport();
+                    let vp = frame_builder.scene_size();
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
@@ -7963,6 +8474,7 @@ pub fn run() {
                     date: &date,
                     notification_count: notif_count,
                     verifying: lock.is_verifying(),
+                    now_playing: lock_player.as_ref(),
                 };
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
@@ -7976,7 +8488,7 @@ pub fn run() {
                 };
                 lock_has_wallpaper = wallpaper.is_some();
                 last_lock_animation_frame = iter_t0;
-                FramePaint::full(lock_screen::draw_lock_scene_at_time(
+                let mut lock_scene = lock_screen::draw_lock_scene_at_time(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
@@ -7985,7 +8497,26 @@ pub fn run() {
                     iter_t0
                         .saturating_duration_since(lock_animation_epoch)
                         .as_secs_f64(),
-                ))
+                );
+                // Media keys stay live while locked; their readout is drawn
+                // here because the desktop chrome that normally paints it is
+                // hidden. Expiring on paint mirrors the unlocked host.
+                let mut lock_osd = None;
+                frame_builder.with_chrome(|chrome| {
+                    chrome.expire_osd(iter_t0);
+                    lock_osd = chrome.osd;
+                });
+                if let Some(osd) = lock_osd {
+                    lock_screen::draw_lock_osd(
+                        &mut lock_scene,
+                        &lock_outputs,
+                        &theme,
+                        frame_builder.text_renderer_mut(),
+                        osd,
+                        iter_t0,
+                    );
+                }
+                FramePaint::full(lock_scene)
             } else {
                 let mut frame_paint = if retained_damage_supported {
                     frame_builder.paint_with_damage()
@@ -7995,13 +8526,17 @@ pub fn run() {
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.
-                for surface in &state.output_presentation_surfaces {
-                    foreign::paint_output_presentation_surface(
-                        &mut frame_paint.scene,
-                        surface.surface_id,
-                        surface.rect,
-                        frame_builder.theme(),
-                    );
+                if !state.output_presentation_surfaces.is_empty() {
+                    let mut presentation = vello::Scene::new();
+                    for surface in &state.output_presentation_surfaces {
+                        foreign::paint_output_presentation_surface(
+                            &mut presentation,
+                            surface.surface_id,
+                            surface.rect,
+                            frame_builder.theme(),
+                        );
+                    }
+                    frame_builder.compose_layout_scene(&presentation, &mut frame_paint.scene);
                 }
                 if presentation_frame_changed || !state.output_presentation_surfaces.is_empty() {
                     // The output-specific projection is appended after the
@@ -8018,13 +8553,15 @@ pub fn run() {
                     let visual = state.selection.dnd_label.snapshot();
                     let (cx, cy) = state.client_input.cursor();
                     let theme = frame_builder.theme().clone();
+                    let mut feedback = vello::Scene::new();
                     drag_feedback::draw(
-                        &mut frame_paint.scene,
+                        &mut feedback,
                         vello::kurbo::Point::new(cx, cy),
                         &visual,
                         &theme,
                         frame_builder.text_renderer_mut(),
                     );
+                    frame_builder.compose_layout_scene(&feedback, &mut frame_paint.scene);
                     // The feedback was appended outside the retained sections.
                     frame_paint.force_full();
                 }
@@ -8065,6 +8602,27 @@ pub fn run() {
                             // shell receipt, so a second notification would
                             // obscure work and split the next action.
                             tracing::info!(path = %path.display(), "screenshot saved");
+                            frame_builder.host_mut().set_capture_send_devices(
+                                peer_sync.as_deref().map_or_else(Vec::new, |network| {
+                                    crate::shell::screenshot_send::online_devices(network)
+                                }),
+                            );
+                        }
+                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                            let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
+                                network: peer_sync.as_deref(),
+                                workspace_root: crate::shell::screenshot_send::workspace_files_root(
+                                ),
+                            };
+                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
+                            {
+                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                }),
+                                Err(error) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_error_notification("Screenshot not sent", error);
+                                }),
+                            }
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
@@ -8208,7 +8766,7 @@ pub fn run() {
                 && (frame_builder.host().projection_capture_requested()
                     || personal_display_profile.is_some())
             {
-                let viewport = frame_builder.viewport();
+                let viewport = frame_builder.scene_size();
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -8220,6 +8778,28 @@ pub fn run() {
                     viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                 );
                 let _ = projection_capture.submit_scene(&frame_paint.scene, clamped_viewport);
+            }
+            // The idle dim goes on last, after captures and casts took their clean copy, so only
+            // the local panel darkens.
+            if let Some(alpha) = screen_dimmer.overlay_alpha() {
+                let rect = backend
+                    .outputs()
+                    .iter()
+                    .map(|o| {
+                        vello::kurbo::Rect::new(
+                            f64::from(o.position.0),
+                            f64::from(o.position.1),
+                            f64::from(o.position.0) + f64::from(o.size.0),
+                            f64::from(o.position.1) + f64::from(o.size.1),
+                        )
+                    })
+                    .reduce(|a, b| a.union(b))
+                    .unwrap_or_else(|| {
+                        let (w, h) = frame_builder.viewport();
+                        vello::kurbo::Rect::new(0.0, 0.0, w, h)
+                    });
+                crate::compositor::screen_dim::paint_overlay(&mut frame_paint.scene, rect, alpha);
+                frame_paint.force_full();
             }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
@@ -8308,6 +8888,9 @@ pub fn run() {
             // what size to render at, then release the frame throttle for on-screen ones; both no-ops with no external client.
             foreign::flush_configures(&mut state);
             foreign::release_frame_throttle(&mut state);
+            state.client_cursor.send_frame_callbacks(
+                u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
+            );
         } else if had_backend_events {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
@@ -8335,17 +8918,15 @@ pub fn run() {
         }
 
         // Accept new test-control connections and drain them in this same
-        // iteration. Previously new connections were appended here but only
-        // pumped after the following calloop sleep. With no inherited wake fd
-        // that made a freshly connected test driver wait until an unrelated
-        // desktop event; with the wake fd it created a fragile two-phase
-        // handshake. Keeping accept+drain together makes the control protocol
-        // deterministic and leaves production builds unaffected.
+        // iteration, so a request already written is answered without
+        // another calloop sleep. One written after this drain wakes the loop
+        // through the connection's own source.
         if let Some(listener) = &test_control_listener {
             loop {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
-                        if let Some(conn) = TestControlConn::new(stream) {
+                        if let Some(mut conn) = TestControlConn::new(stream) {
+                            conn.watch(&event_loop.handle());
                             test_control_conns.push(conn);
                         }
                     }
@@ -8371,7 +8952,14 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
         }
-        test_control_conns.retain(|conn| !conn.closed);
+        test_control_conns.retain_mut(|conn| {
+            if conn.closed
+                && let Some(token) = conn.wake.take()
+            {
+                event_loop.handle().remove(token);
+            }
+            !conn.closed
+        });
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
@@ -8453,6 +9041,11 @@ pub fn run() {
             .is_locked()
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
+        // Follow the players while the lock is visible; a blanked display
+        // shows nothing, so it does not wake for them.
+        let lock_media_deadline = (session.is_locked() && !session.is_blanked())
+            .then(|| last_lock_media_poll.checked_add(LOCK_MEDIA_REFRESH))
+            .flatten();
         let park = native_loop_park(
             park_now,
             backend_event_wake,
@@ -8470,6 +9063,7 @@ pub fn run() {
                     ),
                 ),
                 lock_clock_deadline,
+                lock_media_deadline,
                 run_deadline,
                 controller_nav.next_deadline(park_now),
                 backend.next_service_deadline(),
@@ -8547,17 +9141,40 @@ pub fn run() {
     // server before returning to the session wrapper.
     drop(notif_handle);
     drop(tray_handle);
+    drop(polkit_agent);
+    drop(network_secret_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
 /// mirrors it before raising the transient readout. Quick Settings may be
 /// open while a hardware key is pressed, so waiting for its next device read
 /// would leave the visible slider behind the value in the OSD.
+/// Hand a pointer lock/confinement change to the backend, placing the
+/// pointer where a released lock asked.
+fn apply_pointer_constraint_change(
+    backend: &mut dyn Backend,
+    change: crate::compositor::pointer_lock::ConstraintChange,
+) {
+    backend.set_pointer_constraint(change.region);
+    if let Some((x, y)) = change.warp_to {
+        backend.warp_pointer(x, y);
+    }
+}
+
 fn publish_media_osd(
     chrome: &mut crate::shell::chrome_state::ChromeState,
     osd: crate::shell::osd::Osd,
 ) {
     sync_quick_settings_from_osd(&mut chrome.quick_settings, osd);
+    // The volume you just picked, heard at that volume. A muted output has
+    // nothing to hear.
+    if matches!(
+        osd.kind,
+        crate::shell::osd::OsdKind::Volume { muted: false }
+    ) {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::VolumeChange);
+    }
     chrome.show_osd(osd);
 }
 
@@ -8579,7 +9196,9 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
-        | crate::shell::osd::OsdKind::Touchpad { .. } => {}
+        | crate::shell::osd::OsdKind::Touchpad { .. }
+        | crate::shell::osd::OsdKind::PointerHeld { .. }
+        | crate::shell::osd::OsdKind::MouseKeys { .. } => {}
     }
 }
 
@@ -8626,7 +9245,7 @@ fn spawn_auto_brightness_worker() {
                     "auto_brightness",
                 )
                 .unwrap_or(false);
-                if enabled {
+                if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
                         && let Err(error) = os_actions::set_brightness(percent)
@@ -8983,6 +9602,19 @@ mod tests {
     }
 
     #[test]
+    fn lock_osd_fade_repaints_only_while_the_lock_is_visible() {
+        let fading = NativeRedrawReasons {
+            lock_osd: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(fading.content_changed(true));
+        assert!(
+            !fading.content_changed(false),
+            "the unlocked host drives its own OSD frames"
+        );
+    }
+
+    #[test]
     fn artwork_repaints_only_while_the_lock_is_visible() {
         let artwork = NativeRedrawReasons {
             lock_animation: true,
@@ -9156,6 +9788,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (0, 0),
+            identity: crate::compositor::backend::OutputIdentity::default(),
         };
         let mut memberships = SurfaceOutputMemberships::default();
         assert_eq!(
@@ -9212,6 +9845,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (x, 0),
+            identity: crate::compositor::backend::OutputIdentity::default(),
         };
         let old_outputs = [output(0, 0), output(1, 100)];
         let moved_outputs = [output(0, 100), output(1, 0)];
@@ -9916,6 +10550,44 @@ mod tests {
         );
     }
 
+    /// A driver's request often lands after its connection was accepted and
+    /// found empty. The accepted stream must then wake an otherwise idle
+    /// loop itself, rather than leave the request for an unrelated event.
+    #[test]
+    fn a_request_written_after_accept_wakes_an_idle_loop() {
+        use std::io::Write as _;
+
+        let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        let mut conn = TestControlConn::new(server).expect("server connection");
+        conn.watch(&event_loop.handle());
+
+        // Nothing to read yet, so the loop sleeps out its whole timeout.
+        let idle = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("idle dispatch");
+        assert!(
+            idle.elapsed() >= Duration::from_millis(150),
+            "the loop must be idle before the request, or this proves nothing"
+        );
+
+        client
+            .write_all(b"{\"op\":\"list_targets\"}\n")
+            .expect("write the request");
+        let woke = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_secs(30)), &mut state)
+            .expect("dispatch");
+        assert!(
+            woke.elapsed() < Duration::from_secs(10),
+            "the request did not wake the loop (slept {:?})",
+            woke.elapsed()
+        );
+    }
+
     #[test]
     fn nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete() {
         use std::io::Read as _;
@@ -10409,6 +11081,7 @@ mod tests {
                 app_id: "so.tilo.reader".into(),
                 resource: "book:architecture/chapter:7".into(),
                 label: "Rendering and state".into(),
+                kind: String::new(),
             });
         let state = FrameBuilderControlState {
             fb: &fb,
@@ -10809,13 +11482,33 @@ mod tests {
             }
         }
 
+        struct NoBacklight;
+        impl crate::compositor::screen_dim::Backlight for NoBacklight {
+            fn brightness(&self) -> Option<f32> {
+                None
+            }
+            fn set_brightness(&self, _fraction: f32) -> bool {
+                false
+            }
+        }
+
         let mut backend = SpyBackend::default();
-        apply_session_transition(SessionTransition::Blanked, &mut backend, None);
-        apply_session_transition(SessionTransition::Woke, &mut backend, None);
-        apply_session_transition(SessionTransition::Locked, &mut backend, None);
-        apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
+        let mut dimmer = ScreenDimmer::new(NoBacklight);
+        for t in [
+            SessionTransition::Dimmed,
+            SessionTransition::Blanked,
+            SessionTransition::Woke,
+            SessionTransition::Locked,
+            SessionTransition::Unlocked,
+        ] {
+            apply_session_transition(t, &mut backend, None, &mut dimmer);
+        }
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
+        // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
+        assert!(dimmer.overlay_alpha().is_some());
+        apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
+        assert_eq!(dimmer.overlay_alpha(), None);
     }
 }
 
@@ -10957,6 +11650,37 @@ fn apply_shell_gesture(
 /// above the normal tiled scene.  The requested `wl_output` wins; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
+/// The full-screen chord: the focused Wayland client enters or leaves
+/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
+/// protocol fullscreen, so its window group maximizes instead.
+fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
+    use smithay::wayland::shell::xdg::XdgShellHandler;
+    let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
+        state
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+            })
+            .cloned()
+            .map(|toplevel| (surface_id, toplevel))
+    });
+    let Some((surface_id, toplevel)) = toplevel else {
+        let _ = frame.host_mut().toggle_focused_group_maximized();
+        return;
+    };
+    if state
+        .fullscreen_target
+        .as_ref()
+        .is_some_and(|target| target.surface_id == surface_id)
+    {
+        state.unfullscreen_request(toplevel);
+    } else {
+        state.fullscreen_request(toplevel, None);
+    }
+}
+
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
@@ -10991,12 +11715,7 @@ fn reconcile_fullscreen_overlay(
         target.surface.send_configure();
         target.configured_size = Some(size);
     }
-    let rect = vello::kurbo::Rect::new(
-        f64::from(output.position.0),
-        f64::from(output.position.1),
-        f64::from(output.position.0) + f64::from(output.size.0),
-        f64::from(output.position.1) + f64::from(output.size.1),
-    );
+    let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
 }
 
@@ -11009,12 +11728,9 @@ fn select_fullscreen_output(
         .and_then(|id| outputs.iter().find(|output| output.id == id))
         .or_else(|| {
             current_center.and_then(|point| {
-                outputs.iter().find(|output| {
-                    point.x >= f64::from(output.position.0)
-                        && point.x < f64::from(output.position.0) + f64::from(output.size.0)
-                        && point.y >= f64::from(output.position.1)
-                        && point.y < f64::from(output.position.1) + f64::from(output.size.1)
-                })
+                outputs
+                    .iter()
+                    .find(|output| output.logical_rect().contains(point))
             })
         })
         .or_else(|| {
@@ -11033,18 +11749,22 @@ fn input_capture_zones(
     outputs
         .iter()
         .filter(|output| output.size.0 > 0 && output.size.1 > 0)
-        .map(|output| crate::portal::CaptureZone {
-            width: output.size.0,
-            height: output.size.1,
-            x: output.position.0,
-            y: output.position.1,
+        .map(|output| {
+            let (width, height) = output.logical_size();
+            crate::portal::CaptureZone {
+                width,
+                height,
+                x: output.logical_position.0,
+                y: output.logical_position.1,
+            }
         })
         .collect()
 }
 
 #[cfg(test)]
 mod vt_chord_tests {
-    use super::vt_switch_chord;
+    use super::{PriorityRoute, priority_route, vt_switch_chord};
+    use crate::shell::media_keys::MediaKey;
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
 
@@ -11132,6 +11852,128 @@ mod vt_chord_tests {
             vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
             None
         );
+    }
+
+    fn character(c: &str) -> WindowEvent {
+        let mut event = key(NamedKey::F1, ElementState::Pressed);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = Key::Character(c.into());
+        }
+        event
+    }
+
+    fn route(event: &WindowEvent, state: ModifiersState, locked: bool) -> PriorityRoute {
+        priority_route(
+            event,
+            mods(state),
+            locked,
+            &settings_store::hardware::ShortcutConfig::default(),
+        )
+    }
+
+    #[test]
+    fn media_keys_act_while_the_lock_captures_everything_else() {
+        let none = ModifiersState::empty();
+        for (named, media) in [
+            (NamedKey::AudioVolumeUp, MediaKey::VolumeUp),
+            (NamedKey::AudioVolumeDown, MediaKey::VolumeDown),
+            (NamedKey::AudioVolumeMute, MediaKey::VolumeMute),
+            (NamedKey::BrightnessUp, MediaKey::BrightnessUp),
+            (NamedKey::BrightnessDown, MediaKey::BrightnessDown),
+            (NamedKey::MediaPlayPause, MediaKey::PlayPause),
+        ] {
+            let press = key(named, ElementState::Pressed);
+            assert_eq!(route(&press, none, true), PriorityRoute::MediaKey(media));
+            assert_eq!(route(&press, none, false), PriorityRoute::MediaKey(media));
+            assert_eq!(
+                route(&key(named, ElementState::Released), none, true),
+                PriorityRoute::LockScreen,
+                "a media key release is inert and stays with the lock"
+            );
+        }
+
+        for captured in [NamedKey::LaunchApplication2, NamedKey::Standby] {
+            assert_eq!(
+                route(&key(captured, ElementState::Pressed), none, true),
+                PriorityRoute::LockScreen,
+                "{captured:?} opens UI or suspends, so the lock keeps it"
+            );
+            assert!(matches!(
+                route(&key(captured, ElementState::Pressed), none, false),
+                PriorityRoute::MediaKey(_)
+            ));
+        }
+
+        assert_eq!(
+            route(&character("a"), none, true),
+            PriorityRoute::LockScreen
+        );
+        assert_eq!(
+            route(&character("l"), ModifiersState::SUPER, true),
+            PriorityRoute::LockScreen,
+            "the lock chord is inert while already locked"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::F2, ElementState::Pressed),
+                ModifiersState::CONTROL | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "a VT switch cannot bypass the lock"
+        );
+    }
+
+    #[test]
+    fn unlocked_priority_order_is_power_vt_panic_lock_media_then_clients() {
+        let none = ModifiersState::empty();
+        assert_eq!(
+            route(&key(NamedKey::Power, ElementState::Pressed), none, false),
+            PriorityRoute::PowerKey
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::F3, ElementState::Pressed),
+                ModifiersState::CONTROL | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::VtSwitch(3)
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::Escape, ElementState::Pressed),
+                ModifiersState::SUPER,
+                false
+            ),
+            PriorityRoute::RemoteInputKillSwitch
+        );
+        assert_eq!(
+            route(&character("l"), ModifiersState::SUPER, false),
+            PriorityRoute::LockSession
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::ToggleMouseKeys
+        );
+        assert_eq!(
+            route(&key(NamedKey::NumLock, ElementState::Pressed), none, false),
+            PriorityRoute::Continue,
+            "a bare Num Lock is the client's"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "the lock keeps the chord"
+        );
+        assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
     }
 }
 
@@ -11251,8 +12093,70 @@ mod gesture_wireup_tests {
 #[cfg(test)]
 #[cfg(test)]
 mod output_geometry_tests {
-    use super::{output_geometry, select_fullscreen_output};
+    use super::{input_capture_zones, output_geometry, select_fullscreen_output};
     use crate::compositor::backend::{Output, OutputId};
+
+    /// A 2x 2560x1600 laptop panel with a 1x 2560x1440 monitor to its right:
+    /// logically the monitor starts at 1280, in the scene at 2560.
+    fn docked() -> [Output; 2] {
+        [
+            Output::new(OutputId(0), (2560, 1600), 2.0),
+            Output {
+                id: OutputId(1),
+                position: (2560, 0),
+                size: (2560, 1440),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                refresh_mhz: None,
+                logical_position: (1280, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
+            },
+        ]
+    }
+
+    /// The shell lays out in the logical desktop and paints each display
+    /// into its scene rectangle at its own scale.
+    #[test]
+    fn a_dense_panel_is_a_logical_display_drawn_at_its_scale() {
+        let geo = output_geometry(&docked());
+        assert_eq!(
+            (
+                geo[0].x,
+                geo[0].y,
+                geo[0].width,
+                geo[0].height,
+                geo[0].scale
+            ),
+            (0.0, 0.0, 1280.0, 800.0, 2.0)
+        );
+        assert_eq!(
+            geo[0].scene,
+            vello::kurbo::Rect::new(0.0, 0.0, 2560.0, 1600.0)
+        );
+        assert_eq!(
+            (geo[1].x, geo[1].width, geo[1].scale),
+            (1280.0, 2560.0, 1.0)
+        );
+        assert_eq!(
+            geo[1].scene,
+            vello::kurbo::Rect::new(2560.0, 0.0, 5120.0, 1440.0)
+        );
+    }
+
+    /// `InputCapture` zones are where a portal client's pointer barriers go:
+    /// the logical desktop the pointer moves in, gapless across a 2x|1x seam.
+    #[test]
+    fn input_capture_zones_are_logical() {
+        let zones = input_capture_zones(&docked());
+        assert_eq!(
+            zones
+                .iter()
+                .map(|z| (z.x, z.y, z.width, z.height))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 1280, 800), (1280, 0, 2560, 1440)]
+        );
+    }
 
     /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
     #[test]
@@ -11281,6 +12185,7 @@ mod output_geometry_tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1600, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let geo = output_geometry(&outs);
@@ -11312,6 +12217,7 @@ mod output_geometry_tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1600, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let centre = vello::kurbo::Point::new(2000.0, 400.0);
@@ -11357,6 +12263,7 @@ mod external_floating_security_tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 

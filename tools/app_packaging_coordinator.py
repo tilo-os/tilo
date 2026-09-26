@@ -88,7 +88,7 @@ class Store:
 
 class Forgejo:
     def call(self, path, data=None):
-        command = ['fgj', '--hostname', 'code.podesta.ai', 'api', path]
+        command = ['fgj', '--hostname', 'code.tilo.so', 'api', path]
         if data is not None:
             command += ['-X', 'POST']
         result = subprocess.run(command, input=canonical(data) if data is not None else None,

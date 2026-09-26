@@ -255,6 +255,9 @@ pub(super) struct CollaborationRuntime {
     pub(super) snapshot_on_ready: bool,
     /// On-demand paging of document op history.
     pub(super) history: crate::collaboration::DocumentHistory,
+    /// What the primary route's end-to-end encrypted channel lets this
+    /// device do, as last reported; `None` before the first report.
+    pub(super) channel_access: Option<crate::collaboration::ChannelAccessState>,
 }
 
 impl CollaborationRuntime {
@@ -268,6 +271,7 @@ impl CollaborationRuntime {
             local_author,
             snapshot_on_ready: false,
             history: crate::collaboration::DocumentHistory::default(),
+            channel_access: None,
         }
     }
 }

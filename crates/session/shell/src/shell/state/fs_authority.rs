@@ -1,7 +1,7 @@
 //! Asynchronous publication of workspace file capabilities to `quick-fs`.
 
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 
 const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
@@ -23,6 +23,13 @@ struct FsAuthorityPublicationQueue {
 fn fs_authority_publication_queue() -> &'static Mutex<FsAuthorityPublicationQueue> {
     static QUEUE: OnceLock<Mutex<FsAuthorityPublicationQueue>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(FsAuthorityPublicationQueue::default()))
+}
+
+/// Signalled whenever the publication worker retires, so a waiter observes
+/// the idle transition itself instead of sampling the queue on a timer.
+fn fs_authority_publication_retired() -> &'static Condvar {
+    static RETIRED: OnceLock<Condvar> = OnceLock::new();
+    RETIRED.get_or_init(Condvar::new)
 }
 
 fn fs_authority_publisher() -> PathBuf {
@@ -72,6 +79,7 @@ pub(super) fn schedule_fs_authority_publication(acl: PathBuf) {
         .spawn(run_fs_authority_publication_queue);
     if let Err(error) = spawned {
         queue.running = false;
+        fs_authority_publication_retired().notify_all();
         tracing::warn!(%error, "could not start filesystem authority publisher");
     }
 }
@@ -89,6 +97,7 @@ fn run_fs_authority_publication_queue() {
             if let Ok(mut queue) = fs_authority_publication_queue().lock() {
                 queue.running = false;
             }
+            fs_authority_publication_retired().notify_all();
             return;
         };
         let mut retry_delay = std::time::Duration::from_millis(100);
@@ -131,21 +140,16 @@ fn run_fs_authority_publication_queue() {
     }
 }
 
+/// Block until the publication worker has retired with nothing queued, or
+/// `timeout` passes. Returns whether it retired.
 #[cfg(test)]
 pub(super) fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
-    let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
+    let Ok(queue) = fs_authority_publication_queue().lock() else {
         return false;
     };
-    loop {
-        if fs_authority_publication_queue()
-            .lock()
-            .is_ok_and(|queue| !queue.running && queue.pending.is_none())
-        {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    fs_authority_publication_retired()
+        .wait_timeout_while(queue, timeout, |queue| {
+            queue.running || queue.pending.is_some()
+        })
+        .is_ok_and(|(queue, _)| !queue.running && queue.pending.is_none())
 }

@@ -505,6 +505,12 @@ impl AppActionBroker {
     }
 
     /// The broker state behind this facade, for the action host.
+    /// Read what each application declared on the action door from
+    /// `resolver` instead of the installed manifests.
+    pub fn set_app_action_access(&self, resolver: crate::shell::app_action_access::AccessResolver) {
+        self.state.set_app_action_access(resolver);
+    }
+
     pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
         &self.state
     }
@@ -526,6 +532,36 @@ impl AppActionBroker {
     ) -> tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>
     {
         self.state.capture_invocations_for_test(peer_id)
+    }
+
+    /// Shortcut runs finished since the last call, oldest first, for the
+    /// history recorder to record against the documents they changed.
+    pub fn take_finished_shortcut_runs(
+        &self,
+    ) -> Vec<crate::shell::automation_host::FinishedShortcutRun> {
+        self.state.take_finished_shortcut_runs()
+    }
+
+    /// Start saved shortcut `shortcut` in `room` because its `trigger`
+    /// fired, on behalf of `caller`, the person who saved it. Answers with
+    /// the broker job the run reports on.
+    ///
+    /// # Errors
+    ///
+    /// Why the trigger may not start it: the shortcut is gone or lost the
+    /// trigger, `caller` did not save it, or it now reaches past what
+    /// `caller` may do.
+    pub fn start_triggered_shortcut_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+        shortcut: &str,
+        trigger: &tilo_automation::TriggerSpec,
+        run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+        self.state
+            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run, inputs)
     }
 
     pub fn statuses_generation(&self) -> u64 {

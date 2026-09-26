@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 3;
+pub const FABRIC_SCHEMA_VERSION: u16 = 4;
 pub const MAX_DEVICES: usize = 64;
 pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
@@ -35,7 +35,7 @@ pub const MAX_DISPLAY_SESSIONS: usize = 4;
 pub const MAX_DISPLAY_STREAM_AGE_MS: u64 = 15_000;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
-pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 1;
+pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 2;
 pub const REMOTE_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const REMOTE_AUDIO_CHANNELS: u8 = 2;
 pub const REMOTE_AUDIO_FRAME_SAMPLES: u16 = 960;
@@ -44,6 +44,22 @@ pub const REMOTE_AUDIO_SAMPLE_FRAME_BYTES: usize = REMOTE_AUDIO_CHANNELS as usiz
 pub const MAX_REMOTE_AUDIO_FRAME_BYTES: usize =
     REMOTE_AUDIO_FRAME_SAMPLES as usize * REMOTE_AUDIO_CHANNELS as usize * 2;
 pub const MAX_REMOTE_AUDIO_SESSIONS: usize = 4;
+/// Delay from a sample's capture on the source to its playout on every
+/// member: covers capture, the network and its jitter, and the members'
+/// device latency.
+pub const REMOTE_AUDIO_GROUP_LATENCY_NS: u64 = 120_000_000;
+/// Longest group latency a frame may ask for.
+pub const MAX_REMOTE_AUDIO_GROUP_LATENCY_NS: u64 = 1_000_000_000;
+
+/// `media_ts` (frames at [`REMOTE_AUDIO_SAMPLE_RATE_HZ`]) as nanoseconds on the
+/// source's clock, or `None` past the representable range.
+#[must_use]
+pub fn remote_audio_media_ns(media_ts: u64) -> Option<u64> {
+    let ns = u128::from(media_ts)
+        .checked_mul(1_000_000_000)?
+        .checked_div(u128::from(REMOTE_AUDIO_SAMPLE_RATE_HZ))?;
+    u64::try_from(ns).ok()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -84,6 +100,8 @@ pub struct FabricCapabilities {
     pub roaming_settings: bool,
     pub secret_store: bool,
     pub app_continuation: bool,
+    /// The device can play as a member of a speaker group.
+    pub audio_group: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +420,13 @@ pub enum PersonalFabricAction {
         session_id: [u8; 16],
         authorization: [u8; 16],
         sequence: u64,
+        /// Index of the frame's first sample on the source's
+        /// `CLOCK_MONOTONIC`, in frames at the stream rate. Consecutive frames
+        /// continue exactly; a gap is audio the source never captured.
+        media_ts: u64,
+        /// Source `CLOCK_MONOTONIC` nanoseconds at which the frame's first
+        /// sample plays on every member of the group.
+        presentation_ns: u64,
         pcm_s16le: Vec<u8>,
     },
     RemoteAudioStop {
@@ -488,6 +513,56 @@ pub enum PersonalFabricAction {
     RemoteAudioKeepalive {
         session_id: [u8; 16],
         authorization: [u8; 16],
+    },
+    /// Ask one exact member device to join a group. The member's own
+    /// compositor asks its user; nothing plays until it approves.
+    SpeakerGroupInvite {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        name: String,
+        output: crate::shell::speaker_group::EndpointSelector,
+        role: crate::shell::speaker_group::SpeakerRole,
+    },
+    /// The member's answer. The durable consent itself is the membership the
+    /// member authors in its own snapshot; this only reports promptly.
+    SpeakerGroupDecision {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        accepted: bool,
+    },
+    /// The leader removed this member or deleted the group, or the member
+    /// left. Either side tears down every session of the group.
+    SpeakerGroupLeave {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+    },
+    /// Start one playback session on a consented member. Any of the person's
+    /// devices may play to a group; the member admits it only while its own
+    /// membership still covers the group as published by the leader.
+    SpeakerGroupSessionOffer {
+        session_id: [u8; 16],
+        group: crate::shell::speaker_group::SpeakerGroupId,
+    },
+    /// Admission result. Approval carries a fresh random capability bound to
+    /// the exact source and session.
+    SpeakerGroupSessionDecision {
+        session_id: [u8; 16],
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        authorization: Option<[u8; 16]>,
+    },
+    SpeakerGroupSessionStop {
+        session_id: [u8; 16],
+        authorization: Option<[u8; 16]>,
+    },
+    /// Play a short sound on one of the target's own outputs so the person
+    /// setting up speakers can tell which one it is. Rate-limited there.
+    SpeakerIdentify {
+        output: crate::shell::speaker_group::EndpointSelector,
+    },
+    /// The group's leader, calibrating, asks a member to play the
+    /// measurement sweep so its first sample leaves the speaker at `start_ns`
+    /// on the leader's `CLOCK_MONOTONIC`. The member converts that through
+    /// its own estimate of the leader's clock.
+    SpeakerSweep {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        start_ns: i64,
     },
 }
 
@@ -791,11 +866,16 @@ impl PersonalFabricActionEnvelope {
                 session_id,
                 authorization,
                 sequence,
+                media_ts,
+                presentation_ns,
                 pcm_s16le,
             } => {
+                let latency = remote_audio_media_ns(*media_ts)
+                    .and_then(|media_ns| presentation_ns.checked_sub(media_ns));
                 if session_id == &[0; 16]
                     || authorization == &[0; 16]
                     || *sequence == 0
+                    || latency.is_none_or(|latency| latency > MAX_REMOTE_AUDIO_GROUP_LATENCY_NS)
                     || pcm_s16le.is_empty()
                     || pcm_s16le.len() > MAX_REMOTE_AUDIO_FRAME_BYTES
                     || !pcm_s16le
@@ -814,6 +894,61 @@ impl PersonalFabricActionEnvelope {
                 authorization,
             } => {
                 if session_id == &[0; 16] || authorization == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerGroupInvite {
+                group,
+                name,
+                output,
+                role,
+            } => {
+                if !group.valid()
+                    || !crate::shell::speaker_group::valid_group_name(name)
+                    || !output.valid()
+                    || !role.valid()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerIdentify { output } => {
+                if !output.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerSweep { group, start_ns } => {
+                if !group.valid() || *start_ns <= 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerGroupDecision { group, .. }
+            | PersonalFabricAction::SpeakerGroupLeave { group } => {
+                if !group.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerGroupSessionOffer { session_id, group } => {
+                if session_id == &[0; 16] || !group.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerGroupSessionDecision {
+                session_id,
+                group,
+                authorization,
+            } => {
+                if session_id == &[0; 16]
+                    || !group.valid()
+                    || authorization.is_some_and(|value| value == [0; 16])
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerGroupSessionStop {
+                session_id,
+                authorization,
+            } => {
+                if session_id == &[0; 16] || authorization.is_some_and(|value| value == [0; 16]) {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1478,6 +1613,7 @@ pub struct DeviceFabricSnapshot {
     pub settings: Vec<RoamingSetting>,
     pub wifi: Vec<WifiCredential>,
     pub display: Option<DisplayPlacement>,
+    pub speakers: crate::shell::speaker_group::SpeakerFabricState,
 }
 
 impl DeviceFabricSnapshot {
@@ -1513,6 +1649,7 @@ impl DeviceFabricSnapshot {
         if let Some(display) = &self.display {
             display.validate(&self.owner)?;
         }
+        self.speakers.validate(&self.owner)?;
         unique(self.media.iter().map(|item| item.id.as_str()))?;
         unique(self.clipboard.iter().map(|item| item.id))?;
         unique(self.settings.iter().map(|item| item.key.as_str()))?;
@@ -1542,6 +1679,20 @@ impl DeviceFabric {
                     .chain(snapshot.settings.iter().map(|item| item.stamp.counter))
                     .chain(snapshot.wifi.iter().map(|item| item.stamp.counter))
                     .chain(snapshot.display.iter().map(|item| item.stamp.counter))
+                    .chain(
+                        snapshot
+                            .speakers
+                            .groups
+                            .iter()
+                            .map(|item| item.stamp.counter),
+                    )
+                    .chain(
+                        snapshot
+                            .speakers
+                            .memberships
+                            .iter()
+                            .map(|item| item.stamp.counter),
+                    )
             })
             .max()
             .unwrap_or(0)
@@ -1800,6 +1951,106 @@ impl DeviceFabric {
     }
 }
 
+impl DeviceFabric {
+    /// Every group any certified device leads, newest record per id.
+    pub fn speaker_groups(&self) -> Vec<&crate::shell::speaker_group::SpeakerGroup> {
+        let mut winners = BTreeMap::<
+            crate::shell::speaker_group::SpeakerGroupId,
+            &crate::shell::speaker_group::SpeakerGroup,
+        >::new();
+        for group in self
+            .snapshots
+            .values()
+            .flat_map(|snapshot| &snapshot.speakers.groups)
+        {
+            if winners
+                .get(&group.id)
+                .is_none_or(|current| group.stamp.is_newer_than(&current.stamp))
+            {
+                winners.insert(group.id, group);
+            }
+        }
+        let mut groups = winners.into_values().collect::<Vec<_>>();
+        groups.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+        groups
+    }
+
+    pub fn speaker_group(
+        &self,
+        id: crate::shell::speaker_group::SpeakerGroupId,
+    ) -> Option<&crate::shell::speaker_group::SpeakerGroup> {
+        self.speaker_groups()
+            .into_iter()
+            .find(|group| group.id == id)
+    }
+
+    /// Where each member of `group` stands, in member order.
+    pub fn speaker_member_states(
+        &self,
+        group: &crate::shell::speaker_group::SpeakerGroup,
+    ) -> Vec<crate::shell::speaker_group::SpeakerMemberState> {
+        use crate::shell::speaker_group::SpeakerMemberState;
+        group
+            .members
+            .iter()
+            .map(|member| {
+                let Some(snapshot) = self.snapshots.get(&member.device) else {
+                    return SpeakerMemberState::NotCertified;
+                };
+                if member.device != group.leader && !snapshot.presence.capabilities.audio_group {
+                    return SpeakerMemberState::Unavailable;
+                }
+                if snapshot.speakers.output(member.output).is_none() {
+                    return SpeakerMemberState::OutputMissing;
+                }
+                let consented = member.device == group.leader
+                    || snapshot
+                        .speakers
+                        .memberships
+                        .iter()
+                        .any(|membership| membership.covers(group, member));
+                if !consented {
+                    SpeakerMemberState::AwaitingConsent
+                } else if snapshot.presence.online {
+                    SpeakerMemberState::Ready
+                } else {
+                    SpeakerMemberState::Offline
+                }
+            })
+            .collect()
+    }
+
+    /// Admission rules for a group its leader is about to publish: every
+    /// member is one of this person's certified devices, can join speaker
+    /// groups (the leader's own outputs always can), and offers the named
+    /// output.
+    ///
+    /// # Errors
+    ///
+    /// [`FabricError::InvalidSpeakerGroup`] for a structural problem,
+    /// [`FabricError::UnknownDevice`] for a device outside the fabric, and
+    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot
+    /// join or does not offer that output.
+    pub fn admit_speaker_group(
+        &self,
+        group: &crate::shell::speaker_group::SpeakerGroup,
+    ) -> Result<(), FabricError> {
+        group.validate(&group.leader)?;
+        for member in &group.members {
+            let snapshot = self
+                .snapshots
+                .get(&member.device)
+                .ok_or(FabricError::UnknownDevice)?;
+            if (member.device != group.leader && !snapshot.presence.capabilities.audio_group)
+                || snapshot.speakers.output(member.output).is_none()
+            {
+                return Err(FabricError::IneligibleSpeakerMember);
+            }
+        }
+        Ok(())
+    }
+}
+
 fn valid_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
@@ -1989,6 +2240,10 @@ pub enum FabricError {
     InvalidAction,
     #[error("personal-fabric action exceeds its wire bound")]
     ActionTooLarge,
+    #[error("invalid speaker group")]
+    InvalidSpeakerGroup,
+    #[error("that device cannot play in this speaker group")]
+    IneligibleSpeakerMember,
 }
 
 #[cfg(test)]
@@ -2039,6 +2294,7 @@ mod tests {
                 stream_source: None,
                 stamp: stamp(device, counter),
             }),
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -2562,6 +2818,34 @@ mod tests {
     }
 
     #[test]
+    fn remote_audio_frames_play_after_capture_within_the_latency_bound() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        for presentation_ns in [999_999_999, 2_000_000_001] {
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioFrame {
+                    session_id: [4; 16],
+                    authorization: [5; 16],
+                    sequence: 1,
+                    media_ts: 48_000,
+                    presentation_ns,
+                    pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction),
+                "a frame played before its capture or beyond the latency bound"
+            );
+        }
+    }
+
+    #[test]
     fn remote_audio_wire_is_versioned_bounded_and_capability_bearing() {
         let source = id("source");
         let target = id("target");
@@ -2609,6 +2893,8 @@ mod tests {
                 session_id: [4; 16],
                 authorization: [5; 16],
                 sequence: 1,
+                media_ts: 48_000,
+                presentation_ns: 1_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS,
                 pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
             })
             .validate_at(&source, &target, 10_100),
@@ -2619,6 +2905,8 @@ mod tests {
                 session_id: [4; 16],
                 authorization: [5; 16],
                 sequence: 2,
+                media_ts: 0,
+                presentation_ns: REMOTE_AUDIO_GROUP_LATENCY_NS,
                 pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
             })
             .validate_at(&source, &target, 10_100),
@@ -2653,6 +2941,115 @@ mod tests {
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn speaker_group_wire_rejects_zero_identities_and_bad_names() {
+        use crate::shell::speaker_group::{
+            EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, StereoSide,
+        };
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        let check = |action| envelope(action).validate_at(&source, &target, 10_100);
+        let invite = |group, name: &str, output, role| PersonalFabricAction::SpeakerGroupInvite {
+            group,
+            name: name.into(),
+            output,
+            role,
+        };
+        let group = SpeakerGroupId([1; 16]);
+        let output = EndpointSelector([2; 16]);
+        let right = SpeakerRole::Stereo(StereoSide::Right);
+        assert_eq!(check(invite(group, "Living room", output, right)), Ok(()));
+        for bad in [
+            invite(SpeakerGroupId([0; 16]), "Living room", output, right),
+            invite(group, "", output, right),
+            invite(group, "line\nbreak", output, right),
+            invite(group, "Living room", EndpointSelector([0; 16]), right),
+            invite(
+                group,
+                "Living room",
+                output,
+                SpeakerRole::RoomPoint(RoomPoint {
+                    x_mm: i32::MAX,
+                    y_mm: 0,
+                    z_mm: 0,
+                }),
+            ),
+            PersonalFabricAction::SpeakerGroupSessionOffer {
+                session_id: [0; 16],
+                group,
+            },
+            PersonalFabricAction::SpeakerGroupSessionDecision {
+                session_id: [4; 16],
+                group,
+                authorization: Some([0; 16]),
+            },
+            PersonalFabricAction::SpeakerGroupSessionStop {
+                session_id: [4; 16],
+                authorization: Some([0; 16]),
+            },
+            PersonalFabricAction::SpeakerGroupLeave {
+                group: SpeakerGroupId([0; 16]),
+            },
+        ] {
+            assert_eq!(
+                check(bad.clone()),
+                Err(FabricError::InvalidAction),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            check(PersonalFabricAction::SpeakerGroupSessionDecision {
+                session_id: [4; 16],
+                group,
+                authorization: None,
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_snapshot_cannot_carry_a_group_led_by_another_device() {
+        use crate::shell::speaker_group::{
+            EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerGroupMember, SpeakerRole,
+            SpeakerTrim, StereoSide,
+        };
+        let mut laptop = snapshot("laptop", 1, 0, FabricCapabilities::default());
+        let member = |device: &str, side| SpeakerGroupMember {
+            device: id(device),
+            output: EndpointSelector([9; 16]),
+            role: SpeakerRole::Stereo(side),
+            trim: SpeakerTrim::default(),
+        };
+        laptop.speakers.groups.push(SpeakerGroup {
+            id: SpeakerGroupId([5; 16]),
+            name: "Desk".into(),
+            leader: id("tablet"),
+            members: vec![
+                member("laptop", StereoSide::Left),
+                member("tablet", StereoSide::Right),
+            ],
+            stamp: stamp("laptop", 1),
+        });
+        assert_eq!(laptop.validate(), Err(FabricError::ForeignAuthorship));
+        laptop.speakers.groups[0].leader = id("laptop");
+        assert_eq!(laptop.validate(), Ok(()));
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(laptop).unwrap();
+        let group = fabric.speaker_group(SpeakerGroupId([5; 16])).unwrap();
+        assert_eq!(
+            fabric.admit_speaker_group(group),
+            Err(FabricError::IneligibleSpeakerMember),
+            "the laptop does not offer that output"
         );
     }
 

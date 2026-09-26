@@ -34,7 +34,7 @@ impl SceneFrames {
 thread_local! { static DRAWN: RefCell<SceneFrames> = RefCell::default(); }
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("QOS_WEBVIEW_FRAME_TRACE").is_ok_and(|v| v == "1"))
+    *ENABLED.get_or_init(|| std::env::var("TILO_WEBVIEW_FRAME_TRACE").is_ok_and(|v| v == "1"))
 }
 /// Unique within this Rust process, including across native helpers and tabs.
 /// Receipt is after transport/decode; it is not the CEF paint timestamp.
@@ -49,14 +49,14 @@ pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option
         .ok()?;
     let (_, host) = crate::native_scenario::host_clock::sample();
     let scroll_marker_delta = if *SCROLL_MARKER
-        .get_or_init(|| std::env::var("QOS_WEBVIEW_SCROLL_MARKER").is_ok_and(|v| v == "1"))
+        .get_or_init(|| std::env::var("TILO_WEBVIEW_SCROLL_MARKER").is_ok_and(|v| v == "1"))
     {
         super::scroll_marker::decode(rgba, width, height)
     } else {
         None
     };
     crate::native_scenario::log::emit_json(
-        "qos-webview-received",
+        "tilo-webview-received",
         serde_json::json!({
             "frame_id": id, "tab_id": tab, "process_id": std::process::id(),
             "scroll_marker_delta": scroll_marker_delta,
@@ -89,7 +89,7 @@ pub(crate) fn finish_scene(cpu_frame_id: Option<u64>) {
     }
     let (ids, overflow) = DRAWN.with(|scene| scene.borrow_mut().take());
     crate::native_scenario::log::emit_json(
-        "qos-webview-scene",
+        "tilo-webview-scene",
         serde_json::json!({
             "process_id": std::process::id(), "cpu_frame_id": cpu_frame_id,
             "webview_frame_ids": ids, "overflow": overflow,

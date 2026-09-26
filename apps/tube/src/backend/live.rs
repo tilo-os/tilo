@@ -110,6 +110,8 @@ impl RustyPipeBackend {
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         let potoken_desc = bind_potoken(provider);
         let can_stream = provider.can_stream();
+        // rustypipe's reqwest client takes the process-default TLS provider.
+        tilo_net::install_crypto_provider();
         // Build the client *inside* the runtime so anything rustypipe wires up
         // at construction (the reqwest pool, cache tasks) has a reactor.
         let rp = rt

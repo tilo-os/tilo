@@ -122,7 +122,7 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 
 #[test]
 fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
-    if let Ok(stage) = std::env::var("QOS_SLICE5_THEMES_STAGE") {
+    if let Ok(stage) = std::env::var("TILO_SLICE5_THEMES_STAGE") {
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.themes").unwrap();
         let store = crate::store::store_path().unwrap();
         if stage == "write" {
@@ -177,10 +177,11 @@ fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
         }
         return;
     }
-    let dir = std::env::temp_dir().join(format!("qos-slice5-themes-legacy-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("tilo-slice5-themes-legacy-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
-        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::legacy_restore_actual_storage_reopen_never_applies_os_theme","--nocapture"]).env("QOS_SLICE5_THEMES_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).output().unwrap();
+        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::legacy_restore_actual_storage_reopen_never_applies_os_theme","--nocapture"]).env("TILO_SLICE5_THEMES_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).output().unwrap();
         assert!(
             out.status.success(),
             "{stage}: {} {}",

@@ -9,7 +9,7 @@ def summarize_presentation(lines, expected_cpu_ids):
     if len(expected) != len(expected_cpu_ids) or any(type(i) is not int or i < 0 for i in expected):
         raise ValueError('Invalid expected CPU identities')
     requests, callbacks, cpu_requests = {}, {}, {}
-    for prefix, destination in [('qos-display-request ', requests), ('qos-display-frame ', callbacks)]:
+    for prefix, destination in [('tilo-display-request ', requests), ('tilo-display-frame ', callbacks)]:
         for row in rows(lines, prefix):
             if any(type(row.get(k)) is not int or row[k] < 0 for k in ['worker_id','worker_frame_ix']):
                 raise ValueError('Invalid display worker identity')
@@ -20,7 +20,7 @@ def summarize_presentation(lines, expected_cpu_ids):
             if key in destination:
                 raise ValueError('Duplicate display request or callback')
             destination[key] = row
-            if prefix == 'qos-display-request ' and cpu is not None:
+            if prefix == 'tilo-display-request ' and cpu is not None:
                 if cpu in cpu_requests:
                     raise ValueError('CPU frame registered more than once')
                 cpu_requests[cpu] = key

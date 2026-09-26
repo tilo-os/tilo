@@ -106,6 +106,8 @@ struct Inner {
     /// unfocused. Window events already obey that boundary; `DeviceEvent`
     /// deliberately does not, so we gate it explicitly.
     focused: bool,
+    /// Clock for relative-motion timestamps; raw device events carry none.
+    started: std::time::Instant,
 }
 
 struct RenderState {
@@ -135,6 +137,7 @@ impl WinitBackend {
                 base_color: FALLBACK_BG,
                 closed: false,
                 focused: false,
+                started: std::time::Instant::now(),
             },
         };
         me.pump_until_resumed();
@@ -306,6 +309,47 @@ impl Backend for WinitBackend {
     /// compositor must not paint a second one into the scene.
     fn has_cursor_plane(&self) -> bool {
         true
+    }
+
+    /// The host draws the pointer, so pass it the name of the shape; a
+    /// client-drawn cursor shows as the host's arrow.
+    /// Ask the host to hold or confine its pointer to this window, so a
+    /// locked game keeps receiving motion. Best effort: a host may refuse.
+    fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        use crate::compositor::backend::PointerConstraintRegion;
+        use winit::window::CursorGrabMode;
+        let Some(window) = self.inner.window.as_ref() else {
+            return;
+        };
+        let mode = match constraint {
+            PointerConstraintRegion::Free => CursorGrabMode::None,
+            PointerConstraintRegion::Locked => CursorGrabMode::Locked,
+            PointerConstraintRegion::Confined(_) => CursorGrabMode::Confined,
+        };
+        if let Err(error) = window.set_cursor_grab(mode) {
+            tracing::debug!(%error, "host refused the pointer constraint");
+        }
+    }
+
+    fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        use crate::compositor::cursor::{CursorShape, PointerImage};
+        let Some(window) = self.inner.window.as_ref() else {
+            return;
+        };
+        match image {
+            PointerImage::Hidden => window.set_cursor_visible(false),
+            PointerImage::Shape(shape) => {
+                window.set_cursor_visible(true);
+                window.set_cursor(shape.icon());
+            }
+            PointerImage::Client(_) => {
+                window.set_cursor_visible(true);
+                window.set_cursor(CursorShape::Default.icon());
+            }
+        }
     }
 
     /// Inline presentation fallback — only reached when
@@ -573,8 +617,14 @@ impl ApplicationHandler for Inner {
             // Unlike `CursorMoved`, raw motion keeps arriving after the host
             // cursor reaches a window edge. This gives the nested/dev backend
             // the same four-edge cross-device control contract as DRM.
-            self.event_buffer
-                .push(BackendEvent::RelativePointerMotion { dx, dy });
+            // Raw device motion is already unaccelerated.
+            self.event_buffer.push(BackendEvent::RelativePointerMotion {
+                dx,
+                dy,
+                dx_unaccel: dx,
+                dy_unaccel: dy,
+                time_usec: u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            });
         }
     }
 

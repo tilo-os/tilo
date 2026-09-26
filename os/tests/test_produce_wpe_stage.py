@@ -17,8 +17,8 @@ class ProducerTests(unittest.TestCase):
     def setUp(self):
         self.args = argparse.Namespace(architecture='x86_64', revision='a' * 40,
             branch='refs/heads/codex/wpe', run_id='42', attempt='1',
-            wpe='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '1' * 64,
-            tools_builder='code.podesta.ai/qos/tilo-builder@sha256:' + '2' * 64)
+            wpe='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '1' * 64,
+            tools_builder='registry.tilo.so/tilo/tilo-builder@sha256:' + '2' * 64)
 
     def test_supported_native_architectures(self):
         for architecture in ('x86_64', 'aarch64'):

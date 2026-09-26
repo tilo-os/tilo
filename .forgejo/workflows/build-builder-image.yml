@@ -1,6 +1,6 @@
 name: Snapshot / CI builder
 
-# Publishes code.podesta.ai/qos/tilo-builder, which check.yml runs in. Weekly so
+# Publishes registry.tilo.so/tilo/tilo-builder, which check.yml runs in. Weekly so
 # the base and the package set stay current; on dispatch, and whenever the
 # inputs that define the environment change.
 
@@ -51,10 +51,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       reason: ${{ steps.plan.outputs.reason }}
@@ -139,12 +136,12 @@ jobs:
         with:
           key: github-assets-all-v1
 
-      - name: Log in to the registry
+      - name: Log in to registry.tilo.so
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # The image bakes the toolchain the workspace pins, so a job cannot
       # silently compile with a different one.
@@ -175,10 +172,10 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
-          tags: code.podesta.ai/qos/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          tags: registry.tilo.so/tilo/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           cache-from: |
-            type=registry,ref=code.podesta.ai/qos/tilo-builder-buildcache:${{ matrix.arch }}
-            type=registry,ref=code.podesta.ai/qos/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
+            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:${{ matrix.arch }}
+            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
 
       # Forgejo's registry can reject the same blob when BuildKit pushes the
       # image and cache concurrently. Reuse the completed local BuildKit graph,
@@ -196,11 +193,11 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
-          tags: code.podesta.ai/qos/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          tags: registry.tilo.so/tilo/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           cache-from: |
-            type=registry,ref=code.podesta.ai/qos/tilo-builder-buildcache:${{ matrix.arch }}
-            type=registry,ref=code.podesta.ai/qos/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
-          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
+            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:${{ matrix.arch }}
+            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
+          cache-to: type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
 
       - name: Install checksum-pinned Cosign
         run: ./os/dev/install-cached-cosign.sh
@@ -213,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           . os/dev/configure-cosign-kms.sh
-          ref="code.podesta.ai/qos/tilo-builder@${CHILD_DIGEST}"
+          ref="registry.tilo.so/tilo/tilo-builder@${CHILD_DIGEST}"
           cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
           cosign verify --key keys/cosign.pub "$ref" >/dev/null
           mkdir -p native-child
@@ -260,13 +257,6 @@ jobs:
           python3 os/tests/test_builder_candidate_workflow.py
           python3 os/tests/native_index_promotion.py
           python3 os/dev/builder-canary-inputs.py matrix native-candidates
-      - name: Log in to read the promoted builder
-        if: needs.plan.outputs.mode == 'reuse'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install checksum-pinned Cosign
         if: needs.plan.outputs.mode == 'reuse'
         uses: ./.forgejo/actions/install-cosign
@@ -278,8 +268,6 @@ jobs:
       - name: Resolve the signed promoted native builders
         id: reused
         if: needs.plan.outputs.mode == 'reuse'
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 -I tools/ci/resolve_promoted_builder.py
       - name: Select the canary matrix
         id: select
@@ -311,9 +299,6 @@ jobs:
     timeout-minutes: 240
     container:
       image: ${{ matrix.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
@@ -369,9 +354,6 @@ jobs:
     timeout-minutes: 240
     container:
       image: ${{ matrix.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
@@ -447,12 +429,12 @@ jobs:
         env:
           CANDIDATE_MATRIX: ${{ needs.images.outputs.matrix }}
         run: python3 os/dev/builder-canary-inputs.py descriptors native-children
-      - name: Log in to code.podesta.ai
+      - name: Log in to registry.tilo.so
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install publication tools
         run: |
           ./os/dev/install-cached-cosign.sh
@@ -490,7 +472,7 @@ jobs:
             tags=(--tag "$GITHUB_SHA" --tag "$channel" --tag latest)
           fi
           python3 os/dev/promote-native-index.py \
-            --repository code.podesta.ai/qos/tilo-builder \
+            --repository registry.tilo.so/tilo/tilo-builder \
             "${tags[@]}" \
             --revision "$GITHUB_SHA" --descriptors native-children \
             --signing-key "$COSIGN_KEY_REF" --output builder-index.txt
@@ -502,7 +484,7 @@ jobs:
         run: |
           python3 os/dev/replicate-builder-index.py \
             --source-file builder-index.txt \
-            --target-repository 125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder \
+            --target-repository 125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder \
             --role-arn "$AWS_REPLICATION_ROLE_ARN" \
             --region us-west-2 \
             --public-key keys/cosign.pub \

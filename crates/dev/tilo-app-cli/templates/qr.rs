@@ -1,6 +1,6 @@
 use ui::prelude::*;
 
-const DEFAULT_PAYLOAD: &str = "https://qos.dev";
+const DEFAULT_PAYLOAD: &str = "https://tilo.dev";
 
 /// The app's state: what the code encodes. Stored, synced and undoable.
 #[derive(Model, Debug, Clone, PartialEq)]

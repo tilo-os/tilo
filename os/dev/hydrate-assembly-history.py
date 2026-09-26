@@ -85,10 +85,10 @@ def main():
     token = env.pop('TILO_HISTORY_TOKEN')
     user = env.pop('TILO_HISTORY_USER')
     remote = subprocess.check_output(['git', '-C', args.repo, 'remote', 'get-url', 'origin'], text=True).strip()
-    if remote not in ('https://code.podesta.ai/qos/qos', 'https://code.podesta.ai/qos/qos.git'):
+    if remote not in ('https://code.tilo.so/tilo/tilo', 'https://code.tilo.so/tilo/tilo.git'):
         raise ValueError('unexpected source remote')
     header = 'Authorization: Basic ' + base64.b64encode((user+':'+token).encode()).decode()
-    env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://code.podesta.ai/.extraHeader', GIT_CONFIG_VALUE_0=header, GIT_TERMINAL_PROMPT='0')
+    env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://code.tilo.so/.extraHeader', GIT_CONFIG_VALUE_0=header, GIT_TERMINAL_PROMPT='0')
     receipt = hydrate(args.repo, os.environ['NATIVE_SOURCE_COMPATIBILITY'].encode(),
                       os.environ['NATIVE_SOURCE_COMPATIBILITY_SHA256'], os.environ['SOURCE_REVISION'], env)
     print(json.dumps(receipt, sort_keys=True))

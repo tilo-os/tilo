@@ -11,9 +11,11 @@
 )]
 
 use automerge::AutoCommit;
+use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::projection::{
     changed_owned_entries, contents_of, declared_room, merge_room_contents, project_owned_contents,
-    project_room_records, project_workspace_tasks, room_records_of, workspace_tasks_of,
+    project_room_records, project_workspace_shortcuts, project_workspace_tasks, room_records_of,
+    workspace_shortcuts_of, workspace_tasks_of,
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
@@ -192,4 +194,41 @@ fn tasks_and_record_references_round_trip() {
         vec![("rec-1".to_string(), "note".to_string())]
     );
     let _ = AppKind::Terminal;
+}
+
+fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {
+    serde_json::from_value(serde_json::json!({ "id": id, "name": name, "steps": [] }))
+        .expect("a shortcut with no steps")
+}
+
+/// Two collaborators saving different shortcuts at once both keep theirs,
+/// and a deletion reaches the peer that already held the shortcut.
+#[test]
+fn shortcuts_merge_by_id_and_deletions_replicate() {
+    let mut alice = AutoCommit::new();
+    project_workspace_shortcuts(&mut alice, &[shortcut("tidy", "Tidy")]).unwrap();
+    let mut bob = alice.fork();
+    project_workspace_shortcuts(&mut alice, &[shortcut("tidy", "Tidy"), shortcut("a", "A")])
+        .unwrap();
+    project_workspace_shortcuts(&mut bob, &[shortcut("tidy", "Tidy"), shortcut("b", "B")]).unwrap();
+    alice.merge_incoming(&mut bob).unwrap();
+    assert_eq!(
+        workspace_shortcuts_of(&alice),
+        vec![
+            shortcut("a", "A"),
+            shortcut("b", "B"),
+            shortcut("tidy", "Tidy")
+        ]
+    );
+
+    let kept: Vec<_> = workspace_shortcuts_of(&alice)
+        .into_iter()
+        .filter(|shortcut| shortcut.id != "tidy")
+        .collect();
+    project_workspace_shortcuts(&mut alice, &kept).unwrap();
+    bob.merge_incoming(&mut alice).unwrap();
+    assert_eq!(
+        workspace_shortcuts_of(&bob),
+        vec![shortcut("a", "A"), shortcut("b", "B")]
+    );
 }

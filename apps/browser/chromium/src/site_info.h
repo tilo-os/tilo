@@ -6,7 +6,7 @@
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 #include <functional>
-namespace qos {
+namespace tilo {
 struct SitePermission { const char* name;cef_content_setting_types_t type; };
 inline constexpr SitePermission kSitePermissions[]={
   {"camera",CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA},

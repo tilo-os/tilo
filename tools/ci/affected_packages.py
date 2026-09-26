@@ -77,6 +77,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
+    "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
     "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
     "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
     "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
@@ -498,8 +499,12 @@ def make_plan(
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
     # Packages whose tests or build read a changed file from outside their own
     # directory. Their code is unchanged, so their dependants are not re-checked.
-    readers = (set(path_suites.select_packages(suite_manifest, changes)) & packages.keys()
-               if suite_manifest is not None else set())
+    reader_scopes = {name: scope for name, scope in (
+        path_suites.select_package_scopes(suite_manifest, changes).items()
+        if suite_manifest is not None else ()) if name in packages}
+    readers = set(reader_scopes)
+    # Readers reached only through scoped inputs run just the tests that read them.
+    whole_readers = {name for name, scope in reader_scopes.items() if scope is None}
     checked: set[str] = set()
     for resolved in resolved_inputs.values():
         seeds.update(resolved.seeds & packages.keys())
@@ -606,10 +611,12 @@ def make_plan(
     if full:
         tested = selected
     else:
-        tested = (seeds | readers | ALWAYS_PACKAGES) & selected
+        tested = (seeds | whole_readers | ALWAYS_PACKAGES) & selected
         dependants, deferred_dependants = direct_dependants_within_budget(
             seeds, reverse, packages, tested)
         tested |= dependants & selected
+    scoped_tests = {name: scope for name, scope in reader_scopes.items()
+                    if scope is not None and name in selected and name not in tested}
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
@@ -619,13 +626,18 @@ def make_plan(
         for shard in balance(selected, packages, effective_shards, test_seconds):
             shard_names = set(shard["packages"].split()[1::2])
             test_names = sorted(tested & shard_names)
+            scoped_names = sorted(scoped_tests.keys() & shard_names)
             selected_runner = (
                 "runner-large"
-                if arch == "x86_64" and LARGE_X86_TEST_PACKAGES.intersection(test_names)
+                if arch == "x86_64"
+                and LARGE_X86_TEST_PACKAGES.intersection(test_names + scoped_names)
                 else runner
             )
+            scoped = [{"package": name, "test": scoped_tests[name].test,
+                       "filter": scoped_tests[name].filter} for name in scoped_names]
             matrix.append({**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
-                           "test_packages": " ".join(f"-p {name}" for name in test_names)})
+                           "test_packages": " ".join(f"-p {name}" for name in test_names),
+                           "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""})
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
@@ -644,6 +656,10 @@ def make_plan(
         "workspace_count": len(packages),
         "selected": sorted(selected),
         "tested": sorted(tested),
+        # Packages that only read a changed file through a scoped input; the
+        # test job runs just the tests that read it.
+        "scoped_tests": {name: f"--test {scope.test} -E '{scope.filter}'"
+                         for name, scope in sorted(scoped_tests.items())},
         # Changed packages whose direct dependants are only type-checked here
         # (and tested nightly) because testing them exceeds the budget.
         "dependants_tested_nightly": deferred_dependants,

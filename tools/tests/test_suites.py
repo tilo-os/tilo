@@ -238,6 +238,45 @@ class CargoReaderTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 suites.parse(text)
 
+    def test_scoped_inputs_select_only_the_reading_tests(self):
+        manifest = suites.parse(READER_MANIFEST.replace(
+            'readers = ["crates/ui/tests/audit.rs"]\n',
+            'readers = ["crates/ui/tests/audit.rs"]\n'
+            'scope = { inputs = ["apps/*/src/main.rs"], test = "it", filter = "test(/^audit::/)" }\n'))
+        scope = suites.select_package_scopes(manifest, ["apps/calc/src/main.rs"])["ui"]
+        self.assertEqual((scope.test, scope.filter), ("it", "test(/^audit::/)"))
+        # An unscoped input among the changes needs the whole suite.
+        self.assertEqual(suites.select_package_scopes(
+            manifest, ["apps/calc/src/main.rs", "os/share/x.json"]), {"ui": None})
+        self.assertEqual(suites.select_package_scopes(manifest, ["os/share/x.json"]), {"ui": None})
+        self.assertEqual(suites.select_package_scopes(manifest, ["apps/calc/Cargo.toml"]), {})
+        # Without a scope every selection is whole.
+        self.assertEqual(suites.select_package_scopes(
+            suites.parse(READER_MANIFEST), ["apps/calc/src/main.rs"]), {"ui": None})
+
+    def test_parse_rejects_malformed_scopes(self):
+        base = 'readers = ["crates/ui/tests/audit.rs"]\n'
+        for scope in (
+            'scope = { inputs = ["os/other/"], test = "it", filter = "test(a)" }',
+            'scope = { inputs = ["os/share/"], test = "two words", filter = "test(a)" }',
+            'scope = { inputs = ["os/share/"], test = "it", filter = " " }',
+            'scope = { inputs = ["os/share/"], test = "it" }',
+            'scope = { inputs = ["os/share/"], test = "it", filter = "test(a)", extra = 1 }',
+            'scope = "it"',
+        ):
+            with self.subTest(scope=scope), self.assertRaises(ValueError):
+                suites.parse(READER_MANIFEST.replace(base, base + scope + "\n"))
+
+    def test_production_ui_scope_keeps_compiled_inputs_whole(self):
+        manifest = suites.load()
+        scoped = suites.select_package_scopes(manifest, ["apps/scratchpad/src/main.rs"])
+        self.assertEqual(scoped["tilo-ui"].test, "it")
+        self.assertIn("design_token_audit", scoped["tilo-ui"].filter)
+        self.assertIn("spacing_token_audit", scoped["tilo-ui"].filter)
+        # The vendored quit request is compiled into tilo-ui's library.
+        self.assertIsNone(suites.select_package_scopes(
+            manifest, ["vendor/winit/src/platform_impl/quit_request.rs"])["tilo-ui"])
+
     def test_declared_inputs_select_the_reading_package(self):
         manifest = suites.parse(READER_MANIFEST)
         self.assertEqual(suites.select_packages(manifest, ["apps/calc/src/main.rs"]), ["ui"])

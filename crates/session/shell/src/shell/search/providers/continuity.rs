@@ -7,6 +7,10 @@
 
 use std::rc::Rc;
 
+use ui::search::{FieldWeight, RankField};
+
+use super::actions::ACTION_ID_WEIGHT;
+
 use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
 use crate::shell::device_fabric_runtime::{
     BluetoothHandoffPhaseView, DisplayMirrorPhase, MediaHandoffPhase,
@@ -50,25 +54,39 @@ fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
+/// The semantic id of "play this local media session on `target`". Other
+/// chrome names a handoff destination by this id, never by the device or
+/// session identity behind it.
+pub(crate) fn media_handoff_action_id(
+    session_id: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> String {
+    format!(
+        "media.handoff.{}.{}",
+        opaque("so.tilo.continuity.media-session.v1", session_id.as_bytes()),
+        opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
+    )
+}
+
+/// The semantic id of "route local playback to this output". The `PipeWire`
+/// node id stays behind the digest.
+pub(crate) fn audio_route_action_id(node_id: u32) -> String {
+    format!(
+        "audio.route.{}",
+        opaque("so.tilo.continuity.audio-node.v1", &node_id.to_le_bytes())
+    )
+}
+
+/// The shared ranker over an action's title, identity and description.
 fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
-    let needle = needle.trim().to_ascii_lowercase();
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let title = title.to_ascii_lowercase();
-    let subtitle = subtitle.to_ascii_lowercase();
-    let id = id.to_ascii_lowercase();
-    if title.starts_with(&needle) {
-        Some(100)
-    } else if id == needle {
-        Some(90)
-    } else if title.contains(&needle) {
-        Some(50)
-    } else if subtitle.contains(&needle) || id.contains(&needle) {
-        Some(25)
-    } else {
-        None
-    }
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(title, FieldWeight::TITLE),
+            RankField::new(id, ACTION_ID_WEIGHT),
+            RankField::new(subtitle, FieldWeight::SUBTITLE),
+        ],
+    )
 }
 
 fn confirmation_params(confirm: bool) -> Vec<ActionParam> {
@@ -152,14 +170,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         for target in &media.targets {
             let label = label_for(target);
             actions.push(DeviceAction {
-                id: format!(
-                    "media.handoff.{}.{}",
-                    opaque(
-                        "so.tilo.continuity.media-session.v1",
-                        media.session_id.as_bytes()
-                    ),
-                    opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
-                ),
+                id: media_handoff_action_id(&media.session_id, target),
                 title: format!("Play {} on {label}", media.title),
                 subtitle: "Move this live media session to an exact certified device".into(),
                 action: DeviceFabricUiAction::HandoffMedia {
@@ -266,13 +277,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         .filter(|output| !output.is_default)
     {
         actions.push(DeviceAction {
-            id: format!(
-                "audio.route.{}",
-                opaque(
-                    "so.tilo.continuity.audio-node.v1",
-                    &output.node_id.to_le_bytes()
-                )
-            ),
+            id: audio_route_action_id(output.node_id),
             title: format!("Route audio to {}", output.label),
             subtitle: "Choose an exact currently enumerated local audio output".into(),
             action: DeviceFabricUiAction::RouteLocalAudio {
@@ -337,6 +342,104 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             subtitle: "Close and neutralize this exact live-audio route".into(),
             action: DeviceFabricUiAction::StopRemoteAudio {
                 session_id: route.session_id,
+            },
+            confirm: false,
+        });
+    }
+
+    let speaker_id = |group: crate::shell::speaker_group::SpeakerGroupId| {
+        opaque("so.tilo.continuity.speaker-group.v1", &group.0)
+    };
+    for consent in &view.speaker_groups.consents {
+        for (approved, verb) in [(true, "Join"), (false, "Decline to join")] {
+            actions.push(DeviceAction {
+                id: format!(
+                    "speakers.consent.{}.{}",
+                    if approved { "allow" } else { "decline" },
+                    speaker_id(consent.group)
+                ),
+                title: format!("{verb} {} as the {}", consent.name, consent.role.describe()),
+                subtitle: format!(
+                    "{} asked this device to play in a speaker group",
+                    consent.leader_label
+                ),
+                action: DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                    group: consent.group,
+                    approved,
+                },
+                confirm: approved,
+            });
+        }
+    }
+    for membership in &view.speaker_groups.memberships {
+        actions.push(DeviceAction {
+            id: format!("speakers.leave.{}", speaker_id(membership.group)),
+            title: format!("Leave {}", membership.name),
+            subtitle: format!(
+                "Stop playing as the {} in this speaker group",
+                membership.role.describe()
+            ),
+            action: DeviceFabricUiAction::LeaveSpeakerGroup {
+                group: membership.group,
+            },
+            confirm: false,
+        });
+    }
+    for group in view
+        .speaker_groups
+        .groups
+        .iter()
+        .filter(|group| group.ready_members() > 0)
+    {
+        for source in &view.remote_audio.sources {
+            actions.push(DeviceAction {
+                id: format!(
+                    "speakers.play.{}.{}",
+                    opaque(
+                        "so.tilo.continuity.audio-source.v1",
+                        &source.token.to_le_bytes()
+                    ),
+                    speaker_id(group.id)
+                ),
+                title: format!("Play {} on {}", source.label, group.name),
+                subtitle: "Play through every ready speaker of this group".into(),
+                action: DeviceFabricUiAction::StartSpeakerGroupAudio {
+                    source_token: source.token,
+                    group: group.id,
+                },
+                confirm: true,
+            });
+        }
+        for media in &view.local_media {
+            actions.push(DeviceAction {
+                id: format!(
+                    "speakers.media.{}.{}",
+                    opaque(
+                        "so.tilo.continuity.media-session.v1",
+                        media.session_id.as_bytes()
+                    ),
+                    speaker_id(group.id)
+                ),
+                title: format!("Play {} on {}", media.title, group.name),
+                subtitle: "Keep playing here and send the sound to this speaker group".into(),
+                action: DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+                    session_id: media.session_id.clone(),
+                    group: group.id,
+                },
+                confirm: true,
+            });
+        }
+    }
+    for session in &view.speaker_groups.sessions {
+        actions.push(DeviceAction {
+            id: format!(
+                "speakers.stop.{}",
+                opaque("so.tilo.continuity.speaker-session.v1", &session.session_id)
+            ),
+            title: format!("Stop playing on {}", session.name),
+            subtitle: "End this speaker group playback on every speaker".into(),
+            action: DeviceFabricUiAction::StopSpeakerGroupSession {
+                session_id: session.session_id,
             },
             confirm: false,
         });
@@ -1415,6 +1518,91 @@ mod tests {
                     request_id: [0x45; 16],
                 }
         }));
+    }
+
+    #[test]
+    fn speaker_groups_project_consent_play_and_leave_without_disclosing_ids() {
+        use crate::shell::speaker_group::{
+            EndpointSelector, SpeakerGroupId, SpeakerMemberState, SpeakerRole, SpeakerTrim,
+            StereoSide,
+        };
+        use crate::shell::speaker_group_runtime::{
+            SpeakerConsentView, SpeakerGroupView, SpeakerMemberView, SpeakerMembershipView,
+        };
+        let mut view = fixture();
+        let group = SpeakerGroupId([0x51; 16]);
+        let right = SpeakerRole::Stereo(StereoSide::Right);
+        view.remote_audio
+            .sources
+            .push(crate::shell::remote_audio::RemoteAudioSourceView {
+                token: 77,
+                label: "All system audio".into(),
+                application: false,
+            });
+        view.speaker_groups.consents.push(SpeakerConsentView {
+            group,
+            name: "Living room".into(),
+            leader: device("desk"),
+            leader_label: "Desk".into(),
+            role: right,
+            output_label: Some("Speakers".into()),
+        });
+        view.speaker_groups.memberships.push(SpeakerMembershipView {
+            group,
+            name: "Living room".into(),
+            leader_label: "Desk".into(),
+            role: right,
+        });
+        view.speaker_groups.groups.push(SpeakerGroupView {
+            id: group,
+            name: "Living room".into(),
+            leader: device("desk"),
+            leader_label: "Desk".into(),
+            led_locally: false,
+            members: vec![SpeakerMemberView {
+                device: device("desk"),
+                device_label: "Desk".into(),
+                output: EndpointSelector([0x52; 16]),
+                output_label: None,
+                role: SpeakerRole::Stereo(StereoSide::Left),
+                trim: SpeakerTrim::default(),
+                state: SpeakerMemberState::Ready,
+            }],
+        });
+        let actions = device_actions(&view);
+        let join = actions
+            .iter()
+            .find(|action| {
+                action.action
+                    == DeviceFabricUiAction::ResolveSpeakerGroupConsent {
+                        group,
+                        approved: true,
+                    }
+            })
+            .unwrap();
+        assert!(join.confirm, "joining needs explicit confirmation");
+        assert_eq!(join.title, "Join Living room as the right speaker");
+        assert!(actions.iter().any(|action| {
+            action.action == DeviceFabricUiAction::LeaveSpeakerGroup { group } && !action.confirm
+        }));
+        assert!(actions.iter().any(|action| {
+            action.action
+                == DeviceFabricUiAction::StartSpeakerGroupAudio {
+                    source_token: 77,
+                    group,
+                }
+                && action.confirm
+        }));
+        assert!(actions.iter().any(|action| {
+            matches!(
+                &action.action,
+                DeviceFabricUiAction::PlayMediaOnSpeakerGroup { group: target, .. }
+                    if *target == group
+            )
+        }));
+        for action in &actions {
+            assert!(!action.id.contains("51515151"), "{}", action.id);
+        }
     }
 
     #[test]

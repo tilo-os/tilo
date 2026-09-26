@@ -322,8 +322,8 @@ class CreationTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'disk.raw'
         self.args = SimpleNamespace(output=self.path, size_bytes=4096,
-            source='code.podesta.ai/qos/tilo-development@sha256:' + '1' * 64,
-            target='code.podesta.ai/qos/tilo-development:aarch64',
+            source='registry.tilo.so/tilo/tilo-development@sha256:' + '1' * 64,
+            target='registry.tilo.so/tilo/tilo-development:aarch64',
             architecture='aarch64', manifest_sha256='2' * 64, generation=1,
             composefs_digest='3' * 128, systemd_version='259.8',
             installer_bootc_directory=Path('/work/installer-bootc-helper'),

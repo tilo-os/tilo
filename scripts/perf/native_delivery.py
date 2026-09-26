@@ -10,7 +10,7 @@ def rows(lines, prefix):
 def summarize_native_delivery(scenario, lines, frames):
     expected = set(range(len(scenario["steps"])))
     warmup = scenario.get("warmup_steps", 0)
-    handled = rows(lines, "qos-native-input ")
+    handled = rows(lines, "tilo-native-input ")
     seen = set()
     lateness = []
     scheduler_lateness = []
@@ -67,7 +67,7 @@ def summarize_native_delivery(scenario, lines, frames):
     measured_ids = set()
     mixed = []
     coalesced = 0
-    for row in rows(lines, "qos-native-frame "):
+    for row in rows(lines, "tilo-native-frame "):
         frame = row["cpu_frame_id"]
         inputs = row["input_ids"]
         if type(frame) is not int or frame < 0 or frame in frame_ids or not inputs:
@@ -105,8 +105,8 @@ def summarize_native_delivery(scenario, lines, frames):
         "active_cpu_frame_build": distribution([row["total_us"] for row in measured], scale=0.001),
         "frame_correlation": correlate_frames(frames, lines),
         "active_frame_correlation": correlate_frames(measured, [
-            "qos-render-frame " + json.dumps(row)
-            for row in rows(lines, "qos-render-frame ") if row.get("cpu_frame_id") in measured_ids]),
+            "tilo-render-frame " + json.dumps(row)
+            for row in rows(lines, "tilo-render-frame ") if row.get("cpu_frame_id") in measured_ids]),
         "limitations": ["Input identity proves dispatch and frame association, not an observable effect.",
                         "Coalesced inputs are not extra frames; mixed warmup frames are excluded.",
                         "CPU/worker evidence is not GPU completion or display cadence."],
@@ -119,7 +119,7 @@ def validate_scroll_effects(scenario, lines):
     This validates widget state, not pixels, GPU completion, or presentation.
     """
     import math
-    effects = rows(lines, "qos-native-effect ")
+    effects = rows(lines, "tilo-native-effect ")
     steps = scenario["steps"]
     if len(effects) != len(steps):
         raise ValueError("Missing or extra native effect snapshots")
@@ -158,7 +158,7 @@ def validate_frame_scroll_states(scenario, lines):
     def finite_number(value):
         return type(value) in (int, float) and math.isfinite(value)
 
-    effects = rows(lines, "qos-native-effect ")
+    effects = rows(lines, "tilo-native-effect ")
     count = len(scenario["steps"])
     if not count or len(effects) != count:
         raise ValueError("Missing or extra native effect snapshots")
@@ -168,7 +168,7 @@ def validate_frame_scroll_states(scenario, lines):
                 or not isinstance(after, dict) or not finite_number(after.get("offset_y"))):
             raise ValueError("Invalid or reordered native effect state")
 
-    frames = rows(lines, "qos-native-frame ")
+    frames = rows(lines, "tilo-native-frame ")
     next_input = 0
     last_frame = -1
     offsets, maxima, windows, block_counts = [], [], [], []

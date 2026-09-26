@@ -23,6 +23,7 @@ use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Res
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
+use crate::shell::channel_encryption::{ChannelAccess, ChannelKeyAccess, ChannelKeyProvider};
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
 pub struct IdentityBrokerHandle {
@@ -48,7 +49,11 @@ impl Drop for IdentityBrokerHandle {
 ///
 /// Returns an error if binding the unix socket at `path` or putting it into
 /// non-blocking mode fails, or if the listener thread cannot be spawned.
-pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBrokerHandle> {
+pub fn spawn(
+    path: PathBuf,
+    tree: WorkspaceTreeHandle,
+    channels: ChannelKeyProvider,
+) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
     listener.set_nonblocking(true)?;
@@ -61,9 +66,10 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let tree = tree.clone();
+                        let channels = channels.clone();
                         if let Err(error) = thread::Builder::new()
                             .name("tilo-identity-client".into())
-                            .spawn(move || serve(stream, &tree))
+                            .spawn(move || serve(stream, &tree, &channels))
                         {
                             tracing::warn!(%error, "identity broker could not spawn client worker");
                         }
@@ -85,7 +91,7 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
     })
 }
 
-fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
+fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle, channels: &ChannelKeyProvider) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
     if let Err(error) = stream.set_nonblocking(false) {
@@ -124,6 +130,23 @@ fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
                 &app_id,
                 &record_id,
                 &unsigned_op,
+            ),
+            Request::ChannelKeys {
+                workspace_id,
+                app_id,
+                record_id,
+                known_generation,
+            } => channel_keys(
+                tree,
+                channels.get().as_ref(),
+                &ChannelKeyRoute {
+                    bound_room: &room,
+                    bound_app_id: &handshake.app_id,
+                    workspace_id: &workspace_id,
+                    app_id: &app_id,
+                    record_id: &record_id,
+                },
+                known_generation,
             ),
         };
         if write_action_frame(&mut stream, &response).is_err() {
@@ -345,6 +368,87 @@ fn sign_collaboration_op(
         Err(error) => return Response::Error(error.to_string()),
     };
     Response::Signature(device.sign(&signing_bytes).to_bytes().to_vec())
+}
+
+/// The route a [`Request::ChannelKeys`] names, with the launch binding it
+/// must match.
+struct ChannelKeyRoute<'a> {
+    bound_room: &'a RoomId,
+    bound_app_id: &'a str,
+    workspace_id: &'a str,
+    app_id: &'a str,
+    record_id: &'a str,
+}
+
+/// Hand an app the content keys of one route of its own launch, only while
+/// this device is trusted and its person may read the workspace. The keys
+/// open the route's content and nothing else: no MLS secret leaves the
+/// channel service, and another app's or workspace's route is refused.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the role check reads one coherent workspace snapshot"
+)]
+fn channel_keys(
+    tree: &WorkspaceTreeHandle,
+    channels: Option<&ChannelKeyAccess>,
+    route: &ChannelKeyRoute<'_>,
+    known_generation: u64,
+) -> Response {
+    if route.workspace_id != route.bound_room.to_string() || route.app_id != route.bound_app_id {
+        return Response::Denied("channel keys requested for a different launch route".into());
+    }
+    let profile = match crate::identity_registry::selected_identity_profile(route.workspace_id) {
+        Ok(Some(profile)) => profile,
+        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Err(error) => return Response::Error(error.to_string()),
+    };
+    if let Err(error) = require_trusted_current_device(&profile) {
+        return Response::Denied(error.to_string());
+    }
+    let principal_id =
+        Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
+            .id()
+            .to_string();
+    let reads = {
+        let tree = tree.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| &workspace.room == route.bound_room)
+            .and_then(|workspace| workspace.role_of(&principal_id))
+            .is_some_and(|role| role != crate::shell::state::CapRole::Denied)
+    };
+    if !reads {
+        return Response::Denied("identity may not read this workspace".into());
+    }
+    let Some(channels) = channels else {
+        return Response::ChannelKeys {
+            access: runtime_identity::wire::ChannelAccess::Unavailable,
+            generation: 0,
+            keys: Vec::new(),
+        };
+    };
+    let channel =
+        collab_types::document_channel_id(route.app_id, route.workspace_id, route.record_id);
+    let (access, generation) = channels.access(*route.bound_room, channel);
+    let (access, keys) = match access {
+        ChannelAccess::Ready(keys) if generation != known_generation => match keys.to_bytes() {
+            Ok(bytes) => (runtime_identity::wire::ChannelAccess::Ready, bytes.to_vec()),
+            Err(error) => return Response::Error(error.to_string()),
+        },
+        ChannelAccess::Ready(_) => (runtime_identity::wire::ChannelAccess::Ready, Vec::new()),
+        ChannelAccess::Waiting => (runtime_identity::wire::ChannelAccess::Waiting, Vec::new()),
+        ChannelAccess::Removed => (runtime_identity::wire::ChannelAccess::Removed, Vec::new()),
+        ChannelAccess::Unavailable => (
+            runtime_identity::wire::ChannelAccess::Unavailable,
+            Vec::new(),
+        ),
+    };
+    Response::ChannelKeys {
+        access,
+        generation,
+        keys,
+    }
 }
 
 /// Root-key operations are available only while this machine is covered by
@@ -758,7 +862,8 @@ mod tests {
         let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let socket = temp.path().join("identity.sock");
-        let _broker = spawn(socket.clone(), tree.shared()).expect("broker");
+        let _broker =
+            spawn(socket.clone(), tree.shared(), ChannelKeyProvider::default()).expect("broker");
         let mut client = UnixStream::connect(socket).expect("connect");
         write_frame(
             &mut client,

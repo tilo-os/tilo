@@ -12,7 +12,10 @@
 //!   unexpired, not revoked), plus, for this machine's own identity, the
 //!   devices of its own fleet;
 //! - always-on hosts (`can_act_as_host`) are not a person's reading device.
-//!   A cloud or relay service reads only as an explicit service member.
+//!   A cloud or relay service reads only as an explicit service member
+//!   ([`super::service_members`]): its own device key, admitted with a
+//!   purpose, a scope and optionally a deadline, and removed from every
+//!   channel when the grant ends.
 
 use std::collections::BTreeSet;
 
@@ -124,6 +127,11 @@ pub fn allowed_devices(
     for (cert, revoked) in own_devices {
         if !revoked && reads(cert) {
             allowed.insert(Ed25519PublicKey::from_bytes(cert.device_public_key));
+        }
+    }
+    for member in super::service_members::service_members(workspace, now) {
+        if member.verb.implies(collab_types::caps::Verb::Read) {
+            allowed.insert(member.device);
         }
     }
     allowed

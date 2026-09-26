@@ -15,7 +15,7 @@ has() { grep -Fq -- "$2" "$1"; }
 line_of() { grep -nF -- "$2" "$1" | head -n 1 | cut -d: -f1; }
 safe_line="$(line_of "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)')"
 try_line="$(line_of "$script" 'try {')"
-url_line="$(line_of "$script" 'if ($Server -notin @("https://code.podesta.ai", "https://code.podesta.ai/"))')"
+url_line="$(line_of "$script" 'if ($Server -notin @("https://code.tilo.so", "https://code.tilo.so/"))')"
 runner_line="$(line_of "$script" '$TrustedRunner = Assert-TiloTrustedRunner $Runner')"
 start_line="$(line_of "$script" '$Process = Start-Process')"
 finally_line="$(line_of "$script" '} finally {')"
@@ -24,7 +24,7 @@ finally_kill_line="$(grep -nF -- 'taskkill.exe" /PID $Process.Id /T /F' "$script
 has "$script" 'Assert-TiloPrivateMetadataFile $UuidFile' \
   && has "$script" 'Assert-TiloPrivateMetadataFile $TokenFile' \
   && has "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)' \
-  && has "$script" 'if ($Server -notin @("https://code.podesta.ai", "https://code.podesta.ai/"))' \
+  && has "$script" 'if ($Server -notin @("https://code.tilo.so", "https://code.tilo.so/"))' \
   && has "$script" '$NativeLabel = Resolve-TiloWindowsRunnerLabel @((Get-CimInstance Win32_Processor).Architecture)' \
   && has "$script" '$Label -cne $NativeLabel' \
   && has "$script" '9 { return "imager-windows-x86_64" }' \

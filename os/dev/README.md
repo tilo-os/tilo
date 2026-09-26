@@ -48,9 +48,9 @@ TILO_WITH_BROWSER=0 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-
 
 # …or don't build at all. The image builds in CI here, so the local half of
 # the pipeline is often just the disk step: pull what CI published and image
-# that. Needs `podman login code.podesta.ai` once.
-podman pull code.podesta.ai/qos/tilo:<tag>
-podman tag  code.podesta.ai/qos/tilo:<tag> localhost/tilo:latest
+# that. Anyone may pull from registry.tilo.so; no login.
+podman pull registry.tilo.so/tilo/tilo:<tag>
+podman tag  registry.tilo.so/tilo/tilo:<tag> localhost/tilo:latest
 TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 
 # 2. Boot + greeter + login + desktop, screenshots into a dir:
@@ -308,7 +308,7 @@ network must not expose a repository-known maintenance credential. The
 explicit `--dev-login` build is for isolated local diagnostics only.
 
 The installed system's update origin defaults to
-`code.podesta.ai/qos/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
+`registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
 in that same signature-required repository; the backend rejects other origins.
 
 ## Configuration (env vars)

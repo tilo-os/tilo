@@ -1,6 +1,6 @@
 # Native shared-runtime MCP host
 
-`qos-runtime-mcp` exposes the action directories of native qOS apps on one
+`tilo-runtime-mcp` exposes the action directories of native Tilo apps on one
 newline-delimited MCP stdio connection. A normal framework GUI launch joins the
 same per-user runtime automatically. The first app starts the background daemon;
 later apps and MCP clients reuse it. Individual apps need no manifest, service
@@ -9,21 +9,21 @@ descriptor setup, MCP registration hook, or app-specific routing.
 Build the host on macOS or Linux:
 
 ```sh
-cargo build -p shell --bin qos-runtime-mcp --no-default-features
+cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 ```
 
-In an installed layout, app startup finds the sibling `qos-runtime-mcp` binary,
+In an installed layout, app startup finds the sibling `tilo-runtime-mcp` binary,
 then falls back to `PATH`. In a source checkout, the first ordinary `cargo run`
 can bootstrap a missing host with a bounded, serialized Cargo build using the
 checkout's normal Cargo cache, network, target directory, and explicit offline
-settings. Set `QOS_RUNTIME_BINARY` only when packaging or testing must select a
+settings. Set `TILO_RUNTIME_BINARY` only when packaging or testing must select a
 specific absolute host binary. Startup errors are printed instead of silently
 running an app disconnected.
 
 Without configuration, the persistent profile is
-`$HOME/Library/Application Support/qOS/runtime` on macOS and
-`$HOME/.local/state/qos/runtime` on other Unix systems. An absolute
-`QOS_RUNTIME_PROFILE` selects another profile, which is useful for isolated
+`$HOME/Library/Application Support/Tilo/runtime` on macOS and
+`$HOME/.local/state/tilo/runtime` on other Unix systems. An absolute
+`TILO_RUNTIME_PROFILE` selects another profile, which is useful for isolated
 development runs. The daemon owns the profile independently of every app and
 MCP client: closing one app or one MCP connection does not stop the daemon or
 the other apps. Only one daemon may own a profile, and private-directory and
@@ -37,8 +37,8 @@ Point the assistant at the existing host with `--connect` and the same profile:
 ```json
 {
   "mcpServers": {
-    "qos-runtime": {
-      "command": "/absolute/path/to/qos-runtime-mcp",
+    "tilo-runtime": {
+      "command": "/absolute/path/to/tilo-runtime-mcp",
       "args": ["--profile", "/absolute/path/to/persistent-profile", "--connect"]
     }
   }
@@ -54,7 +54,7 @@ that proxy connection.
 Choose a short absolute profile path and create an app manifest at an absolute
 path. Unix socket pathname limits also apply to the profile’s `collab.sock` and
 `identity.sock`; long profile paths fail at startup. For example, use a private
-`/tmp/qos-mcp-...` directory for temporary runs. The executable paths must also
+`/tmp/tilo-mcp-...` directory for temporary runs. The executable paths must also
 be absolute. The list may be empty, and repeated
 app ids intentionally create separate live instances:
 
@@ -62,12 +62,12 @@ app ids intentionally create separate live instances:
 {
   "apps": [
     {
-      "id": "dev.qos.photos",
+      "id": "dev.tilo.photos",
       "executable": "/absolute/path/to/photos",
       "args": ["--open", "/absolute/path/to/source.png"]
     },
     {
-      "id": "dev.qos.word-processor",
+      "id": "dev.tilo.word-processor",
       "executable": "/absolute/path/to/word-processor",
       "args": []
     }
@@ -80,8 +80,8 @@ The original explicit launcher remains available for controlled workflows:
 ```json
 {
   "mcpServers": {
-    "qos-runtime": {
-      "command": "/absolute/path/to/qos-runtime-mcp",
+    "tilo-runtime": {
+      "command": "/absolute/path/to/tilo-runtime-mcp",
       "args": [
         "--profile", "/absolute/path/to/persistent-profile",
         "--apps", "/absolute/path/to/apps.json"
@@ -106,15 +106,15 @@ current action, start it, inspect its canonical status, and request
 cancellation. Starting, status and cancellation go through the session's
 action host — the same `tilo_actions::remote` door apps, agents and peers use —
 so an invocation is identified by a UUID `invocation_id`. Pass your own
-`invocation_id` to `qos_invoke` to make a retry safe: repeating the same id and
+`invocation_id` to `tilo_invoke` to make a retry safe: repeating the same id and
 request reports the original invocation instead of starting it again, and
-reusing an id for a different request is refused. Call `qos_list_apps`, then `qos_query`; preserve the returned peer
-id, revision, resource and action for `qos_resolve` or `qos_invoke`. Browse
+reusing an id for a different request is refused. Call `tilo_list_apps`, then `tilo_query`; preserve the returned peer
+id, revision, resource and action for `tilo_resolve` or `tilo_invoke`. Browse
 roots with an empty `parent_resource`, then use a returned resource as
 `parent_resource` to discover its actions and children. Follow `next_cursor`
 with the same revision and query. The optional `needle` searches declared
 search providers; it is not a search across every action label. After an
-invocation is accepted, poll `qos_status` with its `invocation_id` until its
+invocation is accepted, poll `tilo_status` with its `invocation_id` until its
 real terminal update. Pass
 content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
@@ -123,7 +123,7 @@ replays a mutation automatically.
 
 A normal `ui::App` automatically obtains collaboration and identity
 connections from the shared runtime and publishes its current lazy directory.
-Existing qOS or legacy inherited connections remain authoritative and are not
+Existing Tilo or legacy inherited connections remain authoritative and are not
 replaced by another profile. Complete malformed inherited transfers fail
 closed. Diagnostic, audit, shot, headless, and handled-command launches remain
 detached, and an app may explicitly opt a private/local mode out before live
@@ -148,8 +148,8 @@ rather than a GUI publisher.
 
 Building or running this binary does not configure an MCP client, change an
 account, enable a cloud relay, or add remote federation. Assistant setup remains
-explicit. `QOS_RUNTIME_STANDALONE=1` is a deliberate test/diagnostic opt-out
-when no inherited qOS connection exists; it is not the ordinary default.
+explicit. `TILO_RUNTIME_STANDALONE=1` is a deliberate test/diagnostic opt-out
+when no inherited Tilo connection exists; it is not the ordinary default.
 
 ## Native acceptance proof
 
@@ -160,7 +160,7 @@ between these commands:
 ```sh
 python3 scripts/runtime-auto-attach-proof.py \
   --capture-host-source-snapshot /absolute/path/to/host-build-source-hashes.json
-cargo build -p shell --bin qos-runtime-mcp --no-default-features
+cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 python3 scripts/runtime-auto-attach-proof.py \
   --host-source-snapshot /absolute/path/to/host-build-source-hashes.json \
   --output /absolute/path/to/new-evidence

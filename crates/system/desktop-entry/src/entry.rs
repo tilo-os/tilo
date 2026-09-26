@@ -83,6 +83,9 @@ pub struct DesktopEntry {
     /// system file of the same id.
     pub hidden: bool,
     pub terminal: bool,
+    /// `X-GNOME-Autostart-enabled`, `None` when absent: `Some(false)` switches an
+    /// autostart entry off without deleting it.
+    pub autostart_enabled: Option<bool>,
     pub only_show_in: Vec<String>,
     pub not_show_in: Vec<String>,
     pub source: EntrySource,
@@ -222,6 +225,7 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         no_display: boolean(raw("NoDisplay")),
         hidden: boolean(raw("Hidden")),
         terminal: boolean(raw("Terminal")),
+        autostart_enabled: raw("X-GNOME-Autostart-enabled").map(|value| boolean(Some(value))),
         only_show_in: string_list(raw("OnlyShowIn")),
         not_show_in: string_list(raw("NotShowIn")),
         source,
@@ -316,6 +320,21 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
         }
     }
     groups
+}
+
+/// Every group's unlocalised values, for the other key-file formats that share
+/// this grammar (an icon theme's `index.theme`).
+pub(crate) fn unlocalised_groups(contents: &str) -> BTreeMap<String, BTreeMap<String, String>> {
+    parse_groups(contents)
+        .into_iter()
+        .map(|(name, group)| {
+            let values = group
+                .into_iter()
+                .map(|(key, value)| (key, value.default))
+                .collect();
+            (name, values)
+        })
+        .collect()
 }
 
 /// The best value for `key` given the caller's locale preference list. `locales` is already

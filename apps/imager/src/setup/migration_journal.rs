@@ -23,7 +23,7 @@ use std::{
 // each frame, never the complete operation. Checksums detect corruption, not
 // malicious edits; receipts still confer no overwrite authority.
 const MAX_JOURNAL: u64 = 16 * 1024 * 1024;
-const MAGIC: &[u8; 8] = b"QOSJNL2\n";
+const MAGIC: &[u8; 8] = b"TILOJL2\n";
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "record", deny_unknown_fields)]
@@ -458,7 +458,7 @@ impl MigrationJournal {
         let (mut file, identity) = super::migration_journal_log::open_private(&parent, &name)?;
         let mut magic = [0; 8];
         let modern = file.read_exact(&mut magic).is_ok() && &magic == MAGIC;
-        if &magic == b"QOSJNL3\n" {
+        if &magic == b"TILOJL3\n" {
             return Err(changed(
                 "fresh native selection required; use native resume",
             ));
@@ -1557,7 +1557,7 @@ mod tests {
 
     #[test]
     fn interruption_worker() {
-        let Some(base) = std::env::var_os("QOS_JOURNAL_FIXTURE") else {
+        let Some(base) = std::env::var_os("TILO_JOURNAL_FIXTURE") else {
             return;
         };
         let base = PathBuf::from(base);
@@ -1581,9 +1581,9 @@ mod tests {
                 &worker_name("interruption_worker"),
                 "--nocapture",
             ])
-            .env("QOS_JOURNAL_FIXTURE", f.1.parent().unwrap())
-            .env("QOS_JOURNAL_BOUNDARY", boundary)
-            .env("QOS_JOURNAL_BOUNDARY_COUNT", count)
+            .env("TILO_JOURNAL_FIXTURE", f.1.parent().unwrap())
+            .env("TILO_JOURNAL_BOUNDARY", boundary)
+            .env("TILO_JOURNAL_BOUNDARY_COUNT", count)
             .output()
             .unwrap();
         assert_eq!(
@@ -1783,10 +1783,10 @@ mod tests {
 
     #[test]
     fn fifo_race_worker() {
-        if std::env::var_os("QOS_FIFO_RACE_WORKER").is_none() {
+        if std::env::var_os("TILO_FIFO_RACE_WORKER").is_none() {
             return;
         }
-        let base = PathBuf::from(std::env::var_os("QOS_FIFO_RACE_WORKER").unwrap());
+        let base = PathBuf::from(std::env::var_os("TILO_FIFO_RACE_WORKER").unwrap());
         let source = base.join("source");
         let output = base.join("output");
         let journal = base.join("journal/receipt.json");
@@ -1814,7 +1814,7 @@ mod tests {
         let (_temp, source, _output, _journal) = fixture();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &worker_name("fifo_race_worker")])
-            .env("QOS_FIFO_RACE_WORKER", source.parent().unwrap())
+            .env("TILO_FIFO_RACE_WORKER", source.parent().unwrap())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -2043,10 +2043,10 @@ pub(super) mod crash_injection {
         reason = "Crash-recovery tests deliberately exit the child at a selected journal boundary without running destructors."
     )]
     pub(crate) fn boundary(name: &str) {
-        if std::env::var("QOS_JOURNAL_BOUNDARY").ok().as_deref() != Some(name) {
+        if std::env::var("TILO_JOURNAL_BOUNDARY").ok().as_deref() != Some(name) {
             return;
         }
-        let nth = std::env::var("QOS_JOURNAL_BOUNDARY_COUNT")
+        let nth = std::env::var("TILO_JOURNAL_BOUNDARY_COUNT")
             .unwrap()
             .parse::<usize>()
             .unwrap();

@@ -36,7 +36,7 @@ const TITLE_READY: &str = "Your recovery words";
 const TITLE_UNAVAILABLE: &str = "Recovery is not ready yet";
 const EXPLANATION_READY: &str =
     "Write these 24 words down. They restore your identity if you lose every device.";
-const EXPLANATION_UNAVAILABLE: &str = "Pair another trusted device first. qOS will show real \
+const EXPLANATION_UNAVAILABLE: &str = "Pair another trusted device first. Tilo will show real \
      recovery words only after the secure setup completes.";
 const ACK_LABEL: &str = "I've written them down somewhere safe";
 const COPY_LABEL: &str = "Copy to clipboard";

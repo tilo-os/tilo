@@ -85,7 +85,7 @@ impl SessionContinuation {
             return Err(io::Error::other("invalid Wayland socket identity"));
         }
         let key = hex::encode(bytes);
-        let socket_path = runtime.join(format!("qos-import-{key}-{}.sock", wayland.ino()));
+        let socket_path = runtime.join(format!("tilo-import-{key}-{}.sock", wayland.ino()));
         if socket_path.as_os_str().as_bytes().len() >= 104 {
             return Err(io::Error::other("import readiness socket path too long"));
         }
@@ -118,9 +118,9 @@ impl SessionContinuation {
                 continue;
             }
             let response = if onboarding_active {
-                b"qos-import-wait--v1\n"
+                b"tilo-import-wait--v1\n"
             } else {
-                b"qos-import-ready-v1\n"
+                b"tilo-import-ready-v1\n"
             };
             let _ = client.write_all(response);
         }
@@ -251,13 +251,13 @@ mod tests {
         assert!(SessionContinuation::bind(root, OsStr::new("wayland-1"), uid, true).is_err());
         let mut client = UnixStream::connect(&gate.socket_path).unwrap();
         assert!(!gate.pump(true));
-        let mut bytes = [0; 20];
+        let mut bytes = [0; 21];
         client.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"qos-import-wait--v1\n");
+        assert_eq!(&bytes, b"tilo-import-wait--v1\n");
         let mut client = UnixStream::connect(&gate.socket_path).unwrap();
         assert!(gate.pump(false));
         client.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"qos-import-ready-v1\n");
+        assert_eq!(&bytes, b"tilo-import-ready-v1\n");
         assert!(!gate.pump(false));
         assert!(SessionContinuation::bind(root, OsStr::new("../escape"), uid, true).is_err());
         fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
