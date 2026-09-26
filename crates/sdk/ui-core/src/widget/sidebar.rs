@@ -592,7 +592,7 @@ impl SidebarDrawer {
     /// Advance the eased reveal off a real wall-clock delta. Call once per
     /// draw. `reduce_motion` snaps straight to the target (accessibility). The
     /// first tick establishes the clock (`dt == 0`, no jump); later deltas are
-    /// clamped to [`MAX_FRAME_DT`]. Returns whether it is still animating.
+    /// clamped to `MAX_FRAME_DT`. Returns whether it is still animating.
     pub fn tick(&mut self, reduce_motion: bool) -> bool {
         let now = crate::time::now();
         let dt = self.last_tick.map_or(0.0, |t| {

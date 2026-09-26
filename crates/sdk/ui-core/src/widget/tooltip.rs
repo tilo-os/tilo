@@ -409,7 +409,7 @@ struct HoverTarget {
 
 /// One controller owned by [`crate::app::App`] — not one tooltip widget per
 /// control — is what makes tooltips work for every widget exposing
-/// [`Widget::tooltip`](crate::widget::Widget::tooltip) with zero per-app
+/// [`Widget::tooltip`] with zero per-app
 /// wiring, and guarantees at most one chip on screen. Timing is wall-clock
 /// through an injected `now: Instant`, so it's unit-testable.
 pub struct TooltipHost {

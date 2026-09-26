@@ -278,7 +278,7 @@ impl PushNav {
     }
 
     /// Advance the slide by the wall-clock time since the previous tick
-    /// (clamped to [`MAX_FRAME_DT`]). With `reduce_motion` the slide lands on
+    /// (clamped to `MAX_FRAME_DT`). With `reduce_motion` the slide lands on
     /// its target at once. Returns `true` while still animating, so the host
     /// can request another frame.
     pub fn tick(&mut self, reduce_motion: bool) -> bool {

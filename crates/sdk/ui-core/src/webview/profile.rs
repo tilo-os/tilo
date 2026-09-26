@@ -11,9 +11,9 @@
 //!  * **geometry** — each frame's pixel size and each draw's rect, so a
 //!    size/rect mismatch (a stretched or mispositioned frame) is visible.
 //!
-//! A summary prints to stderr every [`SUMMARY_EVERY`] frames and once
+//! A summary prints to stderr every `SUMMARY_EVERY` frames and once
 //! more when the process exits. With `TILO_WEBVIEW_PROFILE=trace` the
-//! first [`TRACE_FRAMES`] frames and draws are logged individually — the
+//! first `TRACE_FRAMES` frames and draws are logged individually — the
 //! fast path to diagnosing a visual glitch.
 //!
 //! All timing uses `crate::time::Instant`; the whole module is a no-op
@@ -313,7 +313,7 @@ impl Ring {
 }
 
 /// Print a final summary. Call from a process-exit path (the browser
-/// binary installs it) so a run that never hits [`SUMMARY_EVERY`] still
+/// binary installs it) so a run that never hits `SUMMARY_EVERY` still
 /// reports.
 pub fn print_final_summary() {
     if !enabled() {

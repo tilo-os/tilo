@@ -8,7 +8,7 @@
 //! Render-only relative to the CRDT — its content is fed by a parent. The
 //! user's choice is exposed via [`PermissionPrompt::pending_choice`] as a
 //! one-shot output; the parent drains it each frame and applies the
-//! resulting [`Capability`] grant.
+//! resulting `Capability` grant.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;

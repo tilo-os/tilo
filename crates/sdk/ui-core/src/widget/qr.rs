@@ -35,7 +35,7 @@ use crate::widget::Widget;
 pub const DEFAULT_QUIET_MODULES: usize = 4;
 
 /// Holds the source bytes plus the cached encoded matrix. Re-encodes when
-/// the payload changes via [`set_payload`] — the pairing-channel screen
+/// the payload changes via `set_payload` — the pairing-channel screen
 /// calls it every few seconds as the broker rotates the nonce.
 pub struct QrWidget {
     rect: Rect,
@@ -50,7 +50,7 @@ pub struct QrWidget {
     quiet_modules: usize,
     error_correction: EcLevel,
     /// Encoding error, if any. Surfaced inline (the widget paints a
-    /// "QR: <error>" label) rather than panicking so a too-large
+    /// `"QR: <error>"` label) rather than panicking so a too-large
     /// payload doesn't kill the host app.
     error: Option<String>,
 }

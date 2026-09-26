@@ -2,7 +2,7 @@
 //!
 //! A single measured leaf widget that **reflows** to the available width
 //! (column count derived from cell size at layout time), **selects** via
-//! the shared [`SelectionModel`](crate::selection::SelectionModel), and
+//! the shared [`SelectionModel`], and
 //! **activates** items on double-click or Enter via `on_activate`.
 //!
 //! Designed to be rebuilt each frame by a stateless host: seed the
