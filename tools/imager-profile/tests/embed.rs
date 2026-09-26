@@ -23,45 +23,47 @@ fn command(target: &std::path::Path) -> Command {
 }
 
 #[test]
-fn only_reserved_tail_changes_and_live_extractor_accepts_it() {
-    let temporary = tempfile::tempdir().unwrap();
-    let media = temporary.path().join("media.img");
-    fs::write(&media, vec![0xa5; 131072]).unwrap();
-    assert!(command(&media).status().unwrap().success());
-    let bytes = fs::read(&media).unwrap();
-    assert_eq!(bytes.len(), 131072);
-    assert!(bytes[..65536].iter().all(|value| *value == 0xa5));
-    assert!(bytes[65536..].starts_with(b"TILO_INSTALL_PROFILE_V1\n"));
-    #[cfg(target_os = "linux")]
+fn embedding_changes_only_the_reserved_tail_of_regular_files() {
+    // Phase `only_reserved_tail_changes_and_live_extractor_accepts_it`.
     {
-        let extractor = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../os/usr/libexec/tilo-installer-profile-extract");
-        let output = temporary.path().join("profile");
-        assert!(
-            Command::new("bash")
-                .arg(extractor)
-                .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
-                .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
-                .env("TILO_INSTALLER_PROFILE_OUT_DIR", &output)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let profile: serde_json::Value =
-            serde_json::from_slice(&fs::read(output.join("profile.json")).unwrap()).unwrap();
-        assert_eq!(profile["hostname"], "studio");
-        assert_eq!(profile["username"], "testuser");
-        assert_eq!(profile["filesystem"], "btrfs");
-        assert!(profile.get("password").is_none());
+        let temporary = tempfile::tempdir().unwrap();
+        let media = temporary.path().join("media.img");
+        fs::write(&media, vec![0xa5; 131072]).unwrap();
+        assert!(command(&media).status().unwrap().success());
+        let bytes = fs::read(&media).unwrap();
+        assert_eq!(bytes.len(), 131072);
+        assert!(bytes[..65536].iter().all(|value| *value == 0xa5));
+        assert!(bytes[65536..].starts_with(b"TILO_INSTALL_PROFILE_V1\n"));
+        #[cfg(target_os = "linux")]
+        {
+            let extractor = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../os/usr/libexec/tilo-installer-profile-extract");
+            let output = temporary.path().join("profile");
+            assert!(
+                Command::new("bash")
+                    .arg(extractor)
+                    .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
+                    .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
+                    .env("TILO_INSTALLER_PROFILE_OUT_DIR", &output)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let profile: serde_json::Value =
+                serde_json::from_slice(&fs::read(output.join("profile.json")).unwrap()).unwrap();
+            assert_eq!(profile["hostname"], "studio");
+            assert_eq!(profile["username"], "testuser");
+            assert_eq!(profile["filesystem"], "btrfs");
+            assert!(profile.get("password").is_none());
+        }
     }
-}
-
-#[test]
-fn undersized_regular_file_is_unchanged() {
-    let file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(file.path(), b"too small").unwrap();
-    assert!(!command(file.path()).status().unwrap().success());
-    assert_eq!(fs::read(file.path()).unwrap(), b"too small");
+    // Phase `undersized_regular_file_is_unchanged`.
+    {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), b"too small").unwrap();
+        assert!(!command(file.path()).status().unwrap().success());
+        assert_eq!(fs::read(file.path()).unwrap(), b"too small");
+    }
 }
 
 #[cfg(unix)]

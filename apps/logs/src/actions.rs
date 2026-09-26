@@ -274,11 +274,15 @@ mod tests {
     use super::*;
     use crate::journal::sample_entries;
 
+    /// Entries and filters publish local view operations: each entry has a
+    /// stable select resource, and every filter action is a view operation.
     #[test]
-    fn entries_have_stable_local_navigation_resources() {
+    fn resources_publish_entries_and_filters_as_local_view_operations() {
         let entries = sample_entries();
-        let id = entry_resource_id(&entries[0]);
         let root = resources(&entries, &Filter::default(), false, false).remove(0);
+
+        // Entries have stable local navigation resources.
+        let id = entry_resource_id(&entries[0]);
         let entry = root.children.iter().find(|child| child.id.0 == id).unwrap();
         let select = entry
             .actions
@@ -291,11 +295,8 @@ mod tests {
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
             Some(LogsOperation::SelectEntry { entry_id: id }),
         );
-    }
 
-    #[test]
-    fn filters_are_local_view_operations_not_document_actions() {
-        let root = resources(&sample_entries(), &Filter::default(), false, false).remove(0);
+        // Filters are local view operations, not document actions.
         let filters = root
             .children
             .iter()

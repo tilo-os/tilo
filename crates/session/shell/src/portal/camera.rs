@@ -146,29 +146,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn access_is_always_camera() {
-        let (kind, cap) = camera_capability();
-        assert_eq!(kind, CapabilityKind::Camera);
-        assert!(matches!(cap, Capability::Camera { .. }));
-    }
-
-    #[test]
-    fn translated_or_hostile_ui_text_cannot_change_the_capability() {
-        let (kind, cap) = camera_capability();
-        assert_eq!(kind, CapabilityKind::Camera);
-        assert!(matches!(cap, Capability::Camera { .. }));
-    }
-
-    #[test]
-    fn access_allow_returns_zero() {
-        let (code, results) = outcome_to_access_response(PromptOutcome::AllowOnce);
-        assert_eq!(code, 0);
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn access_deny_returns_one() {
-        let (code, _) = outcome_to_access_response(PromptOutcome::Deny);
-        assert_eq!(code, 1);
+    fn camera_access_is_always_the_camera_capability_and_maps_responses() {
+        // Phase `access_is_always_camera`.
+        {
+            let (kind, cap) = camera_capability();
+            assert_eq!(kind, CapabilityKind::Camera);
+            assert!(matches!(cap, Capability::Camera { .. }));
+        }
+        // (The former `translated_or_hostile_ui_text_cannot_change_the_capability` made exactly
+        // these assertions: `camera_capability` takes no UI text, so nothing can change it.)
+        // Phase `access_allow_returns_zero`.
+        {
+            let (code, results) = outcome_to_access_response(PromptOutcome::AllowOnce);
+            assert_eq!(code, 0);
+            assert!(results.is_empty());
+        }
+        // Phase `access_deny_returns_one`.
+        {
+            let (code, _) = outcome_to_access_response(PromptOutcome::Deny);
+            assert_eq!(code, 1);
+        }
     }
 }

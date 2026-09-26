@@ -1103,7 +1103,18 @@ mod rich_schema_tests {
     use super::*;
     use serde_json::json;
 
+    /// Structured arguments are typed and recursively validated; resource, datetime, secret and
+    /// nullable values round-trip; a malformed schema is rejected before it describes values; unique
+    /// array items are published and enforced.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn action_parameters_are_typed_validated_and_round_trip() {
+        structured_arguments_are_typed_and_recursively_validated();
+        resource_datetime_secret_and_nullable_values_round_trip();
+        malformed_schema_is_rejected_before_it_describes_values();
+        unique_array_items_are_published_and_enforced();
+    }
+
     fn structured_arguments_are_typed_and_recursively_validated() {
         let params = vec![
             ActionParam::required("request", ParamType::Object, "request").with_schema(json!({
@@ -1152,7 +1163,6 @@ mod rich_schema_tests {
         );
     }
 
-    #[test]
     fn resource_datetime_secret_and_nullable_values_round_trip() {
         let params = vec![
             ActionParam::required("resource", ParamType::Resource, "target"),
@@ -1186,7 +1196,6 @@ mod rich_schema_tests {
         }
     }
 
-    #[test]
     fn malformed_schema_is_rejected_before_it_describes_values() {
         assert!(validate_schema_definition(&json!({"pattern":"["})).is_err());
         assert!(validate_schema_definition(&json!({"format":"tilo-maybe"})).is_err());
@@ -1214,7 +1223,6 @@ mod rich_schema_tests {
         assert!(validate_schema_definition(&json!({"title": "accepted annotation"})).is_ok());
     }
 
-    #[test]
     fn unique_array_items_are_published_and_enforced() {
         let schema = json!({
             "type": "array",

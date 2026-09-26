@@ -1438,287 +1438,468 @@ mod tests {
     use qdoc::{AttrVal, Document};
 
     #[test]
-    fn imports_headings_and_paragraphs() {
-        let body = concat!(
-            r#"<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>"#,
-            r#"<w:p><w:r><w:t>Hello</w:t></w:r></w:p>"#,
-        );
-        let docx = minimal_docx(body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn imports_block_structure_lists_tables_and_fidelity_atoms() {
+        // Phase `imports_headings_and_paragraphs`.
+        {
+            let body = concat!(
+                r#"<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>"#,
+                r#"<w:p><w:r><w:t>Hello</w:t></w:r></w:p>"#,
+            );
+            let docx = minimal_docx(body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
 
-        assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(snap.blocks[0].text, "Title");
-        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(2)));
-        assert_eq!(snap.blocks[1].kind, "paragraph");
-        assert_eq!(snap.blocks[1].text, "Hello");
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(snap.blocks[0].text, "Title");
+            assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(2)));
+            assert_eq!(snap.blocks[1].kind, "paragraph");
+            assert_eq!(snap.blocks[1].text, "Hello");
+        }
+        // Phase `imports_heading_via_named_style_with_style_alignment`.
+        {
+            // A custom style derived from Heading1 that also centres text: heading detection + alignment come from the resolved style.
+            let styles = concat!(
+                r#"<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr></w:style>"#,
+                r#"<w:style w:type="paragraph" w:styleId="MyTitle"><w:basedOn w:val="Heading1"/></w:style>"#,
+            );
+            let body = r#"<w:p><w:pPr><w:pStyle w:val="MyTitle"/></w:pPr><w:r><w:t>My Title</w:t></w:r></w:p>"#;
+            let docx = minimal_docx_styled(styles, body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.kind, "heading", "named paragraph style → heading");
+            assert_eq!(b.text, "My Title");
+            assert_eq!(
+                b.attrs.get("level"),
+                Some(&AttrVal::Int(1)),
+                "level inherited via basedOn"
+            );
+            assert_eq!(
+                b.attrs.get("align"),
+                Some(&AttrVal::Str("center".into())),
+                "alignment from the style"
+            );
+        }
+        // Phase `imports_numbered_and_bulleted_lists`.
+        {
+            let numbering = concat!(
+                r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>"#,
+                r#"<w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>"#,
+                r#"<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#,
+                r#"<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>"#,
+            );
+            let body = concat!(
+                r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>first</w:t></w:r></w:p>"#,
+                r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>bee</w:t></w:r></w:p>"#,
+            );
+            let docx = minimal_docx_numbered("", numbering, body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2, "{snap:?}");
+            assert_eq!(items[0].text, "first");
+            assert_eq!(
+                items[0].attrs.get("ordered"),
+                Some(&AttrVal::Bool(true)),
+                "decimal numId → ordered"
+            );
+            assert_eq!(
+                items[1].attrs.get("ordered"),
+                Some(&AttrVal::Bool(false)),
+                "bullet numId → unordered"
+            );
+        }
+        // Phase `imports_table_as_editable_cells`.
+        {
+            let body = concat!(
+                r#"<w:tbl>"#,
+                r#"<w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc></w:tr>"#,
+                r#"<w:tr><w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>d</w:t></w:r></w:p></w:tc></w:tr>"#,
+                r#"</w:tbl>"#,
+            );
+            let docx = minimal_docx(body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
+            assert_eq!(
+                cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+                vec!["a", "b", "c", "d"]
+            );
+            assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
+            assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
+        }
+        // Phase `captures_unmodeled_body_element_as_fidelity_atom`.
+        {
+            let body = concat!(
+                r#"<w:p><w:r><w:t>before</w:t></w:r></w:p>"#,
+                r#"<w:sdt><w:sdtContent><w:r><w:t>boxed</w:t></w:r></w:sdtContent></w:sdt>"#,
+                r#"<w:p><w:r><w:t>after</w:t></w:r></w:p>"#,
+            );
+            let docx = minimal_docx(body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
+            assert_eq!(snap.blocks[0].text, "before");
+            assert_eq!(snap.blocks[1].kind, "fidelity");
+            assert_eq!(snap.blocks[2].text, "after");
+            let raw = match snap.blocks[1].attrs.get("xml") {
+                Some(AttrVal::Str(x)) => x.clone(),
+                other => panic!("fidelity atom missing xml attr: {other:?}"),
+            };
+            assert!(
+                raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"),
+                "captured raw: {raw}"
+            );
+        }
     }
 
     #[test]
-    fn imports_heading_via_named_style_with_style_alignment() {
-        // A custom style derived from Heading1 that also centres text: heading detection + alignment come from the resolved style.
-        let styles = concat!(
-            r#"<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr></w:style>"#,
-            r#"<w:style w:type="paragraph" w:styleId="MyTitle"><w:basedOn w:val="Heading1"/></w:style>"#,
-        );
-        let body = r#"<w:p><w:pPr><w:pStyle w:val="MyTitle"/></w:pPr><w:r><w:t>My Title</w:t></w:r></w:p>"#;
-        let docx = minimal_docx_styled(styles, body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.kind, "heading", "named paragraph style → heading");
-        assert_eq!(b.text, "My Title");
-        assert_eq!(
-            b.attrs.get("level"),
-            Some(&AttrVal::Int(1)),
-            "level inherited via basedOn"
-        );
-        assert_eq!(
-            b.attrs.get("align"),
-            Some(&AttrVal::Str("center".into())),
-            "alignment from the style"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn imports_run_and_paragraph_formatting_and_named_styles() {
+        // Phase `imports_run_props_as_marks`.
+        {
+            use qdoc::document::MarkValue;
+            let body = concat!(
+                r#"<w:p>"#,
+                r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
+                r#"<w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r>"#,
+                r#"<w:r><w:t xml:space="preserve"> and </w:t></w:r>"#,
+                r#"<w:r><w:rPr><w:i/><w:u w:val="single"/><w:strike/></w:rPr><w:t>more</w:t></w:r>"#,
+                r#"</w:p>"#,
+            );
+            let docx = minimal_docx(body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let p = &d.materialize().blocks[0];
+            assert_eq!(p.text, "a bold and more");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "em" && m.start == 11 && m.end == 15),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "underline" && m.start == 11 && m.end == 15),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strike" && m.start == 11 && m.end == 15),
+                "{:?}",
+                p.marks
+            );
+            let _ = MarkValue::Bool(true);
+        }
+        // Phase `imports_align_font_size_and_family`.
+        {
+            use qdoc::document::MarkValue;
+            let body = concat!(
+                r#"<w:p><w:pPr><w:jc w:val="center"/></w:pPr>"#,
+                r#"<w:r><w:rPr><w:sz w:val="40"/><w:rFonts w:ascii="Times New Roman"/></w:rPr><w:t>big</w:t></w:r>"#,
+                r#"</w:p>"#,
+            );
+            let docx = minimal_docx(body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d.materialize().blocks[0];
+            assert_eq!(b.text, "big");
+            assert_eq!(
+                b.attrs.get("align"),
+                Some(&AttrVal::Str("center".into())),
+                "{:?}",
+                b.attrs
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+                "{:?}",
+                b.marks
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+                "{:?}",
+                b.marks
+            );
+        }
+        // Phase `imports_named_character_style_and_whitespace`.
+        {
+            let styles =
+                r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
+            let body = concat!(
+                r#"<w:p><w:r><w:t>x</w:t></w:r>"#,
+                r#"<w:r><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>y</w:t></w:r></w:p>"#,
+                r#"<w:p><w:r><w:t>one</w:t><w:br/><w:t>two</w:t><w:tab/><w:t>three</w:t></w:r></w:p>"#,
+            );
+            let docx = minimal_docx_styled(styles, body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let p0 = &snap.blocks[0];
+            assert_eq!(p0.text, "xy");
+            assert!(
+                p0.marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
+                "named char style → mark: {:?}",
+                p0.marks
+            );
+            let p1 = &snap.blocks[1];
+            assert!(p1.text.contains('\n'), "w:br → newline: {:?}", p1.text);
+            assert!(p1.text.contains('\t'), "w:tab → tab: {:?}", p1.text);
+            assert_eq!(p1.text, "one\ntwo\tthree");
+        }
+        // Phase `imports_named_paragraph_style_into_container`.
+        {
+            // A custom paragraph style carrying formatting lifts into the styles container, pointed at via `w:styleId`.
+            let styles = concat!(
+                r##"<w:style w:type="paragraph" w:styleId="Fancy"><w:name w:val="Fancy"/>"##,
+                r##"<w:pPr><w:jc w:val="center"/><w:spacing w:after="180"/><w:ind w:left="360"/></w:pPr>"##,
+                r##"<w:rPr><w:rFonts w:ascii="Times New Roman"/><w:b/><w:i/><w:color w:val="FF0000"/><w:sz w:val="40"/></w:rPr></w:style>"##,
+            );
+            let body =
+                r#"<w:p><w:pPr><w:pStyle w:val="Fancy"/></w:pPr><w:r><w:t>hi</w:t></w:r></w:p>"#;
+            let docx = minimal_docx_styled(styles, body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d.materialize();
+            let b = &snap.blocks[0];
+            assert_eq!(b.kind, "paragraph");
+            assert_eq!(b.text, "hi");
+            assert_eq!(
+                b.attrs.get("style"),
+                Some(&AttrVal::Str("Fancy".into())),
+                "block points at the styleId: {:?}",
+                b.attrs
+            );
+            // The formatting lives in the style, not directly on the block.
+            assert_eq!(
+                b.attrs.get("align"),
+                None,
+                "alignment comes from the style, not a direct attr: {:?}",
+                b.attrs
+            );
+            assert!(
+                b.marks.is_empty(),
+                "style formatting not lifted as inline marks: {:?}",
+                b.marks
+            );
+
+            let st = snap
+                .styles
+                .get("Fancy")
+                .expect("style lifted into container");
+            assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
+            assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
+            assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
+            assert_eq!(
+                st.get("color"),
+                Some(&AttrVal::Str("#ff0000".into())),
+                "w:color FF0000 → #ff0000"
+            );
+            assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
+            assert_eq!(
+                st.get("size"),
+                Some(&AttrVal::Float(20.0)),
+                "w:sz 40 half-points → 20pt"
+            );
+            assert_eq!(
+                st.get("font"),
+                Some(&AttrVal::Str("serif".into())),
+                "Times New Roman → serif"
+            );
+            assert_eq!(
+                st.get("space_after"),
+                Some(&AttrVal::Float(12.0)),
+                "180 twips → 12px"
+            );
+            assert_eq!(
+                st.get("indent"),
+                Some(&AttrVal::Float(24.0)),
+                "360 twips → 24px"
+            );
+        }
     }
 
     #[test]
-    fn imports_run_props_as_marks() {
-        use qdoc::document::MarkValue;
-        let body = concat!(
-            r#"<w:p>"#,
-            r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
-            r#"<w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r>"#,
-            r#"<w:r><w:t xml:space="preserve"> and </w:t></w:r>"#,
-            r#"<w:r><w:rPr><w:i/><w:u w:val="single"/><w:strike/></w:rPr><w:t>more</w:t></w:r>"#,
-            r#"</w:p>"#,
-        );
-        let docx = minimal_docx(body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let p = &d.materialize().blocks[0];
-        assert_eq!(p.text, "a bold and more");
-        assert!(
-            p.marks
-                .iter()
-                .any(|m| m.name == "strong" && m.start == 2 && m.end == 6),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
-                .iter()
-                .any(|m| m.name == "em" && m.start == 11 && m.end == 15),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
-                .iter()
-                .any(|m| m.name == "underline" && m.start == 11 && m.end == 15),
-            "{:?}",
-            p.marks
-        );
-        assert!(
-            p.marks
-                .iter()
-                .any(|m| m.name == "strike" && m.start == 11 && m.end == 15),
-            "{:?}",
-            p.marks
-        );
-        let _ = MarkValue::Bool(true);
-    }
+    fn imports_and_roundtrips_document_and_run_language() {
+        // Phase `imports_run_language_as_mark`.
+        {
+            use qdoc::document::MarkValue;
+            // A run carrying `<w:lang w:val="fr"/>` → a `lang` run mark with the tag.
+            let body = concat!(
+                r#"<w:p>"#,
+                r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
+                r#"<w:r><w:rPr><w:lang w:val="fr"/></w:rPr><w:t>bonjour</w:t></w:r>"#,
+                r#"</w:p>"#,
+            );
+            let docx = minimal_docx(body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let p = &d.materialize().blocks[0];
+            assert_eq!(p.text, "a bonjour");
+            assert!(
+                p.marks.iter().any(|m| m.name == "lang"
+                    && m.start == 2
+                    && m.end == 9
+                    && m.value == MarkValue::Str("fr".into())),
+                "lang mark over 'bonjour': {:?}",
+                p.marks
+            );
+        }
+        // Phase `imports_document_default_language`.
+        {
+            // `docDefaults > rPrDefault > rPr > w:lang` sets the document default; the style's own `w:lang` proves only the run default is read.
+            let styles = concat!(
+                r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
+                r#"<w:style w:type="paragraph" w:styleId="Body"><w:rPr><w:lang w:val="en-US"/></w:rPr></w:style>"#,
+            );
+            let body = r"<w:p><w:r><w:t>hi</w:t></w:r></w:p>";
+            let docx = minimal_docx_styled(styles, body);
+            let mut d = Document::new();
+            DocxCodec
+                .import(
+                    &docx,
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                d.materialize().language.as_deref(),
+                Some("de-DE"),
+                "document default language from docDefaults"
+            );
+        }
+        // Phase `document_and_run_language_roundtrip`.
+        {
+            use qdoc::document::MarkValue;
+            // A `de-DE` default language plus a `fr`-marked run must both survive export→import.
+            let mut d = Document::new();
+            d.set_language("de-DE");
+            let id = d.insert_block(None, "paragraph");
+            d.splice_text(&id, 0, 0, "bonjour monde");
+            d.add_mark(&id, 0, 7, "lang", "fr");
 
-    #[test]
-    fn imports_align_font_size_and_family() {
-        use qdoc::document::MarkValue;
-        let body = concat!(
-            r#"<w:p><w:pPr><w:jc w:val="center"/></w:pPr>"#,
-            r#"<w:r><w:rPr><w:sz w:val="40"/><w:rFonts w:ascii="Times New Roman"/></w:rPr><w:t>big</w:t></w:r>"#,
-            r#"</w:p>"#,
-        );
-        let docx = minimal_docx(body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "big");
-        assert_eq!(
-            b.attrs.get("align"),
-            Some(&AttrVal::Str("center".into())),
-            "{:?}",
-            b.attrs
-        );
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
-            "{:?}",
-            b.marks
-        );
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
-            "{:?}",
-            b.marks
-        );
-    }
+            let exported = DocxCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            let mut d2 = Document::new();
+            DocxCodec
+                .import(
+                    &exported,
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d2.materialize();
 
-    #[test]
-    fn imports_named_character_style_and_whitespace() {
-        let styles =
-            r#"<w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>"#;
-        let body = concat!(
-            r#"<w:p><w:r><w:t>x</w:t></w:r>"#,
-            r#"<w:r><w:rPr><w:rStyle w:val="Strong"/></w:rPr><w:t>y</w:t></w:r></w:p>"#,
-            r#"<w:p><w:r><w:t>one</w:t><w:br/><w:t>two</w:t><w:tab/><w:t>three</w:t></w:r></w:p>"#,
-        );
-        let docx = minimal_docx_styled(styles, body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let p0 = &snap.blocks[0];
-        assert_eq!(p0.text, "xy");
-        assert!(
-            p0.marks
-                .iter()
-                .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
-            "named char style → mark: {:?}",
-            p0.marks
-        );
-        let p1 = &snap.blocks[1];
-        assert!(p1.text.contains('\n'), "w:br → newline: {:?}", p1.text);
-        assert!(p1.text.contains('\t'), "w:tab → tab: {:?}", p1.text);
-        assert_eq!(p1.text, "one\ntwo\tthree");
-    }
-
-    #[test]
-    fn imports_numbered_and_bulleted_lists() {
-        let numbering = concat!(
-            r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>"#,
-            r#"<w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>"#,
-            r#"<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#,
-            r#"<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>"#,
-        );
-        let body = concat!(
-            r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:t>first</w:t></w:r></w:p>"#,
-            r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>bee</w:t></w:r></w:p>"#,
-        );
-        let docx = minimal_docx_numbered("", numbering, body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 2, "{snap:?}");
-        assert_eq!(items[0].text, "first");
-        assert_eq!(
-            items[0].attrs.get("ordered"),
-            Some(&AttrVal::Bool(true)),
-            "decimal numId → ordered"
-        );
-        assert_eq!(
-            items[1].attrs.get("ordered"),
-            Some(&AttrVal::Bool(false)),
-            "bullet numId → unordered"
-        );
-    }
-
-    #[test]
-    fn imports_table_as_editable_cells() {
-        let body = concat!(
-            r#"<w:tbl>"#,
-            r#"<w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc></w:tr>"#,
-            r#"<w:tr><w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>d</w:t></w:r></w:p></w:tc></w:tr>"#,
-            r#"</w:tbl>"#,
-        );
-        let docx = minimal_docx(body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
-        assert_eq!(
-            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
-            vec!["a", "b", "c", "d"]
-        );
-        assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
-        assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
-    }
-
-    #[test]
-    fn captures_unmodeled_body_element_as_fidelity_atom() {
-        let body = concat!(
-            r#"<w:p><w:r><w:t>before</w:t></w:r></w:p>"#,
-            r#"<w:sdt><w:sdtContent><w:r><w:t>boxed</w:t></w:r></w:sdtContent></w:sdt>"#,
-            r#"<w:p><w:r><w:t>after</w:t></w:r></w:p>"#,
-        );
-        let docx = minimal_docx(body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
-        assert_eq!(snap.blocks[0].text, "before");
-        assert_eq!(snap.blocks[1].kind, "fidelity");
-        assert_eq!(snap.blocks[2].text, "after");
-        let raw = match snap.blocks[1].attrs.get("xml") {
-            Some(AttrVal::Str(x)) => x.clone(),
-            other => panic!("fidelity atom missing xml attr: {other:?}"),
-        };
-        assert!(
-            raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"),
-            "captured raw: {raw}"
-        );
+            assert_eq!(
+                snap.language.as_deref(),
+                Some("de-DE"),
+                "document default language survives: {:?}",
+                snap.language
+            );
+            let b = &snap.blocks[0];
+            assert_eq!(b.text, "bonjour monde");
+            assert!(
+                b.marks.iter().any(|m| m.name == "lang"
+                    && m.start == 0
+                    && m.end == 7
+                    && m.value == MarkValue::Str("fr".into())),
+                "run lang mark `fr` survives over 'bonjour': {:?}",
+                b.marks
+            );
+        }
     }
 
     #[test]
@@ -1817,178 +1998,6 @@ mod tests {
         assert_eq!(
             snap.blocks[0].text,
             format!("before{}after", qdoc::schema::FIELD_PLACEHOLDER)
-        );
-    }
-
-    #[test]
-    fn imports_named_paragraph_style_into_container() {
-        // A custom paragraph style carrying formatting lifts into the styles container, pointed at via `w:styleId`.
-        let styles = concat!(
-            r##"<w:style w:type="paragraph" w:styleId="Fancy"><w:name w:val="Fancy"/>"##,
-            r##"<w:pPr><w:jc w:val="center"/><w:spacing w:after="180"/><w:ind w:left="360"/></w:pPr>"##,
-            r##"<w:rPr><w:rFonts w:ascii="Times New Roman"/><w:b/><w:i/><w:color w:val="FF0000"/><w:sz w:val="40"/></w:rPr></w:style>"##,
-        );
-        let body = r#"<w:p><w:pPr><w:pStyle w:val="Fancy"/></w:pPr><w:r><w:t>hi</w:t></w:r></w:p>"#;
-        let docx = minimal_docx_styled(styles, body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d.materialize();
-        let b = &snap.blocks[0];
-        assert_eq!(b.kind, "paragraph");
-        assert_eq!(b.text, "hi");
-        assert_eq!(
-            b.attrs.get("style"),
-            Some(&AttrVal::Str("Fancy".into())),
-            "block points at the styleId: {:?}",
-            b.attrs
-        );
-        // The formatting lives in the style, not directly on the block.
-        assert_eq!(
-            b.attrs.get("align"),
-            None,
-            "alignment comes from the style, not a direct attr: {:?}",
-            b.attrs
-        );
-        assert!(
-            b.marks.is_empty(),
-            "style formatting not lifted as inline marks: {:?}",
-            b.marks
-        );
-
-        let st = snap
-            .styles
-            .get("Fancy")
-            .expect("style lifted into container");
-        assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
-        assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
-        assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
-        assert_eq!(
-            st.get("color"),
-            Some(&AttrVal::Str("#ff0000".into())),
-            "w:color FF0000 → #ff0000"
-        );
-        assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
-        assert_eq!(
-            st.get("size"),
-            Some(&AttrVal::Float(20.0)),
-            "w:sz 40 half-points → 20pt"
-        );
-        assert_eq!(
-            st.get("font"),
-            Some(&AttrVal::Str("serif".into())),
-            "Times New Roman → serif"
-        );
-        assert_eq!(
-            st.get("space_after"),
-            Some(&AttrVal::Float(12.0)),
-            "180 twips → 12px"
-        );
-        assert_eq!(
-            st.get("indent"),
-            Some(&AttrVal::Float(24.0)),
-            "360 twips → 24px"
-        );
-    }
-
-    #[test]
-    fn imports_run_language_as_mark() {
-        use qdoc::document::MarkValue;
-        // A run carrying `<w:lang w:val="fr"/>` → a `lang` run mark with the tag.
-        let body = concat!(
-            r#"<w:p>"#,
-            r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
-            r#"<w:r><w:rPr><w:lang w:val="fr"/></w:rPr><w:t>bonjour</w:t></w:r>"#,
-            r#"</w:p>"#,
-        );
-        let docx = minimal_docx(body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let p = &d.materialize().blocks[0];
-        assert_eq!(p.text, "a bonjour");
-        assert!(
-            p.marks.iter().any(|m| m.name == "lang"
-                && m.start == 2
-                && m.end == 9
-                && m.value == MarkValue::Str("fr".into())),
-            "lang mark over 'bonjour': {:?}",
-            p.marks
-        );
-    }
-
-    #[test]
-    fn imports_document_default_language() {
-        // `docDefaults > rPrDefault > rPr > w:lang` sets the document default; the style's own `w:lang` proves only the run default is read.
-        let styles = concat!(
-            r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
-            r#"<w:style w:type="paragraph" w:styleId="Body"><w:rPr><w:lang w:val="en-US"/></w:rPr></w:style>"#,
-        );
-        let body = r"<w:p><w:r><w:t>hi</w:t></w:r></w:p>";
-        let docx = minimal_docx_styled(styles, body);
-        let mut d = Document::new();
-        DocxCodec
-            .import(
-                &docx,
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        assert_eq!(
-            d.materialize().language.as_deref(),
-            Some("de-DE"),
-            "document default language from docDefaults"
-        );
-    }
-
-    #[test]
-    fn document_and_run_language_roundtrip() {
-        use qdoc::document::MarkValue;
-        // A `de-DE` default language plus a `fr`-marked run must both survive export→import.
-        let mut d = Document::new();
-        d.set_language("de-DE");
-        let id = d.insert_block(None, "paragraph");
-        d.splice_text(&id, 0, 0, "bonjour monde");
-        d.add_mark(&id, 0, 7, "lang", "fr");
-
-        let exported = DocxCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut d2 = Document::new();
-        DocxCodec
-            .import(
-                &exported,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let snap = d2.materialize();
-
-        assert_eq!(
-            snap.language.as_deref(),
-            Some("de-DE"),
-            "document default language survives: {:?}",
-            snap.language
-        );
-        let b = &snap.blocks[0];
-        assert_eq!(b.text, "bonjour monde");
-        assert!(
-            b.marks.iter().any(|m| m.name == "lang"
-                && m.start == 0
-                && m.end == 7
-                && m.value == MarkValue::Str("fr".into())),
-            "run lang mark `fr` survives over 'bonjour': {:?}",
-            b.marks
         );
     }
 }

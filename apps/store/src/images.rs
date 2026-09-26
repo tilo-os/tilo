@@ -123,40 +123,44 @@ pub fn image_store() -> ImageStore {
 mod tests {
     use super::*;
 
+    /// Artwork URLs refuse local networks, ambient credentials and every non-public range.
     #[test]
-    fn artwork_urls_refuse_local_network_and_ambient_credentials() {
-        for url in [
-            "http://cdn.example/icon.png",
-            "https://user:secret@example.com/icon.png",
-            "https://localhost/icon.png",
-            "https://127.0.0.1/icon.png",
-            "https://[::1]/icon.png",
-            "https://printer.local/icon.png",
-        ] {
-            assert!(safe_artwork_url(url).is_none(), "accepted {url}");
+    fn artwork_urls_refuse_non_public_hosts_and_credentials() {
+        // Case `artwork_urls_refuse_local_network_and_ambient_credentials`.
+        {
+            for url in [
+                "http://cdn.example/icon.png",
+                "https://user:secret@example.com/icon.png",
+                "https://localhost/icon.png",
+                "https://127.0.0.1/icon.png",
+                "https://[::1]/icon.png",
+                "https://printer.local/icon.png",
+            ] {
+                assert!(safe_artwork_url(url).is_none(), "accepted {url}");
+            }
+            assert!(safe_artwork_url("https://cdn.example/icon.png").is_some());
         }
-        assert!(safe_artwork_url("https://cdn.example/icon.png").is_some());
-    }
 
-    #[test]
-    fn artwork_address_filter_refuses_every_non_public_range() {
-        for ip in [
-            "127.0.0.1",
-            "10.0.0.1",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.1.1",
-            "100.64.0.1",
-            "192.0.2.1",
-            "198.51.100.1",
-            "203.0.113.1",
-            "::1",
-            "fe80::1",
-            "fd00::1",
-        ] {
-            assert!(!public_ip(ip.parse().unwrap()), "accepted {ip}");
+        // Case `artwork_address_filter_refuses_every_non_public_range`.
+        {
+            for ip in [
+                "127.0.0.1",
+                "10.0.0.1",
+                "172.16.0.1",
+                "192.168.1.1",
+                "169.254.1.1",
+                "100.64.0.1",
+                "192.0.2.1",
+                "198.51.100.1",
+                "203.0.113.1",
+                "::1",
+                "fe80::1",
+                "fd00::1",
+            ] {
+                assert!(!public_ip(ip.parse().unwrap()), "accepted {ip}");
+            }
+            assert!(public_ip("1.1.1.1".parse().unwrap()));
+            assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
         }
-        assert!(public_ip("1.1.1.1".parse().unwrap()));
-        assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
     }
 }

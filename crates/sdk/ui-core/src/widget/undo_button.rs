@@ -499,119 +499,125 @@ mod tests {
         }
     }
 
-    /// The disabled state an AT is told must be the state that is real: no
-    /// undo on the stack means `disabled`, not focusable, and a description
-    /// that says so.
     #[test]
-    fn accessibility_reports_disabled_exactly_when_the_verb_is_unavailable() {
-        use crate::a11y::Role;
-        let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
+    fn undo_controls_read_their_own_verb_and_report_availability() {
+        // Case `accessibility_reports_disabled_exactly_when_the_verb_is_unavailable`.
+        // The disabled state an AT is told must be the state that is real: no
+        // undo on the stack means `disabled`, not focusable, and a description
+        // that says so.
+        {
+            use crate::a11y::Role;
+            let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
-        let node = Widget::accessibility(&b).expect("an undo button is not presentational");
-        assert_eq!(node.role, Role::Button);
-        assert_eq!(node.name.as_deref(), Some("Undo"));
-        assert!(node.state.disabled, "an empty history disables the control");
-        assert!(!node.state.focusable, "a dead control must not take focus");
-        assert_eq!(node.description.as_deref(), Some("Nothing to undo"));
-        assert!(!b.is_enabled(), "is_enabled must agree with the a11y state");
+            let node = Widget::accessibility(&b).expect("an undo button is not presentational");
+            assert_eq!(node.role, Role::Button);
+            assert_eq!(node.name.as_deref(), Some("Undo"));
+            assert!(node.state.disabled, "an empty history disables the control");
+            assert!(!node.state.focusable, "a dead control must not take focus");
+            assert_eq!(node.description.as_deref(), Some("Nothing to undo"));
+            assert!(!b.is_enabled(), "is_enabled must agree with the a11y state");
 
-        b.set_undo_status(&mut || status(true, false));
-        let node = Widget::accessibility(&b).unwrap();
-        assert!(!node.state.disabled, "an action on the stack enables it");
-        assert!(node.state.focusable);
-        assert_eq!(node.description.as_deref(), Some("Undo: +4 -0 chars"));
-        assert!(b.is_enabled());
+            b.set_undo_status(&mut || status(true, false));
+            let node = Widget::accessibility(&b).unwrap();
+            assert!(!node.state.disabled, "an action on the stack enables it");
+            assert!(node.state.focusable);
+            assert_eq!(node.description.as_deref(), Some("Undo: +4 -0 chars"));
+            assert!(b.is_enabled());
+        }
+
+        // Case `each_control_reads_its_own_verb`.
+        // A Redo control must read the redo half of the status, not the undo
+        // half — otherwise Redo lights up whenever anything is undoable.
+        {
+            let mut undo = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
+            let mut redo = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
+            undo.set_undo_status(&mut || status(true, false));
+            redo.set_undo_status(&mut || status(true, false));
+            assert!(undo.is_enabled(), "undo is available");
+            assert!(!redo.is_enabled(), "redo is not, despite undo being");
+            assert_eq!(
+                Widget::accessibility(&redo).unwrap().description.as_deref(),
+                Some("Nothing to redo")
+            );
+        }
+
+        // Case `a_status_change_marks_the_control_for_repaint`.
+        // A status arriving on a control that painted dimmed has to repaint it,
+        // or the first undoable action leaves a live history behind a dead-looking
+        // button until something else happens to invalidate the frame.
+        {
+            let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
+            b.last_paint_state = b.paint_state();
+            b.dirty = false;
+            assert!(!b.needs_redraw(), "nothing has changed yet");
+
+            b.set_undo_status(&mut || status(true, false));
+            assert!(
+                b.needs_redraw(),
+                "gaining an undoable action must repaint the control"
+            );
+        }
+
+        // Case `a_control_that_goes_unavailable_surrenders_focus`.
+        // Undoing the last action with the keyboard empties the stack under the
+        // control the user is standing on. It must not keep the focus ring, and
+        // must not keep telling an assistive technology it is focused — it has
+        // just left the focus order.
+        {
+            let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
+            b.set_undo_status(&mut || status(true, false));
+            b.set_focus(true);
+            assert!(b.is_focused());
+            assert!(
+                Widget::accessibility(&b).unwrap().state.focused,
+                "a live, focused control reports focus"
+            );
+
+            // The action is undone; the stack is empty.
+            b.set_undo_status(&mut || status(false, true));
+            assert!(!b.is_focused(), "focus is surrendered with the verb");
+            let node = Widget::accessibility(&b).unwrap();
+            assert!(!node.state.focused, "and is not reported to an AT");
+            assert!(node.state.disabled);
+        }
     }
 
-    /// A Redo control must read the redo half of the status, not the undo
-    /// half — otherwise Redo lights up whenever anything is undoable.
     #[test]
-    fn each_control_reads_its_own_verb() {
-        let mut undo = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        let mut redo = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        undo.set_undo_status(&mut || status(true, false));
-        redo.set_undo_status(&mut || status(true, false));
-        assert!(undo.is_enabled(), "undo is available");
-        assert!(!redo.is_enabled(), "redo is not, despite undo being");
-        assert_eq!(
-            Widget::accessibility(&redo).unwrap().description.as_deref(),
-            Some("Nothing to redo")
-        );
-    }
+    fn undo_requests_share_one_route_for_pointer_and_assistive_activation() {
+        // Case `clicking_requests_the_verb_only_when_it_is_available`.
+        // The pointer path produces a request the host can drain — and only when
+        // the verb is available.
+        {
+            let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
+            click(&mut b);
+            assert_eq!(
+                b.take_undo_request(),
+                None,
+                "a disabled control must not ask the host to undo"
+            );
 
-    /// The pointer path produces a request the host can drain — and only when
-    /// the verb is available.
-    #[test]
-    fn clicking_requests_the_verb_only_when_it_is_available() {
-        let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        click(&mut b);
-        assert_eq!(
-            b.take_undo_request(),
-            None,
-            "a disabled control must not ask the host to undo"
-        );
+            b.set_undo_status(&mut || status(true, false));
+            click(&mut b);
+            assert_eq!(b.take_undo_request(), Some(UndoRequest::Undo));
+            assert_eq!(b.take_undo_request(), None, "one click, one undo");
+        }
 
-        b.set_undo_status(&mut || status(true, false));
-        click(&mut b);
-        assert_eq!(b.take_undo_request(), Some(UndoRequest::Undo));
-        assert_eq!(b.take_undo_request(), None, "one click, one undo");
-    }
+        // Case `assistive_activation_takes_the_same_route_as_a_click`.
+        // Assistive technology reaches the same request as a mouse release —
+        // `perform_action_at` forwards the empty key path here.
+        {
+            let mut doc = AutoCommit::new();
+            let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
-    /// Assistive technology reaches the same request as a mouse release —
-    /// `perform_action_at` forwards the empty key path here.
-    #[test]
-    fn assistive_activation_takes_the_same_route_as_a_click() {
-        let mut doc = AutoCommit::new();
-        let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
+            assert!(
+                !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
+                "an unavailable verb declines the action"
+            );
+            assert_eq!(b.take_undo_request(), None);
 
-        assert!(
-            !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
-            "an unavailable verb declines the action"
-        );
-        assert_eq!(b.take_undo_request(), None);
-
-        b.set_undo_status(&mut || status(false, true));
-        assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
-        assert_eq!(b.take_undo_request(), Some(UndoRequest::Redo));
-    }
-
-    /// Undoing the last action with the keyboard empties the stack under the
-    /// control the user is standing on. It must not keep the focus ring, and
-    /// must not keep telling an assistive technology it is focused — it has
-    /// just left the focus order.
-    #[test]
-    fn a_control_that_goes_unavailable_surrenders_focus() {
-        let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        b.set_undo_status(&mut || status(true, false));
-        b.set_focus(true);
-        assert!(b.is_focused());
-        assert!(
-            Widget::accessibility(&b).unwrap().state.focused,
-            "a live, focused control reports focus"
-        );
-
-        // The action is undone; the stack is empty.
-        b.set_undo_status(&mut || status(false, true));
-        assert!(!b.is_focused(), "focus is surrendered with the verb");
-        let node = Widget::accessibility(&b).unwrap();
-        assert!(!node.state.focused, "and is not reported to an AT");
-        assert!(node.state.disabled);
-    }
-
-    /// A status arriving on a control that painted dimmed has to repaint it,
-    /// or the first undoable action leaves a live history behind a dead-looking
-    /// button until something else happens to invalidate the frame.
-    #[test]
-    fn a_status_change_marks_the_control_for_repaint() {
-        let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-        b.last_paint_state = b.paint_state();
-        b.dirty = false;
-        assert!(!b.needs_redraw(), "nothing has changed yet");
-
-        b.set_undo_status(&mut || status(true, false));
-        assert!(
-            b.needs_redraw(),
-            "gaining an undoable action must repaint the control"
-        );
+            b.set_undo_status(&mut || status(false, true));
+            assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
+            assert_eq!(b.take_undo_request(), Some(UndoRequest::Redo));
+        }
     }
 }

@@ -338,57 +338,61 @@ mod tests {
         anchor
     }
 
+    /// The bar exposes sort and filter actions and an open menu owns its rows and swallows the gap.
     #[test]
-    fn bar_hit_testing_exposes_sort_and_filter_actions() {
-        let mut controls = ShelfControls::default();
-        let anchor = draw(&mut controls, LibraryPrefs::default());
-        assert_eq!(
-            controls.hit_test(anchor.center()),
-            Some(ShelfControlAction::ToggleSortMenu)
-        );
-        let toggle = controls
-            .hits
-            .iter()
-            .find(|(_, action)| *action == ShelfControlAction::ToggleHideRead)
-            .map(|(rect, _)| rect.center())
-            .expect("hide-read toggle");
-        assert_eq!(
-            controls.hit_test(toggle),
-            Some(ShelfControlAction::ToggleHideRead)
-        );
-    }
+    fn shelf_controls_hit_testing_and_menu_ownership() {
+        // --- phase: bar_hit_testing_exposes_sort_and_filter_actions ---
+        {
+            let mut controls = ShelfControls::default();
+            let anchor = draw(&mut controls, LibraryPrefs::default());
+            assert_eq!(
+                controls.hit_test(anchor.center()),
+                Some(ShelfControlAction::ToggleSortMenu)
+            );
+            let toggle = controls
+                .hits
+                .iter()
+                .find(|(_, action)| *action == ShelfControlAction::ToggleHideRead)
+                .map(|(rect, _)| rect.center())
+                .expect("hide-read toggle");
+            assert_eq!(
+                controls.hit_test(toggle),
+                Some(ShelfControlAction::ToggleHideRead)
+            );
+        }
 
-    #[test]
-    fn open_menu_owns_rows_and_gap_swallowing() {
-        use crate::chrome::rhythm;
-        let mut controls = ShelfControls::default();
-        controls.toggle_sort_menu();
-        let anchor = draw(&mut controls, LibraryPrefs::default());
-        let progress = controls
-            .hits
-            .iter()
-            .find(|(_, action)| *action == ShelfControlAction::SetSort(LibrarySort::Progress))
-            .map(|(rect, _)| rect.center())
-            .expect("progress row");
-        assert_eq!(
-            controls.hit_test(progress),
-            Some(ShelfControlAction::SetSort(LibrarySort::Progress))
-        );
-        // The menu opens a related step under its anchor and pads its rows
-        // by another related step: a point inside that top padding is the
-        // panel's own (swallowed), a point in the gap above it is nobody's.
-        assert_eq!(
-            controls.hit_test(Point::new(
-                anchor.x0,
-                anchor.y1 + rhythm::RELATED + rhythm::TIGHT
-            )),
-            Some(ShelfControlAction::Swallow)
-        );
-        assert_eq!(
-            controls.hit_test(Point::new(anchor.x0, anchor.y1 + rhythm::TIGHT)),
-            None
-        );
-        controls.close_sort_menu();
-        assert!(!controls.sort_menu_open());
+        // --- phase: open_menu_owns_rows_and_gap_swallowing ---
+        {
+            use crate::chrome::rhythm;
+            let mut controls = ShelfControls::default();
+            controls.toggle_sort_menu();
+            let anchor = draw(&mut controls, LibraryPrefs::default());
+            let progress = controls
+                .hits
+                .iter()
+                .find(|(_, action)| *action == ShelfControlAction::SetSort(LibrarySort::Progress))
+                .map(|(rect, _)| rect.center())
+                .expect("progress row");
+            assert_eq!(
+                controls.hit_test(progress),
+                Some(ShelfControlAction::SetSort(LibrarySort::Progress))
+            );
+            // The menu opens a related step under its anchor and pads its rows
+            // by another related step: a point inside that top padding is the
+            // panel's own (swallowed), a point in the gap above it is nobody's.
+            assert_eq!(
+                controls.hit_test(Point::new(
+                    anchor.x0,
+                    anchor.y1 + rhythm::RELATED + rhythm::TIGHT
+                )),
+                Some(ShelfControlAction::Swallow)
+            );
+            assert_eq!(
+                controls.hit_test(Point::new(anchor.x0, anchor.y1 + rhythm::TIGHT)),
+                None
+            );
+            controls.close_sort_menu();
+            assert!(!controls.sort_menu_open());
+        }
     }
 }

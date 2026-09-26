@@ -1363,56 +1363,57 @@ mod quick_settings_tests {
     use super::{QuickSettingsConfig, QuickSettingsControl};
 
     #[test]
-    fn quick_settings_config_deduplicates_and_keeps_network_recovery() {
-        let config = QuickSettingsConfig {
-            controls: vec![
-                QuickSettingsControl::NightLight,
-                QuickSettingsControl::NightLight,
-            ],
+    fn quick_settings_order_dedupes_persists_and_keeps_recovery_controls() {
+        // Phase `quick_settings_config_deduplicates_and_keeps_network_recovery`.
+        {
+            let config = QuickSettingsConfig {
+                controls: vec![
+                    QuickSettingsControl::NightLight,
+                    QuickSettingsControl::NightLight,
+                ],
+            }
+            .normalised();
+            assert_eq!(
+                config.controls,
+                vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
+            );
         }
-        .normalised();
-        assert_eq!(
-            config.controls,
-            vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
-        );
-    }
+        // Phase `airplane_is_available_but_not_a_default_control`.
+        {
+            assert!(
+                !QuickSettingsConfig::default()
+                    .controls
+                    .contains(&QuickSettingsControl::AirplaneMode)
+            );
+        }
+        // Phase `quick_settings_order_survives_restart_without_replacing_other_settings`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("tilo/settings.json");
+            crate::update_section_at(
+                &path,
+                "appearance",
+                serde_json::json!({"theme": "dark"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+            let expected = QuickSettingsConfig {
+                controls: vec![
+                    QuickSettingsControl::NightLight,
+                    QuickSettingsControl::Wifi,
+                    QuickSettingsControl::Bluetooth,
+                ],
+            };
+            expected.save_at(&path).unwrap();
 
-    #[test]
-    fn airplane_is_available_but_not_a_default_control() {
-        assert!(
-            !QuickSettingsConfig::default()
-                .controls
-                .contains(&QuickSettingsControl::AirplaneMode)
-        );
-    }
-
-    #[test]
-    fn quick_settings_order_survives_restart_without_replacing_other_settings() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("tilo/settings.json");
-        crate::update_section_at(
-            &path,
-            "appearance",
-            serde_json::json!({"theme": "dark"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap();
-        let expected = QuickSettingsConfig {
-            controls: vec![
-                QuickSettingsControl::NightLight,
-                QuickSettingsControl::Wifi,
-                QuickSettingsControl::Bluetooth,
-            ],
-        };
-        expected.save_at(&path).unwrap();
-
-        assert_eq!(QuickSettingsConfig::load_at(&path), expected);
-        assert_eq!(
-            crate::load_at(&path)["appearance"]["theme"],
-            serde_json::json!("dark")
-        );
+            assert_eq!(QuickSettingsConfig::load_at(&path), expected);
+            assert_eq!(
+                crate::load_at(&path)["appearance"]["theme"],
+                serde_json::json!("dark")
+            );
+        }
     }
 }
 
@@ -2046,160 +2047,152 @@ mod tests {
         }
     }
     #[test]
-    fn rejects_modes_the_connector_does_not_advertise() {
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mode: Some(OutputMode {
-                    width: 3840,
-                    height: 2160,
-                    refresh_mhz: 60_000,
-                }),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            cfg.validate_for(&[display("DP-1")]),
-            Err(DisplayConfigError::UnsupportedMode { .. })
-        ));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn display_layouts_reject_unadvertised_modes_and_invalid_mirrors() {
+        // Phase `rejects_modes_the_connector_does_not_advertise`.
+        {
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mode: Some(OutputMode {
+                        width: 3840,
+                        height: 2160,
+                        refresh_mhz: 60_000,
+                    }),
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(
+                cfg.validate_for(&[display("DP-1")]),
+                Err(DisplayConfigError::UnsupportedMode { .. })
+            ));
+        }
+        // Phase `legacy_unqualified_connector_never_cross_targets_qualified_duplicates`.
+        {
+            let first = OutputDescriptor {
+                connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            let second = OutputDescriptor {
+                connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            let mut config = DisplayConfig::default();
+            config.outputs.insert(
+                "HDMI-A-1".into(),
+                OutputConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            );
 
-    #[test]
-    fn legacy_unqualified_connector_never_cross_targets_qualified_duplicates() {
-        let first = OutputDescriptor {
-            connector: "pci:0000:01:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        let second = OutputDescriptor {
-            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        let mut config = DisplayConfig::default();
-        config.outputs.insert(
-            "HDMI-A-1".into(),
-            OutputConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        );
+            assert!(config.output_for(&first.connector).is_none());
+            assert!(config.output_for(&second.connector).is_none());
+            assert_eq!(first.label(), "HDMI-A-1");
+            assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
 
-        assert!(config.output_for(&first.connector).is_none());
-        assert!(config.output_for(&second.connector).is_none());
-        assert_eq!(first.label(), "HDMI-A-1");
-        assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
+            // Snapshots written before `connector_label` existed remain readable
+            // and continue to present the historical raw connector label.
+            let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
+                "connector": "HDMI-A-1",
+                "modes": [], "hdr": false, "vrr": false, "color_profiles": []
+            }))
+            .expect("old snapshot remains compatible");
+            assert_eq!(legacy.label(), "HDMI-A-1");
+            assert_eq!(legacy.card_qualifier(), None);
+        }
+        // Phase `rejects_mirror_cycles`.
+        {
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mirror_of: Some("DP-2".into()),
+                    ..Default::default()
+                },
+            );
+            cfg.outputs.insert(
+                "DP-2".into(),
+                OutputConfig {
+                    mirror_of: Some("DP-1".into()),
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(
+                cfg.validate_for(&[display("DP-1"), display("DP-2")]),
+                Err(DisplayConfigError::MirrorCycle { .. })
+            ));
+        }
+        // Phase `rejects_mirror_pair_with_different_explicit_modes`.
+        {
+            let mut left = display("DP-1");
+            left.modes.push(OutputMode {
+                width: 1280,
+                height: 720,
+                refresh_mhz: 60_000,
+            });
+            let right = display("DP-2");
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mode: Some(left.modes[1]),
+                    mirror_of: Some("DP-2".into()),
+                    ..Default::default()
+                },
+            );
+            cfg.outputs.insert(
+                "DP-2".into(),
+                OutputConfig {
+                    mode: Some(right.modes[0]),
+                    ..Default::default()
+                },
+            );
+            assert!(matches!(
+                cfg.validate_for(&[left, right]),
+                Err(DisplayConfigError::IncompatibleMirrorModes { .. })
+            ));
+        }
+        // Phase `mirror_pair_accepts_same_resolution_at_different_refresh_rates`.
+        {
+            let mut panel = display("eDP-1");
+            panel.modes[0].refresh_mhz = 60_000;
+            let mut usb_c = display("DP-1");
+            usb_c.modes[0].refresh_mhz = 59_940;
+            let mut cfg = DisplayConfig::default();
+            cfg.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    primary: true,
+                    mode: Some(panel.modes[0]),
+                    ..Default::default()
+                },
+            );
+            cfg.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    mode: Some(usb_c.modes[0]),
+                    mirror_of: Some("eDP-1".into()),
+                    ..Default::default()
+                },
+            );
 
-        // Snapshots written before `connector_label` existed remain readable
-        // and continue to present the historical raw connector label.
-        let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
-            "connector": "HDMI-A-1",
-            "modes": [], "hdr": false, "vrr": false, "color_profiles": []
-        }))
-        .expect("old snapshot remains compatible");
-        assert_eq!(legacy.label(), "HDMI-A-1");
-        assert_eq!(legacy.card_qualifier(), None);
-    }
-    #[test]
-    fn rejects_mirror_cycles() {
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mirror_of: Some("DP-2".into()),
-                ..Default::default()
-            },
-        );
-        cfg.outputs.insert(
-            "DP-2".into(),
-            OutputConfig {
-                mirror_of: Some("DP-1".into()),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            cfg.validate_for(&[display("DP-1"), display("DP-2")]),
-            Err(DisplayConfigError::MirrorCycle { .. })
-        ));
-    }
-    #[test]
-    fn rejects_mirror_pair_with_different_explicit_modes() {
-        let mut left = display("DP-1");
-        left.modes.push(OutputMode {
-            width: 1280,
-            height: 720,
-            refresh_mhz: 60_000,
-        });
-        let right = display("DP-2");
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mode: Some(left.modes[1]),
-                mirror_of: Some("DP-2".into()),
-                ..Default::default()
-            },
-        );
-        cfg.outputs.insert(
-            "DP-2".into(),
-            OutputConfig {
-                mode: Some(right.modes[0]),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(
-            cfg.validate_for(&[left, right]),
-            Err(DisplayConfigError::IncompatibleMirrorModes { .. })
-        ));
-    }
-
-    #[test]
-    fn mirror_pair_accepts_same_resolution_at_different_refresh_rates() {
-        let mut panel = display("eDP-1");
-        panel.modes[0].refresh_mhz = 60_000;
-        let mut usb_c = display("DP-1");
-        usb_c.modes[0].refresh_mhz = 59_940;
-        let mut cfg = DisplayConfig::default();
-        cfg.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                primary: true,
-                mode: Some(panel.modes[0]),
-                ..Default::default()
-            },
-        );
-        cfg.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                mode: Some(usb_c.modes[0]),
-                mirror_of: Some("eDP-1".into()),
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(cfg.validate_for(&[panel, usb_c]), Ok(()));
-    }
-
-    #[test]
-    fn display_confirmation_expiry_is_a_precise_state_transition() {
-        let mut transaction = DisplayTransaction {
-            state: DisplayTransactionState::AwaitingConfirmation,
-            deadline_unix_ms: Some(25_000),
-            ..Default::default()
-        };
-        assert!(!transaction.expired(24_999));
-        assert!(transaction.expired(25_000));
-        transaction.state = DisplayTransactionState::Confirmed;
-        assert!(!transaction.expired(u64::MAX));
+            assert_eq!(cfg.validate_for(&[panel, usb_c]), Ok(()));
+        }
     }
 
     #[test]
@@ -2219,8 +2212,23 @@ mod tests {
     }
 
     #[test]
-    fn missing_transaction_section_does_not_create_a_phantom_request() {
-        assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
+    fn display_confirmations_are_precise_transitions_without_phantom_requests() {
+        // Phase `display_confirmation_expiry_is_a_precise_state_transition`.
+        {
+            let mut transaction = DisplayTransaction {
+                state: DisplayTransactionState::AwaitingConfirmation,
+                deadline_unix_ms: Some(25_000),
+                ..Default::default()
+            };
+            assert!(!transaction.expired(24_999));
+            assert!(transaction.expired(25_000));
+            transaction.state = DisplayTransactionState::Confirmed;
+            assert!(!transaction.expired(u64::MAX));
+        }
+        // Phase `missing_transaction_section_does_not_create_a_phantom_request`.
+        {
+            assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
+        }
     }
 
     #[test]
@@ -2240,46 +2248,6 @@ mod tests {
             process_start_ticks(stale.publisher_pid),
             Some(stale.publisher_start_ticks)
         );
-    }
-    #[test]
-    #[cfg(not(target_os = "linux"))]
-    fn unavailable_linux_process_identity_is_not_invented() {
-        assert_eq!(process_start_ticks(std::process::id()), None);
-    }
-
-    #[test]
-    fn shortcut_parser_normalises_and_rejects_plain_letters() {
-        assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
-        assert!(KeyChord::parse("k").is_err());
-    }
-    #[test]
-    fn window_management_defaults_are_coherent_and_conflict_free() {
-        let cfg = ShortcutConfig::default();
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
-            "Super+Up"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
-            "Super+Page Up"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::NextWorkspace].display(),
-            "Super+Page Down"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::DetachTab].display(),
-            "Super+Shift+Enter"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::AttachTabLeft].display(),
-            "Super+["
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::AttachTabRight].display(),
-            "Super+]"
-        );
-        assert!(cfg.validate().is_ok());
     }
 
     #[test]
@@ -2327,101 +2295,170 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_conflicts_are_rejected_without_overwriting() {
-        let mut cfg = ShortcutConfig::default();
-        let old = cfg.bindings[&ShortcutAction::Lock].clone();
-        assert_eq!(
-            cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-            Err(ShortcutConfigError::InvalidChord)
-        );
-        assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+    #[cfg(not(target_os = "linux"))]
+    fn unavailable_linux_process_identity_is_not_invented() {
+        assert_eq!(process_start_ticks(std::process::id()), None);
     }
 
     #[test]
-    fn reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter() {
-        let mut cfg = ShortcutConfig::default();
-        for key in ["f1", "printscreen"] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn shortcuts_are_normalised_conflict_free_and_reload_unchanged() {
+        // Phase `shortcut_parser_normalises_and_rejects_plain_letters`.
+        {
+            assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
+            assert!(KeyChord::parse("k").is_err());
+        }
+        // Phase `window_management_defaults_are_coherent_and_conflict_free`.
+        {
+            let cfg = ShortcutConfig::default();
             assert_eq!(
-                cfg.set(
-                    ShortcutAction::Search,
-                    KeyChord {
-                        modifiers: BTreeSet::from(["Ctrl".to_string()]),
-                        key: key.into(),
-                    },
-                ),
-                Err(ShortcutConfigError::ReservedSystemKey),
-                "{key} must remain compositor-owned"
+                cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
+                "Super+Up"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
+                "Super+Page Up"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::NextWorkspace].display(),
+                "Super+Page Down"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::DetachTab].display(),
+                "Super+Shift+Enter"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::AttachTabLeft].display(),
+                "Super+["
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::AttachTabRight].display(),
+                "Super+]"
+            );
+            assert!(cfg.validate().is_ok());
+        }
+        // Phase `shortcut_conflicts_are_rejected_without_overwriting`.
+        {
+            let mut cfg = ShortcutConfig::default();
+            let old = cfg.bindings[&ShortcutAction::Lock].clone();
+            assert_eq!(
+                cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
+                Err(ShortcutConfigError::InvalidChord)
+            );
+            assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+        }
+        // Phase `reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter`.
+        {
+            let mut cfg = ShortcutConfig::default();
+            for key in ["f1", "printscreen"] {
+                assert_eq!(
+                    cfg.set(
+                        ShortcutAction::Search,
+                        KeyChord {
+                            modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                            key: key.into(),
+                        },
+                    ),
+                    Err(ShortcutConfigError::ReservedSystemKey),
+                    "{key} must remain compositor-owned"
+                );
+            }
+            cfg.set(ShortcutAction::Search, KeyChord::parse("Ctrl+J").unwrap())
+                .unwrap();
+            assert_eq!(
+                cfg.set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap()),
+                Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
         }
-        cfg.set(ShortcutAction::Search, KeyChord::parse("Ctrl+J").unwrap())
-            .unwrap();
-        assert_eq!(
-            cfg.set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap()),
-            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
-        );
+        // Phase `corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership`.
+        {
+            let mut corrupt = ShortcutConfig::default();
+            corrupt.bindings.insert(
+                ShortcutAction::Search,
+                KeyChord {
+                    modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                    key: "f1".into(),
+                },
+            );
+            corrupt
+                .bindings
+                .insert(ShortcutAction::Lock, KeyChord::parse("Alt+L").unwrap());
+            corrupt.bindings.insert(
+                ShortcutAction::PreviousTab,
+                KeyChord::parse("Ctrl+J").unwrap(),
+            );
+            corrupt
+                .bindings
+                .insert(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap());
+
+            let repaired = ShortcutConfig::normalise(corrupt);
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::Search].display(),
+                "Super+k",
+                "reserved persisted keys revert to their action default"
+            );
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::Lock].display(),
+                "Super+l",
+                "the native lock chord is immutable"
+            );
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::PreviousTab].display(),
+                "Ctrl+j",
+                "the first action in stable action order owns a duplicate"
+            );
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::NextTab].display(),
+                "Ctrl+Tab",
+                "the duplicate action deterministically falls back to default"
+            );
+            assert!(repaired.validate().is_ok());
+        }
+        // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tilo/settings.json");
+
+            let mut saved = ShortcutConfig::default();
+            saved
+                .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
+                .unwrap();
+            saved.save_at(&path).unwrap();
+            let reloaded = ShortcutConfig::load_at(&path);
+
+            assert_eq!(reloaded, saved);
+            assert!(reloaded.validate().is_ok());
+        }
+        // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
+        {
+            let cfg = ShortcutConfig::default();
+            assert_eq!(cfg.bindings.len(), 42);
+            let unique: BTreeSet<_> = cfg.bindings.values().collect();
+            assert_eq!(unique.len(), cfg.bindings.len());
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
+                "Super+Left"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
+                "Super+Right"
+            );
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::PreviousTab].display(),
+                "Ctrl+Shift+Tab"
+            );
+            assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
+            // Reordering within a display keeps Super+Shift+arrows; moving to
+            // the neighbouring display adds Ctrl to the same gesture.
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::MoveGroupToNextDisplay].display(),
+                "Super+Ctrl+Shift+Right"
+            );
+        }
     }
-
-    #[test]
-    fn corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership() {
-        let mut corrupt = ShortcutConfig::default();
-        corrupt.bindings.insert(
-            ShortcutAction::Search,
-            KeyChord {
-                modifiers: BTreeSet::from(["Ctrl".to_string()]),
-                key: "f1".into(),
-            },
-        );
-        corrupt
-            .bindings
-            .insert(ShortcutAction::Lock, KeyChord::parse("Alt+L").unwrap());
-        corrupt.bindings.insert(
-            ShortcutAction::PreviousTab,
-            KeyChord::parse("Ctrl+J").unwrap(),
-        );
-        corrupt
-            .bindings
-            .insert(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap());
-
-        let repaired = ShortcutConfig::normalise(corrupt);
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::Search].display(),
-            "Super+k",
-            "reserved persisted keys revert to their action default"
-        );
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::Lock].display(),
-            "Super+l",
-            "the native lock chord is immutable"
-        );
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::PreviousTab].display(),
-            "Ctrl+j",
-            "the first action in stable action order owns a duplicate"
-        );
-        assert_eq!(
-            repaired.bindings[&ShortcutAction::NextTab].display(),
-            "Ctrl+Tab",
-            "the duplicate action deterministically falls back to default"
-        );
-        assert!(repaired.validate().is_ok());
-    }
-
-    #[test]
-    fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo/settings.json");
-
-        let mut saved = ShortcutConfig::default();
-        saved
-            .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
-            .unwrap();
-        saved.save_at(&path).unwrap();
-        let reloaded = ShortcutConfig::load_at(&path);
-
-        assert_eq!(reloaded, saved);
-        assert!(reloaded.validate().is_ok());
-    }
-
     #[test]
     fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
         let dir = tempfile::tempdir().unwrap();
@@ -2474,101 +2511,73 @@ mod tests {
     }
 
     #[test]
-    fn desktop_navigation_defaults_are_complete_and_conflict_free() {
-        let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 42);
-        let unique: BTreeSet<_> = cfg.bindings.values().collect();
-        assert_eq!(unique.len(), cfg.bindings.len());
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
-            "Super+Left"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
-            "Super+Right"
-        );
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::PreviousTab].display(),
-            "Ctrl+Shift+Tab"
-        );
-        assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
-        // Reordering within a display keeps Super+Shift+arrows; moving to
-        // the neighbouring display adds Ctrl to the same gesture.
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::MoveGroupToNextDisplay].display(),
-            "Super+Ctrl+Shift+Right"
-        );
-    }
+    fn input_sources_and_pointer_settings_migrate_validate_and_survive_damage() {
+        // Phase `legacy_single_keyboard_layout_migrates_into_sources`.
+        {
+            let section = serde_json::json!({ "keyboard_layout": "de" })
+                .as_object()
+                .unwrap()
+                .clone();
+            let cfg = RichInputConfig::from_section(&section);
+            assert_eq!(cfg.keyboard_layout, "de");
+            assert_eq!(cfg.keyboard_layouts, ["de"]);
+            assert_eq!(cfg.active_source_index(), 0);
+        }
+        // Phase `scroll_defaults_match_gnome_and_keep_legacy_global_documents`.
+        {
+            let empty = RichInputConfig::from_section(&serde_json::Map::new());
+            assert_eq!(empty.touchpad_natural_scroll, Some(true));
+            assert_eq!(empty.mouse_natural_scroll, Some(false));
 
-    #[test]
-    fn legacy_single_keyboard_layout_migrates_into_sources() {
-        let section = serde_json::json!({ "keyboard_layout": "de" })
+            let legacy = serde_json::json!({ "natural_scroll": false })
+                .as_object()
+                .unwrap()
+                .clone();
+            let legacy = RichInputConfig::from_section(&legacy);
+            assert_eq!(legacy.touchpad_natural_scroll, Some(false));
+            assert_eq!(legacy.mouse_natural_scroll, Some(false));
+        }
+        // Phase `keyboard_sources_are_validated_deduplicated_and_bounded`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layout": "de:nodeadkeys",
+                "keyboard_layouts": [
+                    "us", "de:nodeadkeys", "us", "../evil", "fr", "es", "gb"
+                ]
+            })
             .as_object()
             .unwrap()
             .clone();
-        let cfg = RichInputConfig::from_section(&section);
-        assert_eq!(cfg.keyboard_layout, "de");
-        assert_eq!(cfg.keyboard_layouts, ["de"]);
-        assert_eq!(cfg.active_source_index(), 0);
-    }
-
-    #[test]
-    fn scroll_defaults_match_gnome_and_keep_legacy_global_documents() {
-        let empty = RichInputConfig::from_section(&serde_json::Map::new());
-        assert_eq!(empty.touchpad_natural_scroll, Some(true));
-        assert_eq!(empty.mouse_natural_scroll, Some(false));
-
-        let legacy = serde_json::json!({ "natural_scroll": false })
+            let cfg = RichInputConfig::from_section(&section);
+            assert_eq!(cfg.keyboard_layouts.len(), MAX_KEYBOARD_INPUT_SOURCES);
+            assert_eq!(cfg.keyboard_layouts, ["us", "de:nodeadkeys", "fr", "es"]);
+            assert_eq!(cfg.active_source_index(), 1);
+            assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
+        }
+        // Phase `keyboard_options_do_not_steal_the_shell_search_shortcut`.
+        {
+            let mut cfg = RichInputConfig {
+                keyboard_layouts: vec!["us".into(), "de".into()],
+                compose_key: Some("ralt".into()),
+                ..Default::default()
+            };
+            cfg.normalise_sources();
+            assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle", "compose:ralt"]);
+        }
+        // Phase `malformed_pointer_field_does_not_discard_keyboard_sources`.
+        {
+            let section = serde_json::json!({
+                "pointer_speed": "fast",
+                "keyboard_layout": "de",
+                "keyboard_layouts": ["us", "de"]
+            })
             .as_object()
             .unwrap()
             .clone();
-        let legacy = RichInputConfig::from_section(&legacy);
-        assert_eq!(legacy.touchpad_natural_scroll, Some(false));
-        assert_eq!(legacy.mouse_natural_scroll, Some(false));
-    }
-
-    #[test]
-    fn keyboard_sources_are_validated_deduplicated_and_bounded() {
-        let section = serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "keyboard_layouts": [
-                "us", "de:nodeadkeys", "us", "../evil", "fr", "es", "gb"
-            ]
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let cfg = RichInputConfig::from_section(&section);
-        assert_eq!(cfg.keyboard_layouts.len(), MAX_KEYBOARD_INPUT_SOURCES);
-        assert_eq!(cfg.keyboard_layouts, ["us", "de:nodeadkeys", "fr", "es"]);
-        assert_eq!(cfg.active_source_index(), 1);
-        assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
-    }
-
-    #[test]
-    fn keyboard_options_do_not_steal_the_shell_search_shortcut() {
-        let mut cfg = RichInputConfig {
-            keyboard_layouts: vec!["us".into(), "de".into()],
-            compose_key: Some("ralt".into()),
-            ..Default::default()
-        };
-        cfg.normalise_sources();
-        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle", "compose:ralt"]);
-    }
-
-    #[test]
-    fn malformed_pointer_field_does_not_discard_keyboard_sources() {
-        let section = serde_json::json!({
-            "pointer_speed": "fast",
-            "keyboard_layout": "de",
-            "keyboard_layouts": ["us", "de"]
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let cfg = RichInputConfig::from_section(&section);
-        assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
-        assert_eq!(cfg.active_source_index(), 1);
+            let cfg = RichInputConfig::from_section(&section);
+            assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
+            assert_eq!(cfg.active_source_index(), 1);
+        }
     }
 
     #[test]

@@ -171,7 +171,17 @@ fn checkout_main(client: &Repository) {
     client.checkout_head(None).unwrap();
 }
 
+/// Remote operations against a real server: fetch with configured credentials,
+/// rejected credentials fail without retrying, push transfers objects and reports
+/// rejection, and pull preserves conflicting local edits. Each phase is a former test with its own fresh fixture.
 #[test]
+fn remote_fetch_push_pull_move_real_objects_and_respect_credentials() {
+    fetch_uses_configured_credentials_and_downloads_real_objects();
+    rejected_credentials_fail_without_retrying_forever();
+    push_transfers_real_objects_and_reports_remote_rejection();
+    pull_preserves_conflicting_local_edits_and_head();
+}
+
 fn fetch_uses_configured_credentials_and_downloads_real_objects() {
     let root = tempfile::Builder::new()
         .prefix("tilo git user's credentials ")
@@ -194,7 +204,6 @@ fn fetch_uses_configured_credentials_and_downloads_real_objects() {
     );
 }
 
-#[test]
 fn rejected_credentials_fail_without_retrying_forever() {
     let root = tempfile::tempdir().unwrap();
     seed_remote(&root.path().join("remote.git"));
@@ -208,7 +217,6 @@ fn rejected_credentials_fail_without_retrying_forever() {
     assert!(client.find_reference("refs/remotes/origin/main").is_err());
 }
 
-#[test]
 fn push_transfers_real_objects_and_reports_remote_rejection() {
     let root = tempfile::tempdir().unwrap();
     let remote_path = root.path().join("remote.git");
@@ -247,7 +255,6 @@ fn push_transfers_real_objects_and_reports_remote_rejection() {
     assert_eq!(remote.head().unwrap().target(), Some(pushed));
 }
 
-#[test]
 fn pull_preserves_conflicting_local_edits_and_head() {
     let root = tempfile::tempdir().unwrap();
     let remote_path = root.path().join("remote.git");
@@ -280,7 +287,21 @@ fn pull_preserves_conflicting_local_edits_and_head() {
     );
 }
 
+/// The production transport backend: HTTPS and SSH remotes are supported and an
+/// untrusted server certificate is rejected. Each phase is a former test with its own fresh fixture.
 #[test]
+fn production_backend_supports_https_and_ssh_and_rejects_untrusted_tls() {
+    // The SSH phase re-runs this test in a child process with the fixture's HOME and
+    // agent; that child performs only the SSH verification the parent is waiting on.
+    if std::env::var_os(ssh_remote::CHILD_ROOT).is_some() {
+        production_backend_supports_ssh_remotes();
+        return;
+    }
+    production_backend_supports_https_remotes();
+    production_backend_supports_ssh_remotes();
+    https_rejects_an_untrusted_server_certificate();
+}
+
 fn production_backend_supports_https_remotes() {
     let root = tempfile::tempdir().unwrap();
     let expected = seed_remote(&root.path().join("remote.git"));
@@ -313,12 +334,10 @@ fn production_backend_supports_https_remotes() {
     );
 }
 
-#[test]
 fn production_backend_supports_ssh_remotes() {
     ssh_remote::verify_transport();
 }
 
-#[test]
 fn https_rejects_an_untrusted_server_certificate() {
     let root = tempfile::tempdir().unwrap();
     seed_remote(&root.path().join("remote.git"));
@@ -334,7 +353,15 @@ fn https_rejects_an_untrusted_server_certificate() {
     assert!(client.find_reference("refs/remotes/origin/main").is_err());
 }
 
+/// Remote operations from the app: a fetch keeps the app responsive and reports
+/// completion after sync, and a failure reaches the invocation and visible status.
+/// Each phase is a former test with its own fresh fixture.
 #[test]
+fn app_remote_operations_stay_responsive_and_report_outcomes() {
+    remote_fetch_keeps_app_responsive_and_reports_completion_after_sync();
+    remote_failure_is_reported_to_the_invocation_and_visible_status();
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one production lifecycle scenario checks admission, responsiveness, isolation and completion in order"
@@ -474,7 +501,6 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
     assert_eq!(Repository::open(path).unwrap().index().unwrap().len(), 1);
 }
 
-#[test]
 fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
     use git_client::actions::{GIT_CLIENT_OPERATION_TYPE, GitClientOperation};
     use tilo_actions::{InvocationId, InvocationUpdate, OperationKind};

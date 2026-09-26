@@ -382,85 +382,86 @@ mod tests {
     }
 
     #[test]
-    fn only_owner_authorized_snapshot_is_offerable() {
-        let owner = SigningKey::from_bytes(&[8; 32]);
-        let snapshot = snapshot(&owner);
-        let out = classify_snapshot(
-            &snapshot,
-            &hex::encode(owner.verifying_key().to_bytes()),
-            150,
-        )
-        .unwrap();
-        assert_eq!(out[0].trust, TrustLevel::PublisherSigned);
-        assert!(out[0].trust.is_offerable());
-
-        assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
-        let mut tampered = snapshot;
-        tampered.entries[0].name = "hijacked".into();
-        assert!(
-            classify_snapshot(
-                &tampered,
+    fn registry_client_accepts_only_authorized_monotonic_snapshots_from_safe_endpoints() {
+        // Phase `only_owner_authorized_snapshot_is_offerable`.
+        {
+            let owner = SigningKey::from_bytes(&[8; 32]);
+            let snapshot = snapshot(&owner);
+            let out = classify_snapshot(
+                &snapshot,
                 &hex::encode(owner.verifying_key().to_bytes()),
-                150
+                150,
             )
-            .is_err()
-        );
-    }
+            .unwrap();
+            assert_eq!(out[0].trust, TrustLevel::PublisherSigned);
+            assert!(out[0].trust.is_offerable());
 
-    #[test]
-    fn durable_checkpoint_rejects_rollback_and_same_sequence_fork() {
-        let old = SnapshotCheckpoint {
-            sequence: 8,
-            snapshot_hash_hex: "aa".repeat(32),
-        };
-        assert!(matches!(
-            validate_checkpoint(&old, 7, &"bb".repeat(32)),
-            Err(RegistryError::Rollback)
-        ));
-        assert!(matches!(
-            validate_checkpoint(&old, 8, &"bb".repeat(32)),
-            Err(RegistryError::Rollback)
-        ));
-        validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
-        validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
-    }
-
-    #[test]
-    fn registry_endpoint_rejects_credentials_remote_plaintext_and_redirectable_query() {
-        for base_url in [
-            "http://registry.test",
-            "https://placeholder:placeholder@registry.test",
-            "https://registry.test/base?next=https://evil.test",
-        ] {
-            let registry = RegistryConfig {
-                name: "test".into(),
-                base_url: base_url.into(),
+            assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
+            let mut tampered = snapshot;
+            tampered.entries[0].name = "hijacked".into();
+            assert!(
+                classify_snapshot(
+                    &tampered,
+                    &hex::encode(owner.verifying_key().to_bytes()),
+                    150
+                )
+                .is_err()
+            );
+        }
+        // Phase `durable_checkpoint_rejects_rollback_and_same_sequence_fork`.
+        {
+            let old = SnapshotCheckpoint {
+                sequence: 8,
+                snapshot_hash_hex: "aa".repeat(32),
+            };
+            assert!(matches!(
+                validate_checkpoint(&old, 7, &"bb".repeat(32)),
+                Err(RegistryError::Rollback)
+            ));
+            assert!(matches!(
+                validate_checkpoint(&old, 8, &"bb".repeat(32)),
+                Err(RegistryError::Rollback)
+            ));
+            validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
+            validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
+        }
+        // Phase `registry_endpoint_rejects_credentials_remote_plaintext_and_redirectable_query`.
+        {
+            for base_url in [
+                "http://registry.test",
+                "https://placeholder:placeholder@registry.test",
+                "https://registry.test/base?next=https://evil.test",
+            ] {
+                let registry = RegistryConfig {
+                    name: "test".into(),
+                    base_url: base_url.into(),
+                    owner_pubkey_hex: "11".repeat(32),
+                    enabled: true,
+                    channel: tilo_app_package::version::ReleaseChannel::Stable,
+                };
+                if base_url.contains('?') {
+                    assert_eq!(
+                        registry_url(&registry, "entries").unwrap().as_str(),
+                        "https://registry.test/base/entries"
+                    );
+                } else {
+                    assert!(matches!(
+                        registry_url(&registry, "entries"),
+                        Err(RegistryError::UnsafeEndpoint)
+                    ));
+                }
+            }
+            let loopback = RegistryConfig {
+                name: "dev".into(),
+                base_url: "http://127.0.0.1:8080".into(),
                 owner_pubkey_hex: "11".repeat(32),
                 enabled: true,
                 channel: tilo_app_package::version::ReleaseChannel::Stable,
             };
-            if base_url.contains('?') {
-                assert_eq!(
-                    registry_url(&registry, "entries").unwrap().as_str(),
-                    "https://registry.test/base/entries"
-                );
-            } else {
-                assert!(matches!(
-                    registry_url(&registry, "entries"),
-                    Err(RegistryError::UnsafeEndpoint)
-                ));
-            }
+            assert_eq!(
+                registry_url(&loopback, "entries").unwrap().as_str(),
+                "http://127.0.0.1:8080/entries"
+            );
         }
-        let loopback = RegistryConfig {
-            name: "dev".into(),
-            base_url: "http://127.0.0.1:8080".into(),
-            owner_pubkey_hex: "11".repeat(32),
-            enabled: true,
-            channel: tilo_app_package::version::ReleaseChannel::Stable,
-        };
-        assert_eq!(
-            registry_url(&loopback, "entries").unwrap().as_str(),
-            "http://127.0.0.1:8080/entries"
-        );
     }
 }

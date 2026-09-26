@@ -496,169 +496,181 @@ mod tests {
     use super::*;
     use ui::tokens::colors::ACCENT_PRIMARY_IDX;
 
+    /// Hex, token get/set, to/from theme conversion, radius/spacing ranges and font classes.
     #[test]
-    fn hex_round_trips() {
-        let c = [0x63, 0x66, 0xF1];
-        assert_eq!(hex(c), "#6366F1");
-        assert_eq!(parse_hex("#6366F1"), Some(c));
-        assert_eq!(parse_hex("6366f1"), Some(c));
-        assert_eq!(parse_hex("#fff"), Some([255, 255, 255]));
-        assert_eq!(parse_hex("nope"), None);
-    }
+    fn tokens_and_theme_conversion_round_trip() {
+        // Case `hex_round_trips`.
+        {
+            let c = [0x63, 0x66, 0xF1];
+            assert_eq!(hex(c), "#6366F1");
+            assert_eq!(parse_hex("#6366F1"), Some(c));
+            assert_eq!(parse_hex("6366f1"), Some(c));
+            assert_eq!(parse_hex("#fff"), Some([255, 255, 255]));
+            assert_eq!(parse_hex("nope"), None);
+        }
 
-    #[test]
-    fn to_theme_propagates_accent_to_both_token_and_shortcut() {
-        let spec = &presets()[0];
-        let theme = spec.to_theme();
-        assert_eq!(rgb_of(theme.accent_primary), spec.accent);
-        assert_eq!(
-            rgb_of(theme.tokens.colors.accent.stops[ACCENT_PRIMARY_IDX]),
-            spec.accent
-        );
-        assert_eq!(rgb_of(theme.tokens.colors.surfaces.base), spec.surface_base);
-        assert_eq!(rgb_of(theme.text_primary), spec.text_primary);
-    }
+        // Case `to_theme_propagates_accent_to_both_token_and_shortcut`.
+        {
+            let spec = &presets()[0];
+            let theme = spec.to_theme();
+            assert_eq!(rgb_of(theme.accent_primary), spec.accent);
+            assert_eq!(
+                rgb_of(theme.tokens.colors.accent.stops[ACCENT_PRIMARY_IDX]),
+                spec.accent
+            );
+            assert_eq!(rgb_of(theme.tokens.colors.surfaces.base), spec.surface_base);
+            assert_eq!(rgb_of(theme.text_primary), spec.text_primary);
+        }
 
-    #[test]
-    fn radius_and_spacing_map_into_range() {
-        let mut spec = seed_custom();
-        spec.radius_norm = 0.0;
-        assert!((spec.radius_px() - RADIUS_MIN).abs() < 0.01);
-        spec.radius_norm = 1.0;
-        assert!((spec.radius_px() - RADIUS_MAX).abs() < 0.01);
-    }
+        // Case `radius_and_spacing_map_into_range`.
+        {
+            let mut spec = seed_custom();
+            spec.radius_norm = 0.0;
+            assert!((spec.radius_px() - RADIUS_MIN).abs() < 0.01);
+            spec.radius_norm = 1.0;
+            assert!((spec.radius_px() - RADIUS_MAX).abs() < 0.01);
+        }
 
-    #[test]
-    fn from_theme_is_inverse_enough_of_to_theme() {
-        let spec = &presets()[0];
-        let theme = spec.to_theme();
-        let back = ThemeSpec::from_theme("x", "X", &theme, true, false, 0);
-        assert_eq!(back.accent, spec.accent);
-        assert_eq!(back.surface_base, spec.surface_base);
-        assert_eq!(back.danger, spec.danger);
-    }
+        // Case `from_theme_is_inverse_enough_of_to_theme`.
+        {
+            let spec = &presets()[0];
+            let theme = spec.to_theme();
+            let back = ThemeSpec::from_theme("x", "X", &theme, true, false, 0);
+            assert_eq!(back.accent, spec.accent);
+            assert_eq!(back.surface_base, spec.surface_base);
+            assert_eq!(back.danger, spec.danger);
+        }
 
-    #[test]
-    fn token_get_set_round_trips() {
-        let mut spec = seed_custom();
-        spec.set_token(TokenId::Border, [1, 2, 3]);
-        assert_eq!(spec.token(TokenId::Border), [1, 2, 3]);
-    }
+        // Case `token_get_set_round_trips`.
+        {
+            let mut spec = seed_custom();
+            spec.set_token(TokenId::Border, [1, 2, 3]);
+            assert_eq!(spec.token(TokenId::Border), [1, 2, 3]);
+        }
 
-    #[test]
-    fn live_default_catalog_is_presets_only_no_fabricated_custom() {
-        // Honest live default: the shipped presets, and NOT a pre-authored
-        // "your custom theme" the user never made.
-        let cat = default_catalog();
-        assert!(cat.len() >= 7);
-        assert!(
-            cat.iter().all(|t| t.builtin),
-            "every live default theme is a built-in preset"
-        );
-    }
-
-    #[test]
-    fn demo_catalog_has_presets_plus_an_editable_custom() {
-        let cat = demo_catalog();
-        assert!(cat.len() >= 8);
-        assert!(
-            cat.iter().any(|t| !t.builtin),
-            "demo carries one editable custom theme"
-        );
-        assert!(cat.iter().filter(|t| t.builtin).count() >= 7);
-    }
-
-    #[test]
-    fn font_choice_maps_distinctive_families_to_generic_classes() {
-        // Monospace / serif families resolve to a generic class so the preview
-        // visibly changes typeface even without the exact face installed; a
-        // plain sans family targets the named face (falls back to sans).
-        assert_eq!(font_choice("JetBrains Mono"), FontChoice::Monospace);
-        assert_eq!(font_choice("Source Serif"), FontChoice::Serif);
-        assert_eq!(font_choice("Inter"), FontChoice::Named("Inter".to_string()));
-        assert_eq!(
-            font_choice("Roboto"),
-            FontChoice::Named("Roboto".to_string())
-        );
-    }
-
-    #[test]
-    fn catalog_ships_the_expected_named_palettes() {
-        // The redesign's shipped set: the new neutral default, the preserved
-        // blue, and the canonical presets the picker offers.
-        let cat = default_catalog();
-        for id in [
-            "tilo-dark",
-            "tilo-blue",
-            "catppuccin-mocha",
-            "catppuccin-latte",
-            "dracula",
-            "nord",
-            "gruvbox",
-            "gruvbox-light",
-            "solarized",
-            "oled",
-            "beige",
-        ] {
-            assert!(cat.iter().any(|s| s.id == id), "catalog ships {id:?}");
+        // Case `font_choice_maps_distinctive_families_to_generic_classes`.
+        {
+            // Monospace / serif families resolve to a generic class so the preview
+            // visibly changes typeface even without the exact face installed; a
+            // plain sans family targets the named face (falls back to sans).
+            assert_eq!(font_choice("JetBrains Mono"), FontChoice::Monospace);
+            assert_eq!(font_choice("Source Serif"), FontChoice::Serif);
+            assert_eq!(font_choice("Inter"), FontChoice::Named("Inter".to_string()));
+            assert_eq!(
+                font_choice("Roboto"),
+                FontChoice::Named("Roboto".to_string())
+            );
         }
     }
 
+    /// Live and demo catalogs and the named palettes.
     #[test]
-    fn builtin_preset_applies_as_its_real_canonical_palette() {
-        // The production apply path: a persisted preset spec → to_theme must
-        // reproduce the ui constructor's *whole* palette (not just the reduced
-        // swatch tokens), so a preset reads as its real self — deep popover,
-        // right accent, three text tiers.
-        let dracula = presets().into_iter().find(|s| s.id == "dracula").unwrap();
-        let t = dracula.to_theme();
-        let want = Theme::dracula();
-        assert_eq!(rgb_of(t.bg_app), rgb_of(want.bg_app), "ground");
-        assert_eq!(
-            rgb_of(t.accent_primary),
-            [0xFF, 0x79, 0xC6],
-            "canonical Dracula pink"
-        );
-        assert_eq!(
-            rgb_of(t.text_tertiary),
-            rgb_of(want.text_tertiary),
-            "tertiary tier survives"
-        );
-        // The rich near-black popover comes from the constructor, not the default.
-        assert_eq!(
-            rgb_of(t.tokens.colors.surfaces.overlay),
-            rgb_of(want.tokens.colors.surfaces.overlay),
-            "popover surface is Dracula's, not the graphite default's",
-        );
-        assert_ne!(
-            rgb_of(t.tokens.colors.surfaces.overlay),
-            rgb_of(Theme::dark().tokens.colors.surfaces.overlay),
-        );
+    fn catalogs_ship_presets_and_only_the_demo_adds_a_custom() {
+        // Case `live_default_catalog_is_presets_only_no_fabricated_custom`.
+        {
+            // Honest live default: the shipped presets, and NOT a pre-authored
+            // "your custom theme" the user never made.
+            let cat = default_catalog();
+            assert!(cat.len() >= 7);
+            assert!(
+                cat.iter().all(|t| t.builtin),
+                "every live default theme is a built-in preset"
+            );
+        }
+
+        // Case `demo_catalog_has_presets_plus_an_editable_custom`.
+        {
+            let cat = demo_catalog();
+            assert!(cat.len() >= 8);
+            assert!(
+                cat.iter().any(|t| !t.builtin),
+                "demo carries one editable custom theme"
+            );
+            assert!(cat.iter().filter(|t| t.builtin).count() >= 7);
+        }
+
+        // Case `catalog_ships_the_expected_named_palettes`.
+        {
+            // The redesign's shipped set: the new neutral default, the preserved
+            // blue, and the canonical presets the picker offers.
+            let cat = default_catalog();
+            for id in [
+                "tilo-dark",
+                "tilo-blue",
+                "catppuccin-mocha",
+                "catppuccin-latte",
+                "dracula",
+                "nord",
+                "gruvbox",
+                "gruvbox-light",
+                "solarized",
+                "oled",
+                "beige",
+            ] {
+                assert!(cat.iter().any(|s| s.id == id), "catalog ships {id:?}");
+            }
+        }
     }
 
+    /// Built-in presets, OLED true black and derived custom palettes.
     #[test]
-    fn oled_preset_applies_true_black() {
-        let oled = presets().into_iter().find(|s| s.id == "oled").unwrap();
-        assert_eq!(rgb_of(oled.to_theme().bg_app), [0, 0, 0]);
-    }
+    fn presets_and_customs_apply_as_coherent_palettes() {
+        // Case `builtin_preset_applies_as_its_real_canonical_palette`.
+        {
+            // The production apply path: a persisted preset spec → to_theme must
+            // reproduce the ui constructor's *whole* palette (not just the reduced
+            // swatch tokens), so a preset reads as its real self — deep popover,
+            // right accent, three text tiers.
+            let dracula = presets().into_iter().find(|s| s.id == "dracula").unwrap();
+            let t = dracula.to_theme();
+            let want = Theme::dracula();
+            assert_eq!(rgb_of(t.bg_app), rgb_of(want.bg_app), "ground");
+            assert_eq!(
+                rgb_of(t.accent_primary),
+                [0xFF, 0x79, 0xC6],
+                "canonical Dracula pink"
+            );
+            assert_eq!(
+                rgb_of(t.text_tertiary),
+                rgb_of(want.text_tertiary),
+                "tertiary tier survives"
+            );
+            // The rich near-black popover comes from the constructor, not the default.
+            assert_eq!(
+                rgb_of(t.tokens.colors.surfaces.overlay),
+                rgb_of(want.tokens.colors.surfaces.overlay),
+                "popover surface is Dracula's, not the graphite default's",
+            );
+            assert_ne!(
+                rgb_of(t.tokens.colors.surfaces.overlay),
+                rgb_of(Theme::dark().tokens.colors.surfaces.overlay),
+            );
+        }
 
-    #[test]
-    fn custom_theme_gets_a_coherent_derived_full_palette() {
-        // A user-authored (non-builtin) theme still gets a matching deep
-        // popover + tertiary tier derived from its own palette, rather than
-        // inheriting the default's.
-        let custom = seed_custom();
-        assert!(!custom.builtin);
-        let t = custom.to_theme();
-        // Popover is deeper than the theme's own ground…
-        let lum = |c: Color| {
-            0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())
-        };
-        assert!(
-            lum(t.tokens.colors.surfaces.overlay) < lum(t.bg_app),
-            "popover deeper than ground"
-        );
-        // …and the derived tertiary tier is quieter than the secondary.
-        assert_ne!(rgb_of(t.text_dim), rgb_of(t.text_tertiary));
+        // Case `oled_preset_applies_true_black`.
+        {
+            let oled = presets().into_iter().find(|s| s.id == "oled").unwrap();
+            assert_eq!(rgb_of(oled.to_theme().bg_app), [0, 0, 0]);
+        }
+
+        // Case `custom_theme_gets_a_coherent_derived_full_palette`.
+        {
+            // A user-authored (non-builtin) theme still gets a matching deep
+            // popover + tertiary tier derived from its own palette, rather than
+            // inheriting the default's.
+            let custom = seed_custom();
+            assert!(!custom.builtin);
+            let t = custom.to_theme();
+            // Popover is deeper than the theme's own ground…
+            let lum = |c: Color| {
+                0.2126 * f32::from(c.r()) + 0.7152 * f32::from(c.g()) + 0.0722 * f32::from(c.b())
+            };
+            assert!(
+                lum(t.tokens.colors.surfaces.overlay) < lum(t.bg_app),
+                "popover deeper than ground"
+            );
+            // …and the derived tertiary tier is quieter than the secondary.
+            assert_ne!(rgb_of(t.text_dim), rgb_of(t.text_tertiary));
+        }
     }
 }

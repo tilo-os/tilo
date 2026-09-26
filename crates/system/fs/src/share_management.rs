@@ -291,161 +291,167 @@ mod tests {
     }
 
     #[test]
-    fn creates_persists_restarts_and_revokes_exact_grants() {
-        let fixture = Fixture::new();
-        let (_, recipient) = collab_types::generate_keypair();
-        let named = fixture
-            .service
-            .create_named(
-                fixture.named(recipient),
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW,
-            )
-            .unwrap();
-        let link = fixture
-            .service
-            .create_bearer_v2(
-                fixture.bearer(),
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW,
-            )
-            .unwrap();
-        let uri = link.encode_uri_at(NOW).unwrap();
-        let fragment = uri.split_once('#').unwrap().1.to_owned();
-        assert!(!format!("{link:?}").contains(&fragment));
-        assert_eq!(link.invite.workspace_id, fixture.workspace_id);
-        assert_eq!(link.invite.record_id, fixture.record_id);
-        assert_eq!(link.endpoint, fixture.bearer().endpoint);
-        drop(fixture.service);
-        drop(fixture.authority);
-
-        let reopened = Arc::new(ShareAuthority::open(&fixture.authority_path).unwrap());
-        let projection = reopened.projection(fixture.record_id, NOW + 1);
-        assert_eq!(projection.grants.len(), 2);
-        assert_eq!(
-            projection
-                .grants
-                .iter()
-                .find(|grant| grant.grant_id == named.id)
-                .unwrap()
-                .subject,
-            ShareSubjectProjection::Person { person: recipient }
-        );
-        let bearer = projection
-            .grants
-            .iter()
-            .find(|grant| grant.grant_id == link.invite.id)
-            .unwrap();
-        assert_eq!(bearer.subject, ShareSubjectProjection::BearerLink);
-        assert_eq!(bearer.max_redemptions, Some(1));
-
-        let persisted = String::from_utf8(std::fs::read(&fixture.authority_path).unwrap()).unwrap();
-        assert!(!persisted.contains(&fragment));
-        let service = ShareManagement::new(reopened.clone());
-        assert!(service.revoke(named.id).unwrap());
-        assert_eq!(
-            reopened
-                .projection(fixture.record_id, NOW + 2)
-                .grants
-                .iter()
-                .find(|grant| grant.grant_id == named.id)
-                .unwrap()
-                .status,
-            ShareGrantStatus::Revoked
-        );
-    }
-
-    #[test]
-    fn persistence_failure_returns_no_grant_and_does_not_mutate_authority() {
-        let fixture = Fixture::new();
-        assert!(!fixture.authority_path.exists());
-        std::fs::create_dir(&fixture.authority_path).unwrap();
-        let (_, recipient) = collab_types::generate_keypair();
-        assert!(matches!(
-            fixture.service.create_named(
-                fixture.named(recipient),
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW
-            ),
-            Err(ShareManagementError::Authority(ShareAuthorityError::Io(_)))
-        ));
-        assert!(matches!(
-            fixture.service.create_bearer_v2(
-                fixture.bearer(),
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW
-            ),
-            Err(ShareManagementError::Authority(ShareAuthorityError::Io(_)))
-        ));
-        assert!(
-            fixture
-                .authority
-                .projection(fixture.record_id, NOW)
-                .grants
-                .is_empty()
-        );
-        std::fs::remove_dir(&fixture.authority_path).unwrap();
-    }
-
-    #[test]
-    fn trust_scope_expiry_redemption_and_endpoint_inputs_are_bounded() {
-        let fixture = Fixture::new();
-        let (_, recipient) = collab_types::generate_keypair();
-        assert!(matches!(
-            fixture
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn share_management_persists_exact_grants_and_bounds_every_input() {
+        // Phase `creates_persists_restarts_and_revokes_exact_grants`.
+        {
+            let fixture = Fixture::new();
+            let (_, recipient) = collab_types::generate_keypair();
+            let named = fixture
                 .service
-                .create_named(fixture.named(recipient), &fixture.issuer, &[], NOW),
-            Err(ShareManagementError::InvalidTrustedIssuerSet)
-        ));
-        let (_, stranger) = collab_types::generate_keypair();
-        assert!(matches!(
-            fixture.service.create_named(
-                fixture.named(recipient),
-                &fixture.issuer,
-                &[stranger],
-                NOW
-            ),
-            Err(ShareManagementError::UntrustedIssuer)
-        ));
+                .create_named(
+                    fixture.named(recipient),
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW,
+                )
+                .unwrap();
+            let link = fixture
+                .service
+                .create_bearer_v2(
+                    fixture.bearer(),
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW,
+                )
+                .unwrap();
+            let uri = link.encode_uri_at(NOW).unwrap();
+            let fragment = uri.split_once('#').unwrap().1.to_owned();
+            assert!(!format!("{link:?}").contains(&fragment));
+            assert_eq!(link.invite.workspace_id, fixture.workspace_id);
+            assert_eq!(link.invite.record_id, fixture.record_id);
+            assert_eq!(link.endpoint, fixture.bearer().endpoint);
+            drop(fixture.service);
+            drop(fixture.authority);
 
-        let mut bearer = fixture.bearer();
-        bearer.max_redemptions = MAX_BEARER_REDEMPTIONS + 1;
-        assert!(matches!(
-            fixture.service.create_bearer_v2(
-                bearer,
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW
-            ),
-            Err(ShareManagementError::InvalidRedemptionLimit)
-        ));
-        let mut bearer = fixture.bearer();
-        bearer.expires_at_ms = NOW + MAX_SHARE_LIFETIME_MS + 1;
-        assert!(matches!(
-            fixture.service.create_bearer_v2(
-                bearer,
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW
-            ),
-            Err(ShareManagementError::ExpiryTooDistant)
-        ));
-        let mut bearer = fixture.bearer();
-        bearer.endpoint = EndpointAddr::new(SecretKey::from_bytes(&[62; 32]).public());
-        assert!(matches!(
-            fixture.service.create_bearer_v2(
-                bearer,
-                &fixture.issuer,
-                &[fixture.issuer_public],
-                NOW
-            ),
-            Err(ShareManagementError::Link(
-                FileShareLinkError::EndpointHasNoRoute
-            ))
-        ));
+            let reopened = Arc::new(ShareAuthority::open(&fixture.authority_path).unwrap());
+            let projection = reopened.projection(fixture.record_id, NOW + 1);
+            assert_eq!(projection.grants.len(), 2);
+            assert_eq!(
+                projection
+                    .grants
+                    .iter()
+                    .find(|grant| grant.grant_id == named.id)
+                    .unwrap()
+                    .subject,
+                ShareSubjectProjection::Person { person: recipient }
+            );
+            let bearer = projection
+                .grants
+                .iter()
+                .find(|grant| grant.grant_id == link.invite.id)
+                .unwrap();
+            assert_eq!(bearer.subject, ShareSubjectProjection::BearerLink);
+            assert_eq!(bearer.max_redemptions, Some(1));
+
+            let persisted =
+                String::from_utf8(std::fs::read(&fixture.authority_path).unwrap()).unwrap();
+            assert!(!persisted.contains(&fragment));
+            let service = ShareManagement::new(reopened.clone());
+            assert!(service.revoke(named.id).unwrap());
+            assert_eq!(
+                reopened
+                    .projection(fixture.record_id, NOW + 2)
+                    .grants
+                    .iter()
+                    .find(|grant| grant.grant_id == named.id)
+                    .unwrap()
+                    .status,
+                ShareGrantStatus::Revoked
+            );
+        }
+        // Phase `persistence_failure_returns_no_grant_and_does_not_mutate_authority`.
+        {
+            let fixture = Fixture::new();
+            assert!(!fixture.authority_path.exists());
+            std::fs::create_dir(&fixture.authority_path).unwrap();
+            let (_, recipient) = collab_types::generate_keypair();
+            assert!(matches!(
+                fixture.service.create_named(
+                    fixture.named(recipient),
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW
+                ),
+                Err(ShareManagementError::Authority(ShareAuthorityError::Io(_)))
+            ));
+            assert!(matches!(
+                fixture.service.create_bearer_v2(
+                    fixture.bearer(),
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW
+                ),
+                Err(ShareManagementError::Authority(ShareAuthorityError::Io(_)))
+            ));
+            assert!(
+                fixture
+                    .authority
+                    .projection(fixture.record_id, NOW)
+                    .grants
+                    .is_empty()
+            );
+            std::fs::remove_dir(&fixture.authority_path).unwrap();
+        }
+        // Phase `trust_scope_expiry_redemption_and_endpoint_inputs_are_bounded`.
+        {
+            let fixture = Fixture::new();
+            let (_, recipient) = collab_types::generate_keypair();
+            assert!(matches!(
+                fixture
+                    .service
+                    .create_named(fixture.named(recipient), &fixture.issuer, &[], NOW),
+                Err(ShareManagementError::InvalidTrustedIssuerSet)
+            ));
+            let (_, stranger) = collab_types::generate_keypair();
+            assert!(matches!(
+                fixture.service.create_named(
+                    fixture.named(recipient),
+                    &fixture.issuer,
+                    &[stranger],
+                    NOW
+                ),
+                Err(ShareManagementError::UntrustedIssuer)
+            ));
+
+            let mut bearer = fixture.bearer();
+            bearer.max_redemptions = MAX_BEARER_REDEMPTIONS + 1;
+            assert!(matches!(
+                fixture.service.create_bearer_v2(
+                    bearer,
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW
+                ),
+                Err(ShareManagementError::InvalidRedemptionLimit)
+            ));
+            let mut bearer = fixture.bearer();
+            bearer.expires_at_ms = NOW + MAX_SHARE_LIFETIME_MS + 1;
+            assert!(matches!(
+                fixture.service.create_bearer_v2(
+                    bearer,
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW
+                ),
+                Err(ShareManagementError::ExpiryTooDistant)
+            ));
+            let mut bearer = fixture.bearer();
+            bearer.endpoint = EndpointAddr::new(SecretKey::from_bytes(&[62; 32]).public());
+            assert!(matches!(
+                fixture.service.create_bearer_v2(
+                    bearer,
+                    &fixture.issuer,
+                    &[fixture.issuer_public],
+                    NOW
+                ),
+                Err(ShareManagementError::Link(
+                    FileShareLinkError::EndpointHasNoRoute
+                ))
+            ));
+        }
     }
 }

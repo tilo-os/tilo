@@ -395,70 +395,73 @@ mod tests {
     use crate::clipboard::ClipboardTarget;
 
     #[test]
-    fn null_services_perform_nothing_outside_the_process() {
-        let null = HostServices::null();
-        assert!(null.clipboard.set_text(ClipboardTarget::Clipboard, "local"));
-        assert_eq!(
-            null.clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-            Some("local")
-        );
-        assert!(
-            !null
-                .clipboard
-                .set_shared_text(ClipboardTarget::Clipboard, "secret"),
-            "an in-process buffer must not claim a shared copy"
-        );
-        assert_eq!(
-            null.opener
-                .open("https://example.invalid")
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::Unsupported
-        );
-        assert!(matches!(
-            null.files.pick(PickRequest::open("Open", "Open")).recv(),
-            Ok(PortalOutcome::Failed(_))
-        ));
-        assert!(matches!(
-            null.files.launch(LaunchRequest::open("/tmp/x")).recv(),
-            Ok(LaunchOutcome::Failed(_))
-        ));
-        assert_eq!(
-            null.notifications.withdraw("tag"),
-            Err(NotifyError::Unavailable)
-        );
-        assert!(
-            null.media_session
-                .start(MprisConfig::new("app", "App"), PlayerSnapshot::default())
-                .is_none()
-        );
-    }
+    fn host_services_are_inert_and_scopes_nest_and_restore_even_on_panic() {
+        // Case `null_services_perform_nothing_outside_the_process`.
+        {
+            let null = HostServices::null();
+            assert!(null.clipboard.set_text(ClipboardTarget::Clipboard, "local"));
+            assert_eq!(
+                null.clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("local")
+            );
+            assert!(
+                !null
+                    .clipboard
+                    .set_shared_text(ClipboardTarget::Clipboard, "secret"),
+                "an in-process buffer must not claim a shared copy"
+            );
+            assert_eq!(
+                null.opener
+                    .open("https://example.invalid")
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::Unsupported
+            );
+            assert!(matches!(
+                null.files.pick(PickRequest::open("Open", "Open")).recv(),
+                Ok(PortalOutcome::Failed(_))
+            ));
+            assert!(matches!(
+                null.files.launch(LaunchRequest::open("/tmp/x")).recv(),
+                Ok(LaunchOutcome::Failed(_))
+            ));
+            assert_eq!(
+                null.notifications.withdraw("tag"),
+                Err(NotifyError::Unavailable)
+            );
+            assert!(
+                null.media_session
+                    .start(MprisConfig::new("app", "App"), PlayerSnapshot::default())
+                    .is_none()
+            );
+        }
 
-    #[test]
-    fn scopes_nest_and_restore() {
-        let (outer, outer_record) = HostServices::recording();
-        let (inner, inner_record) = HostServices::recording();
-        scoped(&outer, || {
-            let _ = current().opener.open("outer://1");
-            scoped(&inner, || {
-                let _ = current().opener.open("inner://1");
+        // Case `scopes_nest_and_restore`.
+        {
+            let (outer, outer_record) = HostServices::recording();
+            let (inner, inner_record) = HostServices::recording();
+            scoped(&outer, || {
+                let _ = current().opener.open("outer://1");
+                scoped(&inner, || {
+                    let _ = current().opener.open("inner://1");
+                });
+                let _ = current().opener.open("outer://2");
             });
-            let _ = current().opener.open("outer://2");
-        });
-        assert_eq!(outer_record.opened_uris(), ["outer://1", "outer://2"]);
-        assert_eq!(inner_record.opened_uris(), ["inner://1"]);
-    }
+            assert_eq!(outer_record.opened_uris(), ["outer://1", "outer://2"]);
+            assert_eq!(inner_record.opened_uris(), ["inner://1"]);
+        }
 
-    #[test]
-    fn scope_is_restored_after_a_panic() {
-        let (services, record) = HostServices::recording();
-        let depth = || SCOPES.with(|scopes| scopes.borrow().len());
-        let before = depth();
-        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            scoped(&services, || panic!("dispatch failed"));
-        }));
-        assert!(unwound.is_err());
-        assert_eq!(depth(), before);
-        assert!(record.opened_uris().is_empty());
+        // Case `scope_is_restored_after_a_panic`.
+        {
+            let (services, record) = HostServices::recording();
+            let depth = || SCOPES.with(|scopes| scopes.borrow().len());
+            let before = depth();
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                scoped(&services, || panic!("dispatch failed"));
+            }));
+            assert!(unwound.is_err());
+            assert_eq!(depth(), before);
+            assert!(record.opened_uris().is_empty());
+        }
     }
 }

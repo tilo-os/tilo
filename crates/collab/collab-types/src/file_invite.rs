@@ -328,91 +328,101 @@ mod tests {
         }
     }
 
+    /// A named invite is record-scoped, signed and expires; a bearer secret is required and never
+    /// stored in the token.
     #[test]
-    fn named_invite_is_record_scoped_signed_and_expires() {
-        let mut rng = UnwrapErr(SysRng);
-        let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
-        let recipient = ed25519_dalek::SigningKey::generate(&mut rng);
-        let token = mint_file_invite(
-            spec(FileInviteSubject::Person(Ed25519PublicKey::from_bytes(
-                recipient.verifying_key().to_bytes(),
-            ))),
-            &issuer,
-        )
-        .unwrap();
-        token.verify_at(1_999).unwrap();
-        assert!(matches!(
-            token.verify_at(2_000),
-            Err(FileInviteError::Expired)
-        ));
-
-        let mut tampered = token;
-        tampered.record_id = FileRecordId::new();
-        assert!(matches!(
-            tampered.verify_at(1_000),
-            Err(FileInviteError::BadSignature(_))
-        ));
-    }
-
-    #[test]
-    fn bearer_secret_is_required_and_never_stored_in_the_token() {
-        let mut rng = UnwrapErr(SysRng);
-        let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
-        let invite = mint_bearer_file_invite(
-            spec(FileInviteSubject::Bearer {
-                secret_hash: [0; 32],
-            }),
-            &issuer,
-            &mut rng,
-        )
-        .unwrap();
-        invite
-            .token
-            .verify_bearer_at(&invite.secret, 1_000)
+    fn a_named_invite_is_scoped_signed_and_expiring_and_a_bearer_secret_is_never_stored() {
+        // Phase: named_invite_is_record_scoped_signed_and_expires.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
+            let recipient = ed25519_dalek::SigningKey::generate(&mut rng);
+            let token = mint_file_invite(
+                spec(FileInviteSubject::Person(Ed25519PublicKey::from_bytes(
+                    recipient.verifying_key().to_bytes(),
+                ))),
+                &issuer,
+            )
             .unwrap();
-        assert!(matches!(
-            invite.token.verify_bearer_at(&[9; 32], 1_000),
-            Err(FileInviteError::WrongSecret)
-        ));
-        let encoded = crate::canonical::canonical_bytes(&invite.token).unwrap();
-        assert!(!encoded.windows(32).any(|window| window == invite.secret));
+            token.verify_at(1_999).unwrap();
+            assert!(matches!(
+                token.verify_at(2_000),
+                Err(FileInviteError::Expired)
+            ));
+
+            let mut tampered = token;
+            tampered.record_id = FileRecordId::new();
+            assert!(matches!(
+                tampered.verify_at(1_000),
+                Err(FileInviteError::BadSignature(_))
+            ));
+        }
+
+        // Phase: bearer_secret_is_required_and_never_stored_in_the_token.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
+            let invite = mint_bearer_file_invite(
+                spec(FileInviteSubject::Bearer {
+                    secret_hash: [0; 32],
+                }),
+                &issuer,
+                &mut rng,
+            )
+            .unwrap();
+            invite
+                .token
+                .verify_bearer_at(&invite.secret, 1_000)
+                .unwrap();
+            assert!(matches!(
+                invite.token.verify_bearer_at(&[9; 32], 1_000),
+                Err(FileInviteError::WrongSecret)
+            ));
+            let encoded = crate::canonical::canonical_bytes(&invite.token).unwrap();
+            assert!(!encoded.windows(32).any(|window| window == invite.secret));
+        }
     }
 
+    /// A limited link refuses offline verification; a copied link round-trips and authenticates
+    /// before redemption.
     #[test]
-    fn limited_link_refuses_offline_verification() {
-        let mut rng = UnwrapErr(SysRng);
-        let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
-        let mut limited = spec(FileInviteSubject::Bearer {
-            secret_hash: [0; 32],
-        });
-        limited.max_redemptions = Some(1);
-        let invite = mint_bearer_file_invite(limited, &issuer, &mut rng).unwrap();
-        assert!(matches!(
-            invite.token.verify_bearer_at(&invite.secret, 1_000),
-            Err(FileInviteError::AuthorityRequired)
-        ));
-    }
+    fn links_verify_only_as_their_kind_allows() {
+        // Phase: limited_link_refuses_offline_verification.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
+            let mut limited = spec(FileInviteSubject::Bearer {
+                secret_hash: [0; 32],
+            });
+            limited.max_redemptions = Some(1);
+            let invite = mint_bearer_file_invite(limited, &issuer, &mut rng).unwrap();
+            assert!(matches!(
+                invite.token.verify_bearer_at(&invite.secret, 1_000),
+                Err(FileInviteError::AuthorityRequired)
+            ));
+        }
 
-    #[test]
-    fn copied_link_round_trips_and_authenticates_before_redemption() {
-        let mut rng = UnwrapErr(SysRng);
-        let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
-        let mut limited = spec(FileInviteSubject::Bearer {
-            secret_hash: [0; 32],
-        });
-        limited.max_redemptions = Some(1);
-        let invite = mint_bearer_file_invite(limited, &issuer, &mut rng).unwrap();
-        let link = invite.encode_link().unwrap();
-        assert!(link.starts_with(FILE_INVITE_LINK_PREFIX));
-        let decoded = BearerFileInvite::decode_link_at(&link, 1_000).unwrap();
-        assert_eq!(decoded, invite);
+        // Phase: copied_link_round_trips_and_authenticates_before_redemption.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let issuer = ed25519_dalek::SigningKey::generate(&mut rng);
+            let mut limited = spec(FileInviteSubject::Bearer {
+                secret_hash: [0; 32],
+            });
+            limited.max_redemptions = Some(1);
+            let invite = mint_bearer_file_invite(limited, &issuer, &mut rng).unwrap();
+            let link = invite.encode_link().unwrap();
+            assert!(link.starts_with(FILE_INVITE_LINK_PREFIX));
+            let decoded = BearerFileInvite::decode_link_at(&link, 1_000).unwrap();
+            assert_eq!(decoded, invite);
 
-        let mut wrong = link;
-        let last = wrong.pop().unwrap();
-        wrong.push(if last == '0' { '1' } else { '0' });
-        assert!(matches!(
-            BearerFileInvite::decode_link_at(&wrong, 1_000),
-            Err(FileInviteError::WrongSecret)
-        ));
+            let mut wrong = link;
+            let last = wrong.pop().unwrap();
+            wrong.push(if last == '0' { '1' } else { '0' });
+            assert!(matches!(
+                BearerFileInvite::decode_link_at(&wrong, 1_000),
+                Err(FileInviteError::WrongSecret)
+            ));
+        }
     }
 }

@@ -937,224 +937,244 @@ mod tests {
     }
 
     #[test]
-    fn local_hotspot_is_not_a_remote_tethering_request() {
-        let (_, requester, _, _) = devices();
-        assert_eq!(
-            PersonalTethering::default().request(
-                TetheringRoute::LocalHotspot,
-                &requester,
-                "Laptop",
-                [1; 16],
-                100,
-            ),
-            Err(TetheringError::LocalRoute)
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tethering_requests_are_exact_consent_bound_and_spoof_resistant() {
+        fn local_hotspot_is_not_a_remote_tethering_request() {
+            let (_, requester, _, _) = devices();
+            assert_eq!(
+                PersonalTethering::default().request(
+                    TetheringRoute::LocalHotspot,
+                    &requester,
+                    "Laptop",
+                    [1; 16],
+                    100,
+                ),
+                Err(TetheringError::LocalRoute)
+            );
+        }
 
-    #[test]
-    fn accepted_request_is_exact_consent_bound_and_secret_free_on_the_wire() {
-        let (requester_key, requester, _, provider) = devices();
-        let mut requester_state = PersonalTethering::default();
-        let mut provider_state = PersonalTethering::default();
-        let request = requester_state
-            .request(
-                TetheringRoute::CertifiedPhone(provider.clone()),
-                &requester,
-                "Laptop",
-                [1; 16],
-                1_000,
-            )
-            .unwrap();
-        assert!(matches!(
-            provider_state.receive_request(&requester, &provider, &request, 1_001),
-            Ok(TetheringEvent::ConsentRequired { .. })
-        ));
-        let credential = sealed(&requester, &provider, "not-in-wire-debug", 2);
-        let signals = provider_state
-            .decide(
-                &provider,
-                [1; 16],
-                true,
-                Some([9; 16]),
-                Some(credential),
-                1_002,
-            )
-            .unwrap();
-        assert_eq!(signals.len(), 2);
-        requester_state
-            .receive_decision(&provider, &requester, &signals[0], 1_003)
-            .unwrap();
-        let event = requester_state
-            .receive_credential(&provider, &requester, &signals[1], 1_004)
-            .unwrap();
-        let TetheringEvent::ConnectOffered { credential, .. } = event else {
-            panic!("expected connect offer");
-        };
-        assert_eq!(
-            crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &requester_key)
-                .unwrap(),
-            "not-in-wire-debug"
-        );
-        assert!(!format!("{:?}", signals[1]).contains("not-in-wire-debug"));
-        let encoded = postcard::to_allocvec(&signals[1]).unwrap();
-        assert!(
-            !encoded
-                .windows("not-in-wire-debug".len())
-                .any(|window| window == b"not-in-wire-debug")
-        );
-    }
-
-    #[test]
-    fn spoof_replay_and_wrong_recipient_fail_closed() {
-        let (_, requester, _, provider) = devices();
-        let attacker_key = SigningKey::from_bytes(&[5; 32]);
-        let attacker = DeviceId::new(hex::encode(attacker_key.verifying_key().to_bytes())).unwrap();
-        let mut requester_state = PersonalTethering::default();
-        let request = requester_state
-            .request(
-                TetheringRoute::CertifiedPhone(provider.clone()),
-                &requester,
-                "Laptop",
-                [2; 16],
-                2_000,
-            )
-            .unwrap();
-        let mut provider_state = PersonalTethering::default();
-        assert_eq!(
-            provider_state.receive_request(&attacker, &provider, &request, 2_001),
-            Err(TetheringError::InvalidRequest)
-        );
-        provider_state
-            .receive_request(&requester, &provider, &request, 2_001)
-            .unwrap();
-        assert_eq!(
-            provider_state.receive_request(&requester, &provider, &request, 2_001),
-            Err(TetheringError::InvalidRequest)
-        );
-        let wrong = sealed(&attacker, &provider, "private-pass", 3);
-        assert_eq!(
-            provider_state.decide(&provider, [2; 16], true, Some([8; 16]), Some(wrong), 2_002,),
-            Err(TetheringError::InvalidCredential)
-        );
-    }
-
-    #[test]
-    fn disconnect_revocation_policy_and_expiry_tear_down_exact_leases() {
-        let (_, requester, _, provider) = devices();
-        let mut requester_state = PersonalTethering::default();
-        let mut provider_state = PersonalTethering::default();
-        for (id, now) in [([3; 16], 3_000), ([4; 16], 4_000), ([5; 16], 5_000)] {
+        fn accepted_request_is_exact_consent_bound_and_secret_free_on_the_wire() {
+            let (requester_key, requester, _, provider) = devices();
+            let mut requester_state = PersonalTethering::default();
+            let mut provider_state = PersonalTethering::default();
             let request = requester_state
                 .request(
                     TetheringRoute::CertifiedPhone(provider.clone()),
                     &requester,
                     "Laptop",
-                    id,
-                    now,
+                    [1; 16],
+                    1_000,
+                )
+                .unwrap();
+            assert!(matches!(
+                provider_state.receive_request(&requester, &provider, &request, 1_001),
+                Ok(TetheringEvent::ConsentRequired { .. })
+            ));
+            let credential = sealed(&requester, &provider, "not-in-wire-debug", 2);
+            let signals = provider_state
+                .decide(
+                    &provider,
+                    [1; 16],
+                    true,
+                    Some([9; 16]),
+                    Some(credential),
+                    1_002,
+                )
+                .unwrap();
+            assert_eq!(signals.len(), 2);
+            requester_state
+                .receive_decision(&provider, &requester, &signals[0], 1_003)
+                .unwrap();
+            let event = requester_state
+                .receive_credential(&provider, &requester, &signals[1], 1_004)
+                .unwrap();
+            let TetheringEvent::ConnectOffered { credential, .. } = event else {
+                panic!("expected connect offer");
+            };
+            assert_eq!(
+                crate::shell::device_fabric_secrets::open_wifi_credential(
+                    &credential,
+                    &requester_key
+                )
+                .unwrap(),
+                "not-in-wire-debug"
+            );
+            assert!(!format!("{:?}", signals[1]).contains("not-in-wire-debug"));
+            let encoded = postcard::to_allocvec(&signals[1]).unwrap();
+            assert!(
+                !encoded
+                    .windows("not-in-wire-debug".len())
+                    .any(|window| window == b"not-in-wire-debug")
+            );
+        }
+
+        fn spoof_replay_and_wrong_recipient_fail_closed() {
+            let (_, requester, _, provider) = devices();
+            let attacker_key = SigningKey::from_bytes(&[5; 32]);
+            let attacker =
+                DeviceId::new(hex::encode(attacker_key.verifying_key().to_bytes())).unwrap();
+            let mut requester_state = PersonalTethering::default();
+            let request = requester_state
+                .request(
+                    TetheringRoute::CertifiedPhone(provider.clone()),
+                    &requester,
+                    "Laptop",
+                    [2; 16],
+                    2_000,
+                )
+                .unwrap();
+            let mut provider_state = PersonalTethering::default();
+            assert_eq!(
+                provider_state.receive_request(&attacker, &provider, &request, 2_001),
+                Err(TetheringError::InvalidRequest)
+            );
+            provider_state
+                .receive_request(&requester, &provider, &request, 2_001)
+                .unwrap();
+            assert_eq!(
+                provider_state.receive_request(&requester, &provider, &request, 2_001),
+                Err(TetheringError::InvalidRequest)
+            );
+            let wrong = sealed(&attacker, &provider, "private-pass", 3);
+            assert_eq!(
+                provider_state.decide(&provider, [2; 16], true, Some([8; 16]), Some(wrong), 2_002,),
+                Err(TetheringError::InvalidCredential)
+            );
+        }
+
+        local_hotspot_is_not_a_remote_tethering_request();
+        accepted_request_is_exact_consent_bound_and_secret_free_on_the_wire();
+        spoof_replay_and_wrong_recipient_fail_closed();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tethering_leases_tear_down_exactly_on_revocation_expiry_or_nonce_cancel() {
+        fn disconnect_revocation_policy_and_expiry_tear_down_exact_leases() {
+            let (_, requester, _, provider) = devices();
+            let mut requester_state = PersonalTethering::default();
+            let mut provider_state = PersonalTethering::default();
+            for (id, now) in [([3; 16], 3_000), ([4; 16], 4_000), ([5; 16], 5_000)] {
+                let request = requester_state
+                    .request(
+                        TetheringRoute::CertifiedPhone(provider.clone()),
+                        &requester,
+                        "Laptop",
+                        id,
+                        now,
+                    )
+                    .unwrap();
+                provider_state
+                    .receive_request(&requester, &provider, &request, now + 1)
+                    .unwrap();
+                provider_state
+                    .decide(
+                        &provider,
+                        id,
+                        true,
+                        Some(id),
+                        Some(sealed(&requester, &provider, "private-pass", now)),
+                        now + 2,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                provider_state.peer_unavailable(&provider, &requester).len(),
+                3
+            );
+            assert!(provider_state.policy_disabled(&provider).is_empty());
+
+            let request = requester_state
+                .request(
+                    TetheringRoute::CertifiedPhone(provider.clone()),
+                    &requester,
+                    "Laptop",
+                    [6; 16],
+                    6_000,
                 )
                 .unwrap();
             provider_state
-                .receive_request(&requester, &provider, &request, now + 1)
+                .receive_request(&requester, &provider, &request, 6_001)
                 .unwrap();
             provider_state
                 .decide(
                     &provider,
-                    id,
+                    [6; 16],
                     true,
-                    Some(id),
-                    Some(sealed(&requester, &provider, "private-pass", now)),
-                    now + 2,
+                    Some([6; 16]),
+                    Some(sealed(&requester, &provider, "private-pass", 6)),
+                    6_002,
                 )
                 .unwrap();
+            assert_eq!(
+                provider_state.expire(&provider, 6_002 + GRANT_TTL_MS).len(),
+                1
+            );
         }
-        assert_eq!(
-            provider_state.peer_unavailable(&provider, &requester).len(),
-            3
-        );
-        assert!(provider_state.policy_disabled(&provider).is_empty());
 
-        let request = requester_state
-            .request(
-                TetheringRoute::CertifiedPhone(provider.clone()),
-                &requester,
-                "Laptop",
-                [6; 16],
-                6_000,
-            )
-            .unwrap();
-        provider_state
-            .receive_request(&requester, &provider, &request, 6_001)
-            .unwrap();
-        provider_state
-            .decide(
-                &provider,
-                [6; 16],
-                true,
-                Some([6; 16]),
-                Some(sealed(&requester, &provider, "private-pass", 6)),
-                6_002,
-            )
-            .unwrap();
-        assert_eq!(
-            provider_state.expire(&provider, 6_002 + GRANT_TTL_MS).len(),
-            1
-        );
-    }
-
-    #[test]
-    fn requester_cancel_requires_the_exact_grant_nonce() {
-        let (_, requester, _, provider) = devices();
-        let mut provider_state = PersonalTethering::default();
-        let mut requester_state = PersonalTethering::default();
-        let request_id = [21; 16];
-        let request = requester_state
-            .request(
-                TetheringRoute::CertifiedPhone(provider.clone()),
-                &requester,
-                "Laptop",
-                request_id,
-                1_000,
-            )
-            .unwrap();
-        provider_state
-            .receive_request(&requester, &provider, &request, 1_000)
-            .unwrap();
-        let signals = provider_state
-            .decide(
-                &provider,
-                request_id,
-                true,
-                Some([22; 16]),
-                Some(sealed(&requester, &provider, "secret-passphrase", 1)),
-                1_001,
-            )
-            .unwrap();
-        requester_state
-            .receive_decision(&provider, &requester, &signals[0], 1_001)
-            .unwrap();
-        requester_state
-            .receive_credential(&provider, &requester, &signals[1], 1_001)
-            .unwrap();
-
-        let cancel = requester_state
-            .cancel_request(&requester, request_id)
-            .unwrap();
-        let mut spoof = cancel.clone();
-        if let TetheringSignal::Cancel { grant_nonce, .. } = &mut spoof {
-            *grant_nonce = Some([23; 16]);
-        }
-        assert_eq!(
-            provider_state.receive_cancel(&requester, &provider, &spoof),
-            Err(TetheringError::InvalidDecision)
-        );
-        assert!(
+        fn requester_cancel_requires_the_exact_grant_nonce() {
+            let (_, requester, _, provider) = devices();
+            let mut provider_state = PersonalTethering::default();
+            let mut requester_state = PersonalTethering::default();
+            let request_id = [21; 16];
+            let request = requester_state
+                .request(
+                    TetheringRoute::CertifiedPhone(provider.clone()),
+                    &requester,
+                    "Laptop",
+                    request_id,
+                    1_000,
+                )
+                .unwrap();
             provider_state
-                .receive_cancel(&requester, &provider, &cancel)
-                .is_ok()
-        );
-        assert_eq!(
-            provider_state.stop_provider_lease(&provider, request_id),
-            Err(TetheringError::UnknownRequest)
-        );
+                .receive_request(&requester, &provider, &request, 1_000)
+                .unwrap();
+            let signals = provider_state
+                .decide(
+                    &provider,
+                    request_id,
+                    true,
+                    Some([22; 16]),
+                    Some(sealed(&requester, &provider, "secret-passphrase", 1)),
+                    1_001,
+                )
+                .unwrap();
+            requester_state
+                .receive_decision(&provider, &requester, &signals[0], 1_001)
+                .unwrap();
+            requester_state
+                .receive_credential(&provider, &requester, &signals[1], 1_001)
+                .unwrap();
+
+            let cancel = requester_state
+                .cancel_request(&requester, request_id)
+                .unwrap();
+            let mut spoof = cancel.clone();
+            if let TetheringSignal::Cancel { grant_nonce, .. } = &mut spoof {
+                *grant_nonce = Some([23; 16]);
+            }
+            assert_eq!(
+                provider_state.receive_cancel(&requester, &provider, &spoof),
+                Err(TetheringError::InvalidDecision)
+            );
+            assert!(
+                provider_state
+                    .receive_cancel(&requester, &provider, &cancel)
+                    .is_ok()
+            );
+            assert_eq!(
+                provider_state.stop_provider_lease(&provider, request_id),
+                Err(TetheringError::UnknownRequest)
+            );
+        }
+
+        disconnect_revocation_policy_and_expiry_tear_down_exact_leases();
+        requester_cancel_requires_the_exact_grant_nonce();
     }
 }

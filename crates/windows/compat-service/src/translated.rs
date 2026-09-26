@@ -653,11 +653,22 @@ mod tests {
         if std::env::var_os(CHILD).is_none() {
             // Subreaper state is process-wide. Isolate this test from the
             // parallel harness, whose unrelated children must never be adopted.
+            // Stdout goes to a file, not a pipe: a descendant the child
+            // preserves could otherwise hold a pipe open past the child's exit.
+            let log_dir = tempfile::tempdir().unwrap();
+            let log = log_dir.path().join("child.stdout");
             let status = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "translated::tests::exclusive_cleanup_reaps_detached_descendants_and_preserves_existing_children", "--nocapture"])
                 .env(CHILD, "1")
+                .stdout(File::create(&log).unwrap())
                 .status().unwrap();
-            assert!(status.success());
+            let stdout = std::fs::read_to_string(&log).unwrap();
+            assert!(status.success(), "{stdout}");
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                stdout.contains("test result: ok. 1 passed"),
+                "the child ran no test: {stdout}"
+            );
             return;
         }
         let mut disposition = unsafe { std::mem::zeroed::<libc::sigaction>() };
@@ -788,82 +799,107 @@ mod tests {
     }
 
     #[test]
-    fn native_dxvk_overrides_apply_only_to_managed_wine_applications() {
-        for mode in [WineMode::Win32, WineMode::Win64] {
-            let mut boot = Command::new("/bin/true");
-            boot.env("WINEDLLOVERRIDES", "attacker");
-            GuestEnvironment::WineBoot(mode).apply(&mut boot);
-            assert!(boot.get_envs().any(|(key, value)| key == "WINEDLLOVERRIDES"
-                && value == Some(std::ffi::OsStr::new("wineboot.exe=b"))));
-            for key in ["WINEDLLPATH", "WINEBUILDDIR"] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn translated_launches_replace_inherited_overrides_and_allow_listed_modes() {
+        // Phase `native_dxvk_overrides_apply_only_to_managed_wine_applications`.
+        {
+            for mode in [WineMode::Win32, WineMode::Win64] {
+                let mut boot = Command::new("/bin/true");
+                boot.env("WINEDLLOVERRIDES", "attacker");
+                GuestEnvironment::WineBoot(mode).apply(&mut boot);
+                assert!(boot.get_envs().any(|(key, value)| key == "WINEDLLOVERRIDES"
+                    && value == Some(std::ffi::OsStr::new("wineboot.exe=b"))));
+                for key in ["WINEDLLPATH", "WINEBUILDDIR"] {
+                    assert!(
+                        boot.get_envs()
+                            .any(|(actual, value)| actual == key && value.is_none())
+                    );
+                }
+                let mut cleanup = Command::new("/bin/true");
+                GuestEnvironment::WinePreparation(mode).apply(&mut cleanup);
                 assert!(
-                    boot.get_envs()
-                        .any(|(actual, value)| actual == key && value.is_none())
+                    cleanup
+                        .get_envs()
+                        .any(|(key, value)| key == "WINEDLLOVERRIDES" && value.is_none())
+                );
+                let mut application = Command::new("/bin/true");
+                GuestEnvironment::WineApplication(mode).apply(&mut application);
+                assert!(
+                    application
+                        .get_envs()
+                        .any(|(key, value)| key == "WINEDLLOVERRIDES"
+                            && value == Some(std::ffi::OsStr::new(crate::dxvk::NATIVE_OVERRIDES)))
+                );
+                let expected = match mode {
+                    WineMode::Win32 => "win32",
+                    WineMode::Win64 => "win64",
+                };
+                assert!(application.get_envs().any(|(key, value)| key == "WINEARCH"
+                    && value == Some(std::ffi::OsStr::new(expected))));
+            }
+            let mut proton = Command::new("/bin/true");
+            GuestEnvironment::Unchanged.apply(&mut proton);
+            assert_eq!(proton.get_envs().count(), 0);
+        }
+        // Phase `inherited_socket_and_rootfs_overrides_are_replaced`.
+        {
+            let mut child = Command::new("/usr/bin/env");
+            child
+                .env_clear()
+                .env("FEX_ROOTFS", "/attacker/rootfs")
+                .env("FEX_SERVERSOCKETPATH", "/attacker/server.sock")
+                .env("FEX_INTERPRETER_INSTALLED", "1")
+                .env("XDG_RUNTIME_DIR", "/run/user/1000");
+            configure_environment(&mut child);
+            let output = child.output().unwrap();
+            assert!(output.status.success());
+            let environment = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/tilo-fex-server.sock")
+            );
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == format!("FEX_ROOTFS={ROOTFS}"))
+            );
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "FEX_INTERPRETER_INSTALLED=0")
+            );
+            assert!(
+                environment
+                    .lines()
+                    .any(|line| line == "XDG_RUNTIME_DIR=/run/user/1000")
+            );
+            assert!(!environment.contains("/attacker/"));
+        }
+        // Phase `command_mode_is_required_and_allow_listed`.
+        {
+            for arguments in [
+                vec![],
+                vec![OsString::from("wine64")],
+                vec![OsString::from("/bin/sh"), OsString::from("app.exe")],
+            ] {
+                assert_eq!(
+                    run_translated_command(&arguments).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput
                 );
             }
-            let mut cleanup = Command::new("/bin/true");
-            GuestEnvironment::WinePreparation(mode).apply(&mut cleanup);
-            assert!(
-                cleanup
-                    .get_envs()
-                    .any(|(key, value)| key == "WINEDLLOVERRIDES" && value.is_none())
-            );
-            let mut application = Command::new("/bin/true");
-            GuestEnvironment::WineApplication(mode).apply(&mut application);
-            assert!(
-                application
-                    .get_envs()
-                    .any(|(key, value)| key == "WINEDLLOVERRIDES"
-                        && value == Some(std::ffi::OsStr::new(crate::dxvk::NATIVE_OVERRIDES)))
-            );
-            let expected = match mode {
-                WineMode::Win32 => "win32",
-                WineMode::Win64 => "win64",
-            };
-            assert!(
-                application.get_envs().any(|(key, value)| key == "WINEARCH"
-                    && value == Some(std::ffi::OsStr::new(expected)))
+        }
+        // Phase `guest_status_preserves_exit_codes_and_signals`.
+        {
+            assert_eq!(exit_code(ExitStatus::from_raw(23 << 8)), 23);
+            assert_eq!(
+                exit_code(ExitStatus::from_raw(libc::SIGTERM)),
+                128 + libc::SIGTERM
             );
         }
-        let mut proton = Command::new("/bin/true");
-        GuestEnvironment::Unchanged.apply(&mut proton);
-        assert_eq!(proton.get_envs().count(), 0);
-    }
-
-    #[test]
-    fn inherited_socket_and_rootfs_overrides_are_replaced() {
-        let mut child = Command::new("/usr/bin/env");
-        child
-            .env_clear()
-            .env("FEX_ROOTFS", "/attacker/rootfs")
-            .env("FEX_SERVERSOCKETPATH", "/attacker/server.sock")
-            .env("FEX_INTERPRETER_INSTALLED", "1")
-            .env("XDG_RUNTIME_DIR", "/run/user/1000");
-        configure_environment(&mut child);
-        let output = child.output().unwrap();
-        assert!(output.status.success());
-        let environment = String::from_utf8(output.stdout).unwrap();
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/tilo-fex-server.sock")
-        );
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == format!("FEX_ROOTFS={ROOTFS}"))
-        );
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == "FEX_INTERPRETER_INSTALLED=0")
-        );
-        assert!(
-            environment
-                .lines()
-                .any(|line| line == "XDG_RUNTIME_DIR=/run/user/1000")
-        );
-        assert!(!environment.contains("/attacker/"));
     }
 
     fn sleeping_server() -> ManagedChild {
@@ -871,63 +907,40 @@ mod tests {
     }
 
     #[test]
-    fn readiness_requires_eof_from_a_live_server() {
-        let (read, write) = readiness_pipe().unwrap();
-        let mut server = sleeping_server();
-        drop(write);
-        wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap();
-        assert!(server.child.try_wait().unwrap().is_none());
-    }
-
-    #[test]
-    fn readiness_is_bounded_when_server_keeps_pipe_open() {
-        let (read, _write) = readiness_pipe().unwrap();
-        let mut server = sleeping_server();
-        let error =
-            wait_for_ready(&read, &mut server.child, Duration::from_millis(10)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    }
-
-    #[test]
-    fn unexpected_readiness_bytes_are_rejected() {
-        let (read, write) = readiness_pipe().unwrap();
-        File::from(write).write_all(b"unexpected").unwrap();
-        let mut server = sleeping_server();
-        let error =
-            wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap_err();
-        assert!(error.to_string().contains("invalid FEXServer readiness"));
-    }
-
-    #[test]
-    fn server_exit_is_not_readiness() {
-        let (read, write) = readiness_pipe().unwrap();
-        drop(write);
-        let mut server = Command::new("/bin/true").spawn().unwrap();
-        server.wait().unwrap();
-        let error = wait_for_ready(&read, &mut server, Duration::from_millis(200)).unwrap_err();
-        assert!(error.to_string().contains("before readiness"));
-    }
-
-    #[test]
-    fn command_mode_is_required_and_allow_listed() {
-        for arguments in [
-            vec![],
-            vec![OsString::from("wine64")],
-            vec![OsString::from("/bin/sh"), OsString::from("app.exe")],
-        ] {
-            assert_eq!(
-                run_translated_command(&arguments).unwrap_err().kind(),
-                io::ErrorKind::InvalidInput
-            );
+    fn translated_readiness_requires_a_bounded_clean_eof_from_a_live_server() {
+        // Phase `readiness_requires_eof_from_a_live_server`.
+        {
+            let (read, write) = readiness_pipe().unwrap();
+            let mut server = sleeping_server();
+            drop(write);
+            wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap();
+            assert!(server.child.try_wait().unwrap().is_none());
         }
-    }
-
-    #[test]
-    fn guest_status_preserves_exit_codes_and_signals() {
-        assert_eq!(exit_code(ExitStatus::from_raw(23 << 8)), 23);
-        assert_eq!(
-            exit_code(ExitStatus::from_raw(libc::SIGTERM)),
-            128 + libc::SIGTERM
-        );
+        // Phase `readiness_is_bounded_when_server_keeps_pipe_open`.
+        {
+            let (read, _write) = readiness_pipe().unwrap();
+            let mut server = sleeping_server();
+            let error =
+                wait_for_ready(&read, &mut server.child, Duration::from_millis(10)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        }
+        // Phase `unexpected_readiness_bytes_are_rejected`.
+        {
+            let (read, write) = readiness_pipe().unwrap();
+            File::from(write).write_all(b"unexpected").unwrap();
+            let mut server = sleeping_server();
+            let error =
+                wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap_err();
+            assert!(error.to_string().contains("invalid FEXServer readiness"));
+        }
+        // Phase `server_exit_is_not_readiness`.
+        {
+            let (read, write) = readiness_pipe().unwrap();
+            drop(write);
+            let mut server = Command::new("/bin/true").spawn().unwrap();
+            server.wait().unwrap();
+            let error = wait_for_ready(&read, &mut server, Duration::from_millis(200)).unwrap_err();
+            assert!(error.to_string().contains("before readiness"));
+        }
     }
 }

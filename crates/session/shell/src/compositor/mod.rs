@@ -369,207 +369,161 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_flag_defaults_native() {
-        // `cargo run -p tilo-desktop` (no flags) boots the real smithay server.
-        assert!(matches!(parse_mode(&[]), Mode::Native));
+    fn mode_and_install_mode_resolve_every_flag_form() {
+        let modes: &[(&str, &[&str], Mode)] = &[
+            // `cargo run -p tilo-desktop` (no flags) boots the real smithay server.
+            ("no flag", &[], Mode::Native),
+            ("--mode native", &["--mode", "native"], Mode::Native),
+            ("--mode=native", &["--mode=native"], Mode::Native),
+            // `--mode hosted` is the explicit dev opt-in for the legacy iced-on-winit path; guards that fallback stays reachable from the CLI.
+            ("--mode hosted", &["--mode", "hosted"], Mode::Hosted),
+            ("--mode=hosted", &["--mode=hosted"], Mode::Hosted),
+            // A typo doesn't demote to the hosted iced path — it falls through to the real Wayland server (hosted is opt-in only).
+            ("--mode junk", &["--mode", "junk"], Mode::Native),
+        ];
+        for (case, args, want) in modes {
+            assert_eq!(parse_mode(args), *want, "case {case}");
+        }
+
+        let installs: &[(&str, &[&str], InstallMode)] = &[
+            ("no flag", &[], InstallMode::FullSystem),
+            (
+                "drm backend",
+                &["--backend", "drm"],
+                InstallMode::FullSystem,
+            ),
+            // The package wrapper explicitly selects a host desktop session.
+            (
+                "wrapper with firstboot",
+                &["--firstboot", "--host-desktop-session", "--backend", "drm"],
+                InstallMode::HostDesktop,
+            ),
+            (
+                "wrapper with mode",
+                &["--host-desktop-session", "--mode", "native"],
+                InstallMode::HostDesktop,
+            ),
+        ];
+        for (case, args, want) in installs {
+            assert_eq!(parse_install_mode(args), *want, "case {case}");
+        }
     }
 
     #[test]
-    fn install_mode_defaults_to_the_full_tilo_system() {
-        assert_eq!(parse_install_mode(&[]), InstallMode::FullSystem);
-        assert_eq!(
-            parse_install_mode(&["--backend", "drm"]),
-            InstallMode::FullSystem
-        );
+    fn backend_flag_selects_drm_or_headless_and_defaults_to_winit() {
+        // `--backend headless` / `--backend=headless` is the third path alongside winit (default) and drm,
+        // letting the binary boot without a display server so e2e harnesses can drive it via `TILO_TEST_CONTROL`.
+        let cases: &[(&str, &[&str], BackendKind)] = &[
+            ("default", &[], BackendKind::Winit),
+            ("--backend drm", &["--backend", "drm"], BackendKind::Drm),
+            ("--backend=drm", &["--backend=drm"], BackendKind::Drm),
+            ("--backend junk", &["--backend", "junk"], BackendKind::Winit),
+            (
+                "--backend=nonsense",
+                &["--backend=nonsense"],
+                BackendKind::Winit,
+            ),
+            (
+                "--backend headless",
+                &["--backend", "headless"],
+                BackendKind::Headless,
+            ),
+            (
+                "--backend=headless",
+                &["--backend=headless"],
+                BackendKind::Headless,
+            ),
+        ];
+        for (case, args, want) in cases {
+            assert_eq!(parse_backend(args), *want, "case {case}");
+        }
     }
 
     #[test]
-    fn package_wrapper_explicitly_selects_a_host_desktop_session() {
-        assert_eq!(
-            parse_install_mode(&["--firstboot", "--host-desktop-session", "--backend", "drm"]),
-            InstallMode::HostDesktop
-        );
-        assert_eq!(
-            parse_install_mode(&["--host-desktop-session", "--mode", "native"]),
-            InstallMode::HostDesktop
-        );
-    }
-
-    #[test]
-    fn dash_dash_mode_native() {
-        assert!(matches!(parse_mode(&["--mode", "native"]), Mode::Native));
-    }
-
-    #[test]
-    fn dash_dash_mode_eq_native() {
-        assert!(matches!(parse_mode(&["--mode=native"]), Mode::Native));
-    }
-
-    #[test]
-    fn dash_dash_mode_hosted_returns_hosted() {
-        // `--mode hosted` is the explicit dev opt-in for the legacy iced-on-winit path; guards that fallback stays reachable from the CLI.
-        assert!(matches!(parse_mode(&["--mode", "hosted"]), Mode::Hosted));
-        assert!(matches!(parse_mode(&["--mode=hosted"]), Mode::Hosted));
-    }
-
-    #[test]
-    fn unrecognized_value_defaults_native() {
-        // A typo doesn't demote to the hosted iced path — it falls through to the real Wayland server (hosted is opt-in only).
-        assert!(matches!(parse_mode(&["--mode", "junk"]), Mode::Native));
-    }
-
-    #[test]
-    fn peer_sync_legacy_enable_flag_is_not_required_for_default_on() {
-        assert!(!parse_peer_sync(&[]));
-        assert!(!parse_peer_sync(&["--mode", "hosted"]));
-    }
-
-    #[test]
-    fn peer_sync_flag_present_anywhere() {
-        assert!(parse_peer_sync(&["--enable-peer-sync"]));
-        assert!(parse_peer_sync(&["--mode", "hosted", "--enable-peer-sync"]));
-        assert!(parse_peer_sync(&["--enable-peer-sync", "--mode=native"]));
-    }
-
-    #[test]
-    fn portals_flag_default_off() {
-        assert!(!parse_portals(&[]));
-        assert!(!parse_portals(&["--mode", "hosted"]));
-        assert!(!parse_portals(&["--enable-peer-sync"]));
-    }
-
-    #[test]
-    fn portals_flag_present_anywhere() {
-        assert!(parse_portals(&["--enable-portals"]));
-        assert!(parse_portals(&["--mode", "native", "--enable-portals"]));
-        assert!(parse_portals(&[
-            "--enable-portals",
-            "--enable-peer-sync",
-            "--mode=native"
-        ]));
-    }
-
-    #[test]
-    fn default_backend_is_winit() {
-        assert!(matches!(parse_backend(&[]), BackendKind::Winit));
-    }
-
-    #[test]
-    fn dash_dash_backend_drm_returns_drm() {
-        assert!(matches!(
-            parse_backend(&["--backend", "drm"]),
-            BackendKind::Drm
-        ));
-    }
-
-    #[test]
-    fn dash_dash_backend_eq_drm_returns_drm() {
-        assert!(matches!(
-            parse_backend(&["--backend=drm"]),
-            BackendKind::Drm
-        ));
-    }
-
-    #[test]
-    fn unrecognized_backend_value_defaults_winit() {
-        assert!(matches!(
-            parse_backend(&["--backend", "junk"]),
-            BackendKind::Winit
-        ));
-        assert!(matches!(
-            parse_backend(&["--backend=nonsense"]),
-            BackendKind::Winit
-        ));
-    }
-
-    #[test]
-    fn parse_backend_headless_returns_headless() {
-        // Both `--backend headless` and `--backend=headless` resolve to `BackendKind::Headless` — the
-        // third path alongside winit (default) and drm, letting the binary boot without a display server so e2e harnesses can drive it via `TILO_TEST_CONTROL`.
-        assert!(matches!(
-            parse_backend(&["--backend", "headless"]),
-            BackendKind::Headless
-        ));
-        assert!(matches!(
-            parse_backend(&["--backend=headless"]),
-            BackendKind::Headless
-        ));
-    }
-
-    // --portal-server-only
-
-    #[test]
-    fn portal_server_only_default_false() {
-        // Bare cargo run -p tilo-desktop must still boot the compositor — no flag means no portal-only short-circuit.
-        assert!(!parse_portal_server_only(&[]));
-        assert!(!parse_portal_server_only(&["--mode", "native"]));
-        assert!(!parse_portal_server_only(&["--enable-peer-sync"]));
-    }
-
-    #[test]
-    fn portal_server_only_flag_present_anywhere() {
-        assert!(parse_portal_server_only(&["--portal-server-only"]));
-        // The systemd unit invokes `--portal-server-only` alone, but combining with other flags (e.g. tracing knobs) must still work.
-        assert!(parse_portal_server_only(&[
-            "--mode",
-            "native",
-            "--portal-server-only"
-        ]));
-        assert!(parse_portal_server_only(&[
-            "--portal-server-only",
-            "--enable-portals"
-        ]));
-    }
-
-    // --firstboot
-
-    #[test]
-    fn firstboot_default_false() {
-        assert!(!parse_firstboot(&[]));
-        assert!(!parse_firstboot(&["--mode", "native"]));
-        assert!(!parse_firstboot(&["--enable-peer-sync"]));
-    }
-
-    #[test]
-    fn firstboot_flag_present_anywhere() {
-        assert!(parse_firstboot(&["--firstboot"]));
-        assert!(parse_firstboot(&["--firstboot", "--mode", "native"]));
-        assert!(parse_firstboot(&["--mode=native", "--firstboot"]));
-    }
-
-    // --firstboot-only
-
-    #[test]
-    fn firstboot_only_default_false() {
-        assert!(!parse_firstboot_only(&[]));
-        assert!(!parse_firstboot_only(&["--firstboot"]));
-        assert!(!parse_firstboot_only(&["--mode", "native"]));
-    }
-
-    #[test]
-    fn firstboot_only_flag_present_anywhere() {
-        assert!(parse_firstboot_only(&["--firstboot-only"]));
-        assert!(parse_firstboot_only(&[
-            "--mode",
-            "native",
-            "--firstboot-only"
-        ]));
-    }
-
-    #[test]
-    fn identity_entry_points_are_explicit_and_independent() {
-        assert!(!parse_provision_identity(&[]));
-        assert!(!parse_verify_collaboration_identity(&[]));
-        assert!(parse_provision_identity(&["--provision-identity"]));
-        assert!(parse_verify_collaboration_identity(&[
-            "--verify-collaboration-identity"
-        ]));
-        assert!(!parse_provision_identity(&[
-            "--verify-collaboration-identity"
-        ]));
-        assert!(!parse_verify_collaboration_identity(&[
-            "--provision-identity"
-        ]));
+    fn boolean_flags_default_off_and_are_found_anywhere() {
+        type Parse = fn(&[&str]) -> bool;
+        // (flag, parser, argument lists that must parse false, argument lists that must parse true)
+        #[allow(
+            clippy::type_complexity,
+            reason = "one row per flag: name, parser, accepted and rejected argv sets"
+        )]
+        let cases: &[(&str, Parse, &[&[&str]], &[&[&str]])] = &[
+            // Peer sync is default-on elsewhere; the legacy enable flag is not required for it.
+            (
+                "peer_sync",
+                parse_peer_sync,
+                &[&[], &["--mode", "hosted"]],
+                &[
+                    &["--enable-peer-sync"],
+                    &["--mode", "hosted", "--enable-peer-sync"],
+                    &["--enable-peer-sync", "--mode=native"],
+                ],
+            ),
+            (
+                "portals",
+                parse_portals,
+                &[&[], &["--mode", "hosted"], &["--enable-peer-sync"]],
+                &[
+                    &["--enable-portals"],
+                    &["--mode", "native", "--enable-portals"],
+                    &["--enable-portals", "--enable-peer-sync", "--mode=native"],
+                ],
+            ),
+            // --portal-server-only: bare cargo run -p tilo-desktop must still boot the compositor —
+            // no flag means no portal-only short-circuit. The systemd unit invokes
+            // `--portal-server-only` alone, but combining with other flags (e.g. tracing knobs)
+            // must still work.
+            (
+                "portal_server_only",
+                parse_portal_server_only,
+                &[&[], &["--mode", "native"], &["--enable-peer-sync"]],
+                &[
+                    &["--portal-server-only"],
+                    &["--mode", "native", "--portal-server-only"],
+                    &["--portal-server-only", "--enable-portals"],
+                ],
+            ),
+            (
+                "firstboot",
+                parse_firstboot,
+                &[&[], &["--mode", "native"], &["--enable-peer-sync"]],
+                &[
+                    &["--firstboot"],
+                    &["--firstboot", "--mode", "native"],
+                    &["--mode=native", "--firstboot"],
+                ],
+            ),
+            (
+                "firstboot_only",
+                parse_firstboot_only,
+                &[&[], &["--firstboot"], &["--mode", "native"]],
+                &[
+                    &["--firstboot-only"],
+                    &["--mode", "native", "--firstboot-only"],
+                ],
+            ),
+            // Identity entry points are explicit and independent.
+            (
+                "provision_identity",
+                parse_provision_identity,
+                &[&[], &["--verify-collaboration-identity"]],
+                &[&["--provision-identity"]],
+            ),
+            (
+                "verify_collaboration_identity",
+                parse_verify_collaboration_identity,
+                &[&[], &["--provision-identity"]],
+                &[&["--verify-collaboration-identity"]],
+            ),
+        ];
+        for (flag, parse, off, on) in cases {
+            for args in *off {
+                assert!(!parse(args), "case {flag} must be off for {args:?}");
+            }
+            for args in *on {
+                assert!(parse(args), "case {flag} must be on for {args:?}");
+            }
+        }
     }
 
     // peer-sync marker file
@@ -584,88 +538,72 @@ mod tests {
     }
 
     #[test]
-    fn peer_sync_resolution_default_on_without_marker() {
-        let m = FakeMarker { present: false };
-        assert!(peer_sync_enabled_with(&[], &m));
-        assert!(peer_sync_enabled_with(&["--mode", "native"], &m));
-    }
-
-    #[test]
-    fn peer_sync_resolution_cli_flag_wins() {
-        // CLI flag enables peer-sync regardless of marker absence.
-        let m_off = FakeMarker { present: false };
-        assert!(peer_sync_enabled_with(&["--enable-peer-sync"], &m_off));
-        // And marker presence + flag is still on (no double-disable).
-        let m_on = FakeMarker { present: true };
-        assert!(peer_sync_enabled_with(&["--enable-peer-sync"], &m_on));
-    }
-
-    #[test]
-    fn peer_sync_resolution_accepts_legacy_marker_without_flag() {
-        // Existing marker-managed installations remain enabled without a CLI flag.
-        let m = FakeMarker { present: true };
-        assert!(peer_sync_enabled_with(&[], &m));
-        assert!(peer_sync_enabled_with(&["--mode", "native"], &m));
-    }
-
-    #[test]
-    fn peer_sync_disable_override_wins_over_default_enable_and_marker() {
-        let marker = FakeMarker { present: true };
+    fn peer_sync_resolution_combines_flag_marker_and_disable_override() {
+        let cases: &[(&str, &[&str], bool, bool)] = &[
+            // Default on without a marker.
+            ("default, no marker", &[], false, true),
+            ("mode, no marker", &["--mode", "native"], false, true),
+            // CLI flag enables peer-sync regardless of marker absence.
+            ("flag, no marker", &["--enable-peer-sync"], false, true),
+            // And marker presence + flag is still on (no double-disable).
+            ("flag and marker", &["--enable-peer-sync"], true, true),
+            // Existing marker-managed installations remain enabled without a CLI flag.
+            ("legacy marker", &[], true, true),
+            ("legacy marker with mode", &["--mode", "native"], true, true),
+            // The disable override wins over default enable and marker.
+            ("disable over marker", &["--disable-peer-sync"], true, false),
+            (
+                "disable over flag and marker",
+                &["--enable-peer-sync", "--disable-peer-sync"],
+                true,
+                false,
+            ),
+        ];
+        for (case, args, marker, want) in cases {
+            let m = FakeMarker { present: *marker };
+            assert_eq!(peer_sync_enabled_with(args, &m), *want, "case {case}");
+        }
         assert!(parse_peer_sync_disabled(&["--disable-peer-sync"]));
-        assert!(!peer_sync_enabled_with(&["--disable-peer-sync"], &marker));
-        assert!(!peer_sync_enabled_with(
-            &["--enable-peer-sync", "--disable-peer-sync"],
-            &marker
-        ));
     }
 
     #[test]
-    fn marker_path_prefers_xdg_config_home() {
-        let path = peer_sync_marker_path_from_env(
-            Some(std::ffi::OsStr::new("/custom/xdg")),
-            Some(std::ffi::OsStr::new("/home/ignored")),
-        )
-        .expect("path resolves with XDG set");
-        assert_eq!(
-            path,
-            std::path::PathBuf::from("/custom/xdg/tilo-desktop/peer-sync.enabled")
-        );
-    }
-
-    #[test]
-    fn marker_path_falls_back_to_home_dot_config() {
-        let path = peer_sync_marker_path_from_env(None, Some(std::ffi::OsStr::new("/home/alice")))
-            .expect("path resolves via HOME");
-        assert_eq!(
-            path,
-            std::path::PathBuf::from("/home/alice/.config/tilo-desktop/peer-sync.enabled")
-        );
-    }
-
-    #[test]
-    fn marker_path_empty_xdg_treated_as_unset() {
-        // POSIX convention: an empty env-var means "use the default".
-        let path = peer_sync_marker_path_from_env(
-            Some(std::ffi::OsStr::new("")),
-            Some(std::ffi::OsStr::new("/home/bob")),
-        )
-        .expect("falls back through empty XDG to HOME");
-        assert_eq!(
-            path,
-            std::path::PathBuf::from("/home/bob/.config/tilo-desktop/peer-sync.enabled")
-        );
-    }
-
-    #[test]
-    fn marker_path_no_xdg_no_home_returns_none() {
-        // No way to resolve a path → caller defaults to "marker absent".
-        assert!(peer_sync_marker_path_from_env(None, None).is_none());
-        assert!(
-            peer_sync_marker_path_from_env(
-                Some(std::ffi::OsStr::new("")),
-                Some(std::ffi::OsStr::new("")),
-            )
-            .is_none()
-        );
+    fn marker_path_prefers_xdg_then_home_and_treats_empty_as_unset() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        #[allow(
+            clippy::type_complexity,
+            reason = "one row per case: name and the three optional inputs"
+        )]
+        let cases: &[(&str, Option<&str>, Option<&str>, Option<&str>)] = &[
+            (
+                "prefers XDG_CONFIG_HOME",
+                Some("/custom/xdg"),
+                Some("/home/ignored"),
+                Some("/custom/xdg/tilo-desktop/peer-sync.enabled"),
+            ),
+            (
+                "falls back to HOME/.config",
+                None,
+                Some("/home/alice"),
+                Some("/home/alice/.config/tilo-desktop/peer-sync.enabled"),
+            ),
+            // POSIX convention: an empty env-var means "use the default".
+            (
+                "empty XDG treated as unset",
+                Some(""),
+                Some("/home/bob"),
+                Some("/home/bob/.config/tilo-desktop/peer-sync.enabled"),
+            ),
+            // No way to resolve a path → caller defaults to "marker absent".
+            ("no XDG, no HOME", None, None, None),
+            ("empty XDG and HOME", Some(""), Some(""), None),
+        ];
+        for (case, xdg, home, want) in cases {
+            assert_eq!(
+                peer_sync_marker_path_from_env(xdg.map(OsStr::new), home.map(OsStr::new)),
+                want.map(PathBuf::from),
+                "case {case}"
+            );
+        }
     }
 }

@@ -1052,224 +1052,232 @@ mod tests {
     use super::*;
 
     #[test]
-    fn set_code_handles_partial_input() {
-        let mut s = PairDeviceScreen::new();
-        s.set_code("123");
-        assert_eq!(s.code_string(), "123---");
-        s.set_code("987654");
-        assert_eq!(s.code_string(), "987654");
+    fn pair_code_parsing_and_payload_validation() {
+        fn set_code_handles_partial_input() {
+            let mut s = PairDeviceScreen::new();
+            s.set_code("123");
+            assert_eq!(s.code_string(), "123---");
+            s.set_code("987654");
+            assert_eq!(s.code_string(), "987654");
+        }
+
+        fn parse_code_requires_six_digits() {
+            let mut s = PairDeviceScreen::new();
+            assert!(s.parse_code().is_none());
+            s.set_code("12345");
+            assert!(s.parse_code().is_none());
+            s.set_code("000042");
+            assert_eq!(s.parse_code(), Some(42));
+        }
+
+        fn validate_code_against_payload_round_trip() {
+            let mut rng = UnwrapErr(SysRng);
+            let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+            let nonce = [0x77u8; 16];
+            let payload = PairingPayload::new(nonce, id.group_public_key(), &r1).unwrap();
+            let derived = derive_pairing_code(&nonce);
+            // Correct code accepted.
+            PairDeviceScreen::validate_code_against_payload(derived, &payload).unwrap();
+            // Wrong code rejected.
+            let err =
+                PairDeviceScreen::validate_code_against_payload(derived.wrapping_add(1), &payload)
+                    .unwrap_err();
+            assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
+        }
+
+        set_code_handles_partial_input();
+        parse_code_requires_six_digits();
+        validate_code_against_payload_round_trip();
     }
 
     #[test]
-    fn parse_code_requires_six_digits() {
-        let mut s = PairDeviceScreen::new();
-        assert!(s.parse_code().is_none());
-        s.set_code("12345");
-        assert!(s.parse_code().is_none());
-        s.set_code("000042");
-        assert_eq!(s.parse_code(), Some(42));
-    }
+    fn pair_code_entry_input_and_layout() {
+        fn manual_payload_copy_is_the_only_advertised_input() {
+            assert!(PAYLOAD_PLACEHOLDER.contains("Paste the pairing payload"));
+            assert!(!PAYLOAD_PLACEHOLDER.contains("scanner"));
+            assert!(!PAYLOAD_PLACEHOLDER.contains("TODO"));
+        }
 
-    #[test]
-    fn manual_payload_copy_is_the_only_advertised_input() {
-        assert!(PAYLOAD_PLACEHOLDER.contains("Paste the pairing payload"));
-        assert!(!PAYLOAD_PLACEHOLDER.contains("scanner"));
-        assert!(!PAYLOAD_PLACEHOLDER.contains("TODO"));
-    }
-
-    #[test]
-    fn validate_code_against_payload_round_trip() {
-        let mut rng = UnwrapErr(SysRng);
-        let mut id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let (_sess, r1) = id.begin_enrolment(1, 2, 2, &mut rng).unwrap();
-        let nonce = [0x77u8; 16];
-        let payload = PairingPayload::new(nonce, id.group_public_key(), &r1).unwrap();
-        let derived = derive_pairing_code(&nonce);
-        // Correct code accepted.
-        PairDeviceScreen::validate_code_against_payload(derived, &payload).unwrap();
-        // Wrong code rejected.
-        let err =
-            PairDeviceScreen::validate_code_against_payload(derived.wrapping_add(1), &payload)
-                .unwrap_err();
-        assert!(matches!(err, IdentityFlowError::DecodeFailed(_)));
-    }
-
-    /// Code entry through the shared inputs keeps its shape: a digit moves
-    /// on to the next cell, a multi-digit edit (a paste, an accessibility
-    /// `SetValue`) spreads across the cells, Backspace in an empty cell
-    /// steps back and clears the one before it, and typing into a focused
-    /// filled cell replaces its digit.
-    #[test]
-    fn typing_advances_a_paste_spreads_and_backspace_steps_back() {
-        use crate::widget::identity_flow::test_events as ev;
-        fn send(
-            s: &mut PairDeviceScreen,
-            event: &WindowEvent,
-            doc: &mut AutoCommit,
-            taffy: &TaffyTree<()>,
-            node: NodeId,
-        ) {
-            let mut handled = false;
-            let mut target = None;
-            s.handle_event_screen(
-                event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut target,
-                node,
-                taffy,
+        /// Code entry through the shared inputs keeps its shape: a digit moves
+        /// on to the next cell, a multi-digit edit (a paste, an accessibility
+        /// `SetValue`) spreads across the cells, Backspace in an empty cell
+        /// steps back and clears the one before it, and typing into a focused
+        /// filled cell replaces its digit.
+        fn typing_advances_a_paste_spreads_and_backspace_steps_back() {
+            use crate::widget::identity_flow::test_events as ev;
+            fn send(
+                s: &mut PairDeviceScreen,
+                event: &WindowEvent,
+                doc: &mut AutoCommit,
+                taffy: &TaffyTree<()>,
+                node: NodeId,
+            ) {
+                let mut handled = false;
+                let mut target = None;
+                s.handle_event_screen(
+                    event,
+                    1.0,
+                    &winit::event::Modifiers::default(),
+                    doc,
+                    &automerge::ROOT,
+                    &mut handled,
+                    &mut target,
+                    node,
+                    taffy,
+                );
+            }
+            let (taffy, node) = ev::scratch_node();
+            let mut doc = AutoCommit::new();
+            let mut s = PairDeviceScreen::new();
+            assert_eq!(
+                s.focused_cell(),
+                Some(0),
+                "the screen opens with the first cell focused"
             );
+
+            send(&mut s, &ev::char("9"), &mut doc, &taffy, node);
+            assert_eq!(s.code_string(), "9-----");
+            assert_eq!(
+                s.focused_cell(),
+                Some(1),
+                "a digit moves on to the next cell"
+            );
+
+            send(&mut s, &ev::char("x"), &mut doc, &taffy, node);
+            assert_eq!(s.code_string(), "9-----", "a cell admits digits only");
+            assert_eq!(s.focused_cell(), Some(1));
+
+            // An accessibility SetValue lands as one edit in a cell and is
+            // noticed by the layout pass, which spreads the digits forward but
+            // leaves focus where the host put it.
+            Widget::perform_action(
+                &mut s.cells[1],
+                &crate::a11y::Action::SetValue("2468".into()),
+                &mut doc,
+                &automerge::ROOT,
+            );
+            s.settle(None);
+            assert_eq!(s.code_string(), "92468-");
+            assert_eq!(
+                s.focused_cell(),
+                Some(1),
+                "the layout pass never moves focus"
+            );
+
+            // A selection change is not an edit: nothing spreads, nothing moves.
+            Widget::perform_action(
+                &mut s.cells[2],
+                &crate::a11y::Action::SetSelection {
+                    anchor: 0,
+                    focus: 1,
+                },
+                &mut doc,
+                &automerge::ROOT,
+            );
+            send(
+                &mut s,
+                &ev::cursor_at(Point::new(5.0, 5.0)),
+                &mut doc,
+                &taffy,
+                node,
+            );
+            assert_eq!(s.code_string(), "92468-");
+            assert_eq!(s.focused_cell(), Some(1), "a SetSelection is not an edit");
+
+            // Moving the caret inside a filled cell and typing still replaces
+            // its digit rather than appending a second one.
+            send(
+                &mut s,
+                &ev::named(NamedKey::ArrowRight),
+                &mut doc,
+                &taffy,
+                node,
+            );
+            send(&mut s, &ev::named(NamedKey::End), &mut doc, &taffy, node);
+            send(&mut s, &ev::char("5"), &mut doc, &taffy, node);
+            assert_eq!(
+                s.code_string(),
+                "95468-",
+                "typing after a caret move replaces the cell's digit"
+            );
+            assert_eq!(s.focused_cell(), Some(2));
+
+            // Focus handed to a filled cell by the host (Tab/Shift+Tab move
+            // focus without an event reaching the screen): the layout pass
+            // selects the digit, so the next keystroke replaces it too.
+            for (i, cell) in s.cells.iter_mut().enumerate() {
+                cell.set_focus(i == 3);
+            }
+            s.settle(None);
+            send(&mut s, &ev::char("0"), &mut doc, &taffy, node);
+            assert_eq!(
+                s.code_string(),
+                "95408-",
+                "a digit typed into a host-focused filled cell replaces it"
+            );
+            assert_eq!(s.focused_cell(), Some(4));
+
+            s.focus_cell(5, &mut None);
+            send(
+                &mut s,
+                &ev::named(NamedKey::Backspace),
+                &mut doc,
+                &taffy,
+                node,
+            );
+            assert_eq!(
+                s.code_string(),
+                "9540--",
+                "backspace in an empty cell clears the one before it"
+            );
+            assert_eq!(s.focused_cell(), Some(4));
+
+            send(&mut s, &ev::char("7"), &mut doc, &taffy, node);
+            send(&mut s, &ev::char("1"), &mut doc, &taffy, node);
+            assert_eq!(s.code_string(), "954071");
+            assert_eq!(s.parse_code(), Some(954_071));
+            assert_eq!(s.focused_cell(), Some(5), "the last cell keeps focus");
+            send(&mut s, &ev::char("3"), &mut doc, &taffy, node);
+            assert_eq!(
+                s.code_string(),
+                "954073",
+                "typing into a focused, filled cell replaces its digit"
+            );
+
+            let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
+            assert_eq!(ids.len(), CODE_LEN + 1);
+            assert_eq!(ids[0], CODE_CELL_IDS[0]);
+            assert_eq!(ids[CODE_LEN], PAYLOAD_INPUT_ID);
         }
-        let (taffy, node) = ev::scratch_node();
-        let mut doc = AutoCommit::new();
-        let mut s = PairDeviceScreen::new();
-        assert_eq!(
-            s.focused_cell(),
-            Some(0),
-            "the screen opens with the first cell focused"
-        );
 
-        send(&mut s, &ev::char("9"), &mut doc, &taffy, node);
-        assert_eq!(s.code_string(), "9-----");
-        assert_eq!(
-            s.focused_cell(),
-            Some(1),
-            "a digit moves on to the next cell"
-        );
-
-        send(&mut s, &ev::char("x"), &mut doc, &taffy, node);
-        assert_eq!(s.code_string(), "9-----", "a cell admits digits only");
-        assert_eq!(s.focused_cell(), Some(1));
-
-        // An accessibility SetValue lands as one edit in a cell and is
-        // noticed by the layout pass, which spreads the digits forward but
-        // leaves focus where the host put it.
-        Widget::perform_action(
-            &mut s.cells[1],
-            &crate::a11y::Action::SetValue("2468".into()),
-            &mut doc,
-            &automerge::ROOT,
-        );
-        s.settle(None);
-        assert_eq!(s.code_string(), "92468-");
-        assert_eq!(
-            s.focused_cell(),
-            Some(1),
-            "the layout pass never moves focus"
-        );
-
-        // A selection change is not an edit: nothing spreads, nothing moves.
-        Widget::perform_action(
-            &mut s.cells[2],
-            &crate::a11y::Action::SetSelection {
-                anchor: 0,
-                focus: 1,
-            },
-            &mut doc,
-            &automerge::ROOT,
-        );
-        send(
-            &mut s,
-            &ev::cursor_at(Point::new(5.0, 5.0)),
-            &mut doc,
-            &taffy,
-            node,
-        );
-        assert_eq!(s.code_string(), "92468-");
-        assert_eq!(s.focused_cell(), Some(1), "a SetSelection is not an edit");
-
-        // Moving the caret inside a filled cell and typing still replaces
-        // its digit rather than appending a second one.
-        send(
-            &mut s,
-            &ev::named(NamedKey::ArrowRight),
-            &mut doc,
-            &taffy,
-            node,
-        );
-        send(&mut s, &ev::named(NamedKey::End), &mut doc, &taffy, node);
-        send(&mut s, &ev::char("5"), &mut doc, &taffy, node);
-        assert_eq!(
-            s.code_string(),
-            "95468-",
-            "typing after a caret move replaces the cell's digit"
-        );
-        assert_eq!(s.focused_cell(), Some(2));
-
-        // Focus handed to a filled cell by the host (Tab/Shift+Tab move
-        // focus without an event reaching the screen): the layout pass
-        // selects the digit, so the next keystroke replaces it too.
-        for (i, cell) in s.cells.iter_mut().enumerate() {
-            cell.set_focus(i == 3);
+        /// Six square boxes on the spacing scale, starting on the body's edge
+        /// under their label; the payload field spans the body and is several
+        /// lines tall.
+        fn plan_lays_six_square_code_boxes_under_their_label() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let s = PairDeviceScreen::new();
+            let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let sp = &theme.tokens.spacing;
+            let side = f64::from(sp.s12);
+            assert_eq!(plan.boxes[0].x0, plan.code_label.x0);
+            for b in &plan.boxes {
+                assert_eq!(b.width(), side);
+                assert_eq!(b.height(), side);
+            }
+            for pair in plan.boxes.windows(2) {
+                assert!((pair[1].x0 - pair[0].x1 - f64::from(sp.s2)).abs() < 1e-9);
+            }
+            assert!(plan.boxes[5].x1 <= body.x1, "the row fits the body");
+            assert_eq!((plan.payload.x0, plan.payload.x1), (body.x0, body.x1));
+            assert!(plan.payload.height() > 3.0 * line_height(&mut tr, &theme, Role::Value));
+            assert!((plan.bottom - plan.payload.y1).abs() < 1e-9);
         }
-        s.settle(None);
-        send(&mut s, &ev::char("0"), &mut doc, &taffy, node);
-        assert_eq!(
-            s.code_string(),
-            "95408-",
-            "a digit typed into a host-focused filled cell replaces it"
-        );
-        assert_eq!(s.focused_cell(), Some(4));
 
-        s.focus_cell(5, &mut None);
-        send(
-            &mut s,
-            &ev::named(NamedKey::Backspace),
-            &mut doc,
-            &taffy,
-            node,
-        );
-        assert_eq!(
-            s.code_string(),
-            "9540--",
-            "backspace in an empty cell clears the one before it"
-        );
-        assert_eq!(s.focused_cell(), Some(4));
-
-        send(&mut s, &ev::char("7"), &mut doc, &taffy, node);
-        send(&mut s, &ev::char("1"), &mut doc, &taffy, node);
-        assert_eq!(s.code_string(), "954071");
-        assert_eq!(s.parse_code(), Some(954_071));
-        assert_eq!(s.focused_cell(), Some(5), "the last cell keeps focus");
-        send(&mut s, &ev::char("3"), &mut doc, &taffy, node);
-        assert_eq!(
-            s.code_string(),
-            "954073",
-            "typing into a focused, filled cell replaces its digit"
-        );
-
-        let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
-        assert_eq!(ids.len(), CODE_LEN + 1);
-        assert_eq!(ids[0], CODE_CELL_IDS[0]);
-        assert_eq!(ids[CODE_LEN], PAYLOAD_INPUT_ID);
-    }
-
-    /// Six square boxes on the spacing scale, starting on the body's edge
-    /// under their label; the payload field spans the body and is several
-    /// lines tall.
-    #[test]
-    fn plan_lays_six_square_code_boxes_under_their_label() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let s = PairDeviceScreen::new();
-        let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let sp = &theme.tokens.spacing;
-        let side = f64::from(sp.s12);
-        assert_eq!(plan.boxes[0].x0, plan.code_label.x0);
-        for b in &plan.boxes {
-            assert_eq!(b.width(), side);
-            assert_eq!(b.height(), side);
-        }
-        for pair in plan.boxes.windows(2) {
-            assert!((pair[1].x0 - pair[0].x1 - f64::from(sp.s2)).abs() < 1e-9);
-        }
-        assert!(plan.boxes[5].x1 <= body.x1, "the row fits the body");
-        assert_eq!((plan.payload.x0, plan.payload.x1), (body.x0, body.x1));
-        assert!(plan.payload.height() > 3.0 * line_height(&mut tr, &theme, Role::Value));
-        assert!((plan.bottom - plan.payload.y1).abs() < 1e-9);
+        manual_payload_copy_is_the_only_advertised_input();
+        typing_advances_a_paste_spreads_and_backspace_steps_back();
+        plan_lays_six_square_code_boxes_under_their_label();
     }
 }

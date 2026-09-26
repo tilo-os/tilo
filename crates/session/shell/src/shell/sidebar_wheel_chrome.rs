@@ -901,109 +901,116 @@ mod drag_rotate_tests {
     }
 
     #[test]
-    fn drag_down_past_threshold_rotates_to_next_workspace() {
-        use winit::event::{ElementState, MouseButton};
-        let (mut s, chrome) = sidebar_with_workspaces(3);
-        let active_before = chrome.borrow().tree().active;
-        s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
-        s.last_cursor = Some(Point::new(48.0, 100.0));
-        s.drag_start_y = Some(100.0);
-        s.drag_last_y = Some(100.0);
-        s.drag_accum = 0.0;
-        s.drag_moved = false;
-
-        let _ = (MouseButton::Left, ElementState::Pressed); // smoke
-        // Drives the CursorMoved math directly.
-        s.last_cursor = Some(Point::new(48.0, 100.0 + DRAG_SWITCH_THRESHOLD_PX + 2.0));
-        let p = s.last_cursor.unwrap();
-        if let (Some(start), Some(last)) = (s.drag_start_y, s.drag_last_y) {
-            let dy = p.y - last;
-            s.drag_last_y = Some(p.y);
-            if !s.drag_moved && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX {
-                s.drag_moved = true;
-            }
-            if s.drag_moved {
-                s.drag_accum += dy;
-                let (steps, remainder) = whole_steps(s.drag_accum, DRAG_SWITCH_THRESHOLD_PX);
-                s.drag_accum = remainder;
-                for _ in 0..steps {
-                    if let Some(ch) = s.chrome.clone()
-                        && !ch.borrow_mut().switch_workspace(1)
-                    {
-                        s.drag_accum = 0.0;
-                        break;
-                    }
-                }
-            }
-        }
-
-        let active_after = chrome.borrow().tree().active;
-        assert_ne!(
-            active_after, active_before,
-            "dragging one card-stride down must rotate to a new workspace"
-        );
-    }
-
-    #[test]
-    fn pure_click_below_tolerance_does_not_mark_drag() {
-        let (mut s, _chrome) = sidebar_with_workspaces(2);
-        s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
-        s.drag_start_y = Some(100.0);
-        s.drag_last_y = Some(100.0);
-
-        // 2px wiggle — below the 4px click tolerance.
-        let p = Point::new(48.0, 102.0);
-        if let (Some(start), Some(_last)) = (s.drag_start_y, s.drag_last_y)
-            && !s.drag_moved
-            && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn dragging_past_the_threshold_rotates_but_a_click_does_not() {
+        // Phase `drag_down_past_threshold_rotates_to_next_workspace`.
         {
-            s.drag_moved = true;
-        }
+            use winit::event::{ElementState, MouseButton};
+            let (mut s, chrome) = sidebar_with_workspaces(3);
+            let active_before = chrome.borrow().tree().active;
+            s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
+            s.last_cursor = Some(Point::new(48.0, 100.0));
+            s.drag_start_y = Some(100.0);
+            s.drag_last_y = Some(100.0);
+            s.drag_accum = 0.0;
+            s.drag_moved = false;
 
-        assert!(
-            !s.drag_moved,
-            "a 2 px press-wiggle must not transition into a drag — release branch must still activate"
-        );
-    }
-
-    #[test]
-    fn drag_up_past_threshold_rotates_to_previous_workspace() {
-        let (mut s, chrome) = sidebar_with_workspaces(3);
-        // Advance first so there's somewhere to go back to.
-        chrome.borrow_mut().switch_workspace(1);
-        let active_before = chrome.borrow().tree().active;
-        s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
-        s.drag_start_y = Some(400.0);
-        s.drag_last_y = Some(400.0);
-        s.drag_moved = false;
-        s.drag_accum = 0.0;
-
-        let p = Point::new(48.0, 400.0 - DRAG_SWITCH_THRESHOLD_PX - 2.0); // moved up past threshold
-        if let (Some(start), Some(last)) = (s.drag_start_y, s.drag_last_y) {
-            let dy = p.y - last;
-            s.drag_last_y = Some(p.y);
-            if !s.drag_moved && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX {
-                s.drag_moved = true;
-            }
-            if s.drag_moved {
-                s.drag_accum += dy;
-                let (steps, remainder) = whole_steps(-s.drag_accum, DRAG_SWITCH_THRESHOLD_PX);
-                s.drag_accum = -remainder;
-                for _ in 0..steps {
-                    if let Some(ch) = s.chrome.clone()
-                        && !ch.borrow_mut().switch_workspace(-1)
-                    {
-                        s.drag_accum = 0.0;
-                        break;
+            let _ = (MouseButton::Left, ElementState::Pressed); // smoke
+            // Drives the CursorMoved math directly.
+            s.last_cursor = Some(Point::new(48.0, 100.0 + DRAG_SWITCH_THRESHOLD_PX + 2.0));
+            let p = s.last_cursor.unwrap();
+            if let (Some(start), Some(last)) = (s.drag_start_y, s.drag_last_y) {
+                let dy = p.y - last;
+                s.drag_last_y = Some(p.y);
+                if !s.drag_moved && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX {
+                    s.drag_moved = true;
+                }
+                if s.drag_moved {
+                    s.drag_accum += dy;
+                    let (steps, remainder) = whole_steps(s.drag_accum, DRAG_SWITCH_THRESHOLD_PX);
+                    s.drag_accum = remainder;
+                    for _ in 0..steps {
+                        if let Some(ch) = s.chrome.clone()
+                            && !ch.borrow_mut().switch_workspace(1)
+                        {
+                            s.drag_accum = 0.0;
+                            break;
+                        }
                     }
                 }
             }
+
+            let active_after = chrome.borrow().tree().active;
+            assert_ne!(
+                active_after, active_before,
+                "dragging one card-stride down must rotate to a new workspace"
+            );
         }
 
-        let active_after = chrome.borrow().tree().active;
-        assert_ne!(
-            active_after, active_before,
-            "dragging one card-stride up must rotate back to the previous workspace"
-        );
+        // Phase `pure_click_below_tolerance_does_not_mark_drag`.
+        {
+            let (mut s, _chrome) = sidebar_with_workspaces(2);
+            s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
+            s.drag_start_y = Some(100.0);
+            s.drag_last_y = Some(100.0);
+
+            // 2px wiggle — below the 4px click tolerance.
+            let p = Point::new(48.0, 102.0);
+            if let (Some(start), Some(_last)) = (s.drag_start_y, s.drag_last_y)
+                && !s.drag_moved
+                && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX
+            {
+                s.drag_moved = true;
+            }
+
+            assert!(
+                !s.drag_moved,
+                "a 2 px press-wiggle must not transition into a drag — release branch must still activate"
+            );
+        }
+
+        // Phase `drag_up_past_threshold_rotates_to_previous_workspace`.
+        {
+            let (mut s, chrome) = sidebar_with_workspaces(3);
+            // Advance first so there's somewhere to go back to.
+            chrome.borrow_mut().switch_workspace(1);
+            let active_before = chrome.borrow().tree().active;
+            s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
+            s.drag_start_y = Some(400.0);
+            s.drag_last_y = Some(400.0);
+            s.drag_moved = false;
+            s.drag_accum = 0.0;
+
+            let p = Point::new(48.0, 400.0 - DRAG_SWITCH_THRESHOLD_PX - 2.0); // moved up past threshold
+            if let (Some(start), Some(last)) = (s.drag_start_y, s.drag_last_y) {
+                let dy = p.y - last;
+                s.drag_last_y = Some(p.y);
+                if !s.drag_moved && (p.y - start).abs() > DRAG_CLICK_TOLERANCE_PX {
+                    s.drag_moved = true;
+                }
+                if s.drag_moved {
+                    s.drag_accum += dy;
+                    let (steps, remainder) = whole_steps(-s.drag_accum, DRAG_SWITCH_THRESHOLD_PX);
+                    s.drag_accum = -remainder;
+                    for _ in 0..steps {
+                        if let Some(ch) = s.chrome.clone()
+                            && !ch.borrow_mut().switch_workspace(-1)
+                        {
+                            s.drag_accum = 0.0;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let active_after = chrome.borrow().tree().active;
+            assert_ne!(
+                active_after, active_before,
+                "dragging one card-stride up must rotate back to the previous workspace"
+            );
+        }
     }
 }

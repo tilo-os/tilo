@@ -203,21 +203,21 @@ impl EmailBackend {
 mod tests {
     use super::*;
     #[test]
-    fn string_list_drops_controls() {
-        let mut v = HashMap::new();
-        v.insert(
-            "cc".into(),
-            OwnedValue::try_from(zbus::zvariant::Value::new(vec![
-                "a@example.test".to_string(),
-                "bad\n".to_string(),
-            ]))
-            .expect("string arrays serialize into a zvariant"),
-        );
-        assert_eq!(strings(&v, "cc", 8), None);
-    }
-
-    #[test]
-    fn host_paths_are_never_attachments() {
+    fn email_inputs_drop_controls_and_host_paths() {
+        // Phase `string_list_drops_controls`.
+        {
+            let mut v = HashMap::new();
+            v.insert(
+                "cc".into(),
+                OwnedValue::try_from(zbus::zvariant::Value::new(vec![
+                    "a@example.test".to_string(),
+                    "bad\n".to_string(),
+                ]))
+                .expect("string arrays serialize into a zvariant"),
+            );
+            assert_eq!(strings(&v, "cc", 8), None);
+        }
+        // Phase `host_paths_are_never_attachments`.
         // The helper additionally verifies that a file URI lies under the
         // live document portal mount; arbitrary host paths fail that check.
         assert!(!attachment_uris(&["file:///home/me/private.pdf".into()]));

@@ -130,59 +130,64 @@ fn caret(app: &App) -> Option<String> {
 }
 
 #[test]
-fn caret_preserved_across_structure_rebuild() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
-    app.autofocus_first = true;
-    app.autofocus_on_structure_change = true;
-    app.init_layout();
+fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
+    // Case `caret_preserved_across_structure_rebuild`.
+    {
+        let mut app =
+            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
 
-    let id = app.focused_node.expect("input focused at startup");
-    unsafe {
-        (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
-    }
-    assert_eq!(caret(&app).as_deref(), Some("3"));
+        let id = app.focused_node.expect("input focused at startup");
+        unsafe {
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+        }
+        assert_eq!(caret(&app).as_deref(), Some("3"));
 
-    // Triggers a structural rebuild that recreates the input as a fresh
-    // instance whose own caret default is 5.
-    let mut tmp = AutoCommit::new();
-    app.root_widget
-        .on_external_event("show_status", &mut tmp, &automerge::ROOT);
-    app.rebuild_structure();
+        // Triggers a structural rebuild that recreates the input as a fresh
+        // instance whose own caret default is 5.
+        let mut tmp = AutoCommit::new();
+        app.root_widget
+            .on_external_event("show_status", &mut tmp, &automerge::ROOT);
+        app.rebuild_structure();
 
-    assert!(app.focused_node.is_some(), "focus preserved across rebuild");
-    assert_eq!(
-        caret(&app).as_deref(),
-        Some("3"),
-        "caret offset must be preserved across the rebuild"
-    );
-    assert_eq!(
-        app.root_widget.children().len(),
-        2,
-        "status sibling appeared"
-    );
-    assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
-}
-
-#[test]
-fn focus_reset_does_not_restore_caret() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
-    app.autofocus_first = true;
-    app.autofocus_on_structure_change = true;
-    app.init_layout();
-
-    let id = app.focused_node.unwrap();
-    unsafe {
-        (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+        assert!(app.focused_node.is_some(), "focus preserved across rebuild");
+        assert_eq!(
+            caret(&app).as_deref(),
+            Some("3"),
+            "caret offset must be preserved across the rebuild"
+        );
+        assert_eq!(
+            app.root_widget.children().len(),
+            2,
+            "status sibling appeared"
+        );
+        assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
     }
 
-    let mut tmp = AutoCommit::new();
-    app.root_widget
-        .on_external_event("reset", &mut tmp, &automerge::ROOT);
-    app.rebuild_structure();
+    // Case `focus_reset_does_not_restore_caret`.
+    {
+        let mut app =
+            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
 
-    assert_eq!(
-        caret(&app).as_deref(),
-        Some("5"),
-        "focus_reset must not paste the old caret onto the new field"
-    );
+        let id = app.focused_node.unwrap();
+        unsafe {
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+        }
+
+        let mut tmp = AutoCommit::new();
+        app.root_widget
+            .on_external_event("reset", &mut tmp, &automerge::ROOT);
+        app.rebuild_structure();
+
+        assert_eq!(
+            caret(&app).as_deref(),
+            Some("5"),
+            "focus_reset must not paste the old caret onto the new field"
+        );
+    }
 }

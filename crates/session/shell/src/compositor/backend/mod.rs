@@ -542,14 +542,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combined_geometry_single_output_equals_its_size() {
-        let outs = [Output::new(OutputId(0), (1920, 1080), 1.0)];
-        assert_eq!(combined_geometry(&outs), (1920, 1080));
-    }
+    fn combined_geometry_spans_every_output_and_is_zero_for_none() {
+        let single = [Output::new(OutputId(0), (1920, 1080), 1.0)];
+        assert_eq!(
+            combined_geometry(&single),
+            (1920, 1080),
+            "single output equals its size"
+        );
 
-    #[test]
-    fn combined_geometry_side_by_side_sums_width_takes_max_height() {
-        let outs = [
+        let side_by_side = [
             Output {
                 id: OutputId(0),
                 position: (0, 0),
@@ -574,7 +575,13 @@ mod tests {
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
-        assert_eq!(combined_geometry(&outs), (3200, 1080));
+        assert_eq!(
+            combined_geometry(&side_by_side),
+            (3200, 1080),
+            "side by side"
+        );
+
+        assert_eq!(combined_geometry(&[]), (0, 0), "empty");
     }
 
     #[test]
@@ -611,11 +618,6 @@ mod tests {
             PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
             None
         );
-    }
-
-    #[test]
-    fn combined_geometry_empty_is_zero() {
-        assert_eq!(combined_geometry(&[]), (0, 0));
     }
 }
 

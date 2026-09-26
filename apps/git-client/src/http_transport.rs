@@ -521,7 +521,17 @@ impl Helper {
 mod tests {
     use super::*;
 
+    /// Credential configuration: fetch and push capture their own, the helper
+    /// snapshot ignores later edits, non-default ports stay isolated, and an empty
+    /// scoped helper resets prior entries while keeping order. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn credential_configuration_is_captured_per_operation_and_origin() {
+        fetch_and_push_capture_their_own_credential_configuration();
+        helper_snapshot_is_independent_of_later_repository_edits();
+        credential_origin_keeps_nondefault_ports_isolated();
+        scoped_empty_helper_resets_prior_multivars_then_keeps_order();
+    }
+
     fn fetch_and_push_capture_their_own_credential_configuration() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -558,7 +568,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn helper_snapshot_is_independent_of_later_repository_edits() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -575,7 +584,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn credential_origin_keeps_nondefault_ports_isolated() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -609,7 +617,6 @@ mod tests {
         assert_eq!(helper.host, "example.invalid:8443");
     }
 
-    #[test]
     fn scoped_empty_helper_resets_prior_multivars_then_keeps_order() {
         let root = tempfile::tempdir().unwrap();
         let repository = git2::Repository::init(root.path()).unwrap();
@@ -643,7 +650,14 @@ mod tests {
         );
     }
 
+    /// HTTP protocol edges: Basic challenges parse outside quoted parameters and
+    /// boxed TLS certificate errors keep their classification. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn http_challenges_and_tls_errors_are_classified() {
+        basic_challenges_are_parsed_outside_quoted_parameters();
+        boxed_tls_certificate_errors_keep_their_classification();
+    }
+
     fn basic_challenges_are_parsed_outside_quoted_parameters() {
         assert!(offers_basic("Negotiate, Basic realm=\"git\""));
         assert!(offers_basic(
@@ -656,7 +670,6 @@ mod tests {
         assert!(!offers_basic("Digest realm=\"git\", Basic =\"parameter\""));
     }
 
-    #[test]
     fn boxed_tls_certificate_errors_keep_their_classification() {
         let error = io::Error::new(
             io::ErrorKind::InvalidData,
@@ -673,7 +686,18 @@ mod tests {
         )));
     }
 
+    /// Credential helper command lines: native executables keep quotes, spaces and
+    /// backslashes; relative helpers keep the git- prefix and POSIX quoting; absolute
+    /// POSIX paths survive on every platform; shell scripts and expansion are kept.
+    /// Each phase is a former test with its own fresh fixture.
     #[test]
+    fn credential_helper_commands_preserve_paths_quoting_and_scripts() {
+        native_helper_executables_preserve_quotes_spaces_and_backslashes();
+        relative_helpers_keep_git_prefix_and_posix_argument_quoting();
+        posix_absolute_helpers_keep_their_shell_paths_on_every_platform();
+        configured_shell_scripts_and_expansion_are_preserved();
+    }
+
     fn native_helper_executables_preserve_quotes_spaces_and_backslashes() {
         for (command, expected) in [
             (
@@ -705,7 +729,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn relative_helpers_keep_git_prefix_and_posix_argument_quoting() {
         let command = r"store --file='C:/user'\''s credential store'";
         let HelperCommand::Process {
@@ -725,7 +748,6 @@ mod tests {
         assert!(!requires_shell(&shell_command));
     }
 
-    #[test]
     fn posix_absolute_helpers_keep_their_shell_paths_on_every_platform() {
         for command in [
             "/mingw64/bin/git-credential-custom.exe --mode=test",
@@ -745,7 +767,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn configured_shell_scripts_and_expansion_are_preserved() {
         let script = r#"f() { printf '%s\n' "$HOME"; }; f"#;
         assert_eq!(

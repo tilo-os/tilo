@@ -66,122 +66,115 @@ def select_matrix(ref: str, event: str, requested: str) -> tuple[bool, list[dict
 
 
 class OsReleaseMatrixTests(unittest.TestCase):
-    def test_version_tags_keep_the_dedicated_release_fleet(self):
-        publish, lanes = select_matrix("refs/tags/v1.2.3", "push", "false")
-        self.assertTrue(publish)
-        self.assertEqual(
-            lanes,
-            [
-                {"arch": "x86_64", "runner": "imager-linux-x86_64"},
-                {"arch": "aarch64", "runner": "imager-linux-aarch64"},
-                {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
-                {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
-            ],
-        )
-
-    def test_protected_manual_main_publish_uses_native_large_disk_fleet(self):
-        publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "true")
-        self.assertTrue(publish)
-        self.assertEqual(
-            lanes,
-            [
+    def test_release_ref_and_event_choose_the_native_build_fleet(self):
+        with self.subTest(phase='version tags keep the dedicated release fleet'):
+            publish, lanes = select_matrix("refs/tags/v1.2.3", "push", "false")
+            self.assertTrue(publish)
+            self.assertEqual(
+                lanes,
+                [
+                    {"arch": "x86_64", "runner": "imager-linux-x86_64"},
+                    {"arch": "aarch64", "runner": "imager-linux-aarch64"},
+                    {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
+                ],
+            )
+        with self.subTest(phase='protected manual main publish uses native large disk fleet'):
+            publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "true")
+            self.assertTrue(publish)
+            self.assertEqual(
+                lanes,
+                [
+                    {"arch": "x86_64", "runner": "runner-large"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64"},
+                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                ],
+            )
+        with self.subTest(phase='manual nonpublication builds both native integration lanes'):
+            publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "false")
+            self.assertFalse(publish)
+            self.assertEqual(lanes, [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
-                {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
-            ],
-        )
+            ])
+        with self.subTest(phase='nightly main publishes through the manual main fleet'):
+            publish, skip, lanes = plan("refs/heads/main", "schedule", "", "f" * 40)
+            self.assertTrue(publish)
+            self.assertFalse(skip)
+            self.assertEqual(
+                lanes,
+                [
+                    {"arch": "x86_64", "runner": "runner-large"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64"},
+                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                ],
+            )
 
-    def test_manual_nonpublication_builds_both_native_integration_lanes(self):
-        publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "false")
-        self.assertFalse(publish)
-        self.assertEqual(lanes, [
-            {"arch": "x86_64", "runner": "runner-large"},
-            {"arch": "aarch64", "runner": "runner-large-arm64"},
-        ])
-
-    def test_nightly_main_publishes_through_the_manual_main_fleet(self):
-        publish, skip, lanes = plan("refs/heads/main", "schedule", "", "f" * 40)
-        self.assertTrue(publish)
-        self.assertFalse(skip)
-        self.assertEqual(
-            lanes,
-            [
+    def test_nightly_builds_publish_or_skip_based_on_published_and_built_revisions(self):
+        with self.subTest(phase='nightly publishes when no published revision is readable'):
+            publish, skip, _ = plan("refs/heads/main", "schedule", "", "")
+            self.assertTrue(publish)
+            self.assertFalse(skip)
+        with self.subTest(phase='nightly skips the build when main is already published'):
+            publish, skip, _ = plan("refs/heads/main", "schedule", "", SHA)
+            self.assertFalse(publish)
+            self.assertTrue(skip)
+        with self.subTest(phase='schedule never publishes from another ref'):
+            publish, skip, lanes = plan("refs/heads/feature", "schedule", "", "")
+            self.assertFalse(publish)
+            self.assertFalse(skip)
+            self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
+        with self.subTest(phase='unconfigured nightly runs a main integration build'):
+            publish, skip, lanes = plan("refs/heads/main", "schedule", "", "", "false")
+            self.assertFalse(publish)
+            self.assertFalse(skip)
+            self.assertEqual(lanes, [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
-                {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
-            ],
-        )
+            ])
+        with self.subTest(phase='unconfigured nightly skips an already built integration image'):
+            publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "false", SHA)
+            self.assertFalse(publish)
+            self.assertTrue(skip)
+        with self.subTest(phase='configured nightly publishes despite an integration image'):
+            publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "true", SHA)
+            self.assertTrue(publish)
+            self.assertFalse(skip)
+        with self.subTest(phase='explicit publication ignores the published revision'):
+            publish, skip, _ = plan("refs/heads/main", "workflow_dispatch", "true", SHA)
+            self.assertTrue(publish)
+            self.assertFalse(skip)
 
-    def test_nightly_publishes_when_no_published_revision_is_readable(self):
-        publish, skip, _ = plan("refs/heads/main", "schedule", "", "")
-        self.assertTrue(publish)
-        self.assertFalse(skip)
-
-    def test_nightly_skips_the_build_when_main_is_already_published(self):
-        publish, skip, _ = plan("refs/heads/main", "schedule", "", SHA)
-        self.assertFalse(publish)
-        self.assertTrue(skip)
-
-    def test_schedule_never_publishes_from_another_ref(self):
-        publish, skip, lanes = plan("refs/heads/feature", "schedule", "", "")
-        self.assertFalse(publish)
-        self.assertFalse(skip)
-        self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
-
-    def test_unconfigured_nightly_runs_a_main_integration_build(self):
-        publish, skip, lanes = plan("refs/heads/main", "schedule", "", "", "false")
-        self.assertFalse(publish)
-        self.assertFalse(skip)
-        self.assertEqual(lanes, [
-            {"arch": "x86_64", "runner": "runner-large"},
-            {"arch": "aarch64", "runner": "runner-large-arm64"},
-        ])
-
-    def test_unconfigured_nightly_skips_an_already_built_integration_image(self):
-        publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "false", SHA)
-        self.assertFalse(publish)
-        self.assertTrue(skip)
-
-    def test_configured_nightly_publishes_despite_an_integration_image(self):
-        publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "true", SHA)
-        self.assertTrue(publish)
-        self.assertFalse(skip)
-
-    def test_explicit_publication_ignores_the_published_revision(self):
-        publish, skip, _ = plan("refs/heads/main", "workflow_dispatch", "true", SHA)
-        self.assertTrue(publish)
-        self.assertFalse(skip)
-
-    def test_build_and_publication_jobs_honour_the_nightly_skip(self):
-        workflow = WORKFLOW.read_text()
-        build = workflow.split("\n  build-and-push:\n", 1)[1].split("\n    strategy:", 1)[0]
-        self.assertIn("needs.plan.outputs.skip != 'true'", build)
-        self.assertIn("PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}", workflow)
-        self.assertIn("docker://registry.tilo.so/tilo/tilo:latest", workflow)
-        self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
-
-    def test_every_publishing_run_holds_the_generation_series_lock(self):
-        cases = [
-            ("refs/tags/v1.2.3", "push", ""),
-            ("refs/heads/main", "workflow_dispatch", "true"),
-            ("refs/heads/main", "workflow_dispatch", "false"),
-            ("refs/heads/feature", "workflow_dispatch", "true"),
-            ("refs/heads/main", "schedule", ""),
-            ("refs/heads/feature", "schedule", ""),
-            ("refs/heads/main", "push", ""),
-        ]
-        for ref, event, requested in cases:
-            with self.subTest(ref=ref, event=event, requested=requested):
-                # A scheduled main run that skips must still hold the lock, so
-                # judge the lock against the unskipped rule.
-                publish, _, _ = plan(ref, event, requested)
-                group = concurrency_group(ref, event, requested)
-                if publish:
-                    self.assertEqual(group, "tilo-os-image-series")
-                else:
-                    self.assertEqual(group, f"tilo-os-image-validate-{ref}")
+    def test_publishing_jobs_honour_the_nightly_skip_and_hold_the_series_lock(self):
+        with self.subTest(phase='build and publication jobs honour the nightly skip'):
+            workflow = WORKFLOW.read_text()
+            build = workflow.split("\n  build-and-push:\n", 1)[1].split("\n    strategy:", 1)[0]
+            self.assertIn("needs.plan.outputs.skip != 'true'", build)
+            self.assertIn("PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}", workflow)
+            self.assertIn("docker://registry.tilo.so/tilo/tilo:latest", workflow)
+            self.assertIn('.Labels["org.opencontainers.image.revision"]', workflow)
+        with self.subTest(phase='every publishing run holds the generation series lock'):
+            cases = [
+                ("refs/tags/v1.2.3", "push", ""),
+                ("refs/heads/main", "workflow_dispatch", "true"),
+                ("refs/heads/main", "workflow_dispatch", "false"),
+                ("refs/heads/feature", "workflow_dispatch", "true"),
+                ("refs/heads/main", "schedule", ""),
+                ("refs/heads/feature", "schedule", ""),
+                ("refs/heads/main", "push", ""),
+            ]
+            for ref, event, requested in cases:
+                with self.subTest(ref=ref, event=event, requested=requested):
+                    # A scheduled main run that skips must still hold the lock, so
+                    # judge the lock against the unskipped rule.
+                    publish, _, _ = plan(ref, event, requested)
+                    group = concurrency_group(ref, event, requested)
+                    if publish:
+                        self.assertEqual(group, "tilo-os-image-series")
+                    else:
+                        self.assertEqual(group, f"tilo-os-image-validate-{ref}")
 
 
 def generation_script() -> str:
@@ -221,49 +214,47 @@ def empty_series_allowed(publish: str, genesis: str, sha: str = SHA) -> bool:
 
 
 class GenerationSeriesBootstrapTests(unittest.TestCase):
-    def test_validation_builds_may_find_no_published_series(self):
-        self.assertTrue(empty_series_allowed("false", ""))
-
-    def test_publication_never_restarts_an_unreadable_series_by_default(self):
-        self.assertFalse(empty_series_allowed("true", ""))
-
-    def test_genesis_authorizes_only_the_exact_commit(self):
-        self.assertTrue(empty_series_allowed("true", SHA))
-        self.assertFalse(empty_series_allowed("true", "f" * 40))
-        self.assertFalse(empty_series_allowed("true", SHA[:7], SHA[:7]))
-        self.assertFalse(empty_series_allowed("true", SHA.upper(), SHA.upper()))
-
-    def test_genesis_reads_the_protected_repository_variable(self):
-        self.assertIn(
-            "SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}",
-            WORKFLOW.read_text(),
-        )
+    def test_empty_generation_series_is_allowed_only_for_validation_or_exact_genesis(self):
+        with self.subTest(phase='validation builds may find no published series'):
+            self.assertTrue(empty_series_allowed("false", ""))
+        with self.subTest(phase='publication never restarts an unreadable series by default'):
+            self.assertFalse(empty_series_allowed("true", ""))
+        with self.subTest(phase='genesis authorizes only the exact commit'):
+            self.assertTrue(empty_series_allowed("true", SHA))
+            self.assertFalse(empty_series_allowed("true", "f" * 40))
+            self.assertFalse(empty_series_allowed("true", SHA[:7], SHA[:7]))
+            self.assertFalse(empty_series_allowed("true", SHA.upper(), SHA.upper()))
+        with self.subTest(phase='genesis reads the protected repository variable'):
+            self.assertIn(
+                "SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}",
+                WORKFLOW.read_text(),
+            )
 
 
 class ReleaseGateTests(unittest.TestCase):
-    def test_validation_gate_tolerates_an_absent_prediction_signer(self):
-        # Only a publication exports the signer, and the gate runs under set -u.
-        workflow = WORKFLOW.read_text()
-        gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
-        gate = gate.split("\n      - name: ", 1)[0]
-        self.assertIn("set -euo pipefail", gate)
-        condition = next(line for line in gate.splitlines() if "sign-target-prediction.sh" in line)
-        guard = gate.splitlines()[gate.splitlines().index(condition) - 1]
-        self.assertIn('[[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]', guard)
-
-    def test_oci_archive_reads_select_a_tagged_descriptor(self):
-        workflow = WORKFLOW.read_text()
-        archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
-        uses = list(archive.finditer(workflow))
-        self.assertEqual(len(uses), 4)
-        for use in uses:
-            self.assertRegex(
-                workflow[use.end():use.end() + 24],
-                r"^:\$(?:source_ref|first_ref|repro_ref)\b",
-            )
-        self.assertIn("'${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'", workflow)
-        self.assertIn("'${{ steps.repro.outputs.digest }}'", workflow)
-        self.assertNotIn("podman load --input /var/tmp/tilo-image", workflow)
+    def test_validation_gate_and_oci_archive_reads_are_exact(self):
+        with self.subTest(phase='validation gate tolerates an absent prediction signer'):
+            # Only a publication exports the signer, and the gate runs under set -u.
+            workflow = WORKFLOW.read_text()
+            gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
+            gate = gate.split("\n      - name: ", 1)[0]
+            self.assertIn("set -euo pipefail", gate)
+            condition = next(line for line in gate.splitlines() if "sign-target-prediction.sh" in line)
+            guard = gate.splitlines()[gate.splitlines().index(condition) - 1]
+            self.assertIn('[[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]', guard)
+        with self.subTest(phase='oci archive reads select a tagged descriptor'):
+            workflow = WORKFLOW.read_text()
+            archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
+            uses = list(archive.finditer(workflow))
+            self.assertEqual(len(uses), 4)
+            for use in uses:
+                self.assertRegex(
+                    workflow[use.end():use.end() + 24],
+                    r"^:\$(?:source_ref|first_ref|repro_ref)\b",
+                )
+            self.assertIn("'${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'", workflow)
+            self.assertIn("'${{ steps.repro.outputs.digest }}'", workflow)
+            self.assertNotIn("podman load --input /var/tmp/tilo-image", workflow)
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("skopeo"), "skopeo on POSIX required")
     def test_two_ref_archive_needs_an_explicit_source_reference(self):

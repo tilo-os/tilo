@@ -1227,139 +1227,147 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
+    /// The pane lays out and imported repeat settings show the live rate or disabled.
     #[test]
     #[expect(
         clippy::float_cmp,
         reason = "off, pass-through and clamped slider values are exact sentinels, not computed"
     )]
-    fn imported_repeat_settings_are_shown_as_the_live_rate_or_disabled() {
-        let disabled = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat: 0.5,
-                key_repeat_delay_ms: Some(500),
-                key_repeat_rate_hz: Some(0),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(disabled.key_repeat_slider_value(), 0.0);
-        assert_eq!(
-            disabled.key_repeat_description(),
-            "Repeat is off — move the slider to turn it on"
-        );
+    fn input_pane_lays_out_and_shows_imported_repeat_settings() {
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        }
 
-        let exact = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat: 0.5,
-                key_repeat_delay_ms: Some(275),
-                key_repeat_rate_hz: Some(37),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
-        assert_eq!(
-            exact.key_repeat_description(),
-            "37 keys per second · starts after 275 ms"
-        );
+        // Case `imported_repeat_settings_are_shown_as_the_live_rate_or_disabled`.
+        {
+            let disabled = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat: 0.5,
+                    key_repeat_delay_ms: Some(500),
+                    key_repeat_rate_hz: Some(0),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert_eq!(disabled.key_repeat_slider_value(), 0.0);
+            assert_eq!(
+                disabled.key_repeat_description(),
+                "Repeat is off — move the slider to turn it on"
+            );
 
-        let partial = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat: 0.25,
-                key_repeat_rate_hz: Some(50),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(partial.key_repeat_slider_value(), 0.25);
-        assert_eq!(
-            partial.key_repeat_description(),
-            "Faster repeat starts sooner"
-        );
+            let exact = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat: 0.5,
+                    key_repeat_delay_ms: Some(275),
+                    key_repeat_rate_hz: Some(37),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
+            assert_eq!(
+                exact.key_repeat_description(),
+                "37 keys per second · starts after 275 ms"
+            );
 
-        let clamped = MouseKeyboardPane::with_catalog(
-            InputPrefs {
-                key_repeat_delay_ms: Some(200),
-                key_repeat_rate_hz: Some(1_000),
-                ..Default::default()
-            },
-            catalog(),
-        );
-        assert_eq!(clamped.key_repeat_slider_value(), 1.0);
+            let partial = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat: 0.25,
+                    key_repeat_rate_hz: Some(50),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert_eq!(partial.key_repeat_slider_value(), 0.25);
+            assert_eq!(
+                partial.key_repeat_description(),
+                "Faster repeat starts sooner"
+            );
+
+            let clamped = MouseKeyboardPane::with_catalog(
+                InputPrefs {
+                    key_repeat_delay_ms: Some(200),
+                    key_repeat_rate_hz: Some(1_000),
+                    ..Default::default()
+                },
+                catalog(),
+            );
+            assert_eq!(clamped.key_repeat_slider_value(), 1.0);
+        }
     }
 
+    /// Document source selection, source latches and pointer speeds never drive the device.
     #[test]
-    fn document_active_source_selection_is_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let initial = InputPrefs {
-            keyboard_layouts: vec!["us".into(), "de".into()],
-            ..Default::default()
-        };
-        let mut pane = MouseKeyboardPane::with_catalog(initial, catalog());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, LAYOUT_KEY, "German");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layout, "us");
-        assert_eq!(SystemPrefs::load().input.keyboard_layout, "us");
-        assert!(!pane.take_structure_dirty());
-    }
+    fn document_input_edits_are_ignored_in_favour_of_local_effects() {
+        // Case `document_active_source_selection_is_ignored`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let initial = InputPrefs {
+                keyboard_layouts: vec!["us".into(), "de".into()],
+                ..Default::default()
+            };
+            let mut pane = MouseKeyboardPane::with_catalog(initial, catalog());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, LAYOUT_KEY, "German");
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layout, "us");
+            assert_eq!(SystemPrefs::load().input.keyboard_layout, "us");
+            assert!(!pane.take_structure_dirty());
+        }
 
-    #[test]
-    fn document_source_latches_are_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
+        // Case `document_source_latches_are_ignored`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-        let _ = doc.put(&root, ADD_SOURCE_PICKER_KEY, "German");
-        let _ = doc.put(&root, ADD_SOURCE_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us"]);
-        assert_eq!(pane.last.keyboard_layout, "us");
+            let _ = doc.put(&root, ADD_SOURCE_PICKER_KEY, "German");
+            let _ = doc.put(&root, ADD_SOURCE_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layouts, ["us"]);
+            assert_eq!(pane.last.keyboard_layout, "us");
 
-        let _ = doc.put(&root, MouseKeyboardPane::source_action(1, "up"), true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us"]);
-        assert_eq!(pane.last.keyboard_layout, "us");
+            let _ = doc.put(&root, MouseKeyboardPane::source_action(1, "up"), true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layouts, ["us"]);
+            assert_eq!(pane.last.keyboard_layout, "us");
 
-        let _ = doc.put(&root, MouseKeyboardPane::source_action(0, "remove"), true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us"]);
-        assert_eq!(pane.last.keyboard_layout, "us");
-    }
+            let _ = doc.put(&root, MouseKeyboardPane::source_action(0, "remove"), true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.keyboard_layouts, ["us"]);
+            assert_eq!(pane.last.keyboard_layout, "us");
+        }
 
-    /// Device class speed sliders only travel through local effect actions.
-    #[test]
-    fn document_pointer_speed_changes_are_ignored() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            TOUCHPAD_POINTER_SPEED_KEY,
-            automerge::ScalarValue::F64(0.9),
-        );
-        let _ = doc.put(
-            &root,
-            MOUSE_POINTER_SPEED_KEY,
-            automerge::ScalarValue::F64(0.2),
-        );
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.touchpad_pointer_speed, None);
-        assert_eq!(pane.last.mouse_pointer_speed, None);
+        // Case `document_pointer_speed_changes_are_ignored`.
+        // Device class speed sliders only travel through local effect actions.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                TOUCHPAD_POINTER_SPEED_KEY,
+                automerge::ScalarValue::F64(0.9),
+            );
+            let _ = doc.put(
+                &root,
+                MOUSE_POINTER_SPEED_KEY,
+                automerge::ScalarValue::F64(0.2),
+            );
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.last.touchpad_pointer_speed, None);
+            assert_eq!(pane.last.mouse_pointer_speed, None);
+        }
     }
 }

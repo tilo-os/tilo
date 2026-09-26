@@ -170,129 +170,137 @@ mod tests {
         out
     }
 
+    /// ODS values, currency styles, formulas, syntax and content XML.
     #[test]
-    fn ods_round_trips() {
-        let path = std::env::temp_dir().join("sheets-ods-test.ods");
-        write_ods(&path, std::slice::from_ref(&sample_table())).unwrap();
-        let back = read_ods(&path).unwrap();
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].name, "Budget");
-        assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
-        // Currency value survived as 1200.
-        let rent = back[0].rows[1][1].as_ref().unwrap();
-        assert_eq!(rent.raw.parse::<f64>().unwrap(), 1200.0);
-        // Percent value survived as 0.21.
-        let rate = back[0].rows[2][1].as_ref().unwrap();
-        assert!((rate.raw.parse::<f64>().unwrap() - 0.21).abs() < 1e-9);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn ods_export_uses_the_cells_actual_currency_style() {
-        for (currency, style) in [
-            (Currency::USD, "coUSD"),
-            (Currency::EUR, "coEUR"),
-            (Currency::GBP, "coGBP"),
-            (Currency::JPY, "coJPY"),
-            (Currency::CNY, "coCNY"),
-            (Currency::CHF, "coCHF"),
-            (Currency::INR, "coINR"),
-            (Currency::CAD, "coCAD"),
-            (Currency::AUD, "coAUD"),
-        ] {
-            let table = SheetTable {
-                name: "S".into(),
-                rows: vec![vec![Some(cell("12.5", CellFormat::Currency(currency)))]],
-            };
-            let xml = written_part(std::slice::from_ref(&table), "content.xml");
-            assert!(
-                xml.contains(&format!(r#"table:style-name="{style}""#)),
-                "{currency:?} used the wrong ODF style: {xml}"
-            );
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn ods_round_trips_values_styles_and_formulas() {
+        // Case `ods_round_trips`.
+        {
+            let path = std::env::temp_dir().join("sheets-ods-test.ods");
+            write_ods(&path, std::slice::from_ref(&sample_table())).unwrap();
+            let back = read_ods(&path).unwrap();
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].name, "Budget");
+            assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
+            // Currency value survived as 1200.
+            let rent = back[0].rows[1][1].as_ref().unwrap();
+            assert_eq!(rent.raw.parse::<f64>().unwrap(), 1200.0);
+            // Percent value survived as 0.21.
+            let rate = back[0].rows[2][1].as_ref().unwrap();
+            assert!((rate.raw.parse::<f64>().unwrap() - 0.21).abs() < 1e-9);
+            let _ = std::fs::remove_file(&path);
         }
-        let styles = written_part(&[sample_table()], "styles.xml");
-        assert!(styles.contains("<number:currency-symbol>€</number:currency-symbol>"));
-        assert!(styles.contains("<number:currency-symbol>₹</number:currency-symbol>"));
-        assert!(styles.contains(r#"style:name="coPct""#));
-    }
 
-    /// Formulas written into `.ods` (as `table:formula`) come back with their
-    /// text intact and recompute to the original results — the real
-    /// `from_cells` → `write_ods` → `read_ods` → engine path.
-    #[test]
-    fn ods_round_trips_formulas() {
-        use crate::model::Addr;
-        use std::collections::HashMap;
+        // Case `ods_export_uses_the_cells_actual_currency_style`.
+        {
+            for (currency, style) in [
+                (Currency::USD, "coUSD"),
+                (Currency::EUR, "coEUR"),
+                (Currency::GBP, "coGBP"),
+                (Currency::JPY, "coJPY"),
+                (Currency::CNY, "coCNY"),
+                (Currency::CHF, "coCHF"),
+                (Currency::INR, "coINR"),
+                (Currency::CAD, "coCAD"),
+                (Currency::AUD, "coAUD"),
+            ] {
+                let table = SheetTable {
+                    name: "S".into(),
+                    rows: vec![vec![Some(cell("12.5", CellFormat::Currency(currency)))]],
+                };
+                let xml = written_part(std::slice::from_ref(&table), "content.xml");
+                assert!(
+                    xml.contains(&format!(r#"table:style-name="{style}""#)),
+                    "{currency:?} used the wrong ODF style: {xml}"
+                );
+            }
+            let styles = written_part(&[sample_table()], "styles.xml");
+            assert!(styles.contains("<number:currency-symbol>€</number:currency-symbol>"));
+            assert!(styles.contains("<number:currency-symbol>₹</number:currency-symbol>"));
+            assert!(styles.contains(r#"style:name="coPct""#));
+        }
 
-        let mut raw: HashMap<Addr, String> = HashMap::new();
-        raw.insert((0, 0), "5".into());
-        raw.insert((0, 1), "7".into());
-        raw.insert((0, 2), "=SUM(A1:A2)".into()); // 12
-        raw.insert((0, 3), "=A3*2".into()); // 24
-        let fmt: HashMap<Addr, CellFormat> = HashMap::new();
-        let values = crate::formula::recalculate(&raw);
-        let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
+        // Case `ods_round_trips_formulas`.
+        // Formulas written into `.ods` (as `table:formula`) come back with their
+        // text intact and recompute to the original results — the real
+        // `from_cells` → `write_ods` → `read_ods` → engine path.
+        {
+            use crate::model::Addr;
+            use std::collections::HashMap;
 
-        let path = std::env::temp_dir().join("sheets-ods-formula-rt.ods");
-        write_ods(&path, std::slice::from_ref(&table)).unwrap();
-        let back = read_ods(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
+            let mut raw: HashMap<Addr, String> = HashMap::new();
+            raw.insert((0, 0), "5".into());
+            raw.insert((0, 1), "7".into());
+            raw.insert((0, 2), "=SUM(A1:A2)".into()); // 12
+            raw.insert((0, 3), "=A3*2".into()); // 24
+            let fmt: HashMap<Addr, CellFormat> = HashMap::new();
+            let values = crate::formula::recalculate(&raw);
+            let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
 
-        // Formula text (normalized back to A1) survived the ODF round-trip.
-        assert_eq!(
-            back[0].rows[2][0].as_ref().unwrap().formula.as_deref(),
-            Some("=SUM(A1:A2)")
-        );
-        assert_eq!(
-            back[0].rows[3][0].as_ref().unwrap().formula.as_deref(),
-            Some("=A3*2")
-        );
+            let path = std::env::temp_dir().join("sheets-ods-formula-rt.ods");
+            write_ods(&path, std::slice::from_ref(&table)).unwrap();
+            let back = read_ods(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
 
-        // Re-evaluating the imported formulas reproduces the results.
-        let mut reimported: HashMap<Addr, String> = HashMap::new();
-        for (r, row) in back[0].rows.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
-                if let Some(cell) = cell {
-                    let raw = cell.formula.clone().unwrap_or_else(|| cell.raw.clone());
-                    if !raw.is_empty() {
-                        reimported.insert((c as u32, r as u32), raw);
+            // Formula text (normalized back to A1) survived the ODF round-trip.
+            assert_eq!(
+                back[0].rows[2][0].as_ref().unwrap().formula.as_deref(),
+                Some("=SUM(A1:A2)")
+            );
+            assert_eq!(
+                back[0].rows[3][0].as_ref().unwrap().formula.as_deref(),
+                Some("=A3*2")
+            );
+
+            // Re-evaluating the imported formulas reproduces the results.
+            let mut reimported: HashMap<Addr, String> = HashMap::new();
+            for (r, row) in back[0].rows.iter().enumerate() {
+                for (c, cell) in row.iter().enumerate() {
+                    if let Some(cell) = cell {
+                        let raw = cell.formula.clone().unwrap_or_else(|| cell.raw.clone());
+                        if !raw.is_empty() {
+                            reimported.insert((c as u32, r as u32), raw);
+                        }
                     }
                 }
             }
+            let recomputed = crate::formula::recalculate(&reimported);
+            assert_eq!(recomputed.get(&(0, 2)), Some(&CellValue::Number(12.0)));
+            assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(24.0)));
         }
-        let recomputed = crate::formula::recalculate(&reimported);
-        assert_eq!(recomputed.get(&(0, 2)), Some(&CellValue::Number(12.0)));
-        assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(24.0)));
-    }
 
-    #[test]
-    fn ods_formula_syntax() {
-        // A1 refs become bracketed current-table refs under the of: namespace.
-        assert_eq!(to_ods_formula("=SUM(A1:A3)"), "of:=SUM([.A1:.A3])");
-        assert_eq!(to_ods_formula("=B2+C2"), "of:=[.B2]+[.C2]");
-        // Function names and numeric literals are left alone.
-        assert_eq!(to_ods_formula("=A1*2"), "of:=[.A1]*2");
-    }
+        // Case `ods_formula_syntax`.
+        {
+            // A1 refs become bracketed current-table refs under the of: namespace.
+            assert_eq!(to_ods_formula("=SUM(A1:A3)"), "of:=SUM([.A1:.A3])");
+            assert_eq!(to_ods_formula("=B2+C2"), "of:=[.B2]+[.C2]");
+            // Function names and numeric literals are left alone.
+            assert_eq!(to_ods_formula("=A1*2"), "of:=[.A1]*2");
+        }
 
-    #[test]
-    fn content_xml_carries_values_formulas_and_escaped_names() {
-        let mut table = sample_table();
-        table.name = "Budget <&> \"Q1\"".into();
-        table.rows.push(vec![Some(ImportedCell {
-            raw: "12".into(),
-            format: CellFormat::General,
-            formula: Some("=SUM(A1:A2)".into()),
-        })]);
-        let xml = written_part(std::slice::from_ref(&table), "content.xml");
-        assert!(xml.contains("office:spreadsheet"));
-        assert!(xml.contains(r#"table:name="Budget &lt;&amp;&gt; &quot;Q1&quot;""#));
-        // The currency cell carries a numeric office:value.
-        assert!(xml.contains(r#"office:value="1200""#));
-        assert!(
-            xml.contains(r#"table:formula="of:=SUM([.A1:.A2])""#),
-            "missing formula attr in: {xml}"
-        );
-        // The cached value is still present so a non-recalc viewer shows it.
-        assert!(xml.contains(r#"office:value="12""#));
+        // Case `content_xml_carries_values_formulas_and_escaped_names`.
+        {
+            let mut table = sample_table();
+            table.name = "Budget <&> \"Q1\"".into();
+            table.rows.push(vec![Some(ImportedCell {
+                raw: "12".into(),
+                format: CellFormat::General,
+                formula: Some("=SUM(A1:A2)".into()),
+            })]);
+            let xml = written_part(std::slice::from_ref(&table), "content.xml");
+            assert!(xml.contains("office:spreadsheet"));
+            assert!(xml.contains(r#"table:name="Budget &lt;&amp;&gt; &quot;Q1&quot;""#));
+            // The currency cell carries a numeric office:value.
+            assert!(xml.contains(r#"office:value="1200""#));
+            assert!(
+                xml.contains(r#"table:formula="of:=SUM([.A1:.A2])""#),
+                "missing formula attr in: {xml}"
+            );
+            // The cached value is still present so a non-recalc viewer shows it.
+            assert!(xml.contains(r#"office:value="12""#));
+        }
     }
 }

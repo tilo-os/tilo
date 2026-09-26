@@ -53,62 +53,68 @@ class PreparePrHistory(unittest.TestCase):
         )
         return clone
 
-    def test_normal_pr_needs_no_fetch_beyond_checkout(self):
-        base = self.commit("base")
-        self.git(self.source, "checkout", "-qb", "candidate")
-        head = self.commit("head")
-        self.publish()
-        clone = self.shallow_clone("candidate")
-        self.assertEqual(history.prepare(clone, self.event(base, head)), base)
-        self.assertFalse((clone / ".git/refs/ci/pr-base").exists())
+    def test_pr_history_is_deepened_only_as_needed_to_find_the_true_merge_base(self):
+        with self.subTest(phase='normal pr needs no fetch beyond checkout'):
+            self.doCleanups()
+            self.setUp()
+            base = self.commit("base")
+            self.git(self.source, "checkout", "-qb", "candidate")
+            head = self.commit("head")
+            self.publish()
+            clone = self.shallow_clone("candidate")
+            self.assertEqual(history.prepare(clone, self.event(base, head)), base)
+            self.assertFalse((clone / ".git/refs/ci/pr-base").exists())
+        with self.subTest(phase='stale diverged pr finds the true common ancestor'):
+            self.doCleanups()
+            self.setUp()
+            ancestor = self.commit("ancestor")
+            self.git(self.source, "checkout", "-qb", "candidate")
+            head = self.commit("candidate")
+            self.git(self.source, "checkout", "-qb", "main", ancestor)
+            base = self.commit("new main")
+            self.publish()
+            clone = self.shallow_clone("candidate", 1)
+            self.assertEqual(history.prepare(clone, self.event(base, head)), ancestor)
+        with self.subTest(phase='progressively retries deeper targeted fetches'):
+            self.doCleanups()
+            self.setUp()
+            completed = mock.Mock(stdout="b" * 40 + "\n", returncode=0, stderr="")
+            fetch_depths = []
 
-    def test_stale_diverged_pr_finds_the_true_common_ancestor(self):
-        ancestor = self.commit("ancestor")
-        self.git(self.source, "checkout", "-qb", "candidate")
-        head = self.commit("candidate")
-        self.git(self.source, "checkout", "-qb", "main", ancestor)
-        base = self.commit("new main")
-        self.publish()
-        clone = self.shallow_clone("candidate", 1)
-        self.assertEqual(history.prepare(clone, self.event(base, head)), ancestor)
+            def fake_git(_repo, *args, check=True):
+                if args[0] == "rev-parse":
+                    return completed
+                self.assertEqual(args[0], "fetch")
+                self.assertIn("--no-tags", args)
+                self.assertIn("--no-write-fetch-head", args)
+                self.assertIn("origin", args)
+                self.assertIn("+" + "a" * 40 + ":refs/ci/pr-base", args)
+                self.assertIn("+" + "b" * 40 + ":refs/ci/pr-head", args)
+                fetch_depths.append(next(a for a in args if a.startswith("--depth=")))
+                return mock.Mock(returncode=0, stderr="")
 
-    def test_progressively_retries_deeper_targeted_fetches(self):
-        completed = mock.Mock(stdout="b" * 40 + "\n", returncode=0, stderr="")
-        fetch_depths = []
-
-        def fake_git(_repo, *args, check=True):
-            if args[0] == "rev-parse":
-                return completed
-            self.assertEqual(args[0], "fetch")
-            self.assertIn("--no-tags", args)
-            self.assertIn("--no-write-fetch-head", args)
-            self.assertIn("origin", args)
-            self.assertIn("+" + "a" * 40 + ":refs/ci/pr-base", args)
-            self.assertIn("+" + "b" * 40 + ":refs/ci/pr-head", args)
-            fetch_depths.append(next(a for a in args if a.startswith("--depth=")))
-            return mock.Mock(returncode=0, stderr="")
-
-        with mock.patch.object(history, "git", side_effect=fake_git), \
-             mock.patch.object(history, "merge_base", side_effect=[None, None, "a" * 40]):
-            result = history.prepare(
-                Path("."), self.event("a" * 40, "b" * 40), depths=(32, 128)
-            )
-        self.assertEqual(result, "a" * 40)
-        self.assertEqual(fetch_depths, ["--depth=32", "--depth=128"])
-
-    def test_missing_ancestry_fails_after_the_bound(self):
-        ancestor = self.commit("ancestor")
-        for i in range(6):
-            self.commit(f"main-{i}")
-        base = self.git(self.source, "rev-parse", "HEAD")
-        self.git(self.source, "checkout", "-qb", "candidate", ancestor)
-        for i in range(6):
-            self.commit(f"candidate-{i}")
-        head = self.git(self.source, "rev-parse", "HEAD")
-        self.publish()
-        clone = self.shallow_clone("candidate", 1)
-        with self.assertRaisesRegex(RuntimeError, "cannot establish PR merge base"):
-            history.prepare(clone, self.event(base, head), depths=(2, 3))
+            with mock.patch.object(history, "git", side_effect=fake_git), \
+                 mock.patch.object(history, "merge_base", side_effect=[None, None, "a" * 40]):
+                result = history.prepare(
+                    Path("."), self.event("a" * 40, "b" * 40), depths=(32, 128)
+                )
+            self.assertEqual(result, "a" * 40)
+            self.assertEqual(fetch_depths, ["--depth=32", "--depth=128"])
+        with self.subTest(phase='missing ancestry fails after the bound'):
+            self.doCleanups()
+            self.setUp()
+            ancestor = self.commit("ancestor")
+            for i in range(6):
+                self.commit(f"main-{i}")
+            base = self.git(self.source, "rev-parse", "HEAD")
+            self.git(self.source, "checkout", "-qb", "candidate", ancestor)
+            for i in range(6):
+                self.commit(f"candidate-{i}")
+            head = self.git(self.source, "rev-parse", "HEAD")
+            self.publish()
+            clone = self.shallow_clone("candidate", 1)
+            with self.assertRaisesRegex(RuntimeError, "cannot establish PR merge base"):
+                history.prepare(clone, self.event(base, head), depths=(2, 3))
 
 
 if __name__ == "__main__":

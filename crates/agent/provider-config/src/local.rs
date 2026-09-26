@@ -595,32 +595,67 @@ mod tests {
         }
     }
 
+    /// The runtime is picked CUDA, then `ROCm`, then CPU only when the facts support it; installation
+    /// resumes then verifies before each install; activation refuses a network-facing `vLLM` endpoint.
     #[test]
-    fn picks_cuda_then_rocm_then_cpu_only_when_facts_support_it() {
-        assert_eq!(
-            select_runtime(&HardwareSnapshot {
-                accelerators: vec![Accelerator::Nvidia {
-                    vram_mib: 12288,
-                    driver: "560".into()
-                }],
-                ..cpu()
-            }),
-            RuntimeDecision::Ready(RuntimeKind::NvidiaCuda)
-        );
-        assert_eq!(
-            select_runtime(&HardwareSnapshot {
-                accelerators: vec![Accelerator::Amd {
-                    vram_mib: 16384,
-                    rocm: Some("6.2".into())
-                }],
-                ..cpu()
-            }),
-            RuntimeDecision::Ready(RuntimeKind::AmdRocm)
-        );
-        assert_eq!(
-            select_runtime(&cpu()),
-            RuntimeDecision::Ready(RuntimeKind::Cpu)
-        );
+    fn local_model_setup_follows_the_hardware_and_verifies_before_activating() {
+        // Phase: picks_cuda_then_rocm_then_cpu_only_when_facts_support_it.
+        {
+            assert_eq!(
+                select_runtime(&HardwareSnapshot {
+                    accelerators: vec![Accelerator::Nvidia {
+                        vram_mib: 12288,
+                        driver: "560".into()
+                    }],
+                    ..cpu()
+                }),
+                RuntimeDecision::Ready(RuntimeKind::NvidiaCuda)
+            );
+            assert_eq!(
+                select_runtime(&HardwareSnapshot {
+                    accelerators: vec![Accelerator::Amd {
+                        vram_mib: 16384,
+                        rocm: Some("6.2".into())
+                    }],
+                    ..cpu()
+                }),
+                RuntimeDecision::Ready(RuntimeKind::AmdRocm)
+            );
+            assert_eq!(
+                select_runtime(&cpu()),
+                RuntimeDecision::Ready(RuntimeKind::Cpu)
+            );
+        }
+
+        // Phase: installation_resumes_then_verifies_before_each_install.
+        {
+            let mut fake = Fake {
+                partial: 20,
+                calls: vec![],
+                endpoint: "http://127.0.0.1:8000/v1".into(),
+            };
+            let status = LocalModelProvisioner::new(&mut fake)
+                .install(&catalog(), &cpu(), "tiny-q4")
+                .unwrap();
+            assert_eq!(status, LocalModelStatus::Installed);
+            assert_eq!(
+                fake.calls,
+                ["resume", "promote", "runtime", "resume", "promote", "model"]
+            );
+        }
+
+        // Phase: activation_refuses_a_network_facing_vllm_endpoint.
+        {
+            let mut fake = Fake {
+                partial: 0,
+                calls: vec![],
+                endpoint: "http://192.168.1.2:8000/v1".into(),
+            };
+            assert_eq!(
+                LocalModelProvisioner::new(&mut fake).activate(&catalog(), &cpu(), "tiny-q4", 8000),
+                Err(ProvisionError::UnsafeEndpoint)
+            );
+        }
     }
 
     struct Fake {
@@ -669,35 +704,5 @@ mod tests {
                 model_id: "tiny-q4".into(),
             })
         }
-    }
-
-    #[test]
-    fn installation_resumes_then_verifies_before_each_install() {
-        let mut fake = Fake {
-            partial: 20,
-            calls: vec![],
-            endpoint: "http://127.0.0.1:8000/v1".into(),
-        };
-        let status = LocalModelProvisioner::new(&mut fake)
-            .install(&catalog(), &cpu(), "tiny-q4")
-            .unwrap();
-        assert_eq!(status, LocalModelStatus::Installed);
-        assert_eq!(
-            fake.calls,
-            ["resume", "promote", "runtime", "resume", "promote", "model"]
-        );
-    }
-
-    #[test]
-    fn activation_refuses_a_network_facing_vllm_endpoint() {
-        let mut fake = Fake {
-            partial: 0,
-            calls: vec![],
-            endpoint: "http://192.168.1.2:8000/v1".into(),
-        };
-        assert_eq!(
-            LocalModelProvisioner::new(&mut fake).activate(&catalog(), &cpu(), "tiny-q4", 8000),
-            Err(ProvisionError::UnsafeEndpoint)
-        );
     }
 }

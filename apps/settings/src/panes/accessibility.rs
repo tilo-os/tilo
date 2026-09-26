@@ -912,158 +912,175 @@ impl Widget for AccessibilityPane {
 mod tests {
     use super::*;
 
+    /// Seeding writes current prefs, is not a user action or draft, never overwrites peer values, and lays out.
     #[test]
-    fn seed_writes_current_prefs_into_crdt() {
-        let mut pane = AccessibilityPane::with_prefs(
-            AppearancePrefs {
-                high_contrast: true,
-                text_scale: 1.15,
-                ..AppearancePrefs::default()
-            },
-            AccessibilityPrefs {
-                large_cursor: true,
-                cursor_size: 48,
-                screen_reader: true,
-                ..AccessibilityPrefs::default()
-            },
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
-        assert_eq!(
-            read_str_or_text(&doc, &root, TEXT_SIZE_KEY).as_deref(),
-            Some("Large")
-        );
-        assert_eq!(read_bool(&doc, &root, LARGE_CURSOR_KEY), Some(true));
-        assert_eq!(
-            read_str_or_text(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
-            Some("Larger")
-        );
-        assert_eq!(read_bool(&doc, &root, SCREEN_READER_KEY), Some(true));
-    }
-
-    #[test]
-    fn initial_hydration_is_not_a_user_action_or_a_replicated_draft() {
-        let mut pane = AccessibilityPane::with_prefs(
-            AppearancePrefs {
-                high_contrast: true,
-                ..AppearancePrefs::default()
-            },
-            AccessibilityPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        assert!(
-            pane.take_commit_context().is_none(),
-            "hydration is not undoable user intent"
-        );
-        for key in [
-            HIGH_CONTRAST_KEY,
-            TEXT_SIZE_KEY,
-            LARGE_CURSOR_KEY,
-            SWITCH_SCAN_KEY,
-        ] {
-            assert!(
-                doc.get(&root, format!("{key}.edit")).unwrap().is_none(),
-                "no presentation draft for {key} is replicated"
+    fn accessibility_pane_seeds_without_user_actions_or_overwriting_peers() {
+        // Case `seed_writes_current_prefs_into_crdt`.
+        {
+            let mut pane = AccessibilityPane::with_prefs(
+                AppearancePrefs {
+                    high_contrast: true,
+                    text_scale: 1.15,
+                    ..AppearancePrefs::default()
+                },
+                AccessibilityPrefs {
+                    large_cursor: true,
+                    cursor_size: 48,
+                    screen_reader: true,
+                    ..AccessibilityPrefs::default()
+                },
             );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
+            assert_eq!(
+                read_str_or_text(&doc, &root, TEXT_SIZE_KEY).as_deref(),
+                Some("Large")
+            );
+            assert_eq!(read_bool(&doc, &root, LARGE_CURSOR_KEY), Some(true));
+            assert_eq!(
+                read_str_or_text(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
+                Some("Larger")
+            );
+            assert_eq!(read_bool(&doc, &root, SCREEN_READER_KEY), Some(true));
+        }
+
+        // Case `initial_hydration_is_not_a_user_action_or_a_replicated_draft`.
+        {
+            let mut pane = AccessibilityPane::with_prefs(
+                AppearancePrefs {
+                    high_contrast: true,
+                    ..AppearancePrefs::default()
+                },
+                AccessibilityPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+
+            assert!(
+                pane.take_commit_context().is_none(),
+                "hydration is not undoable user intent"
+            );
+            for key in [
+                HIGH_CONTRAST_KEY,
+                TEXT_SIZE_KEY,
+                LARGE_CURSOR_KEY,
+                SWITCH_SCAN_KEY,
+            ] {
+                assert!(
+                    doc.get(&root, format!("{key}.edit")).unwrap().is_none(),
+                    "no presentation draft for {key} is replicated"
+                );
+            }
+        }
+
+        // Case `hydration_never_overwrites_a_value_already_received_from_a_peer`.
+        {
+            // The pane persists through the per-user settings file.
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            doc.put(
+                &root,
+                HIGH_CONTRAST_KEY,
+                automerge::ScalarValue::Boolean(true),
+            )
+            .unwrap();
+            doc.put(&root, CURSOR_SIZE_KEY, "Largest").unwrap();
+            let mut pane = AccessibilityPane::with_prefs(
+                AppearancePrefs::default(),
+                AccessibilityPrefs::default(),
+            );
+            pane.sync(&mut doc, &root);
+
+            assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
+            assert_eq!(
+                read_str_or_text(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
+                Some("Largest")
+            );
+            assert!(pane.appearance().high_contrast);
+            assert_eq!(pane.access().cursor_size, 64);
+        }
+
+        // Case `builds_layout`.
+        {
+            let mut pane = build();
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         }
     }
 
+    /// Vision edits fold into shared appearance; pointer/typing edits persist to the accessibility section.
     #[test]
-    fn hydration_never_overwrites_a_value_already_received_from_a_peer() {
-        // The pane persists through the per-user settings file.
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        doc.put(
-            &root,
-            HIGH_CONTRAST_KEY,
-            automerge::ScalarValue::Boolean(true),
-        )
-        .unwrap();
-        doc.put(&root, CURSOR_SIZE_KEY, "Largest").unwrap();
-        let mut pane = AccessibilityPane::with_prefs(
-            AppearancePrefs::default(),
-            AccessibilityPrefs::default(),
-        );
-        pane.sync(&mut doc, &root);
+    fn accessibility_edits_persist_to_their_sections() {
+        // Case `vision_edit_folds_into_shared_appearance_and_persists`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = AccessibilityPane::with_prefs(
+                AppearancePrefs::default(),
+                AccessibilityPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Turn on high contrast + bump the text size here in Accessibility.
+            let _ = doc.put(
+                &root,
+                HIGH_CONTRAST_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            let _ = doc.put(&root, TEXT_SIZE_KEY, "Larger");
+            pane.sync(&mut doc, &root);
+            assert!(pane.appearance().high_contrast);
+            assert_eq!(pane.appearance().text_scale, 1.30);
+            // The shared appearance section is what got written — the Appearance
+            // pane would load the same value.
+            let loaded = SystemPrefs::load();
+            assert!(
+                loaded.appearance.high_contrast,
+                "written to the shared section"
+            );
+            assert_eq!(loaded.appearance.text_scale, 1.30);
+        }
 
-        assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
-        assert_eq!(
-            read_str_or_text(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
-            Some("Largest")
-        );
-        assert!(pane.appearance().high_contrast);
-        assert_eq!(pane.access().cursor_size, 64);
-    }
-
-    #[test]
-    fn vision_edit_folds_into_shared_appearance_and_persists() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = AccessibilityPane::with_prefs(
-            AppearancePrefs::default(),
-            AccessibilityPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Turn on high contrast + bump the text size here in Accessibility.
-        let _ = doc.put(
-            &root,
-            HIGH_CONTRAST_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        let _ = doc.put(&root, TEXT_SIZE_KEY, "Larger");
-        pane.sync(&mut doc, &root);
-        assert!(pane.appearance().high_contrast);
-        assert_eq!(pane.appearance().text_scale, 1.30);
-        // The shared appearance section is what got written — the Appearance
-        // pane would load the same value.
-        let loaded = SystemPrefs::load();
-        assert!(
-            loaded.appearance.high_contrast,
-            "written to the shared section"
-        );
-        assert_eq!(loaded.appearance.text_scale, 1.30);
-    }
-
-    #[test]
-    fn pointer_and_typing_edits_persist_to_accessibility_section() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = AccessibilityPane::with_prefs(
-            AppearancePrefs::default(),
-            AccessibilityPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            LARGE_CURSOR_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        let _ = doc.put(&root, CURSOR_SIZE_KEY, "Largest");
-        let _ = doc.put(
-            &root,
-            STICKY_KEYS_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        let _ = doc.put(&root, OSK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert!(pane.access().large_cursor);
-        assert_eq!(pane.access().cursor_size, 64);
-        assert!(pane.access().sticky_keys);
-        assert!(pane.access().on_screen_keyboard);
-        let loaded = SystemPrefs::load().accessibility;
-        assert_eq!(
-            loaded.cursor_size, 64,
-            "persisted to the accessibility section"
-        );
-        assert!(loaded.on_screen_keyboard);
+        // Case `pointer_and_typing_edits_persist_to_accessibility_section`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = AccessibilityPane::with_prefs(
+                AppearancePrefs::default(),
+                AccessibilityPrefs::default(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                LARGE_CURSOR_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            let _ = doc.put(&root, CURSOR_SIZE_KEY, "Largest");
+            let _ = doc.put(
+                &root,
+                STICKY_KEYS_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            let _ = doc.put(&root, OSK_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert!(pane.access().large_cursor);
+            assert_eq!(pane.access().cursor_size, 64);
+            assert!(pane.access().sticky_keys);
+            assert!(pane.access().on_screen_keyboard);
+            let loaded = SystemPrefs::load().accessibility;
+            assert_eq!(
+                loaded.cursor_size, 64,
+                "persisted to the accessibility section"
+            );
+            assert!(loaded.on_screen_keyboard);
+        }
     }
 
     #[test]
@@ -1126,14 +1143,5 @@ mod tests {
                 view: magnifier::MagnifierView::FullScreen,
             }
         );
-    }
-
-    #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 }

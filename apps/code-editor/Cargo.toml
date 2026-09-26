@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "code-editor"
 version = "0.1.0"
 edition = "2024"
@@ -54,6 +55,10 @@ libc.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

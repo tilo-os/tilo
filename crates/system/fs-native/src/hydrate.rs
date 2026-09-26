@@ -1009,22 +1009,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn residency_xattr_round_trips() {
-        let mut missing = RangeSet::full(1000);
-        missing.remove(0..100);
-        missing.remove(500..600);
-        let st = FileState::new([0xAB; 32], 1000, missing.clone());
-        let (content, size, back) = decode_residency(&encode_residency(&st)).unwrap();
-        assert_eq!(content, [0xAB; 32]);
-        assert_eq!(size, 1000);
-        assert_eq!(back, missing);
-    }
-
-    #[test]
-    fn fills_are_rounded_to_the_granule_and_clipped_to_the_file() {
-        assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
-        assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
-        assert_eq!(align_range(5000..9000, 4096, 6000), 4096..6000);
+    fn residency_xattrs_round_trip_and_fills_align_to_granules() {
+        // Phase `residency_xattr_round_trips`.
+        {
+            let mut missing = RangeSet::full(1000);
+            missing.remove(0..100);
+            missing.remove(500..600);
+            let st = FileState::new([0xAB; 32], 1000, missing.clone());
+            let (content, size, back) = decode_residency(&encode_residency(&st)).unwrap();
+            assert_eq!(content, [0xAB; 32]);
+            assert_eq!(size, 1000);
+            assert_eq!(back, missing);
+        }
+        // Phase `fills_are_rounded_to_the_granule_and_clipped_to_the_file`.
+        {
+            assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
+            assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
+            assert_eq!(align_range(5000..9000, 4096, 6000), 4096..6000);
+        }
     }
 }
 

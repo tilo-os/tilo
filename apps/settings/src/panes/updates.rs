@@ -2821,57 +2821,233 @@ mod tests {
         );
     }
 
+    /// os-release, bootc staged/rollback, release notes and journal history parsing.
     #[test]
-    fn parses_pretty_name() {
-        assert_eq!(
-            parse_pretty_name("PRETTY_NAME=\"Tilo 42\"\n").as_deref(),
-            Some("Tilo 42")
-        );
+    fn update_status_parsers_accept_only_trusted_shapes() {
+        // Case `parses_pretty_name`.
+        {
+            assert_eq!(
+                parse_pretty_name("PRETTY_NAME=\"Tilo 42\"\n").as_deref(),
+                Some("Tilo 42")
+            );
+        }
+
+        // Case `parse_bootc_staged_detects_and_ignores`.
+        {
+            let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
+            assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
+
+            let none = r#"{"status":{"staged":null,"booted":{"version":"Tilo 2026.06"}}}"#;
+            assert_eq!(parse_bootc_staged(none), None);
+
+            let image =
+                r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
+            assert_eq!(
+                parse_bootc_staged(image).as_deref(),
+                Some("quay.io/tilo/tilo:latest")
+            );
+        }
+
+        // Case `parse_bootc_rollback_detects_and_ignores`.
+        {
+            let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
+            assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
+            let none = r#"{"status":{"rollback":null}}"#;
+            assert_eq!(parse_bootc_rollback(none), None);
+            let bare = r#"{"status":{"rollback":{}}}"#;
+            assert_eq!(
+                parse_bootc_rollback(bare).as_deref(),
+                Some("the previous image"),
+                "a rollback deployment bootc describes in a shape we do not know \
+             still exists, and hiding it would hide the way back"
+            );
+        }
+
+        // Case `release_notes_only_accept_https_image_metadata`.
+        {
+            let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
+            assert_eq!(
+                parse_bootc_release_notes(json).as_deref(),
+                Some("https://updates.example.test/releases/42")
+            );
+            let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
+            assert_eq!(parse_bootc_release_notes(unsafe_url), None);
+        }
+
+        // Case `journal_history_is_bounded_and_control_free`.
+        {
+            let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
+            assert_eq!(history, ["2026-01-01 update complete", "line two"]);
+        }
     }
 
+    /// Checks and firmware refresh return promptly, stamp only on success, dedupe, and ignore replicated latches.
     #[test]
-    fn parse_bootc_staged_detects_and_ignores() {
-        let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
-        assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn update_checks_run_promptly_and_stamp_only_on_completion() {
+        // Case `check_requeries_and_stamps_last_checked`.
+        // Check for updates re-queries the system and stamps a real
+        // last-checked time — proving the button acts, not no-ops.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let reb = Arc::new(RecordingRebooter::default());
+            let mut pane = pane_with(None, reb);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.prefs().last_checked, "Never");
+            assert_eq!(pane.status().staged_version, None);
+            // Press Check.
+            let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            assert_eq!(
+                pane.prefs().last_checked,
+                "CHECKED-NOW",
+                "timestamp updated"
+            );
+            assert_eq!(
+                pane.status().staged_version.as_deref(),
+                Some("Tilo 2026.07"),
+                "the re-query result landed"
+            );
+            assert!(pane.take_structure_dirty(), "check refreshes the view");
+        }
 
-        let none = r#"{"status":{"staged":null,"booted":{"version":"Tilo 2026.06"}}}"#;
-        assert_eq!(parse_bootc_staged(none), None);
+        // Case `blocking_update_check_returns_promptly_and_stamps_only_on_completion`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None));
+            let release = control.gate_checks();
+            let mut pane = pane_with_control(Arc::clone(&control));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+            // The check is held until released below: were `sync` to wait for
+            // it, this call would only return once the gate timed out.
+            pane.sync(&mut doc, &root);
+            assert!(pane.check_pending, "the check runs off the UI thread");
+            assert_eq!(pane.prefs().last_checked, "Never");
+            release.send(()).unwrap();
+            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            assert!(
+                !control.gate_timed_out(),
+                "sync blocked on the update check"
+            );
+            assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
+            assert!(pane.notice().is_none());
+        }
 
-        let image =
-            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
-        assert_eq!(
-            parse_bootc_staged(image).as_deref(),
-            Some("quay.io/tilo/tilo:latest")
-        );
-    }
+        // Case `failed_async_update_check_does_not_stamp_last_checked`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None).failing_check());
+            let mut pane = pane_with_control(control);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            assert_eq!(pane.prefs().last_checked, "Never");
+            assert!(
+                pane.notice()
+                    .is_some_and(|message| message.contains("could not be checked"))
+            );
+        }
 
-    /// Check for updates re-queries the system and stamps a real
-    /// last-checked time — proving the button acts, not no-ops.
-    #[test]
-    fn check_requeries_and_stamps_last_checked() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let reb = Arc::new(RecordingRebooter::default());
-        let mut pane = pane_with(None, reb);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().last_checked, "Never");
-        assert_eq!(pane.status().staged_version, None);
-        // Press Check.
-        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        settle(&mut pane, &mut doc, |pane| pane.check_pending);
-        assert_eq!(
-            pane.prefs().last_checked,
-            "CHECKED-NOW",
-            "timestamp updated"
-        );
-        assert_eq!(
-            pane.status().staged_version.as_deref(),
-            Some("Tilo 2026.07"),
-            "the re-query result landed"
-        );
-        assert!(pane.take_structure_dirty(), "check refreshes the view");
+        // Case `blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None));
+            let release = control.gate_refreshes();
+            let mut pane = pane_with_control(Arc::clone(&control));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                FIRMWARE_REFRESH_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            assert!(pane.firmware_refresh_pending);
+            release.send(()).unwrap();
+            settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
+            assert!(
+                !control.gate_timed_out(),
+                "sync blocked on the firmware refresh"
+            );
+            assert_eq!(pane.firmware_updates, Ok(Vec::new()));
+
+            control.set_refresh_fails(true);
+            let _ = doc.put(
+                &root,
+                FIRMWARE_REFRESH_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            assert!(pane.firmware_refresh_pending);
+            release.send(()).unwrap();
+            settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
+            assert!(pane.firmware_updates.is_err());
+            assert!(pane.notice().is_some_and(|message| {
+                message.contains("Firmware metadata could not be refreshed")
+            }));
+        }
+
+        // Case `duplicate_update_checks_are_cleared_while_one_is_pending`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(None, None));
+            let release = control.gate_checks();
+            let mut pane = pane_with_control(Arc::clone(&control));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert!(pane.check_pending);
+            // A second press while the first check is provably still running.
+            let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                read_bool(&doc, &root, CHECK_KEY),
+                Some(false),
+                "the duplicate press is cleared"
+            );
+            release.send(()).unwrap();
+            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            assert_eq!(*control.check_calls.lock().unwrap(), 1);
+        }
+
+        // Case `replicated_update_latches_never_call_system_controls`.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), Some("Tilo previous")));
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+            let commands = ui::LocalState::new(None);
+            let mut pane = pane_with_control(Arc::clone(&control))
+                .with_command_state(&commands)
+                .with_operation_status(&status);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let initial_heads = doc.get_heads();
+            pane.sync(&mut doc, &root);
+            assert_eq!(doc.get_heads(), initial_heads);
+            let _ = doc.put(&root, AUTO_KEY, false);
+            let _ = doc.put(&root, CHECK_KEY, true);
+            let _ = doc.put(&root, ROLLBACK_CONFIRM_KEY, true);
+            pane.sync(&mut doc, &root);
+
+            assert!(control.set_calls.lock().unwrap().is_empty());
+            assert_eq!(*control.check_calls.lock().unwrap(), 0);
+            assert_eq!(*control.rollbacks.lock().unwrap(), 0);
+            assert!(pane.prefs.auto);
+        }
     }
 
     /// Drive the host's polling until `pending` clears. The bound is a hang
@@ -2895,127 +3071,139 @@ mod tests {
         }
     }
 
+    /// Restart reboots once; rollback is confirmed, reported, honestly described and absent without an image.
     #[test]
-    fn blocking_update_check_returns_promptly_and_stamps_only_on_completion() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None));
-        let release = control.gate_checks();
-        let mut pane = pane_with_control(Arc::clone(&control));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        // The check is held until released below: were `sync` to wait for
-        // it, this call would only return once the gate timed out.
-        pane.sync(&mut doc, &root);
-        assert!(pane.check_pending, "the check runs off the UI thread");
-        assert_eq!(pane.prefs().last_checked, "Never");
-        release.send(()).unwrap();
-        settle(&mut pane, &mut doc, |pane| pane.check_pending);
-        assert!(
-            !control.gate_timed_out(),
-            "sync blocked on the update check"
-        );
-        assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
-        assert!(pane.notice().is_none());
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn restart_and_rollback_are_confirmed_and_reported() {
+        // Case `restart_reboots_once`.
+        // Restart & update reboots exactly once via the injected rebooter.
+        {
+            let reb = Arc::new(RecordingRebooter::default());
+            let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, RESTART_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            // A second stray press must not reboot again.
+            let _ = doc.put(&root, RESTART_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert_eq!(*reb.calls.lock().unwrap(), 1);
+        }
 
-    #[test]
-    fn failed_async_update_check_does_not_stamp_last_checked() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None).failing_check());
-        let mut pane = pane_with_control(control);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        settle(&mut pane, &mut doc, |pane| pane.check_pending);
-        assert_eq!(pane.prefs().last_checked, "Never");
-        assert!(
-            pane.notice()
-                .is_some_and(|message| message.contains("could not be checked"))
-        );
-    }
+        // Case `rolling_back_needs_a_confirmation_and_then_acts`.
+        // Rolling back takes two clicks, and the first one only shows what a
+        // rollback does not undo.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
+            let mut pane = pane_with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
 
-    #[test]
-    fn blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None));
-        let release = control.gate_refreshes();
-        let mut pane = pane_with_control(Arc::clone(&control));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            FIRMWARE_REFRESH_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        assert!(pane.firmware_refresh_pending);
-        release.send(()).unwrap();
-        settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
-        assert!(
-            !control.gate_timed_out(),
-            "sync blocked on the firmware refresh"
-        );
-        assert_eq!(pane.firmware_updates, Ok(Vec::new()));
+            // First click: nothing happens to the machine.
+            let _ = doc.put(&root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                *control.rollbacks.lock().unwrap(),
+                0,
+                "the first click must only ask; a one-click rollback is a rollback \
+             by accident"
+            );
 
-        control.set_refresh_fails(true);
-        let _ = doc.put(
-            &root,
-            FIRMWARE_REFRESH_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        assert!(pane.firmware_refresh_pending);
-        release.send(()).unwrap();
-        settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
-        assert!(pane.firmware_updates.is_err());
-        assert!(pane.notice().is_some_and(|message| {
-            message.contains("Firmware metadata could not be refreshed")
-        }));
-    }
+            // The confirmation view has to actually carry the caveats, or the
+            // second click is uninformed.
+            let shown = pane.rollback_card_lines().join("\n");
+            for phrase in ["do NOT revert", "stop launching"] {
+                assert!(
+                    shown.contains(phrase),
+                    "the confirmation must say what a rollback does not undo \
+                 ({phrase} missing) — shown was:\n{shown}"
+                );
+            }
 
-    #[test]
-    fn duplicate_update_checks_are_cleared_while_one_is_pending() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(None, None));
-        let release = control.gate_checks();
-        let mut pane = pane_with_control(Arc::clone(&control));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert!(pane.check_pending);
-        // A second press while the first check is provably still running.
-        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            read_bool(&doc, &root, CHECK_KEY),
-            Some(false),
-            "the duplicate press is cleared"
-        );
-        release.send(()).unwrap();
-        settle(&mut pane, &mut doc, |pane| pane.check_pending);
-        assert_eq!(*control.check_calls.lock().unwrap(), 1);
-    }
+            // Second click: it acts.
+            let _ = doc.put(
+                &root,
+                ROLLBACK_CONFIRM_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            assert_eq!(*control.rollbacks.lock().unwrap(), 1);
+            let notice = pane.notice().expect("the result has to be shown");
+            assert!(
+                notice.contains("Restart"),
+                "the person has to be told a restart is what takes it, got: {notice}"
+            );
+        }
 
-    /// Restart & update reboots exactly once via the injected rebooter.
-    #[test]
-    fn restart_reboots_once() {
-        let reb = Arc::new(RecordingRebooter::default());
-        let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, RESTART_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        // A second stray press must not reboot again.
-        let _ = doc.put(&root, RESTART_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert_eq!(*reb.calls.lock().unwrap(), 1);
+        // Case `a_failed_rollback_is_reported_in_the_pane`.
+        // A failed rollback says so where the person is looking.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control =
+                Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
+            let mut pane = pane_with_control(control);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                ROLLBACK_CONFIRM_KEY,
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            let notice = pane.notice().expect("a failed rollback must be visible");
+            assert!(
+                notice.contains("the boot loader would not take it"),
+                "the reason has to survive to the screen, got: {notice}"
+            );
+        }
+
+        // Case `the_help_text_does_not_promise_what_is_not_offered`.
+        // The help text must never promise a capability the pane does not offer
+        // — assert on what the pane renders, not on a comment.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let pane =
+                pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
+            let help = pane.help_lines().join("\n");
+            assert!(
+                !help.contains("you can roll back to the previous image at boot"),
+                "the old sentence described a feature that did not exist; if it is \
+             back, so is the lie. Help text was:\n{help}"
+            );
+            assert_eq!(
+                pane.rollback_card_lines()[0],
+                ROLLBACK_CARD_TITLE,
+                "the rollback control has to be on the pane, since the pane talks \
+             about rolling back"
+            );
+            assert!(
+                help.contains("three times"),
+                "the automatic half is the part a person cannot discover by \
+             looking, so the pane has to state it. Help text was:\n{help}"
+            );
+        }
+
+        // Case `no_previous_image_is_stated_rather_than_offered`.
+        // A machine with nothing to go back to says so, rather than offering a
+        // button that would fail.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
+            let shown = pane.rollback_card_lines().join("\n");
+            assert!(
+                shown.contains("no previous image on this machine yet"),
+                "the absence has to be stated; an absent card reads as an absent \
+             feature. Shown was:\n{shown}"
+            );
+        }
     }
 
     // ---- timer + rollback control -------------------------------------------
@@ -3166,280 +3354,118 @@ mod tests {
         )
     }
 
+    /// The switch mirrors the timer, disables it, snaps back on refusal and is absent when unreadable.
     #[test]
-    fn replicated_update_latches_never_call_system_controls() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), Some("Tilo previous")));
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-        let commands = ui::LocalState::new(None);
-        let mut pane = pane_with_control(Arc::clone(&control))
-            .with_command_state(&commands)
-            .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let initial_heads = doc.get_heads();
-        pane.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), initial_heads);
-        let _ = doc.put(&root, AUTO_KEY, false);
-        let _ = doc.put(&root, CHECK_KEY, true);
-        let _ = doc.put(&root, ROLLBACK_CONFIRM_KEY, true);
-        pane.sync(&mut doc, &root);
-
-        assert!(control.set_calls.lock().unwrap().is_empty());
-        assert_eq!(*control.check_calls.lock().unwrap(), 0);
-        assert_eq!(*control.rollbacks.lock().unwrap(), 0);
-        assert!(pane.prefs.auto);
-    }
-
-    /// The switch shows the timer, not a stored preference, even when the two
-    /// disagree.
-    #[test]
-    fn the_switch_opens_showing_what_the_timer_actually_is() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        // A preferences file that says "off" and a timer that is on.
-        let control = Arc::new(FakeControl::new(Some(true), None));
-        let pane = UpdatesPane::with_parts_and_control(
-            UpdateStatus {
-                current_version: "Tilo".into(),
-                staged_version: None,
-            },
-            UpdatePrefs {
-                auto: false,
-                ..UpdatePrefs::default()
-            },
-            Arc::new(|| UpdateStatus {
-                current_version: "Tilo".into(),
-                staged_version: None,
-            }),
-            Arc::new(|| "now".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            control,
-        );
-        assert!(
-            pane.prefs().auto,
-            "the machine's timer wins over a stale preference; showing the \
-             preference is how a switch comes to lie about the system"
-        );
-        assert_eq!(pane.timer_enabled(), Some(true));
-    }
-
-    /// Turning the switch off turns the timer off.
-    #[test]
-    fn turning_automatic_updates_off_disables_the_timer() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), None));
-        let mut pane = pane_with_control(control.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        let _ = doc.put(&root, AUTO_KEY, automerge::ScalarValue::Boolean(false));
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(
-            *control.set_calls.lock().unwrap(),
-            vec![false],
-            "the switch must reach the update timer exactly once"
-        );
-        assert_eq!(
-            control.timer_enabled(),
-            Some(false),
-            "and the timer must actually be off afterwards"
-        );
-        assert_eq!(pane.timer_enabled(), Some(false));
-        assert!(
-            pane.notice().is_none(),
-            "nothing went wrong, so say nothing"
-        );
-    }
-
-    /// When the system refuses, the switch goes back and the pane says so on
-    /// screen. A warning in the journal is, for a settings switch, the same as
-    /// failing silently.
-    #[test]
-    fn a_refused_switch_snaps_back_and_is_reported_in_the_pane() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
-        let mut pane = pane_with_control(control.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        let _ = doc.put(&root, AUTO_KEY, automerge::ScalarValue::Boolean(false));
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(
-            control.timer_enabled(),
-            Some(true),
-            "the timer must be untouched when the change was refused"
-        );
-        assert_eq!(
-            read_bool(&doc, &root, AUTO_KEY),
-            Some(true),
-            "the switch itself must snap back, or it shows a state the machine \
-             is not in"
-        );
-        let notice = pane
-            .notice()
-            .expect("a refused change has to appear in the pane, not only the journal");
-        assert!(
-            notice.contains("polkit said no"),
-            "the message must carry the reason, got: {notice}"
-        );
-    }
-
-    /// A machine that cannot be asked gets no switch at all. Rendering "off"
-    /// for a timer that could not be read is the same class of lie.
-    #[test]
-    fn an_unreadable_timer_is_not_rendered_as_off() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
-        assert_eq!(pane.timer_enabled(), None);
-        // And the stub used by the older constructor answers the same way, so
-        // a test written before this existed cannot get a confident `false`.
-        assert_eq!(UnavailableControl.timer_enabled(), None);
-        assert!(UnavailableControl.set_timer(true).is_err());
-        assert!(UnavailableControl.roll_back().is_err());
-    }
-
-    /// Rolling back takes two clicks, and the first one only shows what a
-    /// rollback does not undo.
-    #[test]
-    fn rolling_back_needs_a_confirmation_and_then_acts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
-        let mut pane = pane_with_control(control.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
-
-        // First click: nothing happens to the machine.
-        let _ = doc.put(&root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            *control.rollbacks.lock().unwrap(),
-            0,
-            "the first click must only ask; a one-click rollback is a rollback \
-             by accident"
-        );
-
-        // The confirmation view has to actually carry the caveats, or the
-        // second click is uninformed.
-        let shown = pane.rollback_card_lines().join("\n");
-        for phrase in ["do NOT revert", "stop launching"] {
+    fn automatic_update_switch_follows_the_timer() {
+        // Case `the_switch_opens_showing_what_the_timer_actually_is`.
+        // The switch shows the timer, not a stored preference, even when the two
+        // disagree.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            // A preferences file that says "off" and a timer that is on.
+            let control = Arc::new(FakeControl::new(Some(true), None));
+            let pane = UpdatesPane::with_parts_and_control(
+                UpdateStatus {
+                    current_version: "Tilo".into(),
+                    staged_version: None,
+                },
+                UpdatePrefs {
+                    auto: false,
+                    ..UpdatePrefs::default()
+                },
+                Arc::new(|| UpdateStatus {
+                    current_version: "Tilo".into(),
+                    staged_version: None,
+                }),
+                Arc::new(|| "now".to_string()),
+                Arc::new(RecordingRebooter::default()),
+                control,
+            );
             assert!(
-                shown.contains(phrase),
-                "the confirmation must say what a rollback does not undo \
-                 ({phrase} missing) — shown was:\n{shown}"
+                pane.prefs().auto,
+                "the machine's timer wins over a stale preference; showing the \
+             preference is how a switch comes to lie about the system"
+            );
+            assert_eq!(pane.timer_enabled(), Some(true));
+        }
+
+        // Case `turning_automatic_updates_off_disables_the_timer`.
+        // Turning the switch off turns the timer off.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), None));
+            let mut pane = pane_with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+
+            let _ = doc.put(&root, AUTO_KEY, automerge::ScalarValue::Boolean(false));
+            pane.sync(&mut doc, &root);
+
+            assert_eq!(
+                *control.set_calls.lock().unwrap(),
+                vec![false],
+                "the switch must reach the update timer exactly once"
+            );
+            assert_eq!(
+                control.timer_enabled(),
+                Some(false),
+                "and the timer must actually be off afterwards"
+            );
+            assert_eq!(pane.timer_enabled(), Some(false));
+            assert!(
+                pane.notice().is_none(),
+                "nothing went wrong, so say nothing"
             );
         }
 
-        // Second click: it acts.
-        let _ = doc.put(
-            &root,
-            ROLLBACK_CONFIRM_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        assert_eq!(*control.rollbacks.lock().unwrap(), 1);
-        let notice = pane.notice().expect("the result has to be shown");
-        assert!(
-            notice.contains("Restart"),
-            "the person has to be told a restart is what takes it, got: {notice}"
-        );
-    }
+        // Case `a_refused_switch_snaps_back_and_is_reported_in_the_pane`.
+        // When the system refuses, the switch goes back and the pane says so on
+        // screen. A warning in the journal is, for a settings switch, the same as
+        // failing silently.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
+            let mut pane = pane_with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
 
-    /// A failed rollback says so where the person is looking.
-    #[test]
-    fn a_failed_rollback_is_reported_in_the_pane() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
-        let mut pane = pane_with_control(control);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            ROLLBACK_CONFIRM_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        let notice = pane.notice().expect("a failed rollback must be visible");
-        assert!(
-            notice.contains("the boot loader would not take it"),
-            "the reason has to survive to the screen, got: {notice}"
-        );
-    }
+            let _ = doc.put(&root, AUTO_KEY, automerge::ScalarValue::Boolean(false));
+            pane.sync(&mut doc, &root);
 
-    /// The help text must never promise a capability the pane does not offer
-    /// — assert on what the pane renders, not on a comment.
-    #[test]
-    fn the_help_text_does_not_promise_what_is_not_offered() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
-        let help = pane.help_lines().join("\n");
-        assert!(
-            !help.contains("you can roll back to the previous image at boot"),
-            "the old sentence described a feature that did not exist; if it is \
-             back, so is the lie. Help text was:\n{help}"
-        );
-        assert_eq!(
-            pane.rollback_card_lines()[0],
-            ROLLBACK_CARD_TITLE,
-            "the rollback control has to be on the pane, since the pane talks \
-             about rolling back"
-        );
-        assert!(
-            help.contains("three times"),
-            "the automatic half is the part a person cannot discover by \
-             looking, so the pane has to state it. Help text was:\n{help}"
-        );
-    }
+            assert_eq!(
+                control.timer_enabled(),
+                Some(true),
+                "the timer must be untouched when the change was refused"
+            );
+            assert_eq!(
+                read_bool(&doc, &root, AUTO_KEY),
+                Some(true),
+                "the switch itself must snap back, or it shows a state the machine \
+             is not in"
+            );
+            let notice = pane
+                .notice()
+                .expect("a refused change has to appear in the pane, not only the journal");
+            assert!(
+                notice.contains("polkit said no"),
+                "the message must carry the reason, got: {notice}"
+            );
+        }
 
-    /// A machine with nothing to go back to says so, rather than offering a
-    /// button that would fail.
-    #[test]
-    fn no_previous_image_is_stated_rather_than_offered() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
-        let shown = pane.rollback_card_lines().join("\n");
-        assert!(
-            shown.contains("no previous image on this machine yet"),
-            "the absence has to be stated; an absent card reads as an absent \
-             feature. Shown was:\n{shown}"
-        );
-    }
-
-    #[test]
-    fn parse_bootc_rollback_detects_and_ignores() {
-        let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
-        assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
-        let none = r#"{"status":{"rollback":null}}"#;
-        assert_eq!(parse_bootc_rollback(none), None);
-        let bare = r#"{"status":{"rollback":{}}}"#;
-        assert_eq!(
-            parse_bootc_rollback(bare).as_deref(),
-            Some("the previous image"),
-            "a rollback deployment bootc describes in a shape we do not know \
-             still exists, and hiding it would hide the way back"
-        );
-    }
-
-    #[test]
-    fn release_notes_only_accept_https_image_metadata() {
-        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
-        assert_eq!(
-            parse_bootc_release_notes(json).as_deref(),
-            Some("https://updates.example.test/releases/42")
-        );
-        let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
-        assert_eq!(parse_bootc_release_notes(unsafe_url), None);
-    }
-
-    #[test]
-    fn journal_history_is_bounded_and_control_free() {
-        let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
-        assert_eq!(history, ["2026-01-01 update complete", "line two"]);
+        // Case `an_unreadable_timer_is_not_rendered_as_off`.
+        // A machine that cannot be asked gets no switch at all. Rendering "off"
+        // for a timer that could not be read is the same class of lie.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
+            assert_eq!(pane.timer_enabled(), None);
+            // And the stub used by the older constructor answers the same way, so
+            // a test written before this existed cannot get a confident `false`.
+            assert_eq!(UnavailableControl.timer_enabled(), None);
+            assert!(UnavailableControl.set_timer(true).is_err());
+            assert!(UnavailableControl.roll_back().is_err());
+        }
     }
 }

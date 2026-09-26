@@ -596,118 +596,97 @@ mod tests {
         }
     }
 
+    /// An index of `so.tilo.editor` entries, each signed by one publisher.
+    fn index_of(entries: impl IntoIterator<Item = IndexEntry>) -> RegistryIndex {
+        let publisher = SigningIdentity::generate();
+        let mut idx = RegistryIndex::new("so.tilo.central");
+        for mut e in entries {
+            e.sign(&publisher).unwrap();
+            idx.upsert(e);
+        }
+        idx
+    }
+
     #[test]
-    fn entry_sign_verify_roundtrip() {
+    fn entry_and_index_signatures_verify_survive_json_and_catch_tampering() {
         let id = SigningIdentity::generate();
         let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&id).unwrap();
         e.verify_publisher().unwrap();
-    }
-
-    #[test]
-    fn tampered_entry_fails_publisher_verify() {
-        let id = SigningIdentity::generate();
-        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
-        e.sign(&id).unwrap();
         // Flip the advertised hash — signature must no longer verify.
         e.tapp_hash = hex::encode([1u8; 32]);
         assert!(e.verify_publisher().is_err());
-    }
 
-    #[test]
-    fn index_sign_verify_and_reject_wrong_key() {
         let registry = SigningIdentity::generate();
         let other = SigningIdentity::generate();
-        let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("so.tilo.central");
-        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
-        e.sign(&publisher).unwrap();
-        idx.upsert(e);
+        let mut idx = index_of([sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3")]);
         idx.sign(&registry).unwrap();
-
         idx.verify_signature(&registry.public_key_bytes()).unwrap();
         assert!(idx.verify_signature(&other.public_key_bytes()).is_err());
-    }
 
-    #[test]
-    fn resolve_picks_highest_runnable_isa_then_semver() {
-        let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("so.tilo.central");
-        for (ver, isa) in [
-            ("1.0.0", "x86_64"),
-            ("1.0.0", "x86_64-v3"),
-            ("1.0.0", "x86_64-v4"),
-            ("0.9.0", "x86_64-v3"),
-        ] {
-            let mut e = sample_entry("so.tilo.editor", ver, isa);
-            e.sign(&publisher).unwrap();
-            idx.upsert(e);
-        }
-        // A v3 host cannot run the v4 build; must pick 1.0.0 / v3.
-        let host = x86_host(X86_64Level::V3);
-        let best = idx.resolve_best("so.tilo.editor", None, &host).unwrap();
-        assert_eq!(best.version, "1.0.0");
-        assert_eq!(best.isa, "x86_64-v3");
-
-        // A v4 host prefers the v4 build.
-        let host4 = x86_host(X86_64Level::V4);
-        let best4 = idx.resolve_best("so.tilo.editor", None, &host4).unwrap();
-        assert_eq!(best4.isa, "x86_64-v4");
-    }
-
-    #[test]
-    fn resolve_respects_version_req() {
-        let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("so.tilo.central");
-        for ver in ["1.0.0", "1.2.0", "2.0.0"] {
-            let mut e = sample_entry("so.tilo.editor", ver, "x86_64");
-            e.sign(&publisher).unwrap();
-            idx.upsert(e);
-        }
-        let host = x86_host(X86_64Level::Baseline);
-        let req = semver::VersionReq::parse("^1").unwrap();
-        let best = idx
-            .resolve_best("so.tilo.editor", Some(&req), &host)
-            .unwrap();
-        assert_eq!(best.version, "1.2.0");
-    }
-
-    #[test]
-    fn runtime_gate_blocks_missing_runtime() {
-        let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("so.tilo.central");
-        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64");
-        e.runtime = Some("tilo-runtime/1.2.0".into());
-        e.sign(&publisher).unwrap();
-        idx.upsert(e);
-
-        // No runtime installed → not selectable.
-        let host = x86_host(X86_64Level::Baseline);
-        assert!(idx.resolve_best("so.tilo.editor", None, &host).is_none());
-
-        // A compatible runtime present → selectable.
-        let host = host.with_runtime(RuntimeRef::parse("tilo-runtime/1.5.0").unwrap());
-        assert!(idx.resolve_best("so.tilo.editor", None, &host).is_some());
-
-        // A different-major runtime does NOT satisfy.
-        let host = x86_host(X86_64Level::Baseline)
-            .with_runtime(RuntimeRef::parse("tilo-runtime/2.0.0").unwrap());
-        assert!(idx.resolve_best("so.tilo.editor", None, &host).is_none());
-    }
-
-    #[test]
-    fn json_roundtrip_preserves_signature() {
-        let registry = SigningIdentity::generate();
-        let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("so.tilo.central");
-        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64-v3");
-        e.sign(&publisher).unwrap();
-        idx.upsert(e);
-        idx.sign(&registry).unwrap();
-
+        // JSON round-trips with the signature intact.
         let bytes = idx.to_json().unwrap();
         let back = RegistryIndex::from_json(&bytes).unwrap();
         back.verify_signature(&registry.public_key_bytes()).unwrap();
         assert_eq!(back, idx);
+    }
+
+    #[test]
+    fn resolution_picks_the_best_runnable_isa_version_and_runtime() {
+        let idx = index_of(
+            [
+                ("1.0.0", "x86_64"),
+                ("1.0.0", "x86_64-v3"),
+                ("1.0.0", "x86_64-v4"),
+                ("0.9.0", "x86_64-v3"),
+            ]
+            .map(|(ver, isa)| sample_entry("so.tilo.editor", ver, isa)),
+        );
+        // A v3 host cannot run the v4 build; must pick 1.0.0 / v3.
+        let best = idx
+            .resolve_best("so.tilo.editor", None, &x86_host(X86_64Level::V3))
+            .unwrap();
+        assert_eq!(best.version, "1.0.0");
+        assert_eq!(best.isa, "x86_64-v3");
+        // A v4 host prefers the v4 build.
+        let best4 = idx
+            .resolve_best("so.tilo.editor", None, &x86_host(X86_64Level::V4))
+            .unwrap();
+        assert_eq!(best4.isa, "x86_64-v4");
+
+        // A version requirement is respected.
+        let idx = index_of(
+            ["1.0.0", "1.2.0", "2.0.0"].map(|ver| sample_entry("so.tilo.editor", ver, "x86_64")),
+        );
+        let req = semver::VersionReq::parse("^1").unwrap();
+        let best = idx
+            .resolve_best(
+                "so.tilo.editor",
+                Some(&req),
+                &x86_host(X86_64Level::Baseline),
+            )
+            .unwrap();
+        assert_eq!(best.version, "1.2.0");
+
+        // The runtime gate blocks a missing or different-major runtime.
+        let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64");
+        e.runtime = Some("tilo-runtime/1.2.0".into());
+        let idx = index_of([e]);
+        let host = x86_host(X86_64Level::Baseline);
+        assert!(
+            idx.resolve_best("so.tilo.editor", None, &host).is_none(),
+            "no runtime installed"
+        );
+        let host = host.with_runtime(RuntimeRef::parse("tilo-runtime/1.5.0").unwrap());
+        assert!(
+            idx.resolve_best("so.tilo.editor", None, &host).is_some(),
+            "compatible runtime"
+        );
+        let host = x86_host(X86_64Level::Baseline)
+            .with_runtime(RuntimeRef::parse("tilo-runtime/2.0.0").unwrap());
+        assert!(
+            idx.resolve_best("so.tilo.editor", None, &host).is_none(),
+            "different major"
+        );
     }
 }

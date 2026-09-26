@@ -198,110 +198,118 @@ mod tests {
         json!({"schema":1,"tag":"test-1","releases":releases}).to_string()
     }
 
+    /// Accepted catalogs, typed formats and runtime evidence.
     #[test]
-    fn desktop_catalog_accepts_explicit_unreleased_empty_catalog() {
-        assert!(
-            parse_catalog(include_str!("../../desktop-catalog.json"))
-                .unwrap()
-                .is_empty()
-        );
-        assert!(parse_catalog(r#"{"schema":1,"tag":"unreleased","releases":[]}"#).is_ok());
-        assert!(parse_catalog(r#"{"schema":2,"tag":"unreleased","releases":[]}"#).is_err());
-        assert!(parse_catalog(r#"{"schema":1,"tag":"released","releases":[]}"#).is_err());
-    }
-
-    #[test]
-    fn desktop_catalog_rejects_duplicate_selectors_and_ids() {
-        let release = release_json();
-        let mut other = release.clone();
-        other["id"] = json!("different-id");
-        assert!(parse_catalog(&catalog(vec![release.clone(), other])).is_err());
-        let mut other = release.clone();
-        other["distro_version"] = json!("45");
-        assert!(parse_catalog(&catalog(vec![release, other])).is_err());
-    }
-
-    #[test]
-    fn desktop_catalog_rejects_invalid_metadata_and_unknown_fields() {
-        for (field, value) in [
-            ("sha256", json!("bad")),
-            ("byte_size", json!(0)),
-            ("package_format", json!("exe")),
-            ("architecture", json!("arm64")),
-            ("id", json!("")),
-            ("distro_id", json!("Fedora")),
-            ("unexpected", json!(true)),
-        ] {
-            let mut release = release_json();
-            release[field] = value;
+    fn desktop_catalog_accepts_strict_typed_entries_and_empty_releases() {
+        // Phase `desktop_catalog_accepts_explicit_unreleased_empty_catalog`.
+        {
             assert!(
-                parse_catalog(&catalog(vec![release])).is_err(),
-                "accepted {field}"
+                parse_catalog(include_str!("../../desktop-catalog.json"))
+                    .unwrap()
+                    .is_empty()
             );
+            assert!(parse_catalog(r#"{"schema":1,"tag":"unreleased","releases":[]}"#).is_ok());
+            assert!(parse_catalog(r#"{"schema":2,"tag":"unreleased","releases":[]}"#).is_err());
+            assert!(parse_catalog(r#"{"schema":1,"tag":"released","releases":[]}"#).is_err());
         }
-        let mut value: Value = serde_json::from_str(&catalog(vec![release_json()])).unwrap();
-        value["unexpected"] = json!(true);
-        assert!(parse_catalog(&value.to_string()).is_err());
-        value.as_object_mut().unwrap().remove("unexpected");
-        value["tag"] = json!("unreleased");
-        assert!(parse_catalog(&value.to_string()).is_err());
-    }
 
-    #[test]
-    fn desktop_catalog_rejects_untrusted_urls() {
-        for url in [
-            "http://code.tilo.so/test.rpm",
-            "https://example.com/test.rpm",
-            "https://code.tilo.so:444/test.rpm",
-            "https://user@code.tilo.so/test.rpm",
-            "https://code.tilo.so/test.rpm#fragment",
-        ] {
+        // Phase `desktop_catalog_uses_typed_formats_and_exact_selectors`.
+        {
+            for format in ["rpm", "deb", "arch", "nix_closure"] {
+                let mut release = release_json();
+                release["package_format"] = json!(format);
+                let parsed = parse_catalog(&catalog(vec![release])).unwrap().remove(0);
+                assert!(parsed.matches_platform("fedora", "44", "aarch64"));
+                assert!(!parsed.matches_platform("example-fedora", "44", "aarch64"));
+                assert!(!parsed.matches_platform("fedora", "44", "x86_64"));
+                assert!(!parsed.matches_platform("fedora", "44.0", "aarch64"));
+                assert!(parsed.verified_runtime.is_none());
+            }
+        }
+
+        // Phase `desktop_catalog_runtime_evidence_is_digest_bound_and_strict`.
+        {
             let mut release = release_json();
-            release["url"] = json!(url);
-            assert!(
-                parse_catalog(&catalog(vec![release])).is_err(),
-                "accepted {url}"
-            );
+            release["verified_runtime"] = json!({"schema":1,"reference":"docs/evidence/test.md",
+                "package_sha256":"a".repeat(64),"graphical_login":true,"return_to_prior_session":true,"identity_setup":true,"selected_folder_import":true,"source_intact":true});
+            assert!(parse_catalog(&catalog(vec![release.clone()])).is_ok());
+            for (field, value) in [
+                ("schema", json!(2)),
+                ("package_sha256", json!("b".repeat(64))),
+                ("reference", json!("")),
+                ("graphical_login", json!(false)),
+                ("return_to_prior_session", json!(false)),
+                ("identity_setup", json!(false)),
+                ("selected_folder_import", json!(false)),
+                ("source_intact", json!(false)),
+                ("unknown", json!(true)),
+            ] {
+                let mut altered = release.clone();
+                altered["verified_runtime"][field] = value;
+                assert!(
+                    parse_catalog(&catalog(vec![altered])).is_err(),
+                    "accepted {field}"
+                );
+            }
         }
     }
 
+    /// Rejected catalogs.
     #[test]
-    fn desktop_catalog_uses_typed_formats_and_exact_selectors() {
-        for format in ["rpm", "deb", "arch", "nix_closure"] {
-            let mut release = release_json();
-            release["package_format"] = json!(format);
-            let parsed = parse_catalog(&catalog(vec![release])).unwrap().remove(0);
-            assert!(parsed.matches_platform("fedora", "44", "aarch64"));
-            assert!(!parsed.matches_platform("example-fedora", "44", "aarch64"));
-            assert!(!parsed.matches_platform("fedora", "44", "x86_64"));
-            assert!(!parsed.matches_platform("fedora", "44.0", "aarch64"));
-            assert!(parsed.verified_runtime.is_none());
+    fn desktop_catalog_rejects_duplicates_invalid_metadata_and_untrusted_urls() {
+        // Phase `desktop_catalog_rejects_duplicate_selectors_and_ids`.
+        {
+            let release = release_json();
+            let mut other = release.clone();
+            other["id"] = json!("different-id");
+            assert!(parse_catalog(&catalog(vec![release.clone(), other])).is_err());
+            let mut other = release.clone();
+            other["distro_version"] = json!("45");
+            assert!(parse_catalog(&catalog(vec![release, other])).is_err());
         }
-    }
 
-    #[test]
-    fn desktop_catalog_runtime_evidence_is_digest_bound_and_strict() {
-        let mut release = release_json();
-        release["verified_runtime"] = json!({"schema":1,"reference":"docs/evidence/test.md",
-            "package_sha256":"a".repeat(64),"graphical_login":true,"return_to_prior_session":true,"identity_setup":true,"selected_folder_import":true,"source_intact":true});
-        assert!(parse_catalog(&catalog(vec![release.clone()])).is_ok());
-        for (field, value) in [
-            ("schema", json!(2)),
-            ("package_sha256", json!("b".repeat(64))),
-            ("reference", json!("")),
-            ("graphical_login", json!(false)),
-            ("return_to_prior_session", json!(false)),
-            ("identity_setup", json!(false)),
-            ("selected_folder_import", json!(false)),
-            ("source_intact", json!(false)),
-            ("unknown", json!(true)),
-        ] {
-            let mut altered = release.clone();
-            altered["verified_runtime"][field] = value;
-            assert!(
-                parse_catalog(&catalog(vec![altered])).is_err(),
-                "accepted {field}"
-            );
+        // Phase `desktop_catalog_rejects_invalid_metadata_and_unknown_fields`.
+        {
+            for (field, value) in [
+                ("sha256", json!("bad")),
+                ("byte_size", json!(0)),
+                ("package_format", json!("exe")),
+                ("architecture", json!("arm64")),
+                ("id", json!("")),
+                ("distro_id", json!("Fedora")),
+                ("unexpected", json!(true)),
+            ] {
+                let mut release = release_json();
+                release[field] = value;
+                assert!(
+                    parse_catalog(&catalog(vec![release])).is_err(),
+                    "accepted {field}"
+                );
+            }
+            let mut value: Value = serde_json::from_str(&catalog(vec![release_json()])).unwrap();
+            value["unexpected"] = json!(true);
+            assert!(parse_catalog(&value.to_string()).is_err());
+            value.as_object_mut().unwrap().remove("unexpected");
+            value["tag"] = json!("unreleased");
+            assert!(parse_catalog(&value.to_string()).is_err());
+        }
+
+        // Phase `desktop_catalog_rejects_untrusted_urls`.
+        {
+            for url in [
+                "http://code.tilo.so/test.rpm",
+                "https://example.com/test.rpm",
+                "https://code.tilo.so:444/test.rpm",
+                "https://user@code.tilo.so/test.rpm",
+                "https://code.tilo.so/test.rpm#fragment",
+            ] {
+                let mut release = release_json();
+                release["url"] = json!(url);
+                assert!(
+                    parse_catalog(&catalog(vec![release])).is_err(),
+                    "accepted {url}"
+                );
+            }
         }
     }
 }
