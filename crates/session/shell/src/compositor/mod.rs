@@ -81,6 +81,8 @@ pub mod test_control;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
 #[cfg(target_os = "linux")]
+pub mod window_previews;
+#[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland_composer;

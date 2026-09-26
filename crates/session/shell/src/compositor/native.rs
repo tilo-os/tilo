@@ -1919,6 +1919,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
+            // The Alt+Tab switcher while it is open: its windows in order,
+            // the selected one, and whether each card shows a live preview
+            // (`live`), its app mark because the app holds secrets
+            // (`withheld`), or its app mark for now (`none`).
+            "window_switcher": self.fb.host().window_switcher_state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
