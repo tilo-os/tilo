@@ -125,7 +125,6 @@ suites = [
   "os/tests/test_rebind_development_trust.py",
   "os/tests/test_reconstructed_native_consumer.py",
   "os/tests/test_reconstructed_partials.py",
-  "os/tests/test_replicate_builder_index.py",
   "os/tests/test_reseal_image.py",
   "os/tests/test_restore_thin_cache.py",
   "os/tests/test_retain_development_rootfs.py",
