@@ -21,6 +21,8 @@ pub mod availability;
 #[cfg(feature = "filesystem")]
 mod blob_access;
 #[cfg(feature = "filesystem")]
+mod canonical_frame;
+#[cfg(feature = "filesystem")]
 pub mod caps_file;
 #[cfg(feature = "filesystem")]
 pub mod clock;

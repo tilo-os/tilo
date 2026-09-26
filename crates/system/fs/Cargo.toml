@@ -38,6 +38,7 @@ filesystem = [
     "dep:getrandom",
     "dep:fuser",
     "dep:fs-native",
+    "dep:wire-frame",
 ]
 
 [[bin]]
@@ -139,6 +140,7 @@ postcard = { workspace = true, features = ["use-std"] }
 futures-util.workspace = true
 rand = { workspace = true, optional = true }
 redb.workspace = true
+wire-frame = { path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
