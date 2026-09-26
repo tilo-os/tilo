@@ -1802,6 +1802,8 @@ pub struct CapnpBrokerState {
     /// Remote-action invocation ids to broker jobs, shared by every caller
     /// path so a retry is idempotent whichever way it arrives.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
+    /// Shortcut runs the door finished, until history records them.
+    shortcut_runs: crate::shell::automation_host::ShortcutRuns,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
@@ -2753,6 +2755,7 @@ impl CapnpBrokerState {
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(1),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
+                shortcut_runs: crate::shell::automation_host::ShortcutRuns::default(),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
