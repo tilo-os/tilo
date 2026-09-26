@@ -3004,6 +3004,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(

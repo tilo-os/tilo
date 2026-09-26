@@ -1750,6 +1750,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "room_activity": overlays.room_activity,
             },
             "search_scope": format!("{:?}", chrome.search_scope),
+            // Applications' status-notifier items and their menus, as the top bar shows them.
+            "tray": crate::tray::Tray::global().state_json(),
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -5832,6 +5834,32 @@ pub fn run() {
         }
     }
 
+    // Status-notifier watcher: applications' tray icons for the top bar and
+    // the action registry. Held for the session; a second watcher already on
+    // the bus (a nested session) leaves this one off.
+    let tray_handle: Option<
+        crate::session_runtime::Registration<crate::tray::watcher::WatcherHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "tray",
+            async move {
+                let conn = zbus::connection::Builder::session()?.build().await?;
+                crate::tray::watcher::serve(
+                    conn,
+                    std::sync::Arc::clone(crate::tray::Tray::global()),
+                )
+                .await
+            },
+            |_| {
+                tracing::info!(
+                    "tray: serving {} on session bus",
+                    crate::tray::WATCHER_BUS_NAME
+                );
+            },
+        )
+    });
+
     // Power service: async orchestrator suspending via logind, mirroring the
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
@@ -8390,6 +8418,7 @@ pub fn run() {
     // Releases the D-Bus bus name and tears down the notification object
     // server before returning to the session wrapper.
     drop(notif_handle);
+    drop(tray_handle);
 }
 
 /// Publish a successful machine-level change to every shell surface that
