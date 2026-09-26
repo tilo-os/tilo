@@ -16,7 +16,7 @@ import urllib.request
 
 
 HOST = "code.podesta.ai"
-REPO = "qos/qos"
+REPO = "tilo/tilo"
 BRANCH = "main"
 INTEGRATOR = "tilo-integrator"
 REVIEWERS = {"claude"}
