@@ -80,33 +80,5 @@ administration and media governance all arrive through the certified action brok
 endpoint. Invocation arguments and receipts never travel through broadcast state or
 presence messages. The committed application document changes are shared normally.
 
-Managed inference privately reloads the five-field `{machineId,endpoint,model,token,expiresAt}`
-credential from the trusted refresh helper for each dispatch. It accepts only a regular owned
-0600 file of at most 8 KiB, rejects symlinks and expired credentials, and requires HTTPS with
-the exact machine inference path, no URL credentials, query, or fragment. Invalid credentials
-disable model dispatch without disrupting native documents. Bearers never enter receipts,
-workspace state or diagnostics. HTTPS redirects and environment proxies are disabled.
-
-The host pins `gpt-4.1-mini-2025-04-14`, sends one user message, limits the serialized message
-to 32 KiB and output to 2048 tokens, and returns `{text}` in a completed receipt. The gateway
-has a 24-second total deadline within the existing 30-second action deadline. A pending
-record is atomically fsynced before HTTP; no Store lock spans the network await. Journal
-version 1 explicitly migrates through version 2 to version 3 while preserving terminal
-receipts. Version 3 adds hosted invitation, join retry, canonical action intent, and
-generation records. Corrupt or incomplete journals fail closed instead of resetting
-pending calls.
-
-Gateway idempotency is an RFC 9562 UUIDv8 using a domain-separated BLAKE3 hash of the canonical
-JSON tuple `(machine, certified device hex, invocation ID, call index 0)`, persisted in the
-pending record. Retry with the identical invocation and arguments reuses this UUID. Timeouts,
-disconnects, credential unavailability, `request_pending`, and `service_unavailable` remain
-pending. Status exposes that state. Cancellation cannot undo an admitted model request.
-HTTP 402 with `insufficient_credit` or `credit_exhausted` becomes `included_credit_exhausted`;
-`subscription_required` remains distinct even with a positive balance. Unknown rejection codes
-become `model_request_rejected`. Raw server error text is discarded, and funding never changes.
-Success and definitive rejection are durable, and later duplicate results cannot overwrite
-them. Current roster and model-action capability are rechecked before dispatch/finalization.
-Model output is bounded to 32 KiB and is never broadcast through workspace replication.
-
 Validation: `cargo test -p qos-user-identity cloud_enrollment --lib`,
 `cargo test -p qos-peer-state`, `cargo test -p qos-cloud-host`.

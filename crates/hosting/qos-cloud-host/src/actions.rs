@@ -22,25 +22,11 @@ pub struct ActionRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeOperation {
-    /// Return the bounded catalogue of native app operations.
-    Catalogue,
-    /// One bounded plain-text completion through the managed machine gateway.
-    ModelComplete {
-        text: String,
-    },
-    /// Inspect a previous invocation owned by this authenticated device.
-    Status {
-        invocation_id: String,
-    },
     /// Test fixture: insert into the canonical Writer body's first paragraph
     /// through the real app action and the owner's permission checks.
     #[cfg(test)]
     WriterInsert {
         text: String,
-    },
-    /// Cancel an invocation before it has committed; completion cannot be undone by retry.
-    Cancel {
-        invocation_id: String,
     },
     /// Issue one room-scoped invitation through the authenticated Owner path.
     CollaborationInvite {
@@ -104,9 +90,6 @@ impl Store {
             if prior == &digest || (prior == "cancelled" && receipt.status == "cancelled") {
                 return Ok(receipt.clone());
             }
-            bail!("invocation substitution")
-        }
-        if self.state.pending_models.contains_key(&scope) {
             bail!("invocation substitution")
         }
         let mut state = self.state.clone();

@@ -638,8 +638,7 @@ async fn handle_inner(
             ActionMessage::Status { invocation } => {
                 let scope = format!("{}:{}", hex::encode(action.source), invocation.0);
                 let unadmitted = !store.state.receipts.contains_key(&scope)
-                    && !store.state.canonical_intents.contains_key(&scope)
-                    && !store.state.pending_models.contains_key(&scope);
+                    && !store.state.canonical_intents.contains_key(&scope);
                 // Never admitted and past its deadline: fence it, then answer
                 // definitively (see `unadmitted`).
                 if unadmitted

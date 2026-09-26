@@ -94,7 +94,6 @@ pub(super) fn fence(store: &mut Store, device: [u8; 32], invocation: InvocationI
         return Ok(receipt.status == NOT_FOUND);
     }
     if store.state.canonical_intents.contains_key(&scope)
-        || store.state.pending_models.contains_key(&scope)
         || store
             .private_agent_invocation_reserved(device, invocation.0)
             .map_err(anyhow::Error::msg)?

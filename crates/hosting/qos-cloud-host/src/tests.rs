@@ -959,33 +959,6 @@ fn expiry_cleanup_publishes_room_delta_while_preserving_encrypted_metadata() {
 }
 
 #[test]
-fn model_journal_migrates_v1_without_losing_receipts_and_never_defaults_missing_v2_pending() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path(), "migrate").unwrap();
-    drop(store);
-    let path = dir.path().join("state.json");
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    value["version"] = 1.into();
-    value.as_object_mut().unwrap().remove("pending_models");
-    value["receipts"]["old"] = serde_json::json!(["digest",{"invocation_id":"old","status":"completed","error":null,"output":null}]);
-    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let store = Store::open(dir.path(), "migrate").unwrap();
-    assert_eq!(store.state.receipts["old"].0, "digest");
-    assert!(store.state.pending_models.is_empty());
-    drop(store);
-    let mut migrated: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(migrated["version"], 4);
-    // A persisted v2 state must still reject the historically mandatory model
-    // journal instead of letting the v2 -> v3 migration default it away.
-    migrated["version"] = 2.into();
-    migrated.as_object_mut().unwrap().remove("pending_models");
-    std::fs::write(&path, serde_json::to_vec(&migrated).unwrap()).unwrap();
-    assert!(Store::open(dir.path(), "migrate").is_err());
-}
-
-#[test]
 fn v3_publication_outbox_migrates_to_explicit_checkpoint_kinds() {
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[111; 32]);

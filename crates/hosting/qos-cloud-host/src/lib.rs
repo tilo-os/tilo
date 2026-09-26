@@ -35,11 +35,9 @@ pub mod collaboration;
 pub mod control;
 mod delivery;
 mod desktop_commands;
-pub mod gateway;
 mod host_secret;
 mod https_owner;
 pub mod mesh;
-pub mod model;
 pub mod operator;
 mod owner_cell;
 pub use owner_cell::StoreGuard;
@@ -235,7 +233,6 @@ struct State {
     consumed: BTreeMap<String, (String, serde_json::Value)>,
     outbox: Vec<StoredPublication>,
     receipts: BTreeMap<String, (String, ActionReceipt)>,
-    pending_models: BTreeMap<String, model::PendingModel>,
     #[serde(default)]
     mesh: mesh::MeshState,
     #[serde(default)]
@@ -663,11 +660,7 @@ impl Store {
                 bail!("existing delivery Store selection required")
             }
             if value.get("version").and_then(|v| v.as_u64()) == Some(1) {
-                if value.get("pending_models").is_some() {
-                    bail!("invalid v1 pending state")
-                }
                 value["version"] = 2.into();
-                value["pending_models"] = serde_json::json!({});
                 migrated = true;
             }
             if value.get("version").and_then(|v| v.as_u64()) == Some(2) {
@@ -742,7 +735,6 @@ impl Store {
                 consumed: BTreeMap::new(),
                 outbox: vec![],
                 receipts: BTreeMap::new(),
-                pending_models: BTreeMap::new(),
                 mesh: mesh::MeshState::default(),
                 join_challenges: BTreeMap::new(),
                 join_responses: BTreeMap::new(),
