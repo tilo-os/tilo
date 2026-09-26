@@ -52,6 +52,7 @@ pub mod display_mode;
 pub mod hardware;
 pub mod notification_policy;
 pub mod roaming_provenance;
+pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 

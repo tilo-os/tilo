@@ -1206,6 +1206,7 @@ impl CaptureExecutor {
                 let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba);
                 if copied {
                     frame_builder.set_capture_screenshot_finished(true, width, height, preview);
+                    play_shutter(frame_builder);
                     Ok(CaptureOutcome::Copied { width, height })
                 } else {
                     Err("the clipboard refused image data".into())
@@ -1225,6 +1226,7 @@ impl CaptureExecutor {
                     tracing::warn!(path = %path.display(), "screenshot saved but not copied");
                 }
                 frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                play_shutter(frame_builder);
                 Ok(CaptureOutcome::Saved(path))
             }
             CaptureDestination::FloatingWindow => {
@@ -1232,6 +1234,14 @@ impl CaptureExecutor {
             }
         }
     }
+}
+
+/// The shutter sound for a screenshot the person just took.
+fn play_shutter(frame_builder: &mut FrameBuilder) {
+    frame_builder.with_chrome(|chrome| {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Screenshot);
+    });
 }
 
 fn refresh_mirror(

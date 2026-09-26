@@ -3805,6 +3805,7 @@ fn power_notification_to_incoming(
         caller: None,
         badge_count: None,
         contact_endpoint: None,
+        sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
     }
 }
 
@@ -6049,9 +6050,9 @@ pub fn run() {
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
     let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
-    let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
+    let system_sounds = crate::shell::system_sounds::SystemSounds::new();
     frame_builder.with_chrome(|st| {
-        st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
+        st.set_notification_runtime(system_sounds.clone(), priority_contacts.clone());
     });
     // The session runtime keeps driving zbus dispatch in the background for
     // the life of the process.
@@ -7485,7 +7486,11 @@ pub fn run() {
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
+        let device_sounds = frame_builder.host().drain_audio_device_sounds();
         frame_builder.with_chrome(|st| {
+            for event in device_sounds {
+                let _ = st.play_system_sound(event);
+            }
             st.set_session_locked(session.is_locked());
             st.set_active_exposures(
                 state
@@ -9161,6 +9166,15 @@ fn publish_media_osd(
     osd: crate::shell::osd::Osd,
 ) {
     sync_quick_settings_from_osd(&mut chrome.quick_settings, osd);
+    // The volume you just picked, heard at that volume. A muted output has
+    // nothing to hear.
+    if matches!(
+        osd.kind,
+        crate::shell::osd::OsdKind::Volume { muted: false }
+    ) {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::VolumeChange);
+    }
     chrome.show_osd(osd);
 }
 
