@@ -737,11 +737,7 @@ mod tests {
     #[allow(
         clippy::float_cmp,
         reason = "2+3 is exactly 5 in f64; an approximate compare would stop \
-                  proving that `=` stores the evaluated value verbatim"
-    )]
-    #[allow(
-        clippy::float_cmp,
-        reason = "10 + 10 is exact in f64; the point of the test is the exact \
+                  proving that `=` stores the evaluated value verbatim; 10 + 10 is exact in f64; the point of the test is the exact \
                   accumulated total"
     )]
     #[test]

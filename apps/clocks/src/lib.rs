@@ -553,6 +553,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn alarm_tick_arms_delivers_once_and_persists_across_restarts() {
         // Phase: a new alarm for a past time waits until tomorrow.
         {
@@ -779,6 +783,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn timer_deadline_delivers_once_across_suspend_restart_and_native_handoff() {
         // Case: a running timer counts down by deadline, so suspend cannot stall it.
         {
@@ -1006,6 +1014,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn shell_activity_shows_and_commands_only_the_floated_clock() {
         // Case: a paused pinned timer remains in the shell and is marked resumable.
         {

@@ -429,6 +429,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn paging_bounds_work_and_results_while_keeping_exact_stable_addresses() {
         // Case `unique_late_record_is_findable_without_a_corpus_scan`.
         {

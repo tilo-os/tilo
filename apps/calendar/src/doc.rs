@@ -1554,6 +1554,10 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn document_round_trips_model_sync_identity_and_addressable_notes() {
         // Case `model_round_trips_through_crdt`.
         {

@@ -830,6 +830,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn timezones_recurrence_and_invite_identity_round_trip_deterministically() {
         // Case `timezone_invites_and_complex_recurrence_round_trip`.
         {
@@ -947,6 +951,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn content_lines_fold_escape_and_quote_per_rfc_5545() {
         // Case `folded_and_escaped_summaries_import`.
         {
