@@ -146,7 +146,7 @@ class ImagePublicationTests(unittest.TestCase):
 
     def test_the_independent_rebuild_never_sees_the_cache(self):
         repro = self.steps["Independently rebuild the release candidate"]
-        self.assertIn("if: steps.release-mode.outputs.publish == 'true'", repro)
+        self.assertIn("if: matrix.role == 'reproduce'", repro)
         self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
         self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
         self.assertIn("no-cache: true", repro)
