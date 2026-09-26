@@ -168,9 +168,10 @@ pub struct LaunchEnv {
     /// host app connects to the compositor that launched it rather than whatever the launcher's
     /// own environment pointed at.
     pub wayland_socket: Option<PathBuf>,
-    /// Session-wide rootless Xwayland display, when the compositor started a
-    /// compatibility bridge. Native Wayland clients still receive both and
-    /// choose Wayland normally; X11-only applications use this fallback.
+    /// The rootless Xwayland display of the workspace this app opens in. It
+    /// is never shared across workspaces, because X11 does not isolate its
+    /// clients from each other. Native Wayland clients still receive both
+    /// and choose Wayland normally; X11-only applications use this fallback.
     pub x11_display: Option<String>,
     /// MIT-MAGIC-COOKIE authority file for [`Self::x11_display`].
     pub x11_authority: Option<PathBuf>,
