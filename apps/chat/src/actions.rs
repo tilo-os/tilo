@@ -2721,7 +2721,7 @@ mod tests {
         seed: seeded(),
         registry: registry(),
         resources: |doc| published(doc),
-        palette: ["New channel", "Rename channel", "Pin message", "Join call"],
+        palette: ["New channel", "Rename channel", "Pin message", "Join muted"],
         replay: [
             send_message => |_| encode(&send_message_action(
                 "c_general",

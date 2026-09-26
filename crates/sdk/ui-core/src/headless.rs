@@ -9414,6 +9414,96 @@ mod tests {
         }
     }
 
+    /// A standalone app whose root names a record: the runner checks that
+    /// record out as its own State, so the root is not a separate owner.
+    struct RecordRootProbe {
+        checkout: crate::record::RecordCheckout,
+    }
+    impl Widget for RecordRootProbe {
+        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+            Some(self.checkout.clone())
+        }
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+            vec![tilo_actions::Resource::new(
+                "probe.document:1",
+                "probe.document",
+                "Probe document",
+            )]
+        }
+        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "the probe implements the fixed Widget event signature"
+        )]
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "RecordRootProbe"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn standalone_record_backed_root_publishes_its_resources() {
+        use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
+        let checkout = RecordCheckout::new(
+            RecordId::for_file("standalone-record-root"),
+            RecordKind::new("document"),
+        );
+        let root = RecordRootProbe {
+            checkout: checkout.clone(),
+        };
+        let mut harness = FrameHarness::new(State::new(), Box::new(root), (320, 240))
+            .with_records(RecordSet::in_memory(), automerge::AutoCommit::new());
+        harness.relayout();
+        assert_eq!(
+            crate::record::identity(&harness.state_mut().doc).map(|record| record.id),
+            Some(checkout.id),
+            "the runner checked the root's record out as its State"
+        );
+        let resources = harness.resources();
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.id.as_str() == "probe.document:1"),
+            "Ctrl+K sees the record-backed root's resources: {:?}",
+            resources.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn late_record_intent_uses_record_store_and_preserves_room_index() {
         const CHILD: &str = "TILO_LATE_RECORD_TEST_CHILD";
