@@ -2774,6 +2774,25 @@ impl FrameHarness {
         resources
     }
 
+    /// Answer an [inspection](crate::inspect) from the laid-out frame, the
+    /// tree the native host answers from, redacted for the request's
+    /// audience.
+    pub fn inspect(
+        &self,
+        request: &crate::inspect::InspectRequest,
+    ) -> crate::inspect::InspectReply {
+        self.drain_component_wakes();
+        let mut resources = Vec::new();
+        crate::widget::collect_widget_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            &mut resources,
+        );
+        let mut semantics = crate::a11y_tree::SemanticTree::new();
+        semantics.refresh_bound(self.root.as_ref(), &self.node_map, self.focused, &resources);
+        semantics.inspect(request)
+    }
+
     /// The live document. Used to dump state and to hand to a saver.
     pub fn state_mut(&mut self) -> &mut State {
         self.pump_component_wakes();

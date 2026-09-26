@@ -1595,6 +1595,13 @@ impl Action {
             apply: crate::shell::remark::act::review_redact_word,
         },
         Action {
+            id: "remark.review.hide",
+            label: "Hide a text",
+            subtitle: "Hide one of a step's texts whole, as pressing it in the preview does",
+            params: crate::shell::remark::act::HIDE_PARAMS,
+            apply: crate::shell::remark::act::review_hide,
+        },
+        Action {
             id: "remark.review.unredact",
             label: "Show text again",
             subtitle: "Show a run you hid; what review hid on its own stays hidden",

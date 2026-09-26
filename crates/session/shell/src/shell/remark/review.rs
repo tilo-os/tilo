@@ -258,8 +258,32 @@ impl Review {
             .collect()
     }
 
+    /// The texts on screen at a step: its own, or, for a step that brought
+    /// nothing new to read (pressing Send), those of the latest step before
+    /// it in the same app, which is where they are sent from and hidden.
+    pub fn shown_texts(&self, step: u32) -> Vec<StepText<'_>> {
+        let Some(at) = self
+            .steps
+            .iter()
+            .position(|candidate| candidate.index == step)
+        else {
+            return Vec::new();
+        };
+        let Some(app) = self.steps.get(at).map(|step| step.app_id.as_str()) else {
+            return Vec::new();
+        };
+        self.steps
+            .iter()
+            .take(at.saturating_add(1))
+            .rev()
+            .filter(|earlier| earlier.app_id == app)
+            .map(|earlier| self.texts(earlier.index))
+            .find(|texts| !texts.is_empty())
+            .unwrap_or_default()
+    }
+
     fn locate_text(&self, step: u32, node: &str) -> Option<StepText<'_>> {
-        self.texts(step)
+        self.shown_texts(step)
             .into_iter()
             .find(|text| text.text.node == node)
     }
@@ -344,6 +368,26 @@ impl Review {
             });
         }
         Ok(())
+    }
+
+    /// Hide one text whole.
+    ///
+    /// # Errors
+    ///
+    /// When the step or text does not exist, or the text is empty.
+    pub fn hide(&mut self, step: u32, node: &str) -> Result<Span, &'static str> {
+        let len = self
+            .locate_text(step, node)
+            .ok_or("remark-review-no-such-text")?
+            .text
+            .text
+            .len();
+        let span = Span {
+            start: 0,
+            end: u32::try_from(len).map_err(|_| "remark-review-bad-span")?,
+        };
+        self.redact(step, node, span)?;
+        Ok(span)
     }
 
     /// Redact the word under byte offset `at`: what a click on text does.
@@ -786,6 +830,34 @@ pub(crate) mod tests {
         assert_eq!(
             summary.steps,
             u32::try_from(review.steps.len() - 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_step_that_showed_nothing_new_shows_and_hides_what_was_on_screen() {
+        let mut review = review();
+        let failed = review
+            .steps
+            .iter()
+            .find(|step| step.failed())
+            .unwrap()
+            .index;
+        let shown: Vec<String> = review
+            .shown_texts(failed)
+            .iter()
+            .map(|text| text.text.node.clone())
+            .collect();
+        assert!(shown.iter().any(|node| node == "t:subject"), "{shown:?}");
+        review
+            .hide(failed, "t:subject")
+            .expect("hidden from the failed step");
+        assert!(
+            review
+                .hidden_values()
+                .iter()
+                .any(|value| value == "Quarterly numbers"),
+            "{:?}",
+            review.hidden_values()
         );
     }
 

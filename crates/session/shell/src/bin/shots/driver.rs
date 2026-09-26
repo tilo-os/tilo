@@ -149,6 +149,11 @@ impl ShellDriver {
         self.fb.chrome_handle()
     }
 
+    /// The theme the shell is drawn in.
+    pub fn theme(&self) -> &ui::Theme {
+        self.fb.theme()
+    }
+
     /// Get a read-only reference to the overlay host.
     pub fn host(&self) -> &ShellOverlayHost {
         self.fb.host()

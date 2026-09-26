@@ -612,6 +612,22 @@ pub fn review_redact(st: &mut ChromeState, args: &ActionArgs) -> Result<(), Acti
     Ok(())
 }
 
+/// Hide one text of a step whole, as pressing it in the preview does.
+///
+/// # Errors
+///
+/// When the step or text does not exist.
+pub fn review_hide(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    require_review(st)?;
+    let step = index(args, "step")?;
+    let node = text(args, "node")?.to_string();
+    review_mut(st)?
+        .hide(step, &node)
+        .map_err(|key| refused(crate::shell::i18n::t(key)))?;
+    st.bump();
+    Ok(())
+}
+
 /// Hide the word at a byte offset, as a click on text does.
 ///
 /// # Errors
@@ -799,6 +815,10 @@ pub const REDACT_PARAMS: &[ActionParam] = &[
         ParamType::Integer,
         "Byte after the last one to hide.",
     ),
+];
+pub const HIDE_PARAMS: &[ActionParam] = &[
+    ActionParam::required("step", ParamType::Integer, "The walk-through step, from 0."),
+    ActionParam::required("node", ParamType::Text, "The text's node id in that step."),
 ];
 pub const REDACT_WORD_PARAMS: &[ActionParam] = &[
     ActionParam::required("step", ParamType::Integer, "The walk-through step, from 0."),

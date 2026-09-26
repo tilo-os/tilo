@@ -64,8 +64,8 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
             driver.with_chrome(|st: &mut ChromeState| st.remark.destination = destination);
         }
         RemarkStep::SeedReview => {
-            let trace = shell::shell::remark::fixture::sample_session();
-            let summary = trace.summary();
+            let recording = shell::shell::remark::fixture::sample_recording(driver.theme());
+            let summary = recording.trace.summary();
             driver.with_chrome(|st: &mut ChromeState| {
                 st.remark.flow = shell::shell::remark::Flow::Attached {
                     record: "uuid:5a3e0000-0000-4000-8000-000000000001".into(),
@@ -73,9 +73,11 @@ pub fn apply(driver: &mut ShellDriver, step: &RemarkStep) {
                 };
                 st.remark.stage = shell::shell::remark::Stage::Review;
             });
-            driver
-                .host_mut()
-                .begin_remark_review("uuid:5a3e0000-0000-4000-8000-000000000001", &trace);
+            driver.host_mut().begin_remark_review(
+                "uuid:5a3e0000-0000-4000-8000-000000000001",
+                &recording.trace,
+                recording.frames,
+            );
         }
         RemarkStep::SeedRecording => driver.with_chrome(|st: &mut ChromeState| {
             st.remark.flow = shell::shell::remark::Flow::Recording {

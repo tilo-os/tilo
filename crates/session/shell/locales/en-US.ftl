@@ -97,6 +97,9 @@ remark-review-verdict-unsemantic = Part of the screen has no structure to replay
 remark-review-verdict-pending = Checking the replay…
 remark-review-attach-regions = Attach differing frames
 remark-review-back = Back
+remark-review-shown = On screen
+remark-review-included = What is included
+remark-review-nothing-included = Nothing typed or shown in this step
 remark-review-empty = Nothing was tried in this recording.
 
 ## After sending

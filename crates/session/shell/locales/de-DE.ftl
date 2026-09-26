@@ -91,6 +91,9 @@ remark-review-verdict-unsemantic = Ein Teil des Bildschirms hat keine wiederholb
 remark-review-verdict-pending = Wiederholung wird geprüft…
 remark-review-attach-regions = Abweichende Bilder anhängen
 remark-review-back = Zurück
+remark-review-shown = Angezeigt
+remark-review-included = Was enthalten ist
+remark-review-nothing-included = In diesem Schritt wurde nichts eingegeben oder angezeigt
 remark-review-empty = In dieser Aufzeichnung wurde nichts versucht.
 
 ## Nach dem Senden

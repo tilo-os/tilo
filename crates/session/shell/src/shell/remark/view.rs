@@ -69,6 +69,10 @@ pub enum Target {
         node: String,
         at: usize,
     },
+    ReviewHideText {
+        step: u32,
+        node: String,
+    },
     ReviewSetUp,
     ReviewSend,
     PillStop,
@@ -105,6 +109,9 @@ impl Target {
                 json!({ "step": step, "node": node, "at": at }),
             ),
             Self::ReviewSetUp => ("remark.review.model.set-up", json!({})),
+            Self::ReviewHideText { step, node } => {
+                ("remark.review.hide", json!({ "step": step, "node": node }))
+            }
             Self::Text | Self::DestinationList | Self::Absorb => return None,
         })
     }
@@ -136,6 +143,7 @@ impl Target {
                 format!("remark_review_word[{step}:{node}:{at}]")
             }
             Self::ReviewSetUp => "remark_review_set_up".into(),
+            Self::ReviewHideText { step, node } => format!("remark_review_hide[{step}:{node}]"),
             Self::ReviewSend => "remark_review_send".into(),
             Self::PillStop => "remark_pill_stop".into(),
             Self::Absorb => return None,
@@ -184,7 +192,7 @@ impl Target {
                     t("remark-review-keep")
                 }
             }
-            Self::ReviewWord { .. } => t("remark-review-subtitle"),
+            Self::ReviewWord { .. } | Self::ReviewHideText { .. } => t("remark-review-subtitle"),
             Self::ReviewSetUp => t("remark-review-model-floor"),
             Self::Absorb => String::new(),
         }
@@ -206,6 +214,8 @@ pub struct RemarkView {
     /// Where pick mode's hint bar is, so the host knows a press there is
     /// the bar's rather than a pick.
     pick_bar: Rect,
+    /// Recorded frames as images, by step, so each decodes once.
+    frame_images: Vec<(u32, ui::widget::Image)>,
 }
 
 impl Default for RemarkView {
@@ -223,6 +233,7 @@ impl Default for RemarkView {
             panel: Rect::ZERO,
             opened: None,
             pick_bar: Rect::ZERO,
+            frame_images: Vec::new(),
         }
     }
 }
@@ -446,7 +457,10 @@ impl RemarkView {
             .filter(|(_, target)| {
                 !matches!(
                     target,
-                    Target::Absorb | Target::ReviewWord { .. } | Target::Text
+                    Target::Absorb
+                        | Target::ReviewWord { .. }
+                        | Target::ReviewHideText { .. }
+                        | Target::Text
                 )
             })
             .map(|(_, target)| target.clone())
@@ -825,17 +839,12 @@ impl RemarkView {
         let width =
             pad * 2.0 + icon + gap + f64::from(name_w) + gap + f64::from(detail_w) + personal_block;
         let height = f64::from(name_h).max(icon) + pad * 1.5;
-        let above = node_rect.y0 - f64_of(spacing.s2) - height;
-        let y = if above >= viewport.y0 + f64_of(spacing.s2) {
-            above
-        } else {
-            (node_rect.y1 + f64_of(spacing.s2)).min(viewport.y1 - height - f64_of(spacing.s2))
-        };
-        let x = node_rect.x0.clamp(
-            viewport.x0 + f64_of(spacing.s2),
-            (viewport.x1 - width - f64_of(spacing.s2)).max(viewport.x0),
+        let tag = tag_rect(
+            node_rect,
+            focus.surface.screen.intersect(viewport),
+            (width, height),
+            f64_of(spacing.s2),
         );
-        let tag = Rect::from_origin_size((x, y), (width, height));
         ui::surface::panel(scene, transform, tag, f64_of(theme.tokens.radii.lg), theme);
         let cy = tag.center().y;
         draw_icon(
@@ -1650,9 +1659,29 @@ impl RemarkView {
         let mut y = sheet.y0 + pad;
         let inner = width - pad * 2.0;
 
-        // Header.
+        // Header: the title, and which model reviews (with setting one up
+        // when there is none) beside it, or below it when the sheet is too
+        // narrow for both.
         let title = t("remark-review-title");
-        let (_, th) = tr.measure_weighted(&title, scale.lg, None, TextWeight::Semibold);
+        let subtitle = t("remark-review-subtitle");
+        let (title_w, th) = tr.measure_weighted(&title, scale.lg, None, TextWeight::Semibold);
+        let (subtitle_w, _) = tr.measure(&subtitle, scale.sm, None);
+        let heading_w = f64::from(title_w.max(subtitle_w));
+        let badge_w = 320.0_f64.min(inner);
+        let setup = review
+            .filter(|review| matches!(review.model, ModelUse::Floor))
+            .map(|_| {
+                let label = t("remark-review-model-setup-action");
+                let (lw, _) = tr.measure_weighted(&label, scale.sm, None, TextWeight::Medium);
+                (label, f64::from(lw) + 44.0)
+            });
+        let setup_w = setup.as_ref().map_or(0.0, |(_, w)| *w + gap);
+        let beside = review.is_none() || heading_w + gap + setup_w + badge_w <= inner;
+        let heading_max = if beside {
+            inner - setup_w - badge_w - gap
+        } else {
+            inner
+        };
         line(
             scene,
             transform,
@@ -1661,10 +1690,9 @@ impl RemarkView {
             scale.lg,
             colors.text_primary,
             Point::new(left, y),
-            inner * 0.55,
+            heading_max,
             TextWeight::Semibold,
         );
-        let subtitle = t("remark-review-subtitle");
         line(
             scene,
             transform,
@@ -1673,27 +1701,34 @@ impl RemarkView {
             scale.sm,
             colors.text_dim,
             Point::new(left, y + f64::from(th) + 2.0),
-            inner * 0.55,
+            heading_max,
             TextWeight::Regular,
         );
+        if !beside {
+            y += 52.0;
+        }
         if let Some(review) = review {
-            let badge = Rect::new(sheet.x1 - pad - 320.0, y, sheet.x1 - pad, y + 44.0);
+            let badge = if beside {
+                Rect::new(sheet.x1 - pad - badge_w, y, sheet.x1 - pad, y + 44.0)
+            } else {
+                Rect::new(left, y, left + (inner - setup_w).min(badge_w), y + 44.0)
+            };
             Self::draw_model_badge(scene, transform, tr, theme, badge, &review.model);
             // No model yet: set the recommended one up here, through the
             // hub's own action and its own confirmation of size and license.
-            if matches!(review.model, ModelUse::Floor) {
-                let label = t("remark-review-model-setup-action");
-                let (lw, _) = tr.measure_weighted(&label, scale.sm, None, TextWeight::Medium);
-                let button = Rect::from_origin_size(
-                    (badge.x0 - gap - f64::from(lw) - 44.0, y + 4.0),
-                    (f64::from(lw) + 44.0, target_h),
-                );
+            if let Some((label, w)) = setup.as_ref() {
+                let x = if beside {
+                    badge.x0 - gap - w
+                } else {
+                    sheet.x1 - pad - w
+                };
+                let button = Rect::from_origin_size((x, y + 4.0), (*w, target_h));
                 Button::paint(
                     scene,
                     transform,
                     tr,
                     theme,
-                    &ButtonFace::new(button, &label)
+                    &ButtonFace::new(button, label)
                         .icon(Icon::CloudDownload)
                         .radius(f64_of(theme.tokens.radii.lg))
                         .hovered(self.hovered(button))
@@ -1943,9 +1978,9 @@ impl RemarkView {
         }
         dy += 24.0;
 
-        // The replayed state, as structure: each node the app described at
-        // that moment, with what is hidden shown as the mask it leaves as.
-        let preview_h = ((detail.y1 - dy) * 0.5).clamp(120.0, 260.0);
+        // The step as it looked, with what is hidden drawn in place.
+        let state = states.iter().find(|state| state.step == step);
+        let preview_h = ((detail.y1 - dy) * 0.6).clamp(140.0, 320.0);
         let preview = Rect::from_origin_size((detail.x0, dy), (detail.width(), preview_h));
         ui::surface::card(
             scene,
@@ -1954,58 +1989,94 @@ impl RemarkView {
             f64_of(theme.tokens.radii.lg),
             colors.surfaces.raised,
         );
-        if let Some(state) = states.iter().find(|s| s.step == step) {
-            Self::draw_replayed_state(scene, transform, tr, theme, preview.inset(-gap), state);
+        if let Some(state) = state {
+            let failed = review
+                .steps
+                .iter()
+                .find(|candidate| candidate.index == step)
+                .is_some_and(super::review::Step::failed);
+            self.draw_step_preview(
+                scene,
+                transform,
+                tr,
+                theme,
+                preview.inset(-gap),
+                state,
+                failed,
+            );
         }
         dy += preview_h + gap;
 
-        // The texts, each word clickable to hide it.
-        let size = scale.sm;
-        for item in review.texts(step) {
+        // What is included: each field's content as it will leave, word by
+        // word, so a word can be hidden. A control's own name is not
+        // content and is not listed.
+        dy += section_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            &t("remark-review-included"),
+            Point::new(detail.x0, dy),
+            detail.width(),
+        ) + f64_of(spacing.s2);
+        let caption_w = 104.0;
+        let mut listed = 0_usize;
+        let masker = session_trace::redact::Masker::new(review.hidden_values());
+        for item in review.shown_texts(step) {
             let text_item = item.text;
             if dy > detail.y1 - 20.0 {
                 break;
             }
-            let shown = review.redacted(step, &text_item.node).unwrap_or_default();
-            // A label is its own text; a value is captioned by the field it
-            // was typed into, as the app names it.
-            let label = if text_item.node.contains('#') {
-                String::new()
-            } else {
-                states
-                    .iter()
-                    .find(|state| state.step == step)
-                    .and_then(|state| state.nodes.iter().find(|node| node.id == text_item.node))
-                    .and_then(|node| node.name.clone())
-                    .unwrap_or_default()
-            };
-            if !label.is_empty() {
-                line(
-                    scene,
-                    transform,
-                    tr,
-                    &label,
-                    scale.xs,
-                    colors.text_tertiary,
-                    Point::new(detail.x0, dy),
-                    detail.width(),
-                    TextWeight::Regular,
-                );
-                dy += 14.0;
+            let base = text_item.node.split('#').next().unwrap_or_default();
+            let node = state.and_then(|state| state.nodes.iter().find(|node| node.id == base));
+            let is_value = !text_item.node.contains('#');
+            if !(is_value || node.is_some_and(|node| node.content)) {
+                continue;
             }
+            listed = listed.saturating_add(1);
+            let caption = node
+                .and_then(|node| node.name.clone())
+                .unwrap_or_else(|| t("remark-review-shown"));
+            line(
+                scene,
+                transform,
+                tr,
+                &caption,
+                scale.xs,
+                colors.text_tertiary,
+                Point::new(detail.x0, dy + 2.0),
+                caption_w - gap,
+                TextWeight::Medium,
+            );
+            // As it leaves: what review hid here, and every hidden value
+            // wherever else it appears.
+            let shown = masker.mask(&review.redacted(step, &text_item.node).unwrap_or_default());
             dy = self.draw_words(
                 scene,
                 transform,
                 tr,
                 theme,
-                Point::new(detail.x0, dy),
-                detail.width(),
+                Point::new(detail.x0 + caption_w, dy),
+                detail.width() - caption_w,
                 step,
                 &text_item.node,
                 &text_item.text,
                 &shown,
-                size,
+                scale.sm,
             ) + f64_of(spacing.s2);
+        }
+        if listed == 0 {
+            line(
+                scene,
+                transform,
+                tr,
+                &t("remark-review-nothing-included"),
+                scale.sm,
+                colors.text_dim,
+                Point::new(detail.x0, dy),
+                detail.width(),
+                TextWeight::Regular,
+            );
         }
 
         self.draw_review_footer(scene, transform, tr, theme, sheet, Some(review));
@@ -2188,83 +2259,203 @@ impl RemarkView {
         );
     }
 
-    fn draw_replayed_state(
+    /// The step as it looked: the recorded frame of the app when frames
+    /// were kept (already masked where the app declared something
+    /// personal), else the app's own tree drawn as a sketch of its
+    /// controls. What review hid is drawn in place as the mask it leaves
+    /// as, the node the step acted on is ringed, and pressing a text hides
+    /// it whole.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the preview is laid out against the step, its state and the frame together"
+    )]
+    fn draw_step_preview(
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
         state: &StepState,
+        failed: bool,
     ) {
         let colors = &theme.tokens.colors;
-        let bounds = state
-            .nodes
-            .iter()
-            .map(|node| node.bounds)
-            .reduce(|a, b| a.union(b))
-            .unwrap_or(Rect::ZERO);
-        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        let (content_w, content_h, unit) = if let Some(frame) = &state.frame {
+            (f64::from(frame.width), f64::from(frame.height), frame.scale)
+        } else {
+            let bounds = state
+                .nodes
+                .iter()
+                .map(|node| node.bounds)
+                .reduce(|a, b| a.union(b))
+                .unwrap_or(Rect::ZERO);
+            (bounds.x1, bounds.y1, 1.0)
+        };
+        if content_w <= 0.0 || content_h <= 0.0 {
             return;
         }
-        let scale = (area.width() / bounds.width()).min(area.height() / bounds.height());
-        let offset = Point::new(
-            area.center().x - bounds.center().x * scale,
-            area.center().y - bounds.center().y * scale,
-        );
+        let fit = (area.width() / content_w).min(area.height() / content_h);
+        let shown = Rect::from_center_size(area.center(), (content_w * fit, content_h * fit));
         let map = |rect: Rect| {
+            let k = unit * fit;
             Rect::new(
-                offset.x + rect.x0 * scale,
-                offset.y + rect.y0 * scale,
-                offset.x + rect.x1 * scale,
-                offset.y + rect.y1 * scale,
+                shown.x0 + rect.x0 * k,
+                shown.y0 + rect.y0 * k,
+                shown.x0 + rect.x1 * k,
+                shown.y0 + rect.y1 * k,
             )
         };
-        let size = f32_of((12.0 * scale).clamp(7.0, 12.0));
-        for node in &state.nodes {
-            let rect = map(node.bounds);
-            if rect.width() < 1.5 || rect.height() < 1.5 {
-                continue;
+        let radius = f64_of(theme.tokens.radii.md);
+        if let Some(frame) = &state.frame {
+            let index = self
+                .frame_images
+                .iter()
+                .position(|(step, _)| *step == state.step);
+            let index = index.unwrap_or_else(|| {
+                self.frame_images.push((
+                    state.step,
+                    ui::widget::Image::from_rgba(
+                        std::sync::Arc::clone(&frame.rgba),
+                        frame.width,
+                        frame.height,
+                    )
+                    .with_fit(ui::widget::ImageFit::Fill),
+                ));
+                self.frame_images.len().saturating_sub(1)
+            });
+            if let Some((_, image)) = self.frame_images.get_mut(index) {
+                image.paint_at_on(scene, transform, shown, theme);
             }
-            let stroke = if node.highlight {
-                colors.semantic.danger
-            } else {
-                ui::surface::edge_on(colors.surfaces.raised)
-            };
             scene.stroke(
-                &Stroke::new(if node.highlight { 1.5 } else { 1.0 }),
+                &Stroke::new(1.0),
                 transform,
-                stroke,
+                ui::surface::edge_on(colors.surfaces.raised),
                 None,
-                &RoundedRect::from_rect(rect, 2.0),
+                &RoundedRect::from_rect(shown, 2.0),
             );
-            if let Some(label) = node
-                .text
-                .as_deref()
-                .filter(|label| !label.is_empty() && node.leaf)
-            {
-                let fitted = tr.elide_to_width(label, size, f32_of((rect.width() - 4.0).max(0.0)));
-                let (_, h) = tr.measure(&fitted, size, None);
-                if f64::from(h) <= rect.height() {
-                    tr.draw_text(
+        } else {
+            // A sketch of the app from its own tree: fields as fields,
+            // buttons as buttons, alerts as alerts.
+            ui::surface::card(scene, transform, shown, radius, colors.surfaces.base);
+            for node in state.nodes.iter().filter(|node| node.leaf) {
+                let rect = map(node.bounds);
+                if rect.width() < 2.0 || rect.height() < 2.0 {
+                    continue;
+                }
+                let text = node.text.as_deref().unwrap_or_default();
+                let size = f32_of((rect.height() * 0.42).clamp(7.0, 13.0));
+                let (fill, ink, centred) = match node.role.as_str() {
+                    role if is_control(role) => {
+                        (Some(colors.surfaces.raised), colors.text_primary, true)
+                    }
+                    "text_input" | "combo_box" | "search_box" => {
+                        (Some(colors.surfaces.overlay), colors.text_primary, false)
+                    }
+                    "alert" | "alert_dialog" | "banner" | "status" => (
+                        Some(colors.semantic.danger.with_alpha_factor(0.16)),
+                        colors.semantic.danger,
+                        false,
+                    ),
+                    _ => (None, colors.text_dim, false),
+                };
+                if let Some(fill) = fill {
+                    ui::surface::card(
                         scene,
-                        &fitted,
-                        size,
-                        if node.highlight {
-                            colors.semantic.danger
-                        } else {
-                            colors.text_dim
-                        },
-                        transform.pre_translate(
-                            (
-                                rect.x0 + 2.0,
-                                rect.y0 + (rect.height() - f64::from(h)) / 2.0,
-                            )
-                                .into(),
-                        ),
-                        None,
+                        transform,
+                        rect,
+                        (rect.height() / 2.0).min(radius),
+                        fill,
                     );
                 }
+                if !text.is_empty() {
+                    let fitted =
+                        tr.elide_to_width(text, size, f32_of((rect.width() - 8.0).max(0.0)));
+                    let (w, h) = tr.measure(&fitted, size, None);
+                    if f64::from(h) <= rect.height() + 2.0 {
+                        let x = if centred {
+                            rect.center().x - f64::from(w) / 2.0
+                        } else {
+                            rect.x0 + 6.0
+                        };
+                        tr.draw_text(
+                            scene,
+                            &fitted,
+                            size,
+                            ink,
+                            transform
+                                .pre_translate((x, rect.center().y - f64::from(h) / 2.0).into()),
+                            None,
+                        );
+                    }
+                }
             }
+        }
+        // What review hid, drawn where it was, as it will leave; and the
+        // texts that can still be hidden, pressable in place.
+        for node in state.nodes.iter().filter(|node| node.content) {
+            let rect = map(node.bounds);
+            if rect.width() < 2.0 || rect.height() < 2.0 {
+                continue;
+            }
+            let hidden = node
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains(tilo_feedback_review::MASK));
+            if hidden && state.frame.is_some() {
+                let text = node.text.as_deref().unwrap_or_default();
+                let size = f32_of((rect.height() * 0.42).clamp(7.0, 13.0));
+                // Over the frame's own mask, edge to edge, so none of it
+                // shows around the placeholder.
+                ui::surface::card(
+                    scene,
+                    transform,
+                    rect.inflate(1.0, 1.0),
+                    2.0,
+                    colors.surfaces.overlay,
+                );
+                let fitted = tr.elide_to_width(text, size, f32_of((rect.width() - 8.0).max(0.0)));
+                let (_, h) = tr.measure(&fitted, size, None);
+                tr.draw_text(
+                    scene,
+                    &fitted,
+                    size,
+                    colors.text_dim,
+                    transform.pre_translate(
+                        (rect.x0 + 6.0, rect.center().y - f64::from(h) / 2.0).into(),
+                    ),
+                    None,
+                );
+            }
+            let target = Target::ReviewHideText {
+                step: state.step,
+                node: node.id.clone(),
+            };
+            if self.hovered(rect) {
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    transform,
+                    colors.semantic.warning,
+                    None,
+                    &RoundedRect::from_rect(rect.inflate(1.0, 1.0), 3.0),
+                );
+            }
+            self.push(rect, target);
+        }
+        // The node the step acted on.
+        if let Some(node) = state.nodes.iter().find(|node| node.acted) {
+            let ring = if failed {
+                colors.semantic.danger
+            } else {
+                colors.accent[5]
+            };
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                ring,
+                None,
+                &RoundedRect::from_rect(map(node.bounds).inflate(2.0, 2.0), radius),
+            );
         }
     }
 
@@ -2466,7 +2657,10 @@ impl RemarkView {
             .with_state(AccessState::new().modal(composer.stage != Stage::Picking));
         let focused = self.focused_target();
         for (rect, target) in &self.targets {
-            if matches!(target, Target::Absorb | Target::ReviewWord { .. }) {
+            if matches!(
+                target,
+                Target::Absorb | Target::ReviewWord { .. } | Target::ReviewHideText { .. }
+            ) {
                 continue;
             }
             let role = match target {
@@ -2490,6 +2684,31 @@ impl RemarkView {
         }
         root
     }
+}
+
+/// Where the pick tag goes: inside the app it names, so it never covers
+/// shell chrome, and off the node it names, so it never hides what is
+/// being picked. Above the node, else below it, else inside its top edge,
+/// else wherever it fits in the app.
+fn tag_rect(node: Rect, app: Rect, size: (f64, f64), gap: f64) -> Rect {
+    let (w, h) = size;
+    let x = node
+        .x0
+        .clamp(app.x0 + gap, (app.x1 - w - gap).max(app.x0 + gap));
+    let fits = |y: f64| y >= app.y0 + gap && y + h <= app.y1 - gap;
+    let above = node.y0 - gap - h;
+    let below = node.y1 + gap;
+    let inside = node.y0 + gap;
+    let y = if fits(above) {
+        above
+    } else if fits(below) {
+        below
+    } else if node.height() >= h + gap * 2.0 && fits(inside) {
+        inside
+    } else {
+        (app.y0 + gap).max(app.y1 - h - gap).min(app.y0 + gap)
+    };
+    Rect::from_origin_size((x, y), (w, h))
 }
 
 fn gap(theme: &Theme) -> f64 {
@@ -2525,6 +2744,41 @@ fn word_spans(text: &str) -> Vec<(usize, &str)> {
 pub struct StepState {
     pub step: u32,
     pub nodes: Vec<StateNode>,
+    /// The recorded frame of the step's app, when frames were kept.
+    pub frame: Option<StepFrame>,
+}
+
+/// One recorded frame, already masked where the app declared personal or
+/// secret content.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepFrame {
+    pub rgba: std::sync::Arc<[u8]>,
+    pub width: u32,
+    pub height: u32,
+    /// Frame pixels per surface unit.
+    pub scale: f64,
+}
+
+/// Roles whose name is the control's, not content someone wrote.
+pub fn is_control(role: &str) -> bool {
+    matches!(
+        role,
+        "button"
+            | "toggle_button"
+            | "link"
+            | "menu_item"
+            | "menu_item_checkbox"
+            | "menu_item_radio"
+            | "tab"
+            | "checkbox"
+            | "radio_button"
+            | "switch"
+            | "toolbar"
+            | "menu"
+            | "menu_bar"
+            | "tab_list"
+            | "window"
+    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -2536,10 +2790,14 @@ pub struct StateNode {
     /// Only a node with no children has its text drawn: a container's name
     /// would be drawn across its children.
     pub leaf: bool,
+    pub role: String,
+    /// Its text is content someone wrote or the app showed, not a
+    /// control's own name.
+    pub content: bool,
+    /// The step acted on this node.
+    pub acted: bool,
     pub bounds: Rect,
     pub text: Option<String>,
-    /// The node the step acted on, or an alert it raised.
-    pub highlight: bool,
 }
 
 #[cfg(test)]
@@ -2565,6 +2823,23 @@ mod tests {
             assert_eq!(target.action().map(|(action, _)| action), Some(id));
         }
         assert_eq!(Target::DestinationList.action(), None);
+    }
+
+    #[test]
+    fn the_pick_tag_stays_inside_the_app_and_off_the_node() {
+        let app = Rect::new(0.0, 100.0, 800.0, 700.0);
+        // Room above: above.
+        let tag = tag_rect(Rect::new(10.0, 300.0, 90.0, 330.0), app, (120.0, 24.0), 8.0);
+        assert_eq!(tag.y1, 292.0);
+        // At the app's top edge: below, never over the chrome above the app.
+        let top = Rect::new(10.0, 104.0, 90.0, 134.0);
+        let tag = tag_rect(top, app, (120.0, 24.0), 8.0);
+        assert!(tag.y0 >= top.y1, "{tag:?}");
+        assert!(app.contains(tag.origin()));
+        // A node filling the app: inside its top edge.
+        let whole = Rect::new(0.0, 100.0, 800.0, 700.0);
+        let tag = tag_rect(whole, app, (120.0, 24.0), 8.0);
+        assert!(app.contains(tag.origin()) && tag.y1 <= app.y1);
     }
 
     #[test]

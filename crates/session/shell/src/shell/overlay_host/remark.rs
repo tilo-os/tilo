@@ -18,7 +18,7 @@ use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::collab_broker_capnp::{InspectCaller, InspectionJob};
 use crate::shell::remark::pick::{PickNode, PickScene, PickSurface};
 use crate::shell::remark::review::{ModelUse, Review};
-use crate::shell::remark::view::{RemarkView, StateNode, StepState};
+use crate::shell::remark::view::{RemarkView, StateNode, StepFrame, StepState};
 use crate::shell::remark::{
     CommunityRoom, DestinationKind, Directory, Flow, Request, Sending, Stage,
 };
@@ -49,6 +49,8 @@ struct InspectedSurface {
     reply: Option<tilo_reference::inspect::InspectReply>,
     asked: Option<Instant>,
     job: Option<InspectionJob>,
+    /// The app's semantic generation the last question was asked at.
+    generation: Option<u64>,
 }
 
 /// What one batch's review came back with.
@@ -84,6 +86,11 @@ pub(crate) struct RemarkHost {
     review_answers: Option<mpsc::Receiver<BatchAnswer>>,
     review_states: Vec<StepState>,
     review_states_key: Option<(String, u32, usize)>,
+    /// The session under review, so the preview follows what is hidden.
+    review_trace: Option<(
+        session_trace::SessionTrace,
+        Option<session_trace::frames::FrameStrip>,
+    )>,
     delivery: Option<DeliveryJob>,
     recording_since: Option<Instant>,
     last_second: Option<u64>,
@@ -296,6 +303,7 @@ impl ShellOverlayHost {
                 self.remark.review_answers = None;
                 self.remark.review_states.clear();
                 self.remark.review_states_key = None;
+                self.remark.review_trace = None;
                 self.remark.view = RemarkView::default();
                 self.remark.directory_at = None;
                 self.remark.shell_tree = None;
@@ -338,6 +346,7 @@ impl ShellOverlayHost {
         }
         dirty |= self.pump_remark_flow();
         dirty |= self.pump_review_answers();
+        dirty |= self.refresh_review_states();
         dirty |= self.pump_remark_delivery();
         dirty
     }
@@ -468,10 +477,16 @@ impl ShellOverlayHost {
             let Some(app_id) = tabs.get(&tile.surface_id) else {
                 continue;
             };
-            let package = crate::shell::launcher::launch_key_for_surface(tile.surface_id);
-            let Some(app) = apps.iter().find(|app| {
-                app.room == room
-                    && (app.app_id == *app_id || package.as_deref() == Some(app.app_id.as_str()))
+            // The launch a window and an app connection both descend from
+            // says which connection draws it; a window the shell did not
+            // launch is matched by its app and room.
+            let launched = broker
+                .as_ref()
+                .and_then(|broker| broker.inspectable_app_for_surface(tile.surface_id));
+            let Some(app) = launched.or_else(|| {
+                apps.iter()
+                    .find(|app| app.room == room && app.app_id == *app_id)
+                    .cloned()
             }) else {
                 continue;
             };
@@ -490,11 +505,17 @@ impl ShellOverlayHost {
                     reply: None,
                     asked: None,
                     job: None,
+                    generation: None,
                 });
             entry.screen = tile.rect;
-            let stale = entry.asked.is_none_or(|at| at.elapsed() >= PICK_REFRESH);
+            // Ask again when the app says its tree changed, and now and then
+            // regardless, so a missed change never leaves a stale outline.
+            let changed = entry.generation != Some(app.semantic_generation);
+            let stale = entry
+                .asked
+                .is_none_or(|at| at.elapsed() >= PICK_REFRESH.saturating_mul(5));
             if entry.job.is_none()
-                && (force || stale)
+                && (force || changed || stale)
                 && let Some(broker) = broker.as_ref()
             {
                 match broker.inspect(
@@ -509,6 +530,7 @@ impl ShellOverlayHost {
                     Err(error) => tracing::debug!(%error, "pick: an app cannot be inspected"),
                 }
                 entry.asked = Some(Instant::now());
+                entry.generation = Some(app.semantic_generation);
             }
         }
         self.remark.surfaces.retain(|key, _| live.contains(key));
@@ -658,12 +680,22 @@ impl ShellOverlayHost {
             });
             return;
         };
-        self.begin_remark_review(&record, &trace);
+        let frames = recorder
+            .as_ref()
+            .and_then(|recorder| recorder.with_pending(&id, |pending| pending.frames().cloned()))
+            .flatten();
+        self.begin_remark_review(&record, &trace, frames);
     }
 
-    /// Walk through `trace` (the session `record`), reviewed by the floor
-    /// at once and by the review model as it answers.
-    pub fn begin_remark_review(&mut self, record: &str, trace: &session_trace::SessionTrace) {
+    /// Walk through `trace` (the session `record`, with the `frames` kept
+    /// of it), reviewed by the floor at once and by the review model as it
+    /// answers.
+    pub fn begin_remark_review(
+        &mut self,
+        record: &str,
+        trace: &session_trace::SessionTrace,
+        frames: Option<session_trace::frames::FrameStrip>,
+    ) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -674,7 +706,8 @@ impl ShellOverlayHost {
             .enumerate()
             .map(|(index, batch)| (index, batch.request.clone()))
             .collect();
-        self.remark.review_states = step_states(&review, trace);
+        self.remark.review_states = step_states(&review, trace, frames.as_ref());
+        self.remark.review_trace = Some((trace.clone(), frames));
         chrome.borrow_mut().remark.review = Some(review);
         let (send, receive) = mpsc::channel();
         self.remark.review_answers = Some(receive);
@@ -696,6 +729,32 @@ impl ShellOverlayHost {
         if let Err(error) = spawned {
             tracing::warn!(%error, "review: could not start the review worker; the floor stands");
         }
+    }
+
+    /// Draw the preview again when what is hidden or cut changed.
+    fn refresh_review_states(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let st = chrome.borrow();
+        let Some(review) = st.remark.review.as_ref() else {
+            return false;
+        };
+        let key = (
+            review.record.clone(),
+            review.redaction_count(),
+            review.cut.len(),
+        );
+        if self.remark.review_states_key.as_ref() == Some(&key) {
+            return false;
+        }
+        let Some((trace, frames)) = self.remark.review_trace.as_ref() else {
+            return false;
+        };
+        self.remark.review_states = step_states(review, trace, frames.as_ref());
+        drop(st);
+        self.remark.review_states_key = Some(key);
+        true
     }
 
     /// Fold the review model's answers into the walk-through.
@@ -1558,23 +1617,28 @@ fn located_redactions(
 
 /// What the review preview draws for each step: the step's app's latest
 /// tree at or before it, with every text as it will leave.
-fn step_states(review: &Review, trace: &session_trace::SessionTrace) -> Vec<StepState> {
+fn step_states(
+    review: &Review,
+    trace: &session_trace::SessionTrace,
+    frames: Option<&session_trace::frames::FrameStrip>,
+) -> Vec<StepState> {
     let masker = session_trace::redact::Masker::new(review.hidden_values());
     review
         .steps
         .iter()
         .enumerate()
         .map(|(index, step)| {
-            // What the step left on screen: the app's last tree before the
-            // next step began, so a failure shows the banner it raised.
+            // What the step left on screen: the app's last tree (and frame)
+            // before the next step began, so a failure shows its banner.
             let until = review
                 .steps
                 .get(index.saturating_add(1))
                 .map_or(trace.duration, |next| next.at);
+            let shown_by = |at: session_trace::Offset| at <= step.at || at < until;
             let keyframe = trace
                 .timeline
                 .iter()
-                .filter(|entry| entry.at <= step.at || entry.at < until)
+                .filter(|entry| shown_by(entry.at))
                 .filter_map(|entry| match &entry.event {
                     session_trace::Event::Inspect(keyframe)
                         if step.app_id.is_empty() || keyframe.route.app_id == step.app_id =>
@@ -1584,6 +1648,18 @@ fn step_states(review: &Review, trace: &session_trace::SessionTrace) -> Vec<Step
                     _ => None,
                 })
                 .next_back();
+            let acted = step.invocation.and_then(|invocation| {
+                trace.events().find_map(|entry| match &entry.event {
+                    session_trace::Event::Presence(session_trace::PresenceUpdate {
+                        change: session_trace::PresenceChange::Interaction(interaction),
+                        ..
+                    }) if interaction.invocation == invocation => match &interaction.anchor {
+                        tilo_actions::InteractionAnchor::SemanticControl { id } => Some(id.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            });
             let nodes = keyframe
                 .map(|keyframe| &keyframe.reply)
                 .map(|reply| {
@@ -1601,26 +1677,46 @@ fn step_states(review: &Review, trace: &session_trace::SessionTrace) -> Vec<Step
                                     node.content_text().map(|text| masker.mask(text))
                                 }
                             };
+                            let is_value = node.content == tilo_reference::inspect::Content::Value;
+                            let content =
+                                text.as_deref().is_some_and(|text| !text.trim().is_empty())
+                                    && node.children.is_empty()
+                                    && (is_value
+                                        || !crate::shell::remark::view::is_control(&node.role));
                             Some(StateNode {
                                 id: node.id.clone(),
-                                name: node.label.clone().filter(|_| {
-                                    node.content == tilo_reference::inspect::Content::Value
-                                }),
+                                name: node.label.clone().filter(|_| is_value),
                                 leaf: node.children.is_empty(),
+                                role: node.role.clone(),
+                                content,
+                                acted: acted.as_deref() == Some(node.id.as_str()),
                                 bounds: rect_of(bounds),
                                 text,
-                                highlight: matches!(
-                                    node.role.as_str(),
-                                    "alert" | "alert_dialog" | "banner" | "status"
-                                ),
                             })
                         })
                         .collect()
                 })
                 .unwrap_or_default();
+            let frame = frames.and_then(|strip| {
+                strip
+                    .frames
+                    .iter()
+                    .rfind(|frame| {
+                        shown_by(frame.at)
+                            && (step.app_id.is_empty() || frame.route.app_id == step.app_id)
+                    })
+                    .and_then(|stored| stored.decode().ok())
+                    .map(|decoded| StepFrame {
+                        rgba: std::sync::Arc::from(decoded.rgba),
+                        width: decoded.width,
+                        height: decoded.height,
+                        scale: decoded.scale,
+                    })
+            });
             StepState {
                 step: step.index,
                 nodes,
+                frame,
             }
         })
         .collect()
