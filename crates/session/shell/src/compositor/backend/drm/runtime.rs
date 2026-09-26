@@ -257,6 +257,9 @@ pub struct DrmDispatchState {
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
+    /// The capability snapshot last published for Settings, kept so
+    /// output-management heads never force-probe connectors themselves.
+    pub display_capabilities: Vec<settings_store::hardware::DisplayOutputSnapshot>,
     /// Current pointer position in scene coordinates (physical pixels of
     /// the combined texture): where the cursor is drawn and what the shell
     /// hit-tests. Always derived from [`Self::logical_pointer`].
@@ -519,6 +522,11 @@ pub enum ScanoutCommand {
     },
     SetCursorSize(u32),
     SetPointerImage(crate::compositor::cursor::PointerImage),
+    /// Switch one panel off or back on for an output-power client.
+    SetOutputPower {
+        output: OutputId,
+        on: bool,
+    },
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -853,6 +861,7 @@ impl DrmDispatchState {
             direct_touch: DirectTouchOwnership::default(),
             outputs_changed: false,
             output_meta: HashMap::new(),
+            display_capabilities: Vec::new(),
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
@@ -922,7 +931,7 @@ impl DrmDispatchState {
     /// Publish the live hardware contract for Settings. Failure is benign in
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
-    fn publish_display_snapshot(&self) {
+    fn publish_display_snapshot(&mut self) {
         let outputs = display_capabilities(&self.cards, &self.color_profiles);
         let layout = self
             .live
@@ -938,6 +947,13 @@ impl DrmDispatchState {
                 }
             })
             .collect();
+        if outputs != self.display_capabilities {
+            self.display_capabilities.clone_from(&outputs);
+            // A disabled connector appearing changes the heads external
+            // configuration tools see, even with no modeset to report.
+            self.outputs_changed = true;
+            self.push(BackendEvent::OutputsChanged);
+        }
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
@@ -1189,6 +1205,7 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_unavailable: None,
+                powered_off: false,
                 scanout: build.scanout,
             });
         }
@@ -2516,6 +2533,9 @@ pub struct ScanoutEntry {
     /// Permanent failure for this output generation. Cleared only when a
     /// lifecycle/topology boundary makes reprobe meaningful.
     pub direct_unavailable: Option<String>,
+    /// An output-power client switched this panel off. It is neither
+    /// painted nor lit by a session wake until switched back on.
+    pub powered_off: bool,
     pub scanout: DrmScanout,
 }
 
@@ -3103,6 +3123,36 @@ impl DrmRuntime {
             | DisplayTransactionState::Reverted
             | DisplayTransactionState::Rejected => {}
         }
+    }
+
+    /// Every attached connector as output-management heads: the cached
+    /// capability snapshot joined with the outputs being driven and the
+    /// effective intent for the ones that are off.
+    pub fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        let live: Vec<crate::compositor::output_heads::LiveHead> = self
+            .dispatch
+            .live
+            .iter()
+            .filter_map(|entry| {
+                let output = self.dispatch.output_meta.get(&entry.id)?;
+                Some(crate::compositor::output_heads::LiveHead {
+                    key: entry.config_key.clone(),
+                    output: output.clone(),
+                    physical_size_mm: entry.physical_mm,
+                })
+            })
+            .collect();
+        crate::compositor::output_heads::heads_from_capabilities(
+            &self.dispatch.display_capabilities,
+            &settings_store::hardware::DisplayConfig::load_effective(&self.dispatch.display_set),
+            &live,
+        )
+    }
+
+    /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_output_power(&self, output: OutputId, on: bool) {
+        self.dispatch
+            .command(ScanoutCommand::SetOutputPower { output, on });
     }
 
     /// Drain pending events from the internal calloop — non-blocking, a zero timeout so the outer compositor loop owns the cadence.

@@ -77,6 +77,7 @@ pub mod network;
 pub mod notes_app;
 pub mod notification;
 pub mod notification_history;
+pub mod now_playing;
 pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;

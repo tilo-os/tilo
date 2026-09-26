@@ -68,7 +68,12 @@ impl Cli {
                     name: slot,
                     slot_flag,
                     ..
-                },
+                }
+                | SlotCommand::Apps(SlotAppsCommand::Install {
+                    name: slot,
+                    slot_flag,
+                    ..
+                }),
             ),
         ) = &mut self.command
         {
@@ -302,7 +307,10 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                     VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
                 )
                 | Command::Slot(
-                    SlotCommand::List | SlotCommand::Show { .. } | SlotCommand::Exec { .. }
+                    SlotCommand::List
+                        | SlotCommand::Show { .. }
+                        | SlotCommand::Exec { .. }
+                        | SlotCommand::Apps(SlotAppsCommand::List)
                 )
                 | Command::Scenario(ScenarioCommand::Install(InstallScenarioArgs {
                     dry_run: true,
@@ -811,6 +819,9 @@ pub enum SlotCommand {
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
         slot_flag: Option<String>,
     },
+    /// Third-party apps for checking desktop features: X11 apps, GTK, dialogs, tray, MIME handlers.
+    #[command(subcommand)]
+    Apps(SlotAppsCommand),
     /// Remove a slot: its session, user and generations (layers stay until gc).
     #[command(
         after_help = "Examples:\n  tilo-vm slot rm review-a\n  tilo-vm slot rm --slot review-a"
@@ -821,6 +832,30 @@ pub enum SlotCommand {
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
         slot_flag: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SlotAppsCommand {
+    /// List the app sets and what each app checks.
+    #[command(after_help = "Examples:\n  tilo-vm slot apps list\n  tilo-vm slot apps list --json")]
+    List,
+    /// Install an app set with the VM's package manager, then restart the slot's session so it sees it.
+    #[command(
+        after_help = "Examples:\n  tilo-vm slot apps install --set verification\n  tilo-vm slot apps install --set verification --slot review-a\n\nThe packages come from the distribution, not from Tilo: tilo-vmd runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every slot on the VM can use them\nafter its session restarts; this command restarts the slot's session.\n\nThe sets and their apps are listed by tilo-vm slot apps list (the data is\ncrates/dev/tilo-vm/data/app-sets.toml)."
+    )]
+    Install {
+        /// The slot whose session restarts to see the apps (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+        /// The app set to install (tilo-vm slot apps list).
+        #[arg(long, value_name = "SET")]
+        set: String,
+        /// Seconds before the install is stopped.
+        #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
+        timeout: u64,
     },
 }
 
@@ -904,6 +939,9 @@ mod tests {
             &["tilo-vm", "slot", "rm", "--slot", "a"],
             &["tilo-vm", "slot", "show", "--slot", "a"],
             &["tilo-vm", "slot", "exec", "--slot", "a", "--", "true"],
+            &[
+                "tilo-vm", "slot", "apps", "install", "--set", "v", "--slot", "a",
+            ],
             &["tilo-vm", "slot", "show", "a"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap().normalized();
@@ -920,7 +958,8 @@ mod tests {
                         | SlotCommand::Restart { name: slot, .. }
                         | SlotCommand::Rm { name: slot, .. }
                         | SlotCommand::Show { name: slot, .. }
-                        | SlotCommand::Exec { name: slot, .. },
+                        | SlotCommand::Exec { name: slot, .. }
+                        | SlotCommand::Apps(SlotAppsCommand::Install { name: slot, .. }),
                     ),
                 ) => slot,
                 other => panic!("{other:?}"),

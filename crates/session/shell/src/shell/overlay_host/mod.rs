@@ -33,6 +33,7 @@ mod controller;
 mod device_fabric;
 mod history;
 mod notification_center;
+mod now_playing;
 mod shortcut_triggers;
 mod shortcuts;
 
@@ -1339,6 +1340,8 @@ enum AccessibleOverlay {
     Collaborators,
     RoomActivity,
     QuickSettings,
+    /// The now-playing card beside the Quick Settings root page.
+    NowPlaying,
     ShortcutHelp,
     DisplayLayouts,
 }
@@ -1450,6 +1453,7 @@ struct OverlayInputs {
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     portal_dialogs: PortalDialogController,
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
+    now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
 }
 
 #[allow(
@@ -1815,6 +1819,15 @@ pub struct ShellOverlayHost {
     personal_display: Option<([u8; 16], crate::shell::peer_view::PeerView)>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
+    /// Where the now-playing card beside the root page reads players and
+    /// sends transport commands.
+    now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
+    /// The now-playing card's focus, pickers and artwork cache.
+    now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard,
+    /// The player the person picked on the card, while it is still running.
+    now_playing_preferred: Option<String>,
+    /// When the visible card next repaints to advance its playhead.
+    now_playing_tick: std::cell::Cell<Option<Instant>>,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// uses [`crate::shell::quick_settings::actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
@@ -2999,6 +3012,9 @@ impl ShellOverlayHost {
         {
             order.push(AccessibleOverlay::QuickSettings);
         }
+        if self.now_playing_published() {
+            order.push(AccessibleOverlay::NowPlaying);
+        }
         if flags.shortcut_help {
             order.push(AccessibleOverlay::ShortcutHelp);
         }
@@ -3071,6 +3087,11 @@ impl ShellOverlayHost {
             crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::now_playing::NowPlayingProvider::new(
+                std::rc::Rc::new(crate::shell::now_playing::MprisSource),
+            ),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -3138,6 +3159,7 @@ impl ShellOverlayHost {
                 ),
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 session_action_policy,
+                now_playing: std::rc::Rc::new(crate::shell::now_playing::MprisSource),
             },
         );
         // Offer Switch user only where the display manager can open a greeter
@@ -3206,6 +3228,7 @@ impl ShellOverlayHost {
                 ),
                 session_action_policy:
                     crate::shell::search::providers::SessionActionPolicy::default(),
+                now_playing: std::rc::Rc::new(crate::shell::now_playing::NoPlayers),
             },
         )
     }
@@ -3354,6 +3377,10 @@ impl ShellOverlayHost {
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
             qs_root: inputs.qs_root,
+            now_playing_source: inputs.now_playing,
+            now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
+            now_playing_preferred: None,
+            now_playing_tick: std::cell::Cell::new(None),
             qs_actions: inputs.qs_actions,
             qs_action_slot: inputs.qs_action_slot,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
@@ -10042,7 +10069,10 @@ impl ShellOverlayHost {
         }
         match state.quick_settings.current_level() {
             crate::shell::quick_settings::QsLevel::Root => {
-                self.qs_root.semantic_rects(&state.quick_settings)
+                let mut rects = self.qs_root.semantic_rects(&state.quick_settings);
+                drop(state);
+                rects.extend(self.now_playing_semantic_rects());
+                rects
             }
             crate::shell::quick_settings::QsLevel::Wifi => self
                 .qs_wifi_pane
@@ -13424,6 +13454,10 @@ impl ShellOverlayHost {
     fn handle_shell_quick_settings_click(&mut self, p: Point, handled: &mut bool) {
         let p = self.untransform_quick_settings_pointer(p, Instant::now());
         let qs_rect = self.quick_settings_rect();
+        if self.handle_now_playing_click(p) {
+            *handled = true;
+            return;
+        }
         if !qs_rect.contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
@@ -14691,9 +14725,26 @@ impl ShellOverlayHost {
         }
 
         if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            if self.handle_now_playing_tab(backwards) {
+                *handled = true;
+                return true;
+            }
             let mut state = chrome.borrow_mut();
             self.qs_root.focus_next(&state.quick_settings, backwards);
             state.bump();
+            *handled = true;
+            return true;
+        }
+
+        let card_key = match logical_key {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => Some((true, true)),
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => Some((false, true)),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => Some((false, false)),
+            _ => None,
+        };
+        if let Some((activate, forward)) = card_key
+            && self.handle_now_playing_key(activate, forward)
+        {
             *handled = true;
             return true;
         }
@@ -17446,6 +17497,11 @@ impl Widget for ShellOverlayHost {
                 AccessibleOverlay::RoomActivity => root
                     .children
                     .push(self.room_activity.accessibility_snapshot()),
+                AccessibleOverlay::NowPlaying => {
+                    if let Some(card) = self.now_playing_accessibility() {
+                        root.children.push(card);
+                    }
+                }
                 AccessibleOverlay::QuickSettings => {
                     if let Some(chrome) = self.chrome.as_ref() {
                         let state = chrome.borrow();
@@ -18313,6 +18369,7 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => None,
             },
+            AccessibleOverlay::NowPlaying => self.now_playing_accessibility_rect(child_path),
             AccessibleOverlay::MemberSheet
             | AccessibleOverlay::ShortcutHelp
             | AccessibleOverlay::DisplayLayouts => None,
@@ -18350,6 +18407,7 @@ impl Widget for ShellOverlayHost {
             AccessibleOverlay::QuickSettings => {
                 focus_quick_settings_accessibility(self, child_path)
             }
+            AccessibleOverlay::NowPlaying => self.focus_now_playing_accessibility(child_path),
             AccessibleOverlay::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
@@ -18488,6 +18546,7 @@ impl Widget for ShellOverlayHost {
                 .as_ref()
                 .and_then(|chrome| chrome.borrow().osd)
                 .and_then(|osd| osd.next_wake_deadline_at(now)),
+            self.now_playing_wake_deadline(now),
         ]
         .into_iter()
         .flatten()
@@ -19616,6 +19675,7 @@ impl ShellOverlayHost {
     ) {
         self.reconcile_quick_settings_open_edge(flags.quick_settings);
         self.apply_quick_settings_readings();
+        self.refresh_now_playing();
         self.qs_transition.set_open(
             flags.quick_settings,
             if theme.reduce_motion {
@@ -19638,6 +19698,9 @@ impl ShellOverlayHost {
             self.qs_refresh.kick_firmware();
             self.qs_root.reset_focus();
             self.refresh_quick_settings_summaries();
+        }
+        if open != self.qs_was_open {
+            self.reconcile_now_playing_open_edge(open);
         }
         self.qs_was_open = open;
     }
@@ -19678,12 +19741,16 @@ impl ShellOverlayHost {
             let scale = 0.95 + 0.05 * f64::from(openness);
             let in_flight = alpha < 1.0;
             let qs_rect = self.quick_settings_rect();
+            let card_rect = self
+                .now_playing_view()
+                .and_then(|view| self.now_playing_rect(&view));
             let clip = Rect::new(
                 qs_rect.x0 - 8.0,
                 qs_rect.y0 - 16.0,
                 qs_rect.x1 + 8.0,
                 qs_rect.y1 + 8.0,
             );
+            let clip = card_rect.map_or(clip, |card| clip.union(card.inflate(8.0, 8.0)));
             if in_flight {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -19717,6 +19784,7 @@ impl ShellOverlayHost {
                 &qs_shadow,
             );
             self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
+            let card_rect = self.draw_now_playing(scene, qs_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
             }
@@ -19725,7 +19793,10 @@ impl ShellOverlayHost {
             return Some(if in_flight {
                 transform.transform_rect_bbox(clip)
             } else {
-                quick_settings_settled_bounds(qs_rect, theme, transform)
+                let settled = quick_settings_settled_bounds(qs_rect, theme, transform);
+                card_rect.map_or(settled, |card| {
+                    settled.union(quick_settings_settled_bounds(card, theme, transform))
+                })
             });
         }
         None
