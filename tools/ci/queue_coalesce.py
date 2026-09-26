@@ -132,9 +132,9 @@ def coalesce(api, max_pages, max_cancel, apply):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default="https://code.sandbox.example/api/v1")
+    parser.add_argument("--base-url", default="https://code.tilo.so/api/v1")
     parser.add_argument("--token-file")
-    parser.add_argument("--repository", default="qos/qos")
+    parser.add_argument("--repository", default="tilo/tilo")
     parser.add_argument("--max-pages", type=int, default=30)
     parser.add_argument("--max-cancel", type=int, default=300)
     parser.add_argument("--timeout", type=int, default=30)

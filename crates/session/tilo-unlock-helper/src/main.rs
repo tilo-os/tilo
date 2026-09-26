@@ -107,61 +107,46 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn read_password_strips_trailing_newline() {
-        let out = read_password(Cursor::new(b"hunter2\n".to_vec())).unwrap();
-        assert_eq!(out, "hunter2");
+    fn read_password_takes_the_first_line_without_its_terminator() {
+        let cases: [(&str, &[u8], &str); 6] = [
+            ("strips trailing newline", b"hunter2\n", "hunter2"),
+            ("strips crlf", b"hunter2\r\n", "hunter2"),
+            ("without trailing newline", b"hunter2", "hunter2"),
+            ("keeps only first line", b"first\nsecond\n", "first"),
+            (
+                "preserves internal spaces and symbols",
+                b"a b c$%^&\n",
+                "a b c$%^&",
+            ),
+            // Empty stdin is an empty password, not an error.
+            ("empty stdin", b"", ""),
+        ];
+        for (name, input, want) in cases {
+            let out = read_password(Cursor::new(input.to_vec())).unwrap();
+            assert_eq!(out, want, "case {name}");
+        }
     }
 
     #[test]
-    fn read_password_strips_crlf() {
-        let out = read_password(Cursor::new(b"hunter2\r\n".to_vec())).unwrap();
-        assert_eq!(out, "hunter2");
-    }
-
-    #[test]
-    fn read_password_without_trailing_newline() {
-        let out = read_password(Cursor::new(b"hunter2".to_vec())).unwrap();
-        assert_eq!(out, "hunter2");
-    }
-
-    #[test]
-    fn read_password_keeps_only_first_line() {
-        let out = read_password(Cursor::new(b"first\nsecond\n".to_vec())).unwrap();
-        assert_eq!(out, "first");
-    }
-
-    #[test]
-    fn read_password_preserves_internal_spaces_and_symbols() {
-        let out = read_password(Cursor::new(b"a b c$%^&\n".to_vec())).unwrap();
-        assert_eq!(out, "a b c$%^&");
-    }
-
-    #[test]
-    fn empty_stdin_is_empty_password_not_error() {
-        let out = read_password(Cursor::new(Vec::new())).unwrap();
-        assert_eq!(out, "");
-    }
-
-    #[test]
-    fn resolve_username_prefers_argv() {
-        assert_eq!(
-            resolve_username(Some("alice"), Some("bob".to_string())),
-            "alice"
-        );
-    }
-
-    #[test]
-    fn resolve_username_falls_back_to_env_when_arg_blank() {
-        assert_eq!(
-            resolve_username(Some("   "), Some("bob".to_string())),
-            "bob"
-        );
-        assert_eq!(resolve_username(None, Some("bob".to_string())), "bob");
-    }
-
-    #[test]
-    fn resolve_username_empty_when_nothing_available() {
-        assert_eq!(resolve_username(None, None), "");
+    fn resolve_username_prefers_argv_then_env_then_empty() {
+        let cases = [
+            ("prefers argv", Some("alice"), Some("bob"), "alice"),
+            (
+                "blank arg falls back to env",
+                Some("   "),
+                Some("bob"),
+                "bob",
+            ),
+            ("missing arg falls back to env", None, Some("bob"), "bob"),
+            ("empty when nothing available", None, None, ""),
+        ];
+        for (name, arg, env, want) in cases {
+            assert_eq!(
+                resolve_username(arg, env.map(str::to_string)),
+                want,
+                "case {name}"
+            );
+        }
     }
 
     #[test]

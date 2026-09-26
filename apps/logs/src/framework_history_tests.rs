@@ -68,18 +68,6 @@ fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<
 }
 
 #[test]
-fn production_root_type_declares_logs_history_without_querying_journal() {
-    let definition = offline_root()
-        .document_history_definition()
-        .expect("production Logs root type declares History");
-    assert_eq!(definition.app_id, "so.tilo.logs");
-    assert!(std::ptr::eq(
-        definition,
-        std::ptr::addr_of!(crate::framework_history::HISTORY)
-    ));
-}
-
-#[test]
 fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
     let mut driver = managed_driver();
     let live = driver.inspection_json().unwrap();
@@ -247,7 +235,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         "the real export operation issued one configured Save request"
     );
     let path = std::env::temp_dir().join(format!(
-        "qos-logs-history-held-export-{}-{}.jsonl",
+        "tilo-logs-history-held-export-{}-{}.jsonl",
         std::process::id(),
         selected.realtime_us
     ));
@@ -302,8 +290,21 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
     std::fs::remove_file(path).unwrap();
 }
 
+/// The production root type declares the Logs History statically (without
+/// querying the journal) as an external policy with no preview or restore.
 #[test]
-fn logs_external_policy_has_no_preview_or_restore_schema() {
+fn logs_history_declaration_is_static_and_external_only() {
+    // The production root type declares Logs History without querying the journal.
+    let definition = offline_root()
+        .document_history_definition()
+        .expect("production Logs root type declares History");
+    assert_eq!(definition.app_id, "so.tilo.logs");
+    assert!(std::ptr::eq(
+        definition,
+        std::ptr::addr_of!(crate::framework_history::HISTORY)
+    ));
+
+    // The external policy has no preview or restore schema.
     let scope = &crate::framework_history::HISTORY.scopes[0];
     assert_eq!(scope.key, "journal-observations");
     assert!(scope.content_schema.is_none());

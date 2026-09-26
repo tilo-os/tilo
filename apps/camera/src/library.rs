@@ -7,16 +7,13 @@
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
 //!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
-//!   * [`load_thumb`]    — decode + downscale the recent-capture peek.
+//!   * [`load_luma`]     — decode + downscale an image for the code scanner.
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::frame::{self, FrameBuf};
 use crate::model::PhotoFormat;
-const MAX_IMAGE_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_DECODE_PIXELS: u64 = 33_554_432;
 
 /// Resolve the capture directory. Honors `CAMERA_DIR` (used by tests and to
 /// point the app at the P2P workspace), otherwise `$XDG_PICTURES_DIR/Camera`,
@@ -78,74 +75,27 @@ fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Decode `path` and downscale to at most `w`×`h`, returning tightly packed
-/// RGBA8 plus its dimensions. Aspect ratio is preserved (the result covers
-/// the box on its shorter axis via the caller's fit mode).
-pub fn load_thumb(path: &Path, w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
-    bounded_image_dimensions(path)?;
-    let img = image::open(path).ok()?;
-    let scaled = img.thumbnail(w.max(1), h.max(1)).to_rgba8();
-    let (sw, sh) = (scaled.width(), scaled.height());
-    Some((scaled.into_raw(), sw, sh))
-}
-
-/// Decode a verified shared-media blob. Callers obtain these bytes only from
-/// the content store after hash verification; this function still applies the same file
-/// and decoded-pixel caps as the local-path route.
-pub fn load_thumb_bytes(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
-    bounded_bytes_dimensions(bytes)?;
-    let img = image::load_from_memory(bytes).ok()?;
-    let scaled = img.thumbnail(w.max(1), h.max(1)).to_rgba8();
-    let (sw, sh) = (scaled.width(), scaled.height());
-    Some((scaled.into_raw(), sw, sh))
-}
-
 /// Decode `path` to a greyscale (luma) buffer, downscaled so its longest
 /// side is at most `max` pixels. Returns the buffer plus its dimensions.
 /// This is what the scanner feeds to the QR detector when scanning a code
 /// out of a portal-selected image (no camera required).
 pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
-    bounded_image_dimensions(path)?;
-    let img = image::open(path).ok()?;
+    let bytes =
+        thumbnail::read_bounded(std::fs::File::open(path).ok()?, thumbnail::MAX_IMAGE_BYTES)?;
+    load_luma_bytes(&bytes, max)
+}
+
+/// Decode verified shared-media bytes into a bounded luma image. The shared
+/// decoder reads the header first, so attacker-controlled dimensions are
+/// refused before any pixel is allocated even after the content store has
+/// verified the byte hash.
+pub fn load_luma_bytes(bytes: &[u8], max: u32) -> Option<(Vec<u8>, usize, usize)> {
+    let img = thumbnail::decode_image(bytes)?;
     // `thumbnail` bounds the longest side to `max` while preserving aspect,
     // keeping enough resolution for the detector to resolve finder patterns.
     let luma = img.thumbnail(max.max(1), max.max(1)).to_luma8();
     let (w, h) = (luma.width() as usize, luma.height() as usize);
     Some((luma.into_raw(), w, h))
-}
-
-/// Decode verified shared-media bytes into a bounded luma image. This is the
-/// portable counterpart to [`load_luma`], used only after content-store hash checks.
-pub fn load_luma_bytes(bytes: &[u8], max: u32) -> Option<(Vec<u8>, usize, usize)> {
-    bounded_bytes_dimensions(bytes)?;
-    let img = image::load_from_memory(bytes).ok()?;
-    let luma = img.thumbnail(max.max(1), max.max(1)).to_luma8();
-    let (w, h) = (luma.width() as usize, luma.height() as usize);
-    Some((luma.into_raw(), w, h))
-}
-
-/// Inspect a shared image header before decoding any pixels. `image` decoders
-/// can otherwise try to allocate from attacker-controlled dimensions even
-/// when the content store has already verified the byte hash.
-fn bounded_bytes_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES as usize {
-        return None;
-    }
-    let reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let (w, h) = reader.into_dimensions().ok()?;
-    (u64::from(w).checked_mul(u64::from(h))? <= MAX_DECODE_PIXELS).then_some((w, h))
-}
-
-fn bounded_image_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > MAX_IMAGE_FILE_BYTES {
-        return None;
-    }
-    let (w, h) = image::image_dimensions(path).ok()?;
-    let pixels = u64::from(w).checked_mul(u64::from(h))?;
-    (w > 0 && h > 0 && pixels <= MAX_DECODE_PIXELS).then_some((w, h))
 }
 
 fn valid_frame(frame: &FrameBuf) -> bool {
@@ -155,7 +105,10 @@ fn valid_frame(frame: &FrameBuf) -> bool {
     let Some(bytes) = pixels.checked_mul(4).and_then(|n| usize::try_from(n).ok()) else {
         return false;
     };
-    frame.w > 0 && frame.h > 0 && pixels <= MAX_DECODE_PIXELS && frame.rgba.len() == bytes
+    frame.w > 0
+        && frame.h > 0
+        && pixels <= thumbnail::MAX_DECODE_PIXELS
+        && frame.rgba.len() == bytes
 }
 
 /// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
@@ -188,64 +141,64 @@ mod tests {
     }
 
     #[test]
-    fn write_round_trips_real_dimensions() {
-        let dir = tmp();
-        let frame = crate::frame::viewfinder(1, 48, 32);
-        let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
-        assert!(dir.join(&name).exists());
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("png"))
-        );
-        assert_eq!(image::image_dimensions(dir.join(&name)).unwrap(), (48, 32));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn jpeg_format_writes_a_real_jpeg() {
-        let dir = tmp();
-        let frame = crate::frame::viewfinder(3, 64, 48);
-        let name = write_photo(&dir, &frame, PhotoFormat::Jpeg).expect("write");
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("jpg"))
-        );
-        // The bytes are a genuine JPEG (SOI marker) and decode at full size.
-        let bytes = std::fs::read(dir.join(&name)).unwrap();
-        assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
-        let (w, h) = image::image_dimensions(dir.join(&name)).unwrap();
-        assert_eq!((w, h), (64, 48));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn thumb_downscales_below_box() {
-        let dir = tmp();
-        let frame = crate::frame::viewfinder(2, 200, 120);
-        let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
-        let (rgba, tw, th) = load_thumb(&dir.join(&name), 50, 50).expect("thumb");
-        assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
-        assert_eq!(rgba.len(), (tw * th * 4) as usize);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn malformed_frames_are_refused_before_io() {
-        let dir = tmp();
-        assert!(
-            write_photo(
-                &dir,
-                &FrameBuf {
-                    rgba: vec![0; 1],
-                    w: 8,
-                    h: 8,
-                },
-                PhotoFormat::Png,
-            )
-            .is_err()
-        );
-        std::fs::remove_dir_all(&dir).ok();
+    fn write_photo_stores_real_decodable_images_and_refuses_malformed_frames() {
+        // Phase `write_round_trips_real_dimensions`.
+        {
+            let dir = tmp();
+            let frame = crate::frame::viewfinder(1, 48, 32);
+            let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
+            assert!(dir.join(&name).exists());
+            assert!(
+                Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+            );
+            assert_eq!(image::image_dimensions(dir.join(&name)).unwrap(), (48, 32));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `jpeg_format_writes_a_real_jpeg`.
+        {
+            let dir = tmp();
+            let frame = crate::frame::viewfinder(3, 64, 48);
+            let name = write_photo(&dir, &frame, PhotoFormat::Jpeg).expect("write");
+            assert!(
+                Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("jpg"))
+            );
+            // The bytes are a genuine JPEG (SOI marker) and decode at full size.
+            let bytes = std::fs::read(dir.join(&name)).unwrap();
+            assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
+            let (w, h) = image::image_dimensions(dir.join(&name)).unwrap();
+            assert_eq!((w, h), (64, 48));
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `scanner_luma_downscales_below_box`.
+        {
+            let dir = tmp();
+            let frame = crate::frame::viewfinder(2, 200, 120);
+            let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
+            let (luma, tw, th) = load_luma(&dir.join(&name), 50).expect("luma");
+            assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
+            assert_eq!(luma.len(), tw * th);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `malformed_frames_are_refused_before_io`.
+        {
+            let dir = tmp();
+            assert!(
+                write_photo(
+                    &dir,
+                    &FrameBuf {
+                        rgba: vec![0; 1],
+                        w: 8,
+                        h: 8,
+                    },
+                    PhotoFormat::Png,
+                )
+                .is_err()
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

@@ -3183,53 +3183,87 @@ mod tests {
     }
 
     #[test]
-    fn personal_media_generation_is_exact_and_stale_completion_cannot_remove_replacement() {
-        let first = iroh::SecretKey::from_bytes(&[0xB1; 32]).public();
-        let sibling = iroh::SecretKey::from_bytes(&[0xB2; 32]).public();
-        let transfer_id = [0xB3; 16];
-        let key = (first, transfer_id);
-        let sibling_key = (sibling, transfer_id);
-        let mut active = HashMap::from([
-            (key, active_personal_media(12)),
-            (sibling_key, active_personal_media(4)),
-        ]);
+    fn personal_bindings_are_exact_generation_and_membership_scoped() {
+        // Phase `personal_media_generation_is_exact_and_stale_completion_cannot_remove_replacement`.
+        {
+            let first = iroh::SecretKey::from_bytes(&[0xB1; 32]).public();
+            let sibling = iroh::SecretKey::from_bytes(&[0xB2; 32]).public();
+            let transfer_id = [0xB3; 16];
+            let key = (first, transfer_id);
+            let sibling_key = (sibling, transfer_id);
+            let mut active = HashMap::from([
+                (key, active_personal_media(12)),
+                (sibling_key, active_personal_media(4)),
+            ]);
 
-        assert!(take_personal_media_generation(&mut active, key, 11).is_none());
-        assert!(
-            active.contains_key(&key),
-            "old worker cannot remove replacement"
-        );
-        assert!(
-            take_personal_media_generation(&mut active, sibling_key, 12).is_none(),
-            "same id on another target is isolated"
-        );
-        assert!(take_personal_media_generation(&mut active, key, 12).is_some());
-        assert!(active.contains_key(&sibling_key));
+            assert!(take_personal_media_generation(&mut active, key, 11).is_none());
+            assert!(
+                active.contains_key(&key),
+                "old worker cannot remove replacement"
+            );
+            assert!(
+                take_personal_media_generation(&mut active, sibling_key, 12).is_none(),
+                "same id on another target is isolated"
+            );
+            assert!(take_personal_media_generation(&mut active, key, 12).is_some());
+            assert!(active.contains_key(&sibling_key));
+        }
+        // Phase `departed_personal_connection_cannot_rebind_after_membership_reconnect`.
+        {
+            let peer = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
+            let old_epoch = MembershipEpoch::for_test(7);
+            let new_epoch = MembershipEpoch::for_test(8);
+            let mut ingress = HashMap::new();
+            assert!(bind_personal_fabric_ingress(
+                &mut ingress,
+                peer,
+                11,
+                21,
+                old_epoch,
+            ));
+            revoke_personal_fabric_ingress(&mut ingress, 21, old_epoch);
+            assert!(
+                !bind_personal_fabric_ingress(&mut ingress, peer, 11, 21, new_epoch),
+                "the old QUIC connection stays tombstoned after reconnect"
+            );
+            assert!(
+                bind_personal_fabric_ingress(&mut ingress, peer, 12, 21, new_epoch),
+                "a fresh connection may bind the fresh membership epoch"
+            );
+        }
+        // Phase `nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk`.
+        {
+            let wire = PersonalFabricWireFrame {
+                workspace: 42,
+                user_public_key: [3; 32],
+                payload: PersonalFabricPayload::NearbyTransfer(
+                    PersonalNearbyTransferFrame::Chunk {
+                        transfer_id: [4; 16],
+                        request_id: [5; 16],
+                        offset: 99,
+                        bytes: vec![7; PERSONAL_MEDIA_CHUNK_BYTES],
+                    },
+                ),
+            };
+            let encoded = postcard::to_allocvec(&wire).unwrap();
+            assert!(encoded.len() < crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES);
+            let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
+            let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
+                transfer_id,
+                request_id,
+                offset,
+                bytes,
+            }) = decoded.payload
+            else {
+                panic!("wrong nearby transfer frame");
+            };
+            assert_eq!(transfer_id, [4; 16]);
+            assert_eq!(request_id, [5; 16]);
+            assert_eq!(offset, 99);
+            assert_eq!(bytes.len(), PERSONAL_MEDIA_CHUNK_BYTES);
+        }
     }
 
-    #[test]
-    fn departed_personal_connection_cannot_rebind_after_membership_reconnect() {
-        let peer = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
-        let old_epoch = MembershipEpoch::for_test(7);
-        let new_epoch = MembershipEpoch::for_test(8);
-        let mut ingress = HashMap::new();
-        assert!(bind_personal_fabric_ingress(
-            &mut ingress,
-            peer,
-            11,
-            21,
-            old_epoch,
-        ));
-        revoke_personal_fabric_ingress(&mut ingress, 21, old_epoch);
-        assert!(
-            !bind_personal_fabric_ingress(&mut ingress, peer, 11, 21, new_epoch),
-            "the old QUIC connection stays tombstoned after reconnect"
-        );
-        assert!(
-            bind_personal_fabric_ingress(&mut ingress, peer, 12, 21, new_epoch),
-            "a fresh connection may bind the fresh membership epoch"
-        );
-    }
     use iroh::endpoint::presets;
     use tilo_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
@@ -3291,36 +3325,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk() {
-        let wire = PersonalFabricWireFrame {
-            workspace: 42,
-            user_public_key: [3; 32],
-            payload: PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
-                transfer_id: [4; 16],
-                request_id: [5; 16],
-                offset: 99,
-                bytes: vec![7; PERSONAL_MEDIA_CHUNK_BYTES],
-            }),
-        };
-        let encoded = postcard::to_allocvec(&wire).unwrap();
-        assert!(encoded.len() < crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES);
-        let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
-        let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
-            transfer_id,
-            request_id,
-            offset,
-            bytes,
-        }) = decoded.payload
-        else {
-            panic!("wrong nearby transfer frame");
-        };
-        assert_eq!(transfer_id, [4; 16]);
-        assert_eq!(request_id, [5; 16]);
-        assert_eq!(offset, 99);
-        assert_eq!(bytes.len(), PERSONAL_MEDIA_CHUNK_BYTES);
-    }
-
     async fn identified_endpoint(key: &ed25519_dalek::SigningKey) -> (Endpoint, MemoryLookup) {
         let lookup = MemoryLookup::new();
         let endpoint = Endpoint::builder(presets::N0)
@@ -3352,247 +3356,460 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_actors_exchange_over_iroh() {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
-        let b_addr = b.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: event_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: event_b,
-            })
-            .await
-            .unwrap();
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_a.recv())
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn two_actors_exchange_and_announce_identity_over_iroh() {
+        // Phase `two_actors_exchange_over_iroh`.
+        {
+            let (a, lookup_a) = endpoint().await;
+            let (b, lookup_b) = endpoint().await;
+            let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
+            let b_addr = b.addr();
+            let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+            let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+            let (event_a, mut rx_a) = mpsc::channel(16);
+            let (event_b, mut rx_b) = mpsc::channel(16);
+            cmd_a
+                .send(NetCmd::JoinWorkspace {
+                    ws: 42,
+                    on_event: event_a,
+                })
                 .await
-                .unwrap()
                 .unwrap();
-            if matches!(event, NetEvent::PeerJoined { .. }) {
-                break;
-            }
-        }
-        cmd_b
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::SyncReq {
-                    since: vec![],
-                    room: String::new(),
-                    invite_id: None,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_a.recv())
+            cmd_b
+                .send(NetCmd::JoinWorkspace {
+                    ws: 42,
+                    on_event: event_b,
+                })
                 .await
-                .unwrap()
                 .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SyncReq { .. },
-                    ..
+            cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+            loop {
+                let event = timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(event, NetEvent::PeerJoined { .. }) {
+                    break;
                 }
-            ) {
-                break;
             }
-        }
-
-        let dedicated_before =
-            DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::SurfaceFrame {
-                    surface: 7,
-                    source_peer,
-                    encoded_h264: vec![0, 0, 0, 1, 0x65],
-                    ts: 99,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_b.recv())
+            cmd_b
+                .send(NetCmd::Publish {
+                    ws: 42,
+                    msg: NeighbourMsg::SyncReq {
+                        since: vec![],
+                        room: String::new(),
+                        invite_id: None,
+                    },
+                })
                 .await
-                .unwrap()
                 .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
+            loop {
+                let event = timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SyncReq { .. },
+                        ..
+                    }
+                ) {
+                    break;
+                }
+            }
+
+            let dedicated_before =
+                DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 42,
                     msg: NeighbourMsg::SurfaceFrame {
                         surface: 7,
+                        source_peer,
+                        encoded_h264: vec![0, 0, 0, 1, 0x65],
                         ts: 99,
-                        ..
                     },
-                    ..
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SurfaceFrame {
+                            surface: 7,
+                            ts: 99,
+                            ..
+                        },
+                        ..
+                    }
+                ) {
+                    break;
                 }
-            ) {
-                break;
+            }
+            assert!(
+                DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
+                    > dedicated_before,
+                "surface frame should arrive through the dedicated QUIC ALPN"
+            );
+        }
+        // Phase `actors_announce_identity_when_a_neighbor_connects`.
+        {
+            let root_a = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let root_b = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
+            let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
+            let expected_a = cert_a.device_public_key;
+            let expected_b = cert_b.device_public_key;
+            let (endpoint_a, lookup_a) = identified_endpoint(&key_a).await;
+            let (endpoint_b, lookup_b) = identified_endpoint(&key_b).await;
+            let addr_b = endpoint_b.addr();
+            let identity_a = HostIdentity {
+                device_cert: cert_a,
+                device_signing_key: key_a,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let identity_b = HostIdentity {
+                device_cert: cert_b,
+                device_signing_key: key_b,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+                endpoint_a,
+                lookup_a,
+                Some(identity_a),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+                endpoint_b,
+                lookup_b,
+                Some(identity_b),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let (events_a, mut rx_a) = mpsc::channel(16);
+            let (events_b, mut rx_b) = mpsc::channel(16);
+            cmd_a
+                .send(NetCmd::JoinWorkspace {
+                    ws: 42,
+                    on_event: events_a,
+                })
+                .await
+                .unwrap();
+            cmd_b
+                .send(NetCmd::JoinWorkspace {
+                    ws: 42,
+                    on_event: events_b,
+                })
+                .await
+                .unwrap();
+            cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+
+            for (rx, expected) in [(&mut rx_a, expected_b), (&mut rx_b, expected_a)] {
+                timeout(Duration::from_secs(4), async {
+                    loop {
+                        if let Some(NetEvent::Msg {
+                            msg: NeighbourMsg::IdentityHello { cert, .. },
+                            ..
+                        }) = rx.recv().await
+                            && cert.device_public_key == expected
+                        {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("identity announcement should not wait for the heartbeat");
             }
         }
-        assert!(
-            DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
-                > dedicated_before,
-            "surface frame should arrive through the dedicated QUIC ALPN"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn dead_surface_viewer_does_not_stall_later_collaboration_messages() {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let (c, lookup_c) = endpoint().await;
-        let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
-        let b_addr = b.addr();
-        let c_addr = c.addr();
-        let (cmd_a, task_a) = Actor::spawn(a, lookup_a);
-        let (cmd_b, task_b) = Actor::spawn(b, lookup_b);
-        let (cmd_c, task_c) = Actor::spawn(c, lookup_c);
-        let (event_a, mut rx_a) = mpsc::channel(32);
-        let (event_b, _rx_b) = mpsc::channel(32);
-        let (event_c, mut rx_c) = mpsc::channel(32);
-        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-            command
-                .send(NetCmd::JoinWorkspace {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
+        // Phase `dead_surface_viewer_does_not_stall_later_collaboration_messages`.
+        {
+            let (a, lookup_a) = endpoint().await;
+            let (b, lookup_b) = endpoint().await;
+            let (c, lookup_c) = endpoint().await;
+            let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
+            let b_addr = b.addr();
+            let c_addr = c.addr();
+            let (cmd_a, task_a) = Actor::spawn(a, lookup_a);
+            let (cmd_b, task_b) = Actor::spawn(b, lookup_b);
+            let (cmd_c, task_c) = Actor::spawn(c, lookup_c);
+            let (event_a, mut rx_a) = mpsc::channel(32);
+            let (event_b, _rx_b) = mpsc::channel(32);
+            let (event_c, mut rx_c) = mpsc::channel(32);
+            for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+                command
+                    .send(NetCmd::JoinWorkspace {
+                        ws: 44,
+                        on_event: events,
+                    })
+                    .await
+                    .unwrap();
+            }
+            cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+            cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+            let mut joined = HashSet::new();
+            while joined.len() < 2 {
+                if let NetEvent::PeerJoined { peer, .. } =
+                    timeout(Duration::from_secs(10), rx_a.recv())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                {
+                    joined.insert(peer);
+                }
+            }
+
+            // Leave A's authenticated membership evidence intact while making B's
+            // dedicated media address unreachable. A direct dial may consume the
+            // full media timeout, but it must happen outside the actor loop.
+            task_b.abort();
+            let _ = task_b.await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let started = Instant::now();
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 44,
+                    msg: NeighbourMsg::SurfaceFrame {
+                        surface: 9,
+                        source_peer,
+                        encoded_h264: vec![0, 0, 0, 1, 0x65],
+                        ts: 1,
+                    },
+                })
+                .await
+                .unwrap();
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 44,
+                    msg: NeighbourMsg::SyncReq {
+                        since: vec![],
+                        room: "responsive".into(),
+                        invite_id: None,
+                    },
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = timeout(Duration::from_millis(250), rx_c.recv())
+                    .await
+                    .expect("dead media viewer stalled the collaboration actor")
+                    .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SyncReq { ref room, .. },
+                        ..
+                    } if room == "responsive"
+                ) {
+                    break;
+                }
+            }
+            assert!(started.elapsed() < Duration::from_millis(250));
+            task_a.abort();
+            task_c.abort();
+        }
+        // Phase `personal_fabric_action_reaches_only_the_exact_target`.
+        {
+            let (a, lookup_a) = endpoint().await;
+            let (b, lookup_b) = endpoint().await;
+            let (c, lookup_c) = endpoint().await;
+            let a_id = a.id();
+            let b_id = b.id();
+            let c_id = c.id();
+            let b_addr = b.addr();
+            let c_addr = c.addr();
+            let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+            let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+            let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
+            let (event_a, mut rx_a) = mpsc::channel(16);
+            let (event_b, mut rx_b) = mpsc::channel(16);
+            let (event_c, mut rx_c) = mpsc::channel(16);
+            for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+                cmd.send(NetCmd::JoinWorkspace {
                     ws: 44,
                     on_event: events,
                 })
                 .await
                 .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
-        let mut joined = HashSet::new();
-        while joined.len() < 2 {
-            if let NetEvent::PeerJoined { peer, .. } = timeout(Duration::from_secs(10), rx_a.recv())
+            }
+            cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+            cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+
+            let mut a_saw_b = false;
+            let mut a_saw_c = false;
+            while !(a_saw_b && a_saw_c) {
+                match timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                {
+                    NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
+                    NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
+                    _ => {}
+                }
+            }
+            for receiver in [&mut rx_b, &mut rx_c] {
+                loop {
+                    let event = timeout(Duration::from_secs(10), receiver.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
+                        break;
+                    }
+                }
+            }
+
+            cmd_a
+                .send(NetCmd::PublishPersonalFabricTarget {
+                    ws: 44,
+                    user_public_key: [0xB4; 32],
+                    target: b_id,
+                    payload: PersonalFabricPayload::Action(vec![4, 4]),
+                })
                 .await
-                .unwrap()
-                .unwrap()
-            {
-                joined.insert(peer);
+                .unwrap();
+            loop {
+                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::PersonalFabric {
+                        payload: PersonalFabricPayload::Action(bytes),
+                        ..
+                    } if bytes == vec![4, 4]
+                ) {
+                    break;
+                }
+            }
+            while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
+                assert!(
+                    !matches!(
+                        event,
+                        NetEvent::PersonalFabric {
+                            payload: PersonalFabricPayload::Action(_),
+                            ..
+                        }
+                    ),
+                    "personal action leaked to a non-target device"
+                );
             }
         }
-
-        // Leave A's authenticated membership evidence intact while making B's
-        // dedicated media address unreachable. A direct dial may consume the
-        // full media timeout, but it must happen outside the actor loop.
-        task_b.abort();
-        let _ = task_b.await;
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        let started = Instant::now();
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 44,
-                msg: NeighbourMsg::SurfaceFrame {
-                    surface: 9,
-                    source_peer,
-                    encoded_h264: vec![0, 0, 0, 1, 0x65],
-                    ts: 1,
-                },
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 44,
-                msg: NeighbourMsg::SyncReq {
-                    since: vec![],
-                    room: "responsive".into(),
-                    invite_id: None,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_millis(250), rx_c.recv())
-                .await
-                .expect("dead media viewer stalled the collaboration actor")
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SyncReq { ref room, .. },
-                    ..
-                } if room == "responsive"
-            ) {
-                break;
-            }
-        }
-        assert!(started.elapsed() < Duration::from_millis(250));
-        task_a.abort();
-        task_c.abort();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn personal_fabric_uses_its_negotiated_alpn() {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let b_addr = b.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: 43,
-                on_event: event_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: 43,
-                on_event: event_b,
-            })
-            .await
-            .unwrap();
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        while !matches!(
-            timeout(Duration::from_secs(10), rx_a.recv())
-                .await
-                .unwrap()
-                .unwrap(),
-            NetEvent::PeerJoined { .. }
-        ) {}
-
-        cmd_a
-            .send(NetCmd::PublishPersonalFabric {
-                ws: 43,
-                user_public_key: [0xA5; 32],
-                payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_b.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::PersonalFabric {
+        // Phase `direct_workspace_control_input_reaches_only_the_exact_target`.
+        {
+            let (a, lookup_a) = endpoint().await;
+            let (b, lookup_b) = endpoint().await;
+            let (c, lookup_c) = endpoint().await;
+            let a_id = a.id();
+            let b_id = b.id();
+            let c_id = c.id();
+            let b_addr = b.addr();
+            let c_addr = c.addr();
+            let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+            let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+            let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
+            let (event_a, mut rx_a) = mpsc::channel(16);
+            let (event_b, mut rx_b) = mpsc::channel(16);
+            let (event_c, mut rx_c) = mpsc::channel(16);
+            for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+                cmd.send(NetCmd::JoinWorkspace {
                     ws: 43,
-                    user_public_key,
-                    payload: PersonalFabricPayload::Snapshot(bytes),
-                    ..
-                } if user_public_key == [0xA5; 32] && bytes == vec![1, 2, 3]
-            ) {
-                break;
+                    on_event: events,
+                })
+                .await
+                .unwrap();
+            }
+            cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+            cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+
+            let mut a_saw_b = false;
+            let mut a_saw_c = false;
+            while !(a_saw_b && a_saw_c) {
+                match timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                {
+                    NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
+                    NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
+                    _ => {}
+                }
+            }
+            for receiver in [&mut rx_b, &mut rx_c] {
+                loop {
+                    let event = timeout(Duration::from_secs(10), receiver.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
+                        break;
+                    }
+                }
+            }
+
+            for _ in 0..2 {
+                cmd_a
+                    .send(NetCmd::PublishWorkspaceControl {
+                        ws: 43,
+                        msg: NeighbourMsg::RemoteInput {
+                            peer: crate::network::behaviour::peer_liveness_handle(&a_id),
+                            surface: 7,
+                            event: vec![0x51, 0x4f, 0x53],
+                        },
+                        route: WorkspaceControlRoute::Direct { target: b_id },
+                    })
+                    .await
+                    .unwrap();
+            }
+
+            let mut delivered = 0;
+            while delivered < 2 {
+                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::RemoteInput { surface: 7, .. },
+                        ..
+                    }
+                ) {
+                    delivered += 1;
+                }
+            }
+            while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
+                assert!(
+                    !matches!(
+                        event,
+                        NetEvent::Msg {
+                            msg: NeighbourMsg::RemoteInput { .. },
+                            ..
+                        }
+                    ),
+                    "direct input leaked to a non-target workspace peer"
+                );
             }
         }
     }
@@ -3602,403 +3819,204 @@ mod tests {
         clippy::too_many_lines,
         reason = "the integration test verifies both receiver framing and the sender's ordered progress lifecycle"
     )]
-    async fn personal_media_streams_in_order_with_a_verified_finish_hash() {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let b_addr = b.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
-            command
+    async fn personal_fabric_negotiates_alpn_and_streams_verified_media() {
+        // Phase `personal_fabric_uses_its_negotiated_alpn`.
+        {
+            let (a, lookup_a) = endpoint().await;
+            let (b, lookup_b) = endpoint().await;
+            let b_addr = b.addr();
+            let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+            let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+            let (event_a, mut rx_a) = mpsc::channel(16);
+            let (event_b, mut rx_b) = mpsc::channel(16);
+            cmd_a
                 .send(NetCmd::JoinWorkspace {
-                    ws: 45,
-                    on_event: events,
+                    ws: 43,
+                    on_event: event_a,
                 })
                 .await
                 .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        while !matches!(
-            timeout(Duration::from_secs(10), rx_a.recv())
+            cmd_b
+                .send(NetCmd::JoinWorkspace {
+                    ws: 43,
+                    on_event: event_b,
+                })
                 .await
-                .unwrap()
-                .unwrap(),
-            NetEvent::PeerJoined { peer, .. } if peer == b_id
-        ) {}
-        while !matches!(
-            timeout(Duration::from_secs(10), rx_b.recv())
-                .await
-                .unwrap()
-                .unwrap(),
-            NetEvent::PeerJoined { peer, .. } if peer == a_id
-        ) {}
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("private-host-name.flac");
-        let bytes = vec![0x9a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(31)];
-        std::fs::write(&path, &bytes).unwrap();
-        let file = std::fs::File::open(&path).unwrap();
-        let transfer_id = [0x45; 16];
-        cmd_a
-            .send(NetCmd::PublishPersonalMedia {
-                ws: 45,
-                user_public_key: [0xA6; 32],
-                target: b_id,
-                transfer_id,
-                file_name: "song.flac".into(),
-                total_bytes: u64::try_from(bytes.len()).unwrap(),
-                file,
-            })
-            .await
-            .unwrap();
-
-        let mut received = Vec::new();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_b.recv())
-                .await
-                .unwrap()
                 .unwrap();
-            let NetEvent::PersonalFabric {
-                payload: PersonalFabricPayload::MediaTransfer(frame),
-                ..
-            } = event
-            else {
-                continue;
-            };
-            match frame {
-                PersonalMediaTransferFrame::Start {
-                    transfer_id: id,
-                    file_name,
-                    total_bytes,
-                } => {
-                    assert_eq!(id, transfer_id);
-                    assert_eq!(file_name, "song.flac");
-                    assert_eq!(total_bytes, u64::try_from(bytes.len()).unwrap());
-                }
-                PersonalMediaTransferFrame::Chunk {
-                    transfer_id: id,
-                    offset,
-                    bytes: chunk,
-                } => {
-                    assert_eq!(id, transfer_id);
-                    assert_eq!(offset, u64::try_from(received.len()).unwrap());
-                    received.extend_from_slice(&chunk);
-                }
-                PersonalMediaTransferFrame::Finish {
-                    transfer_id: id,
-                    content_hash,
-                } => {
-                    assert_eq!(id, transfer_id);
-                    assert_eq!(content_hash, *blake3::hash(&received).as_bytes());
-                    break;
-                }
-                PersonalMediaTransferFrame::Abort { .. } => panic!("transfer aborted"),
-            }
-        }
-        assert_eq!(received, bytes);
+            cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+            while !matches!(
+                timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                NetEvent::PeerJoined { .. }
+            ) {}
 
-        let mut statuses = Vec::new();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_a.recv())
+            cmd_a
+                .send(NetCmd::PublishPersonalFabric {
+                    ws: 43,
+                    user_public_key: [0xA5; 32],
+                    payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+                })
                 .await
-                .unwrap()
                 .unwrap();
-            let NetEvent::PersonalMediaTransfer {
-                target,
-                transfer_id: id,
-                sent_bytes,
-                total_bytes,
-                status,
-            } = event
-            else {
-                continue;
-            };
-            assert_eq!(target, b_id);
-            assert_eq!(id, transfer_id);
-            assert!(sent_bytes <= total_bytes);
-            statuses.push((status, sent_bytes));
-            if status == PersonalMediaTransferStatus::Completed {
-                break;
-            }
-        }
-        assert_eq!(
-            statuses.first(),
-            Some(&(PersonalMediaTransferStatus::Started, 0))
-        );
-        assert!(statuses.iter().any(|(status, sent)| {
-            *status == PersonalMediaTransferStatus::Progress
-                && *sent == u64::try_from(bytes.len()).unwrap()
-        }));
-        assert_eq!(
-            statuses.last(),
-            Some(&(
-                PersonalMediaTransferStatus::Completed,
-                u64::try_from(bytes.len()).unwrap()
-            ))
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn personal_fabric_action_reaches_only_the_exact_target() {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let (c, lookup_c) = endpoint().await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let c_id = c.id();
-        let b_addr = b.addr();
-        let c_addr = c.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        let (event_c, mut rx_c) = mpsc::channel(16);
-        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-            cmd.send(NetCmd::JoinWorkspace {
-                ws: 44,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
-
-        let mut a_saw_b = false;
-        let mut a_saw_c = false;
-        while !(a_saw_b && a_saw_c) {
-            match timeout(Duration::from_secs(10), rx_a.recv())
-                .await
-                .unwrap()
-                .unwrap()
-            {
-                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
-                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
-                _ => {}
-            }
-        }
-        for receiver in [&mut rx_b, &mut rx_c] {
             loop {
-                let event = timeout(Duration::from_secs(10), receiver.recv())
+                let event = timeout(Duration::from_secs(10), rx_b.recv())
                     .await
                     .unwrap()
                     .unwrap();
-                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
-                    break;
-                }
-            }
-        }
-
-        cmd_a
-            .send(NetCmd::PublishPersonalFabricTarget {
-                ws: 44,
-                user_public_key: [0xB4; 32],
-                target: b_id,
-                payload: PersonalFabricPayload::Action(vec![4, 4]),
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(10), rx_b.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::PersonalFabric {
-                    payload: PersonalFabricPayload::Action(bytes),
-                    ..
-                } if bytes == vec![4, 4]
-            ) {
-                break;
-            }
-        }
-        while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
-            assert!(
-                !matches!(
+                if matches!(
                     event,
                     NetEvent::PersonalFabric {
-                        payload: PersonalFabricPayload::Action(_),
+                        ws: 43,
+                        user_public_key,
+                        payload: PersonalFabricPayload::Snapshot(bytes),
                         ..
-                    }
-                ),
-                "personal action leaked to a non-target device"
-            );
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn direct_workspace_control_input_reaches_only_the_exact_target() {
-        let (a, lookup_a) = endpoint().await;
-        let (b, lookup_b) = endpoint().await;
-        let (c, lookup_c) = endpoint().await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let c_id = c.id();
-        let b_addr = b.addr();
-        let c_addr = c.addr();
-        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
-        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
-        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        let (event_c, mut rx_c) = mpsc::channel(16);
-        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-            cmd.send(NetCmd::JoinWorkspace {
-                ws: 43,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        }
-        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
-
-        let mut a_saw_b = false;
-        let mut a_saw_c = false;
-        while !(a_saw_b && a_saw_c) {
-            match timeout(Duration::from_secs(10), rx_a.recv())
-                .await
-                .unwrap()
-                .unwrap()
-            {
-                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
-                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
-                _ => {}
-            }
-        }
-        for receiver in [&mut rx_b, &mut rx_c] {
-            loop {
-                let event = timeout(Duration::from_secs(10), receiver.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
+                    } if user_public_key == [0xA5; 32] && bytes == vec![1, 2, 3]
+                ) {
                     break;
                 }
             }
         }
+        // Phase `personal_media_streams_in_order_with_a_verified_finish_hash`.
+        {
+            let (a, lookup_a) = endpoint().await;
+            let (b, lookup_b) = endpoint().await;
+            let a_id = a.id();
+            let b_id = b.id();
+            let b_addr = b.addr();
+            let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+            let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+            let (event_a, mut rx_a) = mpsc::channel(16);
+            let (event_b, mut rx_b) = mpsc::channel(16);
+            for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
+                command
+                    .send(NetCmd::JoinWorkspace {
+                        ws: 45,
+                        on_event: events,
+                    })
+                    .await
+                    .unwrap();
+            }
+            cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+            while !matches!(
+                timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                NetEvent::PeerJoined { peer, .. } if peer == b_id
+            ) {}
+            while !matches!(
+                timeout(Duration::from_secs(10), rx_b.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                NetEvent::PeerJoined { peer, .. } if peer == a_id
+            ) {}
 
-        for _ in 0..2 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("private-host-name.flac");
+            let bytes = vec![0x9a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(31)];
+            std::fs::write(&path, &bytes).unwrap();
+            let file = std::fs::File::open(&path).unwrap();
+            let transfer_id = [0x45; 16];
             cmd_a
-                .send(NetCmd::PublishWorkspaceControl {
-                    ws: 43,
-                    msg: NeighbourMsg::RemoteInput {
-                        peer: crate::network::behaviour::peer_liveness_handle(&a_id),
-                        surface: 7,
-                        event: vec![0x51, 0x4f, 0x53],
-                    },
-                    route: WorkspaceControlRoute::Direct { target: b_id },
+                .send(NetCmd::PublishPersonalMedia {
+                    ws: 45,
+                    user_public_key: [0xA6; 32],
+                    target: b_id,
+                    transfer_id,
+                    file_name: "song.flac".into(),
+                    total_bytes: u64::try_from(bytes.len()).unwrap(),
+                    file,
                 })
                 .await
                 .unwrap();
-        }
 
-        let mut delivered = 0;
-        while delivered < 2 {
-            let event = timeout(Duration::from_secs(10), rx_b.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::RemoteInput { surface: 7, .. },
+            let mut received = Vec::new();
+            loop {
+                let event = timeout(Duration::from_secs(10), rx_b.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let NetEvent::PersonalFabric {
+                    payload: PersonalFabricPayload::MediaTransfer(frame),
                     ..
-                }
-            ) {
-                delivered += 1;
-            }
-        }
-        while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
-            assert!(
-                !matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::RemoteInput { .. },
-                        ..
+                } = event
+                else {
+                    continue;
+                };
+                match frame {
+                    PersonalMediaTransferFrame::Start {
+                        transfer_id: id,
+                        file_name,
+                        total_bytes,
+                    } => {
+                        assert_eq!(id, transfer_id);
+                        assert_eq!(file_name, "song.flac");
+                        assert_eq!(total_bytes, u64::try_from(bytes.len()).unwrap());
                     }
-                ),
-                "direct input leaked to a non-target workspace peer"
-            );
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn actors_announce_identity_when_a_neighbor_connects() {
-        let root_a = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let root_b = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
-        let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
-        let expected_a = cert_a.device_public_key;
-        let expected_b = cert_b.device_public_key;
-        let (endpoint_a, lookup_a) = identified_endpoint(&key_a).await;
-        let (endpoint_b, lookup_b) = identified_endpoint(&key_b).await;
-        let addr_b = endpoint_b.addr();
-        let identity_a = HostIdentity {
-            device_cert: cert_a,
-            device_signing_key: key_a,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let identity_b = HostIdentity {
-            device_cert: cert_b,
-            device_signing_key: key_b,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
-            endpoint_a,
-            lookup_a,
-            Some(identity_a),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
-            endpoint_b,
-            lookup_b,
-            Some(identity_b),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_a, mut rx_a) = mpsc::channel(16);
-        let (events_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events_b,
-            })
-            .await
-            .unwrap();
-        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
-
-        for (rx, expected) in [(&mut rx_a, expected_b), (&mut rx_b, expected_a)] {
-            timeout(Duration::from_secs(4), async {
-                loop {
-                    if let Some(NetEvent::Msg {
-                        msg: NeighbourMsg::IdentityHello { cert, .. },
-                        ..
-                    }) = rx.recv().await
-                        && cert.device_public_key == expected
-                    {
+                    PersonalMediaTransferFrame::Chunk {
+                        transfer_id: id,
+                        offset,
+                        bytes: chunk,
+                    } => {
+                        assert_eq!(id, transfer_id);
+                        assert_eq!(offset, u64::try_from(received.len()).unwrap());
+                        received.extend_from_slice(&chunk);
+                    }
+                    PersonalMediaTransferFrame::Finish {
+                        transfer_id: id,
+                        content_hash,
+                    } => {
+                        assert_eq!(id, transfer_id);
+                        assert_eq!(content_hash, *blake3::hash(&received).as_bytes());
                         break;
                     }
+                    PersonalMediaTransferFrame::Abort { .. } => panic!("transfer aborted"),
                 }
-            })
-            .await
-            .expect("identity announcement should not wait for the heartbeat");
+            }
+            assert_eq!(received, bytes);
+
+            let mut statuses = Vec::new();
+            loop {
+                let event = timeout(Duration::from_secs(10), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let NetEvent::PersonalMediaTransfer {
+                    target,
+                    transfer_id: id,
+                    sent_bytes,
+                    total_bytes,
+                    status,
+                } = event
+                else {
+                    continue;
+                };
+                assert_eq!(target, b_id);
+                assert_eq!(id, transfer_id);
+                assert!(sent_bytes <= total_bytes);
+                statuses.push((status, sent_bytes));
+                if status == PersonalMediaTransferStatus::Completed {
+                    break;
+                }
+            }
+            assert_eq!(
+                statuses.first(),
+                Some(&(PersonalMediaTransferStatus::Started, 0))
+            );
+            assert!(statuses.iter().any(|(status, sent)| {
+                *status == PersonalMediaTransferStatus::Progress
+                    && *sent == u64::try_from(bytes.len()).unwrap()
+            }));
+            assert_eq!(
+                statuses.last(),
+                Some(&(
+                    PersonalMediaTransferStatus::Completed,
+                    u64::try_from(bytes.len()).unwrap()
+                ))
+            );
         }
     }
 
@@ -4040,131 +4058,493 @@ mod tests {
         (relay, state, host_cert)
     }
 
-    /// Exercise the exact scheduled enrolled-home-peer route, rather than a
-    /// direct `RelayClient` unit call. In particular, this protects against an
-    /// innocuous-looking refactor that drops `HomePeerExpectation` before the
-    /// relay dial.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[allow(
         clippy::too_many_lines,
-        reason = "the enrolled-host integration transcript needs setup, relay, and rejection assertions together"
+        reason = "the enrolled-host and continuity replay transcripts need setup, relay, rejection and restart actors together"
     )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn scheduled_enrolled_host_rejects_wrong_root_device_and_revocation() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let other_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
-        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
-        let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
-        let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
-            RelayConfig {
-                state_root: state.path().to_path_buf(),
-                workspaces: vec![WorkspaceBinding {
-                    id: 42,
-                    pin: true,
-                    replication: ReplicationIntent::FullWorkspace,
-                    admitted_users: Vec::new(),
-                }],
-                ..RelayConfig::default()
-            },
-            RelayIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_signing_key: host_key,
-                device_cert: host_cert.clone(),
-                revocations: RevocationList::new(),
-            },
-        )
-        .await
-        .unwrap();
-        relay
-            .set_workspace_membership(
-                42,
-                true,
-                vec![client_key.verifying_key().to_bytes()],
-                state.path().to_path_buf(),
+    async fn workspace_host_relays_authenticated_traffic_and_retains_routes() {
+        // Phase `scheduled_enrolled_host_rejects_wrong_root_device_and_revocation`.
+        // Exercise the exact scheduled enrolled-home-peer route, rather than a
+        // direct `RelayClient` unit call. In particular, this protects against an
+        // innocuous-looking refactor that drops `HomePeerExpectation` before the
+        // relay dial.
+        {
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let other_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
+            let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
+            let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
+            let state = tempfile::tempdir().unwrap();
+            let relay = Relay::start(
+                RelayConfig {
+                    state_root: state.path().to_path_buf(),
+                    workspaces: vec![WorkspaceBinding {
+                        id: 42,
+                        pin: true,
+                        replication: ReplicationIntent::FullWorkspace,
+                        admitted_users: Vec::new(),
+                    }],
+                    ..RelayConfig::default()
+                },
+                RelayIdentity {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_signing_key: host_key,
+                    device_cert: host_cert.clone(),
+                    revocations: RevocationList::new(),
+                },
             )
             .await
             .unwrap();
+            relay
+                .set_workspace_membership(
+                    42,
+                    true,
+                    vec![client_key.verifying_key().to_bytes()],
+                    state.path().to_path_buf(),
+                )
+                .await
+                .unwrap();
 
-        let attempt =
-            |expectation: HomePeerExpectation,
-             revocations: Vec<tilo_user_identity::RevocationEntry>| {
-                let relay_addr = relay.node_addr();
-                let client_key = client_key.clone();
-                let client_cert = client_cert.clone();
-                async move {
-                    let (endpoint, _) = identified_endpoint(&client_key).await;
-                    let identity = HostIdentity {
-                        device_cert: client_cert,
-                        device_signing_key: client_key,
-                        workspace_device_certs: HashMap::new(),
-                        workspace_revocations: HashMap::from([(42, revocations)]),
-                        identity_paths: None,
-                    };
-                    let (tx, mut rx) = mpsc::channel(2);
-                    let mut connecting = HashSet::new();
-                    let mut discoveries = HashMap::new();
-                    schedule_host_topic(
-                        &endpoint,
-                        &identity,
-                        42,
-                        relay_addr,
-                        Some(expectation),
-                        &tx,
-                        &HashMap::new(),
-                        &mut connecting,
-                        &mut discoveries,
-                    );
-                    let rejected = matches!(
-                        timeout(Duration::from_secs(5), rx.recv()).await,
-                        Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
-                    );
-                    for (_, task) in discoveries {
-                        task.abort();
+            let attempt =
+                |expectation: HomePeerExpectation,
+                 revocations: Vec<tilo_user_identity::RevocationEntry>| {
+                    let relay_addr = relay.node_addr();
+                    let client_key = client_key.clone();
+                    let client_cert = client_cert.clone();
+                    async move {
+                        let (endpoint, _) = identified_endpoint(&client_key).await;
+                        let identity = HostIdentity {
+                            device_cert: client_cert,
+                            device_signing_key: client_key,
+                            workspace_device_certs: HashMap::new(),
+                            workspace_revocations: HashMap::from([(42, revocations)]),
+                            identity_paths: None,
+                        };
+                        let (tx, mut rx) = mpsc::channel(2);
+                        let mut connecting = HashSet::new();
+                        let mut discoveries = HashMap::new();
+                        schedule_host_topic(
+                            &endpoint,
+                            &identity,
+                            42,
+                            relay_addr,
+                            Some(expectation),
+                            &tx,
+                            &HashMap::new(),
+                            &mut connecting,
+                            &mut discoveries,
+                        );
+                        let rejected = matches!(
+                            timeout(Duration::from_secs(5), rx.recv()).await,
+                            Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
+                        );
+                        for (_, task) in discoveries {
+                            task.abort();
+                        }
+                        endpoint.close().await;
+                        rejected
                     }
-                    endpoint.close().await;
-                    rejected
-                }
+                };
+            let host_device = host_cert.device_public_key;
+            assert!(
+                attempt(
+                    HomePeerExpectation {
+                        user_public_key: other_root.verifying_key().to_bytes(),
+                        device_public_key: host_device,
+                    },
+                    Vec::new(),
+                )
+                .await
+            );
+            assert!(
+                attempt(
+                    HomePeerExpectation {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_public_key: wrong_device_cert.device_public_key,
+                    },
+                    Vec::new(),
+                )
+                .await
+            );
+            let mut revocation = RevocationEntry {
+                user_public_key: root.verifying_key().to_bytes(),
+                revoked_device_public_key: host_device,
+                revoked_at_ns: 1,
+                reason: RevocationReason::Lost,
+                signature: [0; 64],
             };
-        let host_device = host_cert.device_public_key;
-        assert!(
-            attempt(
-                HomePeerExpectation {
-                    user_public_key: other_root.verifying_key().to_bytes(),
-                    device_public_key: host_device,
-                },
-                Vec::new(),
+            sign_revocation_entry(&mut revocation, &root).unwrap();
+            assert!(
+                attempt(
+                    HomePeerExpectation {
+                        user_public_key: root.verifying_key().to_bytes(),
+                        device_public_key: host_device,
+                    },
+                    vec![revocation],
+                )
+                .await
+            );
+        }
+        // Phase `two_actors_exchange_through_authenticated_workspace_host`.
+        {
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+            let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+                &root,
+                a_key.verifying_key().to_bytes(),
+                b_key.verifying_key().to_bytes(),
             )
-            .await
-        );
-        assert!(
-            attempt(
-                HomePeerExpectation {
-                    user_public_key: root.verifying_key().to_bytes(),
-                    device_public_key: wrong_device_cert.device_public_key,
-                },
-                Vec::new(),
+            .await;
+
+            let (a, lookup_a) = identified_endpoint(&a_key).await;
+            let (b, lookup_b) = identified_endpoint(&b_key).await;
+            let identity_a = HostIdentity {
+                device_cert: a_cert,
+                device_signing_key: a_key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let identity_b = HostIdentity {
+                device_cert: b_cert,
+                device_signing_key: b_key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+                a,
+                lookup_a,
+                identity_a,
+                b,
+                lookup_b,
+                identity_b,
+                &relay,
+                HEARTBEAT_INTERVAL,
             )
-            .await
-        );
-        let mut revocation = RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
-            revoked_device_public_key: host_device,
-            revoked_at_ns: 1,
-            reason: RevocationReason::Lost,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut revocation, &root).unwrap();
-        assert!(
-            attempt(
-                HomePeerExpectation {
-                    user_public_key: root.verifying_key().to_bytes(),
-                    device_public_key: host_device,
-                },
-                vec![revocation],
+            .await;
+
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 42,
+                    msg: NeighbourMsg::SyncReq {
+                        since: vec![],
+                        room: "hosted".into(),
+                        invite_id: None,
+                    },
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = timeout(Duration::from_secs(15), rx_b.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SyncReq { .. },
+                        ..
+                    }
+                ) {
+                    break;
+                }
+            }
+        }
+        // Phase `remote_action_frames_fall_back_to_the_workspace_host`.
+        // Two devices that share only a workspace host, with no direct route,
+        // still exchange remote-action frames: the same bytes, delivered to the
+        // addressed device attributed to the sender the host authenticated, and
+        // a byte-identical retry is delivered again rather than deduplicated.
+        {
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+            let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+                &root,
+                a_key.verifying_key().to_bytes(),
+                b_key.verifying_key().to_bytes(),
             )
+            .await;
+            let (a, lookup_a) = identified_endpoint(&a_key).await;
+            let (b, lookup_b) = identified_endpoint(&b_key).await;
+            let a_id = a.id();
+            let b_id = b.id();
+            let identity = |key: ed25519_dalek::SigningKey, cert| HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+                a,
+                lookup_a,
+                identity(a_key, a_cert),
+                b,
+                lookup_b,
+                identity(b_key, b_cert),
+                &relay,
+                HEARTBEAT_INTERVAL,
+            )
+            .await;
+
+            let frame = br#"{"version":1}"#.to_vec();
+            for attempt in 0..2 {
+                cmd_a
+                    .send(NetCmd::PublishRemoteAction {
+                        ws: 42,
+                        target: b_id,
+                        msg: NeighbourMsg::RemoteAction {
+                            frame: frame.clone(),
+                        },
+                    })
+                    .await
+                    .unwrap();
+                let (peer, received) = timeout(Duration::from_secs(15), async {
+                    loop {
+                        if let Some(NetEvent::Msg {
+                            peer,
+                            msg: NeighbourMsg::RemoteAction { frame },
+                            ..
+                        }) = rx_b.recv().await
+                        {
+                            return (peer, frame);
+                        }
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("relayed attempt {attempt} was not delivered"));
+                assert_eq!(peer, a_id, "attributed to the authenticated sender");
+                assert_eq!(received, frame, "the host carries the frame untouched");
+            }
+        }
+        // Phase `failed_host_address_refresh_retains_files_route_until_explicit_removal`.
+        {
+            const TEST_HEARTBEAT: Duration = Duration::from_millis(100);
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+            let a_public = a_key.verifying_key().to_bytes();
+            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+            let (relay, _state, host_cert) = spawn_pinned_relay_for_two_members(
+                &root,
+                a_public,
+                b_key.verifying_key().to_bytes(),
+            )
+            .await;
+            let (a, lookup_a) = identified_endpoint(&a_key).await;
+            let (b, lookup_b) = identified_endpoint(&b_key).await;
+            let identity = |key, cert| HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let (cmd_a, mut rx_a, _cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+                a,
+                lookup_a,
+                identity(a_key, a_cert),
+                b,
+                lookup_b,
+                identity(b_key, b_cert),
+                &relay,
+                TEST_HEARTBEAT,
+            )
+            .await;
+
+            // Upgrade the existing host route to an enrolled home-peer route.
+            // The subsequent address refresh must retain that route's Files
+            // endpoint; it is a reconnect, not a home-peer removal.
+            let expectation = HomePeerExpectation {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: host_cert.device_public_key,
+            };
+            cmd_a
+                .send(NetCmd::ConnectHost {
+                    addr: relay.node_addr(),
+                    expectation: Some(expectation.clone()),
+                })
+                .await
+                .unwrap();
+            loop {
+                let event = timeout(Duration::from_secs(15), rx_a.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(event, NetEvent::HostReady { .. }) {
+                    break;
+                }
+            }
+
+            // A replacement address that cannot respond must not tear down the
+            // already-discovered Files endpoint. The old actor implementation
+            // called the permanent-removal path before attempting this dial.
+            let refreshed = EndpointAddr::new(relay.node_addr().id)
+                .with_ip_addr("192.0.2.1:9".parse().unwrap());
+            cmd_a
+                .send(NetCmd::ConnectHost {
+                    addr: refreshed,
+                    expectation: Some(expectation),
+                })
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                !noted_content_peer_removals()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&relay.node_addr().id),
+                "an address refresh must retain the enrolled peer's Files route"
+            );
+
+            cmd_a
+                .send(NetCmd::DisconnectHost {
+                    id: relay.node_addr().id,
+                })
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if noted_content_peer_removals()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .contains(&relay.node_addr().id)
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
             .await
-        );
+            .expect("explicit removal must revoke enrolled Files routes");
+            for _ in 0..100 {
+                if !relay.is_subscribed(42, &a_public).await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(!relay.is_subscribed(42, &a_public).await);
+            // Several retry rounds pass; any of them would redial a host it still held.
+            tokio::time::sleep(TEST_HEARTBEAT * 4).await;
+            assert!(
+                !relay.is_subscribed(42, &a_public).await,
+                "a removed host must not be redialled by the heartbeat retry loop"
+            );
+        }
+        // Phase `host_replays_the_latest_personal_continuity_checkpoint_after_close`.
+        {
+            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+            let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+                &root,
+                a_key.verifying_key().to_bytes(),
+                b_key.verifying_key().to_bytes(),
+            )
+            .await;
+            let (a, lookup_a) = identified_endpoint(&a_key).await;
+            let (b, lookup_b) = identified_endpoint(&b_key).await;
+            let b_restart_key = b_key.clone();
+            let b_restart_cert = b_cert.clone();
+            let identity = |key, cert| HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            };
+            let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+                a,
+                lookup_a,
+                identity(a_key, a_cert),
+                b,
+                lookup_b,
+                identity(b_key, b_cert),
+                &relay,
+                HEARTBEAT_INTERVAL,
+            )
+            .await;
+            let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key: root.verifying_key().to_bytes(),
+                publisher: 7,
+                snapshot: bytes,
+            };
+            cmd_a
+                .send(NetCmd::PublishCheckpoint {
+                    ws: 42,
+                    msg: checkpoint(vec![1]),
+                })
+                .await
+                .unwrap();
+            loop {
+                if let Some(NetEvent::Msg {
+                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                    ..
+                }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+                {
+                    assert_eq!(snapshot, vec![1]);
+                    break;
+                }
+            }
+            cmd_a
+                .send(NetCmd::PublishCheckpoint {
+                    ws: 42,
+                    msg: checkpoint(Vec::new()),
+                })
+                .await
+                .unwrap();
+            loop {
+                if let Some(NetEvent::Msg {
+                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                    ..
+                }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+                {
+                    assert!(snapshot.is_empty(), "closure replaces live checkpoint");
+                    break;
+                }
+            }
+
+            // A fresh actor with B's durable device identity models a shell
+            // restart while A is offline. The host must replay the retained
+            // closure baseline rather than resurrecting A's earlier checkpoint.
+            let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
+            let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
+                b_restarted,
+                lookup_restarted,
+                Some(identity(b_restart_key, b_restart_cert)),
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let (events, mut replay_events) = mpsc::channel(16);
+            cmd_restarted
+                .send(NetCmd::JoinWorkspace {
+                    ws: 42,
+                    on_event: events,
+                })
+                .await
+                .unwrap();
+            cmd_restarted
+                .send(NetCmd::ConnectHost {
+                    addr: relay.node_addr(),
+                    expectation: None,
+                })
+                .await
+                .unwrap();
+            loop {
+                if let Some(NetEvent::Msg {
+                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                    ..
+                }) = timeout(Duration::from_secs(10), replay_events.recv())
+                    .await
+                    .unwrap()
+                {
+                    assert!(snapshot.is_empty(), "restarted B receives retained closure");
+                    break;
+                }
+            }
+        }
     }
 
     /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
@@ -4247,367 +4627,356 @@ mod tests {
         (cmd_a, rx_a, cmd_b, rx_b)
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn two_actors_exchange_through_authenticated_workspace_host() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
+    /// The room's governance transport of one device, over its real actor:
+    /// channel governance goes to the room's workspace host (and gossip) like
+    /// any collaboration message, and documents are collected on the side.
+    struct ActorChannelTransport {
+        cmd: mpsc::Sender<NetCmd>,
+        events: Mutex<mpsc::Receiver<NetEvent>>,
+        room: crate::shell::state::RoomId,
+        documents: Mutex<Vec<collab_types::SignedOp>>,
+        host_ready: std::sync::atomic::AtomicBool,
+    }
 
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let identity_a = HostIdentity {
-            device_cert: a_cert,
-            device_signing_key: a_key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let identity_b = HostIdentity {
-            device_cert: b_cert,
-            device_signing_key: b_key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity_a,
-            b,
-            lookup_b,
-            identity_b,
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
-
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::SyncReq {
-                    since: vec![],
-                    room: "hosted".into(),
-                    invite_id: None,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(15), rx_b.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SyncReq { .. },
-                    ..
-                }
-            ) {
-                break;
+    impl ActorChannelTransport {
+        fn new(
+            cmd: mpsc::Sender<NetCmd>,
+            events: mpsc::Receiver<NetEvent>,
+            room: crate::shell::state::RoomId,
+        ) -> Self {
+            Self {
+                cmd,
+                events: Mutex::new(events),
+                room,
+                documents: Mutex::new(Vec::new()),
+                host_ready: std::sync::atomic::AtomicBool::new(false),
             }
+        }
+
+        fn host_ready(&self) -> bool {
+            self.host_ready.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
-    /// Two devices that share only a workspace host, with no direct route,
-    /// still exchange remote-action frames: the same bytes, delivered to the
-    /// addressed device attributed to the sender the host authenticated, and
-    /// a byte-identical retry is delivered again rather than deduplicated.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn remote_action_frames_fall_back_to_the_workspace_host() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let a_id = a.id();
-        let b_id = b.id();
-        let identity = |key: ed25519_dalek::SigningKey, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity(a_key, a_cert),
-            b,
-            lookup_b,
-            identity(b_key, b_cert),
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
+    impl crate::shell::channel_encryption::GovernanceTransport for ActorChannelTransport {
+        fn publish(&self, msg: NeighbourMsg) -> bool {
+            self.cmd.try_send(NetCmd::Publish { ws: 42, msg }).is_ok()
+        }
 
-        let frame = br#"{"version":1}"#.to_vec();
-        for attempt in 0..2 {
-            cmd_a
-                .send(NetCmd::PublishRemoteAction {
-                    ws: 42,
-                    target: b_id,
-                    msg: NeighbourMsg::RemoteAction {
-                        frame: frame.clone(),
-                    },
-                })
-                .await
-                .unwrap();
-            let (peer, received) = timeout(Duration::from_secs(15), async {
-                loop {
-                    if let Some(NetEvent::Msg {
-                        peer,
-                        msg: NeighbourMsg::RemoteAction { frame },
-                        ..
-                    }) = rx_b.recv().await
-                    {
-                        return (peer, frame);
+        fn take_inbound(&self) -> Vec<crate::shell::network::InboundChannelGovernance> {
+            use crate::shell::network::InboundChannelGovernance as Inbound;
+            let room = self.room;
+            let mut inbound = Vec::new();
+            let mut events = self.events.lock().unwrap();
+            while let Ok(event) = events.try_recv() {
+                let msg = match event {
+                    NetEvent::Msg { msg, .. } => msg,
+                    NetEvent::HostReady { .. } => {
+                        self.host_ready
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        continue;
                     }
+                    _ => continue,
+                };
+                match msg {
+                    NeighbourMsg::MlsGovernance { frame, .. } => {
+                        inbound.push(Inbound::Frame { room, frame });
+                    }
+                    NeighbourMsg::MlsAccessRequest { request, .. } => {
+                        inbound.push(Inbound::AccessRequest { room, request });
+                    }
+                    NeighbourMsg::MlsGovernanceAck { ack, .. } => {
+                        inbound.push(Inbound::Ack { room, ack });
+                    }
+                    NeighbourMsg::AppDocument { envelope, .. } => {
+                        self.documents.lock().unwrap().push(*envelope);
+                    }
+                    _ => {}
                 }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("relayed attempt {attempt} was not delivered"));
-            assert_eq!(peer, a_id, "attributed to the authenticated sender");
-            assert_eq!(received, frame, "the host carries the frame untouched");
+            }
+            inbound
         }
     }
 
+    fn channel_service(
+        key: &ed25519_dalek::SigningKey,
+        dir: &std::path::Path,
+        directory: crate::shell::channel_encryption::tests::Directory,
+    ) -> crate::shell::channel_encryption::ChannelEncryption {
+        crate::shell::channel_encryption::ChannelEncryption::open(
+            crate::shell::channel_encryption::ChannelEncryptionConfig {
+                root: dir.join("channels"),
+                vault: channel_crypto::VaultKey::new(key.to_bytes()),
+                device_key: key.clone(),
+            },
+            Box::new(directory),
+            Arc::new(Mutex::new(
+                crate::shell::collab_core::BrokerChannels::default(),
+            )),
+        )
+        .unwrap()
+    }
+
+    fn every_file(dir: &std::path::Path, out: &mut Vec<Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                every_file(&path, out);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                out.push(bytes);
+            }
+        }
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// End to end through two real actors and a real workspace host:
+    ///
+    /// - a new channel is encrypted from creation, and what the relay stores
+    ///   (governance and document history alike) holds no plaintext;
+    /// - a member device whose network fails right after asking for access
+    ///   still joins: the host retained the steward's frames and the steward
+    ///   kept redelivering, so the restarted device gets its Welcome;
+    /// - it reads what the steward wrote; once the policy drops it, the
+    ///   removal commit rotates the keys and later content is closed to it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transcript across two devices, a host outage and a restart"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn failed_host_address_refresh_retains_files_route_until_explicit_removal() {
-        const TEST_HEARTBEAT: Duration = Duration::from_millis(100);
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let a_public = a_key.verifying_key().to_bytes();
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, host_cert) =
-            spawn_pinned_relay_for_two_members(&root, a_public, b_key.verifying_key().to_bytes())
-                .await;
+    async fn channel_encryption_runs_end_to_end_through_the_workspace_host() {
+        use crate::shell::channel_encryption::ChannelAccess;
+        use crate::shell::channel_encryption::tests::{Directory, Policy};
+        use std::time::Instant;
+
+        const SECRET: &[u8] = b"quarterly figures nobody outside may read";
+        const LATER: &[u8] = b"written after the laptop lost access";
+        let user_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&user_root, DeviceCapabilities::primary(), "desktop");
+        let (b_key, b_cert) = enrol(&user_root, DeviceCapabilities::member(), "laptop");
+        let device = |key: &ed25519_dalek::SigningKey| {
+            collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes())
+        };
+        let (relay, relay_state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &user_root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
         let (a, lookup_a) = identified_endpoint(&a_key).await;
         let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
+        let identity = |key: &ed25519_dalek::SigningKey, cert: &DeviceCert| HostIdentity {
+            device_cert: cert.clone(),
+            device_signing_key: key.clone(),
             workspace_device_certs: HashMap::new(),
             workspace_revocations: HashMap::new(),
             identity_paths: None,
         };
-        let (cmd_a, mut rx_a, _cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+        let (cmd_a, rx_a, cmd_b, rx_b) = join_workspace_and_await_host_ready(
             a,
             lookup_a,
-            identity(a_key, a_cert),
+            identity(&a_key, &a_cert),
             b,
             lookup_b,
-            identity(b_key, b_cert),
+            identity(&b_key, &b_cert),
             &relay,
-            TEST_HEARTBEAT,
+            HEARTBEAT_INTERVAL,
         )
         .await;
-
-        // Upgrade the existing host route to an enrolled home-peer route.
-        // The subsequent address refresh must retain that route's Files
-        // endpoint; it is a reconnect, not a home-peer removal.
-        let expectation = HomePeerExpectation {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: host_cert.device_public_key,
-        };
-        cmd_a
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: Some(expectation.clone()),
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = timeout(Duration::from_secs(15), rx_a.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if matches!(event, NetEvent::HostReady { .. }) {
-                break;
-            }
-        }
-
-        // A replacement address that cannot respond must not tear down the
-        // already-discovered Files endpoint. The old actor implementation
-        // called the permanent-removal path before attempting this dial.
-        let refreshed =
-            EndpointAddr::new(relay.node_addr().id).with_ip_addr("192.0.2.1:9".parse().unwrap());
-        cmd_a
-            .send(NetCmd::ConnectHost {
-                addr: refreshed,
-                expectation: Some(expectation),
-            })
-            .await
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            !noted_content_peer_removals()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&relay.node_addr().id),
-            "an address refresh must retain the enrolled peer's Files route"
+        let room = crate::shell::state::RoomId::new();
+        let workspace = room.to_string();
+        let channel = collab_types::document_channel_id("so.tilo.writer", &workspace, "q3");
+        let artifact = collab_types::document_artifact_id("so.tilo.writer", &workspace, "q3");
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(device(&b_key));
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut steward = channel_service(
+            &a_key,
+            a_dir.path(),
+            Directory {
+                governs: true,
+                steward: device(&a_key),
+                policy: policy.clone(),
+            },
         );
+        let member_directory = || Directory {
+            governs: false,
+            steward: device(&a_key),
+            policy: Policy::default(),
+        };
+        let steward_transport = ActorChannelTransport::new(cmd_a.clone(), rx_a, room);
+        let first_laptop = ActorChannelTransport::new(cmd_b.clone(), rx_b, room);
 
-        cmd_a
+        // Encrypted from creation; the laptop waits and asks once.
+        assert!(matches!(
+            steward.access(room, channel, Instant::now()),
+            ChannelAccess::Ready(_)
+        ));
+        let generation = steward.generation();
+        let mut member = channel_service(&b_key, b_dir.path(), member_directory());
+        assert!(matches!(
+            member.access(room, channel, Instant::now()),
+            ChannelAccess::Waiting
+        ));
+        member.pump(&first_laptop, Instant::now(), 1_000);
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        timeout(Duration::from_secs(30), async {
+            while steward.generation() == generation {
+                tick.tick().await;
+                steward.pump(&steward_transport, Instant::now(), 1_000);
+            }
+        })
+        .await
+        .expect("the steward admits the laptop from its request");
+
+        // The laptop's network fails before it processes any answer: its
+        // session to the host goes down and the process with everything it
+        // had queued is gone.
+        cmd_b
             .send(NetCmd::DisconnectHost {
                 id: relay.node_addr().id,
             })
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if noted_content_peer_removals()
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .contains(&relay.node_addr().id)
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("explicit removal must revoke enrolled Files routes");
-        for _ in 0..100 {
-            if !relay.is_subscribed(42, &a_public).await {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(!relay.is_subscribed(42, &a_public).await);
-        // Several retry rounds pass; any of them would redial a host it still held.
-        tokio::time::sleep(TEST_HEARTBEAT * 4).await;
-        assert!(
-            !relay.is_subscribed(42, &a_public).await,
-            "a removed host must not be redialled by the heartbeat retry loop"
-        );
-    }
+        drop(member);
+        drop(first_laptop);
+        drop(cmd_b);
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the continuity replay integration transcript intentionally retains both initial and restart actors"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let b_restart_key = b_key.clone();
-        let b_restart_cert = b_cert.clone();
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity(a_key, a_cert),
-            b,
-            lookup_b,
-            identity(b_key, b_cert),
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
-        let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root.verifying_key().to_bytes(),
-            publisher: 7,
-            snapshot: bytes,
-        };
-        cmd_a
-            .send(NetCmd::PublishCheckpoint {
-                ws: 42,
-                msg: checkpoint(vec![1]),
-            })
-            .await
-            .unwrap();
-        loop {
-            if let Some(NetEvent::Msg {
-                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
-                ..
-            }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
-            {
-                assert_eq!(snapshot, vec![1]);
-                break;
-            }
-        }
-        cmd_a
-            .send(NetCmd::PublishCheckpoint {
-                ws: 42,
-                msg: checkpoint(Vec::new()),
-            })
-            .await
-            .unwrap();
-        loop {
-            if let Some(NetEvent::Msg {
-                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
-                ..
-            }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
-            {
-                assert!(snapshot.is_empty(), "closure replaces live checkpoint");
-                break;
-            }
-        }
-
-        // A fresh actor with B's durable device identity models a shell
-        // restart while A is offline. The host must replay the retained
-        // closure baseline rather than resurrecting A's earlier checkpoint.
-        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
-        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
-            b_restarted,
-            lookup_restarted,
-            Some(identity(b_restart_key, b_restart_cert)),
+        // The laptop restarts: a fresh actor on the same device key, its
+        // channel state reopened from disk.
+        let (b_again, lookup_again) = identified_endpoint(&b_key).await;
+        let (cmd_again, _task) = Actor::spawn_reporting_addrs(
+            b_again,
+            lookup_again,
+            Some(identity(&b_key, &b_cert)),
             Arc::new(Mutex::new(Vec::new())),
         );
-        let (events, mut replay_events) = mpsc::channel(16);
-        cmd_restarted
+        let (events, events_rx) = mpsc::channel(64);
+        cmd_again
             .send(NetCmd::JoinWorkspace {
                 ws: 42,
                 on_event: events,
             })
             .await
             .unwrap();
-        cmd_restarted
+        cmd_again
             .send(NetCmd::ConnectHost {
                 addr: relay.node_addr(),
                 expectation: None,
             })
             .await
             .unwrap();
-        loop {
-            if let Some(NetEvent::Msg {
-                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
-                ..
-            }) = timeout(Duration::from_secs(10), replay_events.recv())
-                .await
-                .unwrap()
-            {
-                assert!(snapshot.is_empty(), "restarted B receives retained closure");
-                break;
+        let laptop = ActorChannelTransport::new(cmd_again, events_rx, room);
+        let mut member = channel_service(&b_key, b_dir.path(), member_directory());
+        let member_keys = timeout(Duration::from_secs(90), async {
+            loop {
+                tick.tick().await;
+                steward.pump(&steward_transport, Instant::now(), 1_000);
+                member.pump(&laptop, Instant::now(), 1_000);
+                if laptop.host_ready()
+                    && let ChannelAccess::Ready(keys) = member.access(room, channel, Instant::now())
+                {
+                    break keys;
+                }
             }
-        }
+        })
+        .await
+        .expect("the restarted laptop joins from retained and redelivered frames");
+
+        // The steward writes; the laptop reads it through the host.
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+            panic!("steward keys");
+        };
+        let (metadata, ciphertext) = keys
+            .seal_content(artifact, collab_types::ContentRetention::Checkpoint, SECRET)
+            .unwrap();
+        let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+            ciphertext.clone(),
+            artifact,
+            device(&a_key),
+            collab_types::AttestationId::default(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+            metadata,
+        );
+        collab_types::sign_op(&mut op, &a_key).unwrap();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 1,
+                    app_id: "so.tilo.writer".into(),
+                    cluster_id: workspace.clone(),
+                    record_id: "q3".into(),
+                    envelope: Box::new(op),
+                },
+            })
+            .await
+            .unwrap();
+        let received = timeout(Duration::from_secs(30), async {
+            loop {
+                tick.tick().await;
+                member.pump(&laptop, Instant::now(), 1_000);
+                let next = laptop.documents.lock().unwrap().pop();
+                if let Some(op) = next {
+                    break op;
+                }
+            }
+        })
+        .await
+        .expect("the document reaches the laptop through the host");
+        assert_eq!(
+            member_keys
+                .open_content(artifact, &received.encryption.unwrap(), &received.payload)
+                .unwrap()
+                .as_slice(),
+            SECRET
+        );
+
+        // What the host stored: ciphertext, and never the plaintext.
+        let mut stored = Vec::new();
+        every_file(relay_state.path(), &mut stored);
+        assert!(
+            stored.iter().any(|file| contains(file, &ciphertext)),
+            "the host retains the encrypted checkpoint"
+        );
+        assert!(
+            stored.iter().all(|file| !contains(file, SECRET)),
+            "no stored byte of the host holds the plaintext"
+        );
+
+        // The laptop loses access: removal rotates the keys.
+        policy.allowed.lock().unwrap().clear();
+        timeout(Duration::from_secs(30), async {
+            loop {
+                tick.tick().await;
+                steward.pump(&steward_transport, Instant::now(), 1_000);
+                member.pump(&laptop, Instant::now(), 1_000);
+                if matches!(
+                    member.access(room, channel, Instant::now()),
+                    ChannelAccess::Removed
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the laptop learns of its removal");
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+            panic!("steward keys");
+        };
+        let (metadata, later) = keys
+            .seal_content(artifact, collab_types::ContentRetention::Delta, LATER)
+            .unwrap();
+        assert!(
+            member_keys
+                .open_content(artifact, &metadata, &later)
+                .is_err()
+        );
     }
 }

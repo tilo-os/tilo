@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::search::{FieldWeight, RankField};
 
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::search::ActionReceipt;
@@ -19,7 +20,7 @@ use crate::shell::search::{
 };
 
 use crate::shell::collab_broker_capnp::{
-    ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface,
+    ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
 use crate::shell::remote_actions::BrokerActionHost;
 use tilo_actions::remote::{
@@ -29,6 +30,10 @@ use tilo_actions::remote::{
 };
 
 pub const PROVIDER_ID: &str = "app-actions";
+/// How long the palette waits for a local action's admission. A closed app
+/// is launched first, and the host gives up on it sooner with a clearer
+/// error; this only bounds a host that never answers.
+const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
 const MAX_DIRECTORY_ROOTS_PER_QUERY: usize = 16;
 /// Jobs are an immediate, useful palette hint rather than a second unbounded
@@ -113,8 +118,35 @@ fn directory_start_ticket(
     cache_key: DirectoryCacheKey,
     deadline: Instant,
 ) -> PendingInvocation {
-    // Dropped once answered or given up on, so a start still waiting on its
-    // owner sees nobody wants it and does not begin after the deadline.
+    let refused_invalidations = Rc::clone(&invalidations);
+    let refused_key = cache_key.clone();
+    admission_ticket(
+        admission,
+        deadline,
+        move |error| {
+            if invalidates_directory_cache(error) {
+                refused_invalidations
+                    .borrow_mut()
+                    .insert(refused_key.clone());
+            }
+            ActionError::Refused(format!("directory action refused: {error}"))
+        },
+        move || {
+            invalidations.borrow_mut().insert(cache_key.clone());
+            ActionError::Refused("directory action admission timed out".into())
+        },
+    )
+}
+
+/// Poll an admission from the frame loop until it answers or `deadline`
+/// passes. Dropped once answered or given up on, so a start still waiting
+/// sees nobody wants it and does not begin after the deadline.
+fn admission_ticket(
+    admission: Pending<Result<(u64, InvocationReceipt), ActionHostError>>,
+    deadline: Instant,
+    refused: impl Fn(&ActionHostError) -> ActionError + 'static,
+    timed_out: impl Fn() -> ActionError + 'static,
+) -> PendingInvocation {
     let admission = Rc::new(RefCell::new(Some(admission)));
     Rc::new(move || {
         let polled = admission
@@ -127,53 +159,45 @@ fn directory_start_ticket(
         match polled {
             PendingPoll::Ready(Ok((job, receipt))) => Ok(Some(ActionReceipt {
                 broker_invocation_id: Some(job),
-                update: match receipt.status {
-                    tilo_actions::remote::ReceiptStatus::Completed { output } => {
-                        tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: receipt.invocation,
-                            output,
-                        }
-                    }
-                    tilo_actions::remote::ReceiptStatus::Failed { error } => {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: receipt.invocation,
-                            error,
-                        }
-                    }
-                    tilo_actions::remote::ReceiptStatus::Cancelled { message } => {
-                        tilo_actions::InvocationUpdate::Cancelled {
-                            invocation: receipt.invocation,
-                            message,
-                        }
-                    }
-                    tilo_actions::remote::ReceiptStatus::Accepted
-                    | tilo_actions::remote::ReceiptStatus::Rejected { .. } => {
-                        tilo_actions::InvocationUpdate::Accepted {
-                            invocation: receipt.invocation,
-                        }
-                    }
-                },
+                update: receipt_update(receipt),
             })),
-            PendingPoll::Ready(Err(error)) => {
-                if invalidates_directory_cache(&error) {
-                    invalidations.borrow_mut().insert(cache_key.clone());
-                }
-                Err(ActionError::Refused(format!(
-                    "directory action refused: {error}"
-                )))
-            }
+            PendingPoll::Ready(Err(error)) => Err(refused(&error)),
             PendingPoll::Abandoned => Err(ActionError::Refused(
-                "directory action response was unavailable".into(),
+                "the action's admission was unavailable".into(),
             )),
-            PendingPoll::Waiting if Instant::now() >= deadline => {
-                invalidations.borrow_mut().insert(cache_key.clone());
-                Err(ActionError::Refused(
-                    "directory action admission timed out".into(),
-                ))
-            }
+            PendingPoll::Waiting if Instant::now() >= deadline => Err(timed_out()),
             PendingPoll::Waiting => Ok(None),
         }
     })
+}
+
+fn receipt_update(receipt: InvocationReceipt) -> tilo_actions::InvocationUpdate {
+    match receipt.status {
+        tilo_actions::remote::ReceiptStatus::Completed { output } => {
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: receipt.invocation,
+                output,
+            }
+        }
+        tilo_actions::remote::ReceiptStatus::Failed { error } => {
+            tilo_actions::InvocationUpdate::Failed {
+                invocation: receipt.invocation,
+                error,
+            }
+        }
+        tilo_actions::remote::ReceiptStatus::Cancelled { message } => {
+            tilo_actions::InvocationUpdate::Cancelled {
+                invocation: receipt.invocation,
+                message,
+            }
+        }
+        tilo_actions::remote::ReceiptStatus::Accepted
+        | tilo_actions::remote::ReceiptStatus::Rejected { .. } => {
+            tilo_actions::InvocationUpdate::Accepted {
+                invocation: receipt.invocation,
+            }
+        }
+    }
 }
 
 pub(crate) const JOB_UNAVAILABLE_MESSAGE: &str = "invocation is unavailable or not visible; this does not establish the original action's outcome";
@@ -310,118 +334,71 @@ struct AuxiliaryResume {
     directory: Option<DirectoryContinuation>,
 }
 
-struct PeerInvocation<'a> {
-    peer_id: u64,
-    resource: &'a str,
-    action: &'a str,
-    argument: Option<&'a str>,
-    actor: &'a str,
-    confirmation: &'a tilo_actions::ConfirmationPolicy,
-    confirmed: bool,
-    phrase: Option<&'a str>,
+/// A published local action, started through the session's action host
+/// confined to the room of the publishing surface: the same admission,
+/// permission and confirmation path every other caller takes. An action
+/// retained from a closed app names the host's launchable provider, and the
+/// host launches the app before delivering it.
+struct LocalStart {
+    host: BrokerActionHost,
+    provider: String,
+    room: String,
+    address: tilo_actions::ActionAddress,
+    actor: String,
+    confirmation: tilo_actions::ConfirmationPolicy,
+    typed_arguments: bool,
+    wants_content: bool,
 }
 
-/// Start a published action through the session's action host, confined to
-/// the room of the publishing surface: the same admission, permission and
-/// confirmation path every other caller takes.
-fn start_on_peer(
-    broker: &AppActionBroker,
-    invocation: &PeerInvocation<'_>,
-) -> Result<ActionReceipt, String> {
-    use tilo_actions::remote::{
-        Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
-    };
-    let room = broker
-        .surfaces()
-        .into_iter()
-        .find(|surface| surface.peer_id == invocation.peer_id && surface.live)
-        .map(|surface| surface.route.cluster_id)
-        .ok_or_else(|| "the application no longer publishes that action".to_string())?;
-    let argument = match invocation.argument {
-        None => InvokeArgument::None,
-        Some(slot) => match slot
-            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-        {
-            Some(serde_json::Value::Object(object)) => InvokeArgument::Json(object),
-            _ => InvokeArgument::Text(slot.to_string()),
-        },
-    };
-    let confirmation = match invocation.confirmation {
-        tilo_actions::ConfirmationPolicy::None => None,
-        tilo_actions::ConfirmationPolicy::Confirm => {
-            invocation.confirmed.then_some(Confirmation::Confirmed)
-        }
-        tilo_actions::ConfirmationPolicy::Phrase { .. } => invocation
-            .phrase
-            .map(|phrase| Confirmation::Phrase(phrase.to_string())),
-    };
-    let request = InvokeRequest {
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: invocation.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new(invocation.resource, invocation.action),
-        },
-        argument,
-        context: None,
-        confirmation,
-        revision: None,
-    };
-    // An action on a live surface is admitted at once; nothing here waits.
-    let mut admission = crate::shell::remote_actions::BrokerActionHost::new(broker.clone())
-        .invoke_job(
-            &Caller::local_person(invocation.actor).in_room(room),
-            request,
-        );
-    let (job, receipt) = match admission.poll_ready() {
-        PendingPoll::Ready(result) => result.map_err(|error| error.to_string())?,
-        PendingPoll::Waiting | PendingPoll::Abandoned => {
-            return Err("the action was not admitted immediately".into());
-        }
-    };
-    let update = broker
-        .status(job)
-        .unwrap_or(tilo_actions::InvocationUpdate::Accepted {
-            invocation: receipt.invocation,
-        });
-    Ok(ActionReceipt {
-        broker_invocation_id: Some(job),
-        update,
-    })
+impl LocalStart {
+    fn begin(
+        &self,
+        args: &crate::shell::search::action_api::ActionArgs,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let argument = if self.typed_arguments {
+            let mut values = args.to_json();
+            values.remove("confirm");
+            values.remove("confirmation_phrase");
+            InvokeArgument::Json(values)
+        } else {
+            args.text(if self.wants_content {
+                "content"
+            } else {
+                "argument"
+            })
+            .map_or(InvokeArgument::None, |text| {
+                InvokeArgument::Text(text.to_owned())
+            })
+        };
+        let confirmation = match &self.confirmation {
+            tilo_actions::ConfirmationPolicy::None => None,
+            tilo_actions::ConfirmationPolicy::Confirm => {
+                (args.boolean("confirm") == Some(true)).then_some(Confirmation::Confirmed)
+            }
+            tilo_actions::ConfirmationPolicy::Phrase { .. } => args
+                .text("confirmation_phrase")
+                .map(|phrase| Confirmation::Phrase(phrase.to_owned())),
+        };
+        self.host.invoke_job(
+            &Caller::local_person(&self.actor).in_room(&self.room),
+            InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: self.provider.clone(),
+                    address: self.address.clone(),
+                },
+                argument,
+                context: None,
+                confirmation,
+                revision: None,
+            },
+        )
+    }
 }
 
 fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
     let now = std::time::Instant::now();
     now.checked_add(duration).unwrap_or(now)
-}
-
-fn invocation_argument(
-    args: &crate::shell::search::action_api::ActionArgs,
-    typed_arguments: bool,
-    wants_content: bool,
-) -> (Option<String>, bool, Option<String>) {
-    let encoded = typed_arguments.then(|| {
-        let mut application_args = args.to_json();
-        application_args.remove("confirm");
-        application_args.remove("confirmation_phrase");
-        format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(application_args)
-        )
-    });
-    let argument = encoded.or_else(|| {
-        if wants_content {
-            args.text("content").map(str::to_owned)
-        } else {
-            args.text("argument").map(str::to_owned)
-        }
-    });
-    (
-        argument,
-        args.boolean("confirm") == Some(true),
-        args.text("confirmation_phrase").map(str::to_owned),
-    )
 }
 
 impl LiveAppActionsProvider {
@@ -1458,23 +1435,15 @@ impl LiveAppActionsProvider {
         if descriptor.contract.is_programmatic() {
             return None;
         }
-        let searchable = format!(
-            "{} {} {} {}",
-            descriptor.action_label,
-            descriptor.resource_label,
-            descriptor.address.action,
-            root.app_id
-        )
-        .to_lowercase();
-        let score = if needle.is_empty() {
-            0
-        } else if descriptor.action_label.to_lowercase().starts_with(needle) {
-            100
-        } else if searchable.contains(needle) {
-            50
-        } else {
-            return None;
-        };
+        let score = crate::shell::search::rank_fields(
+            needle,
+            &[
+                RankField::new(&descriptor.action_label, FieldWeight::TITLE),
+                RankField::new(&descriptor.resource_label, FieldWeight::SUBTITLE),
+                RankField::new(&descriptor.address.action, FieldWeight::IDENTITY),
+                RankField::new(&root.app_id, FieldWeight::METADATA),
+            ],
+        )?;
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
         push_confirmation_params(&mut params, &contract.advertised_confirmation());
@@ -1575,26 +1544,21 @@ impl LiveAppActionsProvider {
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
-        let searchable = format!(
-            "{} {} {}",
-            row.resource.label, row.resource.id, presentation_text
-        )
-        .to_lowercase();
-        let rank = if needle.is_empty() {
-            0
-        } else if row.resource.label.to_lowercase().starts_with(needle) {
-            100
-        } else if searchable.contains(needle) {
-            50
-        } else {
-            return None;
-        };
+        let rank = crate::shell::search::rank_fields(
+            needle,
+            &[
+                RankField::new(&row.resource.label, FieldWeight::TITLE),
+                RankField::new(row.resource.id.as_str(), FieldWeight::IDENTITY),
+                RankField::new(&presentation_text, FieldWeight::METADATA),
+            ],
+        )?;
         let scope = crate::shell::chrome_state::SearchResourceScope {
             peer_id: root.peer_id,
             cluster_id: root.cluster_id.clone(),
             app_id: root.app_id.clone(),
             resource: row.resource.id.clone(),
             label: row.resource.label.clone(),
+            kind: row.resource.kind.clone(),
         };
         let title = row.resource.label.clone();
         Some(SearchResult {
@@ -1905,51 +1869,48 @@ impl SearchProvider for LiveAppActionsProvider {
                     tilo_actions::Availability::Available => None,
                     tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
                 };
-                let searchable = format!(
-                    "{} {} {} {} {}",
-                    action.action_label,
-                    action.resource_label,
-                    action.action,
-                    action.resource,
-                    surface.app_id
-                )
-                .to_lowercase();
-                let score = if needle.is_empty() {
-                    0
-                } else if action.action_label.to_lowercase().starts_with(&needle) {
-                    100
-                } else if searchable.contains(&needle) {
-                    50
-                } else {
+                let Some(score) = crate::shell::search::rank_fields(
+                    &needle,
+                    &[
+                        RankField::new(&action.action_label, FieldWeight::TITLE),
+                        RankField::new(&action.resource_label, FieldWeight::SUBTITLE),
+                        RankField::new(&action.action, FieldWeight::IDENTITY),
+                        RankField::new(&action.resource, FieldWeight::IDENTITY),
+                        RankField::new(&surface.app_id, FieldWeight::METADATA),
+                    ],
+                ) else {
                     continue;
                 };
                 let params = Self::action_params(action);
-                let broker = self.broker.clone();
-                let peer_id = surface.peer_id;
-                let resource = action.resource.clone();
-                let action_id = action.action.clone();
-                let actor = actor.clone();
-                let wants_content = matches!(
-                    action.input,
-                    PublishedInput::Text {
-                        wants_content: true,
-                        ..
-                    }
-                );
-                let typed_arguments = !action.params.is_empty();
-                let confirmation = action.contract.advertised_confirmation();
                 let surface_live = surface.live;
-                let app_id = surface.app_id.clone();
-                let cluster_id = surface.route.cluster_id.clone();
-                let action_label = action.action_label.clone();
-                let invoke_broker = broker.clone();
-                let invoke_resource = resource.clone();
-                let invoke_action_id = action_id.clone();
-                let invoke_actor = actor.clone();
-                let invoke_confirmation = confirmation.clone();
-                let invoke_app_id = app_id.clone();
-                let invoke_cluster_id = cluster_id.clone();
-                let invoke_unavailable_reason = unavailable_reason.clone();
+                let start = Rc::new(LocalStart {
+                    host: self.host.clone(),
+                    provider: if surface_live {
+                        surface.peer_id.to_string()
+                    } else {
+                        launchable_provider(&surface)
+                    },
+                    room: surface.route.cluster_id.clone(),
+                    address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+                    actor: actor.clone(),
+                    confirmation: action.contract.advertised_confirmation(),
+                    typed_arguments: !action.params.is_empty(),
+                    wants_content: matches!(
+                        action.input,
+                        PublishedInput::Text {
+                            wants_content: true,
+                            ..
+                        }
+                    ),
+                });
+                // Availability on a retained launchable descriptor is only a
+                // last-known hint. The host launches the app first and lets
+                // the freshly published surface decide; otherwise an app
+                // closed while temporarily busy could never be opened
+                // through that action again.
+                let unavailable = unavailable_reason.clone().filter(|_| surface_live);
+                let open_start = Rc::clone(&start);
+                let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
@@ -1972,219 +1933,53 @@ impl SearchProvider for LiveAppActionsProvider {
                     score,
                     params,
                     contract: Some(action.contract.clone()),
-                    on_open: std::rc::Rc::new(move |_doc, _root, chrome, args| {
-                        // Availability on an archived launchable descriptor is
-                        // only a last-known hint. Launch first and let the
-                        // freshly published surface decide; otherwise an app
-                        // closed while temporarily busy could never be opened
-                        // through that action again.
-                        if surface_live && let Some(reason) = &unavailable_reason {
+                    on_open: Rc::new(move |_doc, _root, _chrome, args| {
+                        if let Some(reason) = &open_unavailable {
                             return Err(ActionError::Refused(reason.clone()));
                         }
-                        let encoded_arguments = typed_arguments.then(|| {
-                            let mut application_args = args.to_json();
-                            application_args.remove("confirm");
-                            application_args.remove("confirmation_phrase");
-                            format!(
-                                "{}{}",
-                                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                                serde_json::Value::Object(application_args)
-                            )
-                        });
-                        let argument = if let Some(arguments) = encoded_arguments.as_deref() {
-                            Some(arguments)
-                        } else if wants_content {
-                            args.text("content")
-                        } else {
-                            args.text("argument")
-                        };
-                        let confirmed = args.boolean("confirm") == Some(true);
-                        let phrase = args.text("confirmation_phrase").map(str::to_owned);
-                        if !surface_live {
-                            // Validate the human confirmation before starting
-                            // another process; the broker binds a fresh one-use
-                            // grant to the reconnected peer immediately before
-                            // delivery.
-                            match &confirmation {
-                                tilo_actions::ConfirmationPolicy::Confirm if !confirmed => {
-                                    return Err(ActionError::Refused(
-                                        "explicit confirmation is required".into(),
-                                    ));
-                                }
-                                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected }
-                                    if phrase.as_deref() != Some(expected.as_str()) =>
-                                {
-                                    return Err(ActionError::Refused(
-                                        "the confirmation phrase did not match".into(),
-                                    ));
-                                }
-                                _ => {}
-                            }
-                            crate::shell::search::providers::applications::launch_installed_app(
-                                chrome, &app_id, &app_id,
-                            )?;
-                            let broker = broker.clone();
-                            let resource = resource.clone();
-                            let action_id = action_id.clone();
-                            let argument = argument.map(str::to_owned);
-                            let actor = actor.clone();
-                            let confirmation = confirmation.clone();
-                            let app_id = app_id.clone();
-                            let cluster_id = cluster_id.clone();
-                            let action_label = action_label.clone();
-                            std::thread::Builder::new()
-                                .name("tilo-deferred-action".into())
-                                .spawn(move || {
-                                    let deadline =
-                                        deadline_after(std::time::Duration::from_secs(30));
-                                    while std::time::Instant::now() < deadline {
-                                        let target =
-                                            broker.surfaces().into_iter().find(|surface| {
-                                                surface.live
-                                                    && surface.app_id == app_id
-                                                    && surface.route.cluster_id == cluster_id
-                                                    && surface.actions.iter().any(|candidate| {
-                                                        candidate.resource == resource
-                                                            && candidate.action == action_id
-                                                    })
-                                            });
-                                        if let Some(target) = target {
-                                            match start_on_peer(
-                                                &broker,
-                                                &PeerInvocation {
-                                                    peer_id: target.peer_id,
-                                                    resource: &resource,
-                                                    action: &action_id,
-                                                    argument: argument.as_deref(),
-                                                    actor: &actor,
-                                                    confirmation: &confirmation,
-                                                    confirmed,
-                                                    phrase: phrase.as_deref(),
-                                                },
-                                            ) {
-                                                Ok(receipt) => {
-                                                    tracing::debug!(
-                                                        invocation_id = ?receipt.broker_invocation_id,
-                                                        "deferred application action accepted"
-                                                    );
-                                                }
-                                                Err(error) => tracing::warn!(
-                                                    %error,
-                                                    action = %action_label,
-                                                    "deferred application action was refused"
-                                                ),
-                                            }
-                                            return;
-                                        }
-                                        std::thread::sleep(std::time::Duration::from_millis(100));
-                                    }
-                                    tracing::warn!(
-                                        action = %action_label,
-                                        app = %app_id,
-                                        "application did not publish its launchable action in time"
-                                    );
+                        let mut admission = open_start.begin(args);
+                        match admission.poll_ready() {
+                            PendingPoll::Ready(result) => result
+                                .map(|(job, _)| {
+                                    tracing::debug!(job, "application action accepted");
                                 })
-                                .map_err(|error| ActionError::Refused(error.to_string()))?;
-                            return Ok(());
+                                .map_err(|error| ActionError::Refused(error.to_string())),
+                            PendingPoll::Waiting => {
+                                // Launching a closed app first: the host
+                                // delivers once the app is up. Keep listening
+                                // so the delivery is not abandoned.
+                                admission.then(|answer| match answer {
+                                    Some(Ok((job, _))) => {
+                                        tracing::debug!(job, "launched application action accepted");
+                                    }
+                                    Some(Err(error)) => {
+                                        tracing::warn!(%error, "launched application action was refused");
+                                    }
+                                    None => {}
+                                });
+                                Ok(())
+                            }
+                            PendingPoll::Abandoned => Err(ActionError::Refused(
+                                "the action's admission was unavailable".into(),
+                            )),
                         }
-                        let receipt = start_on_peer(
-                            &broker,
-                            &PeerInvocation {
-                                peer_id,
-                                resource: &resource,
-                                action: &action_id,
-                                argument,
-                                actor: &actor,
-                                confirmation: &confirmation,
-                                confirmed,
-                                phrase: phrase.as_deref(),
-                            },
-                        )
-                        .map_err(ActionError::Refused)?;
-                        tracing::debug!(
-                            invocation_id = ?receipt.broker_invocation_id,
-                            "application action accepted"
-                        );
-                        // Admission is synchronous; execution is observed as a
-                        // broker job rather than blocking the compositor.
-                        Ok(())
                     }),
-                    on_invoke: Some(std::rc::Rc::new(move |_doc, _root, chrome, args| {
-                        if surface_live && let Some(reason) = &invoke_unavailable_reason {
+                    on_invoke: None,
+                    on_begin_invoke: Some(Rc::new(move |_doc, _root, _chrome, args| {
+                        if let Some(reason) = &unavailable {
                             return Err(ActionError::Refused(reason.clone()));
                         }
-                        let (argument, confirmed, phrase) =
-                            invocation_argument(args, typed_arguments, wants_content);
-                        if !surface_live {
-                            match &invoke_confirmation {
-                                tilo_actions::ConfirmationPolicy::Confirm if !confirmed => {
-                                    return Err(ActionError::Refused(
-                                        "explicit confirmation is required".into(),
-                                    ));
-                                }
-                                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected }
-                                    if phrase.as_deref() != Some(expected.as_str()) =>
-                                {
-                                    return Err(ActionError::Refused(
-                                        "the confirmation phrase did not match".into(),
-                                    ));
-                                }
-                                _ => {}
-                            }
-                            crate::shell::search::providers::applications::launch_installed_app(
-                                chrome,
-                                &invoke_app_id,
-                                &invoke_app_id,
-                            )?;
-                            let deadline = deadline_after(std::time::Duration::from_secs(30));
-                            while std::time::Instant::now() < deadline {
-                                let target = invoke_broker.surfaces().into_iter().find(|surface| {
-                                    surface.live
-                                        && surface.app_id == invoke_app_id
-                                        && surface.route.cluster_id == invoke_cluster_id
-                                        && surface.actions.iter().any(|candidate| {
-                                            candidate.resource == invoke_resource
-                                                && candidate.action == invoke_action_id
-                                        })
-                                });
-                                if let Some(target) = target {
-                                    return start_on_peer(
-                                        &invoke_broker,
-                                        &PeerInvocation {
-                                            peer_id: target.peer_id,
-                                            resource: &invoke_resource,
-                                            action: &invoke_action_id,
-                                            argument: argument.as_deref(),
-                                            actor: &invoke_actor,
-                                            confirmation: &invoke_confirmation,
-                                            confirmed,
-                                            phrase: phrase.as_deref(),
-                                        },
-                                    )
-                                    .map_err(ActionError::Refused);
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(100));
-                            }
-                            return Err(ActionError::Refused(
-                                "application did not publish its launchable action in time".into(),
-                            ));
-                        }
-                        start_on_peer(
-                            &invoke_broker,
-                            &PeerInvocation {
-                                peer_id,
-                                resource: &invoke_resource,
-                                action: &invoke_action_id,
-                                argument: argument.as_deref(),
-                                actor: &invoke_actor,
-                                confirmation: &invoke_confirmation,
-                                confirmed,
-                                phrase: phrase.as_deref(),
-                            },
-                        )
-                        .map_err(ActionError::Refused)
+                        let ticket = admission_ticket(
+                            start.begin(args),
+                            deadline_after(LOCAL_ADMISSION_TIMEOUT),
+                            |error| ActionError::Refused(error.to_string()),
+                            || ActionError::Refused("the action was not admitted in time".into()),
+                        );
+                        Ok(match ticket()? {
+                            Some(receipt) => InvocationDisposition::Accepted(receipt),
+                            None => InvocationDisposition::Pending(ticket),
+                        })
                     })),
-                    on_begin_invoke: None,
                 });
             }
         }
@@ -2762,266 +2557,331 @@ mod tests {
     }
 
     #[test]
-    fn directory_lifecycle_invalidates_only_lost_current_authority() {
-        for error in [
-            ActionHostError::UnknownAction,
-            ActionHostError::InvalidRequest {
-                reason: "stale revision".into(),
-            },
-            ActionHostError::Unavailable {
-                reason: "owner left".into(),
-            },
-        ] {
-            assert!(invalidates_directory_cache(&error));
-        }
-        for error in [
-            ActionHostError::NotPermitted,
-            ActionHostError::ConfirmationRequired,
-            ActionHostError::InvocationConflict,
-        ] {
-            assert!(!invalidates_directory_cache(&error));
-        }
-    }
-
-    #[test]
-    fn directory_cache_bounds_rapid_queries_and_expires_stalled_page_and_start_tickets() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-        );
-        let mut prior_sender: Option<
-            tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>,
-        > = None;
-        for index in 0..10_000_usize {
-            let needle = format!("needle-{index}");
-            provider.set_directory_query(&needle);
-            if let Some(sender) = prior_sender.take() {
-                assert!(
-                    sender.is_abandoned(),
-                    "changing a query must drop the prior palette receiver"
-                );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn directory_cache_is_bounded_expiring_and_scoped_to_current_authority() {
+        // Phase `directory_lifecycle_invalidates_only_lost_current_authority`.
+        {
+            for error in [
+                ActionHostError::UnknownAction,
+                ActionHostError::InvalidRequest {
+                    reason: "stale revision".into(),
+                },
+                ActionHostError::Unavailable {
+                    reason: "owner left".into(),
+                },
+            ] {
+                assert!(invalidates_directory_cache(&error));
             }
-            let key: DirectoryCacheKey = (7, "actor-a".into(), needle, Vec::new());
-            provider
-                .directory_pages
-                .borrow_mut()
-                .insert(key.clone(), page(Vec::new(), Vec::new()));
-            let (sender, receiver) = pending();
+            for error in [
+                ActionHostError::NotPermitted,
+                ActionHostError::ConfirmationRequired,
+                ActionHostError::InvocationConflict,
+            ] {
+                assert!(!invalidates_directory_cache(&error));
+            }
+        }
+
+        // Phase `directory_cache_bounds_rapid_queries_and_expires_stalled_page_and_start_tickets`.
+        {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let mut prior_sender: Option<
+                tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>,
+            > = None;
+            for index in 0..10_000_usize {
+                let needle = format!("needle-{index}");
+                provider.set_directory_query(&needle);
+                if let Some(sender) = prior_sender.take() {
+                    assert!(
+                        sender.is_abandoned(),
+                        "changing a query must drop the prior palette receiver"
+                    );
+                }
+                let key: DirectoryCacheKey = (7, "actor-a".into(), needle, Vec::new());
+                provider
+                    .directory_pages
+                    .borrow_mut()
+                    .insert(key.clone(), page(Vec::new(), Vec::new()));
+                let (sender, receiver) = pending();
+                provider.directory_pending.borrow_mut().insert(
+                    key,
+                    PendingDirectoryPage {
+                        receiver,
+                        deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                        initial_page: true,
+                    },
+                );
+                prior_sender = Some(sender);
+                assert!(provider.directory_pages.borrow().len() <= 1);
+                assert!(provider.directory_pending.borrow().len() <= 1);
+            }
+            provider.set_directory_query("new-needle");
+            assert!(prior_sender.expect("final sender").is_abandoned());
+            assert!(provider.directory_pages.borrow().is_empty());
+            assert!(provider.directory_pending.borrow().is_empty());
+
+            let expired = Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now);
+            let (page_sender, page_receiver) = pending();
             provider.directory_pending.borrow_mut().insert(
-                key,
+                (7, "actor-a".into(), "new-needle".into(), Vec::new()),
                 PendingDirectoryPage {
-                    receiver,
-                    deadline: super::deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                    receiver: page_receiver,
+                    deadline: expired,
                     initial_page: true,
                 },
             );
-            prior_sender = Some(sender);
-            assert!(provider.directory_pages.borrow().len() <= 1);
-            assert!(provider.directory_pending.borrow().len() <= 1);
+            provider.poll_directory_pages_at(Instant::now());
+            assert!(
+                page_sender.is_abandoned(),
+                "expired directory page ticket is cancelled"
+            );
+            assert!(provider.directory_pending.borrow().is_empty());
+
+            let invalidations: Rc<RefCell<std::collections::HashSet<DirectoryCacheKey>>> =
+                Rc::new(RefCell::new(std::collections::HashSet::default()));
+            let (start_sender, start_receiver) = pending();
+            let key = (7, "actor-a".into(), "new-needle".into(), Vec::new());
+            let ticket = directory_start_ticket(
+                start_receiver,
+                Rc::clone(&invalidations),
+                key.clone(),
+                expired,
+            );
+            assert!(
+                ticket().is_err(),
+                "expired action admission is refused rather than retained"
+            );
+            drop(ticket);
+            assert!(
+                start_sender.is_abandoned(),
+                "an expired action ticket lets go of its admission"
+            );
+            assert!(invalidations.borrow().contains(&key));
         }
-        provider.set_directory_query("new-needle");
-        assert!(prior_sender.expect("final sender").is_abandoned());
-        assert!(provider.directory_pages.borrow().is_empty());
-        assert!(provider.directory_pending.borrow().is_empty());
 
-        let expired = Instant::now()
-            .checked_sub(Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
-        let (page_sender, page_receiver) = pending();
-        provider.directory_pending.borrow_mut().insert(
-            (7, "actor-a".into(), "new-needle".into(), Vec::new()),
-            PendingDirectoryPage {
-                receiver: page_receiver,
-                deadline: expired,
-                initial_page: true,
-            },
-        );
-        provider.poll_directory_pages_at(Instant::now());
-        assert!(
-            page_sender.is_abandoned(),
-            "expired directory page ticket is cancelled"
-        );
-        assert!(provider.directory_pending.borrow().is_empty());
-
-        let invalidations: Rc<RefCell<std::collections::HashSet<DirectoryCacheKey>>> =
-            Rc::new(RefCell::new(std::collections::HashSet::default()));
-        let (start_sender, start_receiver) = pending();
-        let key = (7, "actor-a".into(), "new-needle".into(), Vec::new());
-        let ticket = directory_start_ticket(
-            start_receiver,
-            Rc::clone(&invalidations),
-            key.clone(),
-            expired,
-        );
-        assert!(
-            ticket().is_err(),
-            "expired action admission is refused rather than retained"
-        );
-        drop(ticket);
-        assert!(
-            start_sender.is_abandoned(),
-            "an expired action ticket lets go of its admission"
-        );
-        assert!(invalidations.borrow().contains(&key));
+        // Phase `directory_cache_keeps_room_actors_separate_for_the_current_needle`.
+        {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            provider.set_directory_query("open");
+            for actor in ["room-a-user", "room-b-user"] {
+                provider.directory_pages.borrow_mut().insert(
+                    (7, actor.into(), "open".into(), Vec::new()),
+                    page(Vec::new(), Vec::new()),
+                );
+            }
+            provider.set_directory_query("open");
+            assert_eq!(provider.directory_pages.borrow().len(), 2);
+            provider.set_directory_query("other");
+            assert!(provider.directory_pages.borrow().is_empty());
+        }
     }
 
     #[test]
-    fn directory_cache_keeps_room_actors_separate_for_the_current_needle() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-        );
-        provider.set_directory_query("open");
-        for actor in ["room-a-user", "room-b-user"] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn remote_action_pages_never_repeat_and_cursors_are_self_contained() {
+        // Phase `remote_actions_page_without_repeats_under_tiny_budgets`.
+        {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let chrome = chrome();
+            let chrome = chrome.borrow();
+            let doc = AutoCommit::new();
+            provider.set_directory_query("open");
+            let ctx = context("open", &chrome, &doc);
+            let revision = provider.search_revision(&ctx);
+            let scope = LiveAppActionsProvider::surface_scope(&ctx);
+            let root = ActionDirectoryRoot {
+                peer_id: 7,
+                app_id: "so.tilo.fixture".into(),
+                cluster_id: "room".into(),
+                record_id: "record".into(),
+            };
+            assert!(
+                provider
+                    .directory_action_result(
+                        &root,
+                        "r1",
+                        &exported("Open one", "one"),
+                        "open",
+                        "fixture",
+                        &[]
+                    )
+                    .is_some()
+            );
+            *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
+                revision,
+                query: "open".into(),
+                scope,
+                resume: AuxiliaryResume {
+                    root_after: None,
+                    directory: None,
+                },
+                entries: ["one", "two", "three"]
+                    .into_iter()
+                    .map(|suffix| AuxiliaryEntry::Directory {
+                        root: root.clone(),
+                        revision: "r1".into(),
+                        descriptor: exported(&format!("Open {suffix}"), suffix),
+                        actor: "fixture".into(),
+                        cursor: Vec::new(),
+                    })
+                    .collect(),
+                pending_directory: Vec::new(),
+                next_resume: None,
+            });
+            let budget = SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            };
+            let mut cursor = None;
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                let page =
+                    provider.query_page(context("open", &chrome, &doc), cursor.as_ref(), budget);
+                ids.extend(page.results.into_iter().map(|row| row.id));
+                cursor = page.next_cursor;
+            }
+            assert_eq!(ids.len(), 3);
+            let distinct = ids.iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                distinct.len(),
+                3,
+                "a one-row budget must not repeat remote rows"
+            );
+            let last = provider.query_page(context("open", &chrome, &doc), cursor.as_ref(), budget);
+            assert!(last.exhausted);
+
+            // An action too large for this page is consumed once, not retried forever.
+            let tiny = provider.query_page(
+                context("open", &chrome, &doc),
+                None,
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: 1,
+                    max_work: 1,
+                },
+            );
+            assert!(tiny.results.is_empty());
+            assert!(tiny.next_cursor.is_some());
+        }
+
+        // Phase `cached_remote_pages_append_after_their_opaque_continuation`.
+        {
+            let chrome = chrome();
+            let broker = broker_for(&chrome);
+            let provider = LiveAppActionsProvider::new(broker.clone());
+            let chrome = chrome.borrow();
+            let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
+            let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
+            let root = ActionDirectoryRoot {
+                peer_id: 9,
+                app_id: "so.tilo.remote".into(),
+                cluster_id,
+                record_id: "root".into(),
+            };
+            broker.replace_action_directory_roots_for_test(vec![root]);
+            let row = |label: &str, action: &str| CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.remote".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: format!("resource:{action}"),
+                    kind: "fixture".into(),
+                    label: "Fixture".into(),
+                    presentation: None,
+                },
+                action: Some(exported(label, action)),
+                has_children: false,
+                visibility: None,
+            };
             provider.directory_pages.borrow_mut().insert(
-                (7, actor.into(), "open".into(), Vec::new()),
-                page(Vec::new(), Vec::new()),
+                (9, actor.clone(), "open".into(), Vec::new()),
+                page(vec![row("Open first", "first")], vec![1]),
+            );
+            provider.directory_pages.borrow_mut().insert(
+                (9, actor, "open".into(), vec![1]),
+                page(vec![row("Open second", "second")], Vec::new()),
+            );
+            let doc = AutoCommit::new();
+            provider.set_directory_query("open");
+            let budget = SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            };
+            let first = provider.query_page(context("open", &chrome, &doc), None, budget);
+            let second = provider.query_page(
+                context("open", &chrome, &doc),
+                first.next_cursor.as_ref(),
+                budget,
+            );
+            assert_eq!(first.results[0].title, "Open first");
+            assert_eq!(second.results[0].title, "Open second");
+            assert_ne!(first.results[0].id, second.results[0].id);
+        }
+
+        // Phase `cold_public_action_page_does_not_start_a_surface_clone_or_index_build`.
+        {
+            let provider = LiveAppActionsProvider::new(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+            );
+            let chrome = chrome();
+            let chrome = chrome.borrow();
+            let doc = AutoCommit::new();
+            let page = provider.query_page(
+                context("needle", &chrome, &doc),
+                None,
+                SearchBudget::PALETTE,
+            );
+            assert!(page.results.is_empty());
+            assert!(
+                provider.surface_build.borrow().is_none(),
+                "the query path may only observe a ready retained surface index"
             );
         }
-        provider.set_directory_query("open");
-        assert_eq!(provider.directory_pages.borrow().len(), 2);
-        provider.set_directory_query("other");
-        assert!(provider.directory_pages.borrow().is_empty());
-    }
 
-    #[test]
-    fn remote_actions_page_without_repeats_under_tiny_budgets() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-        );
-        let chrome = chrome();
-        let chrome = chrome.borrow();
-        let doc = AutoCommit::new();
-        provider.set_directory_query("open");
-        let ctx = context("open", &chrome, &doc);
-        let revision = provider.search_revision(&ctx);
-        let scope = LiveAppActionsProvider::surface_scope(&ctx);
-        let root = ActionDirectoryRoot {
-            peer_id: 7,
-            app_id: "so.tilo.fixture".into(),
-            cluster_id: "room".into(),
-            record_id: "record".into(),
-        };
-        assert!(
-            provider
-                .directory_action_result(
-                    &root,
-                    "r1",
-                    &exported("Open one", "one"),
-                    "open",
-                    "fixture",
-                    &[]
-                )
-                .is_some()
-        );
-        *provider.auxiliary_snapshot.borrow_mut() = Some(AuxiliarySnapshot {
-            revision,
-            query: "open".into(),
-            scope,
-            resume: AuxiliaryResume {
-                root_after: None,
-                directory: None,
-            },
-            entries: ["one", "two", "three"]
-                .into_iter()
-                .map(|suffix| AuxiliaryEntry::Directory {
-                    root: root.clone(),
-                    revision: "r1".into(),
-                    descriptor: exported(&format!("Open {suffix}"), suffix),
-                    actor: "fixture".into(),
-                    cursor: Vec::new(),
-                })
-                .collect(),
-            pending_directory: Vec::new(),
-            next_resume: None,
-        });
-        let budget = SearchBudget {
-            max_results: 1,
-            max_bytes: usize::MAX,
-            max_work: 1,
-        };
-        let mut cursor = None;
-        let mut ids = Vec::new();
-        for _ in 0..3 {
-            let page = provider.query_page(context("open", &chrome, &doc), cursor.as_ref(), budget);
-            ids.extend(page.results.into_iter().map(|row| row.id));
-            cursor = page.next_cursor;
+        // Phase `auxiliary_cursor_is_self_contained_for_more_than_128_pages`.
+        {
+            let root = ActionDirectoryRoot {
+                peer_id: 42,
+                app_id: "so.tilo.remote".into(),
+                cluster_id: "room\u{1f}with-separator".into(),
+                record_id: "record".into(),
+            };
+            let resume = AuxiliaryResume {
+                root_after: Some(41),
+                directory: Some(super::DirectoryContinuation {
+                    root,
+                    actor: "person:alice".into(),
+                    cursor: vec![0, 255, 1, 2],
+                    row_offset: 100_001,
+                }),
+            };
+            let encoded = LiveAppActionsProvider::encode_auxiliary_resume(&resume);
+            assert_eq!(
+                LiveAppActionsProvider::decode_auxiliary_resume(&encoded),
+                Some(resume),
+                "a valid continuation cannot depend on a bounded in-memory cursor table"
+            );
         }
-        assert_eq!(ids.len(), 3);
-        let distinct = ids.iter().collect::<std::collections::HashSet<_>>();
-        assert_eq!(
-            distinct.len(),
-            3,
-            "a one-row budget must not repeat remote rows"
-        );
-        let last = provider.query_page(context("open", &chrome, &doc), cursor.as_ref(), budget);
-        assert!(last.exhausted);
 
-        // An action too large for this page is consumed once, not retried forever.
-        let tiny = provider.query_page(
-            context("open", &chrome, &doc),
-            None,
-            SearchBudget {
-                max_results: 1,
-                max_bytes: 1,
-                max_work: 1,
-            },
-        );
-        assert!(tiny.results.is_empty());
-        assert!(tiny.next_cursor.is_some());
-    }
-
-    #[test]
-    fn cached_remote_pages_append_after_their_opaque_continuation() {
-        let chrome = chrome();
-        let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new(broker.clone());
-        let chrome = chrome.borrow();
-        let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
-        let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
-        let root = ActionDirectoryRoot {
-            peer_id: 9,
-            app_id: "so.tilo.remote".into(),
-            cluster_id,
-            record_id: "root".into(),
-        };
-        broker.replace_action_directory_roots_for_test(vec![root]);
-        let row = |label: &str, action: &str| CatalogueRow {
-            provider: "9".into(),
-            app_id: "so.tilo.remote".into(),
-            parent_resource: String::new(),
-            resource: CatalogueResource {
-                id: format!("resource:{action}"),
-                kind: "fixture".into(),
-                label: "Fixture".into(),
-                presentation: None,
-            },
-            action: Some(exported(label, action)),
-            has_children: false,
-            visibility: None,
-        };
-        provider.directory_pages.borrow_mut().insert(
-            (9, actor.clone(), "open".into(), Vec::new()),
-            page(vec![row("Open first", "first")], vec![1]),
-        );
-        provider.directory_pages.borrow_mut().insert(
-            (9, actor, "open".into(), vec![1]),
-            page(vec![row("Open second", "second")], Vec::new()),
-        );
-        let doc = AutoCommit::new();
-        provider.set_directory_query("open");
-        let budget = SearchBudget {
-            max_results: 1,
-            max_bytes: usize::MAX,
-            max_work: 1,
-        };
-        let first = provider.query_page(context("open", &chrome, &doc), None, budget);
-        let second = provider.query_page(
-            context("open", &chrome, &doc),
-            first.next_cursor.as_ref(),
-            budget,
-        );
-        assert_eq!(first.results[0].title, "Open first");
-        assert_eq!(second.results[0].title, "Open second");
-        assert_ne!(first.results[0].id, second.results[0].id);
+        // Phase `malformed_auxiliary_cursor_fails_closed`.
+        {
+            assert!(LiveAppActionsProvider::decode_auxiliary_resume("not;a,cursor").is_none());
+        }
     }
 
     #[test]
@@ -3079,26 +2939,6 @@ mod tests {
         assert!(
             page.exhausted,
             "the rare indexed tail candidate takes one inspected record"
-        );
-    }
-
-    #[test]
-    fn cold_public_action_page_does_not_start_a_surface_clone_or_index_build() {
-        let provider = LiveAppActionsProvider::new(
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-        );
-        let chrome = chrome();
-        let chrome = chrome.borrow();
-        let doc = AutoCommit::new();
-        let page = provider.query_page(
-            context("needle", &chrome, &doc),
-            None,
-            SearchBudget::PALETTE,
-        );
-        assert!(page.results.is_empty());
-        assert!(
-            provider.surface_build.borrow().is_none(),
-            "the query path may only observe a ready retained surface index"
         );
     }
 
@@ -3195,185 +3035,121 @@ mod tests {
     }
 
     #[test]
-    fn auxiliary_cursor_is_self_contained_for_more_than_128_pages() {
-        let root = ActionDirectoryRoot {
-            peer_id: 42,
-            app_id: "so.tilo.remote".into(),
-            cluster_id: "room\u{1f}with-separator".into(),
-            record_id: "record".into(),
-        };
-        let resume = AuxiliaryResume {
-            root_after: Some(41),
-            directory: Some(super::DirectoryContinuation {
-                root,
-                actor: "person:alice".into(),
-                cursor: vec![0, 255, 1, 2],
-                row_offset: 100_001,
-            }),
-        };
-        let encoded = LiveAppActionsProvider::encode_auxiliary_resume(&resume);
-        assert_eq!(
-            LiveAppActionsProvider::decode_auxiliary_resume(&encoded),
-            Some(resume),
-            "a valid continuation cannot depend on a bounded in-memory cursor table"
-        );
-    }
-
-    #[test]
-    fn malformed_auxiliary_cursor_fails_closed() {
-        assert!(LiveAppActionsProvider::decode_auxiliary_resume("not;a,cursor").is_none());
-    }
-
-    #[test]
-    fn hierarchy_decodes_the_address_shape_minted_by_the_provider() {
-        let id = [
-            "so.tilo.files",
-            "write",
-            "room-7",
-            "file:/Brief.md",
-            "files.entry:/Brief.md",
-            "rename",
-        ]
-        .join(&ID_SEPARATOR.to_string());
-
-        assert_eq!(
-            LiveAppActionsProvider::hierarchy(&id),
-            Some((
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn action_hierarchy_decodes_only_provider_minted_live_addresses() {
+        // Phase `hierarchy_decodes_the_address_shape_minted_by_the_provider`.
+        {
+            let id = [
                 "so.tilo.files",
+                "write",
                 "room-7",
                 "file:/Brief.md",
                 "files.entry:/Brief.md",
                 "rename",
-            ))
-        );
-        assert!(LiveAppActionsProvider::hierarchy("display.id#rename").is_none());
-    }
+            ]
+            .join(&ID_SEPARATOR.to_string());
 
-    #[test]
-    fn action_hierarchy_resolves_exact_live_peers_including_zero_and_deep_roots() {
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        let provider = LiveAppActionsProvider::new(broker.clone());
-        let mut roots = (0..=512)
-            .map(|peer_id| ActionDirectoryRoot {
-                peer_id,
-                app_id: "dev.tilo.first".into(),
-                cluster_id: "first-room".into(),
-                record_id: "first-record".into(),
-            })
-            .collect::<Vec<_>>();
-        roots.push(ActionDirectoryRoot {
-            peer_id: 4096,
-            app_id: "dev.tilo.calculator".into(),
-            cluster_id: "calculator-room".into(),
-            record_id: "calculator-record".into(),
-        });
-        broker.replace_action_directory_roots_for_test(roots);
-        assert!(
-            broker
-                .state()
-                .action_directory_roots()
-                .iter()
-                .all(|root| root.peer_id != 4096),
-            "fixture must put the target beyond the first bounded root page"
-        );
-        let first = provider
-            .action_hierarchy("directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}open")
-            .unwrap();
-        assert_eq!(first.application, "dev.tilo.first");
-        assert_eq!(first.room, "first-room");
-        assert_eq!(first.record, "first-record");
-        let deep_id = "directory\u{1f}4096\u{1f}r1\u{1f}calculator.graph:curve2d:17\u{1f}edit";
-        let deep = provider.action_hierarchy(deep_id).unwrap();
-        assert_eq!(deep.application, "dev.tilo.calculator");
-        assert_eq!(deep.room, "calculator-room");
-        assert_eq!(deep.record, "calculator-record");
-        assert_eq!(deep.resource, "calculator.graph:curve2d:17");
-        assert_eq!(deep.operation, "edit");
-        assert!(
-            provider
-                .action_hierarchy("directory\u{1f}4095\u{1f}r1\u{1f}resource:missing\u{1f}open")
-                .is_none(),
-            "an absent peer cannot borrow its next neighbor's identity"
-        );
-        broker.replace_action_directory_roots_for_test(Vec::new());
-        assert!(
-            provider.action_hierarchy(deep_id).is_none(),
-            "a stale result cannot invent a disconnected peer's identity"
-        );
-    }
+            assert_eq!(
+                LiveAppActionsProvider::hierarchy(&id),
+                Some((
+                    "so.tilo.files",
+                    "room-7",
+                    "file:/Brief.md",
+                    "files.entry:/Brief.md",
+                    "rename",
+                ))
+            );
+            assert!(LiveAppActionsProvider::hierarchy("display.id#rename").is_none());
+        }
 
-    #[test]
-    fn action_hierarchy_keeps_local_actions_but_rejects_non_actions_and_malformed_directory_ids() {
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
-            peer_id: 0,
-            app_id: "dev.tilo.calculator".into(),
-            cluster_id: "room".into(),
-            record_id: "record".into(),
-        }]);
-        let provider = LiveAppActionsProvider::new(broker);
-        let local = provider.action_hierarchy("dev.tilo.files\u{1f}write\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
-        assert_eq!(local.application, "dev.tilo.files");
-        assert_eq!(local.room, "room-7");
-        assert_eq!(local.record, "file:/Brief.md");
-        assert_eq!(local.resource, "files.entry:/Brief.md");
-        assert_eq!(local.operation, "rename");
-        for id in [
-            "directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}open\u{1f}extra".to_string(),
-            "directory\u{1f}not-a-peer\u{1f}r1\u{1f}resource:first\u{1f}open".into(),
-            "directory\u{1f}0\u{1f}\u{1f}resource:first\u{1f}open".into(),
-            "directory\u{1f}0\u{1f}r1\u{1f}\u{1f}open".into(),
-            "directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}".into(),
-            "directory-resource\u{1f}0\u{1f}resource:first".into(),
-            super::job_status_id(7),
-            super::job_cancel_id(7),
-        ] {
+        // Phase `action_hierarchy_resolves_exact_live_peers_including_zero_and_deep_roots`.
+        {
+            let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+            let provider = LiveAppActionsProvider::new(broker.clone());
+            let mut roots = (0..=512)
+                .map(|peer_id| ActionDirectoryRoot {
+                    peer_id,
+                    app_id: "dev.tilo.first".into(),
+                    cluster_id: "first-room".into(),
+                    record_id: "first-record".into(),
+                })
+                .collect::<Vec<_>>();
+            roots.push(ActionDirectoryRoot {
+                peer_id: 4096,
+                app_id: "dev.tilo.calculator".into(),
+                cluster_id: "calculator-room".into(),
+                record_id: "calculator-record".into(),
+            });
+            broker.replace_action_directory_roots_for_test(roots);
             assert!(
-                provider.action_hierarchy(&id).is_none(),
-                "not an application action: {id:?}"
+                broker
+                    .state()
+                    .action_directory_roots()
+                    .iter()
+                    .all(|root| root.peer_id != 4096),
+                "fixture must put the target beyond the first bounded root page"
+            );
+            let first = provider
+                .action_hierarchy("directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}open")
+                .unwrap();
+            assert_eq!(first.application, "dev.tilo.first");
+            assert_eq!(first.room, "first-room");
+            assert_eq!(first.record, "first-record");
+            let deep_id = "directory\u{1f}4096\u{1f}r1\u{1f}calculator.graph:curve2d:17\u{1f}edit";
+            let deep = provider.action_hierarchy(deep_id).unwrap();
+            assert_eq!(deep.application, "dev.tilo.calculator");
+            assert_eq!(deep.room, "calculator-room");
+            assert_eq!(deep.record, "calculator-record");
+            assert_eq!(deep.resource, "calculator.graph:curve2d:17");
+            assert_eq!(deep.operation, "edit");
+            assert!(
+                provider
+                    .action_hierarchy("directory\u{1f}4095\u{1f}r1\u{1f}resource:missing\u{1f}open")
+                    .is_none(),
+                "an absent peer cannot borrow its next neighbor's identity"
+            );
+            broker.replace_action_directory_roots_for_test(Vec::new());
+            assert!(
+                provider.action_hierarchy(deep_id).is_none(),
+                "a stale result cannot invent a disconnected peer's identity"
             );
         }
-    }
 
-    #[test]
-    fn live_action_proximity_uses_the_authenticated_resource_room() {
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        let provider = LiveAppActionsProvider::new(broker);
-        let chrome = chrome();
-        let chrome = chrome.borrow();
-        let room = chrome.tree().desktop.workspaces[0].room.to_string();
-        let result = |cluster: &str| SearchResult {
-            kind: ResourceKind::Action,
-            operation_kind: tilo_actions::OperationKind::Effect,
-            provider_id: PROVIDER_ID.into(),
-            id: [
-                "so.tilo.files",
-                "write",
-                cluster,
-                "file:/Brief.md",
-                "files.entry:/Brief.md",
-                "rename",
-            ]
-            .join(&ID_SEPARATOR.to_string()),
-            title: "Rename".into(),
-            subtitle: None,
-            badge: None,
-            score: 100,
-            params: Vec::new(),
-            contract: None,
-            on_open: Rc::new(|_, _, _, _| Ok(())),
-            on_invoke: None,
-            on_begin_invoke: None,
-        };
-
-        assert_eq!(
-            provider.proximity(&result(&room), &chrome),
-            SearchProximity::CurrentWorkspace
-        );
-        assert_eq!(
-            provider.proximity(&result("another-room"), &chrome),
-            SearchProximity::Global
-        );
+        // Phase `action_hierarchy_keeps_local_actions_but_rejects_non_actions_and_malformed_directory_ids`.
+        {
+            let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+            broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+                peer_id: 0,
+                app_id: "dev.tilo.calculator".into(),
+                cluster_id: "room".into(),
+                record_id: "record".into(),
+            }]);
+            let provider = LiveAppActionsProvider::new(broker);
+            let local = provider.action_hierarchy("dev.tilo.files\u{1f}write\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
+            assert_eq!(local.application, "dev.tilo.files");
+            assert_eq!(local.room, "room-7");
+            assert_eq!(local.record, "file:/Brief.md");
+            assert_eq!(local.resource, "files.entry:/Brief.md");
+            assert_eq!(local.operation, "rename");
+            for id in [
+                "directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}open\u{1f}extra".to_string(),
+                "directory\u{1f}not-a-peer\u{1f}r1\u{1f}resource:first\u{1f}open".into(),
+                "directory\u{1f}0\u{1f}\u{1f}resource:first\u{1f}open".into(),
+                "directory\u{1f}0\u{1f}r1\u{1f}\u{1f}open".into(),
+                "directory\u{1f}0\u{1f}r1\u{1f}resource:first\u{1f}".into(),
+                "directory-resource\u{1f}0\u{1f}resource:first".into(),
+                super::job_status_id(7),
+                super::job_cancel_id(7),
+            ] {
+                assert!(
+                    provider.action_hierarchy(&id).is_none(),
+                    "not an application action: {id:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3381,106 +3157,151 @@ mod tests {
         clippy::too_many_lines,
         reason = "the authenticated directory traversal scenario is clearest as one test"
     )]
-    fn resource_only_directory_row_enters_an_authenticated_child_scope() {
-        let chrome = chrome();
-        let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new(broker.clone());
-        let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
-            .room
-            .to_string();
-        let actor = chrome
-            .borrow()
-            .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room);
-        let root = ActionDirectoryRoot {
-            peer_id: 9,
-            app_id: "so.tilo.reader".into(),
-            cluster_id: cluster_id.clone(),
-            record_id: "library".into(),
-        };
-        broker.replace_action_directory_roots_for_test(vec![root]);
-        provider.directory_pages.borrow_mut().insert(
-            (9, actor, "book".into(), Vec::new()),
-            page(
-                vec![CatalogueRow {
-                    provider: "9".into(),
-                    app_id: "so.tilo.reader".into(),
-                    parent_resource: String::new(),
-                    resource: CatalogueResource {
-                        id: "book:42".into(),
-                        kind: "book".into(),
-                        label: "Book of Tilo".into(),
-                        presentation: Some(tilo_actions::ResourcePresentation {
-                            detail: Some("Chapter 7".into()),
-                            badge: Some("2 collaborators".into()),
-                            preview: None,
-                        }),
-                    },
-                    action: None,
-                    has_children: true,
-                    visibility: None,
-                }],
-                Vec::new(),
-            ),
-        );
-        let doc = AutoCommit::new();
-        let wanted = [ResourceKind::Custom("Resources".into())];
-        let chrome_ref = chrome.borrow();
-        let page = provider.query_page(
-            SearchContext {
-                needle: "book",
-                wanted: &wanted,
-                chrome: &chrome_ref,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            },
-            None,
-            SearchBudget::PALETTE,
-        );
-        drop(chrome_ref);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Book of Tilo");
-        assert_eq!(
-            page.results[0].subtitle.as_deref(),
-            Some("so.tilo.reader · Chapter 7")
-        );
-        assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
-        (page.results[0].on_open)(
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &chrome,
-            &crate::shell::search::action_api::ActionArgs::none(),
-        )
-        .unwrap();
-        assert_eq!(
-            chrome.borrow().search_resource_scope,
-            Some(crate::shell::chrome_state::SearchResourceScope {
-                peer_id: 9,
-                cluster_id,
-                app_id: "so.tilo.reader".into(),
-                resource: "book:42".into(),
-                label: "Book of Tilo".into(),
-            })
-        );
-        let chrome_ref = chrome.borrow();
-        let _ = provider.query_page(
-            SearchContext {
-                needle: "",
-                wanted: &wanted,
-                chrome: &chrome_ref,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            },
-            None,
-            SearchBudget::PALETTE,
-        );
-        assert_eq!(
-            provider
-                .directory_query_probe
+    fn live_actions_follow_the_authenticated_resource_room_and_scope() {
+        // Phase `live_action_proximity_uses_the_authenticated_resource_room`.
+        {
+            let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+            let provider = LiveAppActionsProvider::new(broker);
+            let chrome = chrome();
+            let chrome = chrome.borrow();
+            let room = chrome.tree().desktop.workspaces[0].room.to_string();
+            let result = |cluster: &str| SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                provider_id: PROVIDER_ID.into(),
+                id: [
+                    "so.tilo.files",
+                    "write",
+                    cluster,
+                    "file:/Brief.md",
+                    "files.entry:/Brief.md",
+                    "rename",
+                ]
+                .join(&ID_SEPARATOR.to_string()),
+                title: "Rename".into(),
+                subtitle: None,
+                badge: None,
+                score: 100,
+                params: Vec::new(),
+                contract: None,
+                on_open: Rc::new(|_, _, _, _| Ok(())),
+                on_invoke: None,
+                on_begin_invoke: None,
+            };
+
+            assert_eq!(
+                provider.proximity(&result(&room), &chrome),
+                SearchProximity::CurrentWorkspace
+            );
+            assert_eq!(
+                provider.proximity(&result("another-room"), &chrome),
+                SearchProximity::Global
+            );
+        }
+
+        // Phase `resource_only_directory_row_enters_an_authenticated_child_scope`.
+        {
+            let chrome = chrome();
+            let broker = broker_for(&chrome);
+            let provider = LiveAppActionsProvider::new(broker.clone());
+            let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
+                .room
+                .to_string();
+            let actor = chrome
                 .borrow()
-                .as_ref()
-                .and_then(|query| query.parent_resource.as_deref()),
-            Some("book:42"),
-            "the child fetch must carry the selected stable resource address"
-        );
+                .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room);
+            let root = ActionDirectoryRoot {
+                peer_id: 9,
+                app_id: "so.tilo.reader".into(),
+                cluster_id: cluster_id.clone(),
+                record_id: "library".into(),
+            };
+            broker.replace_action_directory_roots_for_test(vec![root]);
+            provider.directory_pages.borrow_mut().insert(
+                (9, actor, "book".into(), Vec::new()),
+                page(
+                    vec![CatalogueRow {
+                        provider: "9".into(),
+                        app_id: "so.tilo.reader".into(),
+                        parent_resource: String::new(),
+                        resource: CatalogueResource {
+                            id: "book:42".into(),
+                            kind: "book".into(),
+                            label: "Book of Tilo".into(),
+                            presentation: Some(tilo_actions::ResourcePresentation {
+                                detail: Some("Chapter 7".into()),
+                                badge: Some("2 collaborators".into()),
+                                preview: None,
+                            }),
+                        },
+                        action: None,
+                        has_children: true,
+                        visibility: None,
+                    }],
+                    Vec::new(),
+                ),
+            );
+            let doc = AutoCommit::new();
+            let wanted = [ResourceKind::Custom("Resources".into())];
+            let chrome_ref = chrome.borrow();
+            let page = provider.query_page(
+                SearchContext {
+                    needle: "book",
+                    wanted: &wanted,
+                    chrome: &chrome_ref,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+                None,
+                SearchBudget::PALETTE,
+            );
+            drop(chrome_ref);
+            assert_eq!(page.results.len(), 1);
+            assert_eq!(page.results[0].title, "Book of Tilo");
+            assert_eq!(
+                page.results[0].subtitle.as_deref(),
+                Some("so.tilo.reader · Chapter 7")
+            );
+            assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
+            (page.results[0].on_open)(
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+                &chrome,
+                &crate::shell::search::action_api::ActionArgs::none(),
+            )
+            .unwrap();
+            assert_eq!(
+                chrome.borrow().search_resource_scope,
+                Some(crate::shell::chrome_state::SearchResourceScope {
+                    peer_id: 9,
+                    cluster_id,
+                    app_id: "so.tilo.reader".into(),
+                    resource: "book:42".into(),
+                    label: "Book of Tilo".into(),
+                    kind: "book".into(),
+                })
+            );
+            let chrome_ref = chrome.borrow();
+            let _ = provider.query_page(
+                SearchContext {
+                    needle: "",
+                    wanted: &wanted,
+                    chrome: &chrome_ref,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+                None,
+                SearchBudget::PALETTE,
+            );
+            assert_eq!(
+                provider
+                    .directory_query_probe
+                    .borrow()
+                    .as_ref()
+                    .and_then(|query| query.parent_resource.as_deref()),
+                Some("book:42"),
+                "the child fetch must carry the selected stable resource address"
+            );
+        }
     }
 }

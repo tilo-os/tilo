@@ -5,7 +5,7 @@
 
 //! Native input-delivery fixture, not a displayed-FPS qualification workload.
 //! The ordinary button callback supplies independent evidence that scheduled
-//! clicks reached a real control. Run with QOS_NATIVE_SCENARIO and QOS_PROFILE_OUT.
+//! clicks reached a real control. Run with TILO_NATIVE_SCENARIO and TILO_PROFILE_OUT.
 
 fn main() {
     tilo_ui::i18n::I18nManager::init("en-US");
@@ -41,7 +41,7 @@ fn main() {
                 move || {
                     activations = activations.saturating_add(1);
                     eprintln!(
-                        "qos-native-effect {}",
+                        "tilo-native-effect {}",
                         serde_json::json!({
                             "event": "button_activated", "count": activations,
                         })

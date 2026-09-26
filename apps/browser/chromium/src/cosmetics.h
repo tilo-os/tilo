@@ -2,7 +2,7 @@
 #include "blocker.h"
 #include "include/cef_v8.h"
 
-namespace qos {
+namespace tilo {
 // This callback is passed directly into a private JS closure, never installed as
 // a global binding. Its URL is fixed by the owning CEF context, not page input.
 class CosmeticQuery final : public CefV8Handler {

@@ -15,7 +15,7 @@
 #include <utility>
 #include <unistd.h>
 
-namespace qos {
+namespace tilo {
 // Runtime-owned downloads may outlive their originating browser. CEF download
 // item IDs are unique across this browser context; commands use those IDs.
 class Downloads final : public CefDownloadHandler {
@@ -90,7 +90,7 @@ class Downloads final : public CefDownloadHandler {
     std::error_code ec;std::filesystem::create_directories(downloads_,ec);
     // mkdtemp atomically reserves a private destination. Untrusted suggested
     // names cannot traverse or overwrite an existing file, even on repetition.
-    std::string directory=downloads_+"/qos-download-XXXXXX";
+    std::string directory=downloads_+"/tilo-download-XXXXXX";
     if(ec || !mkdtemp(directory.data())) { Finish(id,"failed","Cannot create download directory");return; }
     it->second.approved=true;
     auto callback=it->second.before;it->second.before=nullptr;

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "agent"
 version = "0.1.0"
 edition = "2024"
@@ -32,6 +33,8 @@ chat = { path = "../chat", default-features = false }
 # Image editor types and actions, including cross-app image references.
 photos = { path = "../photos" }
 tilo-actions = { path = "../../crates/collab/actions" }
+# The transform action names shortcuts lower their `Ai` steps to.
+tilo-automation = { path = "../../crates/collab/automation" }
 # The selected-resource address carried by chat messages.
 tilo-reference = { path = "../../crates/collab/reference" }
 # The runner reads the same provider profile Settings writes. Resolving the
@@ -62,6 +65,10 @@ collab-types = { path = "../../crates/collab/collab-types" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

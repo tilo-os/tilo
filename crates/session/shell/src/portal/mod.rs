@@ -52,6 +52,7 @@
 pub mod account;
 #[cfg(any(test, target_os = "linux"))]
 pub mod app_chooser;
+pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
 #[cfg(any(test, target_os = "linux"))]
@@ -87,11 +88,12 @@ pub mod remote_desktop;
 #[cfg(any(test, target_os = "linux"))]
 pub mod screencast;
 pub mod screencast_pipewire;
+#[cfg(target_os = "linux")]
+pub mod screensaver;
 #[cfg(any(test, target_os = "linux"))]
 pub mod screenshot;
 #[cfg(any(test, target_os = "linux"))]
 pub mod secret;
-#[cfg(any(test, target_os = "linux"))]
 pub mod settings;
 #[cfg(any(test, target_os = "linux"))]
 pub mod usb;
@@ -1174,6 +1176,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     );
     let shortcut_events = shortcuts.handle();
     shortcut_service.attach_event_bridge(shortcut_events.clone());
+    let screensaver = screensaver::ScreenSaverService::new(inhibit_registry.clone());
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
     input_capture.spawn_signal_emitter(connection.clone());
@@ -1227,6 +1230,13 @@ pub async fn serve_with_inhibit_and_clipboard(
         .await?;
     connection.object_server().at(OBJECT_PATH, secret).await?;
     connection.object_server().at(OBJECT_PATH, usb).await?;
+    for path in screensaver::OBJECT_PATHS {
+        connection
+            .object_server()
+            .at(path, screensaver.clone())
+            .await?;
+    }
+    screensaver.spawn_disconnect_cleanup(&connection);
 
     // Compositor-owned shortcut events are queued by `shortcut_events`; this
     // pump is the only path which emits activation signals for an approved
@@ -1244,6 +1254,12 @@ pub async fn serve_with_inhibit_and_clipboard(
             false
         }
     };
+
+    // Another screensaver service may already own the name (a nested
+    // session); the portal is still useful without it.
+    if let Err(e) = connection.request_name(screensaver::BUS_NAME).await {
+        tracing::debug!("portal: {} not claimed: {e}", screensaver::BUS_NAME);
+    }
 
     Ok(ServerHandle {
         connection,
@@ -1282,368 +1298,376 @@ mod tests {
     }
 
     #[test]
-    fn capability_kind_matches_filesystem_modes() {
-        let read = Capability::Filesystem {
-            path: "/tmp".into(),
-            mode: FsMode::Read,
-            scope: GRANT_ONCE,
-        };
-        let rw = Capability::Filesystem {
-            path: "/tmp".into(),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_ALWAYS,
-        };
-        assert!(CapabilityKind::FilesystemRead.matches(&read));
-        assert!(CapabilityKind::FilesystemRead.matches(&rw));
-        // RW request *only* satisfied by an RW grant.
-        assert!(!CapabilityKind::FilesystemReadWrite.matches(&read));
-        assert!(CapabilityKind::FilesystemReadWrite.matches(&rw));
-    }
-
-    #[test]
-    fn grant_store_returns_strongest_scope() {
-        let mut ws = empty_ws(11);
-        for scope in [GRANT_ONCE, GRANT_ALWAYS, GRANT_SESSION] {
-            ws.grant_app("app.org", &Capability::Camera { scope });
-        }
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let caller = PortalCaller::new(ws_id, "app.org");
-        assert_eq!(
-            store.lookup(&caller, CapabilityKind::Camera),
-            Some(GRANT_ALWAYS)
-        );
-    }
-
-    #[test]
-    fn filesystem_path_granted_covers_exact_and_ancestor_paths() {
-        let mut ws = empty_ws(21);
-        ws.grant_app(
-            "Editor",
-            &Capability::Filesystem {
-                path: "/home/u/proj".into(),
-                mode: FsMode::Read,
-                scope: GRANT_SESSION,
-            },
-        );
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let caller = PortalCaller::new(ws_id, "Editor");
-        // Exact match and any descendant are covered.
-        assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj")));
-        assert!(
-            store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj/main.ts"))
-        );
-        // A sibling path outside the granted subtree is NOT covered.
-        assert!(!store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/other.ts")));
-        // A different app id has no grants → not covered.
-        let other = PortalCaller::new(ws_id, "Files");
-        assert!(
-            !store.filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts"))
-        );
-    }
-
-    #[test]
-    fn grant_store_returns_none_for_missing_app() {
-        let ws = empty_ws(12);
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let caller = PortalCaller::new(ws_id, "no.such.app");
-        assert!(store.lookup(&caller, CapabilityKind::Camera).is_none());
-    }
-
-    #[test]
-    fn grant_store_insert_appends_into_workspace() {
-        let ws = empty_ws(13);
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let caller = PortalCaller::new(ws_id, "app.org");
-        assert!(store.insert(
-            &caller,
-            &Capability::Microphone {
-                scope: GRANT_ALWAYS
-            }
-        ));
-        assert_eq!(
-            store.lookup(&caller, CapabilityKind::Microphone),
-            Some(GRANT_ALWAYS)
-        );
-    }
-
-    /// A grant inserted via the portal's [`GrantStoreHandle`] must be
-    /// immediately visible to the shell chrome (the WS-Settings "Permissions"
-    /// tab reads from `ChromeState`'s shared `WorkspaceTreeHandle`), not sitting in an independent clone.
-    #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "st's only use is producing tree via tree(), read from through the inner \
                   block's last statement; nothing to drop earlier"
     )]
-    fn grant_inserted_via_portal_is_visible_in_ws_settings() {
-        use crate::shell::chrome_state::ChromeState;
-        use crate::shell::state::WorkspaceTreeHandleExt;
-
-        let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
-        let ws_id = WorkspaceId(1);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn grant_store_resolves_capabilities_scopes_and_callers() {
+        // Phase `capability_kind_matches_filesystem_modes`.
         {
-            let mut tree = handle.write();
-            tree.desktop.active = ws_id;
-            tree.desktop.workspaces.push(empty_ws(1));
-        }
-
-        let portal = GrantStoreHandle::new(handle.clone());
-        let chrome = ChromeState::new_with_handle(handle);
-
-        // Simulate an `Allow → Session` outcome for `camera-app`.
-        let caller = PortalCaller::new(ws_id, "camera-app");
-        let cap = Capability::Camera {
-            scope: GRANT_SESSION,
-        };
-        assert!(
-            portal.insert(&caller, &cap),
-            "portal insert must succeed on a workspace that exists",
-        );
-
-        // The production code path the Permissions tab uses, see `shell::workspace_settings::permissions_pane_rows`.
-        let has_camera_app_grant = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            let ws = tree
-                .desktop
-                .active_workspace()
-                .expect("active workspace exists");
-            ws.app_grants_snapshot().contains_key("camera-app")
-        };
-        assert!(
-            has_camera_app_grant,
-            "portal-side grant insert must be visible to the shell chrome \
-             (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
-        );
-    }
-
-    #[test]
-    fn prompt_queue_auto_allow_resolves_immediately() {
-        let q = PromptQueueHandle::new(PromptResolver::AutoAllow);
-        let caller = PortalCaller::new(WorkspaceId(1), "app");
-        let rx = q.enqueue(caller, Capability::Screencast { scope: GRANT_ONCE });
-        // No `.await` needed — AutoAllow fills the oneshot synchronously before `enqueue` returns.
-        let outcome = rx.blocking_recv().expect("oneshot");
-        assert_eq!(outcome, PromptOutcome::AllowOnce);
-        // Nothing should have been buffered.
-        assert_eq!(q.queued_len(), 0);
-    }
-
-    #[test]
-    fn prompt_queue_channel_buffers_for_drain() {
-        let q = PromptQueueHandle::new(PromptResolver::Channel);
-        let caller = PortalCaller::new(WorkspaceId(2), "app");
-        let _rx = q.enqueue(caller.clone(), Capability::Camera { scope: GRANT_ONCE });
-        assert_eq!(q.queued_len(), 1);
-        let drained = q.drain();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].caller, caller);
-        assert_eq!(q.queued_len(), 0);
-    }
-
-    #[test]
-    fn cancelling_one_request_prompt_never_removes_another() {
-        let q = PromptQueueHandle::new(PromptResolver::Channel);
-        let caller = PortalCaller::new(WorkspaceId(3), "app");
-        let cancelled = q.enqueue_for_request(
-            caller.clone(),
-            Capability::Camera { scope: GRANT_ONCE },
-            "/request/one".into(),
-        );
-        let retained = q.enqueue_for_request(
-            caller,
-            Capability::Microphone { scope: GRANT_ONCE },
-            "/request/two".into(),
-        );
-        assert!(q.cancel_request("/request/one"));
-        assert_eq!(
-            cancelled.blocking_recv().expect("cancel response"),
-            PromptOutcome::Deny
-        );
-        assert_eq!(q.queued_len(), 1);
-        let remaining = q.drain();
-        assert_eq!(remaining.len(), 1);
-        assert!(matches!(
-            remaining[0].capability,
-            Capability::Microphone { .. }
-        ));
-        drop(remaining);
-        assert!(
-            retained.blocking_recv().is_err(),
-            "dropped UI sheet cancels only its own request"
-        );
-    }
-
-    #[test]
-    fn cancellation_before_enqueue_closes_the_request_enqueue_race() {
-        let q = PromptQueueHandle::new(PromptResolver::Channel);
-        assert!(q.cancel_request("/request/racing"));
-        let rx = q.enqueue_for_request(
-            PortalCaller::new(WorkspaceId(4), "app"),
-            Capability::Camera { scope: GRANT_ONCE },
-            "/request/racing".into(),
-        );
-        assert_eq!(
-            rx.blocking_recv().expect("deny response"),
-            PromptOutcome::Deny
-        );
-        assert_eq!(q.queued_len(), 0);
-    }
-
-    #[test]
-    fn flow_resolve_fast_path_always_grant_skips_prompt() {
-        // Channel mode would buffer any enqueued request, so an empty queue at the end proves the fast path bypassed it.
-        let mut ws = empty_ws(21);
-        ws.grant_app(
-            "app",
-            &Capability::Camera {
-                scope: GRANT_ALWAYS,
-            },
-        );
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let queue = PromptQueueHandle::new(PromptResolver::Channel);
-        let caller = PortalCaller::new(ws_id, "app");
-        let ctx = (store, queue.clone());
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let outcome = rt.block_on(flow::resolve(
-            &ctx,
-            caller,
-            CapabilityKind::Camera,
-            Capability::Camera { scope: GRANT_ONCE },
-        ));
-        assert_eq!(outcome, PromptOutcome::AllowAlways);
-        assert_eq!(queue.queued_len(), 0, "fast path must skip enqueue");
-    }
-
-    #[test]
-    fn flow_resolve_session_outcome_persists_grant() {
-        let ws = empty_ws(22);
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let queue =
-            PromptQueueHandle::new(PromptResolver::AutoOutcome(PromptOutcome::AllowSession));
-        let caller = PortalCaller::new(ws_id, "app");
-        let ctx = (store.clone(), queue);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let outcome = rt.block_on(flow::resolve(
-            &ctx,
-            caller.clone(),
-            CapabilityKind::Microphone,
-            Capability::Microphone { scope: GRANT_ONCE },
-        ));
-        assert_eq!(outcome, PromptOutcome::AllowSession);
-        // The Session-scoped grant should now be persisted.
-        assert_eq!(
-            store.lookup(&caller, CapabilityKind::Microphone),
-            Some(GRANT_SESSION)
-        );
-        let tree = store.tree_handle();
-        let tree = tree.read();
-        assert!(
-            tree.desktop
-                .active_workspace()
-                .unwrap()
-                .app_grants_snapshot()
-                .get("app")
-                .is_none(),
-            "a local privacy choice must never enter replicated workspace state"
-        );
-    }
-
-    #[test]
-    fn always_portal_consent_is_private_and_survives_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("consents.json");
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                active: WorkspaceId(31),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.workspaces.push(empty_ws(31));
-        let shared = tree.shared();
-        let caller = PortalCaller::new(WorkspaceId(31), "private-app");
-        let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
-        assert!(store.insert_portal_consent(
-            &caller,
-            &Capability::Camera {
-                scope: GRANT_ALWAYS,
-            }
-        ));
-        assert_eq!(
-            GrantStoreHandle::with_consent_path(shared.clone(), Some(path))
-                .lookup(&caller, CapabilityKind::Camera),
-            Some(GRANT_ALWAYS)
-        );
-        assert!(
-            shared.read().desktop.workspaces[0]
-                .app_grants_snapshot()
-                .get("private-app")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn flow_resolve_once_outcome_does_not_persist() {
-        let ws = empty_ws(23);
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
-        let caller = PortalCaller::new(ws_id, "app");
-        let ctx = (store.clone(), queue);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let outcome = rt.block_on(flow::resolve(
-            &ctx,
-            caller.clone(),
-            CapabilityKind::Camera,
-            Capability::Camera { scope: GRANT_ONCE },
-        ));
-        assert_eq!(outcome, PromptOutcome::AllowOnce);
-        assert!(
-            store.lookup(&caller, CapabilityKind::Camera).is_none(),
-            "Once outcomes must not persist"
-        );
-    }
-
-    #[test]
-    fn flow_resolve_deny_outcome_is_propagated() {
-        let ws = empty_ws(24);
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
-        let caller = PortalCaller::new(ws_id, "app");
-        let ctx = (store.clone(), queue);
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let outcome = rt.block_on(flow::resolve(
-            &ctx,
-            caller.clone(),
-            CapabilityKind::Network,
-            Capability::Network {
-                hosts: None,
+            let read = Capability::Filesystem {
+                path: "/tmp".into(),
+                mode: FsMode::Read,
                 scope: GRANT_ONCE,
-            },
-        ));
-        assert_eq!(outcome, PromptOutcome::Deny);
-        assert!(store.lookup(&caller, CapabilityKind::Network).is_none());
+            };
+            let rw = Capability::Filesystem {
+                path: "/tmp".into(),
+                mode: FsMode::ReadWrite,
+                scope: GRANT_ALWAYS,
+            };
+            assert!(CapabilityKind::FilesystemRead.matches(&read));
+            assert!(CapabilityKind::FilesystemRead.matches(&rw));
+            // RW request *only* satisfied by an RW grant.
+            assert!(!CapabilityKind::FilesystemReadWrite.matches(&read));
+            assert!(CapabilityKind::FilesystemReadWrite.matches(&rw));
+        }
+        // Phase `grant_store_returns_strongest_scope`.
+        {
+            let mut ws = empty_ws(11);
+            for scope in [GRANT_ONCE, GRANT_ALWAYS, GRANT_SESSION] {
+                ws.grant_app("app.org", &Capability::Camera { scope });
+            }
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let caller = PortalCaller::new(ws_id, "app.org");
+            assert_eq!(
+                store.lookup(&caller, CapabilityKind::Camera),
+                Some(GRANT_ALWAYS)
+            );
+        }
+        // Phase `filesystem_path_granted_covers_exact_and_ancestor_paths`.
+        {
+            let mut ws = empty_ws(21);
+            ws.grant_app(
+                "Editor",
+                &Capability::Filesystem {
+                    path: "/home/u/proj".into(),
+                    mode: FsMode::Read,
+                    scope: GRANT_SESSION,
+                },
+            );
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let caller = PortalCaller::new(ws_id, "Editor");
+            // Exact match and any descendant are covered.
+            assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj")));
+            assert!(
+                store
+                    .filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj/main.ts"))
+            );
+            // A sibling path outside the granted subtree is NOT covered.
+            assert!(
+                !store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/other.ts"))
+            );
+            // A different app id has no grants → not covered.
+            let other = PortalCaller::new(ws_id, "Files");
+            assert!(
+                !store
+                    .filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts"))
+            );
+        }
+        // Phase `grant_store_returns_none_for_missing_app`.
+        {
+            let ws = empty_ws(12);
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let caller = PortalCaller::new(ws_id, "no.such.app");
+            assert!(store.lookup(&caller, CapabilityKind::Camera).is_none());
+        }
+        // Phase `grant_store_insert_appends_into_workspace`.
+        {
+            let ws = empty_ws(13);
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let caller = PortalCaller::new(ws_id, "app.org");
+            assert!(store.insert(
+                &caller,
+                &Capability::Microphone {
+                    scope: GRANT_ALWAYS
+                }
+            ));
+            assert_eq!(
+                store.lookup(&caller, CapabilityKind::Microphone),
+                Some(GRANT_ALWAYS)
+            );
+        }
+        // Phase `grant_inserted_via_portal_is_visible_in_ws_settings`.
+        // A grant inserted via the portal's [`GrantStoreHandle`] must be
+        // immediately visible to the shell chrome (the WS-Settings "Permissions"
+        // tab reads from `ChromeState`'s shared `WorkspaceTreeHandle`), not sitting in an independent clone.
+        {
+            use crate::shell::chrome_state::ChromeState;
+            use crate::shell::state::WorkspaceTreeHandleExt;
+
+            let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
+            let ws_id = WorkspaceId(1);
+            {
+                let mut tree = handle.write();
+                tree.desktop.active = ws_id;
+                tree.desktop.workspaces.push(empty_ws(1));
+            }
+
+            let portal = GrantStoreHandle::new(handle.clone());
+            let chrome = ChromeState::new_with_handle(handle);
+
+            // Simulate an `Allow → Session` outcome for `camera-app`.
+            let caller = PortalCaller::new(ws_id, "camera-app");
+            let cap = Capability::Camera {
+                scope: GRANT_SESSION,
+            };
+            assert!(
+                portal.insert(&caller, &cap),
+                "portal insert must succeed on a workspace that exists",
+            );
+
+            // The production code path the Permissions tab uses, see `shell::workspace_settings::permissions_pane_rows`.
+            let has_camera_app_grant = {
+                let st = chrome.borrow();
+                let tree = st.tree();
+                let ws = tree
+                    .desktop
+                    .active_workspace()
+                    .expect("active workspace exists");
+                ws.app_grants_snapshot().contains_key("camera-app")
+            };
+            assert!(
+                has_camera_app_grant,
+                "portal-side grant insert must be visible to the shell chrome \
+                 (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
+            );
+        }
+        // Phase `caller_map_round_trips`.
+        {
+            let m = CallerMap::new();
+            let caller = PortalCaller::new(WorkspaceId(7), "app.x");
+            m.insert(":1.42", caller.clone());
+            assert_eq!(m.lookup(":1.42"), Some(caller));
+            assert!(m.lookup(":1.43").is_none());
+        }
     }
 
     #[test]
-    fn caller_map_round_trips() {
-        let m = CallerMap::new();
-        let caller = PortalCaller::new(WorkspaceId(7), "app.x");
-        m.insert(":1.42", caller.clone());
-        assert_eq!(m.lookup(":1.42"), Some(caller));
-        assert!(m.lookup(":1.43").is_none());
+    fn prompt_queue_resolves_buffers_and_cancels_exactly_one_request() {
+        // Phase `prompt_queue_auto_allow_resolves_immediately`.
+        {
+            let q = PromptQueueHandle::new(PromptResolver::AutoAllow);
+            let caller = PortalCaller::new(WorkspaceId(1), "app");
+            let rx = q.enqueue(caller, Capability::Screencast { scope: GRANT_ONCE });
+            // No `.await` needed — AutoAllow fills the oneshot synchronously before `enqueue` returns.
+            let outcome = rx.blocking_recv().expect("oneshot");
+            assert_eq!(outcome, PromptOutcome::AllowOnce);
+            // Nothing should have been buffered.
+            assert_eq!(q.queued_len(), 0);
+        }
+        // Phase `prompt_queue_channel_buffers_for_drain`.
+        {
+            let q = PromptQueueHandle::new(PromptResolver::Channel);
+            let caller = PortalCaller::new(WorkspaceId(2), "app");
+            let _rx = q.enqueue(caller.clone(), Capability::Camera { scope: GRANT_ONCE });
+            assert_eq!(q.queued_len(), 1);
+            let drained = q.drain();
+            assert_eq!(drained.len(), 1);
+            assert_eq!(drained[0].caller, caller);
+            assert_eq!(q.queued_len(), 0);
+        }
+        // Phase `cancelling_one_request_prompt_never_removes_another`.
+        {
+            let q = PromptQueueHandle::new(PromptResolver::Channel);
+            let caller = PortalCaller::new(WorkspaceId(3), "app");
+            let cancelled = q.enqueue_for_request(
+                caller.clone(),
+                Capability::Camera { scope: GRANT_ONCE },
+                "/request/one".into(),
+            );
+            let retained = q.enqueue_for_request(
+                caller,
+                Capability::Microphone { scope: GRANT_ONCE },
+                "/request/two".into(),
+            );
+            assert!(q.cancel_request("/request/one"));
+            assert_eq!(
+                cancelled.blocking_recv().expect("cancel response"),
+                PromptOutcome::Deny
+            );
+            assert_eq!(q.queued_len(), 1);
+            let remaining = q.drain();
+            assert_eq!(remaining.len(), 1);
+            assert!(matches!(
+                remaining[0].capability,
+                Capability::Microphone { .. }
+            ));
+            drop(remaining);
+            assert!(
+                retained.blocking_recv().is_err(),
+                "dropped UI sheet cancels only its own request"
+            );
+        }
+        // Phase `cancellation_before_enqueue_closes_the_request_enqueue_race`.
+        {
+            let q = PromptQueueHandle::new(PromptResolver::Channel);
+            assert!(q.cancel_request("/request/racing"));
+            let rx = q.enqueue_for_request(
+                PortalCaller::new(WorkspaceId(4), "app"),
+                Capability::Camera { scope: GRANT_ONCE },
+                "/request/racing".into(),
+            );
+            assert_eq!(
+                rx.blocking_recv().expect("deny response"),
+                PromptOutcome::Deny
+            );
+            assert_eq!(q.queued_len(), 0);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn flow_resolve_persists_only_session_and_always_outcomes() {
+        // Phase `flow_resolve_fast_path_always_grant_skips_prompt`.
+        {
+            // Channel mode would buffer any enqueued request, so an empty queue at the end proves the fast path bypassed it.
+            let mut ws = empty_ws(21);
+            ws.grant_app(
+                "app",
+                &Capability::Camera {
+                    scope: GRANT_ALWAYS,
+                },
+            );
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let queue = PromptQueueHandle::new(PromptResolver::Channel);
+            let caller = PortalCaller::new(ws_id, "app");
+            let ctx = (store, queue.clone());
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = rt.block_on(flow::resolve(
+                &ctx,
+                caller,
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+            ));
+            assert_eq!(outcome, PromptOutcome::AllowAlways);
+            assert_eq!(queue.queued_len(), 0, "fast path must skip enqueue");
+        }
+        // Phase `flow_resolve_session_outcome_persists_grant`.
+        {
+            let ws = empty_ws(22);
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let queue =
+                PromptQueueHandle::new(PromptResolver::AutoOutcome(PromptOutcome::AllowSession));
+            let caller = PortalCaller::new(ws_id, "app");
+            let ctx = (store.clone(), queue);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = rt.block_on(flow::resolve(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Microphone,
+                Capability::Microphone { scope: GRANT_ONCE },
+            ));
+            assert_eq!(outcome, PromptOutcome::AllowSession);
+            // The Session-scoped grant should now be persisted.
+            assert_eq!(
+                store.lookup(&caller, CapabilityKind::Microphone),
+                Some(GRANT_SESSION)
+            );
+            let tree = store.tree_handle();
+            let tree = tree.read();
+            assert!(
+                tree.desktop
+                    .active_workspace()
+                    .unwrap()
+                    .app_grants_snapshot()
+                    .get("app")
+                    .is_none(),
+                "a local privacy choice must never enter replicated workspace state"
+            );
+        }
+        // Phase `always_portal_consent_is_private_and_survives_restart`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("consents.json");
+            let mut tree = WorkspaceTree {
+                desktop: crate::shell::state::DesktopTree {
+                    active: WorkspaceId(31),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            tree.desktop.workspaces.push(empty_ws(31));
+            let shared = tree.shared();
+            let caller = PortalCaller::new(WorkspaceId(31), "private-app");
+            let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+            assert!(store.insert_portal_consent(
+                &caller,
+                &Capability::Camera {
+                    scope: GRANT_ALWAYS,
+                }
+            ));
+            assert_eq!(
+                GrantStoreHandle::with_consent_path(shared.clone(), Some(path))
+                    .lookup(&caller, CapabilityKind::Camera),
+                Some(GRANT_ALWAYS)
+            );
+            assert!(
+                shared.read().desktop.workspaces[0]
+                    .app_grants_snapshot()
+                    .get("private-app")
+                    .is_none()
+            );
+        }
+        // Phase `flow_resolve_once_outcome_does_not_persist`.
+        {
+            let ws = empty_ws(23);
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+            let caller = PortalCaller::new(ws_id, "app");
+            let ctx = (store.clone(), queue);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = rt.block_on(flow::resolve(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+            ));
+            assert_eq!(outcome, PromptOutcome::AllowOnce);
+            assert!(
+                store.lookup(&caller, CapabilityKind::Camera).is_none(),
+                "Once outcomes must not persist"
+            );
+        }
+        // Phase `flow_resolve_deny_outcome_is_propagated`.
+        {
+            let ws = empty_ws(24);
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+            let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
+            let caller = PortalCaller::new(ws_id, "app");
+            let ctx = (store.clone(), queue);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = rt.block_on(flow::resolve(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Network,
+                Capability::Network {
+                    hosts: None,
+                    scope: GRANT_ONCE,
+                },
+            ));
+            assert_eq!(outcome, PromptOutcome::Deny);
+            assert!(store.lookup(&caller, CapabilityKind::Network).is_none());
+        }
     }
 }

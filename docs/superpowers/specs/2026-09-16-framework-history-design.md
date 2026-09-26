@@ -4,7 +4,7 @@
 
 The user selected a framework-owned History experience for every application, combining activity and historical versions. Their implementation instruction authorizes this design and migration, using subagent-driven development and coordination with the existing runtime and action tasks.
 
-The shared host supplies the entry point, panel, controller, historical banner, comparison, return-to-live, and reviewed restoration. An application supplies its domain rendering and action semantics, not a separate history workflow. qOS embedded and standalone applications use the same implementation.
+The shared host supplies the entry point, panel, controller, historical banner, comparison, return-to-live, and reviewed restoration. An application supplies its domain rendering and action semantics, not a separate history workflow. Tilo embedded and standalone applications use the same implementation.
 
 ## UI behavior
 
@@ -21,7 +21,7 @@ Use the existing UI HIG: history activity is content/master-detail, not a narrow
 
 ## Runtime boundary
 
-Build on `qos_actions::replay`, `ui::history_source`, `qdoc::history`, `AppComponent`, `RecordStore`, and canonical bound dispatch. Do not create a parallel action log or migrate stored change graphs. Historical reads use immutable snapshots/forks. Reconstruct state from existing CRDT history without reexecuting external effects.
+Build on `tilo_actions::replay`, `ui::history_source`, `qdoc::history`, `AppComponent`, `RecordStore`, and canonical bound dispatch. Do not create a parallel action log or migrate stored change graphs. Historical reads use immutable snapshots/forks. Reconstruct state from existing CRDT history without reexecuting external effects.
 
 Current apps expose two hosting paths: Notes defines an `ApplicationDefinition`/`AppComponent`, but its production launcher also still uses the legacy path. The inventory finds 47 GUI applications using `LaunchSpec::new`/`new_with_args`, including six custom live handlers that construct `App` directly. The implementation must cover the common App construction path, headless drivers, nested TileHost roots and bound components. Adding History only to `AppComponent` would not satisfy this specification. No wholesale application-lifecycle migration is required merely to display history.
 

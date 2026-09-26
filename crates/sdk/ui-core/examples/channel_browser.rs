@@ -5,11 +5,11 @@
 //! ```bash
 //! cargo run -p ui --example ui-lab -- channel_browser                       # interactive
 //! cargo run -p ui --example ui-lab -- channel_browser --shots o.png         # headless frame
-//! QOS_SHOTS_THEME=light cargo run -p ui --example ui-lab -- channel_browser --shots o.png
+//! TILO_SHOTS_THEME=light cargo run -p ui --example ui-lab -- channel_browser --shots o.png
 //! ```
 //!
 //! `--shots` mounts the sheet in a [`tilo_ui::headless::FrameHarness`] under the
-//! `QOS_SHOTS_THEME` palette (`dark` by default), composites it on the
+//! `TILO_SHOTS_THEME` palette (`dark` by default), composites it on the
 //! theme's background and writes `o.png` plus `o.inspection.json` — the
 //! rects `scripts/ux-bench/usability.py`'s `geometry_audit` lints.
 //!
@@ -169,7 +169,7 @@ pub fn run(args: &[String]) {
 /// One headless frame of the sheet: PNG composited on the theme background
 /// plus the harness inspection beside it.
 fn render_shot(browser: ChannelBrowser, out: &Path) {
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);

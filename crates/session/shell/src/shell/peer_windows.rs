@@ -19,10 +19,6 @@ use crate::shell::tab_binding::Placement;
 
 /// Shown while the local instance is starting.
 pub(crate) const OPENING: &str = "Opening here…";
-/// A restore that was attempted without Xwayland remains symbolic and is
-/// retried if the compatibility bridge recovers. This is intentionally a
-/// note, so the person sees why the card has not become a live window.
-pub(crate) const X11_RETRY: &str = "Waiting for X11 compatibility to recover…";
 
 /// One symbolic application window, lifted out of the tree so the decision
 /// can be made without holding a borrow on it. `local` distinguishes a window
@@ -33,7 +29,6 @@ struct Pending {
     /// Index of the owning workspace in `tree.workspaces`.
     workspace: usize,
     local: bool,
-    retry_x11: bool,
 }
 
 /// Examine every peer window this machine has not yet answered for, and
@@ -65,15 +60,9 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
             continue;
         }
         let note = match open_for(tree, &item) {
-            Ok(OpenResult::Started) => {
+            Ok(()) => {
                 started.push(item.app_id.clone());
                 OPENING.to_string()
-            }
-            Ok(OpenResult::Deferred(note)) => {
-                if set_note(tree, item.tab, note.to_string()) {
-                    decided = true;
-                }
-                continue;
             }
             Err(refusal) => refusal,
         };
@@ -89,41 +78,9 @@ pub fn any_pending(tree: &WorkspaceTree) -> bool {
     !pending(tree).is_empty()
 }
 
-/// A host restore attempted during a terminal Xwayland outage is observable
-/// only when the launch worker reports failure. Keep that symbolic tab
-/// retryable instead of leaving the misleading `Opening…` note forever.
-pub(crate) fn mark_failed_host_restore(tree: &mut WorkspaceTree, desktop_id: &str) -> bool {
-    let Some(app) = crate::shell::host_apps::find(desktop_id) else {
-        return false;
-    };
-    let mut changed = false;
-    for ws in &mut tree.desktop.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                for tab in &mut group.tabs {
-                    let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
-                        continue;
-                    };
-                    if note == OPENING
-                        && (app.desktop_id.eq_ignore_ascii_case(app_id)
-                            || app
-                                .window_identities
-                                .iter()
-                                .any(|id| id.eq_ignore_ascii_case(app_id)))
-                    {
-                        *note = X11_RETRY.to_string();
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-    changed
-}
-
 /// Settle a persisted host-app card whose process started but never produced
-/// a surface. Unlike an Xwayland outage this is not automatically retryable:
-/// retrying every frame would create an unbounded process loop.
+/// a surface. This is not automatically retryable: retrying every frame would
+/// create an unbounded process loop.
 pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: &str) -> bool {
     let Some(app) = crate::shell::host_apps::find(desktop_id) else {
         return false;
@@ -166,15 +123,13 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
                     match &tab.tile {
                         TileContent::PeerWindow { app_id, note, .. }
                         | TileContent::LocalApp { app_id, note, .. }
-                            if (note.is_empty() || note == X11_RETRY)
-                                && !app_id.trim().is_empty() =>
+                            if note.is_empty() && !app_id.trim().is_empty() =>
                         {
                             out.push(Pending {
                                 tab: tab.id,
                                 app_id: app_id.clone(),
                                 workspace: idx,
                                 local: matches!(&tab.tile, TileContent::LocalApp { .. }),
-                                retry_x11: note == X11_RETRY,
                             });
                         }
                         _ => {}
@@ -217,33 +172,13 @@ pub fn retry_resolvable_host_app_errors(tree: &mut WorkspaceTree) -> bool {
 /// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
 /// carries the sentence to put on the card — what is actually the case,
 /// never a promise ("not installed", not "coming soon").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpenResult {
-    Started,
-    Deferred(&'static str),
-}
-
-fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, String> {
+fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
     if !item.local {
         admits(ws, &item.app_id)?;
-    }
-    // A persisted host window can be X11-only. Host-session Xwayland starts
-    // asynchronously after the public Wayland socket begins dispatching, so
-    // session restore can reach this path first. Keep the symbolic LocalApp
-    // untouched until the compatibility environment is published instead of
-    // starting the app without DISPLAY and permanently replacing the retryable
-    // state with an "Opening here…" card.
-    if item.local && crate::shell::host_apps::resolve(&item.app_id).is_some() {
-        let availability = crate::shell::host_apps::x11_availability();
-        if availability == crate::shell::host_apps::X11Availability::Starting
-            || (item.retry_x11 && availability != crate::shell::host_apps::X11Availability::Ready)
-        {
-            return Ok(OpenResult::Deferred(X11_RETRY));
-        }
     }
     // After `admits`, so nothing is granted for a launch the room refused.
     if !item.local {
@@ -265,12 +200,15 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
                 && let Some(app) = crate::shell::host_apps::resolve(&item.app_id)
             {
                 crate::shell::host_apps::note_placement(&app, Placement::IntoTab(item.tab));
-                return crate::shell::host_apps::launch(&app.desktop_id, None).map(|_| ());
+                // The restored window belongs to this workspace, so an X11
+                // client joins that workspace's private X server.
+                return crate::shell::host_apps::launch(&app.desktop_id, Some(ws.room.to_string()))
+                    .map(|_| ());
             }
             Err(err)
         });
     match launched {
-        Ok(()) => Ok(OpenResult::Started),
+        Ok(()) => Ok(()),
         Err(err) => {
             launcher::clear_pending_placement(&item.app_id);
             Err(match err {
@@ -553,332 +491,304 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
-        let home = xdg_paths::home().expect("the test machine has a home directory");
-        let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
+    fn room_file_managers_alone_see_the_users_home() {
+        fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
+            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
 
-        assert!(
-            !may_read(&tree.desktop.workspaces[0], FILES, &home),
-            "fixture sanity: the file manager must start with no grant on the home, \
-             or this test cannot tell a granted one from a pre-granted one"
-        );
+            assert!(
+                !may_read(&tree.desktop.workspaces[0], FILES, &home),
+                "fixture sanity: the file manager must start with no grant on the home, \
+                 or this test cannot tell a granted one from a pre-granted one"
+            );
 
-        let _ = examine(&mut tree);
+            let _ = examine(&mut tree);
 
-        assert!(
-            may_read(&tree.desktop.workspaces[0], FILES, &home),
-            "a file manager started on the room's behalf must be able to read the \
-             user's home; without it the window opens on its sandbox directory and \
-             says the folder is empty"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn opening_another_app_for_the_room_grants_it_no_home() {
-        let home = xdg_paths::home().expect("the test machine has a home directory");
-        let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), APP);
-
-        let _ = examine(&mut tree);
-
-        assert!(
-            !may_read(&tree.desktop.workspaces[0], APP, &home),
-            "only the file manager gets the user's home; the word processor must not"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn a_refused_file_manager_is_granted_nothing() {
-        let home = xdg_paths::home().expect("the test machine has a home directory");
-        let mut ws = room_owned_by("ada");
-        ws.owner = None;
-        let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
-
-        let _ = examine(&mut tree);
-
-        assert!(
-            !may_read(&tree.desktop.workspaces[0], FILES, &home),
-            "a room that authorises no launch must not hand out the home either"
-        );
-    }
-
-    #[test]
-    fn a_window_this_machine_opened_for_the_room_is_found() {
-        let mut ws = room_owned_by("ada");
-        let tab = Tab {
-            id: peer_id(),
-            title: "Word Processor".into(),
-            tile: TileContent::Foreign {
-                app_id: APP.into(),
-                surface_id: 4711,
-            },
-        };
-        let tab_id = tab.id;
-        let group = WindowGroup {
-            id: peer_id(),
-            tabs: vec![tab],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let mut strip = Strip::new(StripId::from(peer_id()), "main");
-        strip.window_groups = vec![group];
-        ws.strips = vec![strip];
-
-        let found = opened_for_the_room(&ws, APP, 0);
-        assert_eq!(
-            found.map(|(_, _, t)| t),
-            Some(tab_id),
-            "a peer's tab already hosting this machine's window of the app has to be \
-             found, or the launch opens a second one beside it"
-        );
-        assert!(
-            opened_for_the_room(&ws, "so.tilo.terminal", 0).is_none(),
-            "a different app is not this one"
-        );
-    }
-
-    #[test]
-    fn a_window_this_person_opened_is_not_one_to_return_to() {
-        let mut ws = room_owned_by("ada");
-        let tab = Tab {
-            id: next_id(),
-            title: "Terminal".into(),
-            tile: TileContent::Foreign {
-                app_id: "so.tilo.terminal".into(),
-                surface_id: 99,
-            },
-        };
-        let tab_id = tab.id;
-        let group = WindowGroup {
-            id: next_id(),
-            tabs: vec![tab],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let mut strip = Strip::new(StripId::from(next_id()), "main");
-        strip.window_groups = vec![group];
-        ws.strips = vec![strip];
-
-        let salt = crate::shell::state::peer_salt_of(tab_id);
-        assert!(
-            opened_for_the_room(&ws, "so.tilo.terminal", salt).is_none(),
-            "a second terminal is an ordinary thing to want; a window this person \
-             opened must not swallow the next launch of the same app"
-        );
-    }
-
-    #[test]
-    fn an_unanswered_card_is_not_a_window_to_return_to() {
-        let (tree, _tab) = tree_with_peer_window(room_owned_by("ada"));
-        assert!(
-            opened_for_the_room(&tree.desktop.workspaces[0], APP, 0).is_none(),
-            "an unexamined peer window has no instance behind it yet"
-        );
-    }
-
-    #[test]
-    fn a_room_with_an_owner_admits_its_apps() {
-        let ws = room_owned_by("ada");
-        assert_eq!(admits(&ws, APP), Ok(()));
-    }
-
-    /// Fail-closed: this is the state a room is in before its governance
-    /// has replicated, exactly when a machine must not start processes
-    /// on a peer's say-so.
-    #[test]
-    fn a_room_with_no_owner_admits_nothing() {
-        let mut ws = room_owned_by("ada");
-        ws.owner = None;
-        let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
-        assert_eq!(refusal, "This workspace has no owner yet");
-    }
-
-    /// Goes *through* the capability model rather than around it —
-    /// asserted against `Workspace::decide`, the same call every other
-    /// enforcement point bottoms out in.
-    #[test]
-    fn a_restriction_on_the_app_stops_it_opening_here() {
-        let mut ws = room_owned_by("ada");
-        let _ = ws.grant_capability(CapOverride {
-            effect: Effect::Restrict,
-            ..CapOverride::grant(
-                crate::shell::state::Subject::Principal(Principal::Person("ada".into())),
-                Scope::App(APP.to_string()),
-                Verb::Read,
-            )
-        });
-        let refusal = admits(&ws, APP).expect_err("a restricted app must not be opened here");
-        assert!(
-            refusal.contains("does not permit"),
-            "the card has to say why; got {refusal:?}"
-        );
-        // The restriction is about this app, not about the room: another
-        // app in the same room is still admitted.
-        assert_eq!(admits(&ws, "so.tilo.terminal"), Ok(()));
-    }
-
-    #[test]
-    fn a_note_is_what_marks_a_window_answered() {
-        let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
-        assert!(any_pending(&tree), "an unexamined peer window is pending");
-        assert!(set_note(
-            &mut tree,
-            tab,
-            "Not installed on this machine".into()
-        ));
-        assert!(
-            !any_pending(&tree),
-            "a peer window that has been answered for must not be examined again"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn stale_missing_note_for_a_resolvable_host_app_is_retried_once() {
-        let data = tempfile::tempdir().expect("temporary XDG data home");
-        let applications = data.path().join("applications");
-        std::fs::create_dir_all(&applications).expect("applications directory");
-        std::fs::write(
-            applications.join("rygel-preferences.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
-        )
-        .expect("desktop entry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        crate::shell::host_apps::invalidate_cache();
-
-        let (mut tree, tab) = tree_with_local_app("org.gnome.Rygel.Preferences");
-        assert!(set_note(
-            &mut tree,
-            tab,
-            "Not installed on this machine".into()
-        ));
-        assert!(retry_resolvable_host_app_errors(&mut tree));
-        assert_eq!(local_app_note(&tree, tab), "");
-        assert!(any_pending(&tree));
-
-        assert!(set_note(
-            &mut tree,
-            tab,
-            "Not installed on this machine".into()
-        ));
-        if let TileContent::LocalApp { app_id, .. } =
-            &mut tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
-        {
-            *app_id = "org.example.ActuallyMissing".into();
+            assert!(
+                may_read(&tree.desktop.workspaces[0], FILES, &home),
+                "a file manager started on the room's behalf must be able to read the \
+                 user's home; without it the window opens on its sandbox directory and \
+                 says the folder is empty"
+            );
         }
-        assert!(!retry_resolvable_host_app_errors(&mut tree));
-        assert_eq!(local_app_note(&tree, tab), "Not installed on this machine");
 
-        crate::shell::host_apps::invalidate_cache();
-        drop(env);
+        fn opening_another_app_for_the_room_grants_it_no_home() {
+            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), APP);
+
+            let _ = examine(&mut tree);
+
+            assert!(
+                !may_read(&tree.desktop.workspaces[0], APP, &home),
+                "only the file manager gets the user's home; the word processor must not"
+            );
+        }
+
+        fn a_refused_file_manager_is_granted_nothing() {
+            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let mut ws = room_owned_by("ada");
+            ws.owner = None;
+            let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);
+
+            let _ = examine(&mut tree);
+
+            assert!(
+                !may_read(&tree.desktop.workspaces[0], FILES, &home),
+                "a room that authorises no launch must not hand out the home either"
+            );
+        }
+
+        a_file_manager_opened_for_the_room_can_see_the_users_home();
+        opening_another_app_for_the_room_grants_it_no_home();
+        a_refused_file_manager_is_granted_nothing();
     }
 
     #[test]
-    fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
-        let mut ws = room_owned_by("ada");
-        ws.owner = None;
-        let (mut tree, tab) = tree_with_peer_window(ws);
-        assert!(
-            !examine(&mut tree),
-            "missing authority is transient and must not become a permanent refusal"
-        );
-        assert!(any_pending(&tree), "the next authority sync must retry it");
-        let note = tree.desktop.workspaces[0].strips[0].window_groups[0]
-            .tabs
-            .iter()
-            .find(|t| t.id == tab)
-            .map(|t| match &t.tile {
-                TileContent::PeerWindow { note, .. } => note.clone(),
-                other => panic!("expected a peer window, got {other:?}"),
-            })
-            .expect("the tab is still there");
-        assert!(
-            note.is_empty(),
-            "a temporary authority race must not leave a stale error card; got {note:?}"
-        );
+    fn windows_to_return_to_are_this_machines_answered_openings() {
+        fn a_window_this_machine_opened_for_the_room_is_found() {
+            let mut ws = room_owned_by("ada");
+            let tab = Tab {
+                id: peer_id(),
+                title: "Word Processor".into(),
+                tile: TileContent::Foreign {
+                    app_id: APP.into(),
+                    surface_id: 4711,
+                },
+            };
+            let tab_id = tab.id;
+            let group = WindowGroup {
+                id: peer_id(),
+                tabs: vec![tab],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            };
+            let mut strip = Strip::new(StripId::from(peer_id()), "main");
+            strip.window_groups = vec![group];
+            ws.strips = vec![strip];
+
+            let found = opened_for_the_room(&ws, APP, 0);
+            assert_eq!(
+                found.map(|(_, _, t)| t),
+                Some(tab_id),
+                "a peer's tab already hosting this machine's window of the app has to be \
+                 found, or the launch opens a second one beside it"
+            );
+            assert!(
+                opened_for_the_room(&ws, "so.tilo.terminal", 0).is_none(),
+                "a different app is not this one"
+            );
+        }
+
+        fn a_window_this_person_opened_is_not_one_to_return_to() {
+            let mut ws = room_owned_by("ada");
+            let tab = Tab {
+                id: next_id(),
+                title: "Terminal".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.terminal".into(),
+                    surface_id: 99,
+                },
+            };
+            let tab_id = tab.id;
+            let group = WindowGroup {
+                id: next_id(),
+                tabs: vec![tab],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            };
+            let mut strip = Strip::new(StripId::from(next_id()), "main");
+            strip.window_groups = vec![group];
+            ws.strips = vec![strip];
+
+            let salt = crate::shell::state::peer_salt_of(tab_id);
+            assert!(
+                opened_for_the_room(&ws, "so.tilo.terminal", salt).is_none(),
+                "a second terminal is an ordinary thing to want; a window this person \
+                 opened must not swallow the next launch of the same app"
+            );
+        }
+
+        fn an_unanswered_card_is_not_a_window_to_return_to() {
+            let (tree, _tab) = tree_with_peer_window(room_owned_by("ada"));
+            assert!(
+                opened_for_the_room(&tree.desktop.workspaces[0], APP, 0).is_none(),
+                "an unexamined peer window has no instance behind it yet"
+            );
+        }
+
+        fn a_note_is_what_marks_a_window_answered() {
+            let (mut tree, tab) = tree_with_peer_window(room_owned_by("ada"));
+            assert!(any_pending(&tree), "an unexamined peer window is pending");
+            assert!(set_note(
+                &mut tree,
+                tab,
+                "Not installed on this machine".into()
+            ));
+            assert!(
+                !any_pending(&tree),
+                "a peer window that has been answered for must not be examined again"
+            );
+        }
+
+        a_window_this_machine_opened_for_the_room_is_found();
+        a_window_this_person_opened_is_not_one_to_return_to();
+        an_unanswered_card_is_not_a_window_to_return_to();
+        a_note_is_what_marks_a_window_answered();
+    }
+
+    #[test]
+    fn room_authority_admits_apps_only_with_an_owner_and_no_restriction() {
+        fn a_room_with_an_owner_admits_its_apps() {
+            let ws = room_owned_by("ada");
+            assert_eq!(admits(&ws, APP), Ok(()));
+        }
+
+        /// Fail-closed: this is the state a room is in before its governance
+        /// has replicated, exactly when a machine must not start processes
+        /// on a peer's say-so.
+        fn a_room_with_no_owner_admits_nothing() {
+            let mut ws = room_owned_by("ada");
+            ws.owner = None;
+            let refusal = admits(&ws, APP).expect_err("an ownerless room must authorise nothing");
+            assert_eq!(refusal, "This workspace has no owner yet");
+        }
+
+        /// Goes *through* the capability model rather than around it —
+        /// asserted against `Workspace::decide`, the same call every other
+        /// enforcement point bottoms out in.
+        fn a_restriction_on_the_app_stops_it_opening_here() {
+            let mut ws = room_owned_by("ada");
+            let _ = ws.grant_capability(CapOverride {
+                effect: Effect::Restrict,
+                ..CapOverride::grant(
+                    crate::shell::state::Subject::Principal(Principal::Person("ada".into())),
+                    Scope::App(APP.to_string()),
+                    Verb::Read,
+                )
+            });
+            let refusal = admits(&ws, APP).expect_err("a restricted app must not be opened here");
+            assert!(
+                refusal.contains("does not permit"),
+                "the card has to say why; got {refusal:?}"
+            );
+            // The restriction is about this app, not about the room: another
+            // app in the same room is still admitted.
+            assert_eq!(admits(&ws, "so.tilo.terminal"), Ok(()));
+        }
+
+        fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
+            let mut ws = room_owned_by("ada");
+            ws.owner = None;
+            let (mut tree, tab) = tree_with_peer_window(ws);
+            assert!(
+                !examine(&mut tree),
+                "missing authority is transient and must not become a permanent refusal"
+            );
+            assert!(any_pending(&tree), "the next authority sync must retry it");
+            let note = tree.desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter()
+                .find(|t| t.id == tab)
+                .map(|t| match &t.tile {
+                    TileContent::PeerWindow { note, .. } => note.clone(),
+                    other => panic!("expected a peer window, got {other:?}"),
+                })
+                .expect("the tab is still there");
+            assert!(
+                note.is_empty(),
+                "a temporary authority race must not leave a stale error card; got {note:?}"
+            );
+        }
+
+        a_room_with_an_owner_admits_its_apps();
+        a_room_with_no_owner_admits_nothing();
+        a_restriction_on_the_app_stops_it_opening_here();
+        an_ownerless_window_stays_pending_until_room_authority_arrives();
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn restored_host_window_waits_for_xwayland_without_becoming_a_stale_opening_card() {
-        let data = tempfile::tempdir().expect("temporary XDG data home");
-        let applications = data.path().join("applications");
-        std::fs::create_dir_all(&applications).expect("applications directory");
-        std::fs::write(
-            applications.join("org.example.Legacy.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Legacy App\nExec=/bin/true\nStartupWMClass=LegacyWindow\n",
-        )
-        .expect("desktop entry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        crate::shell::host_apps::invalidate_cache();
-        crate::shell::host_apps::set_x11_starting();
-        crate::shell::host_apps::set_x11_session(None);
-        crate::shell::launcher::clear_pending_placements();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn host_window_restores_retry_once_and_time_out_explicitly() {
+        fn stale_missing_note_for_a_resolvable_host_app_is_retried_once() {
+            let data = tempfile::tempdir().expect("temporary XDG data home");
+            let applications = data.path().join("applications");
+            std::fs::create_dir_all(&applications).expect("applications directory");
+            std::fs::write(
+                applications.join("rygel-preferences.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
+            )
+            .expect("desktop entry");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", data.path());
+            crate::shell::host_apps::invalidate_cache();
 
-        let (mut tree, tab) = tree_with_local_app("LegacyWindow");
-        assert!(crate::shell::host_apps::app_for_window_id("LegacyWindow").is_some());
-        assert!(any_pending(&tree));
-        assert!(
-            examine(&mut tree),
-            "waiting for Xwayland must leave a visible retryable restore state"
-        );
-        assert_eq!(local_app_note(&tree, tab), X11_RETRY);
-        assert!(
-            any_pending(&tree),
-            "the same symbolic tab must be retried after DISPLAY is published"
-        );
-        assert!(
-            crate::shell::launcher::placement_for_toplevel("LegacyWindow", 9001).is_none(),
-            "deferral must not stage a placement that can expire before launch"
-        );
-        crate::shell::host_apps::set_x11_unavailable();
-        assert!(
-            !examine(&mut tree),
-            "a retryable restore must not spin-launch while Xwayland is unavailable"
-        );
+            let (mut tree, tab) = tree_with_local_app("org.gnome.Rygel.Preferences");
+            assert!(set_note(
+                &mut tree,
+                tab,
+                "Not installed on this machine".into()
+            ));
+            assert!(retry_resolvable_host_app_errors(&mut tree));
+            assert_eq!(local_app_note(&tree, tab), "");
+            assert!(any_pending(&tree));
 
-        crate::shell::host_apps::invalidate_cache();
-        crate::shell::launcher::clear_pending_placements();
-        crate::shell::host_apps::set_x11_unavailable();
-    }
+            assert!(set_note(
+                &mut tree,
+                tab,
+                "Not installed on this machine".into()
+            ));
+            if let TileContent::LocalApp { app_id, .. } =
+                &mut tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
+            {
+                *app_id = "org.example.ActuallyMissing".into();
+            }
+            assert!(!retry_resolvable_host_app_errors(&mut tree));
+            assert_eq!(local_app_note(&tree, tab), "Not installed on this machine");
 
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn timed_out_host_restore_becomes_an_explicit_non_retrying_error() {
-        let data = tempfile::tempdir().expect("temporary XDG data home");
-        let applications = data.path().join("applications");
-        std::fs::create_dir_all(&applications).expect("applications directory");
-        std::fs::write(
-            applications.join("org.example.Windowless.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Windowless App\nExec=/bin/true\nStartupWMClass=Windowless\n",
-        )
-        .expect("desktop entry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", data.path());
-        crate::shell::host_apps::invalidate_cache();
+            crate::shell::host_apps::invalidate_cache();
+            drop(env);
+        }
 
-        let (mut tree, tab) = tree_with_local_app("org.example.Windowless");
-        assert!(set_note(&mut tree, tab, OPENING.to_string()));
-        assert!(mark_timed_out_host_restore(
-            &mut tree,
-            "org.example.Windowless"
-        ));
-        assert_eq!(
-            local_app_note(&tree, tab),
-            "The app started but did not open a window."
-        );
-        assert!(
-            !any_pending(&tree),
-            "timeout errors must not relaunch every frame"
-        );
+        fn timed_out_host_restore_becomes_an_explicit_non_retrying_error() {
+            let data = tempfile::tempdir().expect("temporary XDG data home");
+            let applications = data.path().join("applications");
+            std::fs::create_dir_all(&applications).expect("applications directory");
+            std::fs::write(
+                applications.join("org.example.Windowless.desktop"),
+                "[Desktop Entry]\nType=Application\nName=Windowless App\nExec=/bin/true\nStartupWMClass=Windowless\n",
+            )
+            .expect("desktop entry");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_DATA_HOME", data.path());
+            crate::shell::host_apps::invalidate_cache();
 
-        crate::shell::host_apps::invalidate_cache();
-        drop(env);
+            let (mut tree, tab) = tree_with_local_app("org.example.Windowless");
+            assert!(set_note(&mut tree, tab, OPENING.to_string()));
+            assert!(mark_timed_out_host_restore(
+                &mut tree,
+                "org.example.Windowless"
+            ));
+            assert_eq!(
+                local_app_note(&tree, tab),
+                "The app started but did not open a window."
+            );
+            assert!(
+                !any_pending(&tree),
+                "timeout errors must not relaunch every frame"
+            );
+
+            crate::shell::host_apps::invalidate_cache();
+            drop(env);
+        }
+
+        stale_missing_note_for_a_resolvable_host_app_is_retried_once();
+        timed_out_host_restore_becomes_an_explicit_non_retrying_error();
     }
 }
 

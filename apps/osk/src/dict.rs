@@ -6,8 +6,8 @@
 //!
 //! The data is bundled at build time from `apps/osk/data/words.txt`
 //! (`word<TAB>weight`, sorted by frequency descending). See that directory's
-//! `README.md` for provenance and license (derived from Peter Norvig's
-//! MIT-licensed n-gram subset of the Google Web Trillion Word Corpus).
+//! `README.md` for provenance and licences (SCOWL vocabulary ranked by
+//! Google Books Ngram fiction counts).
 //!
 //! ## What it exposes
 //! * [`Dictionary::contains`] / [`Dictionary::weight`] — membership + freq.
@@ -256,88 +256,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_dictionary_loads_thousands_of_words() {
-        let d = Dictionary::english();
-        assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
-        assert!(!d.is_empty());
-    }
+    fn embedded_dictionary_loads_with_sane_normalised_frequencies() {
+        eprintln!("phase embedded_dictionary_loads_thousands_of_words");
+        {
+            let d = Dictionary::english();
+            assert!(d.len() > 10_000, "want tens of thousands, got {}", d.len());
+            assert!(!d.is_empty());
+        }
 
-    #[test]
-    fn common_words_present_with_sane_relative_frequency() {
-        let d = Dictionary::english();
-        assert!(d.contains("the"));
-        assert!(d.contains("quick"));
-        assert!(d.contains("hello"));
-        assert!(d.contains("keyboard"));
-        // "the" is the most common English word — strictly more frequent than
-        // a mid-rank word like "quick".
-        assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
-        // Case-insensitive lookup.
-        assert_eq!(d.weight("THE"), d.weight("the"));
-        // Absent garbage.
-        assert!(!d.contains("zzxqj"));
-        assert_eq!(d.frequency("zzxqj"), 0.0);
-    }
+        eprintln!("phase common_words_present_with_sane_relative_frequency");
+        {
+            let d = Dictionary::english();
+            assert!(d.contains("the"));
+            assert!(d.contains("quick"));
+            assert!(d.contains("hello"));
+            assert!(d.contains("keyboard"));
+            // "the" is the most common English word — strictly more frequent than
+            // a mid-rank word like "quick".
+            assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
+            // Case-insensitive lookup.
+            assert_eq!(d.weight("THE"), d.weight("the"));
+            // Absent garbage.
+            assert!(!d.contains("zzxqj"));
+            assert_eq!(d.frequency("zzxqj"), 0.0);
+        }
 
-    #[test]
-    fn frequency_is_normalised_and_monotone() {
-        let d = Dictionary::english();
-        let f_the = d.frequency("the");
-        let f_quick = d.frequency("quick");
-        assert!((0.0..=1.0).contains(&f_the));
-        assert!(f_the >= f_quick);
-        assert!(f_the > 0.0);
-    }
+        eprintln!("phase frequency_is_normalised_and_monotone");
+        {
+            let d = Dictionary::english();
+            let f_the = d.frequency("the");
+            let f_quick = d.frequency("quick");
+            assert!((0.0..=1.0).contains(&f_the));
+            assert!(f_the >= f_quick);
+            assert!(f_the > 0.0);
+        }
 
-    #[test]
-    fn prefix_iteration_returns_only_matching_words() {
-        let d = Dictionary::english();
-        let qu: Vec<_> = d.iter_prefix("qu").map(|e| e.word.clone()).collect();
-        assert!(qu.iter().all(|w| w.starts_with("qu")));
-        assert!(qu.contains(&"quick".to_string()));
-        assert!(qu.contains(&"question".to_string()));
-        // A prefix nothing starts with yields an empty range.
-        assert_eq!(d.iter_prefix("qzx").count(), 0);
-    }
-
-    #[test]
-    fn complete_ranks_by_frequency() {
-        let d = Dictionary::english();
-        let top = d.complete("th", 5);
-        assert!(!top.is_empty());
-        // "the" should be the top completion of "th".
-        assert_eq!(top[0].word, "the");
-        // Results are frequency-descending.
-        for w in top.windows(2) {
-            assert!(w[0].weight >= w[1].weight);
+        eprintln!("phase from_str_parses_and_skips_malformed");
+        {
+            let d = Dictionary::from_str("apple\t100\nbanana\t50\nbroken-line\ncherry\t75\n");
+            assert_eq!(d.len(), 3);
+            assert!(d.contains("apple"));
+            assert!(d.contains("cherry"));
+            assert!(!d.contains("broken-line"));
+            // Frequency order: apple (100) > cherry (75) > banana (50).
+            assert_eq!(d.words()[0].word, "apple");
+            assert_eq!(d.words()[2].word, "banana");
         }
     }
 
     #[test]
-    fn from_str_parses_and_skips_malformed() {
-        let d = Dictionary::from_str("apple\t100\nbanana\t50\nbroken-line\ncherry\t75\n");
-        assert_eq!(d.len(), 3);
-        assert!(d.contains("apple"));
-        assert!(d.contains("cherry"));
-        assert!(!d.contains("broken-line"));
-        // Frequency order: apple (100) > cherry (75) > banana (50).
-        assert_eq!(d.words()[0].word, "apple");
-        assert_eq!(d.words()[2].word, "banana");
-    }
+    fn prefix_iteration_and_completion_return_ranked_matches() {
+        eprintln!("phase prefix_iteration_returns_only_matching_words");
+        {
+            let d = Dictionary::english();
+            let qu: Vec<_> = d.iter_prefix("qu").map(|e| e.word.clone()).collect();
+            assert!(qu.iter().all(|w| w.starts_with("qu")));
+            assert!(qu.contains(&"quick".to_string()));
+            assert!(qu.contains(&"question".to_string()));
+            // A prefix nothing starts with yields an empty range.
+            assert_eq!(d.iter_prefix("qzx").count(), 0);
+        }
 
-    #[test]
-    fn next_char_weights_credit_the_letter_after_the_prefix() {
-        let d = Dictionary::from_str("the\t3000\nthree\t2000\nthat\t2500\nth\t1000\n");
-        let w: std::collections::HashMap<char, f64> =
-            d.next_char_weights("th").into_iter().collect();
-        assert_eq!(w.len(), 3, "'th' itself ends there: {w:?}");
-        assert!(w[&'e'] > w[&'a'] && w[&'a'] > w[&'r']);
-        assert!((w[&'e'] - weight_to_count(3000)).abs() < 1e-6);
-    }
+        eprintln!("phase complete_ranks_by_frequency");
+        {
+            let d = Dictionary::english();
+            let top = d.complete("th", 5);
+            assert!(!top.is_empty());
+            // "the" should be the top completion of "th".
+            assert_eq!(top[0].word, "the");
+            // Results are frequency-descending.
+            for w in top.windows(2) {
+                assert!(w[0].weight >= w[1].weight);
+            }
+        }
 
-    #[test]
-    fn empty_prefix_iterates_all() {
-        let d = Dictionary::from_str("a\t3\nb\t2\nc\t1\n");
-        assert_eq!(d.iter_prefix("").count(), 3);
+        eprintln!("phase empty_prefix_iterates_all");
+        {
+            let d = Dictionary::from_str("a\t3\nb\t2\nc\t1\n");
+            assert_eq!(d.iter_prefix("").count(), 3);
+        }
+
+        eprintln!("phase next_char_weights_credit_the_letter_after_the_prefix");
+        {
+            let d = Dictionary::from_str("the\t3000\nthree\t2000\nthat\t2500\nth\t1000\n");
+            let w: std::collections::HashMap<char, f64> =
+                d.next_char_weights("th").into_iter().collect();
+            assert_eq!(w.len(), 3, "'th' itself ends there: {w:?}");
+            assert!(w[&'e'] > w[&'a'] && w[&'a'] > w[&'r']);
+            assert!((w[&'e'] - weight_to_count(3000)).abs() < 1e-6);
+        }
     }
 }

@@ -81,8 +81,14 @@ fn build_and_sign(
     op
 }
 
-#[test]
-fn same_seq_twice_second_rejected() {
+/// A channel with one owner-signer, one Note artifact and one Editor author.
+fn one_author_channel() -> (
+    ChannelState,
+    SigningKey,
+    Ed25519PublicKey,
+    ArtifactId,
+    AttestationId,
+) {
     let (owner_sk, owner_pub) = generate_keypair();
     let (author_sk, author_pub) = generate_keypair();
     let channel = ChannelId::new();
@@ -94,51 +100,98 @@ fn same_seq_twice_second_rejected() {
     state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
-
-    let op1 = build_and_sign(&author_sk, author_pub, artifact, aid, 1);
-    let op2 = build_and_sign(&author_sk, author_pub, artifact, aid, 1);
-
-    assert!(validate_inbound_op(&op1, &mut state).is_ok());
-    match validate_inbound_op(&op2, &mut state) {
-        Err(ValidationError::ReplaySeq { seen, incoming }) => {
-            assert_eq!(seen, 1);
-            assert_eq!(incoming, 1);
-        }
-        other => panic!("expected ReplaySeq, got {other:?}"),
-    }
+    (state, author_sk, author_pub, artifact, aid)
 }
 
-#[test]
-fn smaller_seq_rejected() {
-    let (owner_sk, owner_pub) = generate_keypair();
-    let (author_sk, author_pub) = generate_keypair();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-    let ra = make_attestation(&owner_sk, owner_pub, author_pub, channel, vec![]);
-    let aid = ra.attestation.id;
-
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(ra);
-
-    let op_high = build_and_sign(&author_sk, author_pub, artifact, aid, 100);
-    let op_low = build_and_sign(&author_sk, author_pub, artifact, aid, 50);
-
-    assert!(validate_inbound_op(&op_high, &mut state).is_ok());
-    match validate_inbound_op(&op_low, &mut state) {
-        Err(ValidationError::ReplaySeq { seen, incoming }) => {
-            assert_eq!(seen, 100);
-            assert_eq!(incoming, 50);
-        }
-        other => panic!("expected ReplaySeq, got {other:?}"),
-    }
+/// What step 7 should say about one submitted seq.
+#[derive(Clone, Copy, Debug)]
+enum Expect {
+    Accepted,
+    Replay { seen: u64, incoming: u64 },
+    AnyReplay,
 }
 
+/// (case, submissions with what step 7 should say, final seq slot)
+type SeqCase = (&'static str, Vec<(u64, Expect)>, u64);
+
+/// Seq is tracked per author: one author's seq must strictly increase on
+/// arrival (gaps allowed, back-fills and repeats rejected), while different
+/// authors each have their own seq space.
 #[test]
-fn different_authors_share_seq_space_independently() {
-    // Author A and Author B both submit seq=1. Both must succeed.
-    // After both succeed, last_seq_per_author has both keys at 1.
+fn seq_must_strictly_increase_per_author_but_may_skip() {
+    let monotonic: Vec<(u64, Expect)> = (1..=10).map(|n| (n, Expect::Accepted)).collect();
+    let cases: [SeqCase; 4] = [
+        (
+            "same seq twice, second rejected",
+            vec![
+                (1, Expect::Accepted),
+                (
+                    1,
+                    Expect::Replay {
+                        seen: 1,
+                        incoming: 1,
+                    },
+                ),
+            ],
+            1,
+        ),
+        (
+            "smaller seq rejected",
+            vec![
+                (100, Expect::Accepted),
+                (
+                    50,
+                    Expect::Replay {
+                        seen: 100,
+                        incoming: 50,
+                    },
+                ),
+            ],
+            100,
+        ),
+        ("strictly monotonic increment succeeds", monotonic, 10),
+        // Holes are fine — out-of-order is reordered by sender; the
+        // validator only insists on strict-monotone-on-arrival, not
+        // gapless. Then seq=2 (a back-filled gap) is rejected because
+        // 2 <= 100.
+        (
+            "gap in seq is allowed",
+            vec![
+                (1, Expect::Accepted),
+                (100, Expect::Accepted),
+                (2, Expect::AnyReplay),
+            ],
+            100,
+        ),
+    ];
+    for (case, submissions, final_seq) in cases {
+        let (mut state, author_sk, author_pub, artifact, aid) = one_author_channel();
+        for (seq, expect) in submissions {
+            let op = build_and_sign(&author_sk, author_pub, artifact, aid, seq);
+            let got = validate_inbound_op(&op, &mut state);
+            match expect {
+                Expect::Accepted => assert!(got.is_ok(), "case {case}: seq {seq}: {got:?}"),
+                Expect::Replay { seen, incoming } => assert_eq!(
+                    got,
+                    Err(ValidationError::ReplaySeq { seen, incoming }),
+                    "case {case}: seq {seq}"
+                ),
+                Expect::AnyReplay => assert!(
+                    matches!(got, Err(ValidationError::ReplaySeq { .. })),
+                    "case {case}: seq {seq}: {got:?}"
+                ),
+            }
+        }
+        assert_eq!(
+            state.last_seq_per_author.get(&author_pub).copied(),
+            Some(final_seq),
+            "case {case}"
+        );
+    }
+
+    // Case: different authors share seq space independently. Author A and
+    // Author B both submit seq=1. Both must succeed. After both succeed,
+    // last_seq_per_author has both keys at 1.
     let (owner_sk, owner_pub) = generate_keypair();
     let (a_sk, a_pub) = generate_keypair();
     let (b_sk, b_pub) = generate_keypair();
@@ -163,57 +216,4 @@ fn different_authors_share_seq_space_independently() {
     assert!(validate_inbound_op(&op_b, &mut state).is_ok());
     assert_eq!(state.last_seq_per_author.get(&a_pub).copied(), Some(1));
     assert_eq!(state.last_seq_per_author.get(&b_pub).copied(), Some(1));
-}
-
-#[test]
-fn strictly_monotonic_increment_succeeds() {
-    let (owner_sk, owner_pub) = generate_keypair();
-    let (author_sk, author_pub) = generate_keypair();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-    let ra = make_attestation(&owner_sk, owner_pub, author_pub, channel, vec![]);
-    let aid = ra.attestation.id;
-
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(ra);
-
-    for n in 1..=10 {
-        let op = build_and_sign(&author_sk, author_pub, artifact, aid, n);
-        assert!(validate_inbound_op(&op, &mut state).is_ok(), "seq {n}");
-    }
-    assert_eq!(
-        state.last_seq_per_author.get(&author_pub).copied(),
-        Some(10)
-    );
-}
-
-#[test]
-fn gap_in_seq_is_allowed() {
-    // Holes are fine — out-of-order is reordered by sender; the
-    // validator only insists on strict-monotone-on-arrival, not
-    // gapless.
-    let (owner_sk, owner_pub) = generate_keypair();
-    let (author_sk, author_pub) = generate_keypair();
-    let channel = ChannelId::new();
-    let artifact = ArtifactId::new();
-    let ra = make_attestation(&owner_sk, owner_pub, author_pub, channel, vec![]);
-    let aid = ra.attestation.id;
-
-    let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pub);
-    state.artifacts.insert(artifact, ArtifactKind::Note);
-    state.register_attestation(ra);
-
-    let op_a = build_and_sign(&author_sk, author_pub, artifact, aid, 1);
-    let op_b = build_and_sign(&author_sk, author_pub, artifact, aid, 100);
-    assert!(validate_inbound_op(&op_a, &mut state).is_ok());
-    assert!(validate_inbound_op(&op_b, &mut state).is_ok());
-    // Now seq=2 (a back-filled gap) is rejected because 2 <= 100.
-    let op_c = build_and_sign(&author_sk, author_pub, artifact, aid, 2);
-    assert!(matches!(
-        validate_inbound_op(&op_c, &mut state),
-        Err(ValidationError::ReplaySeq { .. })
-    ));
 }

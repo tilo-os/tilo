@@ -636,247 +636,260 @@ mod tests {
     }
 
     #[test]
-    fn broker_blocks_lookalike_origins_and_remembers_only_session_consent() {
-        let root = root();
-        let mut store = SecretStore::open_in(&root);
-        let mut item = SecretItem::login("Bank", "ada", "pw");
-        item.add_origin("https://bank.example").unwrap();
-        store.put(&mut item).unwrap();
-        let mut broker = CredentialBroker::new(store);
-        let bad = AccessRequest {
-            app_id: "browser".into(),
-            item_id: item.id.clone(),
-            purpose: "Sign in".into(),
-            origin: Some("https://bank.example.evil.test".into()),
-        };
-        assert_eq!(
-            broker.request(&bad, |_, _| AccessDecision::AllowForSession),
-            Err(BrokerError::OriginMismatch)
-        );
-        let good = AccessRequest {
-            origin: Some("https://bank.example".into()),
-            ..bad
-        };
-        let mut prompts = 0;
-        assert_eq!(
-            broker
-                .request(&good, |_, _| {
-                    prompts += 1;
-                    AccessDecision::AllowForSession
-                })
-                .unwrap()
-                .as_str(),
-            "pw"
-        );
-        assert_eq!(
-            broker
-                .request(&good, |_, _| {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn broker_consent_is_scoped_to_the_exact_origin_and_revocable() {
+        // Phase `broker_blocks_lookalike_origins_and_remembers_only_session_consent`.
+        {
+            let root = root();
+            let mut store = SecretStore::open_in(&root);
+            let mut item = SecretItem::login("Bank", "ada", "pw");
+            item.add_origin("https://bank.example").unwrap();
+            store.put(&mut item).unwrap();
+            let mut broker = CredentialBroker::new(store);
+            let bad = AccessRequest {
+                app_id: "browser".into(),
+                item_id: item.id.clone(),
+                purpose: "Sign in".into(),
+                origin: Some("https://bank.example.evil.test".into()),
+            };
+            assert_eq!(
+                broker.request(&bad, |_, _| AccessDecision::AllowForSession),
+                Err(BrokerError::OriginMismatch)
+            );
+            let good = AccessRequest {
+                origin: Some("https://bank.example".into()),
+                ..bad
+            };
+            let mut prompts = 0;
+            assert_eq!(
+                broker
+                    .request(&good, |_, _| {
+                        prompts += 1;
+                        AccessDecision::AllowForSession
+                    })
+                    .unwrap()
+                    .as_str(),
+                "pw"
+            );
+            assert_eq!(
+                broker
+                    .request(&good, |_, _| {
+                        prompts += 1;
+                        AccessDecision::Deny
+                    })
+                    .unwrap()
+                    .as_str(),
+                "pw"
+            );
+            assert_eq!(prompts, 1);
+            std::fs::remove_dir_all(root).ok();
+        }
+
+        // Phase `durable_consent_survives_restart_but_is_scoped_to_the_exact_origin`.
+        {
+            let root = root();
+            let mut store = SecretStore::open_in(&root);
+            let mut item = SecretItem::login("Bank", "ada", "pw");
+            item.add_origin("https://bank.example").unwrap();
+            item.add_origin("https://accounts.bank.example").unwrap();
+            store.put(&mut item).unwrap();
+            let bank = AccessRequest {
+                app_id: "org.tilo.Browser".into(),
+                item_id: item.id.clone(),
+                purpose: "Sign in".into(),
+                origin: Some("https://bank.example/login".into()),
+            };
+
+            CredentialBroker::new(store)
+                .request(&bank, |_, _| AccessDecision::AllowAlways)
+                .unwrap();
+            let mut restarted = CredentialBroker::new(SecretStore::open_in(&root));
+            let mut prompts = 0;
+            assert_eq!(
+                restarted
+                    .request(&bank, |_, _| {
+                        prompts += 1;
+                        AccessDecision::Deny
+                    })
+                    .unwrap()
+                    .as_str(),
+                "pw"
+            );
+            let other_origin = AccessRequest {
+                origin: Some("https://accounts.bank.example".into()),
+                ..bank
+            };
+            assert_eq!(
+                restarted.request(&other_origin, |_, _| {
                     prompts += 1;
                     AccessDecision::Deny
-                })
-                .unwrap()
-                .as_str(),
-            "pw"
-        );
-        assert_eq!(prompts, 1);
-        std::fs::remove_dir_all(root).ok();
-    }
+                }),
+                Err(BrokerError::Denied)
+            );
+            assert_eq!(prompts, 1, "only the differently scoped origin prompts");
+            assert_eq!(restarted.persistent_grants().len(), 1);
+            std::fs::remove_dir_all(root).ok();
+        }
 
-    #[test]
-    fn durable_consent_survives_restart_but_is_scoped_to_the_exact_origin() {
-        let root = root();
-        let mut store = SecretStore::open_in(&root);
-        let mut item = SecretItem::login("Bank", "ada", "pw");
-        item.add_origin("https://bank.example").unwrap();
-        item.add_origin("https://accounts.bank.example").unwrap();
-        store.put(&mut item).unwrap();
-        let bank = AccessRequest {
-            app_id: "org.tilo.Browser".into(),
-            item_id: item.id.clone(),
-            purpose: "Sign in".into(),
-            origin: Some("https://bank.example/login".into()),
-        };
-
-        CredentialBroker::new(store)
-            .request(&bank, |_, _| AccessDecision::AllowAlways)
-            .unwrap();
-        let mut restarted = CredentialBroker::new(SecretStore::open_in(&root));
-        let mut prompts = 0;
-        assert_eq!(
-            restarted
-                .request(&bank, |_, _| {
-                    prompts += 1;
-                    AccessDecision::Deny
-                })
-                .unwrap()
-                .as_str(),
-            "pw"
-        );
-        let other_origin = AccessRequest {
-            origin: Some("https://accounts.bank.example".into()),
-            ..bank
-        };
-        assert_eq!(
-            restarted.request(&other_origin, |_, _| {
-                prompts += 1;
-                AccessDecision::Deny
-            }),
-            Err(BrokerError::Denied)
-        );
-        assert_eq!(prompts, 1, "only the differently scoped origin prompts");
-        assert_eq!(restarted.persistent_grants().len(), 1);
-        std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn durable_access_can_be_inspected_and_revoked_by_app_or_item() {
-        let root = root();
-        let mut store = SecretStore::open_in(&root);
-        let mut item = SecretItem::login("Bank", "ada", "pw");
-        item.add_origin("https://bank.example").unwrap();
-        store.put(&mut item).unwrap();
-        let request = AccessRequest {
-            app_id: "org.tilo.Browser".into(),
-            item_id: item.id.clone(),
-            purpose: "Sign in".into(),
-            origin: Some("https://bank.example".into()),
-        };
-        let mut broker = CredentialBroker::new(store);
-        broker
-            .request(&request, |_, _| AccessDecision::AllowAlways)
-            .unwrap();
-        let grant = broker.persistent_grants().pop().unwrap();
-        assert_eq!(grant.app_id, "org.tilo.Browser");
-        assert_eq!(grant.origin.as_deref(), Some("https://bank.example"));
-        assert!(broker.revoke_grant(&grant).unwrap());
-
-        broker
-            .request(&request, |_, _| AccessDecision::AllowAlways)
-            .unwrap();
-        assert_eq!(broker.revoke_app("org.tilo.Browser").unwrap(), 1);
-        assert!(broker.persistent_grants().is_empty());
-
-        broker
-            .request(&request, |_, _| AccessDecision::AllowAlways)
-            .unwrap();
-        drop(broker);
-        let mut store = SecretStore::open_in(&root);
-        assert!(store.remove(&item.id).unwrap());
-        assert!(
-            CredentialBroker::new(SecretStore::open_in(&root))
-                .persistent_grants()
-                .is_empty(),
-            "deleting an item cannot leave an orphaned app permission"
-        );
-        std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn broker_discovers_only_login_candidates_for_the_exact_origin() {
-        let root = root();
-        let mut store = SecretStore::open_in(&root);
-        let mut login = SecretItem::login("Bank", "ada@example.com", "pw");
-        login.add_origin("https://bank.example/login").unwrap();
-        store.put(&mut login).unwrap();
-
-        let mut note = SecretItem::login("Recovery note", "", "private note");
-        note.kind = SecretItemKind::SecureNote;
-        note.add_origin("https://bank.example").unwrap();
-        store.put(&mut note).unwrap();
-
-        let broker = CredentialBroker::new(store);
-        assert!(
+        // Phase `durable_access_can_be_inspected_and_revoked_by_app_or_item`.
+        {
+            let root = root();
+            let mut store = SecretStore::open_in(&root);
+            let mut item = SecretItem::login("Bank", "ada", "pw");
+            item.add_origin("https://bank.example").unwrap();
+            store.put(&mut item).unwrap();
+            let request = AccessRequest {
+                app_id: "org.tilo.Browser".into(),
+                item_id: item.id.clone(),
+                purpose: "Sign in".into(),
+                origin: Some("https://bank.example".into()),
+            };
+            let mut broker = CredentialBroker::new(store);
             broker
-                .candidates_for_origin("https://bank.example.evil.test")
-                .unwrap()
-                .is_empty()
-        );
-        let candidates = broker
-            .candidates_for_origin("https://BANK.EXAMPLE/sign-in?next=home")
-            .unwrap();
-        assert_eq!(
-            candidates,
-            vec![CredentialCandidate {
-                item_id: login.id,
-                title: "Bank".into(),
-                username: "ada@example.com".into(),
-            }]
-        );
-        std::fs::remove_dir_all(root).ok();
-    }
+                .request(&request, |_, _| AccessDecision::AllowAlways)
+                .unwrap();
+            let grant = broker.persistent_grants().pop().unwrap();
+            assert_eq!(grant.app_id, "org.tilo.Browser");
+            assert_eq!(grant.origin.as_deref(), Some("https://bank.example"));
+            assert!(broker.revoke_grant(&grant).unwrap());
 
-    #[test]
-    fn origins_use_web_origin_rules_and_reject_credential_or_control_injection() {
-        assert_eq!(
-            canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
-            "https://xn--bcher-kva.example"
-        );
-        assert_eq!(
-            canonical_origin("http://example.com:8080/a").unwrap(),
-            "http://example.com:8080"
-        );
-        for invalid in [
-            "https://user:password@example.com",
-            "https://example.com\nspoofed",
-            "file:///etc/passwd",
-            "https://",
-        ] {
-            assert_eq!(canonical_origin(invalid), Err(BrokerError::InvalidOrigin));
+            broker
+                .request(&request, |_, _| AccessDecision::AllowAlways)
+                .unwrap();
+            assert_eq!(broker.revoke_app("org.tilo.Browser").unwrap(), 1);
+            assert!(broker.persistent_grants().is_empty());
+
+            broker
+                .request(&request, |_, _| AccessDecision::AllowAlways)
+                .unwrap();
+            drop(broker);
+            let mut store = SecretStore::open_in(&root);
+            assert!(store.remove(&item.id).unwrap());
+            assert!(
+                CredentialBroker::new(SecretStore::open_in(&root))
+                    .persistent_grants()
+                    .is_empty(),
+                "deleting an item cannot leave an orphaned app permission"
+            );
+            std::fs::remove_dir_all(root).ok();
         }
     }
 
     #[test]
-    fn broker_rejects_untrusted_prompt_metadata_before_consulting_the_user() {
-        let root = root();
-        let mut store = SecretStore::open_in(&root);
-        let mut item = SecretItem::login("Bank", "ada", "pw");
-        store.put(&mut item).unwrap();
-        let mut broker = CredentialBroker::new(store);
-        let mut prompted = false;
-        let invalid_app = AccessRequest {
-            app_id: "org.tilo.Browser\nFake".into(),
-            item_id: item.id.clone(),
-            purpose: "Sign in".into(),
-            origin: None,
-        };
-        assert_eq!(
-            broker.request(&invalid_app, |_, _| {
-                prompted = true;
-                AccessDecision::AllowAlways
-            }),
-            Err(BrokerError::InvalidAppId)
-        );
-        assert!(!prompted);
+    fn broker_accepts_only_canonical_origins_and_trusted_prompt_metadata() {
+        // Phase `broker_discovers_only_login_candidates_for_the_exact_origin`.
+        {
+            let root = root();
+            let mut store = SecretStore::open_in(&root);
+            let mut login = SecretItem::login("Bank", "ada@example.com", "pw");
+            login.add_origin("https://bank.example/login").unwrap();
+            store.put(&mut login).unwrap();
 
-        let invalid_purpose = AccessRequest {
-            app_id: "org.tilo.Browser".into(),
-            purpose: "Sign in\nApprove something else".into(),
-            ..invalid_app
-        };
-        assert_eq!(
-            broker.request(&invalid_purpose, |_, _| AccessDecision::AllowAlways),
-            Err(BrokerError::InvalidPurpose)
-        );
-        assert!(broker.persistent_grants().is_empty());
-        std::fs::remove_dir_all(root).ok();
+            let mut note = SecretItem::login("Recovery note", "", "private note");
+            note.kind = SecretItemKind::SecureNote;
+            note.add_origin("https://bank.example").unwrap();
+            store.put(&mut note).unwrap();
+
+            let broker = CredentialBroker::new(store);
+            assert!(
+                broker
+                    .candidates_for_origin("https://bank.example.evil.test")
+                    .unwrap()
+                    .is_empty()
+            );
+            let candidates = broker
+                .candidates_for_origin("https://BANK.EXAMPLE/sign-in?next=home")
+                .unwrap();
+            assert_eq!(
+                candidates,
+                vec![CredentialCandidate {
+                    item_id: login.id,
+                    title: "Bank".into(),
+                    username: "ada@example.com".into(),
+                }]
+            );
+            std::fs::remove_dir_all(root).ok();
+        }
+
+        // Phase `origins_use_web_origin_rules_and_reject_credential_or_control_injection`.
+        {
+            assert_eq!(
+                canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
+                "https://xn--bcher-kva.example"
+            );
+            assert_eq!(
+                canonical_origin("http://example.com:8080/a").unwrap(),
+                "http://example.com:8080"
+            );
+            for invalid in [
+                "https://user:password@example.com",
+                "https://example.com\nspoofed",
+                "file:///etc/passwd",
+                "https://",
+            ] {
+                assert_eq!(canonical_origin(invalid), Err(BrokerError::InvalidOrigin));
+            }
+        }
+
+        // Phase `broker_rejects_untrusted_prompt_metadata_before_consulting_the_user`.
+        {
+            let root = root();
+            let mut store = SecretStore::open_in(&root);
+            let mut item = SecretItem::login("Bank", "ada", "pw");
+            store.put(&mut item).unwrap();
+            let mut broker = CredentialBroker::new(store);
+            let mut prompted = false;
+            let invalid_app = AccessRequest {
+                app_id: "org.tilo.Browser\nFake".into(),
+                item_id: item.id.clone(),
+                purpose: "Sign in".into(),
+                origin: None,
+            };
+            assert_eq!(
+                broker.request(&invalid_app, |_, _| {
+                    prompted = true;
+                    AccessDecision::AllowAlways
+                }),
+                Err(BrokerError::InvalidAppId)
+            );
+            assert!(!prompted);
+
+            let invalid_purpose = AccessRequest {
+                app_id: "org.tilo.Browser".into(),
+                purpose: "Sign in\nApprove something else".into(),
+                ..invalid_app
+            };
+            assert_eq!(
+                broker.request(&invalid_purpose, |_, _| AccessDecision::AllowAlways),
+                Err(BrokerError::InvalidPurpose)
+            );
+            assert!(broker.persistent_grants().is_empty());
+            std::fs::remove_dir_all(root).ok();
+        }
     }
 
     #[test]
-    fn generated_password_is_long_and_avoids_ambiguous_characters() {
-        let password = GeneratedPasswordPolicy::default().generate().unwrap();
-        assert_eq!(password.len(), 20);
-        assert!(!password.contains(['0', '1', 'I', 'l', 'O']));
-        assert!(password.chars().any(|c| c.is_ascii_lowercase()));
-        assert!(password.chars().any(|c| c.is_ascii_uppercase()));
-        assert!(password.chars().any(|c| c.is_ascii_digit()));
-        assert!(password.chars().any(|c| "!@#$%^&*-_=+".contains(c)));
-    }
+    fn generated_passwords_and_clipboard_leases_keep_secrets_safe() {
+        // Phase `generated_password_is_long_and_avoids_ambiguous_characters`.
+        {
+            let password = GeneratedPasswordPolicy::default().generate().unwrap();
+            assert_eq!(password.len(), 20);
+            assert!(!password.contains(['0', '1', 'I', 'l', 'O']));
+            assert!(password.chars().any(|c| c.is_ascii_lowercase()));
+            assert!(password.chars().any(|c| c.is_ascii_uppercase()));
+            assert!(password.chars().any(|c| c.is_ascii_digit()));
+            assert!(password.chars().any(|c| "!@#$%^&*-_=+".contains(c)));
+        }
 
-    #[test]
-    fn clipboard_lease_never_clears_new_user_content() {
-        let expired = ClipboardLease::new(Zeroizing::new("secret".into()), Duration::ZERO);
-        assert!(expired.should_clear(Some("secret")));
-        assert!(!expired.should_clear(Some("new copy")));
-        assert!(!expired.should_clear(None));
+        // Phase `clipboard_lease_never_clears_new_user_content`.
+        {
+            let expired = ClipboardLease::new(Zeroizing::new("secret".into()), Duration::ZERO);
+            assert!(expired.should_clear(Some("secret")));
+            assert!(!expired.should_clear(Some("new copy")));
+            assert!(!expired.should_clear(None));
+        }
     }
 }

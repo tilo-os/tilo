@@ -144,7 +144,7 @@ impl QuickFS {
                 .checked_record_frontier(ino)
                 .ok_or(Outcome::Unavailable)?;
             let bytes = serde_json::to_vec(&(
-                "qos.checked-files-review.legacy.v1",
+                "tilo.checked-files-review.legacy.v1",
                 workspace_id,
                 self.mount_lifetime,
                 record_id,
@@ -191,7 +191,7 @@ impl QuickFS {
             .checked_record_frontier(ino)
             .ok_or(Outcome::Unavailable)?;
         let bytes = serde_json::to_vec(&(
-            "qos.checked-files-review.v1",
+            "tilo.checked-files-review.v1",
             workspace_id,
             self.mount_lifetime,
             record_id,

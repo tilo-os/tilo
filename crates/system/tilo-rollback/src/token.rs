@@ -91,7 +91,10 @@ pub struct RollbackToken {
 }
 
 impl RollbackToken {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per sealed token field"
+    )]
     pub fn new(
         keyslot: u32,
         generation: u64,
@@ -287,55 +290,52 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_json() {
-        let t = sample();
-        let j = t.to_json().unwrap();
-        assert_eq!(RollbackToken::from_json(&j).unwrap(), t);
-    }
-
-    #[test]
-    fn cryptsetup_required_fields_are_present_and_named_right() {
-        let j = sample().to_json().unwrap();
-        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
-        assert_eq!(v["type"], "tilo-rollback");
-        assert_eq!(v["keyslots"], serde_json::json!(["2"]));
-    }
-
-    #[test]
-    fn blobs_decode_back_to_bytes() {
-        let t = sample();
-        assert_eq!(t.decoded_public().unwrap(), b"pub");
-        assert_eq!(t.decoded_private().unwrap(), b"priv");
-        assert_eq!(t.decoded_key_name().unwrap(), b"name");
-        let p = t.decoded_predictions().unwrap();
-        assert_eq!(p[0].approved_policy, b"ap");
-        assert_eq!(p[0].signature, b"sig");
-    }
-
-    #[test]
-    fn keyslot_is_parsed_from_the_string_form() {
-        assert_eq!(sample().keyslot().unwrap(), 2);
-    }
-
-    #[test]
-    fn a_token_with_no_prediction_is_rejected() {
-        let mut t = sample();
-        t.predictions.clear();
-        assert!(t.validate().is_err());
-    }
-
-    #[test]
-    fn an_inconsistent_operand_is_rejected() {
-        let mut t = sample();
-        t.nv_operand = 999;
-        let e = t.validate().unwrap_err().to_string();
-        assert!(e.contains("internally inconsistent"), "{e}");
-    }
-
-    #[test]
-    fn a_future_schema_version_is_rejected_not_guessed_at() {
-        let mut t = sample();
-        t.version = TOKEN_VERSION + 1;
-        assert!(t.validate().is_err());
+    fn tokens_round_trip_with_named_fields_and_reject_inconsistency() {
+        // Phase `round_trips_through_json`.
+        {
+            let t = sample();
+            let j = t.to_json().unwrap();
+            assert_eq!(RollbackToken::from_json(&j).unwrap(), t);
+        }
+        // Phase `cryptsetup_required_fields_are_present_and_named_right`.
+        {
+            let j = sample().to_json().unwrap();
+            let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+            assert_eq!(v["type"], "tilo-rollback");
+            assert_eq!(v["keyslots"], serde_json::json!(["2"]));
+        }
+        // Phase `blobs_decode_back_to_bytes`.
+        {
+            let t = sample();
+            assert_eq!(t.decoded_public().unwrap(), b"pub");
+            assert_eq!(t.decoded_private().unwrap(), b"priv");
+            assert_eq!(t.decoded_key_name().unwrap(), b"name");
+            let p = t.decoded_predictions().unwrap();
+            assert_eq!(p[0].approved_policy, b"ap");
+            assert_eq!(p[0].signature, b"sig");
+        }
+        // Phase `keyslot_is_parsed_from_the_string_form`.
+        {
+            assert_eq!(sample().keyslot().unwrap(), 2);
+        }
+        // Phase `a_token_with_no_prediction_is_rejected`.
+        {
+            let mut t = sample();
+            t.predictions.clear();
+            assert!(t.validate().is_err());
+        }
+        // Phase `an_inconsistent_operand_is_rejected`.
+        {
+            let mut t = sample();
+            t.nv_operand = 999;
+            let e = t.validate().unwrap_err().to_string();
+            assert!(e.contains("internally inconsistent"), "{e}");
+        }
+        // Phase `a_future_schema_version_is_rejected_not_guessed_at`.
+        {
+            let mut t = sample();
+            t.version = TOKEN_VERSION + 1;
+            assert!(t.validate().is_err());
+        }
     }
 }

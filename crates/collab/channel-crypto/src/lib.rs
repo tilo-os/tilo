@@ -76,7 +76,9 @@ pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::ChannelContentKeys;
 pub use errors::{Error, Result};
-pub use governance::{DeliveryKind, GovernanceDelivery, GovernanceJournal, MirrorAppend};
+pub use governance::{
+    ChannelGate, DeliveryKind, GovernanceDelivery, GovernanceJournal, MirrorAppend,
+};
 pub use group::{ChannelGroup, MemberAddition};
 pub use member::{Access, ChannelMember, MemberEvent};
 pub use persistence::VaultKey;

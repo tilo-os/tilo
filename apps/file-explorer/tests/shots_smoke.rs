@@ -17,7 +17,15 @@ use std::fs;
 
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
+/// The default `--shots` render writes a PNG; on Windows the projection-backed
+/// scenarios fail instead of producing misleading images.
 #[test]
+fn shots_flag_writes_png_and_refuses_unavailable_projection_scenarios() {
+    #[cfg(windows)]
+    unavailable_projection_scenarios_fail_instead_of_producing_misleading_images();
+    file_explorer_shots_flag_writes_png();
+}
+
 #[cfg(windows)]
 fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images() {
     let directory = tempfile::tempdir().unwrap();
@@ -38,7 +46,6 @@ fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images(
     }
 }
 
-#[test]
 fn file_explorer_shots_flag_writes_png() {
     let out = std::env::temp_dir().join(format!(
         "file-explorer-shots-smoke-{}.png",

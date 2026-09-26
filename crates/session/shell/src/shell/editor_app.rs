@@ -1229,330 +1229,349 @@ mod tests {
     }
 
     #[test]
-    fn enlarged_editor_rows_and_header_reserve_painted_text_height() {
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let (_, body_height) = tr.measure("Ag", TEXT_SIZE, None);
-        assert!(EditorApp::line_height(&tr) >= f64::from(body_height));
-        let (_, title_height) = tr.measure(
-            "Editor",
-            theme.tokens.typography.scale.lg / theme.text_scale,
-            None,
-        );
-        let (_, hint_height) = tr.measure(
-            "Click to edit",
-            theme.tokens.typography.scale.sm / theme.text_scale,
-            None,
-        );
-        assert!(
-            EditorApp::body_offset(&mut tr, &theme)
-                >= 18.0 + f64::from(title_height + hint_height) + 12.0
-        );
-    }
-
-    #[test]
-    fn tokenize_separates_keyword_string_number() {
-        let toks = tokenize("const count = 0; return 'hi';");
-        let has_keyword = toks.iter().any(|(s, e, c)| {
-            *c == TokClass::Keyword && "const count = 0; return 'hi';".get(*s..*e) == Some("const")
-        });
-        assert!(has_keyword, "expected `const` to tokenize as Keyword");
-        let has_string = toks.iter().any(|(_, _, c)| *c == TokClass::StringLit);
-        assert!(has_string, "expected `'hi'` to tokenize as StringLit");
-        let has_number = toks.iter().any(|(_, _, c)| *c == TokClass::Number);
-        assert!(has_number, "expected `0` to tokenize as Number");
-    }
-
-    #[test]
-    fn tokenize_line_comment_swallows_rest_of_line() {
-        let toks = tokenize("let x = 1; // trailing");
-        assert!(toks.iter().any(|(_, _, c)| *c == TokClass::Comment));
-        let last = toks.last().unwrap();
-        assert_eq!(last.2, TokClass::Comment);
-    }
-
-    #[test]
-    fn sync_creates_body_and_seed_roundtrips() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::with_seed("fn main() {}\n");
-        app.sync(&mut doc, &tile);
-        assert_eq!(app.body.text, "fn main() {}\n");
-        assert!(matches!(
-            doc.get(&tile, BODY_KEY),
-            Ok(Some((Value::Object(ObjType::Text), _)))
-        ));
-    }
-
-    #[test]
-    fn insert_and_delete_mutate_crdt() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::new();
-        app.sync(&mut doc, &tile);
-        app.insert_text(&mut doc, &tile, "abc");
-        assert_eq!(app.body.text, "abc");
-        assert_eq!(app.edit.caret(), 3);
-        app.delete_before(&mut doc, &tile);
-        assert_eq!(app.body.text, "ab");
-    }
-
-    #[test]
-    fn control_word_editing_matches_code_editor_expectations() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::with_seed("hello world");
-        app.sync(&mut doc, &tile);
-
-        app.delete_word_before(&mut doc, &tile);
-        assert_eq!(app.body.text, "hello ");
-        assert_eq!(app.edit.caret(), "hello ".len());
-
-        app.edit.set_caret(0);
-        app.delete_word_after(&mut doc, &tile);
-        assert_eq!(app.body.text, "");
-        assert_eq!(app.edit.caret(), 0);
-    }
-
-    #[test]
-    fn control_arrows_jump_between_words_and_document_extremes() {
-        let mut app = EditorApp::with_seed("hello world");
-        app.edit.set_caret(0);
-        app.edit.motion(&app.body.text, Motion::WordRight, false);
-        assert_eq!(app.edit.caret(), "hello ".len());
-        app.edit.motion(&app.body.text, Motion::WordLeft, false);
-        assert_eq!(app.edit.caret(), 0);
-        app.edit.set_caret("hello".len());
-        app.edit.motion(&app.body.text, Motion::WordLeft, false);
-        assert_eq!(app.edit.caret(), 0);
-        app.edit.set_caret(0);
-        app.edit.motion(&app.body.text, Motion::WordRight, false);
-        assert_eq!(app.edit.caret(), "hello ".len());
-    }
-
-    #[test]
-    fn focused_editor_dispatch_consumes_ctrl_backspace() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::with_seed("hello world");
-        app.sync(&mut doc, &tile);
-        app.focused = true;
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Backspace);
-        key.state = ElementState::Pressed;
-        let modifiers = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let mut handled = false;
-
-        app.handle_keyboard_input(&key, modifiers, &mut doc, &tile, &mut handled);
-
-        assert!(handled);
-        assert_eq!(app.body.text, "hello ");
-    }
-
-    #[test]
-    fn focused_editor_dispatch_selects_and_replaces_text() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::with_seed("hello");
-        app.sync(&mut doc, &tile);
-        app.focused = true;
-
-        let mut select_all: KeyEvent = unsafe { std::mem::zeroed() };
-        select_all.logical_key = Key::Character("a".into());
-        select_all.state = ElementState::Pressed;
-        let control = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        let mut handled = false;
-        app.handle_keyboard_input(&select_all, control, &mut doc, &tile, &mut handled);
-        assert!(handled);
-        assert_eq!(app.edit.range(), 0.."hello".len());
-
-        let mut replacement: KeyEvent = unsafe { std::mem::zeroed() };
-        replacement.logical_key = Key::Character("x".into());
-        replacement.text = Some("x".into());
-        replacement.state = ElementState::Pressed;
-        handled = false;
-        app.handle_keyboard_input(
-            &replacement,
-            Modifiers::default(),
-            &mut doc,
-            &tile,
-            &mut handled,
-        );
-        assert!(handled);
-        assert_eq!(app.body.text, "x");
-        assert_eq!(app.edit.caret(), 1);
-    }
-
-    #[test]
-    fn focused_editor_dispatch_extends_selection_with_shift_and_control() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::with_seed("hello world");
-        app.sync(&mut doc, &tile);
-        app.focused = true;
-
-        let mut left: KeyEvent = unsafe { std::mem::zeroed() };
-        left.logical_key = Key::Named(NamedKey::ArrowLeft);
-        left.state = ElementState::Pressed;
-        let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
-        let mut handled = false;
-        app.handle_keyboard_input(&left, shift, &mut doc, &tile, &mut handled);
-        assert!(handled);
-        assert_eq!(
-            app.edit.range(),
-            "hello world".len() - 1.."hello world".len()
-        );
-
-        let control_shift = Modifiers::from(
-            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
-        );
-        handled = false;
-        app.handle_keyboard_input(&left, control_shift, &mut doc, &tile, &mut handled);
-        assert!(handled);
-        assert_eq!(app.edit.range(), "hello ".len().."hello world".len());
-    }
-
-    #[test]
-    fn focused_editor_dispatch_extends_vertical_selection() {
-        let (mut doc, tile) = bind();
-        let mut app = EditorApp::with_seed("one\ntwo\nthree");
-        app.sync(&mut doc, &tile);
-        app.focused = true;
-
-        let mut up: KeyEvent = unsafe { std::mem::zeroed() };
-        up.logical_key = Key::Named(NamedKey::ArrowUp);
-        up.state = ElementState::Pressed;
-        let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
-        let mut handled = false;
-        app.handle_keyboard_input(&up, shift, &mut doc, &tile, &mut handled);
-
-        assert!(handled);
-        assert_eq!(app.edit.selection().anchor, "one\ntwo\nthree".len());
-        assert_eq!(app.edit.caret(), "one\ntwo".len());
-        assert_eq!(app.edit.range(), "one\ntwo".len().."one\ntwo\nthree".len());
-    }
-
-    #[test]
-    fn external_disk_change_replaces_an_unedited_record_body() {
-        let (mut doc, tile) = bind();
-        let path = PathBuf::from("/work/Document-000.txt");
-        let mut first = EditorApp::for_file(path.clone(), "org.tilo.Editor", "base".into());
-        first.sync(&mut doc, &tile);
-
-        let mut reopened = EditorApp::for_file(path, "org.tilo.Editor", "changed on disk".into());
-        reopened.sync(&mut doc, &tile);
-
-        assert_eq!(reopened.body.text, "changed on disk");
-        assert!(reopened.disk_conflict.is_none());
-    }
-
-    #[test]
-    fn an_older_editor_never_replays_its_stale_disk_observation() {
-        let (mut doc, tile) = bind();
-        let path = PathBuf::from("/work/Document-000.txt");
-        let mut older = EditorApp::for_file(path.clone(), "org.tilo.Editor", "old".into());
-        older.sync(&mut doc, &tile);
-        let mut newer = EditorApp::for_file(path, "org.tilo.Editor", "new".into());
-        newer.sync(&mut doc, &tile);
-        assert_eq!(newer.body.text, "new");
-
-        older.sync(&mut doc, &tile);
-
-        assert_eq!(older.body.text, "new");
-        assert_eq!(
-            doc.get(&tile, DISK_BASE_KEY)
-                .unwrap()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| match value {
-                    ScalarValue::Str(text) => Some(text.to_string()),
-                    _ => None,
-                })
-                .as_deref(),
-            Some("new")
-        );
-    }
-
-    #[test]
-    fn concurrent_disk_change_preserves_unsaved_record_edits_and_surfaces_conflict() {
-        let (mut doc, tile) = bind();
-        let path = PathBuf::from("/work/Document-000.txt");
-        let mut first = EditorApp::for_file(path.clone(), "org.tilo.Editor", "base".into());
-        first.sync(&mut doc, &tile);
-        first.body.splice(&mut doc, &tile, 0..4, "local edit");
-
-        let mut reopened = EditorApp::for_file(path, "org.tilo.Editor", "changed on disk".into());
-        reopened.sync(&mut doc, &tile);
-
-        assert_eq!(reopened.body.text, "local edit");
-        assert!(reopened.disk_conflict.is_some());
-        let semantics = reopened.accessibility().expect("file semantics");
-        assert!(semantics.state.invalid);
-        assert!(
-            semantics
-                .description
-                .as_deref()
-                .is_some_and(|message| message.contains("unsaved edits"))
-        );
-    }
-
-    #[test]
-    fn body_presence_key_names_the_record_and_the_body_field() {
-        use ui::presence::{PathSegment, PresenceKey};
-        // Stable contract: the shell seeds presence under this exact key,
-        // so a peer's caret/selection materialises where `draw` looks.
-        // Unhosted — no record named yet — it is the bare field.
-        let mut app = EditorApp::new();
-        let key = app
-            .presence_key()
-            .expect("the editor body publishes presence");
-        match key {
-            PresenceKey::Widget { path } => {
-                assert_eq!(path, vec![PathSegment::Field(BODY_KEY.into())]);
-            }
-            other => panic!("expected PresenceKey::Widget, got {other:?}"),
+    fn editor_paints_rows_and_tokenizes_syntax() {
+        fn enlarged_editor_rows_and_header_reserve_painted_text_height() {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let (_, body_height) = tr.measure("Ag", TEXT_SIZE, None);
+            assert!(EditorApp::line_height(&tr) >= f64::from(body_height));
+            let (_, title_height) = tr.measure(
+                "Editor",
+                theme.tokens.typography.scale.lg / theme.text_scale,
+                None,
+            );
+            let (_, hint_height) = tr.measure(
+                "Click to edit",
+                theme.tokens.typography.scale.sm / theme.text_scale,
+                None,
+            );
+            assert!(
+                EditorApp::body_offset(&mut tr, &theme)
+                    >= 18.0 + f64::from(title_height + hint_height) + 12.0
+            );
         }
 
-        // Hosted in a tab, the record comes first — otherwise two Editor
-        // tabs would share a key and a peer's caret would draw in whichever
-        // tab painted last.
-        let record = ui::record::RecordId::for_tab(0x2b);
-        app.set_record_scope(&record);
-        match app.presence_key().expect("still publishes") {
-            PresenceKey::Widget { path } => {
-                assert_eq!(
-                    path,
-                    vec![
-                        PathSegment::Field(record.as_str().into()),
-                        PathSegment::Field(BODY_KEY.into()),
-                    ],
-                );
-            }
-            other => panic!("expected PresenceKey::Widget, got {other:?}"),
+        fn tokenize_separates_keyword_string_number() {
+            let toks = tokenize("const count = 0; return 'hi';");
+            let has_keyword = toks.iter().any(|(s, e, c)| {
+                *c == TokClass::Keyword
+                    && "const count = 0; return 'hi';".get(*s..*e) == Some("const")
+            });
+            assert!(has_keyword, "expected `const` to tokenize as Keyword");
+            let has_string = toks.iter().any(|(_, _, c)| *c == TokClass::StringLit);
+            assert!(has_string, "expected `'hi'` to tokenize as StringLit");
+            let has_number = toks.iter().any(|(_, _, c)| *c == TokClass::Number);
+            assert!(has_number, "expected `0` to tokenize as Number");
         }
+
+        fn tokenize_line_comment_swallows_rest_of_line() {
+            let toks = tokenize("let x = 1; // trailing");
+            assert!(toks.iter().any(|(_, _, c)| *c == TokClass::Comment));
+            let last = toks.last().unwrap();
+            assert_eq!(last.2, TokClass::Comment);
+        }
+
+        enlarged_editor_rows_and_header_reserve_painted_text_height();
+        tokenize_separates_keyword_string_number();
+        tokenize_line_comment_swallows_rest_of_line();
     }
 
     #[test]
-    fn char_index_to_byte_handles_multibyte_and_oob() {
-        // The body is "aβc" where `β` is a 2-byte UTF-8 scalar.
-        let app = EditorApp::with_seed("aβc");
-        assert_eq!(app.body.char_index_to_byte(0), 0);
-        assert_eq!(app.body.char_index_to_byte(1), 1);
-        assert_eq!(app.body.char_index_to_byte(2), 3); // past `β`
-        // Walk past the end clamps to text.len() rather than panicking.
-        assert_eq!(app.body.char_index_to_byte(99), app.body.text.len());
+    fn editor_text_edits_mutate_the_crdt_with_code_editor_word_motion() {
+        fn sync_creates_body_and_seed_roundtrips() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::with_seed("fn main() {}\n");
+            app.sync(&mut doc, &tile);
+            assert_eq!(app.body.text, "fn main() {}\n");
+            assert!(matches!(
+                doc.get(&tile, BODY_KEY),
+                Ok(Some((Value::Object(ObjType::Text), _)))
+            ));
+        }
+
+        fn insert_and_delete_mutate_crdt() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::new();
+            app.sync(&mut doc, &tile);
+            app.insert_text(&mut doc, &tile, "abc");
+            assert_eq!(app.body.text, "abc");
+            assert_eq!(app.edit.caret(), 3);
+            app.delete_before(&mut doc, &tile);
+            assert_eq!(app.body.text, "ab");
+        }
+
+        fn control_word_editing_matches_code_editor_expectations() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::with_seed("hello world");
+            app.sync(&mut doc, &tile);
+
+            app.delete_word_before(&mut doc, &tile);
+            assert_eq!(app.body.text, "hello ");
+            assert_eq!(app.edit.caret(), "hello ".len());
+
+            app.edit.set_caret(0);
+            app.delete_word_after(&mut doc, &tile);
+            assert_eq!(app.body.text, "");
+            assert_eq!(app.edit.caret(), 0);
+        }
+
+        fn control_arrows_jump_between_words_and_document_extremes() {
+            let mut app = EditorApp::with_seed("hello world");
+            app.edit.set_caret(0);
+            app.edit.motion(&app.body.text, Motion::WordRight, false);
+            assert_eq!(app.edit.caret(), "hello ".len());
+            app.edit.motion(&app.body.text, Motion::WordLeft, false);
+            assert_eq!(app.edit.caret(), 0);
+            app.edit.set_caret("hello".len());
+            app.edit.motion(&app.body.text, Motion::WordLeft, false);
+            assert_eq!(app.edit.caret(), 0);
+            app.edit.set_caret(0);
+            app.edit.motion(&app.body.text, Motion::WordRight, false);
+            assert_eq!(app.edit.caret(), "hello ".len());
+        }
+
+        fn char_index_to_byte_handles_multibyte_and_oob() {
+            // The body is "aβc" where `β` is a 2-byte UTF-8 scalar.
+            let app = EditorApp::with_seed("aβc");
+            assert_eq!(app.body.char_index_to_byte(0), 0);
+            assert_eq!(app.body.char_index_to_byte(1), 1);
+            assert_eq!(app.body.char_index_to_byte(2), 3); // past `β`
+            // Walk past the end clamps to text.len() rather than panicking.
+            assert_eq!(app.body.char_index_to_byte(99), app.body.text.len());
+        }
+
+        fn arrow_down_preserves_column_across_lines() {
+            // Drives the caret arithmetic the handle_event ArrowDown branch performs.
+            let app = EditorApp::with_seed("abcd\nefgh");
+            // Cursor at col 2 of line 0 → byte offset 2.
+            let pos = 2;
+            let line_start = app.line_start(pos);
+            assert_eq!(line_start, 0);
+            let col = pos - line_start;
+            let line_end = app.line_end(pos);
+            assert_eq!(line_end, 4);
+            let next_line_start = line_end + 1; // 5
+            let next_line_end = app.line_end(next_line_start);
+            assert_eq!(next_line_end, 9);
+            let next_len = next_line_end - next_line_start;
+            let new_pos = next_line_start + col.min(next_len);
+            assert_eq!(new_pos, 7); // line "efgh", column 2 → 'g'
+        }
+
+        sync_creates_body_and_seed_roundtrips();
+        insert_and_delete_mutate_crdt();
+        control_word_editing_matches_code_editor_expectations();
+        control_arrows_jump_between_words_and_document_extremes();
+        char_index_to_byte_handles_multibyte_and_oob();
+        arrow_down_preserves_column_across_lines();
     }
 
     #[test]
-    fn arrow_down_preserves_column_across_lines() {
-        // Drives the caret arithmetic the handle_event ArrowDown branch performs.
-        let app = EditorApp::with_seed("abcd\nefgh");
-        // Cursor at col 2 of line 0 → byte offset 2.
-        let pos = 2;
-        let line_start = app.line_start(pos);
-        assert_eq!(line_start, 0);
-        let col = pos - line_start;
-        let line_end = app.line_end(pos);
-        assert_eq!(line_end, 4);
-        let next_line_start = line_end + 1; // 5
-        let next_line_end = app.line_end(next_line_start);
-        assert_eq!(next_line_end, 9);
-        let next_len = next_line_end - next_line_start;
-        let new_pos = next_line_start + col.min(next_len);
-        assert_eq!(new_pos, 7); // line "efgh", column 2 → 'g'
+    fn focused_editor_dispatch_consumes_edits_and_extends_selections() {
+        fn focused_editor_dispatch_consumes_ctrl_backspace() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::with_seed("hello world");
+            app.sync(&mut doc, &tile);
+            app.focused = true;
+            let mut key: KeyEvent = unsafe { std::mem::zeroed() };
+            key.logical_key = Key::Named(NamedKey::Backspace);
+            key.state = ElementState::Pressed;
+            let modifiers = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let mut handled = false;
+
+            app.handle_keyboard_input(&key, modifiers, &mut doc, &tile, &mut handled);
+
+            assert!(handled);
+            assert_eq!(app.body.text, "hello ");
+        }
+
+        fn focused_editor_dispatch_selects_and_replaces_text() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::with_seed("hello");
+            app.sync(&mut doc, &tile);
+            app.focused = true;
+
+            let mut select_all: KeyEvent = unsafe { std::mem::zeroed() };
+            select_all.logical_key = Key::Character("a".into());
+            select_all.state = ElementState::Pressed;
+            let control = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let mut handled = false;
+            app.handle_keyboard_input(&select_all, control, &mut doc, &tile, &mut handled);
+            assert!(handled);
+            assert_eq!(app.edit.range(), 0.."hello".len());
+
+            let mut replacement: KeyEvent = unsafe { std::mem::zeroed() };
+            replacement.logical_key = Key::Character("x".into());
+            replacement.text = Some("x".into());
+            replacement.state = ElementState::Pressed;
+            handled = false;
+            app.handle_keyboard_input(
+                &replacement,
+                Modifiers::default(),
+                &mut doc,
+                &tile,
+                &mut handled,
+            );
+            assert!(handled);
+            assert_eq!(app.body.text, "x");
+            assert_eq!(app.edit.caret(), 1);
+        }
+
+        fn focused_editor_dispatch_extends_selection_with_shift_and_control() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::with_seed("hello world");
+            app.sync(&mut doc, &tile);
+            app.focused = true;
+
+            let mut left: KeyEvent = unsafe { std::mem::zeroed() };
+            left.logical_key = Key::Named(NamedKey::ArrowLeft);
+            left.state = ElementState::Pressed;
+            let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+            let mut handled = false;
+            app.handle_keyboard_input(&left, shift, &mut doc, &tile, &mut handled);
+            assert!(handled);
+            assert_eq!(
+                app.edit.range(),
+                "hello world".len() - 1.."hello world".len()
+            );
+
+            let control_shift = Modifiers::from(
+                winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+            );
+            handled = false;
+            app.handle_keyboard_input(&left, control_shift, &mut doc, &tile, &mut handled);
+            assert!(handled);
+            assert_eq!(app.edit.range(), "hello ".len().."hello world".len());
+        }
+
+        fn focused_editor_dispatch_extends_vertical_selection() {
+            let (mut doc, tile) = bind();
+            let mut app = EditorApp::with_seed("one\ntwo\nthree");
+            app.sync(&mut doc, &tile);
+            app.focused = true;
+
+            let mut up: KeyEvent = unsafe { std::mem::zeroed() };
+            up.logical_key = Key::Named(NamedKey::ArrowUp);
+            up.state = ElementState::Pressed;
+            let shift = Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+            let mut handled = false;
+            app.handle_keyboard_input(&up, shift, &mut doc, &tile, &mut handled);
+
+            assert!(handled);
+            assert_eq!(app.edit.selection().anchor, "one\ntwo\nthree".len());
+            assert_eq!(app.edit.caret(), "one\ntwo".len());
+            assert_eq!(app.edit.range(), "one\ntwo".len().."one\ntwo\nthree".len());
+        }
+
+        focused_editor_dispatch_consumes_ctrl_backspace();
+        focused_editor_dispatch_selects_and_replaces_text();
+        focused_editor_dispatch_extends_selection_with_shift_and_control();
+        focused_editor_dispatch_extends_vertical_selection();
+    }
+
+    #[test]
+    fn disk_changes_replace_clean_bodies_and_surface_conflicts_for_edited_ones() {
+        fn external_disk_change_replaces_an_unedited_record_body() {
+            let (mut doc, tile) = bind();
+            let path = PathBuf::from("/work/Document-000.txt");
+            let mut first = EditorApp::for_file(path.clone(), "org.tilo.Editor", "base".into());
+            first.sync(&mut doc, &tile);
+
+            let mut reopened =
+                EditorApp::for_file(path, "org.tilo.Editor", "changed on disk".into());
+            reopened.sync(&mut doc, &tile);
+
+            assert_eq!(reopened.body.text, "changed on disk");
+            assert!(reopened.disk_conflict.is_none());
+        }
+
+        fn an_older_editor_never_replays_its_stale_disk_observation() {
+            let (mut doc, tile) = bind();
+            let path = PathBuf::from("/work/Document-000.txt");
+            let mut older = EditorApp::for_file(path.clone(), "org.tilo.Editor", "old".into());
+            older.sync(&mut doc, &tile);
+            let mut newer = EditorApp::for_file(path, "org.tilo.Editor", "new".into());
+            newer.sync(&mut doc, &tile);
+            assert_eq!(newer.body.text, "new");
+
+            older.sync(&mut doc, &tile);
+
+            assert_eq!(older.body.text, "new");
+            assert_eq!(
+                doc.get(&tile, DISK_BASE_KEY)
+                    .unwrap()
+                    .and_then(|(value, _)| value.into_scalar().ok())
+                    .and_then(|value| match value {
+                        ScalarValue::Str(text) => Some(text.to_string()),
+                        _ => None,
+                    })
+                    .as_deref(),
+                Some("new")
+            );
+        }
+
+        fn concurrent_disk_change_preserves_unsaved_record_edits_and_surfaces_conflict() {
+            let (mut doc, tile) = bind();
+            let path = PathBuf::from("/work/Document-000.txt");
+            let mut first = EditorApp::for_file(path.clone(), "org.tilo.Editor", "base".into());
+            first.sync(&mut doc, &tile);
+            first.body.splice(&mut doc, &tile, 0..4, "local edit");
+
+            let mut reopened =
+                EditorApp::for_file(path, "org.tilo.Editor", "changed on disk".into());
+            reopened.sync(&mut doc, &tile);
+
+            assert_eq!(reopened.body.text, "local edit");
+            assert!(reopened.disk_conflict.is_some());
+            let semantics = reopened.accessibility().expect("file semantics");
+            assert!(semantics.state.invalid);
+            assert!(
+                semantics
+                    .description
+                    .as_deref()
+                    .is_some_and(|message| message.contains("unsaved edits"))
+            );
+        }
+
+        fn body_presence_key_names_the_record_and_the_body_field() {
+            use ui::presence::{PathSegment, PresenceKey};
+            // Stable contract: the shell seeds presence under this exact key,
+            // so a peer's caret/selection materialises where `draw` looks.
+            // Unhosted — no record named yet — it is the bare field.
+            let mut app = EditorApp::new();
+            let key = app
+                .presence_key()
+                .expect("the editor body publishes presence");
+            match key {
+                PresenceKey::Widget { path } => {
+                    assert_eq!(path, vec![PathSegment::Field(BODY_KEY.into())]);
+                }
+                other => panic!("expected PresenceKey::Widget, got {other:?}"),
+            }
+
+            // Hosted in a tab, the record comes first — otherwise two Editor
+            // tabs would share a key and a peer's caret would draw in whichever
+            // tab painted last.
+            let record = ui::record::RecordId::for_tab(0x2b);
+            app.set_record_scope(&record);
+            match app.presence_key().expect("still publishes") {
+                PresenceKey::Widget { path } => {
+                    assert_eq!(
+                        path,
+                        vec![
+                            PathSegment::Field(record.as_str().into()),
+                            PathSegment::Field(BODY_KEY.into()),
+                        ],
+                    );
+                }
+                other => panic!("expected PresenceKey::Widget, got {other:?}"),
+            }
+        }
+
+        external_disk_change_replaces_an_unedited_record_body();
+        an_older_editor_never_replays_its_stale_disk_observation();
+        concurrent_disk_change_preserves_unsaved_record_edits_and_surfaces_conflict();
+        body_presence_key_names_the_record_and_the_body_field();
     }
 }

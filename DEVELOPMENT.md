@@ -57,7 +57,7 @@ merge before it was green, which usually means two PRs that passed separately
 broke each other, the lander reverts that merge on `main` within a minute or two
 and comments on the PR. To reland, branch from `main`, `git revert` the revert
 commit, fix the failure and open a new PR. The lander logs every revert in
-qos/qos#376; see `apps/forgejo/lander` in PodestaAI/infra.
+tilo/tilo#376; see `apps/forgejo/lander` in tilo/infra.
 
 Review is optional and informational for every change. Review requests,
 approvals and change requests never affect whether a PR can merge.
@@ -96,7 +96,7 @@ For a native integration test without a full workspace dispatch, use
 **Development / focused native test** (`focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
-`concept_parity_spec::overview_add_workspace::overview_add_workspace_click_appends_workspace`.
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
 Use operation `check-tests` with the target/name empty to compile that package's
 test targets. Both modes use `--locked` on one native x86-64 runner and share the
 normal download/compiler caches. Missing or ignored tests fail. The job records
@@ -116,7 +116,7 @@ and submit directly through the scheduler (replace the example package and SHA):
 ```sh
 jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
   '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/qos/qos/actions/workflows/focused-test.yml/dispatches --hostname code.sandbox.example
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/focused-test.yml/dispatches --hostname code.tilo.so
 ```
 
 Use this structured request for lists: the installed `fgj workflow run` does not
@@ -172,14 +172,14 @@ For CI timing, use the repository run number from the Forgejo URL or `fgj action
 run list`, not the Forgejo API's internal database ID:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --run 11408 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo tilo/tilo --run 11408 --output target/ci-timing.json
 ```
 
 For an automatic before/after view of the newest comparable runs, no run IDs or
 manual receipts are needed:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --recent 30 \
+python3 tools/ci/timing_report.py --repo tilo/tilo --recent 30 \
   --workflow check.yml --compare-latest --output target/ci-experience.json
 ```
 
@@ -264,7 +264,7 @@ Windows-hosted checkout in place:
 
 ```bash
 mkdir -p "$HOME/src"
-git clone ssh://git@code.sandbox.example/qos/qos.git "$HOME/src/tilo-linux"
+git clone ssh://git@code.tilo.so/tilo/tilo.git "$HOME/src/tilo-linux"
 cd "$HOME/src/tilo-linux"
 git switch -c codex/my-change
 findmnt -T "$PWD" -o FSTYPE,TARGET
@@ -319,7 +319,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `dbus-1` | `dbus-devel` | portals |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps, and the shell's video (sharing, projection, recording) |
 | `capnp` (binary) | `capnproto` | runtime-collab schema |
-| `autoreconf` `libtoolize` (binaries), `libgcrypt.m4` | `autoconf` `automake` `libtool` `libgcrypt-devel` | `qos-ntfs-helper` bootstraps its pinned NTFS reader |
+| `autoreconf` `libtoolize` (binaries), `libgcrypt.m4` | `autoconf` `automake` `libtool` `libgcrypt-devel` | `tilo-ntfs-helper` bootstraps its pinned NTFS reader |
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
@@ -582,7 +582,7 @@ installed apps discover their adjacent DLL automatically. Requiring PDFium durin
 tests prevents a missing renderer from leaving backend tests unverified.
 PDF Viewer captures wait for the production worker's visible pages and thumbnails;
 unfinished rendering fails after 15 seconds. The explicit `loading` scenario keeps
-its intentional placeholder. `cargo test --locked -p pdf-viewer --test capture`
+its intentional placeholder. `cargo test --locked -p pdf-viewer --test it capture::`
 exercises this worker path separately from the synchronous library tests.
 
 Books opens EPUBs through its background importer and wakes idle windows when an
@@ -1139,6 +1139,25 @@ sets the first two when llvmpipe and pulseaudio are installed. Existing
 `eprintln!("skipping …"); return;` sites move to the macro when their file is
 next changed.
 
+**The native data plane (Tier 1).** `fs --test native_tier1` and
+`fs-native --test it` need root, two dedicated Btrfs volumes and a kernel with
+pre-content fanotify events (6.14 or later, `CONFIG_FANOTIFY_ACCESS_PERMISSIONS`).
+`tools/native-tier1.sh` builds both as you (remotely with `TILO_CARGO=rcargo`),
+makes two loop-mounted Btrfs stores, runs every test once as root through
+`sudo -n` with `TILO_REQUIRE_FANOTIFY=1`, and removes the stores and mounts
+again:
+
+```bash
+TILO_CARGO=rcargo tools/native-tier1.sh                      # both suites
+TILO_CARGO=rcargo TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
+    tools/native-tier1.sh sqlite --nocapture                 # one scenario
+```
+
+`rcargo test --local` cannot run them: its distrobox is a rootless user
+namespace, which gets neither a filesystem mark on a Btrfs store nor a
+pre-content group. `sqlite3` and `git` must be on your `PATH`, which the root
+run inherits.
+
 Full OS image, which needs rootless `podman` for the container step and `sudo`
 for the disk-image step:
 
@@ -1402,7 +1421,7 @@ To prepare the native runtime in a disposable local directory:
 asset=$(bash tools/ci/install-pdfium.sh --asset-name)
 ./os/dev/cache-github-assets.sh "$asset"
 export TILO_PDFIUM_LIB=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /tmp/tilo-pdfium/8057 os/external-assets/github-assets.tsv)
-cargo test --locked -p pdf-viewer --test capture
+cargo test --locked -p pdf-viewer --test it capture::
 ```
 
 The installer verifies the archive before writing, retains its license files,

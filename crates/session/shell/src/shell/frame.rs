@@ -137,58 +137,6 @@ struct FloatingTransferProxy {
     image: ImageData,
 }
 
-/// Append-only receipt for the capture pass. It avoids cloning a scene merely to detect an
-/// externally appended mirror, while covering both ordinary encoding streams and late resources.
-#[derive(Clone, Copy)]
-struct CaptureSceneLengths {
-    path_tags: usize,
-    path_data: usize,
-    draw_tags: usize,
-    draw_data: usize,
-    transforms: usize,
-    styles: usize,
-    patches: usize,
-    color_stops: usize,
-    glyphs: usize,
-    glyph_runs: usize,
-    normalized_coords: usize,
-}
-
-impl CaptureSceneLengths {
-    fn grew_from(self, before: Self) -> bool {
-        self.path_tags > before.path_tags
-            || self.path_data > before.path_data
-            || self.draw_tags > before.draw_tags
-            || self.draw_data > before.draw_data
-            || self.transforms > before.transforms
-            || self.styles > before.styles
-            || self.patches > before.patches
-            || self.color_stops > before.color_stops
-            || self.glyphs > before.glyphs
-            || self.glyph_runs > before.glyph_runs
-            || self.normalized_coords > before.normalized_coords
-    }
-}
-
-fn capture_scene_lengths(scene: &Scene) -> CaptureSceneLengths {
-    let encoding = scene.encoding();
-    let streams = encoding.stream_offsets();
-    let resources = &encoding.resources;
-    CaptureSceneLengths {
-        path_tags: streams.path_tags,
-        path_data: streams.path_data,
-        draw_tags: streams.draw_tags,
-        draw_data: streams.draw_data,
-        transforms: streams.transforms,
-        styles: streams.styles,
-        patches: resources.patches.len(),
-        color_stops: resources.color_stops.len(),
-        glyphs: resources.glyphs.len(),
-        glyph_runs: resources.glyph_runs.len(),
-        normalized_coords: resources.normalized_coords.len(),
-    }
-}
-
 /// A produced shell scene plus a conservative retained-damage relation to its predecessor.
 /// `None` regions request a dense render; an empty region list is never emitted as sparse work.
 pub struct FramePaint {
@@ -321,6 +269,16 @@ fn night_light_multiplier(kelvin: u32) -> Color {
     Color::from_rgb8(255, green, blue)
 }
 
+/// Whether night light shows: on the schedule it follows the day/night phase,
+/// otherwise the manual switch.
+fn night_light_on(manual: bool, scheduled: bool, night: Option<bool>) -> bool {
+    if scheduled {
+        night.unwrap_or(false)
+    } else {
+        manual
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DesktopColorFilter {
     #[default]
@@ -330,10 +288,12 @@ enum DesktopColorFilter {
     GrayscaleInverted,
 }
 
+use settings_store::magnifier::{MagnifierState, MagnifierView};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualAccessibility {
     color_filter: DesktopColorFilter,
-    magnifier_zoom: u8,
+    magnifier: MagnifierState,
     cursor_crosshair: bool,
 }
 
@@ -341,7 +301,10 @@ impl Default for VisualAccessibility {
     fn default() -> Self {
         Self {
             color_filter: DesktopColorFilter::None,
-            magnifier_zoom: 1,
+            magnifier: MagnifierState {
+                zoom: settings_store::magnifier::OFF,
+                view: MagnifierView::Lens,
+            },
             cursor_crosshair: false,
         }
     }
@@ -360,12 +323,7 @@ impl VisualAccessibility {
                 Some("grayscale_inverted") => DesktopColorFilter::GrayscaleInverted,
                 _ => DesktopColorFilter::None,
             },
-            magnifier_zoom: section
-                .get("magnifier_zoom")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u8::try_from(v).ok())
-                .unwrap_or(1)
-                .clamp(1, 3),
+            magnifier: MagnifierState::from_section(&section),
             cursor_crosshair: section
                 .get("cursor_crosshair")
                 .and_then(serde_json::Value::as_bool)
@@ -374,7 +332,7 @@ impl VisualAccessibility {
     }
 }
 
-use crate::shell::overlay_host::OutputGeometry;
+use crate::shell::output_scene::{self, OutputGeometry};
 
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
@@ -414,8 +372,21 @@ pub struct FrameBuilder {
     last_theme_store_check: Instant,
     night_light: bool,
     night_light_temperature: u32,
+    /// The day/night schedule an "Automatic" theme or a scheduled night light
+    /// follows, and whether it was night when last applied. Sunrise and sunset
+    /// change what is drawn without changing the settings file.
+    day_phase: Option<(settings_store::day_schedule::Scheduled, bool)>,
     visual_accessibility: VisualAccessibility,
+    /// Where the magnifier looks: the pointer, or the keyboard focus when it moved last.
+    magnifier_focus: crate::shell::magnifier::FocusTracker,
+    /// The keyboard focus rectangle the compositor last reported, while the magnifier is on.
+    keyboard_focus_rect: Option<Rect>,
+    /// The logical desktop the shell lays out in: the bounding box of every
+    /// display's logical rectangle.
     viewport: (f64, f64),
+    /// The physical-pixel scene the displays present from. Equal to
+    /// `viewport` unless a display draws at a scale other than 1.
+    scene_size: (f64, f64),
     /// The displays behind `viewport`, when known. The viewport is the
     /// *bounding box* of every output, so on multi-monitor it isn't a
     /// display anyone has — a group sized as a fraction of it would span
@@ -458,6 +429,8 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// What the pointer shows right now, so captures draw the same image.
+    pointer_image: crate::compositor::cursor::PointerImage,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -635,8 +608,12 @@ impl FrameBuilder {
             last_theme_store_check: Instant::now(),
             night_light: false,
             night_light_temperature: 3_700,
+            day_phase: None,
             visual_accessibility: VisualAccessibility::default(),
+            magnifier_focus: crate::shell::magnifier::FocusTracker::default(),
+            keyboard_focus_rect: None,
             viewport: (f64::from(viewport.0), f64::from(viewport.1)),
+            scene_size: (f64::from(viewport.0), f64::from(viewport.1)),
             outputs: None,
             presence: {
                 // The broker fans every local app's frame to the whole room
@@ -658,6 +635,7 @@ impl FrameBuilder {
             native_focus_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
+            pointer_image: crate::compositor::cursor::PointerImage::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -668,21 +646,73 @@ impl FrameBuilder {
     /// compositor last reported, else a single display the size of the viewport.
     fn effective_outputs(&self) -> Vec<OutputGeometry> {
         self.outputs.clone().unwrap_or_else(|| {
-            vec![OutputGeometry {
-                x: 0.0,
-                width: self.viewport.0,
-                height: self.viewport.1,
-            }]
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.viewport.0,
+                self.viewport.1,
+            )]
         })
+    }
+
+    /// The displays the shell lays out and paints across: whatever the
+    /// compositor last reported, else one unscaled display the size of the
+    /// viewport.
+    pub fn output_geometry(&self) -> Vec<OutputGeometry> {
+        self.effective_outputs()
     }
 
     /// Tell the frame builder which displays it's painting across, so a
     /// group's width is a fraction of its own monitor rather than the
-    /// combined desktop. Called at startup and on hotplug/mode change.
+    /// combined desktop, and each display draws the desktop at its own
+    /// scale. The logical viewport and the scene size follow the displays.
+    /// Called at startup and on hotplug/mode change.
     pub fn set_output_geometry(&mut self, outputs: Vec<OutputGeometry>) {
-        if self.outputs.as_deref() != Some(outputs.as_slice()) {
-            self.outputs = Some(outputs);
-            self.rebuild_layout_tree();
+        if outputs.is_empty() || self.outputs.as_deref() == Some(outputs.as_slice()) {
+            return;
+        }
+        let (lw, lh) = output_scene::logical_extent(&outputs);
+        let (sw, sh) = output_scene::scene_extent(&outputs);
+        if lw > 0.0 && lh > 0.0 {
+            self.viewport = (lw, lh);
+        }
+        if sw > 0.0 && sh > 0.0 {
+            self.scene_size = (sw, sh);
+        }
+        self.outputs = Some(outputs);
+        self.rebuild_layout_tree();
+    }
+
+    /// The physical-pixel scene [`Self::paint`] produces: what a renderer
+    /// target or a whole-desktop capture is sized to.
+    pub fn scene_size(&self) -> (f64, f64) {
+        self.scene_size
+    }
+
+    /// A logical desktop point in scene pixels, through the display it is on.
+    pub fn layout_point_to_scene(&self, p: Point) -> Point {
+        match &self.outputs {
+            Some(outputs) => output_scene::point_to_scene(outputs, p),
+            None => p,
+        }
+    }
+
+    /// The scene pixels a logical desktop rectangle covers, across every
+    /// display it touches.
+    pub fn layout_rect_to_scene(&self, rect: Rect) -> Option<Rect> {
+        match &self.outputs {
+            Some(outputs) => output_scene::rect_to_scene(outputs, rect),
+            None => Some(rect),
+        }
+    }
+
+    /// Append a scene drawn in logical desktop coordinates to a painted
+    /// scene, drawn by every display at its own scale — for compositor-owned
+    /// layers (drag feedback, audience surfaces) added after [`Self::paint`].
+    pub fn compose_layout_scene(&self, logical: &Scene, target: &mut Scene) {
+        match &self.outputs {
+            Some(outputs) => output_scene::compose(outputs, logical, target),
+            None => target.append(logical, None),
         }
     }
 
@@ -1089,10 +1119,32 @@ impl FrameBuilder {
         }
     }
 
-    /// Render the current frame into a fresh Vello scene. Caller hands it to
-    /// a renderer (offscreen/live/compositor backend).
+    /// Render the current frame into a fresh Vello scene, in scene pixels:
+    /// every display draws its part of the desktop at its own scale. Caller
+    /// hands it to a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        let logical = self.paint_logical();
+        self.to_scene(logical)
+    }
+
+    /// The painted desktop in scene pixels. Passes the logical scene through
+    /// untouched when no display magnifies it.
+    fn to_scene(&self, logical: Scene) -> Scene {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let mut scene = Scene::new();
+                output_scene::compose(outputs, &logical, &mut scene);
+                scene
+            }
+            _ => logical,
+        }
+    }
+
+    /// [`Self::paint`] before the displays magnify it: the desktop in
+    /// logical coordinates, the space the widget tree is laid out in.
+    fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
+        self.refresh_magnifier();
         let mut scene = Scene::new();
         self.host.draw(
             &mut scene,
@@ -1187,6 +1239,7 @@ impl FrameBuilder {
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
+        self.refresh_magnifier();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1254,7 +1307,7 @@ impl FrameBuilder {
                     self.visual_accessibility.color_filter,
                     DesktopColorFilter::None
                 )
-                || self.visual_accessibility.magnifier_zoom > 1
+                || self.visual_accessibility.magnifier.is_on()
                 || self.visual_accessibility.cursor_crosshair);
         let damage_regions = (!global_filter)
             .then(|| self.damage_from_sections(&sections, global_filter))
@@ -1291,6 +1344,7 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
+        let scene = self.to_scene(scene);
 
         self.last_produced_sections = Some(ProducedSections {
             backdrop: sections.backdrop,
@@ -1399,8 +1453,10 @@ impl FrameBuilder {
         // leave those neighbouring pixels from the previous frame behind.
         // Matches TILE_WIDTH/TILE_HEIGHT in vello_encoding/src/config.rs.
         const CLIP_TILE_EDGE: f64 = 16.0;
-        let rect = rect?;
-        let (width, height) = self.viewport;
+        // Sections are drawn in logical coordinates; the damage is in the
+        // scene pixels each display drew them into.
+        let rect = self.layout_rect_to_scene(rect?)?;
+        let (width, height) = self.scene_size;
         let x0 = ((rect.x0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, width);
         let y0 = ((rect.y0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, height);
         let x1 = ((rect.x1 / CLIP_TILE_EDGE).ceil() * CLIP_TILE_EDGE).clamp(0.0, width);
@@ -1455,41 +1511,54 @@ impl FrameBuilder {
         let bounds = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
         self.apply_color_filter(scene, bounds);
         let pointer = self.host.pointer_position();
-        if self.visual_accessibility.magnifier_zoom > 1
-            && let Some(pointer) = pointer
+        if self.visual_accessibility.magnifier.is_on()
+            && let Some(centre) = self.magnifier_focus.centre()
         {
-            // A lens deliberately leaves the underlying coordinate space
-            // untouched: its centre is the real hardware pointer and hence
-            // the target under the centre remains exactly clickable.
             let source = scene.clone();
-            let lens_w = 420.0_f64.min(self.viewport.0 * 0.7);
-            let lens_h = 280.0_f64.min(self.viewport.1 * 0.7);
-            let lens = Rect::from_center_size(pointer, (lens_w, lens_h));
-            let clip = RoundedRect::from_rect(lens, 18.0);
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &clip,
+            let magnify = crate::shell::magnifier::magnify(
+                centre,
+                f64::from(self.visual_accessibility.magnifier.zoom),
             );
-            let z = f64::from(self.visual_accessibility.magnifier_zoom);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-            )]
-            let magnify = Affine::translate((pointer.x, pointer.y))
-                * Affine::scale(z)
-                * Affine::translate((-pointer.x, -pointer.y));
-            scene.append(&source, Some(magnify));
-            scene.pop_layer();
-            scene.stroke(
-                &Stroke::new(3.0),
-                Affine::IDENTITY,
-                self.theme.border_focus,
-                None,
-                &clip,
-            );
+            match self.visual_accessibility.magnifier.view {
+                MagnifierView::Lens => {
+                    // A lens deliberately leaves the underlying coordinate space
+                    // untouched: scaling about the centre keeps the target there
+                    // exactly where it really is, so it remains clickable.
+                    let lens = crate::shell::magnifier::lens_rect(centre, self.viewport);
+                    let clip = RoundedRect::from_rect(lens, 18.0);
+                    scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &clip,
+                    );
+                    scene.append(&source, Some(magnify));
+                    scene.pop_layer();
+                    scene.stroke(
+                        &Stroke::new(3.0),
+                        Affine::IDENTITY,
+                        self.theme.border_focus,
+                        None,
+                        &clip,
+                    );
+                }
+                MagnifierView::FullScreen => {
+                    // The magnified copy covers the whole screen; scaling about the
+                    // centre pans it so the screen's edges are reached as the
+                    // centre reaches them.
+                    *scene = Scene::new();
+                    scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &bounds,
+                    );
+                    scene.append(&source, Some(magnify));
+                    scene.pop_layer();
+                }
+            }
         }
         if self.visual_accessibility.cursor_crosshair
             && let Some(pointer) = pointer
@@ -1512,10 +1581,50 @@ impl FrameBuilder {
         }
     }
 
+    /// Pick up a shortcut's magnifier change at once, and note where the pointer and the keyboard
+    /// focus are for the magnifier to follow.
+    fn refresh_magnifier(&mut self) {
+        self.refresh_magnifier_at(Instant::now());
+    }
+
+    fn refresh_magnifier_at(&mut self, now: Instant) {
+        if self.host.take_magnifier_changed() && self.watch_configured_theme {
+            self.visual_accessibility = VisualAccessibility::load();
+        }
+        self.magnifier_focus
+            .observe(self.host.pointer_position(), self.keyboard_focus_rect, now);
+    }
+
+    /// Where the keyboard focus is on screen, for the magnifier to follow: the focused shell
+    /// control, else the focused window. Only looked up while the magnifier is on.
+    pub fn note_keyboard_focus(&mut self, focus: Option<NodeId>) {
+        self.keyboard_focus_rect = if self.visual_accessibility.magnifier.is_on() {
+            focus
+                .and_then(|id| self.node_map.get(&id))
+                // SAFETY: `node_map` belongs to the current, live layout tree.
+                .map(|&widget| unsafe { (*widget).get_rect() })
+                .filter(|rect| rect.area() > 0.0)
+                .or_else(|| self.host.focused_window_rect())
+        } else {
+            None
+        };
+    }
+
     fn refresh_display_comfort(&mut self) {
         let settings = settings_store::load();
-        self.night_light =
-            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false);
+        let scheduled_night_light =
+            settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
+        let automatic_theme = settings_store::str_at(&settings, "appearance", "theme")
+            .is_some_and(settings_store::day_schedule::is_automatic);
+        self.day_phase = (scheduled_night_light || automatic_theme).then(|| {
+            let schedule = settings_store::day_schedule::Scheduled::from_settings(&settings);
+            (schedule, schedule.is_night(ui::theme::local_moment()))
+        });
+        self.night_light = night_light_on(
+            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false),
+            scheduled_night_light,
+            self.day_phase.map(|(_, night)| night),
+        );
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -1544,7 +1653,10 @@ impl FrameBuilder {
         self.last_theme_store_check = Instant::now();
         let stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if stamp == self.theme_store_stamp {
+        let phase_changed = self
+            .day_phase
+            .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
+        if stamp == self.theme_store_stamp && !phase_changed {
             return;
         }
         self.theme_store_stamp = stamp;
@@ -1881,15 +1993,19 @@ impl FrameBuilder {
     /// recording status out of the encoded pixels.
     /// Returns whether compositor-owned capture chrome appended encoded scene data.
     pub fn draw_capture_overlays(&mut self, scene: &mut Scene) -> bool {
-        let before = capture_scene_lengths(scene);
+        let mut logical = Scene::new();
         self.host.draw_capture_overlays(
-            scene,
+            &mut logical,
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
         );
-        capture_scene_lengths(scene).grew_from(before)
+        if logical.encoding_eq(&Scene::new()) {
+            return false;
+        }
+        self.compose_layout_scene(&logical, scene);
+        true
     }
 
     pub fn take_closed_capture_mirrors(&mut self) -> Vec<String> {
@@ -2222,6 +2338,27 @@ impl FrameBuilder {
         self.host.pointer_position()
     }
 
+    /// The pointer image the compositor is showing, for captures.
+    pub fn pointer_image(&self) -> &crate::compositor::cursor::PointerImage {
+        &self.pointer_image
+    }
+
+    pub fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        self.pointer_image = image;
+    }
+
+    /// The cursor the chrome under `point` asks for: the smallest widget
+    /// containing the point that names one wins, so a nested button beats
+    /// the bar around it — the same rule `ui::App` applies to app windows.
+    pub fn chrome_cursor_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<winit::window::CursorIcon> {
+        let mut best: Option<(f64, winit::window::CursorIcon)> = None;
+        chrome_cursor_walk(self.host.as_ref(), point, &mut best);
+        best.map(|(_, icon)| icon)
+    }
+
     /// Inner node id (host's root child). Required by the input dispatch
     /// path in `bin/shots`'s `ShellDriver`; the compositor doesn't need this.
     /// `None` only in the narrow window where `rebuild_layout_tree` just
@@ -2351,11 +2488,18 @@ impl FrameBuilder {
         &mut self.text_renderer
     }
 
-    /// Resize the viewport, triggering a structural rebuild on the next
-    /// `relayout` (the wrapper root node carries an explicit extent). Used
-    /// by the compositor's `BackendEvent::OutputResized` handler.
+    /// Resize the scene the backend presents, triggering a structural
+    /// rebuild on the next `relayout` (the wrapper root node carries an
+    /// explicit extent). Without display geometry the logical viewport is
+    /// this same size; with it, [`Self::set_output_geometry`] owns the
+    /// logical viewport. Used by the compositor's
+    /// `BackendEvent::OutputResized` handler.
     pub fn set_viewport(&mut self, viewport: (u32, u32)) {
-        self.viewport = (f64::from(viewport.0), f64::from(viewport.1));
+        let size = (f64::from(viewport.0), f64::from(viewport.1));
+        self.scene_size = size;
+        if self.outputs.is_none() {
+            self.viewport = size;
+        }
         self.rebuild_layout_tree();
     }
 
@@ -2569,6 +2713,25 @@ impl FrameBuilder {
     }
 }
 
+fn chrome_cursor_walk(
+    widget: &dyn ui::widget::Widget,
+    point: vello::kurbo::Point,
+    best: &mut Option<(f64, winit::window::CursorIcon)>,
+) {
+    let rect = widget.get_rect();
+    if rect.contains(point)
+        && let Some(icon) = widget.cursor_shape(point)
+    {
+        let area = rect.area().max(0.0);
+        if best.is_none_or(|(smallest, _)| area < smallest) {
+            *best = Some((area, icon));
+        }
+    }
+    for child in widget.children() {
+        chrome_cursor_walk(child, point, best);
+    }
+}
+
 /// Depth-first walk of the widget tree, registering each visited node:
 /// `test_id() -> rect` (highest priority) if set; the path-based key
 /// `Parent/.../Self[sibling_index]` for un-tagged widgets; a bare-name
@@ -2634,213 +2797,525 @@ mod tests {
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
 
     #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "an end-to-end test scenario that reads top to bottom"
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn record_bring_keeps_its_authorized_room_across_workspace_switch() {
-        use crate::shell::search::action_api::{ActionArgs, ArgValue};
-        use crate::shell::search::providers::ActionsProvider;
-        use crate::shell::search::{
-            InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
-        };
-        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
-        use ui::record::{RecordId, RecordKind};
+    fn workspace_switches_keep_record_rooms_chevrons_and_passive_activity() {
+        fn record_bring_keeps_its_authorized_room_across_workspace_switch() {
+            use crate::shell::search::action_api::{ActionArgs, ArgValue};
+            use crate::shell::search::providers::ActionsProvider;
+            use crate::shell::search::{
+                InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
+            };
+            use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+            use ui::record::{RecordId, RecordKind};
 
-        let source_id = WorkspaceId::new();
-        let destination_id = WorkspaceId::new();
-        let mut tree = WorkspaceTree::default();
-        tree.desktop.workspaces = vec![
-            Workspace::new(source_id, "Source"),
-            Workspace::new(destination_id, "Destination"),
-        ];
-        tree.desktop.active = source_id;
-        let chrome = ChromeState::new(tree);
-        let (source_room, destination_room) = {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let workspaces = &mut tree.desktop.workspaces;
-            let source_room = workspaces
-                .iter()
-                .find(|workspace| workspace.id == source_id)
-                .expect("source workspace")
-                .room;
-            let destination_room = workspaces
-                .iter()
-                .find(|workspace| workspace.id == destination_id)
-                .expect("destination workspace")
-                .room;
-            let source_user = state.local_user_for_room(&source_room);
-            workspaces
-                .iter_mut()
-                .find(|workspace| workspace.id == source_id)
-                .expect("source workspace")
-                .set_owner(source_user);
-            workspaces
-                .iter_mut()
-                .find(|workspace| workspace.id == destination_id)
-                .expect("destination workspace")
-                .set_owner("somebody-else");
-            drop(tree);
-            (source_room, destination_room)
-        };
-        let mut document = AutoCommit::new();
-        let result = {
-            let state = chrome.borrow();
-            ActionsProvider::new()
-                .query(SearchContext {
-                    needle: "bring record",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &document,
-                    doc_root: &automerge::ROOT,
-                })
-                .into_iter()
-                .find(|result| result.id == "record.bring")
-                .expect("record action is discoverable in the authorized source")
-        };
-        let record = RecordId::minted();
-        let args = ActionArgs::bind(
-            &result.params,
-            [
-                ("id".into(), ArgValue::Text(record.to_string())),
-                ("kind".into(), ArgValue::Text("field-guide".into())),
-            ],
-        )
-        .expect("typed record arguments");
-        let ticket = match result
-            .on_begin_invoke
-            .as_ref()
-            .expect("record action is asynchronous")(
-            &mut document,
-            &automerge::ROOT,
-            &chrome,
-            &args,
-        )
-        .expect("source admits the record request")
-        {
-            InvocationDisposition::Pending(ticket) => ticket,
-            InvocationDisposition::Accepted(_) => panic!("record request completed before frame"),
-        };
-        chrome.borrow().tree_mut().desktop.active = destination_id;
-        let index = std::rc::Rc::new(std::cell::RefCell::new(
-            crate::shell::room_records::RoomRecords::in_memory(),
-        ));
-        consume_record_requests(&chrome, &index);
-        assert!(ticket().expect("ticket poll").is_some());
-        assert!(index.borrow().holds(source_room, &record));
-        assert!(!index.borrow().holds(destination_room, &record));
+            let source_id = WorkspaceId::new();
+            let destination_id = WorkspaceId::new();
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces = vec![
+                Workspace::new(source_id, "Source"),
+                Workspace::new(destination_id, "Destination"),
+            ];
+            tree.desktop.active = source_id;
+            let chrome = ChromeState::new(tree);
+            let (source_room, destination_room) = {
+                let state = chrome.borrow();
+                let mut tree = state.tree_mut();
+                let workspaces = &mut tree.desktop.workspaces;
+                let source_room = workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == source_id)
+                    .expect("source workspace")
+                    .room;
+                let destination_room = workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == destination_id)
+                    .expect("destination workspace")
+                    .room;
+                let source_user = state.local_user_for_room(&source_room);
+                workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.id == source_id)
+                    .expect("source workspace")
+                    .set_owner(source_user);
+                workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.id == destination_id)
+                    .expect("destination workspace")
+                    .set_owner("somebody-else");
+                drop(tree);
+                (source_room, destination_room)
+            };
+            let mut document = AutoCommit::new();
+            let result = {
+                let state = chrome.borrow();
+                ActionsProvider::new()
+                    .query(SearchContext {
+                        needle: "bring record",
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &document,
+                        doc_root: &automerge::ROOT,
+                    })
+                    .into_iter()
+                    .find(|result| result.id == "record.bring")
+                    .expect("record action is discoverable in the authorized source")
+            };
+            let record = RecordId::minted();
+            let args = ActionArgs::bind(
+                &result.params,
+                [
+                    ("id".into(), ArgValue::Text(record.to_string())),
+                    ("kind".into(), ArgValue::Text("field-guide".into())),
+                ],
+            )
+            .expect("typed record arguments");
+            let ticket = match result
+                .on_begin_invoke
+                .as_ref()
+                .expect("record action is asynchronous")(
+                &mut document,
+                &automerge::ROOT,
+                &chrome,
+                &args,
+            )
+            .expect("source admits the record request")
+            {
+                InvocationDisposition::Pending(ticket) => ticket,
+                InvocationDisposition::Accepted(_) => {
+                    panic!("record request completed before frame")
+                }
+            };
+            chrome.borrow().tree_mut().desktop.active = destination_id;
+            let index = std::rc::Rc::new(std::cell::RefCell::new(
+                crate::shell::room_records::RoomRecords::in_memory(),
+            ));
+            consume_record_requests(&chrome, &index);
+            assert!(ticket().expect("ticket poll").is_some());
+            assert!(index.borrow().holds(source_room, &record));
+            assert!(!index.borrow().holds(destination_room, &record));
 
-        let denied_record = RecordId::minted();
-        chrome.borrow().tree_mut().desktop.active = source_id;
-        let denied_args = ActionArgs::bind(
-            &result.params,
-            [
-                ("id".into(), ArgValue::Text(denied_record.to_string())),
-                (
-                    "kind".into(),
-                    ArgValue::Text(RecordKind::new("note").to_string()),
-                ),
-            ],
-        )
-        .expect("typed denied arguments");
-        let denied = match result
-            .on_begin_invoke
-            .as_ref()
-            .expect("record action is asynchronous")(
-            &mut document,
-            &automerge::ROOT,
-            &chrome,
-            &denied_args,
-        )
-        .expect("request admitted before revocation")
-        {
-            InvocationDisposition::Pending(ticket) => ticket,
-            InvocationDisposition::Accepted(_) => panic!("record request completed before frame"),
-        };
-        {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let source = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.id == source_id)
-                .expect("source workspace");
-            source.owner = None;
-            source.capabilities.clear();
-            tree.desktop.active = destination_id;
+            let denied_record = RecordId::minted();
+            chrome.borrow().tree_mut().desktop.active = source_id;
+            let denied_args = ActionArgs::bind(
+                &result.params,
+                [
+                    ("id".into(), ArgValue::Text(denied_record.to_string())),
+                    (
+                        "kind".into(),
+                        ArgValue::Text(RecordKind::new("note").to_string()),
+                    ),
+                ],
+            )
+            .expect("typed denied arguments");
+            let denied = match result
+                .on_begin_invoke
+                .as_ref()
+                .expect("record action is asynchronous")(
+                &mut document,
+                &automerge::ROOT,
+                &chrome,
+                &denied_args,
+            )
+            .expect("request admitted before revocation")
+            {
+                InvocationDisposition::Pending(ticket) => ticket,
+                InvocationDisposition::Accepted(_) => {
+                    panic!("record request completed before frame")
+                }
+            };
+            {
+                let state = chrome.borrow();
+                let mut tree = state.tree_mut();
+                let source = tree
+                    .desktop
+                    .workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.id == source_id)
+                    .expect("source workspace");
+                source.owner = None;
+                source.capabilities.clear();
+                tree.desktop.active = destination_id;
+            }
+            consume_record_requests(&chrome, &index);
+            assert!(denied().is_err(), "revoked target authority fails closed");
+            assert!(!index.borrow().holds(source_room, &denied_record));
+            assert!(!index.borrow().holds(destination_room, &denied_record));
         }
-        consume_record_requests(&chrome, &index);
-        assert!(denied().is_err(), "revoked target authority fails closed");
-        assert!(!index.borrow().holds(source_room, &denied_record));
-        assert!(!index.borrow().holds(destination_room, &denied_record));
-    }
 
-    #[test]
-    fn moving_frame_builder_preserves_live_layout_widget_addresses() {
-        // Construction already moves the builder out of its constructor;
-        // moving it into an allocation exercises another real ownership move.
-        let frame = Box::new(FrameBuilder::new((1280, 800)));
-        let host: &dyn Widget = frame.host.as_ref();
-        let mapped_host = frame.node_map[&frame.host_node.expect("host layout node")];
-        assert!(
-            std::ptr::addr_eq(mapped_host, std::ptr::from_ref(host)),
-            "layout's host pointer must still refer to the live host after a move"
-        );
-        // Palette and Capture Studio are inline host fields, not independent
-        // heap allocations. Their layout bindings must survive the move too.
-        for child in host.children() {
+        fn startup_keeps_unread_activity_passive() {
+            let mut frame =
+                crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
+            let _ = frame.paint_settled();
             assert!(
-                frame
-                    .node_map
-                    .values()
-                    .any(|&mapped| { std::ptr::addr_eq(mapped, std::ptr::from_ref(child)) }),
-                "{} lost its live layout binding when the frame moved",
-                child.name()
+                frame.chrome().activity_glance.unread > 0,
+                "the restored fixture has unseen history to present in passive chrome"
+            );
+            assert!(!frame.chrome().overlays.room_activity);
+            assert!(
+                !crate::shell::input_policy::chrome_captures_input(&frame),
+                "restoring a workspace must leave the application interactive"
             );
         }
+
+        /// The top bar's workspace chevrons follow the *live* active workspace:
+        /// the bar refreshes `workspace_index` in `Widget::update` when the
+        /// chrome revision bumps. Drives the per-frame path (`pump_apps` → paint)
+        /// and reads chevron state the way a scenario would.
+        fn topbar_workspace_chevrons_track_the_live_active_workspace() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut frame = |fb: &mut FrameBuilder| {
+                fb.pump_apps(&mut doc, &root);
+                fb.relayout();
+                let _ = fb.paint();
+                fb.widget_registry()
+            };
+
+            let reg = frame(&mut fb);
+            assert!(
+                reg.contains_key("topbar_workspace_up"),
+                "the up-chevron click target is always published"
+            );
+            assert!(
+                !reg.contains_key("topbar_workspace_up_enabled"),
+                "booted on the first workspace: nothing above it, up must read disabled"
+            );
+            let booted_with_more_below = fb.chrome().tree().desktop.workspaces.len() > 1;
+            assert_eq!(
+                reg.contains_key("topbar_workspace_down_enabled"),
+                booted_with_more_below,
+                "down reads enabled exactly when a workspace follows the active one"
+            );
+
+            // A new workspace is appended last and made active, so the one
+            // we booted on is now above us: up must go live, down must not.
+            fb.with_chrome(|st| {
+                st.add_workspace("second");
+            });
+            let reg = frame(&mut fb);
+            assert!(
+                reg.contains_key("topbar_workspace_up_enabled"),
+                "after switching to a later workspace the up-chevron must read enabled"
+            );
+            assert!(
+                !reg.contains_key("topbar_workspace_down_enabled"),
+                "on the last workspace the down-chevron must read disabled"
+            );
+
+            // One step back up: still below the boot workspace, so both
+            // chevrons are live — the bar must track each switch, not just
+            // the first one after it was built.
+            fb.with_chrome(|st| {
+                assert!(st.switch_workspace(-1));
+            });
+            let reg = frame(&mut fb);
+            let idx = |fb: &FrameBuilder| {
+                let tree = fb.chrome().tree().clone();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .position(|w| w.id == tree.desktop.active)
+                    .expect("active workspace is in the tree")
+            };
+            assert!(
+                idx(&fb) > 0,
+                "one step up from the last workspace cannot be the first"
+            );
+            assert!(
+                reg.contains_key("topbar_workspace_down_enabled"),
+                "with the new workspace below, the down-chevron must read enabled"
+            );
+
+            // All the way back to the top: up goes dark, down stays live.
+            fb.with_chrome(|st| while st.switch_workspace(-1) {});
+            let reg = frame(&mut fb);
+            assert_eq!(idx(&fb), 0);
+            assert!(
+                !reg.contains_key("topbar_workspace_up_enabled"),
+                "back on the first workspace the up-chevron must read disabled again"
+            );
+            assert!(
+                reg.contains_key("topbar_workspace_down_enabled"),
+                "with a workspace below, the down-chevron must read enabled"
+            );
+        }
+
+        record_bring_keeps_its_authorized_room_across_workspace_switch();
+        startup_keeps_unread_activity_passive();
+        topbar_workspace_chevrons_track_the_live_active_workspace();
     }
 
     #[test]
-    fn startup_keeps_unread_activity_passive() {
-        let mut frame =
-            crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
-        let _ = frame.paint_settled();
-        assert!(
-            frame.chrome().activity_glance.unread > 0,
-            "the restored fixture has unseen history to present in passive chrome"
-        );
-        assert!(!frame.chrome().overlays.room_activity);
-        assert!(
-            !crate::shell::input_policy::chrome_captures_input(&frame),
-            "restoring a workspace must leave the application interactive"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn frame_builder_paints_rebuilds_only_on_change_and_keeps_widget_addresses() {
+        fn moving_frame_builder_preserves_live_layout_widget_addresses() {
+            // Construction already moves the builder out of its constructor;
+            // moving it into an allocation exercises another real ownership move.
+            let frame = Box::new(FrameBuilder::new((1280, 800)));
+            let host: &dyn Widget = frame.host.as_ref();
+            let mapped_host = frame.node_map[&frame.host_node.expect("host layout node")];
+            assert!(
+                std::ptr::addr_eq(mapped_host, std::ptr::from_ref(host)),
+                "layout's host pointer must still refer to the live host after a move"
+            );
+            // Palette and Capture Studio are inline host fields, not independent
+            // heap allocations. Their layout bindings must survive the move too.
+            for child in host.children() {
+                assert!(
+                    frame
+                        .node_map
+                        .values()
+                        .any(|&mapped| { std::ptr::addr_eq(mapped, std::ptr::from_ref(child)) }),
+                    "{} lost its live layout binding when the frame moved",
+                    child.name()
+                );
+            }
+        }
 
-    #[test]
-    fn native_damage_covers_clip_tiles_and_clamps_the_viewport() {
-        let frame = FrameBuilder::new((3839, 2159));
-        assert_eq!(
-            frame.native_damage_rect(Some(Rect::new(3203.5, 49.25, 3824.5, 300.2))),
-            Some(FineDamageRect {
-                x: 3200,
-                y: 48,
-                width: 639,
-                height: 256,
-            }),
-            "include the clip tile's neighbouring pixels, including x=3200"
-        );
-        assert_eq!(
-            frame.native_damage_rect(Some(Rect::new(-8.0, 2148.0, 17.0, 2180.0))),
-            Some(FineDamageRect {
+        /// Smoke: a fresh builder produces a non-empty Vello scene at 1600x900.
+        /// The exact byte-count would change with any rendering tweak, so we
+        /// only assert the scene encoded *something*.
+        fn frame_builder_paints_non_empty_scene() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let scene = fb.paint();
+            assert!(
+                !scene.encoding().is_empty(),
+                "fresh FrameBuilder should produce a non-empty Vello scene"
+            );
+        }
+
+        /// `with_chrome` mutations are visible through `chrome()` — the
+        /// shared cell is the same one the host borrows during draw.
+        fn frame_builder_chrome_round_trips() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            assert!(!fb.chrome().overlays.overview);
+            fb.with_chrome(|st| st.overlays.overview = true);
+            assert!(fb.chrome().overlays.overview);
+        }
+
+        /// `set_viewport` rebuilds the layout tree without panicking and
+        /// keeps `paint` working.
+        fn frame_builder_resize_paints_again() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint();
+            fb.set_viewport((1280, 720));
+            fb.relayout();
+            let scene = fb.paint();
+            assert!(!scene.encoding().is_empty());
+        }
+
+        /// …and a frame where nothing arrived must not bump, or the shell
+        /// rebuilds its widget tree on every idle pass.
+        fn a_quiet_frame_does_not_rebuild() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            fb.pump_apps(&mut doc, &root);
+            let settled = fb.chrome_revision();
+            fb.pump_apps(&mut doc, &root);
+            assert_eq!(
+                fb.chrome_revision(),
+                settled,
+                "nothing arrived; the chrome revision must stand still"
+            );
+        }
+
+        /// A window from a peer must reach the widget tree, not just the
+        /// workspace tree: peer-sync writes the tree from the network thread,
+        /// which can't bump the chrome revision `resync_strips_from_tree` gates
+        /// its rebuild on. Drives the ingest and per-frame pump.
+        fn a_peers_changes_landing_make_the_frame_rebuild() {
+            use crate::shell::state::PeerOrigin;
+            use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+
+            // A room owned by somebody else, with something in it.
+            let owner = "ada".to_string();
+            let mut host = WorkspaceTree::default();
+            let host_ws = host.append_empty_workspace("Shared");
+            host.adopt_ownerless_workspaces(&owner);
+            let room = host
+                .room_of(host_ws)
+                .expect("the host's workspace has a room");
+            host.grant_in_workspace(
+                host_ws,
+                &owner,
+                CapOverride::grant(
+                    Subject::app("files"),
+                    Scope::FsPath("/shared".to_string()),
+                    Verb::Read,
+                ),
+            )
+            .expect("the owner may grant in their own room");
+            host.sync_room_doc(room);
+            let changes = host
+                .export_room_changes_since(room, &[])
+                .expect("the host is in the room");
+            assert!(!changes.is_empty(), "the host must have something to send");
+
+            // This session joins it.
+            let mut fb = FrameBuilder::new((1600, 900));
+            let joined = {
+                let chrome = fb.chrome();
+                let mut tree = chrome.tree_mut();
+                let active = tree.desktop.active;
+                tree.set_room(active, room)
+            };
+            assert!(joined, "this session joins the peer's room");
+
+            let mut doc = AutoCommit::new();
+            let doc_root = automerge::ROOT;
+            // Settle: pump once so the builder is past its first frame and
+            // any revision movement below is attributable to the arrival.
+            fb.pump_apps(&mut doc, &doc_root);
+            let before = fb.chrome_revision();
+
+            let landed = {
+                let chrome = fb.chrome();
+                let mut tree = chrome.tree_mut();
+                tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+                    .expect("well-formed changes parse")
+            };
+            assert!(
+                landed,
+                "the peer's changes must merge into this session's tree"
+            );
+
+            fb.pump_apps(&mut doc, &doc_root);
+            assert!(
+                fb.chrome_revision() > before,
+                "a peer's change landed in the tree and nothing told the shell \
+                 to rebuild, so it would never be drawn"
+            );
+        }
+
+        /// `widget_registry` is idempotent — two consecutive calls with no
+        /// layout/chrome mutation between return the same keys mapped to the
+        /// same rects; the walker may not mutate anything.
+        fn widget_registry_is_idempotent_between_calls() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            // Settle the layout once so rects are populated.
+            let _ = fb.paint();
+            let snap_a = fb.widget_registry();
+            let snap_b = fb.widget_registry();
+            assert_eq!(
+                snap_a.len(),
+                snap_b.len(),
+                "widget_registry should return the same number of entries \
+                 across repeated calls"
+            );
+            for (key, rect) in &snap_a {
+                assert_eq!(
+                    snap_b.get(key),
+                    Some(rect),
+                    "widget_registry key `{key}` mismatched between calls: \
+                     {:?} vs {:?}",
+                    rect,
+                    snap_b.get(key)
+                );
+            }
+        }
+
+        fn external_scene_append_is_an_unversioned_retained_boundary() {
+            let mut frame = FramePaint::full(Scene::new());
+            frame.revision = 42;
+            frame.previous_revision = Some(41);
+            frame.damage_regions = Some(vec![FineDamageRect {
                 x: 0,
-                y: 2144,
-                width: 32,
-                height: 15,
-            }),
-            "edge tiles must stop at a viewport that is not tile aligned"
-        );
+                y: 0,
+                width: 1,
+                height: 1,
+            }]);
+            frame.force_full();
+            assert_eq!(frame.revision, 0);
+            assert_eq!(frame.previous_revision, None);
+            assert_eq!(frame.damage_regions, None);
+        }
+
+        moving_frame_builder_preserves_live_layout_widget_addresses();
+        frame_builder_paints_non_empty_scene();
+        frame_builder_chrome_round_trips();
+        frame_builder_resize_paints_again();
+        a_quiet_frame_does_not_rebuild();
+        a_peers_changes_landing_make_the_frame_rebuild();
+        widget_registry_is_idempotent_between_calls();
+        external_scene_append_is_an_unversioned_retained_boundary();
+    }
+
+    #[test]
+    fn frame_paints_damage_proxies_night_light_and_osk_within_bounds() {
+        fn native_damage_covers_clip_tiles_and_clamps_the_viewport() {
+            let frame = FrameBuilder::new((3839, 2159));
+            assert_eq!(
+                frame.native_damage_rect(Some(Rect::new(3203.5, 49.25, 3824.5, 300.2))),
+                Some(FineDamageRect {
+                    x: 3200,
+                    y: 48,
+                    width: 639,
+                    height: 256,
+                }),
+                "include the clip tile's neighbouring pixels, including x=3200"
+            );
+            assert_eq!(
+                frame.native_damage_rect(Some(Rect::new(-8.0, 2148.0, 17.0, 2180.0))),
+                Some(FineDamageRect {
+                    x: 0,
+                    y: 2144,
+                    width: 32,
+                    height: 15,
+                }),
+                "edge tiles must stop at a viewport that is not tile aligned"
+            );
+        }
+
+        fn transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist() {
+            assert!(floating_transfer_proxy_needed(false, false, true, false));
+            assert!(floating_transfer_proxy_needed(false, true, true, true));
+            assert!(floating_transfer_proxy_needed(false, true, false, false));
+            assert!(!floating_transfer_proxy_needed(false, true, false, true));
+            assert!(floating_transfer_proxy_needed(true, false, true, false));
+            assert!(!floating_transfer_proxy_needed(true, false, false, false));
+        }
+
+        fn night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin() {
+            assert_eq!(
+                night_light_multiplier(6_500),
+                Color::from_rgb8(255, 255, 255)
+            );
+            assert_ne!(night_light_multiplier(2_800), night_light_multiplier(4_500));
+        }
+
+        fn osk_overlay_is_bottom_anchored_and_active_only() {
+            const SURFACE: u64 = 9_900_701;
+            crate::shell::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
+            let mut fb = FrameBuilder::new((1600, 900));
+
+            fb.set_osk_surface(Some(SURFACE), None, false);
+            assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
+
+            fb.set_osk_surface(Some(SURFACE), None, true);
+            let (id, rect) = fb
+                .osk_surface_hit((800.0, 700.0))
+                .expect("active keyboard is hit-testable");
+            assert_eq!(id, SURFACE);
+            assert_eq!(rect.width(), 960.0);
+            assert_eq!(rect.y1, 880.0);
+
+            fb.set_osk_surface(Some(SURFACE), None, false);
+            assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
+            crate::shell::foreign::store().forget(SURFACE);
+        }
+
+        native_damage_covers_clip_tiles_and_clamps_the_viewport();
+        transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist();
+        night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin();
+        osk_overlay_is_bottom_anchored_and_active_only();
     }
 
     fn key_press(key: Key) -> WindowEvent {
@@ -2895,826 +3370,708 @@ mod tests {
     }
 
     #[test]
-    fn native_oobe_initializes_focus_without_test_control() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        fb.reconcile_native_focus(&mut focus);
-        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
-    }
-
-    #[test]
-    fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        fb.reconcile_native_focus(&mut focus);
-
-        let update = fb.build_a11y_tree_update(focus, 1.0);
-        let (existing_id, existing) = exported_node_named(&update, "Use existing")
-            .expect("existing-identity action reaches the external tree");
-        let (_, create) = exported_node_named(&update, "Create identity")
-            .expect("create-identity action reaches the external tree");
-        // Identity setup has distinct backup and final hand-off states, so
-        // its semantic progress surface contains four stages.
-        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
-            .expect("the OOBE progress state reaches the external tree");
-
-        assert_eq!(existing.role(), ui::accesskit::Role::Button);
-        assert_eq!(create.role(), ui::accesskit::Role::Button);
-        assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
-        assert!(existing.supports_action(ui::accesskit::Action::Focus));
-        assert!(existing.supports_action(ui::accesskit::Action::Click));
-        assert_eq!(update.focus, existing_id);
-        assert_eq!(
-            update.tree.as_ref().map(|tree| tree.root),
-            Some(ui::accesskit_bridge::ROOT_ID)
-        );
-    }
-
-    #[test]
-    fn native_oobe_routes_external_focus_and_editable_text_to_the_live_widget() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        fb.reconcile_native_focus(&mut focus);
-
-        let intro = fb.build_a11y_tree_update(focus, 1.0);
-        let (existing_id, _) = exported_node_named(&intro, "Use existing")
-            .expect("the external tree exposes the Connect-existing action");
-        assert!(fb.dispatch_a11y_action(
-            existing_id,
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-
-        let connect = fb.build_a11y_tree_update(focus, 1.0);
-        let (field_id, field) = exported_node_named(&connect, "Identity backup file")
-            .expect("the non-secret identity-path field reaches the external tree");
-        assert_eq!(field.role(), ui::accesskit::Role::TextInput);
-        assert!(field.supports_action(ui::accesskit::Action::Focus));
-        assert!(field.supports_action(ui::accesskit::Action::SetValue));
-        assert_eq!(field.value(), Some(""));
-
-        assert!(fb.dispatch_a11y_action(
-            field_id,
-            &ui::a11y::Action::Focus,
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(
-            focused_name(&fb, focus).as_deref(),
-            Some("Identity backup file"),
-            "an external focus request must update the compositor's real focus cursor"
-        );
-
-        let probe = "tilo-atspi-edit-probe";
-        assert!(fb.dispatch_a11y_action(
-            field_id,
-            &ui::a11y::Action::SetValue(probe.into()),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-
-        let updated = fb.build_a11y_tree_update(focus, 1.0);
-        let (_, field) = exported_node_named(&updated, "Identity backup file")
-            .expect("the editable field remains externally addressable after its update");
-        assert_eq!(field.value(), Some(probe));
-    }
-
-    #[test]
-    fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        fb.reconcile_native_focus(&mut focus);
-        let intro = fb.build_a11y_tree_update(focus, 1.0);
-
-        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-            .expect("begin identity setup");
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-        let protect = fb.build_a11y_tree_update(focus, 1.0);
-
-        assert!(
-            exported_node_named(&protect, "Use existing").is_none(),
-            "nodes from the replaced step must leave the exported tree"
-        );
-        assert!(
-            exported_node_named(&intro, crate::onboarding::ACKNOWLEDGEMENT).is_none(),
-            "the next step must not leak into the initial tree"
-        );
-        let (ack_id, acknowledgement) =
-            exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
-                .expect("the recovery acknowledgement reaches the external tree");
-        let (_, create) = exported_node_named(&protect, "Create local identity")
-            .expect("the gated create action reaches the external tree");
-        assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
-        assert_eq!(
-            acknowledgement.toggled(),
-            Some(ui::accesskit::Toggled::False)
-        );
-        assert!(create.is_disabled());
-        assert_eq!(protect.focus, ack_id);
-
-        assert!(fb.dispatch_a11y_action(
-            ack_id,
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        // The first pump observes the parent flow change; layout rebuilds the
-        // composition just as the production frame loop does before its next
-        // refresh. The second pump then syncs the newly-created checkbox from
-        // the CRDT. Omitting the intervening layout would test two reducer
-        // passes against the old tree, which cannot occur in the live loop.
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-        let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
-        let (_, acknowledgement) =
-            exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
-        let (_, create) = exported_node_named(&acknowledged, "Create local identity").unwrap();
-        assert_eq!(
-            acknowledgement.toggled(),
-            Some(ui::accesskit::Toggled::True),
-            "the rebuilt checkbox must preserve its visible and spoken state"
-        );
-        assert!(
-            !create.is_disabled(),
-            "the externally-operated acknowledgement must enable the gated action"
-        );
-    }
-
-    #[test]
-    fn native_oobe_enter_activates_the_focused_button() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let tab = key_press(Key::Named(NamedKey::Tab));
-
-        assert!(fb.dispatch_event(
-            &tab,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
-        assert!(fb.dispatch_event(
-            &key_press(Key::Named(NamedKey::Enter)),
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(
-            doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
-                .expect("read begin action")
-                .and_then(|(value, _)| value.as_bool()),
-            Some(true),
-            "activation must write the begin action into the document"
-        );
-
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-        assert!(
-            focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
-            "Enter must advance into the identity-protection step"
-        );
-    }
-
-    #[test]
-    fn native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        for key in [
-            crate::onboarding_view::KEY_BEGIN,
-            crate::onboarding_view::KEY_UNDERSTOOD,
-        ] {
-            doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            // The replacement subtree must sync once before a gated control
-            // can be activated, matching the production frame loop.
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_oobe_accessibility_tree_owns_focus_roles_and_editable_text() {
+        fn native_oobe_initializes_focus_without_test_control() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            fb.reconcile_native_focus(&mut focus);
+            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
         }
-        // A structural rebuild exposes the acknowledgement control before
-        // its document value has been synchronized into the new view.
-        doc.put(
-            &automerge::ROOT,
-            crate::onboarding_view::KEY_UNDERSTOOD,
-            true,
-        )
-        .expect("acknowledge identity protection");
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CREATE, true)
-            .expect("create identity");
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
 
-        let names: Vec<_> = fb
-            .focusable_order()
-            .into_iter()
-            .filter_map(|id| focused_name(&fb, Some(id)))
-            .collect();
-        assert!(
-            names.iter().any(|name| name == "New backup passphrase"),
-            "backup passphrase must be keyboard reachable: {names:?}"
-        );
-        assert!(
-            names
-                .iter()
-                .any(|name| name == "Confirm new backup passphrase"),
-            "backup confirmation must be keyboard reachable: {names:?}"
-        );
-        assert!(
-            names
-                .iter()
-                .any(|name| name.contains("without an encrypted backup")),
-            "skip acknowledgement must be keyboard reachable: {names:?}"
-        );
+        fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            fb.reconcile_native_focus(&mut focus);
 
-        let acknowledgement = fb
-            .focusable_order()
-            .into_iter()
-            .find(|id| {
-                focused_name(&fb, Some(*id))
-                    .is_some_and(|name| name.contains("without an encrypted backup"))
-            })
-            .expect("acknowledgement focus target");
-        fb.set_native_focus(&mut focus, Some(acknowledgement));
-        let enter = key_press(Key::Named(NamedKey::Enter));
-        assert!(fb.dispatch_event(
-            &enter,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-        let tab = key_press(Key::Named(NamedKey::Tab));
-        assert!(fb.dispatch_event(
-            &tab,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(
-            focused_name(&fb, focus).as_deref(),
-            Some("Continue without backup"),
-            "acknowledging the risk must make the adjacent continuation action the next keyboard stop"
-        );
+            let update = fb.build_a11y_tree_update(focus, 1.0);
+            let (existing_id, existing) = exported_node_named(&update, "Use existing")
+                .expect("existing-identity action reaches the external tree");
+            let (_, create) = exported_node_named(&update, "Create identity")
+                .expect("create-identity action reaches the external tree");
+            // Identity setup has distinct backup and final hand-off states, so
+            // its semantic progress surface contains four stages.
+            let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
+                .expect("the OOBE progress state reaches the external tree");
+
+            assert_eq!(existing.role(), ui::accesskit::Role::Button);
+            assert_eq!(create.role(), ui::accesskit::Role::Button);
+            assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
+            assert!(existing.supports_action(ui::accesskit::Action::Focus));
+            assert!(existing.supports_action(ui::accesskit::Action::Click));
+            assert_eq!(update.focus, existing_id);
+            assert_eq!(
+                update.tree.as_ref().map(|tree| tree.root),
+                Some(ui::accesskit_bridge::ROOT_ID)
+            );
+        }
+
+        fn native_oobe_routes_external_focus_and_editable_text_to_the_live_widget() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            fb.reconcile_native_focus(&mut focus);
+
+            let intro = fb.build_a11y_tree_update(focus, 1.0);
+            let (existing_id, _) = exported_node_named(&intro, "Use existing")
+                .expect("the external tree exposes the Connect-existing action");
+            assert!(fb.dispatch_a11y_action(
+                existing_id,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+
+            let connect = fb.build_a11y_tree_update(focus, 1.0);
+            let (field_id, field) = exported_node_named(&connect, "Identity backup file")
+                .expect("the non-secret identity-path field reaches the external tree");
+            assert_eq!(field.role(), ui::accesskit::Role::TextInput);
+            assert!(field.supports_action(ui::accesskit::Action::Focus));
+            assert!(field.supports_action(ui::accesskit::Action::SetValue));
+            assert_eq!(field.value(), Some(""));
+
+            assert!(fb.dispatch_a11y_action(
+                field_id,
+                &ui::a11y::Action::Focus,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Identity backup file"),
+                "an external focus request must update the compositor's real focus cursor"
+            );
+
+            let probe = "tilo-atspi-edit-probe";
+            assert!(fb.dispatch_a11y_action(
+                field_id,
+                &ui::a11y::Action::SetValue(probe.into()),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+
+            let updated = fb.build_a11y_tree_update(focus, 1.0);
+            let (_, field) = exported_node_named(&updated, "Identity backup file")
+                .expect("the editable field remains externally addressable after its update");
+            assert_eq!(field.value(), Some(probe));
+        }
+
+        fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            fb.reconcile_native_focus(&mut focus);
+            let intro = fb.build_a11y_tree_update(focus, 1.0);
+
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+                .expect("begin identity setup");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+            let protect = fb.build_a11y_tree_update(focus, 1.0);
+
+            assert!(
+                exported_node_named(&protect, "Use existing").is_none(),
+                "nodes from the replaced step must leave the exported tree"
+            );
+            assert!(
+                exported_node_named(&intro, crate::onboarding::ACKNOWLEDGEMENT).is_none(),
+                "the next step must not leak into the initial tree"
+            );
+            let (ack_id, acknowledgement) =
+                exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
+                    .expect("the recovery acknowledgement reaches the external tree");
+            let (_, create) = exported_node_named(&protect, "Create local identity")
+                .expect("the gated create action reaches the external tree");
+            assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
+            assert_eq!(
+                acknowledgement.toggled(),
+                Some(ui::accesskit::Toggled::False)
+            );
+            assert!(create.is_disabled());
+            assert_eq!(protect.focus, ack_id);
+
+            assert!(fb.dispatch_a11y_action(
+                ack_id,
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            // The first pump observes the parent flow change; layout rebuilds the
+            // composition just as the production frame loop does before its next
+            // refresh. The second pump then syncs the newly-created checkbox from
+            // the CRDT. Omitting the intervening layout would test two reducer
+            // passes against the old tree, which cannot occur in the live loop.
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+            let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
+            let (_, acknowledgement) =
+                exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
+            let (_, create) = exported_node_named(&acknowledged, "Create local identity").unwrap();
+            assert_eq!(
+                acknowledgement.toggled(),
+                Some(ui::accesskit::Toggled::True),
+                "the rebuilt checkbox must preserve its visible and spoken state"
+            );
+            assert!(
+                !create.is_disabled(),
+                "the externally-operated acknowledgement must enable the gated action"
+            );
+        }
+
+        native_oobe_initializes_focus_without_test_control();
+        native_oobe_exports_named_roles_state_and_focus_to_accesskit();
+        native_oobe_routes_external_focus_and_editable_text_to_the_live_widget();
+        native_oobe_external_tree_replaces_step_and_updates_control_state();
     }
 
     #[test]
-    fn native_oobe_tab_and_shift_tab_follow_dfs_order() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let tab = key_press(Key::Named(NamedKey::Tab));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_oobe_keyboard_order_activates_and_traverses_enabled_controls() {
+        fn native_oobe_enter_activates_the_focused_button() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            let tab = key_press(Key::Named(NamedKey::Tab));
 
-        assert!(fb.dispatch_event(
-            &tab,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert!(fb.dispatch_event(
+                &tab,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert!(fb.dispatch_event(
+                &key_press(Key::Named(NamedKey::Enter)),
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(
+                doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
+                    .expect("read begin action")
+                    .and_then(|(value, _)| value.as_bool()),
+                Some(true),
+                "activation must write the begin action into the document"
+            );
 
-        let shift = Modifiers::from(ModifiersState::SHIFT);
-        assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
-        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+            assert!(
+                focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
+                "Enter must advance into the identity-protection step"
+            );
+        }
+
+        fn native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            for key in [
+                crate::onboarding_view::KEY_BEGIN,
+                crate::onboarding_view::KEY_UNDERSTOOD,
+            ] {
+                doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
+                fb.pump_apps(&mut doc, &automerge::ROOT);
+                fb.relayout();
+                // The replacement subtree must sync once before a gated control
+                // can be activated, matching the production frame loop.
+                fb.pump_apps(&mut doc, &automerge::ROOT);
+                fb.relayout();
+            }
+            // A structural rebuild exposes the acknowledgement control before
+            // its document value has been synchronized into the new view.
+            doc.put(
+                &automerge::ROOT,
+                crate::onboarding_view::KEY_UNDERSTOOD,
+                true,
+            )
+            .expect("acknowledge identity protection");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CREATE, true)
+                .expect("create identity");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+
+            let names: Vec<_> = fb
+                .focusable_order()
+                .into_iter()
+                .filter_map(|id| focused_name(&fb, Some(id)))
+                .collect();
+            assert!(
+                names.iter().any(|name| name == "New backup passphrase"),
+                "backup passphrase must be keyboard reachable: {names:?}"
+            );
+            assert!(
+                names
+                    .iter()
+                    .any(|name| name == "Confirm new backup passphrase"),
+                "backup confirmation must be keyboard reachable: {names:?}"
+            );
+            assert!(
+                names
+                    .iter()
+                    .any(|name| name.contains("without an encrypted backup")),
+                "skip acknowledgement must be keyboard reachable: {names:?}"
+            );
+
+            let acknowledgement = fb
+                .focusable_order()
+                .into_iter()
+                .find(|id| {
+                    focused_name(&fb, Some(*id))
+                        .is_some_and(|name| name.contains("without an encrypted backup"))
+                })
+                .expect("acknowledgement focus target");
+            fb.set_native_focus(&mut focus, Some(acknowledgement));
+            let enter = key_press(Key::Named(NamedKey::Enter));
+            assert!(fb.dispatch_event(
+                &enter,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+            let tab = key_press(Key::Named(NamedKey::Tab));
+            assert!(fb.dispatch_event(
+                &tab,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Continue without backup"),
+                "acknowledging the risk must make the adjacent continuation action the next keyboard stop"
+            );
+        }
+
+        fn native_oobe_tab_and_shift_tab_follow_dfs_order() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            let tab = key_press(Key::Named(NamedKey::Tab));
+
+            assert!(fb.dispatch_event(
+                &tab,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+
+            let shift = Modifiers::from(ModifiersState::SHIFT);
+            assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
+            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+        }
+
+        fn native_oobe_focus_order_excludes_disabled_controls() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut doc = AutoCommit::new();
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+                .expect("begin identity setup");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+
+            let names: Vec<_> = fb
+                .focusable_order()
+                .into_iter()
+                .filter_map(|id| focused_name(&fb, Some(id)))
+                .collect();
+            assert!(names.iter().any(|name| name.contains("I understand")));
+            assert!(names.iter().any(|name| name == "Back"));
+            assert!(
+                !names.iter().any(|name| name == "Create"),
+                "the gated Create action must not become a Tab stop: {names:?}"
+            );
+        }
+
+        fn focused_terminal_gets_plain_tab_before_focus_traversal() {
+            let mut fb = FrameBuilder::new((1280, 800));
+            fb.relayout();
+            let terminal = fb.node_map.iter().find_map(|(id, widget)| {
+                // SAFETY: node_map pointers are owned by the live widget tree and
+                // remain valid until the next structural rebuild.
+                (unsafe { (**widget).name() } == "Terminal").then_some(*id)
+            });
+            let Some(terminal) = terminal else {
+                // Environments without a PTY deliberately mount the terminal
+                // fallback instead; the routing rule remains covered by OOBE's
+                // unclaimed-Tab traversal test above.
+                return;
+            };
+            let mut focus = None;
+            fb.set_native_focus(&mut focus, Some(terminal));
+            let mut doc = AutoCommit::new();
+
+            assert!(fb.dispatch_event(
+                &key_press(Key::Named(NamedKey::Tab)),
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(focus, Some(terminal), "terminal Tab must not move focus");
+        }
+
+        native_oobe_enter_activates_the_focused_button();
+        native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue();
+        native_oobe_tab_and_shift_tab_follow_dfs_order();
+        native_oobe_focus_order_excludes_disabled_controls();
+        focused_terminal_gets_plain_tab_before_focus_traversal();
     }
 
     #[test]
-    fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let position = Point::new(417.0, 263.0);
+    fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
+        fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            let position = Point::new(417.0, 263.0);
 
-        assert!(fb.dispatch_event(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(position.x, position.y),
-            },
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(
-            fb.capture_pointer_position(),
-            Some(position),
-            "onboarding must retain the motion used to hit-test the following coordinate-free MouseInput"
-        );
+            assert!(fb.dispatch_event(
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(position.x, position.y),
+                },
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(
+                fb.capture_pointer_position(),
+                Some(position),
+                "onboarding must retain the motion used to hit-test the following coordinate-free MouseInput"
+            );
+        }
+
+        fn native_oobe_step_transition_reseats_focus_on_new_first_control() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            fb.reconcile_native_focus(&mut focus);
+            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
+                .expect("begin identity setup");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+
+            assert!(
+                focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
+                "focus must move into the replacement OOBE step"
+            );
+        }
+
+        fn native_oobe_step_transition_keeps_the_new_page_at_its_top() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            fb.reconcile_native_focus(&mut focus);
+
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CONNECT, true)
+                .expect("open identity restore");
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+
+            let scroll_offset = fb
+                .node_map
+                .values()
+                .copied()
+                .find_map(|pointer| unsafe {
+                    ((*pointer).name() == "Scrollable")
+                        .then(|| (*pointer).as_any_mut())
+                        .flatten()
+                        .and_then(|widget| widget.downcast_mut::<ui::widget::Scrollable>())
+                        .map(|scroll| scroll.offset_y())
+                })
+                .expect("restore page scroll viewport");
+            assert_eq!(
+                scroll_offset, 0.0,
+                "programmatic first focus must not hide a newly presented page's heading"
+            );
+        }
+
+        fn native_oobe_incidental_rebuild_preserves_focus_ordinal() {
+            let (mut fb, _identity_dir) = onboarding_frame();
+            let mut focus = None;
+            let mut doc = AutoCommit::new();
+            let tab = key_press(Key::Named(NamedKey::Tab));
+            assert!(fb.dispatch_event(
+                &tab,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+
+            fb.rebuild_layout_tree();
+            fb.relayout();
+            fb.reconcile_native_focus(&mut focus);
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create identity"),
+                "an unrelated structure refresh must preserve the focused ordinal"
+            );
+        }
+
+        native_oobe_pointer_motion_is_retained_before_modal_dispatch();
+        native_oobe_step_transition_reseats_focus_on_new_first_control();
+        native_oobe_step_transition_keeps_the_new_page_at_its_top();
+        native_oobe_incidental_rebuild_preserves_focus_ordinal();
     }
 
     #[test]
-    fn focused_terminal_gets_plain_tab_before_focus_traversal() {
-        let mut fb = FrameBuilder::new((1280, 800));
-        fb.relayout();
-        let terminal = fb.node_map.iter().find_map(|(id, widget)| {
-            // SAFETY: node_map pointers are owned by the live widget tree and
-            // remain valid until the next structural rebuild.
-            (unsafe { (**widget).name() } == "Terminal").then_some(*id)
-        });
-        let Some(terminal) = terminal else {
-            // Environments without a PTY deliberately mount the terminal
-            // fallback instead; the routing rule remains covered by OOBE's
-            // unclaimed-Tab traversal test above.
-            return;
-        };
-        let mut focus = None;
-        fb.set_native_focus(&mut focus, Some(terminal));
-        let mut doc = AutoCommit::new();
-
-        assert!(fb.dispatch_event(
-            &key_press(Key::Named(NamedKey::Tab)),
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(focus, Some(terminal), "terminal Tab must not move focus");
-    }
-
-    #[test]
-    fn native_oobe_focus_order_excludes_disabled_controls() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut doc = AutoCommit::new();
-        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-            .expect("begin identity setup");
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-
-        let names: Vec<_> = fb
-            .focusable_order()
-            .into_iter()
-            .filter_map(|id| focused_name(&fb, Some(id)))
-            .collect();
-        assert!(names.iter().any(|name| name.contains("I understand")));
-        assert!(names.iter().any(|name| name == "Back"));
-        assert!(
-            !names.iter().any(|name| name == "Create"),
-            "the gated Create action must not become a Tab stop: {names:?}"
-        );
-    }
-
-    #[test]
-    fn native_oobe_step_transition_reseats_focus_on_new_first_control() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        fb.reconcile_native_focus(&mut focus);
-        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
-
-        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-            .expect("begin identity setup");
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-
-        assert!(
-            focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
-            "focus must move into the replacement OOBE step"
-        );
-    }
-
-    #[test]
-    fn native_oobe_step_transition_keeps_the_new_page_at_its_top() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        fb.reconcile_native_focus(&mut focus);
-
-        doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CONNECT, true)
-            .expect("open identity restore");
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-
-        let scroll_offset = fb
-            .node_map
-            .values()
-            .copied()
-            .find_map(|pointer| unsafe {
-                ((*pointer).name() == "Scrollable")
-                    .then(|| (*pointer).as_any_mut())
-                    .flatten()
-                    .and_then(|widget| widget.downcast_mut::<ui::widget::Scrollable>())
-                    .map(|scroll| scroll.offset_y())
-            })
-            .expect("restore page scroll viewport");
-        assert_eq!(
-            scroll_offset, 0.0,
-            "programmatic first focus must not hide a newly presented page's heading"
-        );
-    }
-
-    #[test]
-    fn native_oobe_incidental_rebuild_preserves_focus_ordinal() {
-        let (mut fb, _identity_dir) = onboarding_frame();
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let tab = key_press(Key::Named(NamedKey::Tab));
-        assert!(fb.dispatch_event(
-            &tab,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut focus,
-        ));
-        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
-
-        fb.rebuild_layout_tree();
-        fb.relayout();
-        fb.reconcile_native_focus(&mut focus);
-        assert_eq!(
-            focused_name(&fb, focus).as_deref(),
-            Some("Create identity"),
-            "an unrelated structure refresh must preserve the focused ordinal"
-        );
-    }
-
-    #[test]
-    fn transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist() {
-        assert!(floating_transfer_proxy_needed(false, false, true, false));
-        assert!(floating_transfer_proxy_needed(false, true, true, true));
-        assert!(floating_transfer_proxy_needed(false, true, false, false));
-        assert!(!floating_transfer_proxy_needed(false, true, false, true));
-        assert!(floating_transfer_proxy_needed(true, false, true, false));
-        assert!(!floating_transfer_proxy_needed(true, false, false, false));
-    }
-
-    #[test]
-    fn night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin() {
-        assert_eq!(
-            night_light_multiplier(6_500),
-            Color::from_rgb8(255, 255, 255)
-        );
-        assert_ne!(night_light_multiplier(2_800), night_light_multiplier(4_500));
-    }
-
-    #[test]
-    fn external_scene_append_is_an_unversioned_retained_boundary() {
-        let mut frame = FramePaint::full(Scene::new());
-        frame.revision = 42;
-        frame.previous_revision = Some(41);
-        frame.damage_regions = Some(vec![FineDamageRect {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-        }]);
-        frame.force_full();
-        assert_eq!(frame.revision, 0);
-        assert_eq!(frame.previous_revision, None);
-        assert_eq!(frame.damage_regions, None);
-    }
-
-    /// Smoke: a fresh builder produces a non-empty Vello scene at 1600x900.
-    /// The exact byte-count would change with any rendering tweak, so we
-    /// only assert the scene encoded *something*.
-    #[test]
-    fn frame_builder_paints_non_empty_scene() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let scene = fb.paint();
-        assert!(
-            !scene.encoding().is_empty(),
-            "fresh FrameBuilder should produce a non-empty Vello scene"
-        );
-    }
-
-    /// `with_chrome` mutations are visible through `chrome()` — the
-    /// shared cell is the same one the host borrows during draw.
-    #[test]
-    fn frame_builder_chrome_round_trips() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        assert!(!fb.chrome().overlays.overview);
-        fb.with_chrome(|st| st.overlays.overview = true);
-        assert!(fb.chrome().overlays.overview);
-    }
-
-    #[test]
-    fn osk_overlay_is_bottom_anchored_and_active_only() {
-        const SURFACE: u64 = 9_900_701;
-        crate::shell::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
-        let mut fb = FrameBuilder::new((1600, 900));
-
-        fb.set_osk_surface(Some(SURFACE), None, false);
-        assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
-
-        fb.set_osk_surface(Some(SURFACE), None, true);
-        let (id, rect) = fb
-            .osk_surface_hit((800.0, 700.0))
-            .expect("active keyboard is hit-testable");
-        assert_eq!(id, SURFACE);
-        assert_eq!(rect.width(), 960.0);
-        assert_eq!(rect.y1, 880.0);
-
-        fb.set_osk_surface(Some(SURFACE), None, false);
-        assert!(fb.osk_surface_hit((800.0, 700.0)).is_none());
-        crate::shell::foreign::store().forget(SURFACE);
-    }
-
-    /// A window from a peer must reach the widget tree, not just the
-    /// workspace tree: peer-sync writes the tree from the network thread,
-    /// which can't bump the chrome revision `resync_strips_from_tree` gates
-    /// its rebuild on. Drives the ingest and per-frame pump.
-    #[test]
-    fn a_peers_changes_landing_make_the_frame_rebuild() {
-        use crate::shell::state::PeerOrigin;
-        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
-
-        // A room owned by somebody else, with something in it.
-        let owner = "ada".to_string();
-        let mut host = WorkspaceTree::default();
-        let host_ws = host.append_empty_workspace("Shared");
-        host.adopt_ownerless_workspaces(&owner);
-        let room = host
-            .room_of(host_ws)
-            .expect("the host's workspace has a room");
-        host.grant_in_workspace(
-            host_ws,
-            &owner,
-            CapOverride::grant(
-                Subject::app("files"),
-                Scope::FsPath("/shared".to_string()),
-                Verb::Read,
-            ),
-        )
-        .expect("the owner may grant in their own room");
-        host.sync_room_doc(room);
-        let changes = host
-            .export_room_changes_since(room, &[])
-            .expect("the host is in the room");
-        assert!(!changes.is_empty(), "the host must have something to send");
-
-        // This session joins it.
-        let mut fb = FrameBuilder::new((1600, 900));
-        let joined = {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            let active = tree.desktop.active;
-            tree.set_room(active, room)
-        };
-        assert!(joined, "this session joins the peer's room");
-
-        let mut doc = AutoCommit::new();
-        let doc_root = automerge::ROOT;
-        // Settle: pump once so the builder is past its first frame and
-        // any revision movement below is attributable to the arrival.
-        fb.pump_apps(&mut doc, &doc_root);
-        let before = fb.chrome_revision();
-
-        let landed = {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
-                .expect("well-formed changes parse")
-        };
-        assert!(
-            landed,
-            "the peer's changes must merge into this session's tree"
-        );
-
-        fb.pump_apps(&mut doc, &doc_root);
-        assert!(
-            fb.chrome_revision() > before,
-            "a peer's change landed in the tree and nothing told the shell \
-             to rebuild, so it would never be drawn"
-        );
+    fn scheduled_night_light_follows_the_phase_not_the_switch() {
+        assert!(night_light_on(false, true, Some(true)));
+        assert!(!night_light_on(true, true, Some(false)));
+        assert!(night_light_on(true, false, Some(false)));
+        assert!(!night_light_on(false, false, Some(true)));
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn restored_native_tab_gets_a_configure_rect_before_its_first_buffer() {
-        use crate::shell::state::{Tab, TileContent};
-        use crate::shell::tab_binding::{self, Placement};
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
+        fn restored_native_tab_gets_a_configure_rect_before_its_first_buffer() {
+            use crate::shell::state::{Tab, TileContent};
+            use crate::shell::tab_binding::{self, Placement};
 
-        const SURFACE: u64 = 0xfedc_0011;
-        const APP: &str = "dev.tilo.calculator";
-        crate::shell::launcher::clear_pending_placements();
-        let store = crate::shell::foreign::store();
-        store.forget(SURFACE);
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
-        let tab = tab_binding::place_tab(
-            &mut tree,
-            Tab {
-                id: crate::shell::state::next_id(),
-                title: "Calculator".into(),
-                tile: TileContent::LocalApp {
-                    app_id: APP.into(),
-                    label: "Calculator".into(),
-                    // Restore has already dispatched the app; do not start
-                    // a real process from this frame-builder regression.
-                    note: crate::shell::peer_windows::OPENING.into(),
+            const SURFACE: u64 = 0xfedc_0011;
+            const APP: &str = "dev.tilo.calculator";
+            crate::shell::launcher::clear_pending_placements();
+            let store = crate::shell::foreign::store();
+            store.forget(SURFACE);
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let room = tree.desktop.workspaces[0].room;
+            let tab = tab_binding::place_tab(
+                &mut tree,
+                Tab {
+                    id: crate::shell::state::next_id(),
+                    title: "Calculator".into(),
+                    tile: TileContent::LocalApp {
+                        app_id: APP.into(),
+                        label: "Calculator".into(),
+                        // Restore has already dispatched the app; do not start
+                        // a real process from this frame-builder regression.
+                        note: crate::shell::peer_windows::OPENING.into(),
+                    },
                 },
-            },
-            Placement::NewGroup,
-        );
-        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
-        let mut doc = AutoCommit::new();
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        assert!(fb.foreign_surface_rect(SURFACE).is_none());
-        // A real restored LocalApp notice has already appeared on screen.
-        // Its host visibility latch must not hide the new app's readiness.
-        let _ = fb.paint();
-        crate::shell::launcher::set_pending_placement(APP, Placement::IntoTab(tab));
-        {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            assert_eq!(
-                tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room),
-                Some(tab),
+                Placement::NewGroup,
             );
-        }
-        store.note_adopted(SURFACE);
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        assert_eq!(store.frame_seq(SURFACE), 0);
-        let rect = fb
-            .foreign_surface_rect(SURFACE)
-            .expect("restored tab must publish its configure rect before the client can draw");
-        assert!(rect.width() > 0.0 && rect.height() > 0.0);
-        let (width, height) = store
-            .take_pending_configure(SURFACE, 1.0)
-            .expect("layout must make the initial client configure available without input");
-        assert!(
-            fb.needs_animation_frame(),
-            "the opening window must keep progressing"
-        );
-        assert!(!store.is_presented(SURFACE));
-        assert!(
-            fb.any_tile_opening(),
-            "the visible notice must become an opening card, not an unresponsive-app error"
-        );
-        let _ = fb.paint();
+            let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            assert!(fb.foreign_surface_rect(SURFACE).is_none());
+            // A real restored LocalApp notice has already appeared on screen.
+            // Its host visibility latch must not hide the new app's readiness.
+            let _ = fb.paint();
+            crate::shell::launcher::set_pending_placement(APP, Placement::IntoTab(tab));
+            {
+                let chrome = fb.chrome();
+                let mut tree = chrome.tree_mut();
+                assert_eq!(
+                    tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room),
+                    Some(tab),
+                );
+            }
+            store.note_adopted(SURFACE);
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            assert_eq!(store.frame_seq(SURFACE), 0);
+            let rect = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("restored tab must publish its configure rect before the client can draw");
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+            let (width, height) = store
+                .take_pending_configure(SURFACE)
+                .expect("layout must make the initial client configure available without input");
+            assert!(
+                fb.needs_animation_frame(),
+                "the opening window must keep progressing"
+            );
+            assert!(!store.is_presented(SURFACE));
+            assert!(
+                fb.any_tile_opening(),
+                "the visible notice must become an opening card, not an unresponsive-app error"
+            );
+            let _ = fb.paint();
 
-        let width = u32::try_from(width).expect("positive configured width");
-        let height = u32::try_from(height).expect("positive configured height");
-        let bytes = width
-            .checked_mul(height)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .and_then(|bytes| usize::try_from(bytes).ok())
-            .expect("bounded test viewport");
-        store.publish_rgba(SURFACE, &vec![255; bytes], width, height);
-        let revision = fb.chrome_revision();
-        fb.pump_apps(&mut doc, &automerge::ROOT);
-        fb.relayout();
-        let _ = fb.paint();
-        assert!(
-            store.is_presented(SURFACE),
-            "the first sized buffer must replace the opening presentation"
-        );
-        assert_eq!(
-            fb.chrome_revision(),
-            revision,
-            "presentation must not need an unrelated tree mutation"
-        );
-        store.forget(SURFACE);
-        crate::shell::launcher::clear_pending_placements();
-    }
-
-    /// …and a frame where nothing arrived must not bump, or the shell
-    /// rebuilds its widget tree on every idle pass.
-    #[test]
-    fn a_quiet_frame_does_not_rebuild() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        fb.pump_apps(&mut doc, &root);
-        let settled = fb.chrome_revision();
-        fb.pump_apps(&mut doc, &root);
-        assert_eq!(
-            fb.chrome_revision(),
-            settled,
-            "nothing arrived; the chrome revision must stand still"
-        );
-    }
-
-    /// `set_viewport` rebuilds the layout tree without panicking and
-    /// keeps `paint` working.
-    #[test]
-    fn frame_builder_resize_paints_again() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint();
-        fb.set_viewport((1280, 720));
-        fb.relayout();
-        let scene = fb.paint();
-        assert!(!scene.encoding().is_empty());
-    }
-
-    /// The top bar's workspace chevrons follow the *live* active workspace:
-    /// the bar refreshes `workspace_index` in `Widget::update` when the
-    /// chrome revision bumps. Drives the per-frame path (`pump_apps` → paint)
-    /// and reads chevron state the way a scenario would.
-    #[test]
-    fn topbar_workspace_chevrons_track_the_live_active_workspace() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut frame = |fb: &mut FrameBuilder| {
-            fb.pump_apps(&mut doc, &root);
+            let width = u32::try_from(width).expect("positive configured width");
+            let height = u32::try_from(height).expect("positive configured height");
+            let bytes = width
+                .checked_mul(height)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .expect("bounded test viewport");
+            store.publish_rgba(SURFACE, &vec![255; bytes], width, height);
+            let revision = fb.chrome_revision();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             let _ = fb.paint();
-            fb.widget_registry()
-        };
+            assert!(
+                store.is_presented(SURFACE),
+                "the first sized buffer must replace the opening presentation"
+            );
+            assert_eq!(
+                fb.chrome_revision(),
+                revision,
+                "presentation must not need an unrelated tree mutation"
+            );
+            store.forget(SURFACE);
+            crate::shell::launcher::clear_pending_placements();
+        }
 
-        let reg = frame(&mut fb);
-        assert!(
-            reg.contains_key("topbar_workspace_up"),
-            "the up-chevron click target is always published"
-        );
-        assert!(
-            !reg.contains_key("topbar_workspace_up_enabled"),
-            "booted on the first workspace: nothing above it, up must read disabled"
-        );
-        let booted_with_more_below = fb.chrome().tree().desktop.workspaces.len() > 1;
-        assert_eq!(
-            reg.contains_key("topbar_workspace_down_enabled"),
-            booted_with_more_below,
-            "down reads enabled exactly when a workspace follows the active one"
-        );
+        /// A group promoted to fullscreen absorbs the whole output (top bar
+        /// collapses, the strip's rect rises and spans the width), and clearing
+        /// it restores the exact prior layout — the compositor-scene half of the
+        /// fullscreen contract, driven through the
+        /// `FrameBuilder::set_fullscreen` → `ChromeState` → overlay-host path.
+        fn set_fullscreen_promotes_group_and_restores_on_exit() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
 
-        // A new workspace is appended last and made active, so the one
-        // we booted on is now above us: up must go live, down must not.
-        fb.with_chrome(|st| {
-            st.add_workspace("second");
-        });
-        let reg = frame(&mut fb);
-        assert!(
-            reg.contains_key("topbar_workspace_up_enabled"),
-            "after switching to a later workspace the up-chevron must read enabled"
-        );
-        assert!(
-            !reg.contains_key("topbar_workspace_down_enabled"),
-            "on the last workspace the down-chevron must read disabled"
-        );
+            // A group that actually exists in the rendered tree.
+            let gid = {
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                tree.desktop
+                    .active_workspace()
+                    .expect("bootstrap tree has an active workspace")
+                    .strips[0]
+                    .window_groups[0]
+                    .id
+            };
 
-        // One step back up: still below the boot workspace, so both
-        // chevrons are live — the bar must track each switch, not just
-        // the first one after it was built.
-        fb.with_chrome(|st| {
-            assert!(st.switch_workspace(-1));
-        });
-        let reg = frame(&mut fb);
-        let idx = |fb: &FrameBuilder| {
-            let tree = fb.chrome().tree().clone();
-            tree.desktop
-                .workspaces
-                .iter()
-                .position(|w| w.id == tree.desktop.active)
-                .expect("active workspace is in the tree")
-        };
-        assert!(
-            idx(&fb) > 0,
-            "one step up from the last workspace cannot be the first"
-        );
-        assert!(
-            reg.contains_key("topbar_workspace_down_enabled"),
-            "with the new workspace below, the down-chevron must read enabled"
-        );
+            let before = fb.widget_registry();
+            let topbar_before = rect_named(&before, "TopBarChrome");
+            let row_before = rect_named(&before, "GroupRow");
+            assert!(
+                topbar_before.height() > 10.0,
+                "top bar visible before fullscreen"
+            );
 
-        // All the way back to the top: up goes dark, down stays live.
-        fb.with_chrome(|st| while st.switch_workspace(-1) {});
-        let reg = frame(&mut fb);
-        assert_eq!(idx(&fb), 0);
-        assert!(
-            !reg.contains_key("topbar_workspace_up_enabled"),
-            "back on the first workspace the up-chevron must read disabled again"
-        );
-        assert!(
-            reg.contains_key("topbar_workspace_down_enabled"),
-            "with a workspace below, the down-chevron must read enabled"
-        );
+            // Enter fullscreen on that group.
+            fb.set_fullscreen(Some(gid));
+            assert_eq!(fb.fullscreen_group(), Some(gid));
+            let _ = fb.paint_settled();
+            assert!(fb.chrome().is_fullscreen());
+
+            let during = fb.widget_registry();
+            let topbar_fs = rect_named(&during, "TopBarChrome");
+            let row_fs = rect_named(&during, "GroupRow");
+            assert!(
+                topbar_fs.height() <= 0.5,
+                "top bar collapses under fullscreen; got height {}",
+                topbar_fs.height(),
+            );
+            assert!(
+                row_fs.y0 < row_before.y0 - 20.0,
+                "the strip rises to the top once the bar is gone; before y0 {} during {}",
+                row_before.y0,
+                row_fs.y0,
+            );
+            assert!(
+                row_fs.width() >= fb.viewport().0 - 1.0,
+                "fullscreen strip spans the output width; got {} vs {}",
+                row_fs.width(),
+                fb.viewport().0,
+            );
+
+            // Exit — the layout restores exactly.
+            fb.set_fullscreen(None);
+            assert_eq!(fb.fullscreen_group(), None);
+            let _ = fb.paint_settled();
+            assert!(!fb.chrome().is_fullscreen());
+
+            let after = fb.widget_registry();
+            let topbar_after = rect_named(&after, "TopBarChrome");
+            let row_after = rect_named(&after, "GroupRow");
+            assert!(
+                (topbar_after.height() - topbar_before.height()).abs() < 0.5,
+                "top bar height restores: before {} after {}",
+                topbar_before.height(),
+                topbar_after.height(),
+            );
+            assert!(
+                (row_after.y0 - row_before.y0).abs() < 0.5
+                    && (row_after.x0 - row_before.x0).abs() < 0.5
+                    && (row_after.width() - row_before.width()).abs() < 0.5,
+                "strip row rect restores exactly: before {row_before:?} after {row_after:?}",
+            );
+        }
+
+        /// A fullscreen id the rendered tree does NOT host must be a safe
+        /// no-op — must not blank the shell by hiding every strip (the live
+        /// client tree and rendered tree aren't yet unified).
+        fn set_fullscreen_with_unknown_group_does_not_blank_shell() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let before = fb.widget_registry();
+            let row_before = rect_named(&before, "GroupRow");
+
+            // An id that cannot exist in the tree.
+            fb.set_fullscreen(Some(u64::MAX));
+            let _ = fb.paint_settled();
+
+            let during = fb.widget_registry();
+            let row_during = rect_named(&during, "GroupRow");
+            let topbar_during = rect_named(&during, "TopBarChrome");
+            assert!(
+                row_during.width() > 0.0 && row_during.height() > 0.0,
+                "an unknown fullscreen id must not collapse the shell; got {row_during:?}",
+            );
+            // Geometry matches the normal (non-fullscreen) layout — no promotion,
+            // no chrome suppression.
+            assert!((row_during.width() - row_before.width()).abs() < 0.5);
+            assert!(
+                topbar_during.height() > 10.0,
+                "top bar stays visible for an unknown fullscreen id",
+            );
+        }
+
+        restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
+        set_fullscreen_promotes_group_and_restores_on_exit();
+        set_fullscreen_with_unknown_group_does_not_blank_shell();
     }
 
     /// Look up a widget's rect by its *last* path segment
@@ -3744,142 +4101,48 @@ mod tests {
             )
     }
 
-    /// A group promoted to fullscreen absorbs the whole output (top bar
-    /// collapses, the strip's rect rises and spans the width), and clearing
-    /// it restores the exact prior layout — the compositor-scene half of the
-    /// fullscreen contract, driven through the
-    /// `FrameBuilder::set_fullscreen` → `ChromeState` → overlay-host path.
     #[test]
-    fn set_fullscreen_promotes_group_and_restores_on_exit() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-
-        // A group that actually exists in the rendered tree.
-        let gid = {
-            let chrome = fb.chrome();
-            let tree = chrome.tree();
-            tree.desktop
-                .active_workspace()
-                .expect("bootstrap tree has an active workspace")
-                .strips[0]
-                .window_groups[0]
-                .id
+    fn the_magnifier_centres_on_the_keyboard_focus_once_it_moves_past_a_resting_pointer() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        fb.visual_accessibility.magnifier.zoom = 2;
+        let t0 = Instant::now();
+        let pointer = Point::new(20.0, 700.0);
+        fb.host.note_pointer(pointer);
+        fb.note_keyboard_focus(None);
+        fb.refresh_magnifier_at(t0);
+        let focused = fb.focusable_order().into_iter().find_map(|id| {
+            let &widget = fb.node_map.get(&id)?;
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            let rect = unsafe { (*widget).get_rect() };
+            (rect.area() > 0.0 && rect.center() != pointer).then_some((id, rect))
+        });
+        let Some((node, rect)) = focused else {
+            panic!("the desktop offers a focusable control");
         };
-
-        let before = fb.widget_registry();
-        let topbar_before = rect_named(&before, "TopBarChrome");
-        let row_before = rect_named(&before, "GroupRow");
-        assert!(
-            topbar_before.height() > 10.0,
-            "top bar visible before fullscreen"
-        );
-
-        // Enter fullscreen on that group.
-        fb.set_fullscreen(Some(gid));
-        assert_eq!(fb.fullscreen_group(), Some(gid));
-        let _ = fb.paint_settled();
-        assert!(fb.chrome().is_fullscreen());
-
-        let during = fb.widget_registry();
-        let topbar_fs = rect_named(&during, "TopBarChrome");
-        let row_fs = rect_named(&during, "GroupRow");
-        assert!(
-            topbar_fs.height() <= 0.5,
-            "top bar collapses under fullscreen; got height {}",
-            topbar_fs.height(),
-        );
-        assert!(
-            row_fs.y0 < row_before.y0 - 20.0,
-            "the strip rises to the top once the bar is gone; before y0 {} during {}",
-            row_before.y0,
-            row_fs.y0,
-        );
-        assert!(
-            row_fs.width() >= fb.viewport().0 - 1.0,
-            "fullscreen strip spans the output width; got {} vs {}",
-            row_fs.width(),
-            fb.viewport().0,
-        );
-
-        // Exit — the layout restores exactly.
-        fb.set_fullscreen(None);
-        assert_eq!(fb.fullscreen_group(), None);
-        let _ = fb.paint_settled();
-        assert!(!fb.chrome().is_fullscreen());
-
-        let after = fb.widget_registry();
-        let topbar_after = rect_named(&after, "TopBarChrome");
-        let row_after = rect_named(&after, "GroupRow");
-        assert!(
-            (topbar_after.height() - topbar_before.height()).abs() < 0.5,
-            "top bar height restores: before {} after {}",
-            topbar_before.height(),
-            topbar_after.height(),
-        );
-        assert!(
-            (row_after.y0 - row_before.y0).abs() < 0.5
-                && (row_after.x0 - row_before.x0).abs() < 0.5
-                && (row_after.width() - row_before.width()).abs() < 0.5,
-            "strip row rect restores exactly: before {row_before:?} after {row_after:?}",
-        );
-    }
-
-    /// A fullscreen id the rendered tree does NOT host must be a safe
-    /// no-op — must not blank the shell by hiding every strip (the live
-    /// client tree and rendered tree aren't yet unified).
-    #[test]
-    fn set_fullscreen_with_unknown_group_does_not_blank_shell() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        let before = fb.widget_registry();
-        let row_before = rect_named(&before, "GroupRow");
-
-        // An id that cannot exist in the tree.
-        fb.set_fullscreen(Some(u64::MAX));
-        let _ = fb.paint_settled();
-
-        let during = fb.widget_registry();
-        let row_during = rect_named(&during, "GroupRow");
-        let topbar_during = rect_named(&during, "TopBarChrome");
-        assert!(
-            row_during.width() > 0.0 && row_during.height() > 0.0,
-            "an unknown fullscreen id must not collapse the shell; got {row_during:?}",
-        );
-        // Geometry matches the normal (non-fullscreen) layout — no promotion,
-        // no chrome suppression.
-        assert!((row_during.width() - row_before.width()).abs() < 0.5);
-        assert!(
-            topbar_during.height() > 10.0,
-            "top bar stays visible for an unknown fullscreen id",
-        );
-    }
-
-    /// `widget_registry` is idempotent — two consecutive calls with no
-    /// layout/chrome mutation between return the same keys mapped to the
-    /// same rects; the walker may not mutate anything.
-    #[test]
-    fn widget_registry_is_idempotent_between_calls() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        // Settle the layout once so rects are populated.
-        let _ = fb.paint();
-        let snap_a = fb.widget_registry();
-        let snap_b = fb.widget_registry();
         assert_eq!(
-            snap_a.len(),
-            snap_b.len(),
-            "widget_registry should return the same number of entries \
-             across repeated calls"
+            fb.magnifier_focus.centre(),
+            Some(pointer),
+            "before the focus moves, the pointer leads"
         );
-        for (key, rect) in &snap_a {
-            assert_eq!(
-                snap_b.get(key),
-                Some(rect),
-                "widget_registry key `{key}` mismatched between calls: \
-                 {:?} vs {:?}",
-                rect,
-                snap_b.get(key)
-            );
-        }
+
+        fb.note_keyboard_focus(Some(node));
+        fb.refresh_magnifier_at(t0 + Duration::from_millis(50));
+        assert_eq!(fb.magnifier_focus.centre(), Some(rect.center()));
+
+        let moved = Point::new(40.0, 690.0);
+        fb.host.note_pointer(moved);
+        fb.refresh_magnifier_at(t0 + Duration::from_millis(100));
+        assert_eq!(fb.magnifier_focus.centre(), Some(moved));
+    }
+
+    #[test]
+    fn keyboard_focus_is_not_tracked_while_the_magnifier_is_off() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let node = fb.focusable_order().into_iter().next();
+        fb.note_keyboard_focus(node);
+        assert_eq!(fb.keyboard_focus_rect, None);
     }
 }
 

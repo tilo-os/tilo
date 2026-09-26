@@ -1069,129 +1069,237 @@ mod tests {
     use qdoc::snapshot::DocSnapshot;
 
     #[test]
-    fn borrowed_views_match_document_export() {
-        let cases = [
-            "---\ntitle: \"Notes: café\"\nauthor: Ada\nlang: fr\n---\n\n# Résumé\n\nHello **世界** and *é* with [link](https://qos.dev/).\n",
-            "| Name | Value |\n| --- | --- |\n| **α** | café |\n\n```rust\nlet café = 1;\n```\n",
-            "Text[^second] and again[^second], then[^first].\n\n[^first]: First note.\n\n[^second]: Unicode café note.\n",
-            "- [x] done\n- [ ] pending\n\n1. ordered\n2. next\n",
-            "",
-        ];
-        for source in cases {
-            let mut document = Document::new();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn markdown_block_structure_roundtrips() {
+        // Phase `borrowed_views_match_document_export`.
+        {
+            let cases = [
+                "---\ntitle: \"Notes: café\"\nauthor: Ada\nlang: fr\n---\n\n# Résumé\n\nHello **世界** and *é* with [link](https://tilo.dev/).\n",
+                "| Name | Value |\n| --- | --- |\n| **α** | café |\n\n```rust\nlet café = 1;\n```\n",
+                "Text[^second] and again[^second], then[^first].\n\n[^first]: First note.\n\n[^second]: Unicode café note.\n",
+                "- [x] done\n- [ ] pending\n\n1. ordered\n2. next\n",
+                "",
+            ];
+            for source in cases {
+                let mut document = Document::new();
+                MarkdownCodec
+                    .import(
+                        source.as_bytes(),
+                        &mut document.as_mut(),
+                        &mut tilo_content::ContentInputs::new(),
+                    )
+                    .unwrap();
+                let expected = MarkdownCodec
+                    .export(document.as_ref(), &tilo_content::NoContent)
+                    .unwrap();
+                let snapshot = document.materialize();
+                // Export stays usable after the CRDT is gone: these are the complete,
+                // already materialized inputs, not a handle that can re-read it.
+                drop(document);
+                let actual = export_views(&snapshot.properties, &snapshot.blocks, &snapshot.notes);
+                assert_eq!(actual, expected, "source: {source:?}");
+                let text = String::from_utf8(actual).unwrap();
+                if source.contains("[^second]") {
+                    assert!(text.contains("[^1]: Unicode café note."), "{text}");
+                    assert!(text.contains("[^2]: First note."), "{text}");
+                }
+                if source.contains("```rust") {
+                    assert!(text.contains("```rust\nlet café = 1;\n```"), "{text}");
+                    assert!(text.contains("**α**"), "{text}");
+                }
+                if source.contains("Résumé") {
+                    assert!(text.contains("title: \"Notes: café\""), "{text}");
+                    assert!(text.contains("**世界**"), "{text}");
+                }
+            }
+        }
+        // Phase `roundtrip_basic`.
+        {
+            let src = "# Title\n\nHello **world** and *em*.\n\n- a\n- b\n";
+            let mut d = Document::new();
             MarkdownCodec
                 .import(
-                    source.as_bytes(),
-                    &mut document.as_mut(),
+                    src.as_bytes(),
+                    &mut d.as_mut(),
                     &mut tilo_content::ContentInputs::new(),
                 )
                 .unwrap();
-            let expected = MarkdownCodec
-                .export(document.as_ref(), &tilo_content::NoContent)
+            let snap = d.materialize();
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(snap.blocks[0].text, "Title");
+            assert!(
+                snap.blocks
+                    .iter()
+                    .any(|b| b.kind == "paragraph" && b.marks.iter().any(|m| m.name == "strong"))
+            );
+            assert_eq!(
+                snap.blocks.iter().filter(|b| b.kind == "list_item").count(),
+                2
+            );
+
+            let out1 = MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
                 .unwrap();
-            let snapshot = document.materialize();
-            // Export stays usable after the CRDT is gone: these are the complete,
-            // already materialized inputs, not a handle that can re-read it.
-            drop(document);
-            let actual = export_views(&snapshot.properties, &snapshot.blocks, &snapshot.notes);
-            assert_eq!(actual, expected, "source: {source:?}");
-            let text = String::from_utf8(actual).unwrap();
-            if source.contains("[^second]") {
-                assert!(text.contains("[^1]: Unicode café note."), "{text}");
-                assert!(text.contains("[^2]: First note."), "{text}");
-            }
-            if source.contains("```rust") {
-                assert!(text.contains("```rust\nlet café = 1;\n```"), "{text}");
-                assert!(text.contains("**α**"), "{text}");
-            }
-            if source.contains("Résumé") {
-                assert!(text.contains("title: \"Notes: café\""), "{text}");
-                assert!(text.contains("**世界**"), "{text}");
-            }
+            let mut d2 = Document::new();
+            MarkdownCodec
+                .import(
+                    &out1,
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let out2 = MarkdownCodec
+                .export(d2.as_ref(), &tilo_content::NoContent)
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(out1).unwrap(),
+                String::from_utf8(out2).unwrap(),
+                "export must be idempotent under re-import"
+            );
         }
-    }
-
-    #[test]
-    fn roundtrip_basic() {
-        let src = "# Title\n\nHello **world** and *em*.\n\n- a\n- b\n";
-        let mut d = Document::new();
-        MarkdownCodec
-            .import(
-                src.as_bytes(),
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
+        // Phase `heading_levels_preserved`.
+        {
+            let mut d = Document::new();
+            MarkdownCodec
+                .import(
+                    b"## Sub",
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let out = String::from_utf8(
+                MarkdownCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap(),
             )
             .unwrap();
-        let snap = d.materialize();
-        assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(snap.blocks[0].text, "Title");
-        assert!(
-            snap.blocks
+            assert!(out.starts_with("## Sub"), "got {out:?}");
+        }
+        // Phase `ordered_list_marker`.
+        {
+            let mut d = Document::new();
+            MarkdownCodec
+                .import(
+                    b"1. one\n2. two\n",
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let out = String::from_utf8(
+                MarkdownCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(out.contains("1. one"), "got {out:?}");
+        }
+        // Phase `pipe_table_roundtrips_as_cells`.
+        {
+            let src = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+            let snap = import(src);
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
+            assert_eq!(
+                cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+                vec!["a", "b", "1", "2"]
+            );
+            let tid = match cells[0].attrs.get("table") {
+                Some(AttrVal::Str(s)) => s.clone(),
+                other => panic!("cell must carry a table id, got {other:?}"),
+            };
+            assert!(
+                cells
+                    .iter()
+                    .all(|c| matches!(c.attrs.get("table"), Some(AttrVal::Str(s)) if *s == tid))
+            );
+            assert_eq!(cells[0].attrs.get("row"), Some(&AttrVal::Int(0)));
+            assert_eq!(cells[0].attrs.get("col"), Some(&AttrVal::Int(0)));
+            assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
+            assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
+
+            let out = export(src);
+            assert!(out.contains("| a | b |"), "header row missing: {out:?}");
+            assert!(
+                out.contains("| --- | --- |"),
+                "delimiter row missing: {out:?}"
+            );
+            assert!(out.contains("| 1 | 2 |"), "body row missing: {out:?}");
+            assert_eq!(export(&out), out, "table export idempotent");
+        }
+        // Phase `nested_lists_carry_level_and_reindent`.
+        {
+            let src = "- top\n  - sub\n  - sub2\n- top2\n";
+            let snap = import(src);
+            let items: Vec<_> = snap
+                .blocks
                 .iter()
-                .any(|b| b.kind == "paragraph" && b.marks.iter().any(|m| m.name == "strong"))
-        );
-        assert_eq!(
-            snap.blocks.iter().filter(|b| b.kind == "list_item").count(),
-            2
-        );
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 4);
+            let level = |b: &BlockView| match b.attrs.get("level") {
+                Some(AttrVal::Int(n)) => *n,
+                _ => 0,
+            };
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|b| (b.text.clone(), level(b)))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("top".to_string(), 0),
+                    ("sub".to_string(), 1),
+                    ("sub2".to_string(), 1),
+                    ("top2".to_string(), 0),
+                ]
+            );
 
-        let out1 = MarkdownCodec
-            .export(d.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        let mut d2 = Document::new();
-        MarkdownCodec
-            .import(
-                &out1,
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let out2 = MarkdownCodec
-            .export(d2.as_ref(), &tilo_content::NoContent)
-            .unwrap();
-        assert_eq!(
-            String::from_utf8(out1).unwrap(),
-            String::from_utf8(out2).unwrap(),
-            "export must be idempotent under re-import"
-        );
-    }
+            let out = export(src);
+            assert!(
+                out.contains("- top\n  - sub\n  - sub2\n- top2"),
+                "re-indent failed: {out:?}"
+            );
+            assert_eq!(export(&out), out, "nested-list export idempotent");
+        }
+        // Phase `task_lists_roundtrip_checked_attr`.
+        {
+            let src = "- [ ] todo\n- [x] done\n";
+            let snap = import(src);
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].attrs.get("checked"), Some(&AttrVal::Bool(false)));
+            assert_eq!(items[1].attrs.get("checked"), Some(&AttrVal::Bool(true)));
 
-    #[test]
-    fn heading_levels_preserved() {
-        let mut d = Document::new();
-        MarkdownCodec
-            .import(
-                b"## Sub",
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let out = String::from_utf8(
-            MarkdownCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(out.starts_with("## Sub"), "got {out:?}");
-    }
+            let out = export(src);
+            assert!(out.contains("- [ ] todo"), "unchecked box lost: {out:?}");
+            assert!(out.contains("- [x] done"), "checked box lost: {out:?}");
+            assert_eq!(export(&out), out, "task-list export idempotent");
+        }
+        // Phase `fenced_code_block_preserves_content`.
+        {
+            let src = "```rust\nlet x = 1;\nlet y = 2;\n```\n";
+            let snap = import(src);
+            let code = snap
+                .blocks
+                .iter()
+                .find(|b| matches!(b.attrs.get("code"), Some(AttrVal::Bool(true))))
+                .expect("fenced block tagged code=true");
+            assert_eq!(code.text, "let x = 1;\nlet y = 2;\n");
+            assert_eq!(code.attrs.get("lang"), Some(&AttrVal::Str("rust".into())));
 
-    #[test]
-    fn ordered_list_marker() {
-        let mut d = Document::new();
-        MarkdownCodec
-            .import(
-                b"1. one\n2. two\n",
-                &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .unwrap();
-        let out = String::from_utf8(
-            MarkdownCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(out.contains("1. one"), "got {out:?}");
+            let out = export(src);
+            assert!(
+                out.contains("```rust\nlet x = 1;\nlet y = 2;\n```"),
+                "code block lost: {out:?}"
+            );
+            assert_eq!(export(&out), out, "fenced-code export idempotent");
+        }
     }
 
     fn import(src: &str) -> DocSnapshot {
@@ -1224,560 +1332,458 @@ mod tests {
     }
 
     #[test]
-    fn link_roundtrips_as_mark() {
-        let src = "See [the docs](https://tilo.so/) now.\n";
-        let snap = import(src);
-        let p = &snap.blocks[0];
-        assert_eq!(p.kind, "paragraph");
-        assert_eq!(p.text, "See the docs now.");
-        let link = p
-            .marks
-            .iter()
-            .find(|m| m.name == "link")
-            .expect("link mark present");
-        assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
-        // The mark covers exactly "the docs".
-        assert_eq!((link.start, link.end), (4, 12));
-
-        let out = export(src);
-        assert!(out.contains("[the docs](https://tilo.so/)"), "got {out:?}");
-        assert_eq!(export(&out), out);
-    }
-
-    #[test]
-    fn pipe_table_roundtrips_as_cells() {
-        let src = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
-        let snap = import(src);
-        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
-        assert_eq!(
-            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
-            vec!["a", "b", "1", "2"]
-        );
-        let tid = match cells[0].attrs.get("table") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            other => panic!("cell must carry a table id, got {other:?}"),
-        };
-        assert!(
-            cells
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn markdown_inline_marks_roundtrip() {
+        // Phase `link_roundtrips_as_mark`.
+        {
+            let src = "See [the docs](https://tilo.so/) now.\n";
+            let snap = import(src);
+            let p = &snap.blocks[0];
+            assert_eq!(p.kind, "paragraph");
+            assert_eq!(p.text, "See the docs now.");
+            let link = p
+                .marks
                 .iter()
-                .all(|c| matches!(c.attrs.get("table"), Some(AttrVal::Str(s)) if *s == tid))
-        );
-        assert_eq!(cells[0].attrs.get("row"), Some(&AttrVal::Int(0)));
-        assert_eq!(cells[0].attrs.get("col"), Some(&AttrVal::Int(0)));
-        assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
-        assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
+                .find(|m| m.name == "link")
+                .expect("link mark present");
+            assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
+            // The mark covers exactly "the docs".
+            assert_eq!((link.start, link.end), (4, 12));
 
-        let out = export(src);
-        assert!(out.contains("| a | b |"), "header row missing: {out:?}");
-        assert!(
-            out.contains("| --- | --- |"),
-            "delimiter row missing: {out:?}"
-        );
-        assert!(out.contains("| 1 | 2 |"), "body row missing: {out:?}");
-        assert_eq!(export(&out), out, "table export idempotent");
-    }
-
-    #[test]
-    fn nested_lists_carry_level_and_reindent() {
-        let src = "- top\n  - sub\n  - sub2\n- top2\n";
-        let snap = import(src);
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 4);
-        let level = |b: &BlockView| match b.attrs.get("level") {
-            Some(AttrVal::Int(n)) => *n,
-            _ => 0,
-        };
-        assert_eq!(
-            items
+            let out = export(src);
+            assert!(out.contains("[the docs](https://tilo.so/)"), "got {out:?}");
+            assert_eq!(export(&out), out);
+        }
+        // Phase `inline_code_roundtrips_as_mono_mark`.
+        {
+            let src = "run `cargo test` please\n";
+            let snap = import(src);
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "run cargo test please");
+            let mono = p
+                .marks
                 .iter()
-                .map(|b| (b.text.clone(), level(b)))
-                .collect::<Vec<_>>(),
-            vec![
-                ("top".to_string(), 0),
-                ("sub".to_string(), 1),
-                ("sub2".to_string(), 1),
-                ("top2".to_string(), 0),
-            ]
-        );
+                .find(|m| m.name == "fontFamily")
+                .expect("inline code → fontFamily mark");
+            assert_eq!(mono.value, MarkValue::Str("mono".into()));
+            assert_eq!((mono.start, mono.end), (4, 14));
 
-        let out = export(src);
-        assert!(
-            out.contains("- top\n  - sub\n  - sub2\n- top2"),
-            "re-indent failed: {out:?}"
-        );
-        assert_eq!(export(&out), out, "nested-list export idempotent");
-    }
-
-    #[test]
-    fn task_lists_roundtrip_checked_attr() {
-        let src = "- [ ] todo\n- [x] done\n";
-        let snap = import(src);
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|b| b.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].attrs.get("checked"), Some(&AttrVal::Bool(false)));
-        assert_eq!(items[1].attrs.get("checked"), Some(&AttrVal::Bool(true)));
-
-        let out = export(src);
-        assert!(out.contains("- [ ] todo"), "unchecked box lost: {out:?}");
-        assert!(out.contains("- [x] done"), "checked box lost: {out:?}");
-        assert_eq!(export(&out), out, "task-list export idempotent");
-    }
-
-    #[test]
-    fn inline_code_roundtrips_as_mono_mark() {
-        let src = "run `cargo test` please\n";
-        let snap = import(src);
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "run cargo test please");
-        let mono = p
-            .marks
-            .iter()
-            .find(|m| m.name == "fontFamily")
-            .expect("inline code → fontFamily mark");
-        assert_eq!(mono.value, MarkValue::Str("mono".into()));
-        assert_eq!((mono.start, mono.end), (4, 14));
-
-        let out = export(src);
-        assert!(out.contains("`cargo test`"), "got {out:?}");
-        assert_eq!(export(&out), out, "inline-code export idempotent");
-    }
-
-    #[test]
-    fn fenced_code_block_preserves_content() {
-        let src = "```rust\nlet x = 1;\nlet y = 2;\n```\n";
-        let snap = import(src);
-        let code = snap
-            .blocks
-            .iter()
-            .find(|b| matches!(b.attrs.get("code"), Some(AttrVal::Bool(true))))
-            .expect("fenced block tagged code=true");
-        assert_eq!(code.text, "let x = 1;\nlet y = 2;\n");
-        assert_eq!(code.attrs.get("lang"), Some(&AttrVal::Str("rust".into())));
-
-        let out = export(src);
-        assert!(
-            out.contains("```rust\nlet x = 1;\nlet y = 2;\n```"),
-            "code block lost: {out:?}"
-        );
-        assert_eq!(export(&out), out, "fenced-code export idempotent");
-    }
-
-    #[test]
-    fn span_carries_color_size_font_through_markdown() {
-        // Markdown has no native colour/size/font syntax; these ride as an inline `<span style=…>` on export/import.
-        let mut d = Document::new();
-        let id = d.insert_block(None, "paragraph");
-        d.splice_text(&id, 0, 0, "styled word");
-        {
-            let mut dm = d.as_mut();
-            dm.add_mark(&id, 0, 6, "color", "#ff0000");
-            dm.add_mark(&id, 0, 6, "fontSize", 20_i64);
-            dm.add_mark(&id, 0, 6, "fontFamily", "serif");
+            let out = export(src);
+            assert!(out.contains("`cargo test`"), "got {out:?}");
+            assert_eq!(export(&out), out, "inline-code export idempotent");
         }
-        let out = String::from_utf8(
-            MarkdownCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            out.contains("<span style="),
-            "emits an inline span: {out:?}"
-        );
-        assert!(out.contains("color: #ff0000"), "colour decl: {out:?}");
-        assert!(out.contains("font-size: 20pt"), "size decl: {out:?}");
-        assert!(out.contains("font-family: serif"), "font decl: {out:?}");
-
-        let mut d2 = Document::new();
-        MarkdownCodec
-            .import(
-                out.as_bytes(),
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
+        // Phase `span_carries_color_size_font_through_markdown`.
+        {
+            // Markdown has no native colour/size/font syntax; these ride as an inline `<span style=…>` on export/import.
+            let mut d = Document::new();
+            let id = d.insert_block(None, "paragraph");
+            d.splice_text(&id, 0, 0, "styled word");
+            {
+                let mut dm = d.as_mut();
+                dm.add_mark(&id, 0, 6, "color", "#ff0000");
+                dm.add_mark(&id, 0, 6, "fontSize", 20_i64);
+                dm.add_mark(&id, 0, 6, "fontFamily", "serif");
+            }
+            let out = String::from_utf8(
+                MarkdownCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap(),
             )
             .unwrap();
-        let b = &d2.materialize().blocks[0];
-        assert_eq!(b.text, "styled word");
-        assert!(
-            b.marks.iter().any(|m| m.name == "color"
-                && m.value == MarkValue::Str("#ff0000".into())
-                && m.start == 0
-                && m.end == 6),
-            "colour mark survives: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks.iter().any(|m| m.name == "fontSize"
-                && m.value == MarkValue::Int(20)
-                && m.start == 0
-                && m.end == 6),
-            "size mark survives as Int: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks.iter().any(|m| m.name == "fontFamily"
-                && m.value == MarkValue::Str("serif".into())
-                && m.start == 0
-                && m.end == 6),
-            "font mark survives: {:?}",
-            b.marks
-        );
+            assert!(
+                out.contains("<span style="),
+                "emits an inline span: {out:?}"
+            );
+            assert!(out.contains("color: #ff0000"), "colour decl: {out:?}");
+            assert!(out.contains("font-size: 20pt"), "size decl: {out:?}");
+            assert!(out.contains("font-family: serif"), "font decl: {out:?}");
 
-        assert_eq!(export(&out), out, "span export idempotent");
-    }
-
-    #[test]
-    fn highlight_super_sub_carry_through_markdown_html_fallback() {
-        // Markdown has no native highlight/super/subscript syntax; highlight rides as `<span style="background:…">`, super/sub as `<sup>`/`<sub>`.
-        let mut d = Document::new();
-        let id = d.insert_block(None, "paragraph");
-        d.splice_text(&id, 0, 0, "x ab cd");
-        {
-            let mut dm = d.as_mut();
-            dm.add_mark(&id, 2, 4, "highlight", "#ffff00"); // "ab"
-            dm.add_mark(&id, 5, 6, "super", true); // "c"
-            dm.add_mark(&id, 6, 7, "sub", true); // "d"
-        }
-        let out = String::from_utf8(
+            let mut d2 = Document::new();
             MarkdownCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            out.contains(r#"<span style="background: #ffff00">"#),
-            "highlight span: {out:?}"
-        );
-        assert!(
-            out.contains("<sup>") && out.contains("</sup>"),
-            "sup wrapper: {out:?}"
-        );
-        assert!(
-            out.contains("<sub>") && out.contains("</sub>"),
-            "sub wrapper: {out:?}"
-        );
+                .import(
+                    out.as_bytes(),
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d2.materialize().blocks[0];
+            assert_eq!(b.text, "styled word");
+            assert!(
+                b.marks.iter().any(|m| m.name == "color"
+                    && m.value == MarkValue::Str("#ff0000".into())
+                    && m.start == 0
+                    && m.end == 6),
+                "colour mark survives: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks.iter().any(|m| m.name == "fontSize"
+                    && m.value == MarkValue::Int(20)
+                    && m.start == 0
+                    && m.end == 6),
+                "size mark survives as Int: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks.iter().any(|m| m.name == "fontFamily"
+                    && m.value == MarkValue::Str("serif".into())
+                    && m.start == 0
+                    && m.end == 6),
+                "font mark survives: {:?}",
+                b.marks
+            );
 
-        let mut d2 = Document::new();
-        MarkdownCodec
-            .import(
-                out.as_bytes(),
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
+            assert_eq!(export(&out), out, "span export idempotent");
+        }
+        // Phase `highlight_super_sub_carry_through_markdown_html_fallback`.
+        {
+            // Markdown has no native highlight/super/subscript syntax; highlight rides as `<span style="background:…">`, super/sub as `<sup>`/`<sub>`.
+            let mut d = Document::new();
+            let id = d.insert_block(None, "paragraph");
+            d.splice_text(&id, 0, 0, "x ab cd");
+            {
+                let mut dm = d.as_mut();
+                dm.add_mark(&id, 2, 4, "highlight", "#ffff00"); // "ab"
+                dm.add_mark(&id, 5, 6, "super", true); // "c"
+                dm.add_mark(&id, 6, 7, "sub", true); // "d"
+            }
+            let out = String::from_utf8(
+                MarkdownCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap(),
             )
             .unwrap();
-        let b = &d2.materialize().blocks[0];
-        assert_eq!(b.text, "x ab cd");
-        assert!(
-            b.marks.iter().any(|m| m.name == "highlight"
-                && m.value == MarkValue::Str("#ffff00".into())
-                && m.start == 2
-                && m.end == 4),
-            "highlight mark survives: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks.iter().any(|m| m.name == "super"
-                && m.value == MarkValue::Bool(true)
-                && m.start == 5
-                && m.end == 6),
-            "super mark survives: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks.iter().any(|m| m.name == "sub"
-                && m.value == MarkValue::Bool(true)
-                && m.start == 6
-                && m.end == 7),
-            "sub mark survives: {:?}",
-            b.marks
-        );
+            assert!(
+                out.contains(r#"<span style="background: #ffff00">"#),
+                "highlight span: {out:?}"
+            );
+            assert!(
+                out.contains("<sup>") && out.contains("</sup>"),
+                "sup wrapper: {out:?}"
+            );
+            assert!(
+                out.contains("<sub>") && out.contains("</sub>"),
+                "sub wrapper: {out:?}"
+            );
 
-        assert_eq!(export(&out), out, "highlight/super/sub export idempotent");
-    }
-
-    #[test]
-    fn strikethrough_roundtrips() {
-        let src = "this is ~~gone~~ ok\n";
-        let snap = import(src);
-        let p = &snap.blocks[0];
-        assert_eq!(p.text, "this is gone ok");
-        assert!(
-            p.marks.iter().any(|m| m.name == "strike"),
-            "strike mark present: {:?}",
-            p.marks
-        );
-        let out = export(src);
-        assert!(out.contains("~~gone~~"), "got {out:?}");
-        assert_eq!(export(&out), out);
-    }
-
-    #[test]
-    fn front_matter_imports_to_doc_properties() {
-        let src = "---\ntitle: My Doc\nauthor: Ada Lovelace\ndate: 2026-06-30\nlang: en-GB\n---\n\nBody text.\n";
-        let snap = import(src);
-        assert_eq!(
-            snap.properties.get(PROP_TITLE).map(String::as_str),
-            Some("My Doc")
-        );
-        assert_eq!(
-            snap.properties.get(PROP_AUTHOR).map(String::as_str),
-            Some("Ada Lovelace")
-        );
-        assert_eq!(
-            snap.properties.get(PROP_MODIFIED).map(String::as_str),
-            Some("2026-06-30")
-        );
-        assert_eq!(
-            snap.properties.get("lang").map(String::as_str),
-            Some("en-GB")
-        );
-        assert_eq!(snap.blocks.len(), 1, "only the body paragraph: {snap:?}");
-        assert_eq!(snap.blocks[0].text, "Body text.");
-    }
-
-    #[test]
-    fn front_matter_quoted_scalar_with_colon_roundtrips() {
-        let src = "---\ntitle: \"Notes: A Sequel\"\n---\n\nHi.\n";
-        let snap = import(src);
-        assert_eq!(
-            snap.properties.get(PROP_TITLE).map(String::as_str),
-            Some("Notes: A Sequel")
-        );
-        let out = export(src);
-        assert!(
-            out.starts_with("---\n"),
-            "front-matter emitted first: {out:?}"
-        );
-        assert!(
-            out.contains("title: \"Notes: A Sequel\""),
-            "colon value quoted: {out:?}"
-        );
-        assert_eq!(export(&out), out, "front-matter export idempotent");
-    }
-
-    #[test]
-    fn front_matter_exports_from_properties() {
-        let mut d = Document::new();
-        {
-            let mut dm = d.as_mut();
-            dm.set_doc_prop(PROP_TITLE, "T");
-            dm.set_doc_prop(PROP_AUTHOR, "A");
-        }
-        let _ = d.insert_block(None, "paragraph");
-        let out = String::from_utf8(
+            let mut d2 = Document::new();
             MarkdownCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            out.starts_with("---\ntitle: T\nauthor: A\n---\n\n"),
-            "got {out:?}"
-        );
-    }
+                .import(
+                    out.as_bytes(),
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let b = &d2.materialize().blocks[0];
+            assert_eq!(b.text, "x ab cd");
+            assert!(
+                b.marks.iter().any(|m| m.name == "highlight"
+                    && m.value == MarkValue::Str("#ffff00".into())
+                    && m.start == 2
+                    && m.end == 4),
+                "highlight mark survives: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks.iter().any(|m| m.name == "super"
+                    && m.value == MarkValue::Bool(true)
+                    && m.start == 5
+                    && m.end == 6),
+                "super mark survives: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks.iter().any(|m| m.name == "sub"
+                    && m.value == MarkValue::Bool(true)
+                    && m.start == 6
+                    && m.end == 7),
+                "sub mark survives: {:?}",
+                b.marks
+            );
 
-    #[test]
-    fn front_matter_full_roundtrip_preserves_title_and_author() {
-        let src = "---\ntitle: Round Trip\nauthor: Grace\n---\n\nHello world.\n";
-        let out1 = export(src);
-        let snap = import(&out1);
-        assert_eq!(
-            snap.properties.get(PROP_TITLE).map(String::as_str),
-            Some("Round Trip")
-        );
-        assert_eq!(
-            snap.properties.get(PROP_AUTHOR).map(String::as_str),
-            Some("Grace")
-        );
-        assert_eq!(snap.blocks[0].text, "Hello world.");
-        assert_eq!(export(&out1), out1, "front-matter+body export idempotent");
-    }
-
-    #[test]
-    fn front_matter_less_doc_is_unaffected() {
-        // No properties → no front-matter block; a leading `---` in a property-less doc is just a thematic break.
-        let src = "Just a paragraph.\n";
-        let out = export(src);
-        assert!(!out.starts_with("---"), "no spurious front-matter: {out:?}");
-        assert_eq!(out, "Just a paragraph.\n");
-
-        // An unterminated `---` opening is treated as body (no properties set).
-        let snap = import("---\ntitle: x\n\nno close fence\n");
-        assert!(
-            snap.properties.is_empty(),
-            "unterminated block sets no props: {:?}",
-            snap.properties
-        );
-    }
-
-    #[test]
-    fn footnote_ref_and_def_import_to_one_footnote() {
-        let src = "Text with a ref[^1] here.\n\n[^1]: The footnote body.\n";
-        let snap = import(src);
-        assert_eq!(
-            snap.notes.len(),
-            1,
-            "exactly one footnote: {:?}",
-            snap.notes
-        );
-        let note = &snap.notes[0];
-        assert_eq!(note.kind, "footnote");
-        assert_eq!(note.blocks.len(), 1, "one body paragraph");
-        assert_eq!(note.blocks[0].text, "The footnote body.");
-
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("body paragraph");
-        let nref = p
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_NOTE_REF)
-            .expect("note-ref mark present");
-        assert_eq!(
-            nref.value,
-            MarkValue::Str(note.id.clone()),
-            "note-ref points at the note id"
-        );
-        // The placeholder sits at the reference position ("Text with a ref" = 15 chars).
-        assert_eq!((nref.start, nref.end), (15, 16));
-        assert_eq!(
-            p.text.chars().nth(15),
-            Some('\u{FFFC}'),
-            "placeholder spliced at ref site"
-        );
-    }
-
-    #[test]
-    fn footnote_roundtrips_text_and_position() {
-        let src = "A para with note[^1] inside.\n\n[^1]: body text\n";
-        let out = export(src);
-        assert!(
-            out.contains("A para with note[^1] inside."),
-            "ref position: {out:?}"
-        );
-        assert!(
-            out.contains("[^1]: body text"),
-            "definition appended: {out:?}"
-        );
-
-        let snap = import(&out);
-        assert_eq!(
-            snap.notes.len(),
-            1,
-            "one footnote survives: {:?}",
-            snap.notes
-        );
-        assert_eq!(snap.notes[0].blocks[0].text, "body text");
-        let p = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("body paragraph");
-        assert!(
-            p.marks.iter().any(|m| m.name == MARK_NOTE_REF),
-            "note-ref survives: {:?}",
-            p.marks
-        );
-        assert_eq!(export(&out), out, "footnote export idempotent");
-    }
-
-    #[test]
-    fn front_matter_plus_footnote_full_roundtrip() {
-        // Headline scenario: front-matter + a footnote, exported then re-imported, must preserve both.
-        let mut d = Document::new();
-        {
-            let mut dm = d.as_mut();
-            dm.set_doc_prop(PROP_TITLE, "Spec");
-            dm.set_doc_prop(PROP_AUTHOR, "ada");
+            assert_eq!(export(&out), out, "highlight/super/sub export idempotent");
         }
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "See here for details.");
-        let nid = {
-            let mut dm = d.as_mut();
-            // Footnote reference after "See here" (char index 8).
-            let nid = dm.insert_footnote(&p, 8);
-            let nb = dm.insert_note_block(&nid, None, "paragraph").unwrap();
-            dm.splice_note_text(&nid, &nb, 0, 0, "the cited source");
-            nid
-        };
+        // Phase `strikethrough_roundtrips`.
+        {
+            let src = "this is ~~gone~~ ok\n";
+            let snap = import(src);
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "this is gone ok");
+            assert!(
+                p.marks.iter().any(|m| m.name == "strike"),
+                "strike mark present: {:?}",
+                p.marks
+            );
+            let out = export(src);
+            assert!(out.contains("~~gone~~"), "got {out:?}");
+            assert_eq!(export(&out), out);
+        }
+    }
 
-        let out = String::from_utf8(
-            MarkdownCodec
-                .export(d.as_ref(), &tilo_content::NoContent)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            out.starts_with("---\ntitle: Spec\nauthor: ada\n---\n\n"),
-            "front-matter: {out:?}"
-        );
-        assert!(
-            out.contains("See here[^1] for details."),
-            "ref inline: {out:?}"
-        );
-        assert!(
-            out.contains("[^1]: the cited source"),
-            "definition: {out:?}"
-        );
-
-        let mut d2 = Document::new();
-        MarkdownCodec
-            .import(
-                out.as_bytes(),
-                &mut d2.as_mut(),
-                &mut tilo_content::ContentInputs::new(),
+    #[test]
+    fn markdown_front_matter_maps_to_document_properties() {
+        // Phase `front_matter_imports_to_doc_properties`.
+        {
+            let src = "---\ntitle: My Doc\nauthor: Ada Lovelace\ndate: 2026-06-30\nlang: en-GB\n---\n\nBody text.\n";
+            let snap = import(src);
+            assert_eq!(
+                snap.properties.get(PROP_TITLE).map(String::as_str),
+                Some("My Doc")
+            );
+            assert_eq!(
+                snap.properties.get(PROP_AUTHOR).map(String::as_str),
+                Some("Ada Lovelace")
+            );
+            assert_eq!(
+                snap.properties.get(PROP_MODIFIED).map(String::as_str),
+                Some("2026-06-30")
+            );
+            assert_eq!(
+                snap.properties.get("lang").map(String::as_str),
+                Some("en-GB")
+            );
+            assert_eq!(snap.blocks.len(), 1, "only the body paragraph: {snap:?}");
+            assert_eq!(snap.blocks[0].text, "Body text.");
+        }
+        // Phase `front_matter_quoted_scalar_with_colon_roundtrips`.
+        {
+            let src = "---\ntitle: \"Notes: A Sequel\"\n---\n\nHi.\n";
+            let snap = import(src);
+            assert_eq!(
+                snap.properties.get(PROP_TITLE).map(String::as_str),
+                Some("Notes: A Sequel")
+            );
+            let out = export(src);
+            assert!(
+                out.starts_with("---\n"),
+                "front-matter emitted first: {out:?}"
+            );
+            assert!(
+                out.contains("title: \"Notes: A Sequel\""),
+                "colon value quoted: {out:?}"
+            );
+            assert_eq!(export(&out), out, "front-matter export idempotent");
+        }
+        // Phase `front_matter_exports_from_properties`.
+        {
+            let mut d = Document::new();
+            {
+                let mut dm = d.as_mut();
+                dm.set_doc_prop(PROP_TITLE, "T");
+                dm.set_doc_prop(PROP_AUTHOR, "A");
+            }
+            let _ = d.insert_block(None, "paragraph");
+            let out = String::from_utf8(
+                MarkdownCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap(),
             )
             .unwrap();
-        let snap = d2.materialize();
-        assert_eq!(
-            snap.properties.get(PROP_TITLE).map(String::as_str),
-            Some("Spec")
-        );
-        assert_eq!(
-            snap.properties.get(PROP_AUTHOR).map(String::as_str),
-            Some("ada")
-        );
-        assert_eq!(snap.notes.len(), 1, "footnote survives: {:?}", snap.notes);
-        assert_eq!(snap.notes[0].blocks[0].text, "the cited source");
-        let p2 = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("body paragraph");
-        let nref = p2
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_NOTE_REF)
-            .expect("note-ref mark");
-        assert_eq!(nref.value, MarkValue::Str(snap.notes[0].id.clone()));
-        assert_eq!(nref.start, 8, "ref position preserved");
-        // `nid` is local to `d`; the re-imported note gets a fresh id — what matters is the ref/body survive.
-        let _ = nid;
+            assert!(
+                out.starts_with("---\ntitle: T\nauthor: A\n---\n\n"),
+                "got {out:?}"
+            );
+        }
+        // Phase `front_matter_full_roundtrip_preserves_title_and_author`.
+        {
+            let src = "---\ntitle: Round Trip\nauthor: Grace\n---\n\nHello world.\n";
+            let out1 = export(src);
+            let snap = import(&out1);
+            assert_eq!(
+                snap.properties.get(PROP_TITLE).map(String::as_str),
+                Some("Round Trip")
+            );
+            assert_eq!(
+                snap.properties.get(PROP_AUTHOR).map(String::as_str),
+                Some("Grace")
+            );
+            assert_eq!(snap.blocks[0].text, "Hello world.");
+            assert_eq!(export(&out1), out1, "front-matter+body export idempotent");
+        }
+        // Phase `front_matter_less_doc_is_unaffected`.
+        {
+            // No properties → no front-matter block; a leading `---` in a property-less doc is just a thematic break.
+            let src = "Just a paragraph.\n";
+            let out = export(src);
+            assert!(!out.starts_with("---"), "no spurious front-matter: {out:?}");
+            assert_eq!(out, "Just a paragraph.\n");
+
+            // An unterminated `---` opening is treated as body (no properties set).
+            let snap = import("---\ntitle: x\n\nno close fence\n");
+            assert!(
+                snap.properties.is_empty(),
+                "unterminated block sets no props: {:?}",
+                snap.properties
+            );
+        }
     }
 
     #[test]
-    fn two_footnotes_number_in_reference_order() {
-        let src = "First[^a] then second[^b].\n\n[^a]: alpha\n[^b]: beta\n";
-        let out = export(src);
-        // Labels are renumbered 1,2 in reference order regardless of source labels.
-        assert!(
-            out.contains("First[^1] then second[^2]."),
-            "renumbered refs: {out:?}"
-        );
-        assert!(out.contains("[^1]: alpha"), "first def: {out:?}");
-        assert!(out.contains("[^2]: beta"), "second def: {out:?}");
-        assert_eq!(export(&out), out, "two-footnote export idempotent");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn markdown_footnotes_roundtrip_in_reference_order() {
+        // Phase `footnote_ref_and_def_import_to_one_footnote`.
+        {
+            let src = "Text with a ref[^1] here.\n\n[^1]: The footnote body.\n";
+            let snap = import(src);
+            assert_eq!(
+                snap.notes.len(),
+                1,
+                "exactly one footnote: {:?}",
+                snap.notes
+            );
+            let note = &snap.notes[0];
+            assert_eq!(note.kind, "footnote");
+            assert_eq!(note.blocks.len(), 1, "one body paragraph");
+            assert_eq!(note.blocks[0].text, "The footnote body.");
+
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("body paragraph");
+            let nref = p
+                .marks
+                .iter()
+                .find(|m| m.name == MARK_NOTE_REF)
+                .expect("note-ref mark present");
+            assert_eq!(
+                nref.value,
+                MarkValue::Str(note.id.clone()),
+                "note-ref points at the note id"
+            );
+            // The placeholder sits at the reference position ("Text with a ref" = 15 chars).
+            assert_eq!((nref.start, nref.end), (15, 16));
+            assert_eq!(
+                p.text.chars().nth(15),
+                Some('\u{FFFC}'),
+                "placeholder spliced at ref site"
+            );
+        }
+        // Phase `footnote_roundtrips_text_and_position`.
+        {
+            let src = "A para with note[^1] inside.\n\n[^1]: body text\n";
+            let out = export(src);
+            assert!(
+                out.contains("A para with note[^1] inside."),
+                "ref position: {out:?}"
+            );
+            assert!(
+                out.contains("[^1]: body text"),
+                "definition appended: {out:?}"
+            );
+
+            let snap = import(&out);
+            assert_eq!(
+                snap.notes.len(),
+                1,
+                "one footnote survives: {:?}",
+                snap.notes
+            );
+            assert_eq!(snap.notes[0].blocks[0].text, "body text");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("body paragraph");
+            assert!(
+                p.marks.iter().any(|m| m.name == MARK_NOTE_REF),
+                "note-ref survives: {:?}",
+                p.marks
+            );
+            assert_eq!(export(&out), out, "footnote export idempotent");
+        }
+        // Phase `front_matter_plus_footnote_full_roundtrip`.
+        {
+            // Headline scenario: front-matter + a footnote, exported then re-imported, must preserve both.
+            let mut d = Document::new();
+            {
+                let mut dm = d.as_mut();
+                dm.set_doc_prop(PROP_TITLE, "Spec");
+                dm.set_doc_prop(PROP_AUTHOR, "ada");
+            }
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "See here for details.");
+            let nid = {
+                let mut dm = d.as_mut();
+                // Footnote reference after "See here" (char index 8).
+                let nid = dm.insert_footnote(&p, 8);
+                let nb = dm.insert_note_block(&nid, None, "paragraph").unwrap();
+                dm.splice_note_text(&nid, &nb, 0, 0, "the cited source");
+                nid
+            };
+
+            let out = String::from_utf8(
+                MarkdownCodec
+                    .export(d.as_ref(), &tilo_content::NoContent)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                out.starts_with("---\ntitle: Spec\nauthor: ada\n---\n\n"),
+                "front-matter: {out:?}"
+            );
+            assert!(
+                out.contains("See here[^1] for details."),
+                "ref inline: {out:?}"
+            );
+            assert!(
+                out.contains("[^1]: the cited source"),
+                "definition: {out:?}"
+            );
+
+            let mut d2 = Document::new();
+            MarkdownCodec
+                .import(
+                    out.as_bytes(),
+                    &mut d2.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+            let snap = d2.materialize();
+            assert_eq!(
+                snap.properties.get(PROP_TITLE).map(String::as_str),
+                Some("Spec")
+            );
+            assert_eq!(
+                snap.properties.get(PROP_AUTHOR).map(String::as_str),
+                Some("ada")
+            );
+            assert_eq!(snap.notes.len(), 1, "footnote survives: {:?}", snap.notes);
+            assert_eq!(snap.notes[0].blocks[0].text, "the cited source");
+            let p2 = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("body paragraph");
+            let nref = p2
+                .marks
+                .iter()
+                .find(|m| m.name == MARK_NOTE_REF)
+                .expect("note-ref mark");
+            assert_eq!(nref.value, MarkValue::Str(snap.notes[0].id.clone()));
+            assert_eq!(nref.start, 8, "ref position preserved");
+            // `nid` is local to `d`; the re-imported note gets a fresh id — what matters is the ref/body survive.
+            let _ = nid;
+        }
+        // Phase `two_footnotes_number_in_reference_order`.
+        {
+            let src = "First[^a] then second[^b].\n\n[^a]: alpha\n[^b]: beta\n";
+            let out = export(src);
+            // Labels are renumbered 1,2 in reference order regardless of source labels.
+            assert!(
+                out.contains("First[^1] then second[^2]."),
+                "renumbered refs: {out:?}"
+            );
+            assert!(out.contains("[^1]: alpha"), "first def: {out:?}");
+            assert!(out.contains("[^2]: beta"), "second def: {out:?}");
+            assert_eq!(export(&out), out, "two-footnote export idempotent");
+        }
     }
 
     use proptest::prelude::*;

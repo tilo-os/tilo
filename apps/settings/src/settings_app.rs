@@ -106,6 +106,7 @@ pub struct SettingsApp {
     account_resources: Vec<accounts::Account>,
     account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
     device_mesh_commands: ui::LocalState<Option<crate::actions::DeviceMeshOperation>>,
+    speaker_commands: ui::LocalState<Option<crate::actions::SpeakerOperation>>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     local_operation: Option<tilo_actions::InvocationId>,
@@ -168,6 +169,7 @@ impl SettingsApp {
             account_root,
             account_commands: ui::LocalState::new(None),
             device_mesh_commands: ui::LocalState::new(None),
+            speaker_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             local_operation: None,
@@ -436,6 +438,10 @@ impl SettingsApp {
     }
 
     /// Dispatch to the per-category pane body.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match constructs every category's pane"
+    )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
             // A capture never waits for NetworkManager; it renders the
@@ -463,6 +469,11 @@ impl SettingsApp {
             Category::Sound => Box::new(
                 panes::audio::AudioPane::new()
                     .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            Category::Speakers => Box::new(
+                panes::speakers::SpeakersPane::new()
+                    .with_command_state(&self.speaker_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::Displays if self.deterministic_hardware_for_shot => {
@@ -846,7 +857,30 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::AudioOperation::SetMono { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetMono { .. }
+                    | crate::actions::AudioOperation::SetEchoCancellation { .. }
+                    | crate::actions::AudioOperation::SetSystemSounds { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetSystemSoundVolume { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("system sound volume must be between 0 and 1".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::AudioOperation::SetSoundTheme { theme } => {
+                        if media::event_sound::installed_themes()
+                            .iter()
+                            .any(|installed| installed.id == theme)
+                        {
+                            Ok(())
+                        } else {
+                            Err("that sound theme is not installed".into())
+                        }
+                    }
+                    crate::actions::AudioOperation::SetEventSound { event, .. } => {
+                        settings_store::system_sounds::SystemSoundEvent::from_key(&event)
+                            .map(|_| ())
+                            .ok_or_else(|| "unknown system sound event".to_string())
+                    }
                     crate::actions::AudioOperation::SetDeviceProfile {
                         device_id,
                         profile_index,
@@ -1007,7 +1041,8 @@ impl SettingsApp {
                         Ok(())
                     }
                     crate::actions::DisplayOperation::SetAutoBrightness { .. }
-                    | crate::actions::DisplayOperation::SetNightLight { .. } => Ok(()),
+                    | crate::actions::DisplayOperation::SetNightLight { .. }
+                    | crate::actions::DisplayOperation::SetNightLightSchedule { .. } => Ok(()),
                     crate::actions::DisplayOperation::SetNightLightTemperature { label } => {
                         if !["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
                             .contains(&label.as_str())
@@ -1019,6 +1054,13 @@ impl SettingsApp {
                     crate::actions::DisplayOperation::SetScale { label } => {
                         if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
                             return Err("unsupported display scale".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::DisplayOperation::SetOutputBrightness { connector, value } => {
+                        let _ = output(&connector)?;
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("monitor brightness must be between 0 and 1".into());
                         }
                         Ok(())
                     }
@@ -1128,7 +1170,27 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::DisplayOperation::Apply
+                    crate::actions::DisplayOperation::MoveOutput { connector, x, y } => {
+                        let _ = output(&connector)?;
+                        let bound = crate::actions::MAX_DISPLAY_COORDINATE;
+                        if !(-bound..=bound).contains(&x) || !(-bound..=bound).contains(&y) {
+                            return Err("display position is outside the desktop".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::DisplayOperation::ForgetDisplayTool { ref executable } => {
+                        if settings_store::display_tools::TrustedDisplayTools::load()
+                            .tools
+                            .iter()
+                            .any(|tool| tool.executable == *executable)
+                        {
+                            Ok(())
+                        } else {
+                            Err("that display tool is not trusted".into())
+                        }
+                    }
+                    crate::actions::DisplayOperation::Identify
+                    | crate::actions::DisplayOperation::Apply
                     | crate::actions::DisplayOperation::Confirm
                     | crate::actions::DisplayOperation::Revert => Ok(()),
                 };
@@ -1228,6 +1290,20 @@ impl SettingsApp {
                 self.device_mesh_commands.set(Some(operation));
                 Ok(())
             }
+            crate::actions::SPEAKER_OPERATION_TYPE => {
+                let operation: crate::actions::SpeakerOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if operation.command().valid() {
+                    self.select(Category::Speakers);
+                    self.speaker_commands.set(Some(operation));
+                    Ok(())
+                } else {
+                    Err(
+                        "that speaker request is incomplete: check the names, members and ids"
+                            .to_string(),
+                    )
+                }
+            }
             _ => return Ok(None),
         };
         accepted?;
@@ -1273,6 +1349,10 @@ impl SettingsApp {
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over the closed InputOperation catalogue"
+    )]
     fn apply_input_operation(operation: crate::actions::InputOperation) -> Result<String, String> {
         let mut prefs = crate::prefs::SystemPrefs::load();
         let message = match operation {
@@ -1321,6 +1401,24 @@ impl SettingsApp {
             crate::actions::InputOperation::SetTouchpadGestures { enabled } => {
                 prefs.input.touchpad_gestures = enabled;
                 "touchpad gestures updated"
+            }
+            crate::actions::InputOperation::SetTouchpadClickMethod { method } => {
+                prefs.input.touchpad_click_method =
+                    crate::panes::mouse_keyboard::click_method_for_label(&method)
+                        .ok_or_else(|| "unsupported touchpad click method".to_string())?;
+                "touchpad click method updated"
+            }
+            crate::actions::InputOperation::SetTouchpadScrollMethod { method } => {
+                prefs.input.touchpad_scroll_method =
+                    crate::panes::mouse_keyboard::scroll_method_for_label(&method)
+                        .ok_or_else(|| "unsupported touchpad scroll method".to_string())?;
+                "touchpad scroll method updated"
+            }
+            crate::actions::InputOperation::SetScrollSpeed { value } => {
+                prefs.input.scroll_speed = settings_store::hardware::scroll_speed_from_slider(
+                    valid_input_fraction(value)?,
+                );
+                "scroll speed updated"
             }
             crate::actions::InputOperation::SetAccelerationProfile { profile } => {
                 if !["Adaptive", "Flat"].contains(&profile.as_str()) {
@@ -1379,9 +1477,7 @@ impl SettingsApp {
                 if prefs.input.keyboard_layouts.contains(&source.id) {
                     return Err("keyboard input source is already active".into());
                 }
-                if prefs.input.keyboard_layouts.len()
-                    >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-                {
+                if !crate::input_sources::has_room_for(&prefs.input.keyboard_layouts, &source.id) {
                     return Err(
                         "the maximum number of keyboard input sources is already active".into(),
                     );
@@ -2344,23 +2440,19 @@ mod tests {
         app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
     }
 
+    /// The app opens on the default category unless told otherwise; a real
+    /// selection change flags a rebuild and re-selecting does not.
     #[test]
-    fn new_starts_on_default_category() {
+    fn category_selection_starts_on_the_default_and_flags_rebuilds() {
         let config = crate::prefs::test_env::ScratchConfig::new();
         assert_eq!(config.app().selected(), Category::DEFAULT);
-    }
 
-    #[test]
-    fn with_selected_overrides_default() {
         let config = crate::prefs::test_env::ScratchConfig::new();
         assert_eq!(
             config.app().with_category(Category::About).selected(),
             Category::About
         );
-    }
 
-    #[test]
-    fn select_changes_category_and_flags_structure_dirty() {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut app = config.app();
         layout_at(&mut app, 1200.0, 760.0);
@@ -2375,833 +2467,914 @@ mod tests {
         assert!(!app.take_structure_dirty());
     }
 
+    /// Update operations are accepted, then completed or failed only by the owning pane.
     #[test]
-    fn canonical_update_operation_is_accepted_not_completed_until_the_pane_reports() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let heads = doc.get_heads();
-        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-        let invocation = tilo_actions::InvocationId::new();
-        let start = app
-            .start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .expect("the check operation is valid");
-        assert!(matches!(
-            start,
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert_eq!(app.selected(), Category::Updates);
-        assert_eq!(
-            doc.get_heads(),
-            heads,
-            "local effects must not touch Automerge"
-        );
-        assert_eq!(
-            app.local_pane_command.get(),
-            Some(crate::actions::LocalPaneCommand::Updates(
-                crate::actions::UpdateOperation::Check
-            ))
-        );
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &root)
-                .is_none(),
-            "latch admission must not create a successful history entry"
-        );
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &crate::actions::UpdateOperation::Check,
-                ),
-                message: "checked".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &root)
-                .is_none(),
-            "a local invocation emits exactly one terminal update"
-        );
-    }
-
-    #[test]
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
-        reason = "one table-driven proof visibly enumerates the complete device-local operation set"
+        reason = "cases merged from separate tests; each case stays self-contained"
     )]
-    fn hardware_effect_admission_never_mutates_the_collaborative_document() {
-        use std::collections::BTreeSet;
-
-        let config = crate::prefs::test_env::ConfigGuard::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let keyboard_label = crate::input_sources::installed_catalog()
-            .into_iter()
-            .find(|source| source.id != crate::prefs::SystemPrefs::load().input.keyboard_layout)
-            .expect("the bounded installed catalogue has an alternate keyboard source")
-            .label;
-        let cases = vec![
-            (
-                crate::actions::UPDATE_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap(),
-            ),
-            (
-                crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::KeyboardSourceOperation::Add {
-                    label: keyboard_label,
-                })
-                .unwrap(),
-            ),
-            (
-                crate::actions::INPUT_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::InputOperation::SetTapToClick {
-                    enabled: false,
-                })
-                .unwrap(),
-            ),
-            (
-                crate::actions::TIME_DATE_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::TimeDateOperation::SetHourCycle { h24: true })
-                    .unwrap(),
-            ),
-            (
-                crate::actions::POWER_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::PowerOperation::SetAutoSuspend {
-                    enabled: false,
-                })
-                .unwrap(),
-            ),
-            (
-                crate::actions::NETWORK_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::NetworkOperation::Refresh).unwrap(),
-            ),
-            (
-                crate::actions::BLUETOOTH_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::BluetoothOperation::Refresh).unwrap(),
-            ),
-            (
-                crate::actions::AUDIO_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::AudioOperation::SetOutputVolume { value: 0.5 })
-                    .unwrap(),
-            ),
-            (
-                crate::actions::DISPLAY_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::DisplayOperation::SetBrightness { value: 0.5 })
-                    .unwrap(),
-            ),
-            (
-                crate::actions::STORAGE_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::StorageOperation::OpenDisks).unwrap(),
-            ),
-            (
-                crate::actions::PRINTER_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::PrinterOperation::Refresh).unwrap(),
-            ),
-            (
-                crate::actions::USER_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::UserOperation::SetAdmin {
-                    username: "bounded-missing-user".into(),
-                    admin: true,
-                })
-                .unwrap(),
-            ),
-            (
-                crate::actions::AGENT_MODEL_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::AgentModelOperation::StageAccelerator).unwrap(),
-            ),
-            (
-                crate::actions::DEVICE_MESH_OPERATION_TYPE,
-                serde_json::to_vec(&crate::actions::DeviceMeshOperation::SetRole {
-                    role: "Personal".into(),
-                })
-                .unwrap(),
-            ),
-        ];
-        let mut covered = BTreeSet::new();
-        for (type_id, payload) in cases {
+    fn local_operations_complete_only_when_the_pane_reports() {
+        // Case `canonical_update_operation_is_accepted_not_completed_until_the_pane_reports`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
             let heads = doc.get_heads();
-            assert!(matches!(
-                app.start_local_device_operation(
+            let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+            let invocation = tilo_actions::InvocationId::new();
+            let start = app
+                .start_resource_operation_with_document(
+                    invocation,
                     tilo_actions::OperationKind::Effect,
-                    type_id,
+                    crate::actions::UPDATE_OPERATION_TYPE,
                     &payload,
                     &mut doc,
                     &root,
                 )
-                .expect("bounded local command is admitted"),
+                .expect("the check operation is valid");
+            assert!(matches!(
+                start,
                 Some(ui::widget::ResourceOperationStart::Accepted)
             ));
-            assert_eq!(doc.get_heads(), heads, "{type_id} touched Automerge");
-            covered.insert(type_id);
-            app.local_pane_command.set(None);
-            app.device_mesh_commands.set(None);
+            assert_eq!(app.selected(), Category::Updates);
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "local effects must not touch Automerge"
+            );
+            assert_eq!(
+                app.local_pane_command.get(),
+                Some(crate::actions::LocalPaneCommand::Updates(
+                    crate::actions::UpdateOperation::Check
+                ))
+            );
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none(),
+                "latch admission must not create a successful history entry"
+            );
             app.local_operation_status
-                .set(crate::actions::LocalOperationStatus::Idle);
-            app.local_operation_token = None;
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &crate::actions::UpdateOperation::Check,
+                    ),
+                    message: "checked".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none(),
+                "a local invocation emits exactly one terminal update"
+            );
         }
 
-        let heads = doc.get_heads();
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ACCOUNT_OPERATION_TYPE,
-                &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap(),
-                &doc,
-                &root,
-            )
-            .expect("account form command is admitted")
-        );
-        assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
-        covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
-
-        let heads = doc.get_heads();
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
-                &serde_json::to_vec(&crate::actions::AgentProviderOperation::Add {
-                    protocol: "anthropic".into(),
-                })
-                .unwrap(),
-                &doc,
-                &root,
-            )
-            .expect("provider command is admitted")
-        );
-        assert_eq!(doc.get_heads(), heads, "provider command touched Automerge");
-        covered.insert(crate::actions::AGENT_PROVIDER_OPERATION_TYPE);
-
-        assert_eq!(
-            covered,
-            crate::actions::DEVICE_LOCAL_OPERATION_TYPES
-                .iter()
-                .copied()
-                .collect(),
-            "the unchanged-heads matrix must cover the complete closed set"
-        );
-    }
-
-    #[test]
-    fn network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let heads = doc.get_heads();
-        let operation = crate::actions::NetworkOperation::Refresh;
-        let payload = serde_json::to_vec(&operation).expect("network operation serializes");
-        let invocation = tilo_actions::InvocationId::new();
-        let start = app
-            .start_resource_operation_with_document(
+        // Case `non_cancellable_local_operation_ignores_cancel_until_the_pane_finishes`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+            app.start_resource_operation_with_document(
                 invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::NETWORK_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .expect("refresh admission is local and bounded");
-        assert!(matches!(
-            start,
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert_eq!(app.selected(), Category::Network);
-        assert_eq!(
-            doc.get_heads(),
-            heads,
-            "local effects must not touch Automerge"
-        );
-        assert_eq!(
-            app.local_pane_command.get(),
-            Some(crate::actions::LocalPaneCommand::Network(operation.clone()))
-        );
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &root)
-                .is_none()
-        );
-
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::NETWORK_OPERATION_TYPE,
-                    &operation,
-                ),
-                message: "refreshed".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn input_effect_persists_locally_and_never_latches_a_crdt_value() {
-        use automerge::ReadDoc;
-
-        let config = crate::prefs::test_env::ConfigGuard::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let operation = crate::actions::InputOperation::SetTapToClick { enabled: false };
-        let payload = serde_json::to_vec(&operation).expect("operation serializes");
-        let invocation = tilo_actions::InvocationId::new();
-        let start = app
-            .start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::INPUT_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .expect("input effect is admitted");
-        assert!(matches!(
-            start,
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert_eq!(app.selected(), Category::MouseKeyboard);
-        assert!(
-            doc.get(&root, panes::mouse_keyboard::TAP_CLICK_KEY)
-                .unwrap()
-                .is_none()
-        );
-        assert!(!crate::prefs::SystemPrefs::load().input.tap_to_click);
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn bluetooth_refresh_waits_for_its_own_local_completion_token() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let heads = doc.get_heads();
-        let operation = crate::actions::BluetoothOperation::Refresh;
-        let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
-        let invocation = tilo_actions::InvocationId::new();
-        let start = app
-            .start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::BLUETOOTH_OPERATION_TYPE,
-                &payload,
-                &mut doc,
-                &root,
-            )
-            .expect("Bluetooth refresh admission is valid");
-        assert!(matches!(
-            start,
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
-        assert_eq!(app.selected(), Category::Bluetooth);
-        assert_eq!(doc.get_heads(), heads);
-        assert_eq!(
-            app.local_pane_command.get(),
-            Some(crate::actions::LocalPaneCommand::Bluetooth(
-                operation.clone()
-            ))
-        );
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::BLUETOOTH_OPERATION_TYPE,
-                    &operation,
-                ),
-                message: "refreshed".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn non_cancellable_local_operation_ignores_cancel_until_the_pane_finishes() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-        app.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::UPDATE_OPERATION_TYPE,
-            &payload,
-            &mut doc,
-            &root,
-        )
-        .unwrap();
-        assert!(
-            app.poll_resource_operation(invocation, true, &doc, &root)
-                .is_none(),
-            "cancellation cannot claim to stop an admitted system command"
-        );
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &crate::actions::UpdateOperation::Check,
-                ),
-                message: "checked".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, true, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn unrelated_pane_status_cannot_finish_a_pending_local_operation() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-        app.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::UPDATE_OPERATION_TYPE,
-            &payload,
-            &mut doc,
-            &root,
-        )
-        .unwrap();
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::POWER_OPERATION_TYPE,
-                    &crate::actions::PowerOperation::SetChargeLimit { percent: 80 },
-                ),
-                message: "unrelated UI change".into(),
-            });
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &root)
-                .is_none()
-        );
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &crate::actions::UpdateOperation::Check,
-                ),
-                message: "checked".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn overwritten_schedule_value_cannot_complete_the_original_invocation() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let invocation = tilo_actions::InvocationId::new();
-        let daily = crate::actions::UpdateOperation::SetSchedule {
-            schedule: "Daily".into(),
-        };
-        let payload = serde_json::to_vec(&daily).unwrap();
-        app.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::UPDATE_OPERATION_TYPE,
-            &payload,
-            &mut doc,
-            &root,
-        )
-        .unwrap();
-        let weekly = crate::actions::UpdateOperation::SetSchedule {
-            schedule: "Weekly".into(),
-        };
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &weekly,
-                ),
-                message: "weekly changed".into(),
-            });
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &root)
-                .is_none()
-        );
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Succeeded {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &daily,
-                ),
-                message: "daily changed".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn pane_reported_local_error_becomes_a_failed_terminal_update() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-        app.start_resource_operation_with_document(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::UPDATE_OPERATION_TYPE,
-            &payload,
-            &mut doc,
-            &root,
-        )
-        .unwrap();
-        app.local_operation_status
-            .set(crate::actions::LocalOperationStatus::Failed {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &crate::actions::UpdateOperation::Check,
-                ),
-                message: "offline".into(),
-            });
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
-    }
-
-    #[test]
-    fn local_operation_rejects_an_update_schedule_outside_the_panes_choices() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::SetSchedule {
-            schedule: "Whenever".into(),
-        })
-        .unwrap();
-        assert!(
-            app.start_local_device_operation(
                 tilo_actions::OperationKind::Effect,
                 crate::actions::UPDATE_OPERATION_TYPE,
                 &payload,
                 &mut doc,
                 &root,
             )
-            .is_err()
-        );
+            .unwrap();
+            assert!(
+                app.poll_resource_operation(invocation, true, &doc, &root)
+                    .is_none(),
+                "cancellation cannot claim to stop an admitted system command"
+            );
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &crate::actions::UpdateOperation::Check,
+                    ),
+                    message: "checked".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, true, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Case `unrelated_pane_status_cannot_finish_a_pending_local_operation`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+            app.start_resource_operation_with_document(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::UPDATE_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .unwrap();
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::POWER_OPERATION_TYPE,
+                        &crate::actions::PowerOperation::SetChargeLimit { percent: 80 },
+                    ),
+                    message: "unrelated UI change".into(),
+                });
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none()
+            );
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &crate::actions::UpdateOperation::Check,
+                    ),
+                    message: "checked".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Case `overwritten_schedule_value_cannot_complete_the_original_invocation`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let invocation = tilo_actions::InvocationId::new();
+            let daily = crate::actions::UpdateOperation::SetSchedule {
+                schedule: "Daily".into(),
+            };
+            let payload = serde_json::to_vec(&daily).unwrap();
+            app.start_resource_operation_with_document(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::UPDATE_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .unwrap();
+            let weekly = crate::actions::UpdateOperation::SetSchedule {
+                schedule: "Weekly".into(),
+            };
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &weekly,
+                    ),
+                    message: "weekly changed".into(),
+                });
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none()
+            );
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &daily,
+                    ),
+                    message: "daily changed".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Case `pane_reported_local_error_becomes_a_failed_terminal_update`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+            app.start_resource_operation_with_document(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::UPDATE_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .unwrap();
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Failed {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &crate::actions::UpdateOperation::Check,
+                    ),
+                    message: "offline".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Failed { .. })
+            ));
+        }
+
+        // Case `local_operation_rejects_an_update_schedule_outside_the_panes_choices`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let payload = serde_json::to_vec(&crate::actions::UpdateOperation::SetSchedule {
+                schedule: "Whenever".into(),
+            })
+            .unwrap();
+            assert!(
+                app.start_local_device_operation(
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .is_err()
+            );
+        }
     }
 
+    /// Hardware, network, input and Bluetooth effects are local lifecycles.
     #[test]
-    fn wide_layout_docks_the_sidebar() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        layout_at(&mut app, 1200.0, 760.0);
-        assert!(!app.is_narrow(), "1200px should dock the sidebar");
-        assert!(app.sidebar_open(), "docked sidebar is open by default");
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn hardware_and_input_effects_stay_off_the_collaborative_document() {
+        // Case `hardware_effect_admission_never_mutates_the_collaborative_document`.
+        {
+            use std::collections::BTreeSet;
 
-    #[test]
-    fn narrow_layout_collapses_to_the_content_screen() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        // A collapse to the narrow (phone) layout keeps the selected category's
-        // CONTENT on screen — it never defaults to the category list. The list
-        // is a back-tap away (see the back arrow), not the surface a collapse
-        // lands on.
-        let mut app = config.app().with_width_hint(440.0);
-        layout_at(&mut app, 440.0, 820.0);
-        assert!(app.is_narrow(), "440px should resolve to the narrow layout");
-        assert!(
-            !app.sidebar_open(),
-            "a collapse keeps the content — it must not default to the category list"
-        );
-        assert!(
-            app.back_button_rect().width() > 0.0,
-            "the content screen carries a back arrow to reach the category list"
-        );
-    }
-
-    #[test]
-    fn narrow_list_shot_shows_the_standalone_list_screen() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        // The category list remains reachable (and capturable) as its own
-        // full-screen screen — it is simply no longer the collapse default.
-        let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
-        layout_at(&mut app, 440.0, 820.0);
-        assert!(app.is_narrow(), "440px should resolve to the narrow layout");
-        assert!(
-            app.sidebar_open(),
-            "the list screen shows the standalone full-screen category list"
-        );
-        assert_eq!(
-            app.back_button_rect(),
-            vello::kurbo::Rect::ZERO,
-            "the list screen has no back button"
-        );
-    }
-
-    #[test]
-    fn narrow_content_shot_drills_into_the_content_screen() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(440.0)
-            .with_narrow_content_shot();
-        layout_at(&mut app, 440.0, 820.0);
-        assert!(app.is_narrow());
-        assert!(
-            !app.sidebar_open(),
-            "the content-screen shot shows the content full-screen (not the list)"
-        );
-        assert!(
-            app.back_button_rect().width() > 0.0,
-            "the content screen carries a back-arrow button"
-        );
-    }
-
-    #[test]
-    fn narrow_page_heading_explains_the_back_arrow_destination_without_overlap() {
-        fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
-            if out.is_none()
-                && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
-            {
-                *out = Some(w.get_rect());
+            let config = crate::prefs::test_env::ConfigGuard::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let keyboard_label = crate::input_sources::installed_catalog()
+                .into_iter()
+                .find(|source| source.id != crate::prefs::SystemPrefs::load().input.keyboard_layout)
+                .expect("the bounded installed catalogue has an alternate keyboard source")
+                .label;
+            let cases = vec![
+                (
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap(),
+                ),
+                (
+                    crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::KeyboardSourceOperation::Add {
+                        label: keyboard_label,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::INPUT_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::InputOperation::SetTapToClick {
+                        enabled: false,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::TIME_DATE_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::TimeDateOperation::SetHourCycle {
+                        h24: true,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::POWER_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::PowerOperation::SetAutoSuspend {
+                        enabled: false,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::NETWORK_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::NetworkOperation::Refresh).unwrap(),
+                ),
+                (
+                    crate::actions::BLUETOOTH_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::BluetoothOperation::Refresh).unwrap(),
+                ),
+                (
+                    crate::actions::AUDIO_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::AudioOperation::SetOutputVolume {
+                        value: 0.5,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::DISPLAY_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::DisplayOperation::SetBrightness {
+                        value: 0.5,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::STORAGE_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::StorageOperation::OpenDisks).unwrap(),
+                ),
+                (
+                    crate::actions::PRINTER_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::PrinterOperation::Refresh).unwrap(),
+                ),
+                (
+                    crate::actions::USER_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::UserOperation::SetAdmin {
+                        username: "bounded-missing-user".into(),
+                        admin: true,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::AGENT_MODEL_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::AgentModelOperation::StageAccelerator)
+                        .unwrap(),
+                ),
+                (
+                    crate::actions::DEVICE_MESH_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::DeviceMeshOperation::SetRole {
+                        role: "Personal".into(),
+                    })
+                    .unwrap(),
+                ),
+                (
+                    crate::actions::SPEAKER_OPERATION_TYPE,
+                    serde_json::to_vec(&crate::actions::SpeakerOperation::Delete {
+                        group: "ab".repeat(16),
+                    })
+                    .unwrap(),
+                ),
+            ];
+            let mut covered = BTreeSet::new();
+            for (type_id, payload) in cases {
+                let heads = doc.get_heads();
+                assert!(matches!(
+                    app.start_local_device_operation(
+                        tilo_actions::OperationKind::Effect,
+                        type_id,
+                        &payload,
+                        &mut doc,
+                        &root,
+                    )
+                    .expect("bounded local command is admitted"),
+                    Some(ui::widget::ResourceOperationStart::Accepted)
+                ));
+                assert_eq!(doc.get_heads(), heads, "{type_id} touched Automerge");
+                covered.insert(type_id);
+                app.local_pane_command.set(None);
+                app.device_mesh_commands.set(None);
+                app.speaker_commands.set(None);
+                app.local_operation_status
+                    .set(crate::actions::LocalOperationStatus::Idle);
+                app.local_operation_token = None;
             }
-            for child in w.children() {
-                named_rect(child, name, out);
+
+            let heads = doc.get_heads();
+            assert!(
+                app.invoke_resource_operation(
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::ACCOUNT_OPERATION_TYPE,
+                    &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap(),
+                    &doc,
+                    &root,
+                )
+                .expect("account form command is admitted")
+            );
+            assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
+            covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
+
+            let heads = doc.get_heads();
+            assert!(
+                app.invoke_resource_operation(
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
+                    &serde_json::to_vec(&crate::actions::AgentProviderOperation::Add {
+                        protocol: "anthropic".into(),
+                    })
+                    .unwrap(),
+                    &doc,
+                    &root,
+                )
+                .expect("provider command is admitted")
+            );
+            assert_eq!(doc.get_heads(), heads, "provider command touched Automerge");
+            covered.insert(crate::actions::AGENT_PROVIDER_OPERATION_TYPE);
+
+            assert_eq!(
+                covered,
+                crate::actions::DEVICE_LOCAL_OPERATION_TYPES
+                    .iter()
+                    .copied()
+                    .collect(),
+                "the unchanged-heads matrix must cover the complete closed set"
+            );
+        }
+
+        // Case `network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let heads = doc.get_heads();
+            let operation = crate::actions::NetworkOperation::Refresh;
+            let payload = serde_json::to_vec(&operation).expect("network operation serializes");
+            let invocation = tilo_actions::InvocationId::new();
+            let start = app
+                .start_resource_operation_with_document(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::NETWORK_OPERATION_TYPE,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .expect("refresh admission is local and bounded");
+            assert!(matches!(
+                start,
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            assert_eq!(app.selected(), Category::Network);
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "local effects must not touch Automerge"
+            );
+            assert_eq!(
+                app.local_pane_command.get(),
+                Some(crate::actions::LocalPaneCommand::Network(operation.clone()))
+            );
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &root)
+                    .is_none()
+            );
+
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::NETWORK_OPERATION_TYPE,
+                        &operation,
+                    ),
+                    message: "refreshed".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Case `input_effect_persists_locally_and_never_latches_a_crdt_value`.
+        {
+            use automerge::ReadDoc;
+
+            let config = crate::prefs::test_env::ConfigGuard::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let operation = crate::actions::InputOperation::SetTapToClick { enabled: false };
+            let payload = serde_json::to_vec(&operation).expect("operation serializes");
+            let invocation = tilo_actions::InvocationId::new();
+            let start = app
+                .start_resource_operation_with_document(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::INPUT_OPERATION_TYPE,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .expect("input effect is admitted");
+            assert!(matches!(
+                start,
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            assert_eq!(app.selected(), Category::MouseKeyboard);
+            assert!(
+                doc.get(&root, panes::mouse_keyboard::TAP_CLICK_KEY)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!crate::prefs::SystemPrefs::load().input.tap_to_click);
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Case `bluetooth_refresh_waits_for_its_own_local_completion_token`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let heads = doc.get_heads();
+            let operation = crate::actions::BluetoothOperation::Refresh;
+            let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
+            let invocation = tilo_actions::InvocationId::new();
+            let start = app
+                .start_resource_operation_with_document(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::BLUETOOTH_OPERATION_TYPE,
+                    &payload,
+                    &mut doc,
+                    &root,
+                )
+                .expect("Bluetooth refresh admission is valid");
+            assert!(matches!(
+                start,
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            ));
+            assert_eq!(app.selected(), Category::Bluetooth);
+            assert_eq!(doc.get_heads(), heads);
+            assert_eq!(
+                app.local_pane_command.get(),
+                Some(crate::actions::LocalPaneCommand::Bluetooth(
+                    operation.clone()
+                ))
+            );
+            app.local_operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token: crate::actions::local_operation_token_for(
+                        crate::actions::BLUETOOTH_OPERATION_TYPE,
+                        &operation,
+                    ),
+                    message: "refreshed".into(),
+                });
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &root),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+    }
+
+    #[derive(Debug)]
+    enum Back {
+        Present,
+        Absent,
+        Unchecked,
+    }
+
+    type ResponsiveCase<'a> = (
+        &'a str,
+        fn(&crate::prefs::test_env::ScratchConfig) -> SettingsApp,
+        (f32, f32),
+        Option<bool>,
+        Option<bool>,
+        Back,
+    );
+
+    /// Lay out each case's app (each with its own config) and check the
+    /// resolved layout, sidebar state and back button.
+    fn assert_responsive_layouts(cases: Vec<ResponsiveCase<'_>>) {
+        for (case, build, (w, h), narrow, sidebar_open, back) in cases {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = build(&config);
+            layout_at(&mut app, w, h);
+            assert!(app.get_rect().width() > 0.0, "case {case}: lays out");
+            if let Some(narrow) = narrow {
+                assert_eq!(app.is_narrow(), narrow, "case {case}: narrow");
+            }
+            if let Some(open) = sidebar_open {
+                assert_eq!(app.sidebar_open(), open, "case {case}: sidebar open");
+            }
+            match back {
+                Back::Present => assert!(
+                    app.back_button_rect().width() > 0.0,
+                    "case {case}: the content screen carries a back arrow to reach the category list"
+                ),
+                Back::Absent => assert_eq!(
+                    app.back_button_rect(),
+                    vello::kurbo::Rect::ZERO,
+                    "case {case}: the list screen has no back button"
+                ),
+                Back::Unchecked => {}
             }
         }
-        let config = crate::prefs::test_env::ScratchConfig::new();
-
-        let selected = Category::RegionFormats;
-        let mut app = config
-            .app()
-            .with_category(selected)
-            .with_width_hint(440.0)
-            .with_narrow_content_shot();
-        layout_at(&mut app, 440.0, 820.0);
-
-        let mut heading = None;
-        named_rect(&app, selected.label(), &mut heading);
-        let heading = heading.expect("the content page names the selected destination");
-        let back = app.back_button_rect();
-        assert!(
-            heading.y0 >= back.y1,
-            "the destination heading begins below the back band, so the back arrow remains obvious"
-        );
     }
 
+    /// The responsive shell docks the sidebar when wide. A collapse to the
+    /// narrow (phone) layout keeps the selected category's CONTENT on screen —
+    /// it never defaults to the category list, which is a back-tap away.
     #[test]
-    fn narrow_large_text_keeps_the_destination_in_the_initial_viewport() {
-        fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
-            if out.is_none()
-                && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
-            {
-                *out = Some(w.get_rect());
+    fn responsive_layout_docks_wide_and_drills_into_content_when_narrow() {
+        // (case, app, size, narrow, sidebar open, back button)
+        assert_responsive_layouts(vec![
+            (
+                "wide docks an open sidebar",
+                |c| c.app(),
+                (1200.0, 760.0),
+                Some(false),
+                Some(true),
+                Back::Unchecked,
+            ),
+            (
+                "narrow collapse keeps the content",
+                |c| c.app().with_width_hint(440.0),
+                (440.0, 820.0),
+                Some(true),
+                Some(false),
+                Back::Present,
+            ),
+            (
+                "narrow content shot drills into content",
+                |c| {
+                    c.app()
+                        .with_category(Category::RegionFormats)
+                        .with_width_hint(440.0)
+                        .with_narrow_content_shot()
+                },
+                (440.0, 820.0),
+                Some(true),
+                Some(false),
+                Back::Present,
+            ),
+        ]);
+    }
+
+    /// The category list stays capturable as its own full-screen screen, and
+    /// a busy pane lays out both wide and narrow.
+    #[test]
+    fn narrow_list_screen_and_busy_panes_lay_out() {
+        assert_responsive_layouts(vec![
+            (
+                "narrow list shot shows the standalone list",
+                |c| c.app().with_width_hint(440.0).with_narrow_list_shot(),
+                (440.0, 820.0),
+                Some(true),
+                Some(true),
+                Back::Absent,
+            ),
+            (
+                "wide accounts lays out",
+                |c| c.app().with_category(Category::ExternalAccounts),
+                (1200.0, 720.0),
+                None,
+                None,
+                Back::Unchecked,
+            ),
+            (
+                "narrow accounts lays out",
+                |c| {
+                    c.app()
+                        .with_category(Category::ExternalAccounts)
+                        .with_width_hint(440.0)
+                        .with_narrow_content_shot()
+                },
+                (440.0, 820.0),
+                None,
+                None,
+                Back::Unchecked,
+            ),
+        ]);
+    }
+
+    /// Narrow headings, large-text viewports, readable sidebars and list-to-content navigation.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn narrow_and_large_text_navigation_keeps_destinations_visible() {
+        // Case `narrow_page_heading_explains_the_back_arrow_destination_without_overlap`.
+        {
+            fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
+                if out.is_none()
+                    && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
+                {
+                    *out = Some(w.get_rect());
+                }
+                for child in w.children() {
+                    named_rect(child, name, out);
+                }
             }
-            for child in w.children() {
-                named_rect(child, name, out);
-            }
+            let config = crate::prefs::test_env::ScratchConfig::new();
+
+            let selected = Category::RegionFormats;
+            let mut app = config
+                .app()
+                .with_category(selected)
+                .with_width_hint(440.0)
+                .with_narrow_content_shot();
+            layout_at(&mut app, 440.0, 820.0);
+
+            let mut heading = None;
+            named_rect(&app, selected.label(), &mut heading);
+            let heading = heading.expect("the content page names the selected destination");
+            let back = app.back_button_rect();
+            assert!(
+                heading.y0 >= back.y1,
+                "the destination heading begins below the back band, so the back arrow remains obvious"
+            );
         }
-        let config = crate::prefs::test_env::ScratchConfig::new();
 
-        let selected = Category::RegionFormats;
-        let mut app = config
-            .app()
-            .with_category(selected)
-            .with_width_hint(390.0)
-            .with_narrow_content_shot();
-        layout_at_with_theme(
-            &mut app,
-            390.0,
-            844.0,
-            &ui::Theme::dark().with_text_scale(1.5),
-        );
+        // Case `narrow_large_text_keeps_the_destination_in_the_initial_viewport`.
+        {
+            fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
+                if out.is_none()
+                    && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
+                {
+                    *out = Some(w.get_rect());
+                }
+                for child in w.children() {
+                    named_rect(child, name, out);
+                }
+            }
+            let config = crate::prefs::test_env::ScratchConfig::new();
 
-        let mut heading = None;
-        named_rect(&app, selected.label(), &mut heading);
-        let heading = heading.expect("the content page names the selected destination");
-        assert!(
-            heading.y0 < 844.0,
-            "large text must retain the destination heading in the first viewport (y={})",
-            heading.y0
-        );
+            let selected = Category::RegionFormats;
+            let mut app = config
+                .app()
+                .with_category(selected)
+                .with_width_hint(390.0)
+                .with_narrow_content_shot();
+            layout_at_with_theme(
+                &mut app,
+                390.0,
+                844.0,
+                &ui::Theme::dark().with_text_scale(1.5),
+            );
+
+            let mut heading = None;
+            named_rect(&app, selected.label(), &mut heading);
+            let heading = heading.expect("the content page names the selected destination");
+            assert!(
+                heading.y0 < 844.0,
+                "large text must retain the destination heading in the first viewport (y={})",
+                heading.y0
+            );
+        }
+
+        // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config
+                .app()
+                .with_width_hint(1440.0)
+                .with_narrow_content_shot();
+            layout_at_with_theme(
+                &mut app,
+                1440.0,
+                900.0,
+                &ui::Theme::dark().with_text_scale(2.0),
+            );
+            assert!(
+                !app.is_narrow(),
+                "1440px still admits a readable split at 200% text"
+            );
+            let sidebar = app
+                .shell
+                .as_ref()
+                .expect("layout builds the shell")
+                .sidebar_panel_rect();
+            assert!(
+                (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
+                "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
+            );
+            let mut compact = config.app().with_width_hint(900.0);
+            layout_at_with_theme(
+                &mut compact,
+                900.0,
+                844.0,
+                &ui::Theme::dark().with_text_scale(2.0),
+            );
+            assert!(
+                compact.is_narrow(),
+                "a 900px split would crowd 200%-text navigation and must collapse"
+            );
+        }
+
+        // Case `narrow_pick_navigates_list_to_content_and_back`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            // Start on the list screen — the reachable back-tap state.
+            let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
+            layout_at(&mut app, 440.0, 820.0);
+            assert!(app.sidebar_open(), "starts on the list screen");
+            // Picking a category drills into its content screen.
+            app.select(Category::Users);
+            assert!(app.take_structure_dirty(), "the pick requests a rebuild");
+            layout_at(&mut app, 440.0, 820.0);
+            assert!(
+                !app.sidebar_open(),
+                "the pick navigated to the content screen"
+            );
+            assert!(
+                app.back_button_rect().width() > 0.0,
+                "a back arrow is present"
+            );
+        }
     }
 
+    /// Search queries stay local and seed the field for shots.
     #[test]
-    fn wide_large_text_reserves_a_readable_sidebar_before_layout() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config
-            .app()
-            .with_width_hint(1440.0)
-            .with_narrow_content_shot();
-        layout_at_with_theme(
-            &mut app,
-            1440.0,
-            900.0,
-            &ui::Theme::dark().with_text_scale(2.0),
-        );
-        assert!(
-            !app.is_narrow(),
-            "1440px still admits a readable split at 200% text"
-        );
-        let sidebar = app
-            .shell
-            .as_ref()
-            .expect("layout builds the shell")
-            .sidebar_panel_rect();
-        assert!(
-            (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
-            "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
-        );
-        let mut compact = config.app().with_width_hint(900.0);
-        layout_at_with_theme(
-            &mut compact,
-            900.0,
-            844.0,
-            &ui::Theme::dark().with_text_scale(2.0),
-        );
-        assert!(
-            compact.is_narrow(),
-            "a 900px split would crowd 200%-text navigation and must collapse"
-        );
+    fn search_query_is_local_and_reaches_the_field() {
+        // Case `search_query_is_local_and_flags_rebuild`.
+        {
+            use automerge::ReadDoc;
+            let config = crate::prefs::test_env::ScratchConfig::new();
+
+            let mut app = config.app();
+            layout_at(&mut app, 1200.0, 760.0);
+            assert_eq!(app.search_query(), "", "starts with no query");
+
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            app.search_state.set("night light".to_string());
+            app.sync(&mut doc, &root);
+            assert_eq!(app.search_query(), "night light");
+            assert!(
+                app.take_structure_dirty(),
+                "a new query must flag a rebuild so the filtered sidebar recomposes"
+            );
+            // Re-syncing the same query is a no-op (no spurious rebuild).
+            app.sync(&mut doc, &root);
+            assert!(!app.take_structure_dirty());
+            assert!(
+                doc.get(&root, "settings.search.edit").unwrap().is_none(),
+                "a local filter must not create a shared search draft"
+            );
+        }
+
+        // Case `seeded_search_shot_query_reaches_the_local_field`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config
+                .app()
+                .with_category(Category::Displays)
+                .with_search_shot("light");
+            assert_eq!(app.search_query(), "light");
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            app.sync(&mut doc, &root);
+            assert_eq!(
+                app.search_query(),
+                "light",
+                "the local field must retain the requested capture filter"
+            );
+            assert_eq!(app.search_state.with(Clone::clone), "light");
+            assert!(doc.get_heads().is_empty());
+            layout_at(&mut app, 1200.0, 760.0);
+        }
     }
 
+    /// No app-name header, and the root landmark survives rebuilds.
     #[test]
-    fn narrow_pick_navigates_list_to_content_and_back() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        // Start on the list screen — the reachable back-tap state.
-        let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
-        layout_at(&mut app, 440.0, 820.0);
-        assert!(app.sidebar_open(), "starts on the list screen");
-        // Picking a category drills into its content screen.
-        app.select(Category::Users);
-        assert!(app.take_structure_dirty(), "the pick requests a rebuild");
-        layout_at(&mut app, 440.0, 820.0);
-        assert!(
-            !app.sidebar_open(),
-            "the pick navigated to the content screen"
-        );
-        assert!(
-            app.back_button_rect().width() > 0.0,
-            "a back arrow is present"
-        );
-    }
+    fn chrome_draws_no_app_header_and_keeps_its_landmark() {
+        // Case `draws_no_app_name_header`.
+        // The app must NOT draw its own title / app-name header — the OS window
+        // pill carries the name. The shell's chrome is exactly the search field,
+        // the nav list, and the content pane (no title element). We assert on the
+        // real composed tree: the shell's children are those three, in order.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app();
+            layout_at(&mut app, 1200.0, 760.0);
+            let shell = app.shell.as_ref().expect("shell built");
+            let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
+            assert_eq!(
+                names,
+                vec!["TextInput", "Container", "Container"],
+                "shell chrome is search + nav + content — no title/app-name header widget"
+            );
+            // And the resolved layout is the wide split.
+            assert_eq!(shell.layout(), ui::widget::ShellLayout::Wide);
+        }
 
-    #[test]
-    fn search_query_is_local_and_flags_rebuild() {
-        use automerge::ReadDoc;
-        let config = crate::prefs::test_env::ScratchConfig::new();
+        // Case `root_landmark_is_retained_across_responsive_shell_rebuilds`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let mut app = config.app().with_category(Category::Appearance);
+            let wide = Widget::accessibility(&app).expect("Settings landmark");
+            assert_eq!(wide.name.as_deref(), Some("Settings"));
+            assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
 
-        let mut app = config.app();
-        layout_at(&mut app, 1200.0, 760.0);
-        assert_eq!(app.search_query(), "", "starts with no query");
-
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        app.search_state.set("night light".to_string());
-        app.sync(&mut doc, &root);
-        assert_eq!(app.search_query(), "night light");
-        assert!(
-            app.take_structure_dirty(),
-            "a new query must flag a rebuild so the filtered sidebar recomposes"
-        );
-        // Re-syncing the same query is a no-op (no spurious rebuild).
-        app.sync(&mut doc, &root);
-        assert!(!app.take_structure_dirty());
-        assert!(
-            doc.get(&root, "settings.search.edit").unwrap().is_none(),
-            "a local filter must not create a shared search draft"
-        );
-    }
-
-    #[test]
-    fn seeded_search_shot_query_reaches_the_local_field() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config
-            .app()
-            .with_category(Category::Displays)
-            .with_search_shot("light");
-        assert_eq!(app.search_query(), "light");
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        assert_eq!(
-            app.search_query(),
-            "light",
-            "the local field must retain the requested capture filter"
-        );
-        assert_eq!(app.search_state.with(Clone::clone), "light");
-        assert!(doc.get_heads().is_empty());
-        layout_at(&mut app, 1200.0, 760.0);
-    }
-
-    #[test]
-    fn wide_and_narrow_both_lay_out_without_panicking() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut wide = config.app().with_category(Category::ExternalAccounts);
-        layout_at(&mut wide, 1200.0, 720.0);
-        assert!(wide.get_rect().width() > 0.0);
-
-        let mut narrow = config
-            .app()
-            .with_category(Category::ExternalAccounts)
-            .with_width_hint(440.0)
-            .with_narrow_content_shot();
-        layout_at(&mut narrow, 440.0, 820.0);
-        assert!(narrow.get_rect().width() > 0.0);
-    }
-
-    /// The app must NOT draw its own title / app-name header — the OS window
-    /// pill carries the name. The shell's chrome is exactly the search field,
-    /// the nav list, and the content pane (no title element). We assert on the
-    /// real composed tree: the shell's children are those three, in order.
-    #[test]
-    fn draws_no_app_name_header() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        layout_at(&mut app, 1200.0, 760.0);
-        let shell = app.shell.as_ref().expect("shell built");
-        let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
-        assert_eq!(
-            names,
-            vec!["TextInput", "Container", "Container"],
-            "shell chrome is search + nav + content — no title/app-name header widget"
-        );
-        // And the resolved layout is the wide split.
-        assert_eq!(shell.layout(), ui::widget::ShellLayout::Wide);
-    }
-
-    #[test]
-    fn root_landmark_is_retained_across_responsive_shell_rebuilds() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app().with_category(Category::Appearance);
-        let wide = Widget::accessibility(&app).expect("Settings landmark");
-        assert_eq!(wide.name.as_deref(), Some("Settings"));
-        assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
-
-        layout_at(&mut app, 440.0, 820.0);
-        let narrow = Widget::accessibility(&app).expect("Settings landmark survives narrow shell");
-        assert_eq!(narrow.semantic_key, wide.semantic_key);
+            layout_at(&mut app, 440.0, 820.0);
+            let narrow =
+                Widget::accessibility(&app).expect("Settings landmark survives narrow shell");
+            assert_eq!(narrow.semantic_key, wide.semantic_key);
+        }
     }
 }
 

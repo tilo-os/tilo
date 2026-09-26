@@ -193,7 +193,8 @@ pub struct OverlayFlags {
     /// Pure UI state — the history shown is derived from
     /// `WorkspaceTree::doc`, which is shared and replicated.
     pub room_activity: bool,
-    /// Device-local wireless display picker (Win+P).
+    /// Device-local display sheet (Win+P): desktop layout across attached
+    /// displays, plus wireless receivers.
     pub projection: bool,
     /// Screenshot / recording / arbitrary-region `PiP` selector
     /// (`Super+Shift+S`, or direct `PiP` via `Super+Shift+P`).
@@ -345,6 +346,17 @@ impl OpenTarget {
     }
 }
 
+/// One monitor's brightness control in Quick Settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayBrightness {
+    /// DRM connector, e.g. `DP-2` — what the brightness service keys on.
+    pub connector: String,
+    /// The monitor's EDID name, e.g. `Dell U2720Q`, else its connector.
+    pub name: String,
+    /// 0.0..=1.0.
+    pub level: f32,
+}
+
 /// Local UI state; does not sync to peers — device settings like
 /// brightness, volume, and radio toggles are always per-device.
 #[derive(Clone, Debug, PartialEq)]
@@ -358,6 +370,11 @@ pub struct QuickSettingsState {
     /// False after the device probe confirms there is no controllable
     /// backlight. The slider remains visible but honestly disabled.
     pub brightness_available: bool,
+    /// Every monitor whose brightness can be set (the laptop panel's
+    /// backlight, external monitors over DDC/CI), built-in first. Each gets
+    /// its own slider once there is more than one; empty falls back to the
+    /// single `brightness` control.
+    pub displays: Vec<DisplayBrightness>,
     /// 0.0..=1.0.
     pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
@@ -378,6 +395,11 @@ pub struct QuickSettingsState {
     pub vpns: Vec<os_actions::VpnConnectionInfo>,
     pub privacy: os_actions::PrivacyStatus,
     pub night_light: bool,
+    /// The machine has an accelerometer, so its screen can follow the device
+    /// and the rotation-lock tile is offered.
+    pub rotation_available: bool,
+    /// `display.rotation_lock`: the screen stays put when the device turns.
+    pub rotation_lock: bool,
     /// The renderer dispatches on `nav_stack.last()` (always at least
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
@@ -400,6 +422,18 @@ pub struct QuickSettingsState {
     /// `Balanced` so a host without `power-profiles-daemon` still
     /// renders a sensible label.
     pub power_profile: PowerProfile,
+    /// Apps currently keeping the screen awake (an idle inhibitor held
+    /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
+    /// as they asked. Shown on the power row so a screen that never locks
+    /// has a visible reason.
+    pub awake_holders: Vec<String>,
+    /// Certified personal devices known to the device fabric, read when the
+    /// popover opens. `None` when this session has no device fabric.
+    pub personal_devices: Option<usize>,
+    /// Mirror of the persisted Do Not Disturb switch for the tile.
+    pub do_not_disturb: bool,
+    /// Private clipboard history entries, read when the popover opens.
+    pub clipboard_items: usize,
 }
 
 /// One compositor-authoritative screen exposure projected into trusted
@@ -422,6 +456,8 @@ pub struct SearchResourceScope {
     pub app_id: String,
     pub resource: String,
     pub label: String,
+    /// The resource's kind, which decides the shortcuts offered on it.
+    pub kind: String,
 }
 
 /// Session-local presence changes requested through the semantic action
@@ -443,6 +479,7 @@ impl Default for QuickSettingsState {
         Self {
             brightness: 0.6,
             brightness_available: true,
+            displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -458,6 +495,13 @@ impl Default for QuickSettingsState {
             privacy: os_actions::get_privacy_status(),
             night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
                 .unwrap_or(false),
+            rotation_available: os_actions::has_accelerometer(),
+            rotation_lock: settings_store::bool_at(
+                &settings_store::load(),
+                "display",
+                "rotation_lock",
+            )
+            .unwrap_or(false),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -468,6 +512,10 @@ impl Default for QuickSettingsState {
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            awake_holders: Vec::new(),
+            personal_devices: None,
+            do_not_disturb: false,
+            clipboard_items: 0,
         }
     }
 }
@@ -477,6 +525,7 @@ impl QuickSettingsState {
         Self {
             brightness: 0.6,
             brightness_available: true,
+            displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
             wifi: true,
@@ -498,6 +547,8 @@ impl QuickSettingsState {
             vpns: Vec::new(),
             privacy: os_actions::PrivacyStatus::default(),
             night_light: false,
+            rotation_available: false,
+            rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -508,6 +559,10 @@ impl QuickSettingsState {
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            awake_holders: Vec::new(),
+            personal_devices: None,
+            do_not_disturb: false,
+            clipboard_items: 0,
         }
     }
 
@@ -611,24 +666,30 @@ pub struct ChromeState {
     notification_bridge: Option<NotificationBridge>,
     /// Oldest-first, bounded to [`MAX_HISTORY`]. Every notification
     /// that leaves [`Self::notifications`] lands here, as does
-    /// anything [`Self::dnd`] suppressed.
+    /// anything [`Self::notifications_quiet`] suppressed.
     notification_history: Vec<Notification>,
     /// History removed by the most recent Clear all action. Kept only long
     /// enough to make that destructive-looking action safely reversible.
     pending_notification_history_clear: Option<PendingNotificationHistoryClear>,
+    /// Private on-disk copy of [`Self::notification_history`]. `None` in
+    /// tests and offscreen renders, which must never touch a user's state.
+    notification_history_store:
+        Option<crate::shell::notification_history::NotificationHistoryStore>,
+    /// Set by every history mutation; [`Self::flush_notification_history`]
+    /// writes the store once per frame at most.
+    notification_history_dirty: bool,
     /// Exact unread counts accepted only from launcher-verified senders.
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
     notification_badges: BTreeMap<String, u32>,
-    notification_sound: Option<media::notification_sound::NotificationSoundPlayer>,
+    system_sounds: Option<crate::shell::system_sounds::SystemSounds>,
     priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     notification_policy: settings_store::notification_policy::NotificationPolicy,
     notification_policy_checked: Option<std::time::Instant>,
-    /// While `true`, fresh notifications go straight to
-    /// [`Self::notification_history`] instead of showing as banners.
-    /// Independent of [`Self::session_locked`], which suppresses
-    /// lock-screen *content* but still shows a count.
-    dnd: bool,
+    /// True while this session projects to a wireless display. Notification
+    /// contents must not reach a room full of people, so banners are held
+    /// in history exactly as under Do Not Disturb.
+    presenting: bool,
     /// Short, bounded edge flash requested by the visual-alert accessibility
     /// setting. Local session state only; it is never synced or written back.
     visual_alert_until: Option<std::time::Instant>,
@@ -673,6 +734,9 @@ pub struct ChromeState {
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
+    /// "Send…" requests for the last screenshot from the action door,
+    /// drained into the capture studio by the overlay host.
+    screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -687,6 +751,10 @@ pub struct ChromeState {
     /// here lets the chrome remove its durable tab immediately without owning
     /// Wayland protocol handles.
     close_surface_requests: Vec<u64>,
+    /// The full-screen chord was pressed. The native compositor drains it
+    /// and toggles the focused client's `xdg_toplevel` fullscreen state,
+    /// which only it holds the protocol handles for.
+    fullscreen_toggle_requested: bool,
     /// Docked at the strip's left edge by default; `Some(point)`
     /// detaches the wheel to the pointer. Cleared on Escape or
     /// picking a workspace.
@@ -696,6 +764,13 @@ pub struct ChromeState {
     strip_viewport: Option<crate::shell::placement::StripViewport>,
     /// Logical desktop bounds from the overlay host's latest layout pass.
     viewport_size: Option<(f64, f64)>,
+    /// The offer to continue a tab from another of this person's devices.
+    continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
+    /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
+    closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
+    /// Close toasts still offering Undo: notification id -> closed entry.
+    /// They never enter notification history.
+    undo_toasts: BTreeMap<u64, u64>,
 }
 
 #[derive(Debug)]
@@ -784,12 +859,14 @@ impl ChromeState {
             notification_bridge: None,
             notification_history: Vec::new(),
             pending_notification_history_clear: None,
+            notification_history_store: None,
+            notification_history_dirty: false,
             notification_badges: BTreeMap::new(),
-            notification_sound: None,
+            system_sounds: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
             notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
             notification_policy_checked: None,
-            dnd: false,
+            presenting: false,
             visual_alert_until: None,
             session_locked: false,
             active_exposures: Vec::new(),
@@ -801,6 +878,7 @@ impl ChromeState {
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
+            screenshot_sends: Vec::new(),
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -809,8 +887,13 @@ impl ChromeState {
             peer_sync_request_results: BTreeMap::new(),
             next_peer_sync_request_id: 1,
             close_surface_requests: Vec::new(),
+            fullscreen_toggle_requested: false,
             strip_viewport: None,
             viewport_size: None,
+            continuity_suggestions:
+                crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
+            closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
+            undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -895,6 +978,14 @@ impl ChromeState {
         std::mem::take(&mut self.presence_requests)
     }
 
+    pub fn push_screenshot_send(&mut self, target: ui::widget::ScreenshotSendTarget) {
+        self.screenshot_sends.push(target);
+    }
+
+    pub fn take_screenshot_sends(&mut self) -> Vec<ui::widget::ScreenshotSendTarget> {
+        std::mem::take(&mut self.screenshot_sends)
+    }
+
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
@@ -956,6 +1047,15 @@ impl ChromeState {
 
     pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.close_surface_requests)
+    }
+
+    pub fn request_fullscreen_toggle(&mut self) {
+        self.fullscreen_toggle_requested = true;
+        self.bump();
+    }
+
+    pub fn take_fullscreen_toggle_request(&mut self) -> bool {
+        std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {
@@ -1191,6 +1291,15 @@ impl ChromeState {
         }
     }
 
+    /// Mirror the apps holding the screen awake into quick settings,
+    /// repainting only when the set changed.
+    pub fn set_awake_holders(&mut self, holders: Vec<String>) {
+        if self.quick_settings.awake_holders != holders {
+            self.quick_settings.awake_holders = holders;
+            self.bump();
+        }
+    }
+
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
@@ -1322,6 +1431,133 @@ impl ChromeState {
             tree.flush_to_disk();
         }
         self.bump();
+    }
+
+    /// Replace what personal continuity knows about other devices' focus.
+    pub fn set_continuity_feed(
+        &mut self,
+        feed: crate::shell::continuity_suggestion::ContinuityFeed,
+    ) {
+        if self.continuity_suggestions.set_feed(feed) {
+            self.bump();
+        }
+    }
+
+    /// The tab another of this person's devices just moved to, when this
+    /// desktop has it and is not already showing it.
+    pub fn continuity_suggestion(
+        &self,
+        now: std::time::Instant,
+    ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
+        self.continuity_suggestions.current(&self.tree(), now)
+    }
+
+    /// Focus the offered tab here. Only an explicit accept ever moves focus;
+    /// the offer is retired so it does not return when the person moves on.
+    pub fn accept_continuity_suggestion(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
+        let suggestion = self.continuity_suggestion(now)?;
+        self.continuity_suggestions.dismiss(&suggestion);
+        self.focus_tab(
+            suggestion.workspace,
+            suggestion.strip,
+            suggestion.group,
+            suggestion.tab,
+        );
+        Some(suggestion)
+    }
+
+    /// Hide the current offer until that device's focus changes again.
+    pub fn dismiss_continuity_suggestion(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
+        let suggestion = self.continuity_suggestion(now)?;
+        self.continuity_suggestions.dismiss(&suggestion);
+        self.bump();
+        Some(suggestion)
+    }
+
+    /// Remember a close so it can be undone, and say so with a short toast
+    /// whose activation puts the tab back.
+    pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
+        use crate::shell::i18n::{t, t_args};
+
+        let heading = if entry.tabs.len() > 1 {
+            t_args(
+                "tab-closed-group-toast",
+                &[("count", entry.tabs.len().into())],
+            )
+        } else {
+            t_args("tab-closed-toast", &[("title", entry.title().into())])
+        };
+        let hint = settings_store::hardware::ShortcutConfig::load()
+            .bindings
+            .get(&settings_store::hardware::ShortcutAction::ReopenClosedTab)
+            .map_or_else(
+                || t("tab-closed-undo-hint-unbound"),
+                |chord| t_args("tab-closed-undo-hint", &[("chord", chord.display().into())]),
+            );
+        let serial = self.closed_tabs.push(entry);
+        let mut toast = Notification::new(heading, hint)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Generic);
+        toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
+        toast.actions = vec![("default".into(), t("tab-closed-undo"))];
+        // A direct answer to the person's own action, not an interruption.
+        toast.bypass_dnd = true;
+        toast.show_on_lock_screen = false;
+        let id = toast.id;
+        self.undo_toasts.insert(id, serial);
+        self.push_notification_full(toast);
+        serial
+    }
+
+    /// Reopen the most recently closed tab in the active workspace, at its
+    /// old group and index, and focus it.
+    pub fn reopen_closed_tab(&mut self) -> Option<crate::shell::state::TabId> {
+        let handle = self.tree_handle.clone();
+        let tree = handle.read();
+        let workspace = tree.desktop.active;
+        let entry = self.closed_tabs.pop_for(&tree, workspace);
+        drop(tree);
+        self.restore_closed_tab(entry?)
+    }
+
+    /// The close toast's Undo: reopen exactly that close.
+    pub fn undo_closed_tab(&mut self, serial: u64) -> Option<crate::shell::state::TabId> {
+        let entry = self.closed_tabs.take(serial)?;
+        self.restore_closed_tab(entry)
+    }
+
+    fn restore_closed_tab(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) -> Option<crate::shell::state::TabId> {
+        let serial = entry.serial;
+        let reopened = {
+            let mut tree = self.tree_mut();
+            let reopened = crate::shell::closed_tabs::restore(&mut tree, entry);
+            if reopened.is_some() {
+                tree.flush_to_disk();
+            }
+            reopened
+        };
+        // The toast would now undo nothing.
+        let stale: Vec<u64> = self
+            .undo_toasts
+            .iter()
+            .filter(|(_, candidate)| **candidate == serial)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            self.undo_toasts.remove(&id);
+            self.notifications.retain(|toast| toast.id != id);
+        }
+        self.bump();
+        reopened
     }
 
     /// Routes into the active workspace's first strip/group via
@@ -1691,19 +1927,19 @@ impl ChromeState {
         self.push_notification_full(Notification::new(title, body))
     }
 
-    /// Enforces the [`MAX_NOTIFICATIONS`] cap. When [`Self::dnd`] is
-    /// set, goes straight to history instead of a banner, unless it
-    /// carries [`Notification::bypass_dnd`] (shell-only; D-Bus can't set it).
+    /// Enforces the [`MAX_NOTIFICATIONS`] cap. While
+    /// [`Self::notifications_quiet`], goes straight to history instead of a
+    /// banner, unless it carries [`Notification::bypass_dnd`] (shell-only;
+    /// D-Bus can't set it).
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
-        if self.dnd && !n.bypass_dnd {
+        if self.notifications_quiet() && !n.bypass_dnd {
             self.record_history(n);
             self.bump();
             return id;
         }
         if visual_notification_alerts_enabled() {
-            self.visual_alert_until =
-                std::time::Instant::now().checked_add(std::time::Duration::from_millis(450));
+            self.flash_visual_alert(std::time::Instant::now());
         }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
@@ -1715,6 +1951,13 @@ impl ChromeState {
         id
     }
 
+    /// Start the accessibility edge flash now. Notifications raise it when
+    /// visual alerts are on; bounce keys raises it for a swallowed press.
+    pub fn flash_visual_alert(&mut self, now: std::time::Instant) {
+        self.visual_alert_until = now.checked_add(std::time::Duration::from_millis(450));
+        self.bump();
+    }
+
     /// Whether shell chrome should paint the accessibility edge flash this
     /// frame. No timer thread or persistent alert state is needed.
     pub fn visual_alert_active(&self, now: std::time::Instant) -> bool {
@@ -1724,10 +1967,13 @@ impl ChromeState {
     /// Every path that removes a toast (and the DND-suppression path)
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
-        self.notification_history.push(n);
-        while self.notification_history.len() > MAX_HISTORY {
-            self.notification_history.remove(0);
+        // An Undo that has lapsed is not something to find later.
+        if self.undo_toasts.remove(&n.id).is_some() {
+            return;
         }
+        self.notification_history.push(n);
+        retain_newest_history(&mut self.notification_history);
+        self.notification_history_dirty = true;
     }
 
     pub fn push_warning_notification(
@@ -1747,6 +1993,7 @@ impl ChromeState {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> u64 {
+        let _ = self.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Error);
         self.push_notification_full(
             Notification::new(title, body)
                 .with_severity(NotificationSeverity::Error)
@@ -1798,6 +2045,11 @@ impl ChromeState {
         let Some(pos) = self.notifications.iter().position(|n| n.id == id) else {
             return false;
         };
+        if let Some(serial) = self.undo_toasts.remove(&id) {
+            self.notifications.remove(pos);
+            self.undo_closed_tab(serial);
+            return true;
+        }
         let removed = self.notifications.remove(pos);
         if let Some(command) = removed
             .default_action_key()
@@ -1938,6 +2190,7 @@ impl ChromeState {
 
     fn clear_notification_history_at(&mut self, now: std::time::Instant) {
         if !self.notification_history.is_empty() {
+            self.notification_history_dirty = true;
             let mut removed = std::mem::take(&mut self.notification_history);
             if let Some(pending) = self.pending_notification_history_clear.as_mut() {
                 pending.notifications.append(&mut removed);
@@ -1967,6 +2220,7 @@ impl ChromeState {
         pending.notifications.append(&mut self.notification_history);
         retain_newest_history(&mut pending.notifications);
         self.notification_history = pending.notifications;
+        self.notification_history_dirty = true;
         self.bump();
         true
     }
@@ -1984,27 +2238,280 @@ impl ChromeState {
         expired
     }
 
-    // ---------- Do-Not-Disturb ----------
-
-    /// Whether Do-Not-Disturb is active. While `true`, freshly posted
-    /// notifications are suppressed from the banner surface and go
-    /// straight to history.
-    pub fn dnd(&self) -> bool {
-        self.dnd
+    /// Rows of the notification centre, newest first, grouped by verified
+    /// app. `collapsed` names the group keys the viewer folded.
+    pub fn notification_history_rows(
+        &self,
+        collapsed: &std::collections::BTreeSet<String>,
+    ) -> Vec<crate::shell::notification_history::HistoryRow> {
+        crate::shell::notification_history::history_rows(&self.notification_history, collapsed)
     }
 
-    /// No-op (no revision bump) when the value is unchanged.
+    /// Restore the retained history from `store` and keep it written there
+    /// from now on. Restored entries are older than anything this session
+    /// already retained, so they go first and the newest bound still holds.
+    pub fn attach_notification_history_store(
+        &mut self,
+        store: crate::shell::notification_history::NotificationHistoryStore,
+    ) {
+        let mut restored = store.load();
+        let had_session_entries = !self.notification_history.is_empty();
+        restored.append(&mut self.notification_history);
+        retain_newest_history(&mut restored);
+        self.notification_history = restored;
+        self.notification_history_store = Some(store);
+        self.notification_history_dirty = had_session_entries;
+        self.bump();
+    }
+
+    /// Write the retained history if it changed since the last write. Called
+    /// once per compositor tick; a failed write is logged and retried on the
+    /// next change rather than every frame.
+    pub fn flush_notification_history(&mut self) {
+        if !self.notification_history_dirty {
+            return;
+        }
+        self.notification_history_dirty = false;
+        let Some(store) = self.notification_history_store.as_ref() else {
+            return;
+        };
+        if let Err(error) = store.save(&self.notification_history) {
+            tracing::warn!(
+                path = %store.path().display(),
+                "could not save notification history: {error}"
+            );
+        }
+    }
+
+    /// The user activated a retained notification. A live D-Bus sender gets
+    /// `ActionInvoked` for the default action; a notification mirrored from
+    /// another device routes that action back to exactly that device. An
+    /// entry restored after a restart has no sender left, so the caller opens
+    /// the verified app instead. Acted-on entries leave the history.
+    pub fn activate_history_notification(
+        &mut self,
+        id: u64,
+    ) -> crate::shell::notification_history::HistoryActivation {
+        use crate::shell::notification_history::HistoryActivation;
+        let Some(pos) = self.notification_history.iter().position(|n| n.id == id) else {
+            return HistoryActivation::Missing;
+        };
+        let Some(notification) = self.notification_history.get(pos) else {
+            return HistoryActivation::Missing;
+        };
+        let key = notification.default_action_key();
+        let outcome = if notification.remote_route.is_some() {
+            match key.and_then(|key| notification.remote_action_command(&key)) {
+                Some(command) => {
+                    self.queue_remote_notification_command(command);
+                    HistoryActivation::Invoked
+                }
+                None => HistoryActivation::Unavailable,
+            }
+        } else if let (Some(bridge), Some(dbus_id), Some(key)) =
+            (self.notification_bridge.as_ref(), notification.dbus_id, key)
+        {
+            bridge.note_action(dbus_id, key);
+            HistoryActivation::Invoked
+        } else if let Some(app_id) = notification.app_id.clone() {
+            HistoryActivation::OpenApp {
+                label: crate::shell::notification_history::group_label(notification),
+                app_id,
+            }
+        } else {
+            HistoryActivation::Unavailable
+        };
+        if matches!(
+            outcome,
+            HistoryActivation::Invoked | HistoryActivation::OpenApp { .. }
+        ) {
+            self.notification_history.remove(pos);
+            self.notification_history_dirty = true;
+            self.bump();
+        }
+        outcome
+    }
+
+    /// Remove one retained notification. Dismissing a mirrored notification
+    /// here dismisses it on the device it came from too.
+    pub fn dismiss_history_notification(&mut self, id: u64) -> bool {
+        let Some(pos) = self.notification_history.iter().position(|n| n.id == id) else {
+            return false;
+        };
+        let removed = self.notification_history.remove(pos);
+        if let Some(command) = removed.remote_dismiss_command() {
+            self.queue_remote_notification_command(command);
+        }
+        self.notification_history_dirty = true;
+        self.bump();
+        true
+    }
+
+    /// Remove every retained notification of one app group.
+    pub fn dismiss_history_group(&mut self, key: &str) -> usize {
+        let ids: Vec<u64> = self
+            .notification_history
+            .iter()
+            .filter(|n| crate::shell::notification_history::group_key(n).as_deref() == Some(key))
+            .map(|n| n.id)
+            .collect();
+        for id in &ids {
+            self.dismiss_history_notification(*id);
+        }
+        ids.len()
+    }
+
+    /// The agent collaborator a retained notification could be handed to:
+    /// the first agent admitted to the workspace the notification came from
+    /// (or the active one, for shell and mirrored notifications). Whether
+    /// that agent is live is the caller's question — only the collaboration
+    /// broker knows.
+    pub fn notification_agent_candidate(
+        &self,
+        notification: &Notification,
+    ) -> Option<(WorkspaceId, crate::shell::state::RoomId, String)> {
+        let tree = self.tree();
+        let workspace = notification
+            .source_workspace
+            .and_then(|id| {
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id.0 == id)
+            })
+            .or_else(|| tree.desktop.active_workspace())?;
+        let (agent, _) = workspace.agent_members().into_iter().next()?;
+        Some((workspace.id, workspace.room, agent))
+    }
+
+    /// Hand a retained notification to an agent collaborator as a queued
+    /// workspace task carrying the notification as a typed resource. Returns
+    /// the task id, which the caller dispatches to the live agent.
+    pub fn hand_history_notification_to_agent(
+        &mut self,
+        id: u64,
+        workspace: WorkspaceId,
+        agent: &str,
+    ) -> Option<String> {
+        let notification = self.notification_history.iter().find(|n| n.id == id)?;
+        let summary = if notification.body.is_empty() {
+            notification.title.clone()
+        } else {
+            format!("{}: {}", notification.title, notification.body)
+        };
+        let title: String = summary.chars().take(240).collect();
+        let resource = crate::shell::state::WorkspaceTaskResource {
+            app_id: notification.app_id.clone(),
+            app_label: notification.app_name.clone(),
+            id: format!("notification:{}", uuid::Uuid::new_v4()),
+            kind: "notification".to_string(),
+            label: notification.title.clone(),
+        };
+        let room = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|candidate| candidate.room)?;
+        let actor = self.local_user_for_room(&room);
+        let task = self.tree_mut().create_workspace_task(
+            workspace,
+            title,
+            actor,
+            Some(agent.to_string()),
+            crate::shell::state::WorkspaceTaskRoute::Model,
+            Some(resource),
+        )?;
+        self.bump();
+        Some(task)
+    }
+
+    // ---------- Do-Not-Disturb ----------
+
+    /// The person's persisted Do Not Disturb switch
+    /// ([`NotificationPolicy::do_not_disturb`]). The palette action, the
+    /// Quick Settings tile and Personal Settings all edit this one value.
+    ///
+    /// [`NotificationPolicy::do_not_disturb`]: settings_store::notification_policy::NotificationPolicy::do_not_disturb
+    pub fn dnd(&self) -> bool {
+        self.notification_policy.do_not_disturb
+    }
+
+    /// No-op (no revision bump) when the value is unchanged. A live session
+    /// (one with a notification bridge, which also reloads the policy) persists
+    /// the change to the shared settings document; unit tests and offscreen
+    /// captures never write the developer's real settings.
     pub fn set_dnd(&mut self, on: bool) {
-        if self.dnd != on {
-            self.dnd = on;
+        if self.notification_policy.do_not_disturb == on {
+            return;
+        }
+        self.notification_policy.do_not_disturb = on;
+        self.quick_settings.do_not_disturb = on;
+        if self.notification_bridge.is_some()
+            && !cfg!(test)
+            && let Err(error) =
+                settings_store::notification_policy::NotificationPolicy::save_do_not_disturb(on)
+        {
+            tracing::warn!(%error, "could not persist Do Not Disturb");
+        }
+        self.bump();
+    }
+
+    pub fn toggle_dnd(&mut self) -> bool {
+        let on = !self.dnd();
+        self.set_dnd(on);
+        on
+    }
+
+    /// Mirror whether a wireless projection is live. No-op when unchanged.
+    pub fn set_presenting(&mut self, presenting: bool) {
+        if self.presenting != presenting {
+            self.presenting = presenting;
             self.bump();
         }
     }
 
-    pub fn toggle_dnd(&mut self) -> bool {
-        self.dnd = !self.dnd;
-        self.bump();
-        self.dnd
+    /// Notifications are withheld automatically while the screen is seen by
+    /// others: a live projection, or a surface shared with a collaborator.
+    pub fn notifications_auto_quiet(&self) -> bool {
+        self.presenting || !self.active_exposures.is_empty()
+    }
+
+    /// Whether fresh banners are held in history right now, for any reason
+    /// that does not depend on the sender (a focus schedule can be pierced
+    /// by priority apps, so it is applied per notification instead).
+    pub fn notifications_quiet(&self) -> bool {
+        self.dnd() || self.notifications_auto_quiet()
+    }
+
+    /// Whether the person's focus schedule is holding banners at this local
+    /// time.
+    pub fn focus_schedule_on(&self, local_minute: u16, weekday_from_monday: u8) -> bool {
+        self.notification_policy
+            .focus
+            .active_until(local_minute, weekday_from_monday)
+            .is_some()
+    }
+
+    /// Why banners are being held, for the status pill: Do Not Disturb, an
+    /// automatic hold while presenting or sharing, or the focus schedule and
+    /// when it ends. `None` when notifications show normally.
+    pub fn quiet_status(&self, local_minute: u16, weekday_from_monday: u8) -> Option<String> {
+        if self.dnd() {
+            return Some("Do Not Disturb".into());
+        }
+        if self.notifications_auto_quiet() {
+            return Some(if self.presenting {
+                "Do Not Disturb while presenting".into()
+            } else {
+                "Do Not Disturb while sharing".into()
+            });
+        }
+        self.notification_policy
+            .focus
+            .active_until(local_minute, weekday_from_monday)
+            .map(|end| format!("Focus until {:02}:{:02}", end / 60, end % 60))
     }
 
     // ---------- D-Bus notification wiring ----------
@@ -2017,11 +2524,31 @@ impl ChromeState {
 
     pub fn set_notification_runtime(
         &mut self,
-        sound: media::notification_sound::NotificationSoundPlayer,
+        sounds: crate::shell::system_sounds::SystemSounds,
         priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     ) {
-        self.notification_sound = Some(sound);
+        self.system_sounds = Some(sounds);
         self.priority_contacts = priority_contacts;
+    }
+
+    /// Play a system event sound, subject to the person's "System sounds"
+    /// choices, Do Not Disturb, focus time and presenting. A session without
+    /// a sound runtime (tests, renders) stays silent.
+    pub fn play_system_sound(
+        &self,
+        event: settings_store::system_sounds::SystemSoundEvent,
+    ) -> bool {
+        self.play_system_sound_allowed(event, true)
+    }
+
+    fn play_system_sound_allowed(
+        &self,
+        event: settings_store::system_sounds::SystemSoundEvent,
+        delivery_allows: bool,
+    ) -> bool {
+        self.system_sounds.as_ref().is_some_and(|sounds| {
+            sounds.play(event, self.notifications_auto_quiet(), delivery_allows)
+        })
     }
 
     /// Keep notification unit tests independent of the developer account's
@@ -2032,6 +2559,7 @@ impl ChromeState {
         &mut self,
         policy: settings_store::notification_policy::NotificationPolicy,
     ) {
+        self.quick_settings.do_not_disturb = policy.do_not_disturb;
         self.notification_policy = policy;
         self.notification_policy_checked = Some(std::time::Instant::now());
     }
@@ -2088,6 +2616,7 @@ impl ChromeState {
         if refresh_policy {
             let policy = settings_store::notification_policy::NotificationPolicy::load();
             if policy != self.notification_policy {
+                self.quick_settings.do_not_disturb = policy.do_not_disturb;
                 self.notification_policy = policy;
                 self.bump();
             }
@@ -2101,6 +2630,7 @@ impl ChromeState {
             let sharing = bridge.take_sharing(dbus_id);
             let urgency = inc.urgency;
             let badge_count = inc.badge_count;
+            let sound = inc.sound;
             let verified_priority_contact = verified_app_id.is_some()
                 && inc
                     .contact_endpoint
@@ -2153,11 +2683,15 @@ impl ChromeState {
                     self.notification_badges.insert(app_id, count.min(9_999));
                 }
             }
-            if effective.sounds {
-                let _ = self
-                    .notification_sound
-                    .as_ref()
-                    .map(media::notification_sound::NotificationSoundPlayer::play);
+            if let Some(event) = sound {
+                use settings_store::system_sounds::SystemSoundEvent;
+                // Notifications and messages carry the notification policy's
+                // per-app verdict; other events follow System sounds alone.
+                let allows = !matches!(
+                    event,
+                    SystemSoundEvent::Notification | SystemSoundEvent::Message
+                ) || effective.sounds;
+                let _ = self.play_system_sound_allowed(event, allows);
             }
             if effective.banners {
                 self.push_notification_full(notification);
@@ -2244,6 +2778,7 @@ impl ChromeState {
             let id = existing.id;
             *existing = replacement.clone();
             existing.id = id;
+            self.notification_history_dirty = true;
             self.bump();
             return true;
         }
@@ -2283,6 +2818,9 @@ impl ChromeState {
                 .as_ref()
                 .map_or(0, |pending| pending.notifications.len()),
         );
+        if after.1 != before.1 {
+            self.notification_history_dirty = true;
+        }
         if after != before {
             self.bump();
         }
@@ -2303,45 +2841,49 @@ mod panel_exclusion_tests {
     use super::*;
 
     #[test]
-    fn workspace_and_device_settings_never_stack() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let mut state = chrome.borrow_mut();
+    fn workspace_and_device_panels_are_exclusive_and_deep_links_reset_history() {
+        fn workspace_and_device_settings_never_stack() {
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+            let mut state = chrome.borrow_mut();
 
-        state.open_quick_settings();
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+            state.open_quick_settings();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
 
-        state.open_workspace_settings(WsTab::Members);
-        assert!(state.overlays.ws_settings);
-        assert!(!state.overlays.quick_settings);
-        assert_eq!(state.ws_settings_tab, WsTab::Members);
+            state.open_workspace_settings(WsTab::Members);
+            assert!(state.overlays.ws_settings);
+            assert!(!state.overlays.quick_settings);
+            assert_eq!(state.ws_settings_tab, WsTab::Members);
 
-        state.toggle_quick_settings();
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+            state.toggle_quick_settings();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
 
-        state.toggle_workspace_settings();
-        assert!(state.overlays.ws_settings);
-        assert!(!state.overlays.quick_settings);
-    }
+            state.toggle_workspace_settings();
+            assert!(state.overlays.ws_settings);
+            assert!(!state.overlays.quick_settings);
+        }
 
-    #[test]
-    fn quick_settings_deep_link_replaces_stale_navigation_history() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let mut state = chrome.borrow_mut();
-        state.quick_settings.push_level(QsLevel::Wifi);
-        state
-            .quick_settings
-            .push_level(QsLevel::WifiDetails("Cafe".into()));
+        fn quick_settings_deep_link_replaces_stale_navigation_history() {
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.push_level(QsLevel::Wifi);
+            state
+                .quick_settings
+                .push_level(QsLevel::WifiDetails("Cafe".into()));
 
-        state.open_quick_settings_level(QsLevel::Devices);
+            state.open_quick_settings_level(QsLevel::Devices);
 
-        assert_eq!(
-            state.quick_settings.nav_stack,
-            vec![QsLevel::Root, QsLevel::Devices]
-        );
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+            assert_eq!(
+                state.quick_settings.nav_stack,
+                vec![QsLevel::Root, QsLevel::Devices]
+            );
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
+        }
+
+        workspace_and_device_settings_never_stack();
+        quick_settings_deep_link_replaces_stale_navigation_history();
     }
 }
 
@@ -2369,56 +2911,64 @@ mod notification_history_clear_tests {
     use crate::shell::notification::Notification;
 
     #[test]
-    fn clear_undo_restores_exact_order_before_new_arrivals() {
-        let chrome = ChromeState::new(WorkspaceTree::default());
-        let now = std::time::Instant::now();
-        let mut state = chrome.borrow_mut();
-        state.record_history(Notification::new("first", "one"));
-        state.record_history(Notification::new("second", "two"));
-        state.clear_notification_history_at(now);
-        state.record_history(Notification::new("new", "three"));
+    fn notification_history_clear_is_one_recoverable_expiring_snapshot() {
+        fn clear_undo_restores_exact_order_before_new_arrivals() {
+            let chrome = ChromeState::new(WorkspaceTree::default());
+            let now = std::time::Instant::now();
+            let mut state = chrome.borrow_mut();
+            state.record_history(Notification::new("first", "one"));
+            state.record_history(Notification::new("second", "two"));
+            state.clear_notification_history_at(now);
+            state.record_history(Notification::new("new", "three"));
 
-        assert!(state.undo_notification_history_clear());
-        let titles: Vec<_> = state
-            .notification_history()
-            .iter()
-            .map(|notification| notification.title.as_str())
-            .collect();
-        assert_eq!(titles, ["first", "second", "new"]);
-        assert!(!state.undo_notification_history_clear());
-    }
+            assert!(state.undo_notification_history_clear());
+            let titles: Vec<_> = state
+                .notification_history()
+                .iter()
+                .map(|notification| notification.title.as_str())
+                .collect();
+            assert_eq!(titles, ["first", "second", "new"]);
+            assert!(!state.undo_notification_history_clear());
+        }
 
-    #[test]
-    fn clear_snapshot_expires_at_eight_seconds() {
-        let chrome = ChromeState::new(WorkspaceTree::default());
-        let now = std::time::Instant::now();
-        let mut state = chrome.borrow_mut();
-        state.record_history(Notification::new("one", "body"));
-        state.clear_notification_history_at(now);
+        fn clear_snapshot_expires_at_eight_seconds() {
+            let chrome = ChromeState::new(WorkspaceTree::default());
+            let now = std::time::Instant::now();
+            let mut state = chrome.borrow_mut();
+            state.record_history(Notification::new("one", "body"));
+            state.clear_notification_history_at(now);
 
-        assert!(!state.expire_notification_history_clear(now + std::time::Duration::from_secs(7)));
-        assert!(state.can_undo_notification_history_clear());
-        assert!(state.expire_notification_history_clear(now + std::time::Duration::from_secs(8)));
-        assert!(!state.can_undo_notification_history_clear());
-        assert!(!state.undo_notification_history_clear());
-    }
+            assert!(
+                !state.expire_notification_history_clear(now + std::time::Duration::from_secs(7))
+            );
+            assert!(state.can_undo_notification_history_clear());
+            assert!(
+                state.expire_notification_history_clear(now + std::time::Duration::from_secs(8))
+            );
+            assert!(!state.can_undo_notification_history_clear());
+            assert!(!state.undo_notification_history_clear());
+        }
 
-    #[test]
-    fn second_clear_extends_one_recoverable_snapshot() {
-        let chrome = ChromeState::new(WorkspaceTree::default());
-        let now = std::time::Instant::now();
-        let mut state = chrome.borrow_mut();
-        state.record_history(Notification::new("before", "body"));
-        state.clear_notification_history_at(now);
-        state.record_history(Notification::new("during", "body"));
-        state.clear_notification_history_at(now + std::time::Duration::from_secs(4));
-        assert!(state.undo_notification_history_clear());
-        let titles: Vec<_> = state
-            .notification_history()
-            .iter()
-            .map(|notification| notification.title.as_str())
-            .collect();
-        assert_eq!(titles, ["before", "during"]);
+        fn second_clear_extends_one_recoverable_snapshot() {
+            let chrome = ChromeState::new(WorkspaceTree::default());
+            let now = std::time::Instant::now();
+            let mut state = chrome.borrow_mut();
+            state.record_history(Notification::new("before", "body"));
+            state.clear_notification_history_at(now);
+            state.record_history(Notification::new("during", "body"));
+            state.clear_notification_history_at(now + std::time::Duration::from_secs(4));
+            assert!(state.undo_notification_history_clear());
+            let titles: Vec<_> = state
+                .notification_history()
+                .iter()
+                .map(|notification| notification.title.as_str())
+                .collect();
+            assert_eq!(titles, ["before", "during"]);
+        }
+
+        clear_undo_restores_exact_order_before_new_arrivals();
+        clear_snapshot_expires_at_eight_seconds();
+        second_clear_extends_one_recoverable_snapshot();
     }
 }
 
@@ -2487,149 +3037,231 @@ mod active_tab_tests {
     }
 
     #[test]
-    fn active_app_title_follows_group_active_tab() {
-        let handle = Arc::new(RwLock::new(tree_with(200)));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_app_title().as_deref(), Some("Second"));
-    }
-
-    #[test]
-    fn active_tab_id_matches_the_active_tab_pointer() {
-        let handle = Arc::new(RwLock::new(tree_with(100)));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), Some(100));
-    }
-
-    #[test]
-    fn focus_tab_and_strip_focus_survive_restart() {
-        let dir = tempfile::tempdir().expect("state dir");
-        let path = dir.path().join("workspace.json");
-        let mut tree = tree_with(100);
-        let workspace = tree.desktop.active;
-        let first_strip = tree.desktop.workspaces[0].strips[0].id;
-        let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let second_strip = StripId::new();
-        let second_group = 81;
-        tree.desktop.workspaces[0].strips.push(Strip {
-            id: second_strip,
-            name: "Other".into(),
-            window_groups: vec![StateGroup {
-                id: second_group,
-                tabs: vec![Tab {
-                    id: 300,
-                    title: "Third".into(),
-                    tile: TileContent::Stub {
-                        kind: AppKind::Other("Notes".into()),
-                        label: "third".into(),
-                    },
-                }],
-                active_tab: 300,
-                width: StateWidth::Normal,
-                maximized: false,
-            }],
-        });
-        tree.persist_path = Some(path.clone());
-        tree.flush_to_disk();
-        let chrome = ChromeState::new(tree);
-
-        chrome
-            .borrow_mut()
-            .focus_tab(workspace, first_strip, first_group, 200);
-        let restarted = crate::shell::persist::load_tree_from(&path).expect("focus state");
-        assert_eq!(
-            restarted.desktop.active_group_for(first_strip),
-            Some(first_group)
-        );
-        assert_eq!(
-            restarted.desktop.workspaces[0].strips[0].window_groups[0].active_tab,
-            200
-        );
-
-        assert!(chrome.borrow_mut().focus_strip_index(1));
-        let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
-        assert_eq!(
-            restarted.desktop.active_strip.get(&workspace),
-            Some(&second_strip)
-        );
-    }
-
-    #[test]
-    fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
-        let dir = tempfile::tempdir().expect("state dir");
-        let path = dir.path().join("workspace.json");
-        let mut tree = tree_with(100);
-        let room = tree.desktop.workspaces[0].room;
-        tree.persist_path = Some(path.clone());
-        tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
-        tree.flush_to_disk();
-
-        // Establish a real shared-room lineage before the rename. Merely
-        // assigning the same RoomId to two independently-seeded documents
-        // creates concurrent `name` values; that is not how a peer joins and
-        // cannot prove which later edit should win.
-        let mut replica = tree_with(100);
-        let replica_workspace = replica.desktop.active;
-        assert!(replica.set_room(replica_workspace, room));
-        let baseline = tree
-            .export_room_changes_since(room, &[])
-            .expect("host room baseline");
-        replica
-            .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
-            .expect("guest joins host room");
-        assert_eq!(replica.desktop.active_workspace().unwrap().name, "Home");
-        let replica_heads = replica.room_heads(room);
-
-        let chrome = ChromeState::new_with_fixture_handle(
-            tree.shared(),
-            crate::shell::hosted_inputs::HostedTileInputs::fixture()
-                .expect("hosted fixture inputs"),
-        );
-        {
-            let mut state = chrome.borrow_mut();
-            assert!(state.can_rename_active_workspace());
-            state.editing_workspace_name = Some("  Project Aurora  ".into());
-            state.commit_workspace_name();
+    fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
+        fn active_app_title_follows_group_active_tab() {
+            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
-        let restarted = crate::shell::persist::load_tree_from(&path).expect("renamed state");
-        assert_eq!(
-            restarted.desktop.active_workspace().unwrap().name,
-            "Project Aurora"
-        );
-        let changes = chrome
-            .borrow()
-            .tree_mut()
-            .export_room_changes_since(room, &replica_heads)
-            .expect("room rename delta");
-        assert!(
-            !changes.is_empty(),
-            "the rename must enter the room document"
-        );
-        replica
-            .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
-            .expect("room merge");
-        assert_eq!(replica.desktop.workspaces[0].name, "Project Aurora");
+        fn active_tab_id_matches_the_active_tab_pointer() {
+            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_tab_id(), Some(100));
+        }
+
+        fn no_active_returns_none_instead_of_first_group() {
+            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_tab_id(), None);
+            assert!(st.active_app_title().is_none());
+        }
+
+        fn without_active_strip_returns_none_not_first_strip() {
+            let mut tree = tree_with(100);
+            tree.desktop.active_strip.clear();
+            let handle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_tab_id(), None);
+        }
+
+        fn switching_strips_moves_focus_and_clamps_at_the_ends() {
+            let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let mut st = cell.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                let base = ws.strips.len();
+                for n in 0..3u64 {
+                    let id = StripId(9000 + n);
+                    ws.strips.push(Strip::new(id, format!("Extra {n}")));
+                }
+                drop(tree);
+                assert!(base + 3 >= 4, "fixture needs at least four strips");
+            }
+            st.bump();
+
+            let (count, focused) = st.strip_focus();
+            assert!(
+                count >= 4,
+                "fixture should hold at least four strips, saw {count}"
+            );
+            assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
+
+            assert!(
+                st.switch_strip(1),
+                "moving down a strip should change focus"
+            );
+            assert_eq!(st.strip_focus().1, 1);
+
+            assert!(st.switch_strip(1));
+            assert_eq!(st.strip_focus().1, 2);
+
+            assert!(st.switch_strip(-1));
+            assert_eq!(st.strip_focus().1, 1);
+
+            // Clamps rather than wrapping, matching workspace switching.
+            while st.switch_strip(-1) {}
+            assert_eq!(st.strip_focus().1, 0);
+            assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
+
+            while st.switch_strip(1) {}
+            assert_eq!(st.strip_focus().1, count - 1);
+            assert!(!st.switch_strip(1), "focus wrapped past the last strip");
+        }
+
+        fn focusing_a_strip_by_index_selects_that_strip() {
+            let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let mut st = cell.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                for n in 0..3u64 {
+                    ws.strips
+                        .push(Strip::new(StripId(9100 + n), format!("S{n}")));
+                }
+                drop(tree);
+            }
+            let (count, _) = st.strip_focus();
+            for i in 0..count {
+                st.focus_strip_index(i);
+                assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
+            }
+            // Out of range is a no-op, not a panic and not a silent clamp.
+            let before = st.strip_focus().1;
+            assert!(!st.focus_strip_index(count + 5));
+            assert_eq!(st.strip_focus().1, before);
+        }
+
+        active_app_title_follows_group_active_tab();
+        active_tab_id_matches_the_active_tab_pointer();
+        no_active_returns_none_instead_of_first_group();
+        without_active_strip_returns_none_not_first_strip();
+        switching_strips_moves_focus_and_clamps_at_the_ends();
+        focusing_a_strip_by_index_selects_that_strip();
     }
 
     #[test]
-    fn no_active_returns_none_instead_of_first_group() {
-        let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), None);
-        assert!(st.active_app_title().is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn focus_and_workspace_names_survive_restart_and_replicate() {
+        fn focus_tab_and_strip_focus_survive_restart() {
+            let dir = tempfile::tempdir().expect("state dir");
+            let path = dir.path().join("workspace.json");
+            let mut tree = tree_with(100);
+            let workspace = tree.desktop.active;
+            let first_strip = tree.desktop.workspaces[0].strips[0].id;
+            let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+            let second_strip = StripId::new();
+            let second_group = 81;
+            tree.desktop.workspaces[0].strips.push(Strip {
+                id: second_strip,
+                name: "Other".into(),
+                window_groups: vec![StateGroup {
+                    id: second_group,
+                    tabs: vec![Tab {
+                        id: 300,
+                        title: "Third".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".into()),
+                            label: "third".into(),
+                        },
+                    }],
+                    active_tab: 300,
+                    width: StateWidth::Normal,
+                    maximized: false,
+                }],
+            });
+            tree.persist_path = Some(path.clone());
+            tree.flush_to_disk();
+            let chrome = ChromeState::new(tree);
 
-    #[test]
-    fn without_active_strip_returns_none_not_first_strip() {
-        let mut tree = tree_with(100);
-        tree.desktop.active_strip.clear();
-        let handle = Arc::new(RwLock::new(tree));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), None);
+            chrome
+                .borrow_mut()
+                .focus_tab(workspace, first_strip, first_group, 200);
+            let restarted = crate::shell::persist::load_tree_from(&path).expect("focus state");
+            assert_eq!(
+                restarted.desktop.active_group_for(first_strip),
+                Some(first_group)
+            );
+            assert_eq!(
+                restarted.desktop.workspaces[0].strips[0].window_groups[0].active_tab,
+                200
+            );
+
+            assert!(chrome.borrow_mut().focus_strip_index(1));
+            let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
+            assert_eq!(
+                restarted.desktop.active_strip.get(&workspace),
+                Some(&second_strip)
+            );
+        }
+
+        fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
+            let dir = tempfile::tempdir().expect("state dir");
+            let path = dir.path().join("workspace.json");
+            let mut tree = tree_with(100);
+            let room = tree.desktop.workspaces[0].room;
+            tree.persist_path = Some(path.clone());
+            tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+            tree.flush_to_disk();
+
+            // Establish a real shared-room lineage before the rename. Merely
+            // assigning the same RoomId to two independently-seeded documents
+            // creates concurrent `name` values; that is not how a peer joins and
+            // cannot prove which later edit should win.
+            let mut replica = tree_with(100);
+            let replica_workspace = replica.desktop.active;
+            assert!(replica.set_room(replica_workspace, room));
+            let baseline = tree
+                .export_room_changes_since(room, &[])
+                .expect("host room baseline");
+            replica
+                .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
+                .expect("guest joins host room");
+            assert_eq!(replica.desktop.active_workspace().unwrap().name, "Home");
+            let replica_heads = replica.room_heads(room);
+
+            let chrome = ChromeState::new_with_fixture_handle(
+                tree.shared(),
+                crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                    .expect("hosted fixture inputs"),
+            );
+            {
+                let mut state = chrome.borrow_mut();
+                assert!(state.can_rename_active_workspace());
+                state.editing_workspace_name = Some("  Project Aurora  ".into());
+                state.commit_workspace_name();
+            }
+
+            let restarted = crate::shell::persist::load_tree_from(&path).expect("renamed state");
+            assert_eq!(
+                restarted.desktop.active_workspace().unwrap().name,
+                "Project Aurora"
+            );
+            let changes = chrome
+                .borrow()
+                .tree_mut()
+                .export_room_changes_since(room, &replica_heads)
+                .expect("room rename delta");
+            assert!(
+                !changes.is_empty(),
+                "the rename must enter the room document"
+            );
+            replica
+                .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
+                .expect("room merge");
+            assert_eq!(replica.desktop.workspaces[0].name, "Project Aurora");
+        }
+
+        focus_tab_and_strip_focus_survive_restart();
+        committed_workspace_name_survives_restart_and_replicates_to_a_room_peer();
     }
 
     /// A tree with one strip/group holding `tile`, plus the ids to
@@ -2674,226 +3306,169 @@ mod active_tab_tests {
     }
 
     #[test]
-    fn history_file_drop_creates_only_the_new_tabs_record() {
-        let (tree, strip, group, existing) = tree_with_single_tab(TileContent::AppPlaceholder {
-            kind: AppKind::Other("Notes".into()),
-            label: "Existing".into(),
-        });
-        let chrome = ChromeState::new(tree);
-        let mut state = chrome.borrow_mut();
-        let first = state
-            .handle_file_drop(std::path::Path::new("/missing/example.txt"))
-            .unwrap();
-        let second = state
-            .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
-            .unwrap();
-        for id in [first, second] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn dropped_files_create_only_new_records_and_grant_the_real_app_id() {
+        fn history_file_drop_creates_only_the_new_tabs_record() {
+            let (tree, strip, group, existing) =
+                tree_with_single_tab(TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Notes".into()),
+                    label: "Existing".into(),
+                });
+            let chrome = ChromeState::new(tree);
+            let mut state = chrome.borrow_mut();
+            let first = state
+                .handle_file_drop(std::path::Path::new("/missing/example.txt"))
+                .unwrap();
+            let second = state
+                .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
+                .unwrap();
+            for id in [first, second] {
+                assert!(
+                    state
+                        .records()
+                        .read(&ui::RecordId::for_tab(id), |_| ())
+                        .is_some(),
+                    "a successful drop owns its newly minted scratch record"
+                );
+            }
             assert!(
                 state
                     .records()
-                    .read(&ui::RecordId::for_tab(id), |_| ())
-                    .is_some(),
-                "a successful drop owns its newly minted scratch record"
+                    .read(&ui::RecordId::for_tab(existing), |_| ())
+                    .is_none(),
+                "a drop never authorizes repairing a missing persisted sibling"
             );
         }
-        assert!(
-            state
-                .records()
-                .read(&ui::RecordId::for_tab(existing), |_| ())
-                .is_none(),
-            "a drop never authorizes repairing a missing persisted sibling"
-        );
-    }
 
-    /// Gap-2 proof: when the drop target is a real adopted Wayland client,
-    /// the recorded grant is keyed by that client's actual
-    /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
-    #[test]
-    fn dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id() {
-        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
-            app_id: "org.gimp.GIMP".into(),
-            surface_id: 77,
-        });
-        let ws_id = tree.desktop.active;
-        let handle = Arc::new(RwLock::new(tree));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-
-        let path = std::path::Path::new("/drop/photo.xcf");
-        st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
-
-        let guard = st.tree();
-        let ws = guard
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws_id)
-            .unwrap();
-        let grants = ws.app_grants_snapshot();
-        drop(guard);
-        let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
-            panic!(
-                "grant must be keyed by the foreign client's real app-id; \
-                 grants = {grants:?}"
-            )
-        });
-        assert!(
-            caps.iter().any(|c| matches!(
-                c,
-                Capability::Filesystem { path: p, .. } if p == path
-            )),
-            "the dropped path must be recorded as a Filesystem grant: {caps:?}"
-        );
-        assert!(
-            !grants.contains_key("Foreign"),
-            "grant must not be keyed by a display label: {grants:?}"
-        );
-    }
-
-    /// A built-in app (no `set_app_id`) is keyed by its canonical
-    /// reverse-DNS app-id, not the display label.
-    #[test]
-    fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
-        let (tree, strip_id, group_id, tab_id) =
-            tree_with_single_tab(TileContent::AppPlaceholder {
-                kind: AppKind::Other("Editor".into()),
-                label: "notes.ts".into(),
+        /// Gap-2 proof: when the drop target is a real adopted Wayland client,
+        /// the recorded grant is keyed by that client's actual
+        /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
+        fn dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id() {
+            let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 77,
             });
-        let ws_id = tree.desktop.active;
-        let handle = Arc::new(RwLock::new(tree));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
+            let ws_id = tree.desktop.active;
+            let handle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
 
-        let path = std::path::Path::new("/drop/notes.ts");
-        st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
+            let path = std::path::Path::new("/drop/photo.xcf");
+            st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
 
-        let guard = st.tree();
-        let ws = guard
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws_id)
-            .unwrap();
-        let grants = ws.app_grants_snapshot();
-        drop(guard);
-        assert!(
-            grants.contains_key("org.tilo.Editor"),
-            "built-in Editor must be keyed by its canonical app-id; \
-             grants = {grants:?}"
-        );
-        assert!(
-            !grants.contains_key("Editor"),
-            "the display label 'Editor' must no longer be a grant key: {grants:?}"
-        );
-    }
-
-    #[test]
-    fn switching_strips_moves_focus_and_clamps_at_the_ends() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
-            let base = ws.strips.len();
-            for n in 0..3u64 {
-                let id = StripId(9000 + n);
-                ws.strips.push(Strip::new(id, format!("Extra {n}")));
-            }
-            drop(tree);
-            assert!(base + 3 >= 4, "fixture needs at least four strips");
+            let guard = st.tree();
+            let ws = guard
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .unwrap();
+            let grants = ws.app_grants_snapshot();
+            drop(guard);
+            let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
+                panic!(
+                    "grant must be keyed by the foreign client's real app-id; \
+                     grants = {grants:?}"
+                )
+            });
+            assert!(
+                caps.iter().any(|c| matches!(
+                    c,
+                    Capability::Filesystem { path: p, .. } if p == path
+                )),
+                "the dropped path must be recorded as a Filesystem grant: {caps:?}"
+            );
+            assert!(
+                !grants.contains_key("Foreign"),
+                "grant must not be keyed by a display label: {grants:?}"
+            );
         }
-        st.bump();
 
-        let (count, focused) = st.strip_focus();
-        assert!(
-            count >= 4,
-            "fixture should hold at least four strips, saw {count}"
-        );
-        assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
+        /// A built-in app (no `set_app_id`) is keyed by its canonical
+        /// reverse-DNS app-id, not the display label.
+        fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
+            let (tree, strip_id, group_id, tab_id) =
+                tree_with_single_tab(TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Editor".into()),
+                    label: "notes.ts".into(),
+                });
+            let ws_id = tree.desktop.active;
+            let handle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
 
-        assert!(
-            st.switch_strip(1),
-            "moving down a strip should change focus"
-        );
-        assert_eq!(st.strip_focus().1, 1);
+            let path = std::path::Path::new("/drop/notes.ts");
+            st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
 
-        assert!(st.switch_strip(1));
-        assert_eq!(st.strip_focus().1, 2);
-
-        assert!(st.switch_strip(-1));
-        assert_eq!(st.strip_focus().1, 1);
-
-        // Clamps rather than wrapping, matching workspace switching.
-        while st.switch_strip(-1) {}
-        assert_eq!(st.strip_focus().1, 0);
-        assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
-
-        while st.switch_strip(1) {}
-        assert_eq!(st.strip_focus().1, count - 1);
-        assert!(!st.switch_strip(1), "focus wrapped past the last strip");
-    }
-
-    #[test]
-    fn focusing_a_strip_by_index_selects_that_strip() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
-            for n in 0..3u64 {
-                ws.strips
-                    .push(Strip::new(StripId(9100 + n), format!("S{n}")));
-            }
-            drop(tree);
+            let guard = st.tree();
+            let ws = guard
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .unwrap();
+            let grants = ws.app_grants_snapshot();
+            drop(guard);
+            assert!(
+                grants.contains_key("org.tilo.Editor"),
+                "built-in Editor must be keyed by its canonical app-id; \
+                 grants = {grants:?}"
+            );
+            assert!(
+                !grants.contains_key("Editor"),
+                "the display label 'Editor' must no longer be a grant key: {grants:?}"
+            );
         }
-        let (count, _) = st.strip_focus();
-        for i in 0..count {
-            st.focus_strip_index(i);
-            assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
+
+        history_file_drop_creates_only_the_new_tabs_record();
+        dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id();
+        dropped_file_grant_keyed_by_builtin_canonical_app_id();
+    }
+
+    #[test]
+    fn chrome_invalidation_and_exposure_snapshots_are_edge_triggered() {
+        fn broker_tree_epoch_invalidates_chrome_exactly_once() {
+            let cell = ChromeState::new(WorkspaceTree::default());
+            let mut state = cell.borrow_mut();
+            let initial = state.revision;
+            assert!(!state.sync_external_tree_revision());
+            state.tree_mut().desktop.external_revision = 1;
+            assert!(state.sync_external_tree_revision());
+            assert_eq!(state.revision, initial.wrapping_add(1));
+            assert!(!state.sync_external_tree_revision());
+            assert_eq!(state.revision, initial.wrapping_add(1));
         }
-        // Out of range is a no-op, not a panic and not a silent clamp.
-        let before = st.strip_focus().1;
-        assert!(!st.focus_strip_index(count + 5));
-        assert_eq!(st.strip_focus().1, before);
-    }
 
-    #[test]
-    fn broker_tree_epoch_invalidates_chrome_exactly_once() {
-        let cell = ChromeState::new(WorkspaceTree::default());
-        let mut state = cell.borrow_mut();
-        let initial = state.revision;
-        assert!(!state.sync_external_tree_revision());
-        state.tree_mut().desktop.external_revision = 1;
-        assert!(state.sync_external_tree_revision());
-        assert_eq!(state.revision, initial.wrapping_add(1));
-        assert!(!state.sync_external_tree_revision());
-        assert_eq!(state.revision, initial.wrapping_add(1));
-    }
+        fn active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered() {
+            let cell = ChromeState::new(WorkspaceTree::default());
+            let mut state = cell.borrow_mut();
+            let initial = state.revision;
+            let a = ActiveExposure {
+                peer: 9,
+                surface: 42,
+                can_control: true,
+            };
+            let b = ActiveExposure {
+                peer: 3,
+                surface: 77,
+                can_control: false,
+            };
+            state.set_active_exposures(vec![a, b, a]);
+            assert_eq!(state.active_exposures(), &[b, a]);
+            assert_eq!(state.revision, initial.wrapping_add(1));
 
-    #[test]
-    fn active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered() {
-        let cell = ChromeState::new(WorkspaceTree::default());
-        let mut state = cell.borrow_mut();
-        let initial = state.revision;
-        let a = ActiveExposure {
-            peer: 9,
-            surface: 42,
-            can_control: true,
-        };
-        let b = ActiveExposure {
-            peer: 3,
-            surface: 77,
-            can_control: false,
-        };
-        state.set_active_exposures(vec![a, b, a]);
-        assert_eq!(state.active_exposures(), &[b, a]);
-        assert_eq!(state.revision, initial.wrapping_add(1));
+            state.set_active_exposures(vec![a, b]);
+            assert_eq!(
+                state.revision,
+                initial.wrapping_add(1),
+                "an unchanged authority snapshot must not force a frame"
+            );
+        }
 
-        state.set_active_exposures(vec![a, b]);
-        assert_eq!(
-            state.revision,
-            initial.wrapping_add(1),
-            "an unchanged authority snapshot must not force a frame"
-        );
+        broker_tree_epoch_invalidates_chrome_exactly_once();
+        active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered();
     }
 }

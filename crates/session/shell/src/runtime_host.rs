@@ -1,4 +1,4 @@
-//! Compositor-free host of the same services used by the qOS desktop.
+//! Compositor-free host of the same services used by the Tilo desktop.
 //!
 //! This module contains lifecycle wiring only. Policy and RPC remain in the
 //! existing brokers. Keeping it in this library initially avoids copying the
@@ -24,7 +24,7 @@ pub mod mcp_process;
 mod unix;
 
 /// A single-user service session. Drop applications before dropping the session.
-/// Identity discovery uses the same environment as qOS; configure it before
+/// Identity discovery uses the same environment as Tilo; configure it before
 /// starting any threads when using an isolated profile.
 pub struct Session {
     pub broker: BrokerHandle,
@@ -91,8 +91,11 @@ impl Session {
         persist::save_tree_to(&tree, &path)?;
         let tree = tree.shared();
         let identity_socket = root.join("identity.sock");
-        let identity = identity_broker::spawn(identity_socket.clone(), tree.clone())?;
+        let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
+        let identity =
+            identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
         let broker = collab_broker::spawn_native(root.join("collab.sock"), &None, tree.clone())?;
+        channel_keys.set(broker.channel_encryption());
         let blob_socket = root.join("blobs.sock");
         let media = MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
@@ -134,7 +137,7 @@ impl Session {
     }
 
     /// Launch a trusted native app through the existing SDK descriptor contract.
-    /// This is a development host, not a replacement for qOS package sandboxing.
+    /// This is a development host, not a replacement for Tilo package sandboxing.
     /// # Errors
     /// Returns handshake, descriptor or process-spawn errors.
     pub fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
@@ -163,7 +166,7 @@ impl MediaHost {
     fn start(content: &Path, socket: &Path) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
-            .thread_name("qos-media")
+            .thread_name("tilo-media")
             .enable_all()
             .build()?;
         let store = std::sync::Arc::new(
@@ -194,13 +197,9 @@ impl Drop for MediaHost {
         };
         let store = std::sync::Arc::clone(&self.store);
         let _ = std::thread::spawn(move || {
-            let _ = runtime.block_on(store.store().shutdown());
+            let _ = runtime.block_on(store.shutdown());
             runtime.shutdown_background();
         })
         .join();
     }
 }
-
-#[cfg(test)]
-#[path = "runtime_host/daemon_process_tests.rs"]
-mod daemon_process_tests;

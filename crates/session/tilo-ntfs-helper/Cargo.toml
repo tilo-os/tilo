@@ -1,0 +1,31 @@
+[package]
+autotests = false
+name = "tilo-ntfs-helper"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[dependencies]
+tilo-ntfs-protocol = { path = "../tilo-ntfs-protocol" }
+libc.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+hex.workspace = true
+sha2.workspace = true
+wire-frame = { path = "../../system/wire-frame" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "tilo-ntfs-probe"
+path = "src/main.rs"
+
+[[bin]]
+name = "tilo-ntfs-image-test"
+path = "src/bin/image_test.rs"

@@ -374,116 +374,132 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
-    fn rejects_input_and_both_output_stream_overflows() {
-        assert!(matches!(
-            run(
-                "true",
-                &[],
-                Some(&vec![0; MAX_INPUT_BYTES + 1]),
-                16,
-                Duration::from_secs(1)
-            ),
-            Err(Error::InputTooLarge)
-        ));
-        for (script, stream) in [
-            ("#!/bin/sh\nhead -c 8192 /dev/zero\n", "stdout"),
-            ("#!/bin/sh\nhead -c 8192 /dev/zero >&2\n", "stderr"),
-        ] {
+    fn input_and_output_limits_are_enforced_independently() {
+        // Phase `rejects_input_and_both_output_stream_overflows`.
+        {
+            assert!(matches!(
+                run(
+                    "true",
+                    &[],
+                    Some(&vec![0; MAX_INPUT_BYTES + 1]),
+                    16,
+                    Duration::from_secs(1)
+                ),
+                Err(Error::InputTooLarge)
+            ));
+            for (script, stream) in [
+                ("#!/bin/sh\nhead -c 8192 /dev/zero\n", "stdout"),
+                ("#!/bin/sh\nhead -c 8192 /dev/zero >&2\n", "stderr"),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let helper = directory.path().join("helper");
+                fs::write(&helper, script).unwrap();
+                fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+                let error = run(
+                    helper.to_str().unwrap(),
+                    &[],
+                    None,
+                    4096,
+                    Duration::from_secs(1),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
+                );
+            }
+        }
+        // Phase `enforces_independent_output_limits`.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
+            let error = run_prepared_with_limits(command, None, 64, 32, Duration::from_secs(1))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::OutputTooLarge {
+                    stream: "stderr",
+                    limit: 32
+                }
+            ));
+        }
+        // Phase `explicit_input_limit_supports_bounded_bulk_payloads`.
+        {
+            let bytes = vec![0x5a; MAX_INPUT_BYTES + 1];
+            let output = run_prepared_with_input_limit(
+                Command::new("cat"),
+                Some(&bytes),
+                bytes.len(),
+                bytes.len(),
+                64,
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, bytes);
+
+            assert!(matches!(
+                run_prepared_with_input_limit(
+                    Command::new("cat"),
+                    Some(&bytes),
+                    bytes.len() - 1,
+                    bytes.len(),
+                    64,
+                    Duration::from_secs(1),
+                ),
+                Err(Error::InputTooLarge)
+            ));
+        }
+    }
+
+    #[test]
+    fn timeouts_and_dropped_handles_terminate_children_promptly() {
+        // Phase `timeout_kills_descendants_which_inherit_output_pipes`.
+        {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
-            fs::write(&helper, script).unwrap();
+            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
             fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
             let error = run(
                 helper.to_str().unwrap(),
                 &[],
                 None,
                 4096,
-                Duration::from_secs(1),
+                Duration::from_millis(25),
             )
             .unwrap_err();
-            assert!(matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream));
+            assert!(matches!(error, Error::Timeout(_)));
+            assert!(started.elapsed() < Duration::from_secs(1));
         }
-    }
+        // Phase `timeout_interrupts_a_child_which_does_not_read_input`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let helper = directory.path().join("helper");
+            fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
+            let error = run(
+                helper.to_str().unwrap(),
+                &[],
+                Some(&vec![0; MAX_INPUT_BYTES]),
+                4096,
+                Duration::from_millis(25),
+            )
+            .unwrap_err();
+            assert!(matches!(error, Error::Timeout(_)));
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+        // Phase `asynchronous_handle_is_nonblocking_and_drop_cancels_promptly`.
+        {
+            let mut command = Command::new("sh");
+            command.args(["-c", "printf ready; sleep 5"]);
+            let mut child = spawn_prepared(command, None, 64, Duration::from_secs(30)).unwrap();
+            assert!(child.try_wait().is_none());
 
-    #[test]
-    fn enforces_independent_output_limits() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
-        let error =
-            run_prepared_with_limits(command, None, 64, 32, Duration::from_secs(1)).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::OutputTooLarge {
-                stream: "stderr",
-                limit: 32
-            }
-        ));
-    }
-
-    #[test]
-    fn explicit_input_limit_supports_bounded_bulk_payloads() {
-        let bytes = vec![0x5a; MAX_INPUT_BYTES + 1];
-        let output = run_prepared_with_input_limit(
-            Command::new("cat"),
-            Some(&bytes),
-            bytes.len(),
-            bytes.len(),
-            64,
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        assert!(output.status.success());
-        assert_eq!(output.stdout, bytes);
-
-        assert!(matches!(
-            run_prepared_with_input_limit(
-                Command::new("cat"),
-                Some(&bytes),
-                bytes.len() - 1,
-                bytes.len(),
-                64,
-                Duration::from_secs(1),
-            ),
-            Err(Error::InputTooLarge)
-        ));
-    }
-
-    #[test]
-    fn timeout_kills_descendants_which_inherit_output_pipes() {
-        let directory = tempfile::tempdir().unwrap();
-        let helper = directory.path().join("helper");
-        fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-        let started = Instant::now();
-        let error = run(
-            helper.to_str().unwrap(),
-            &[],
-            None,
-            4096,
-            Duration::from_millis(25),
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::Timeout(_)));
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn timeout_interrupts_a_child_which_does_not_read_input() {
-        let directory = tempfile::tempdir().unwrap();
-        let helper = directory.path().join("helper");
-        fs::write(&helper, "#!/bin/sh\nsleep 5\n").unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-        let started = Instant::now();
-        let error = run(
-            helper.to_str().unwrap(),
-            &[],
-            Some(&vec![0; MAX_INPUT_BYTES]),
-            4096,
-            Duration::from_millis(25),
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::Timeout(_)));
-        assert!(started.elapsed() < Duration::from_secs(1));
+            let started = Instant::now();
+            drop(child);
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
     }
 
     #[test]
@@ -501,17 +517,5 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"isolated");
         assert_eq!(std::env::var_os("TILO_BOUNDED_COMMAND_TEST"), parent_value);
-    }
-
-    #[test]
-    fn asynchronous_handle_is_nonblocking_and_drop_cancels_promptly() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "printf ready; sleep 5"]);
-        let mut child = spawn_prepared(command, None, 64, Duration::from_secs(30)).unwrap();
-        assert!(child.try_wait().is_none());
-
-        let started = Instant::now();
-        drop(child);
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

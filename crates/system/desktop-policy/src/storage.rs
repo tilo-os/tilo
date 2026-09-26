@@ -436,72 +436,72 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_requires_preview_and_rejects_replaced_target() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(cache.join("so.tilo.notes")).unwrap();
-        std::fs::write(cache.join("so.tilo.notes/a"), b"cache").unwrap();
-        let preview = preview_cache_cleanup(&cache).unwrap();
-        std::fs::remove_dir_all(cache.join("so.tilo.notes")).unwrap();
-        std::fs::create_dir(cache.join("so.tilo.notes")).unwrap();
-        assert!(matches!(
-            apply_cleanup(&preview, &[0]),
-            Err(CleanupError::Changed(_))
-        ));
-    }
+    fn cleanup_removes_only_selected_items_whose_preview_still_matches() {
+        // Phase `cleanup_requires_preview_and_rejects_replaced_target`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = tmp.path().join("cache");
+            std::fs::create_dir_all(cache.join("so.tilo.notes")).unwrap();
+            std::fs::write(cache.join("so.tilo.notes/a"), b"cache").unwrap();
+            let preview = preview_cache_cleanup(&cache).unwrap();
+            std::fs::remove_dir_all(cache.join("so.tilo.notes")).unwrap();
+            std::fs::create_dir(cache.join("so.tilo.notes")).unwrap();
+            assert!(matches!(
+                apply_cleanup(&preview, &[0]),
+                Err(CleanupError::Changed(_))
+            ));
+        }
+        // Phase `cleanup_rejects_directory_payload_changed_after_preview`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = tmp.path().join("cache");
+            let target = cache.join("so.tilo.notes");
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("a"), b"cache").unwrap();
+            let preview = preview_cache_cleanup(&cache).unwrap();
 
-    #[test]
-    fn cleanup_rejects_directory_payload_changed_after_preview() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        let target = cache.join("so.tilo.notes");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("a"), b"cache").unwrap();
-        let preview = preview_cache_cleanup(&cache).unwrap();
+            std::fs::write(target.join("a"), b"larger cache payload").unwrap();
 
-        std::fs::write(target.join("a"), b"larger cache payload").unwrap();
+            assert!(matches!(
+                apply_cleanup(&preview, &[0]),
+                Err(CleanupError::Changed(_))
+            ));
+            assert!(target.exists(), "changed cache must not be deleted");
+        }
+        // Phase `cleanup_rejects_directory_file_count_changed_after_preview`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = tmp.path().join("cache");
+            let target = cache.join("so.tilo.notes");
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("a"), b"cache").unwrap();
+            let preview = preview_cache_cleanup(&cache).unwrap();
 
-        assert!(matches!(
-            apply_cleanup(&preview, &[0]),
-            Err(CleanupError::Changed(_))
-        ));
-        assert!(target.exists(), "changed cache must not be deleted");
-    }
+            std::fs::write(target.join("empty"), []).unwrap();
 
-    #[test]
-    fn cleanup_rejects_directory_file_count_changed_after_preview() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        let target = cache.join("so.tilo.notes");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::write(target.join("a"), b"cache").unwrap();
-        let preview = preview_cache_cleanup(&cache).unwrap();
-
-        std::fs::write(target.join("empty"), []).unwrap();
-
-        assert!(matches!(
-            apply_cleanup(&preview, &[0]),
-            Err(CleanupError::Changed(_))
-        ));
-        assert!(target.exists(), "changed cache must not be deleted");
-    }
-
-    #[test]
-    fn only_selected_preview_items_are_removed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(&cache).unwrap();
-        std::fs::write(cache.join("a"), b"aaaa").unwrap();
-        std::fs::write(cache.join("b"), b"bb").unwrap();
-        let preview = preview_cache_cleanup(&cache).unwrap();
-        let a = preview
-            .items
-            .iter()
-            .position(|i| i.path.ends_with("a"))
-            .unwrap();
-        let report = apply_cleanup(&preview, &[a]).unwrap();
-        assert_eq!(report.freed_bytes, 4);
-        assert!(!cache.join("a").exists());
-        assert!(cache.join("b").exists());
+            assert!(matches!(
+                apply_cleanup(&preview, &[0]),
+                Err(CleanupError::Changed(_))
+            ));
+            assert!(target.exists(), "changed cache must not be deleted");
+        }
+        // Phase `only_selected_preview_items_are_removed`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache = tmp.path().join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(cache.join("a"), b"aaaa").unwrap();
+            std::fs::write(cache.join("b"), b"bb").unwrap();
+            let preview = preview_cache_cleanup(&cache).unwrap();
+            let a = preview
+                .items
+                .iter()
+                .position(|i| i.path.ends_with("a"))
+                .unwrap();
+            let report = apply_cleanup(&preview, &[a]).unwrap();
+            assert_eq!(report.freed_bytes, 4);
+            assert!(!cache.join("a").exists());
+            assert!(cache.join("b").exists());
+        }
     }
 }

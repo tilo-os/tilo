@@ -65,7 +65,7 @@ and climb out of the first.
 installs the filter after it has finished mounting and immediately before it
 execs the guest, so the syscalls exist for exactly the process that performs the
 setup and for no descendant of it. Proven in
-`profile.rs::the_kernel_refuses_a_ush_guest_its_own_namespace`, which installs
+`profile.rs::the_kernel_enforces_each_profiles_filter` (the `Profile::Ush` case), which installs
 the filter in a forked child and calls `unshare(CLONE_NEWUSER)`.
 
 **An app** cannot reach the runtime by executing it: it has neither the syscalls
@@ -244,5 +244,6 @@ podman overlay. Run the compiled test binary directly on the host to exercise
 the guest:
 
 ```bash
-./target/debug/deps/serve_handoff-* --test-threads 1
+cargo test -p ush --test it --no-run   # prints the binary, target/debug/deps/it-<hash>
+./target/debug/deps/it-<hash> serve_handoff:: --test-threads 1
 ```

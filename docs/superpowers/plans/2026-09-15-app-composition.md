@@ -6,7 +6,7 @@
 
 **Architecture:** Keep each app's existing state/action model. Change composition through existing Card, Actions, Form, Toolbar, NavSplit, SidebarDrawer and measured text paths where they fit; for immediate-mode apps compute one geometry description and consume it in drawing, pointer events, keyboard navigation and accessibility. Do not create another layout framework.
 
-**Tech stack:** Rust, ui Widget/Taffy/Vello, TextRenderer, Automerge content state and qos_actions.
+**Tech stack:** Rust, ui Widget/Taffy/Vello, TextRenderer, Automerge content state and tilo_actions.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-app-ui-balance.md`.
 
@@ -81,7 +81,7 @@ Execute the SearchField prerequisite and each app as separate reviewed tasks. So
 - [ ] `build_panes_layout` (~809) stacks a fixed `NARROW_PREVIEW_H` 560px specimen before controls. Prefer a compact specimen summary followed by the existing customizer, with a named Show full preview disclosure, rather than cropping arbitrary sample controls. Alternatively use two existing Button tabs Preview/Customize if the summary cannot represent the specimen honestly.
 - [ ] Add local view state and propagate through `build_content_layout`, `apply_content_layout`, `apply_narrow_stack_layout`, draw and event routing. Preserve `push_view_state`, chosen preset, unsaved customization and scroll; do not reset on viewport changes. A full preview opens with keyboard and returns focus to its trigger. Expose the new control through Widget children/accessibility (app has no custom accessibility override to silently extend).
 
-**Acceptance:** Editable controls appear in first narrow viewport with gallery closed; full preview remains reachable; change accent then open/close preview preserves edit. Capture `QOS_THEMES_SHOT=scroll` and `live` in addition to default overlay fixture.
+**Acceptance:** Editable controls appear in first narrow viewport with gallery closed; full preview remains reachable; change accent then open/close preview preserves edit. Capture `TILO_THEMES_SHOT=scroll` and `live` in addition to default overlay fixture.
 
 #### VPN
 
@@ -232,7 +232,7 @@ After shared measured components land, close these existing findings alongside t
 
 - [ ] First capture a populated paragraph and exercise insertion/selection at 480 to distinguish fixture placeholder from real editing. Add a distinct view-only fitting mode (proposed `ViewFit::{TextWidth, Page, Manual}`) using text-area width rather than paper width, with horizontal viewport offset accounting for page margins. Add explicit Fit page/Fit text choices beside the existing zoom control or its accessible menu; retain Reset as 100%. A full document reflow engine is not justified by this bounded task.
 - [ ] Use one content transform and inverse in page paint, selection/caret hit testing, `ime_cursor_rect`, ruler and scroll bounds. Do not change stored page size/margins or exported PDF geometry. If text-width fitting needs horizontal scrolling, provide a reachable scroll route and ensure-caret-visible behavior; do not simply clamp zoom and leave the caret offscreen.
-- [ ] A chosen manual zoom disables automatic fitting; viewport/panel changes may adjust only an active automatic mode. Update `narrow_first_open_fits_the_page_until_the_user_zooms` to new intended default and retain `click_maps_to_the_same_caret_under_zoom`, scroll range and IME accessibility checks.
+- [ ] A chosen manual zoom disables automatic fitting; viewport/panel changes may adjust only an active automatic mode. Update the `narrow_first_open_fits_the_page_until_the_user_zooms` phase of `narrow_and_zoomed_windows_keep_status_and_page_fitting` to new intended default and retain the `click_maps_to_the_same_caret_under_zoom` phase of `zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret`, scroll range and IME accessibility checks.
 
 **Acceptance:** At 480 actual paragraph/caret readable; click/type/select at first and last line edges, horizontal scroll if required, undo, resize, styles/outline open and close. Explicit Fit page and 100% persist. Compare export before/after view-mode switch to ensure page geometry unchanged. Capture populated paragraph plus blank page at 480/800/1200. If text fit exposes an unresolved transform limitation, report it to the controller for a concrete alternative and continue after that ruling; do not silently ship a zoom clamp or treat a recommendation as a completed fix.
 

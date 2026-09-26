@@ -190,44 +190,17 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
 /// Decode raster cover bytes (JPEG/PNG) into downscaled RGBA. Returns `None`
 /// on any decode failure so a broken cover never breaks the shelf.
 fn decode_cover(bytes: &[u8]) -> Option<Cover> {
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_COVER_DIMENSION);
-    limits.max_image_height = Some(MAX_COVER_DIMENSION);
-    // The pixel check below is strict for every format. Keep the decoder's
-    // temporary allocation budget aligned with it as an additional guard for
-    // codecs that support allocation limits.
-    limits.max_alloc = Some(MAX_COVER_PIXELS * 4);
-    let dimensions_reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut dimensions_reader = dimensions_reader;
-    dimensions_reader.limits(limits.clone());
-    let (w, h) = dimensions_reader.into_dimensions().ok()?;
-    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_COVER_PIXELS {
-        return None;
-    }
-    // Re-create the reader after the header-only dimensions pass. Decoding is
-    // now safe to do because both the member bytes and decoded dimensions were
-    // bounded before an image buffer was allocated.
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    reader.limits(limits);
-    let img = reader.decode().ok()?;
-    let scaled = if w.max(h) > COVER_MAX_EDGE {
-        let scale = COVER_MAX_EDGE as f32 / w.max(h) as f32;
-        let nw = ((w as f32 * scale).round() as u32).max(1);
-        let nh = ((h as f32 * scale).round() as u32).max(1);
-        img.resize_exact(nw, nh, image::imageops::FilterType::Triangle)
-    } else {
-        img
+    // The shared preview decoder checks the declared dimensions against these
+    // bounds before an image buffer is allocated.
+    let limits = thumbnail::DecodeLimits {
+        max_pixels: MAX_COVER_PIXELS,
+        max_dimension: MAX_COVER_DIMENSION,
     };
-    let rgba = scaled.to_rgba8();
-    let (width, height) = (rgba.width(), rgba.height());
+    let cover = thumbnail::image_thumb_with(bytes, COVER_MAX_EDGE, limits)?;
     Some(Cover {
-        rgba: Arc::new(rgba.into_raw()),
-        width,
-        height,
+        rgba: Arc::new(cover.rgba),
+        width: cover.width,
+        height: cover.height,
     })
 }
 
@@ -357,75 +330,80 @@ fn read_entry_bytes(archive: &mut Archive<'_>, name: &str, limit: usize) -> Resu
 mod tests {
     use super::*;
 
+    /// EPUB identity is the content hash; the sample parses; zip member limits and oversized covers are handled before decoding.
     #[test]
-    fn identity_is_the_content_hash_not_the_path() {
-        // The same bytes always produce the same id — that is what lets a book's
-        // highlights and reading progress follow it across folders, devices and
-        // peers. Two different files produce two different ids.
-        let bytes = include_bytes!("../assets/sample.epub");
-        let a = parse_epub(bytes, 0, "Fable").unwrap();
-        let b = parse_epub(bytes, 3, "Something else").unwrap();
-        assert_eq!(
-            a.id, b.id,
-            "identical bytes → identical id, regardless of caller hints"
-        );
-        assert!(a.id.starts_with("book:"), "ids are namespaced");
-        assert_eq!(
-            a.id,
-            content_id(bytes),
-            "the book id is exactly the content hash"
-        );
+    fn epub_parsing_is_content_addressed_and_bounded() {
+        // --- phase: identity_is_the_content_hash_not_the_path ---
+        {
+            // The same bytes always produce the same id — that is what lets a book's
+            // highlights and reading progress follow it across folders, devices and
+            // peers. Two different files produce two different ids.
+            let bytes = include_bytes!("../assets/sample.epub");
+            let a = parse_epub(bytes, 0, "Fable").unwrap();
+            let b = parse_epub(bytes, 3, "Something else").unwrap();
+            assert_eq!(
+                a.id, b.id,
+                "identical bytes → identical id, regardless of caller hints"
+            );
+            assert!(a.id.starts_with("book:"), "ids are namespaced");
+            assert_eq!(
+                a.id,
+                content_id(bytes),
+                "the book id is exactly the content hash"
+            );
 
-        let mut tweaked = bytes.to_vec();
-        *tweaked.last_mut().unwrap() ^= 0xFF; // one flipped byte = a different file
-        assert_ne!(
-            content_id(&tweaked),
-            a.id,
-            "different bytes → a different book"
-        );
-    }
+            let mut tweaked = bytes.to_vec();
+            *tweaked.last_mut().unwrap() ^= 0xFF; // one flipped byte = a different file
+            assert_ne!(
+                content_id(&tweaked),
+                a.id,
+                "different bytes → a different book"
+            );
+        }
 
-    #[test]
-    fn parses_the_bundled_sample() {
-        let bytes = include_bytes!("../assets/sample.epub");
-        let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
-        assert_eq!(book.title, "The Lantern-Keeper's Almanac");
-        assert_eq!(book.author, "Wren Halloway");
-        assert_eq!(book.chapters.len(), 4);
-        // TOC supplied real chapter titles.
-        assert!(book.chapters[0].title.contains("Tide-House"));
-        // First chapter has a heading + several paragraphs + a blockquote.
-        assert!(
-            book.chapters[0]
-                .blocks
-                .iter()
-                .any(|b| matches!(b, crate::model::Block::Quote { .. }))
-        );
-        assert!(book.chapters[0].blocks.len() >= 5);
-    }
+        // --- phase: parses_the_bundled_sample ---
+        {
+            let bytes = include_bytes!("../assets/sample.epub");
+            let book = parse_epub(bytes, 0, "Fable").expect("sample.epub parses");
+            assert_eq!(book.title, "The Lantern-Keeper's Almanac");
+            assert_eq!(book.author, "Wren Halloway");
+            assert_eq!(book.chapters.len(), 4);
+            // TOC supplied real chapter titles.
+            assert!(book.chapters[0].title.contains("Tide-House"));
+            // First chapter has a heading + several paragraphs + a blockquote.
+            assert!(
+                book.chapters[0]
+                    .blocks
+                    .iter()
+                    .any(|b| matches!(b, crate::model::Block::Quote { .. }))
+            );
+            assert!(book.chapters[0].blocks.len() >= 5);
+        }
 
-    #[test]
-    fn zip_member_limit_is_enforced_before_reading() {
-        let mut archive =
-            BoundedArchive::from_bytes(crate::content::SAMPLE_EPUB, ZipLimits::default()).unwrap();
-        let error = read_entry(&mut archive, "META-INF/container.xml", 1)
-            .expect_err("the container is larger than one byte");
-        assert!(
-            error.to_string().contains("per-part limit"),
-            "the limit is reported instead of allocating the member: {error:#}"
-        );
-    }
+        // --- phase: zip_member_limit_is_enforced_before_reading ---
+        {
+            let mut archive =
+                BoundedArchive::from_bytes(crate::content::SAMPLE_EPUB, ZipLimits::default())
+                    .unwrap();
+            let error = read_entry(&mut archive, "META-INF/container.xml", 1)
+                .expect_err("the container is larger than one byte");
+            assert!(
+                error.to_string().contains("per-part limit"),
+                "the limit is reported instead of allocating the member: {error:#}"
+            );
+        }
 
-    #[test]
-    fn oversized_cover_dimensions_fall_back_without_decoding_the_image() {
-        // This PNG is tiny on disk but declares a source image wider than a
-        // shelf cover can ever need. The preflight dimensions pass rejects it
-        // before `DynamicImage` can allocate its full RGBA buffer.
-        let image = image::RgbImage::new(MAX_COVER_DIMENSION + 1, 1);
-        let mut png = Cursor::new(Vec::new());
-        image
-            .write_to(&mut png, image::ImageFormat::Png)
-            .expect("a small generated PNG encodes");
-        assert!(decode_cover(&png.into_inner()).is_none());
+        // --- phase: oversized_cover_dimensions_fall_back_without_decoding_the_image ---
+        {
+            // This PNG is tiny on disk but declares a source image wider than a
+            // shelf cover can ever need. The preflight dimensions pass rejects it
+            // before `DynamicImage` can allocate its full RGBA buffer.
+            let image = image::RgbImage::new(MAX_COVER_DIMENSION + 1, 1);
+            let mut png = Cursor::new(Vec::new());
+            image
+                .write_to(&mut png, image::ImageFormat::Png)
+                .expect("a small generated PNG encodes");
+            assert!(decode_cover(&png.into_inner()).is_none());
+        }
     }
 }

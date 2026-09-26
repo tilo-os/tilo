@@ -62,7 +62,7 @@ grep -Fq 'for index, center_x in enumerate((56.0, 110.0, 164.0))' \
   "$root/os/dev/make-plymouth-assets.py"
 if grep -Fq 'recognisable q' "$root/os/dev/make-boot-splash.py" \
    || grep -Fq 'tail_distance' "$root/os/dev/make-plymouth-assets.py"; then
-  printf 'boot artwork still carries the retired qOS q mark\n' >&2
+  printf 'boot artwork still carries the retired Tilo q mark\n' >&2
   exit 1
 fi
 python3 - "$tmp/plymouth" <<'PY'

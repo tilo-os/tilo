@@ -10,7 +10,7 @@
 #include <thread>
 #include <vector>
 
-namespace qos {
+namespace tilo {
 // Move-only owned buffer. OS/CEF copies require their own lifetime management;
 // wiping this allocation is not a claim of perfect process-memory erasure.
 class CredentialSecret {
@@ -139,4 +139,4 @@ class CredentialWorker {
   const bool private_mode_;
   std::shared_ptr<State> state_;
 };
-} // namespace qos
+} // namespace tilo

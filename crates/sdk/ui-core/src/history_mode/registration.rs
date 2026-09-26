@@ -402,7 +402,7 @@ mod asset_factory_tests {
         }
     }
     static DEFINITION: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.qos.asset-factory",
+        app_id: "dev.tilo.asset-factory",
         scopes: &[HistoryScopeDefinition {
             key: "deck",
             title: "Deck",

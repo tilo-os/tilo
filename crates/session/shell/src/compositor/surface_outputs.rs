@@ -93,22 +93,26 @@ impl Memberships {
     }
 }
 
+/// Whether a surface's logical rectangle overlaps the output's.
 fn intersects_output(rect: Rect, output: &Output) -> bool {
     if output.size.0 == 0 || output.size.1 == 0 {
         return false;
     }
-    let x0 = f64::from(output.position.0);
-    let y0 = f64::from(output.position.1);
-    let x1 = x0 + f64::from(output.size.0);
-    let y1 = y0 + f64::from(output.size.1);
-    rect.x0 < x1 && rect.x1 > x0 && rect.y0 < y1 && rect.y1 > y0
+    let o = output.logical_rect();
+    rect.x0 < o.x1 && rect.x1 > o.x0 && rect.y0 < o.y1 && rect.y1 > o.y0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn output(id: u32, position: (i32, i32), size: (u32, u32), scale: f32) -> Output {
+    fn output(
+        id: u32,
+        position: (i32, i32),
+        logical_position: (i32, i32),
+        size: (u32, u32),
+        scale: f32,
+    ) -> Output {
         Output {
             id: OutputId(id),
             position,
@@ -116,116 +120,119 @@ mod tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
+            logical_position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 
+    /// A 2x panel 100 logical pixels wide and a 1x one beside it.
     fn outputs() -> [Output; 2] {
         [
-            output(0, (0, 0), (100, 100), 2.0),
-            output(1, (100, 0), (100, 100), 1.0),
+            output(0, (0, 0), (0, 0), (200, 200), 2.0),
+            output(1, (200, 0), (100, 0), (100, 100), 1.0),
         ]
     }
 
     #[test]
-    fn a_surface_moves_between_two_outputs_without_duplicate_enters() {
-        let outputs = outputs();
-        let mut memberships = Memberships::default();
-        assert_eq!(
-            memberships.reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))]),
-            vec![Change::Enter {
-                surface_id: 7,
-                output: OutputId(0)
-            }]
-        );
-        assert!(
-            memberships
-                .reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))])
-                .is_empty()
-        );
-        assert_eq!(
-            memberships.reconcile(&outputs, &[(7, Rect::new(120.0, 10.0, 170.0, 60.0))]),
-            vec![
-                Change::Leave {
+    fn surface_output_membership_enters_and_leaves_exactly_once() {
+        // Phase `a_surface_moves_between_two_outputs_without_duplicate_enters`.
+        {
+            let outputs = outputs();
+            let mut memberships = Memberships::default();
+            assert_eq!(
+                memberships.reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))]),
+                vec![Change::Enter {
                     surface_id: 7,
                     output: OutputId(0)
-                },
-                Change::Enter {
-                    surface_id: 7,
-                    output: OutputId(1)
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn a_surface_spanning_the_seam_enters_both_outputs_once() {
-        let outputs = outputs();
-        let mut memberships = Memberships::default();
-        assert_eq!(
-            memberships.reconcile(&outputs, &[(7, Rect::new(80.0, 10.0, 120.0, 60.0))]),
-            vec![
-                Change::Enter {
+                }]
+            );
+            assert!(
+                memberships
+                    .reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))])
+                    .is_empty()
+            );
+            assert_eq!(
+                memberships.reconcile(&outputs, &[(7, Rect::new(120.0, 10.0, 170.0, 60.0))]),
+                vec![
+                    Change::Leave {
+                        surface_id: 7,
+                        output: OutputId(0)
+                    },
+                    Change::Enter {
+                        surface_id: 7,
+                        output: OutputId(1)
+                    }
+                ]
+            );
+        }
+        // Phase `a_surface_spanning_the_seam_enters_both_outputs_once`.
+        {
+            let outputs = outputs();
+            let mut memberships = Memberships::default();
+            assert_eq!(
+                memberships.reconcile(&outputs, &[(7, Rect::new(80.0, 10.0, 120.0, 60.0))]),
+                vec![
+                    Change::Enter {
+                        surface_id: 7,
+                        output: OutputId(0)
+                    },
+                    Change::Enter {
+                        surface_id: 7,
+                        output: OutputId(1)
+                    }
+                ]
+            );
+            assert!(
+                memberships
+                    .reconcile(&outputs, &[(7, Rect::new(80.0, 10.0, 120.0, 60.0))])
+                    .is_empty()
+            );
+        }
+        // Phase `a_surface_that_is_no_longer_painted_leaves_its_output`.
+        {
+            let outputs = outputs();
+            let mut memberships = Memberships::default();
+            memberships.reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))]);
+            // Switching a group to a different active tab removes this surface
+            // from the frame's visible-geometry list.
+            assert_eq!(
+                memberships.reconcile(&outputs, &[]),
+                vec![Change::Leave {
                     surface_id: 7,
                     output: OutputId(0)
-                },
-                Change::Enter {
+                }]
+            );
+        }
+        // Phase `removed_output_leaves_before_its_global_is_withdrawn`.
+        {
+            let outputs = outputs();
+            let mut memberships = Memberships::default();
+            memberships.reconcile(&outputs, &[(7, Rect::new(120.0, 10.0, 170.0, 60.0))]);
+            assert_eq!(
+                memberships.leave_removed_outputs(&outputs[..1]),
+                vec![Change::Leave {
                     surface_id: 7,
                     output: OutputId(1)
-                }
-            ]
-        );
-        assert!(
-            memberships
-                .reconcile(&outputs, &[(7, Rect::new(80.0, 10.0, 120.0, 60.0))])
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_surface_that_is_no_longer_painted_leaves_its_output() {
-        let outputs = outputs();
-        let mut memberships = Memberships::default();
-        memberships.reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))]);
-        // Switching a group to a different active tab removes this surface
-        // from the frame's visible-geometry list.
-        assert_eq!(
-            memberships.reconcile(&outputs, &[]),
-            vec![Change::Leave {
-                surface_id: 7,
-                output: OutputId(0)
-            }]
-        );
-    }
-
-    #[test]
-    fn removed_output_leaves_before_its_global_is_withdrawn() {
-        let outputs = outputs();
-        let mut memberships = Memberships::default();
-        memberships.reconcile(&outputs, &[(7, Rect::new(120.0, 10.0, 170.0, 60.0))]);
-        assert_eq!(
-            memberships.leave_removed_outputs(&outputs[..1]),
-            vec![Change::Leave {
-                surface_id: 7,
-                output: OutputId(1)
-            }]
-        );
-        assert!(
-            memberships
-                .reconcile(&outputs[..1], &[(7, Rect::new(120.0, 10.0, 170.0, 60.0))])
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn scale_change_keeps_membership_but_the_output_identity_is_stable() {
-        let mut outputs = outputs();
-        let mut memberships = Memberships::default();
-        memberships.reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))]);
-        outputs[0].scale = 1.25;
-        assert!(
-            memberships
-                .reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))])
-                .is_empty()
-        );
+                }]
+            );
+            assert!(
+                memberships
+                    .reconcile(&outputs[..1], &[(7, Rect::new(120.0, 10.0, 170.0, 60.0))])
+                    .is_empty()
+            );
+        }
+        // Phase `scale_change_keeps_membership_but_the_output_identity_is_stable`.
+        {
+            let mut outputs = outputs();
+            let mut memberships = Memberships::default();
+            memberships.reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))]);
+            outputs[0].scale = 1.25;
+            assert!(
+                memberships
+                    .reconcile(&outputs, &[(7, Rect::new(10.0, 10.0, 60.0, 60.0))])
+                    .is_empty()
+            );
+        }
     }
 }

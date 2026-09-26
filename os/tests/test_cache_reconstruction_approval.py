@@ -15,6 +15,18 @@ HELPER = '2d09fac4a71547f0c0a9c30be757ffac8a642930'
 OLD = '9d7a6b259c9b75b6c5031472bfed05b6461c1893'
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class CacheApprovalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -46,7 +58,7 @@ class CacheApprovalTests(unittest.TestCase):
             resume_admitted=False, original_recipe_executed_verbatim=False)
         raw = a.canonical(value)
         checkpoint = dict(schema=1, purpose=self.resume.RECONSTRUCTED_PARTIAL,
-            reference='code.sandbox.example/qos/tilo-development-partial-native-aarch64@sha256:'+'a'*64,
+            reference='registry.tilo.so/tilo/tilo-development-partial-native-aarch64@sha256:'+'a'*64,
             config_digest='sha256:'+'b'*64, metadata_sha256=a.sha(raw), source_revision=a.SOURCE,
             helper_revision=OLD, run_number=8166, run_id=21554, inventory={'fs': record},
             reconstruction_sha256=prior_sha, installable=False, complete_native_builder=False,
@@ -61,9 +73,9 @@ class CacheApprovalTests(unittest.TestCase):
         cache = dict(purpose='tilo-incomplete-thin-cache-admission', source_revision=a.SOURCE,
             producer_helper_revision=OLD, restore_helper_sha256=a.sha(self.material['restore_helper']),
             source_metadata_sha256='3'*64, cargo_revalidation_required=True, incomplete_cache_reviewed=True,
-            checkpoint_reference='code.sandbox.example/qos/tilo-development-partial-thin-cache-aarch64@sha256:'+'4'*64,
+            checkpoint_reference='registry.tilo.so/tilo/tilo-development-partial-thin-cache-aarch64@sha256:'+'4'*64,
             checkpoint_config_digest='sha256:'+'5'*64,
-            source_metadata_reference='code.sandbox.example/qos/tilo-development-thin-cache-metadata-aarch64@sha256:'+'6'*64,
+            source_metadata_reference='registry.tilo.so/tilo/tilo-development-thin-cache-metadata-aarch64@sha256:'+'6'*64,
             source_metadata_config_digest='sha256:'+'7'*64, archive_sha256='8'*64, metadata_sha256='9'*64)
         cache_receipt = dict(purpose='tilo-development-incomplete-thin-cargo-cache', resume_admitted=False,
             complete=False, installable=False, reference=cache['checkpoint_reference'],
@@ -90,40 +102,41 @@ class CacheApprovalTests(unittest.TestCase):
         return a.approve(receipt, a.sha(a.canonical(receipt)), self.checkpoints, self.required, self.inputs,
             self.resume, self.material, HELPER, '21461', '1', extensions=self.extensions)
 
-    def test_cache_runtime_reproduced_from_independent_inputs(self):
-        receipt = self.completed()
-        runtime = receipt['reconstruction']['thin_cache']['runtime_evidence']
-        self.assertEqual(runtime['restored_files'], 3)
-        self.assertEqual(runtime['restored_bytes'], 192)
-        self.assertFalse(runtime['cargo_freshness_proven'])
-        result = self.approve_cache(receipt)
-        self.assertEqual(result['approved_reconstruction_sha256'], receipt['reconstruction_sha256'])
-        self.assertFalse(result['complete_inventory_verified'])
-
-    def test_remote_runtime_or_cache_admission_tamper_rejected(self):
-        for field, value in [('restored_files', 4), ('dependency_timestamps_restored', True),
-                             ('cargo_freshness_proven', True)]:
+    def test_cache_approval_reproduction_and_tamper(self):
+        with self.subTest(phase="cache_runtime_reproduced_from_independent_inputs"):
             receipt = self.completed()
-            receipt['reconstruction']['thin_cache']['runtime_evidence'][field] = value
+            runtime = receipt['reconstruction']['thin_cache']['runtime_evidence']
+            self.assertEqual(runtime['restored_files'], 3)
+            self.assertEqual(runtime['restored_bytes'], 192)
+            self.assertFalse(runtime['cargo_freshness_proven'])
+            result = self.approve_cache(receipt)
+            self.assertEqual(result['approved_reconstruction_sha256'], receipt['reconstruction_sha256'])
+            self.assertFalse(result['complete_inventory_verified'])
+        restart_fixture(self)
+        with self.subTest(phase="remote_runtime_or_cache_admission_tamper_rejected"):
+            for field, value in [('restored_files', 4), ('dependency_timestamps_restored', True),
+                                 ('cargo_freshness_proven', True)]:
+                receipt = self.completed()
+                receipt['reconstruction']['thin_cache']['runtime_evidence'][field] = value
+                receipt['reconstruction_sha256'] = a.sha(a.canonical(receipt['reconstruction']))
+                with self.subTest(field=field), self.assertRaises(ValueError): self.approve_cache(receipt)
+            receipt = self.completed()
+            receipt['reconstruction']['thin_cache']['approval']['source_metadata_sha256'] = 'f'*64
             receipt['reconstruction_sha256'] = a.sha(a.canonical(receipt['reconstruction']))
-            with self.subTest(field=field), self.assertRaises(ValueError): self.approve_cache(receipt)
-        receipt = self.completed()
-        receipt['reconstruction']['thin_cache']['approval']['source_metadata_sha256'] = 'f'*64
-        receipt['reconstruction_sha256'] = a.sha(a.canonical(receipt['reconstruction']))
-        with self.assertRaises(ValueError): self.approve_cache(receipt)
-
-    def test_partial_metadata_and_restore_helper_tamper_rejected(self):
-        receipt = self.completed()
-        key = next(iter(self.extensions['partial_metadata']))
-        self.extensions['partial_metadata'][key] += b' '
-        with self.assertRaises(ValueError): self.approve_cache(receipt)
-        self.extensions['partial_metadata'][key] = self.extensions['partial_metadata'][key][:-1]
-        self.material['restore_helper'] += b'\n'
-        with self.assertRaises(ValueError): self.approve_cache(receipt)
-
-    def test_incompatible_host_encoding_has_explicit_remedy(self):
-        with patch.object(Path, 'read_text', return_value='incorrect decoding'):
-            with self.assertRaisesRegex(ValueError, 'Python with -X utf8'):
-                self.completed()
+            with self.assertRaises(ValueError): self.approve_cache(receipt)
+        restart_fixture(self)
+        with self.subTest(phase="partial_metadata_and_restore_helper_tamper_rejected"):
+            receipt = self.completed()
+            key = next(iter(self.extensions['partial_metadata']))
+            self.extensions['partial_metadata'][key] += b' '
+            with self.assertRaises(ValueError): self.approve_cache(receipt)
+            self.extensions['partial_metadata'][key] = self.extensions['partial_metadata'][key][:-1]
+            self.material['restore_helper'] += b'\n'
+            with self.assertRaises(ValueError): self.approve_cache(receipt)
+        restart_fixture(self)
+        with self.subTest(phase="incompatible_host_encoding_has_explicit_remedy"):
+            with patch.object(Path, 'read_text', return_value='incorrect decoding'):
+                with self.assertRaisesRegex(ValueError, 'Python with -X utf8'):
+                    self.completed()
 
 if __name__ == '__main__': unittest.main()

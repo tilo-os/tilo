@@ -1228,7 +1228,9 @@ fn structural_match(needle: &str, facts: &NameFacts) -> Option<(i32, usize)> {
     }
     // Last resort: the characters in order, anywhere in the filename.
     // `ntes` → `notes.md`.
-    fuzzy_subsequence(needle, leaf).then_some((STRUCT_FUZZY, stem_len))
+    ui::search::fuzzy_score(needle, leaf)
+        .is_some()
+        .then_some((STRUCT_FUZZY, stem_len))
 }
 
 /// Best word-boundary tier over every occurrence of `needle` in `leaf`:
@@ -1288,19 +1290,6 @@ fn path_depth(display_lower: &str) -> usize {
     display_lower.bytes().filter(|b| *b == b'/').count()
 }
 
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
-}
-
 /// Open a palette hit via [`crate::shell::doc_open`] when an installed app
 /// claims the type; unclaimed types and directories fall back to
 /// `xdg-open`, and a claimed type with no editor is reported, not silent.
@@ -1311,7 +1300,7 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
         return;
     }
     match doc_open::resolve(path) {
-        DocumentTarget::App { .. } => {
+        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
             if let Err(e) = doc_open::open_in_workspace(path, chrome) {
                 notify_open_failure(path, &e.user_message(), chrome);
             }
@@ -1466,246 +1455,93 @@ mod tests {
     }
 
     #[test]
-    fn name_score_prefers_the_leaf_over_the_path() {
-        assert_eq!(
-            name_score("todo", &facts("~/notes/todo.md")),
-            Some(STRUCT_EXACT_STEM + RATIO_WEIGHT)
-        );
-        assert_eq!(
-            name_score("todo", &facts("~/notes/day-todo-list.md")),
-            Some(STRUCT_TOKEN + 5)
-        );
-        assert_eq!(
-            name_score("todo", &facts("~/todo/notes.md")),
-            Some(STRUCT_PATH_COMPONENT + RATIO_WEIGHT)
-        );
-        assert_eq!(name_score("xzq", &facts("~/notes/todo.md")), None);
-    }
+    fn file_name_scoring_prefers_the_exact_whole_word_leaf() {
+        // Phase `name_score_prefers_the_leaf_over_the_path`.
+        {
+            assert_eq!(
+                name_score("todo", &facts("~/notes/todo.md")),
+                Some(STRUCT_EXACT_STEM + RATIO_WEIGHT)
+            );
+            assert_eq!(
+                name_score("todo", &facts("~/notes/day-todo-list.md")),
+                Some(STRUCT_TOKEN + 5)
+            );
+            assert_eq!(
+                name_score("todo", &facts("~/todo/notes.md")),
+                Some(STRUCT_PATH_COMPONENT + RATIO_WEIGHT)
+            );
+            assert_eq!(name_score("xzq", &facts("~/notes/todo.md")), None);
+        }
 
-    #[test]
-    fn a_document_outranks_the_font_assets_of_a_game() {
-        const GAME: &str = "~/Spiele/openttd-jgrpp-0.72.3-linux-generic-amd64";
-        let p = provider_with_index_aged(vec![
-            (&format!("{GAME}/baseset/OpenTTD-Mono.ttf"), false, 50),
-            (&format!("{GAME}/baseset/OpenTTD-Sans.ttf"), false, 50),
-            (&format!("{GAME}/baseset/OpenTTD-Serif.ttf"), false, 50),
-            (&format!("{GAME}/baseset/OpenTTD-Small.ttf"), false, 50),
-            (&format!("{GAME}/baseset/openttd.grf"), false, 50),
-            (&format!("{GAME}/openttd"), false, 50),
-            ("~/Spiele/openttd-logo.png", false, 260),
-            ("~/Documents/opening-hours.md", false, 3),
-        ]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let out = p.query(ctx_for(
-            "open",
-            &[ResourceKind::File, ResourceKind::Folder],
-            &st,
-            &doc,
-        ));
-
-        let listing = || {
-            out.iter()
-                .map(|r| format!("{} ({})", r.title, r.score))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            out.first().map(|r| r.title.as_str()),
-            Some("opening-hours.md"),
-            "the user's own document must lead the game's assets: {:?}",
-            listing()
-        );
-        let doc_score = out[0].score;
-        for r in out.iter().filter(|r| has_ext(&r.title, "ttf")) {
+        // Phase `a_whole_word_beats_the_start_of_a_longer_word`.
+        {
+            let whole = name_score("open", &facts("~/a/open.txt")).unwrap();
+            let prefix = name_score("open", &facts("~/a/opening-notes.md")).unwrap();
+            let inside = name_score("open", &facts("~/a/reopen.md")).unwrap();
+            let other_word = name_score("open", &facts("~/a/xdg-open")).unwrap();
             assert!(
-                r.score < doc_score,
-                "{} scored {} against the document's {doc_score}: {:?}",
-                r.title,
-                r.score,
-                listing()
+                whole > prefix && prefix > inside,
+                "expected open.txt > opening-notes.md > reopen.md, got \
+                 {whole} / {prefix} / {inside}"
+            );
+            assert!(
+                other_word > prefix,
+                "`open` is the whole second word of `xdg-open` but only the start \
+                 of `opening`, so xdg-open ({other_word}) must beat \
+                 opening-notes.md ({prefix})"
             );
         }
-        // Below every non-asset hit, not merely the document.
-        let first_font = out
-            .iter()
-            .position(|r| has_ext(&r.title, "ttf"))
-            .expect("the fonts are still in the results");
-        let last_non_asset = out
-            .iter()
-            .rposition(|r| !has_ext(&r.title, "ttf") && !has_ext(&r.title, "grf"))
-            .expect("some non-asset hit");
-        assert!(
-            first_font > last_non_asset,
-            "a font appears at {first_font}, above the last non-asset hit at \
-             {last_non_asset}: {:?}",
-            listing()
-        );
-        assert_eq!(
-            out.iter().filter(|r| has_ext(&r.title, "ttf")).count(),
-            4,
-            "all four fonts must still be reachable: {:?}",
-            listing()
-        );
-    }
 
-    #[test]
-    fn a_whole_word_beats_the_start_of_a_longer_word() {
-        let whole = name_score("open", &facts("~/a/open.txt")).unwrap();
-        let prefix = name_score("open", &facts("~/a/opening-notes.md")).unwrap();
-        let inside = name_score("open", &facts("~/a/reopen.md")).unwrap();
-        let other_word = name_score("open", &facts("~/a/xdg-open")).unwrap();
-        assert!(
-            whole > prefix && prefix > inside,
-            "expected open.txt > opening-notes.md > reopen.md, got \
-             {whole} / {prefix} / {inside}"
-        );
-        assert!(
-            other_word > prefix,
-            "`open` is the whole second word of `xdg-open` but only the start \
-             of `opening`, so xdg-open ({other_word}) must beat \
-             opening-notes.md ({prefix})"
-        );
-    }
+        // Phase `an_exact_filename_match_clearly_wins`.
+        {
+            let exact = name_score("open", &facts("~/a/open.md")).unwrap();
+            let long = name_score("open", &facts("~/a/opentelemetry-collector-config.md")).unwrap();
+            assert!(
+                exact >= long + 30,
+                "an exact name match ({exact}) must clearly beat four characters \
+                 of a thirty-character name ({long}), not tie with it"
+            );
+        }
 
-    #[test]
-    fn an_exact_filename_match_clearly_wins() {
-        let exact = name_score("open", &facts("~/a/open.md")).unwrap();
-        let long = name_score("open", &facts("~/a/opentelemetry-collector-config.md")).unwrap();
-        assert!(
-            exact >= long + 30,
-            "an exact name match ({exact}) must clearly beat four characters \
-             of a thirty-character name ({long}), not tie with it"
-        );
-    }
+        // Phase `stem_length_ignores_a_version_number_masquerading_as_an_extension`.
+        // A version-numbered directory must not lose its name to a bogus "extension".
+        {
+            assert_eq!(stem_len("openttd-jgrpp-0.72.3-linux-generic-amd64"), 40);
+            assert_eq!(stem_len("open.md"), 4);
+            assert_eq!(stem_len("archive.tar.gz"), 11);
+            assert_eq!(stem_len("noextension"), 11);
+            assert_eq!(stem_len(".hidden"), 7);
+        }
 
-    #[test]
-    fn tokenize_splits_on_separators_and_camel_case() {
-        let words = |s: &str| {
-            let lower = s.to_lowercase();
-            tokenize(s, &lower)
-                .into_iter()
-                .map(|(a, b)| {
-                    lower
-                        .get(a as usize..b as usize)
-                        .unwrap_or_default()
-                        .to_string()
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(words("OpenTTD-Sans.ttf"), ["open", "ttd", "sans", "ttf"]);
-        assert_eq!(words("my_notes file.md"), ["my", "notes", "file", "md"]);
-        assert_eq!(words("HTTPServerLog"), ["http", "server", "log"]);
-        assert_eq!(words("report2026final"), ["report", "2026", "final"]);
-        assert_eq!(words("openapi.yaml"), ["openapi", "yaml"]);
-    }
+        // Phase `max_score_is_the_honest_ceiling`.
+        // The registry divides by this; outgrowing it silently takes over the palette.
+        {
+            assert_eq!(
+                name_score("open", &aged_facts("~/open", 0)),
+                Some(MAX_SCORE),
+                "an exact filename match touched today must land exactly on the \
+                 declared ceiling"
+            );
+            let p = provider_with_index(vec![("~/open", false)]);
+            assert_eq!(p.max_score(), MAX_SCORE);
 
-    /// A version-numbered directory must not lose its name to a bogus "extension".
-    #[test]
-    fn stem_length_ignores_a_version_number_masquerading_as_an_extension() {
-        assert_eq!(stem_len("openttd-jgrpp-0.72.3-linux-generic-amd64"), 40);
-        assert_eq!(stem_len("open.md"), 4);
-        assert_eq!(stem_len("archive.tar.gz"), 11);
-        assert_eq!(stem_len("noextension"), 11);
-        assert_eq!(stem_len(".hidden"), 7);
-    }
-
-    #[test]
-    fn vendored_content_sinks_but_stays_findable() {
-        let mine = name_score("parser", &facts("~/proj/src/parser.rs")).unwrap();
-        let theirs = name_score("parser", &facts("~/proj/vendor/pkg/parser.rs")).unwrap();
-        assert!(
-            mine > theirs,
-            "the user's own parser.rs ({mine}) must outrank the vendored copy \
-             ({theirs})"
-        );
-
-        let p = provider_with_index(vec![("~/proj/vendor/pkg/parser.rs", false)]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let out = p.query(ctx_for("parser.rs", &[ResourceKind::File], &st, &doc));
-        assert_eq!(
-            out.len(),
-            1,
-            "a penalised match must still be returned: {out:?}"
-        );
-        assert!(
-            out[0].score >= 1,
-            "the score floor keeps the row above the no-match threshold"
-        );
-    }
-
-    #[test]
-    fn recency_separates_two_files_with_the_same_name() {
-        let fresh = name_score("report", &aged_facts("~/a/report.md", 0)).unwrap();
-        let stale = name_score("report", &aged_facts("~/b/report.md", 900)).unwrap();
-        assert!(
-            fresh > stale,
-            "the file touched today ({fresh}) must outrank the one from three \
-             years ago ({stale})"
-        );
-    }
-
-    /// A freshly unpacked archive cannot displace an exact old match.
-    #[test]
-    fn recency_cannot_outvote_what_the_name_says() {
-        let old_exact = name_score("notes", &aged_facts("~/a/notes.md", 900)).unwrap();
-        let new_weak = name_score(
-            "notes",
-            &aged_facts("~/b/my-meeting-notes-and-agenda-draft.md", 0),
-        )
-        .unwrap();
-        assert!(
-            old_exact > new_weak,
-            "a three-year-old notes.md ({old_exact}) must still beat a \
-             freshly-touched my-meeting-notes-and-agenda-draft.md ({new_weak})"
-        );
-    }
-
-    /// Proven by scoring a path that does not exist on disk.
-    #[test]
-    fn the_recency_band_comes_from_the_index_not_the_disk() {
-        let ghost = "~/definitely/not/on/this/disk/report.md";
-        assert!(!Path::new("/home/tester/definitely").exists());
-        let fresh = name_score("report", &aged_facts(ghost, 0)).unwrap();
-        let none = name_score("report", &facts(ghost)).unwrap();
-        assert_eq!(
-            fresh - none,
-            RECENCY_MAX,
-            "a today mtime carried in the index must contribute the full \
-             recency band"
-        );
-    }
-
-    /// The registry divides by this; outgrowing it silently takes over the palette.
-    #[test]
-    fn max_score_is_the_honest_ceiling() {
-        assert_eq!(
-            name_score("open", &aged_facts("~/open", 0)),
-            Some(MAX_SCORE),
-            "an exact filename match touched today must land exactly on the \
-             declared ceiling"
-        );
-        let p = provider_with_index(vec![("~/open", false)]);
-        assert_eq!(p.max_score(), MAX_SCORE);
-
-        for display in [
-            "~/open",
-            "~/open.md",
-            "~/OpenTTD-Sans.ttf",
-            "~/a/vendor/b/baseset/open.min.js",
-            "~/open/open/open/open-open_open.open",
-            "~/o/p/e/n/deeply/nested/thing.txt",
-        ] {
-            for needle in ["o", "open", "open.md", "opn", "openopenopen"] {
-                for days in [0u64, 5, 400] {
-                    if let Some(s) = name_score(needle, &aged_facts(display, days)) {
-                        assert!(
-                            (1..=MAX_SCORE).contains(&s),
-                            "{needle:?} on {display:?} at {days}d scored {s}, \
-                             outside 1..={MAX_SCORE}"
-                        );
+            for display in [
+                "~/open",
+                "~/open.md",
+                "~/OpenTTD-Sans.ttf",
+                "~/a/vendor/b/baseset/open.min.js",
+                "~/open/open/open/open-open_open.open",
+                "~/o/p/e/n/deeply/nested/thing.txt",
+            ] {
+                for needle in ["o", "open", "open.md", "opn", "openopenopen"] {
+                    for days in [0u64, 5, 400] {
+                        if let Some(s) = name_score(needle, &aged_facts(display, days)) {
+                            assert!(
+                                (1..=MAX_SCORE).contains(&s),
+                                "{needle:?} on {display:?} at {days}d scored {s}, \
+                                 outside 1..={MAX_SCORE}"
+                            );
+                        }
                     }
                 }
             }
@@ -1713,85 +1549,318 @@ mod tests {
     }
 
     #[test]
-    fn skip_dirs_hits_common_bloat() {
-        let home = Path::new("/home/x");
-        assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
-        assert!(should_skip(Path::new("/home/x/proj/target/debug"), home));
-        assert!(should_skip(Path::new("/home/x/.cache/foo"), home));
-        assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn file_placement_sinks_assets_vendored_and_buried_paths() {
+        // Phase `a_document_outranks_the_font_assets_of_a_game`.
+        {
+            const GAME: &str = "~/Spiele/openttd-jgrpp-0.72.3-linux-generic-amd64";
+            let p = provider_with_index_aged(vec![
+                (&format!("{GAME}/baseset/OpenTTD-Mono.ttf"), false, 50),
+                (&format!("{GAME}/baseset/OpenTTD-Sans.ttf"), false, 50),
+                (&format!("{GAME}/baseset/OpenTTD-Serif.ttf"), false, 50),
+                (&format!("{GAME}/baseset/OpenTTD-Small.ttf"), false, 50),
+                (&format!("{GAME}/baseset/openttd.grf"), false, 50),
+                (&format!("{GAME}/openttd"), false, 50),
+                ("~/Spiele/openttd-logo.png", false, 260),
+                ("~/Documents/opening-hours.md", false, 3),
+            ]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let out = p.query(ctx_for(
+                "open",
+                &[ResourceKind::File, ResourceKind::Folder],
+                &st,
+                &doc,
+            ));
+
+            let listing = || {
+                out.iter()
+                    .map(|r| format!("{} ({})", r.title, r.score))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                out.first().map(|r| r.title.as_str()),
+                Some("opening-hours.md"),
+                "the user's own document must lead the game's assets: {:?}",
+                listing()
+            );
+            let doc_score = out[0].score;
+            for r in out.iter().filter(|r| has_ext(&r.title, "ttf")) {
+                assert!(
+                    r.score < doc_score,
+                    "{} scored {} against the document's {doc_score}: {:?}",
+                    r.title,
+                    r.score,
+                    listing()
+                );
+            }
+            // Below every non-asset hit, not merely the document.
+            let first_font = out
+                .iter()
+                .position(|r| has_ext(&r.title, "ttf"))
+                .expect("the fonts are still in the results");
+            let last_non_asset = out
+                .iter()
+                .rposition(|r| !has_ext(&r.title, "ttf") && !has_ext(&r.title, "grf"))
+                .expect("some non-asset hit");
+            assert!(
+                first_font > last_non_asset,
+                "a font appears at {first_font}, above the last non-asset hit at \
+                 {last_non_asset}: {:?}",
+                listing()
+            );
+            assert_eq!(
+                out.iter().filter(|r| has_ext(&r.title, "ttf")).count(),
+                4,
+                "all four fonts must still be reachable: {:?}",
+                listing()
+            );
+        }
+
+        // Phase `vendored_content_sinks_but_stays_findable`.
+        {
+            let mine = name_score("parser", &facts("~/proj/src/parser.rs")).unwrap();
+            let theirs = name_score("parser", &facts("~/proj/vendor/pkg/parser.rs")).unwrap();
+            assert!(
+                mine > theirs,
+                "the user's own parser.rs ({mine}) must outrank the vendored copy \
+                 ({theirs})"
+            );
+
+            let p = provider_with_index(vec![("~/proj/vendor/pkg/parser.rs", false)]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let out = p.query(ctx_for("parser.rs", &[ResourceKind::File], &st, &doc));
+            assert_eq!(
+                out.len(),
+                1,
+                "a penalised match must still be returned: {out:?}"
+            );
+            assert!(
+                out[0].score >= 1,
+                "the score floor keeps the row above the no-match threshold"
+            );
+        }
+
+        // Phase `depth_counts_against_a_buried_path`.
+        {
+            assert_eq!(depth_penalty("~/report.md"), 0);
+            assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
+            let shallow = name_score("open", &facts("~/Dokumente/opening.md")).unwrap();
+            let buried = name_score(
+                "open",
+                &facts("~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg"),
+            )
+            .unwrap();
+            assert!(
+                shallow > buried,
+                "a document two levels down ({shallow}) must outrank a game sound \
+                 effect seven levels down ({buried})"
+            );
+            assert_eq!(depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"), PENALTY_DEPTH_MAX);
+        }
+
+        // Phase `equal_scores_prefer_the_shallower_path`.
+        {
+            // Same filename/age/penalty, so the scores really tie and depth is
+            // the only tiebreak left. Both sit inside `DEPTH_FREE`, where depth
+            // costs nothing — a deeper path would separate by penalty instead.
+            let p = provider_with_index(vec![
+                ("~/src/project/module/todo.md", false),
+                ("~/src/todo.md", false),
+            ]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let out = p.query(ctx_for("todo", &[ResourceKind::File], &st, &doc));
+            assert_eq!(out.len(), 2);
+            assert_eq!(
+                out[0].score, out[1].score,
+                "the fixture must actually tie on score, or the depth tiebreak \
+                 is not what is being tested: {out:?}"
+            );
+            assert_eq!(out[0].id, "/home/tester/src/todo.md");
+        }
     }
 
-    /// A pattern with a `/` must match consecutive components, not just one.
     #[test]
-    fn multi_component_skip_patterns_match() {
-        let home = Path::new("/home/x");
-        assert!(
-            SKIP_DIRS.contains(&"Downloads/tmp"),
-            "fixture precondition: the list still carries a multi-component \
-             pattern"
-        );
-        assert!(should_skip(Path::new("/home/x/Downloads/tmp/a.iso"), home));
-        assert!(should_skip(
-            Path::new("/home/x/go/pkg/mod/rsc.io/quote"),
-            home
-        ));
-        assert!(should_skip(
-            Path::new("/home/x/Android/Sdk/platforms"),
-            home
-        ));
-        assert!(!should_skip(Path::new("/home/x/Downloads/keep.iso"), home));
-        assert!(!should_skip(Path::new("/home/x/go/src/mod/thing.go"), home));
-        assert!(!should_skip(Path::new("/home/x/tmp/Downloads/a.iso"), home));
-        assert!(!should_skip(Path::new("/home/x/Android/notes.md"), home));
+    fn tokenizer_and_fuzzy_matcher_split_and_match_as_documented() {
+        // Phase `tokenize_splits_on_separators_and_camel_case`.
+        {
+            let words = |s: &str| {
+                let lower = s.to_lowercase();
+                tokenize(s, &lower)
+                    .into_iter()
+                    .map(|(a, b)| {
+                        lower
+                            .get(a as usize..b as usize)
+                            .unwrap_or_default()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(words("OpenTTD-Sans.ttf"), ["open", "ttd", "sans", "ttf"]);
+            assert_eq!(words("my_notes file.md"), ["my", "notes", "file", "md"]);
+            assert_eq!(words("HTTPServerLog"), ["http", "server", "log"]);
+            assert_eq!(words("report2026final"), ["report", "2026", "final"]);
+            assert_eq!(words("openapi.yaml"), ["openapi", "yaml"]);
+        }
+
+        // Phase `a_scattered_leaf_subsequence_still_matches`.
+        {
+            assert!(name_score("ntes", &facts("~/a/notes")).is_some());
+            assert!(name_score("tdo", &facts("~/a/todo.md")).is_some());
+            assert!(name_score("xz", &facts("~/a/notes")).is_none());
+        }
     }
 
     #[test]
-    fn depth_counts_against_a_buried_path() {
-        assert_eq!(depth_penalty("~/report.md"), 0);
-        assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
-        let shallow = name_score("open", &facts("~/Dokumente/opening.md")).unwrap();
-        let buried = name_score(
-            "open",
-            &facts("~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg"),
-        )
-        .unwrap();
-        assert!(
-            shallow > buried,
-            "a document two levels down ({shallow}) must outrank a game sound \
-             effect seven levels down ({buried})"
-        );
-        assert_eq!(depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"), PENALTY_DEPTH_MAX);
+    fn recency_breaks_name_ties_from_the_index_but_never_outvotes_the_name() {
+        // Phase `recency_separates_two_files_with_the_same_name`.
+        {
+            let fresh = name_score("report", &aged_facts("~/a/report.md", 0)).unwrap();
+            let stale = name_score("report", &aged_facts("~/b/report.md", 900)).unwrap();
+            assert!(
+                fresh > stale,
+                "the file touched today ({fresh}) must outrank the one from three \
+                 years ago ({stale})"
+            );
+        }
+
+        // Phase `recency_cannot_outvote_what_the_name_says`.
+        // A freshly unpacked archive cannot displace an exact old match.
+        {
+            let old_exact = name_score("notes", &aged_facts("~/a/notes.md", 900)).unwrap();
+            let new_weak = name_score(
+                "notes",
+                &aged_facts("~/b/my-meeting-notes-and-agenda-draft.md", 0),
+            )
+            .unwrap();
+            assert!(
+                old_exact > new_weak,
+                "a three-year-old notes.md ({old_exact}) must still beat a \
+                 freshly-touched my-meeting-notes-and-agenda-draft.md ({new_weak})"
+            );
+        }
+
+        // Phase `the_recency_band_comes_from_the_index_not_the_disk`.
+        // Proven by scoring a path that does not exist on disk.
+        {
+            let ghost = "~/definitely/not/on/this/disk/report.md";
+            assert!(!Path::new("/home/tester/definitely").exists());
+            let fresh = name_score("report", &aged_facts(ghost, 0)).unwrap();
+            let none = name_score("report", &facts(ghost)).unwrap();
+            assert_eq!(
+                fresh - none,
+                RECENCY_MAX,
+                "a today mtime carried in the index must contribute the full \
+                 recency band"
+            );
+        }
     }
 
-    /// Breadth-first spends the budget on the shallowest paths everywhere.
     #[test]
-    fn the_walk_indexes_every_tree_before_it_runs_out() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let root = home.path();
-        std::fs::create_dir_all(root.join("Aaa-huge")).unwrap();
-        let mut deep = root.join("Aaa-huge");
-        for level in 0..6 {
-            deep = deep.join(format!("level{level}"));
-            std::fs::create_dir_all(&deep).unwrap();
-            for i in 0..40 {
-                std::fs::write(deep.join(format!("filler-{i}.bin")), b"x").unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn the_walk_skips_bloat_and_indexes_every_tree_before_ranking() {
+        // Phase `skip_dirs_hits_common_bloat`.
+        {
+            let home = Path::new("/home/x");
+            assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
+            assert!(should_skip(Path::new("/home/x/proj/target/debug"), home));
+            assert!(should_skip(Path::new("/home/x/.cache/foo"), home));
+            assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
+        }
+
+        // Phase `multi_component_skip_patterns_match`.
+        // A pattern with a `/` must match consecutive components, not just one.
+        {
+            let home = Path::new("/home/x");
+            assert!(
+                SKIP_DIRS.contains(&"Downloads/tmp"),
+                "fixture precondition: the list still carries a multi-component \
+                 pattern"
+            );
+            assert!(should_skip(Path::new("/home/x/Downloads/tmp/a.iso"), home));
+            assert!(should_skip(
+                Path::new("/home/x/go/pkg/mod/rsc.io/quote"),
+                home
+            ));
+            assert!(should_skip(
+                Path::new("/home/x/Android/Sdk/platforms"),
+                home
+            ));
+            assert!(!should_skip(Path::new("/home/x/Downloads/keep.iso"), home));
+            assert!(!should_skip(Path::new("/home/x/go/src/mod/thing.go"), home));
+            assert!(!should_skip(Path::new("/home/x/tmp/Downloads/a.iso"), home));
+            assert!(!should_skip(Path::new("/home/x/Android/notes.md"), home));
+        }
+
+        // Phase `the_walk_indexes_every_tree_before_it_runs_out`.
+        // Breadth-first spends the budget on the shallowest paths everywhere.
+        {
+            let home = tempfile::tempdir().expect("tempdir");
+            let root = home.path();
+            std::fs::create_dir_all(root.join("Aaa-huge")).unwrap();
+            let mut deep = root.join("Aaa-huge");
+            for level in 0..6 {
+                deep = deep.join(format!("level{level}"));
+                std::fs::create_dir_all(&deep).unwrap();
+                for i in 0..40 {
+                    std::fs::write(deep.join(format!("filler-{i}.bin")), b"x").unwrap();
+                }
+            }
+            for tree in ["Documents", "Notes", "Projects", "Pictures"] {
+                std::fs::create_dir_all(root.join(tree)).unwrap();
+                std::fs::write(root.join(tree).join("target.md"), b"x").unwrap();
+            }
+
+            let entries = walk_breadth_first(root, 60);
+            assert_eq!(entries.len(), 60, "the budget must be spent in full");
+            for tree in ["Documents", "Notes", "Projects", "Pictures"] {
+                assert!(
+                    entries
+                        .iter()
+                        .any(|e| e.display == format!("~/{tree}/target.md")),
+                    "~/{tree}/target.md missing — the budget went to one branch \
+                     again. Indexed: {:?}",
+                    entries.iter().map(|e| &e.display).collect::<Vec<_>>()
+                );
             }
         }
-        for tree in ["Documents", "Notes", "Projects", "Pictures"] {
-            std::fs::create_dir_all(root.join(tree)).unwrap();
-            std::fs::write(root.join(tree).join("target.md"), b"x").unwrap();
-        }
 
-        let entries = walk_breadth_first(root, 60);
-        assert_eq!(entries.len(), 60, "the budget must be spent in full");
-        for tree in ["Documents", "Notes", "Projects", "Pictures"] {
-            assert!(
-                entries
-                    .iter()
-                    .any(|e| e.display == format!("~/{tree}/target.md")),
-                "~/{tree}/target.md missing — the budget went to one branch \
-                 again. Indexed: {:?}",
-                entries.iter().map(|e| &e.display).collect::<Vec<_>>()
+        // Phase `the_best_matches_win_regardless_of_walk_position`.
+        // The best matches win regardless of where they sit in the index.
+        {
+            let mut entries: Vec<(String, bool)> = (0..50)
+                .map(|i| (format!("~/report/notes/entry-{i:03}.md"), false))
+                .collect();
+            entries.push(("~/archive/report-final.md".to_string(), false));
+            let owned: Vec<(&str, bool)> = entries.iter().map(|(s, d)| (s.as_str(), *d)).collect();
+            let p = provider_with_index(owned);
+
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let out = p.query(ctx_for(
+                "report",
+                &[ResourceKind::File, ResourceKind::Folder],
+                &st,
+                &doc,
+            ));
+            assert_eq!(
+                out.first().map(|r| r.title.as_str()),
+                Some("report-final.md"),
+                "the leaf-name match must lead the fifty path-only matches it \
+                 sits behind in the index: {:?}",
+                out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
             );
         }
     }
@@ -1890,83 +1959,108 @@ mod tests {
     /// covered by the shared search provider tests in `ui`.
     const LARGE_CORPUS: usize = 4_000;
 
-    /// The best matches win regardless of where they sit in the index.
     #[test]
-    fn the_best_matches_win_regardless_of_walk_position() {
-        let mut entries: Vec<(String, bool)> = (0..50)
-            .map(|i| (format!("~/report/notes/entry-{i:03}.md"), false))
-            .collect();
-        entries.push(("~/archive/report-final.md".to_string(), false));
-        let owned: Vec<(&str, bool)> = entries.iter().map(|(s, d)| (s.as_str(), *d)).collect();
-        let p = provider_with_index(owned);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn narrowing_reuses_the_last_sweep_until_a_reindex() {
+        // Phase `typing_a_word_narrows_instead_of_re_sweeping`.
+        // Compatibility queries use the same retained, bounded page path as
+        // the palette; no character may revive the former corpus sweep.
+        {
+            let paths: Vec<String> = (0..MAX_ENTRIES)
+                .map(|i| format!("~/Development/project-{i}/{}.rs", WORDS[i % WORDS.len()]))
+                .collect();
+            let entries: Vec<(&str, bool)> = paths.iter().map(|s| (s.as_str(), false)).collect();
+            let p = provider_with_index(entries);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
 
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let out = p.query(ctx_for(
-            "report",
-            &[ResourceKind::File, ResourceKind::Folder],
-            &st,
-            &doc,
-        ));
-        assert_eq!(
-            out.first().map(|r| r.title.as_str()),
-            Some("report-final.md"),
-            "the leaf-name match must lead the fifty path-only matches it \
-             sits behind in the index: {:?}",
-            out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
-        );
-    }
+            let word = "component";
+            let mut scanned = Vec::new();
+            for end in 1..=word.len() {
+                let prefix = word.get(..end).unwrap_or_default();
+                p.query(ctx_for(prefix, &[ResourceKind::File], &st, &doc));
+                scanned.push(p.last_scanned.load(Ordering::Relaxed));
+            }
 
-    #[test]
-    fn equal_scores_prefer_the_shallower_path() {
-        // Same filename/age/penalty, so the scores really tie and depth is
-        // the only tiebreak left. Both sit inside `DEPTH_FREE`, where depth
-        // costs nothing — a deeper path would separate by penalty instead.
-        let p = provider_with_index(vec![
-            ("~/src/project/module/todo.md", false),
-            ("~/src/todo.md", false),
-        ]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let out = p.query(ctx_for("todo", &[ResourceKind::File], &st, &doc));
-        assert_eq!(out.len(), 2);
-        assert_eq!(
-            out[0].score, out[1].score,
-            "the fixture must actually tie on score, or the depth tiebreak \
-             is not what is being tested: {out:?}"
-        );
-        assert_eq!(out[0].id, "/home/tester/src/todo.md");
-    }
-
-    /// Compatibility queries use the same retained, bounded page path as
-    /// the palette; no character may revive the former corpus sweep.
-    #[test]
-    fn typing_a_word_narrows_instead_of_re_sweeping() {
-        let paths: Vec<String> = (0..MAX_ENTRIES)
-            .map(|i| format!("~/Development/project-{i}/{}.rs", WORDS[i % WORDS.len()]))
-            .collect();
-        let entries: Vec<(&str, bool)> = paths.iter().map(|s| (s.as_str(), false)).collect();
-        let p = provider_with_index(entries);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-
-        let word = "component";
-        let mut scanned = Vec::new();
-        for end in 1..=word.len() {
-            let prefix = word.get(..end).unwrap_or_default();
-            p.query(ctx_for(prefix, &[ResourceKind::File], &st, &doc));
-            scanned.push(p.last_scanned.load(Ordering::Relaxed));
+            for (i, w) in scanned.iter().enumerate() {
+                assert!(
+                    *w <= SearchBudget::PALETTE.max_work,
+                    "character {i} examined {w} rows; compatibility must remain \
+                     within the page work ceiling: {scanned:?}"
+                );
+            }
         }
 
-        for (i, w) in scanned.iter().enumerate() {
-            assert!(
-                *w <= SearchBudget::PALETTE.max_work,
-                "character {i} examined {w} rows; compatibility must remain \
-                 within the page work ceiling: {scanned:?}"
+        // Phase `narrowing_returns_what_a_cold_query_would`.
+        // Extending a needle must return what a cold query for it would.
+        {
+            let p = provider_with_index(vec![
+                ("~/notes/todo.md", false),
+                ("~/todo/notes.md", false),
+                ("~/Development/day-todo-list.md", false),
+                ("~/tmp/tdo.md", false),
+                ("~/unrelated/readme.md", false),
+            ]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let kinds = [ResourceKind::File, ResourceKind::Folder];
+
+            for prefix in ["t", "to", "tod", "todo"] {
+                let mut warm = Vec::new();
+                for end in 1..=prefix.len() {
+                    let sub = prefix.get(..end).unwrap_or_default();
+                    warm = p.query(ctx_for(sub, &kinds, &st, &doc));
+                }
+                let cold = p.query(ctx_for(prefix, &kinds, &st, &doc));
+
+                let ids = |v: &[SearchResult]| v.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+                assert_eq!(
+                    ids(&warm),
+                    ids(&cold),
+                    "typing into {prefix:?} produced a different result set than \
+                     querying it outright"
+                );
+            }
+        }
+
+        // Phase `a_reindex_invalidates_the_narrowing_cache`.
+        {
+            let p = provider_with_index(vec![("~/alpha.md", false), ("~/alpha-two.md", false)]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            assert_eq!(
+                p.query(ctx_for("alpha", &[ResourceKind::File], &st, &doc))
+                    .len(),
+                2
             );
+
+            {
+                let mut guard = p.name_index.lock().unwrap();
+                let generation = guard.generation.wrapping_add(1);
+                *guard = Arc::new(NameIndex::from_entries(
+                    vec![NameEntry {
+                        path: PathBuf::from("/home/tester/alphabet.md"),
+                        display: "~/alphabet.md".into(),
+                        facts: NameFacts::new("~/alphabet.md", None),
+                        is_dir: false,
+                    }],
+                    generation,
+                ));
+            }
+            let out = p.query(ctx_for("alphab", &[ResourceKind::File], &st, &doc));
+            assert_eq!(
+                out.len(),
+                1,
+                "the post-rescan entry must be found, not looked up through \
+                 stale indices: {out:?}"
+            );
+            assert_eq!(out[0].title, "alphabet.md");
         }
     }
 
@@ -1987,280 +2081,330 @@ mod tests {
         "walker",
     ];
 
-    /// Extending a needle must return what a cold query for it would.
     #[test]
-    fn narrowing_returns_what_a_cold_query_would() {
-        let p = provider_with_index(vec![
-            ("~/notes/todo.md", false),
-            ("~/todo/notes.md", false),
-            ("~/Development/day-todo-list.md", false),
-            ("~/tmp/tdo.md", false),
-            ("~/unrelated/readme.md", false),
-        ]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let kinds = [ResourceKind::File, ResourceKind::Folder];
-
-        for prefix in ["t", "to", "tod", "todo"] {
-            let mut warm = Vec::new();
-            for end in 1..=prefix.len() {
-                let sub = prefix.get(..end).unwrap_or_default();
-                warm = p.query(ctx_for(sub, &kinds, &st, &doc));
-            }
-            let cold = p.query(ctx_for(prefix, &kinds, &st, &doc));
-
-            let ids = |v: &[SearchResult]| v.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
-            assert_eq!(
-                ids(&warm),
-                ids(&cold),
-                "typing into {prefix:?} produced a different result set than \
-                 querying it outright"
-            );
-        }
-    }
-
-    #[test]
-    fn a_reindex_invalidates_the_narrowing_cache() {
-        let p = provider_with_index(vec![("~/alpha.md", false), ("~/alpha-two.md", false)]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        assert_eq!(
-            p.query(ctx_for("alpha", &[ResourceKind::File], &st, &doc))
-                .len(),
-            2
-        );
-
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn retained_corpus_pages_with_fixed_work_and_stable_cursors() {
+        // Phase `pages_a_large_retained_corpus_with_fixed_work`.
+        // Paging a large retained corpus must not quietly turn the first
+        // (or a late) palette page back into a whole-index scan.  This measures
+        // inspected entries, not elapsed time, so it remains meaningful under
+        // sanitizers and on slow CI workers.
         {
-            let mut guard = p.name_index.lock().unwrap();
-            let generation = guard.generation.wrapping_add(1);
-            *guard = Arc::new(NameIndex::from_entries(
-                vec![NameEntry {
-                    path: PathBuf::from("/home/tester/alphabet.md"),
-                    display: "~/alphabet.md".into(),
-                    facts: NameFacts::new("~/alphabet.md", None),
-                    is_dir: false,
-                }],
-                generation,
-            ));
-        }
-        let out = p.query(ctx_for("alphab", &[ResourceKind::File], &st, &doc));
-        assert_eq!(
-            out.len(),
-            1,
-            "the post-rescan entry must be found, not looked up through \
-             stale indices: {out:?}"
-        );
-        assert_eq!(out[0].title, "alphabet.md");
-    }
-
-    /// Paging a large retained corpus must not quietly turn the first
-    /// (or a late) palette page back into a whole-index scan.  This measures
-    /// inspected entries, not elapsed time, so it remains meaningful under
-    /// sanitizers and on slow CI workers.
-    #[test]
-    fn pages_a_large_retained_corpus_with_fixed_work() {
-        let mut paths = (0..LARGE_CORPUS)
-            .map(|i| format!("~/archive/{i:06}-target-needle.md"))
-            .collect::<Vec<_>>();
-        // The exact filename is deliberately last: page quality must come
-        // from the retained exact-name index, not traversal position.
-        paths.push("~/archive/target-needle.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let budget = SearchBudget {
-            max_results: 17,
-            max_bytes: 8_192,
-            max_work: 113,
-        };
-        let first = eventually_page(|| {
-            p.query_page(
-                ctx_for("target-needle", &[ResourceKind::File], &st, &doc),
-                None,
-                budget,
-            )
-        });
-        assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
-        assert!(first.results.len() <= 17);
-        assert_eq!(
-            first.results.first().map(|row| row.title.as_str()),
-            Some("target-needle.md"),
-            "an exact filename behind thousands of earlier candidates must lead"
-        );
-    }
-
-    #[test]
-    fn late_non_exact_pages_keep_the_same_work_ceiling() {
-        let paths = (0..=LARGE_CORPUS)
-            .map(|i| format!("~/archive/{i:06}-needle.md"))
-            .collect::<Vec<_>>();
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let budget = SearchBudget {
-            max_results: 17,
-            max_bytes: 8_192,
-            max_work: 113,
-        };
-        let first = eventually_page(|| {
-            p.query_page(
-                ctx_for("needle", &[ResourceKind::File], &st, &doc),
-                None,
-                budget,
-            )
-        });
-        let mut cursor = first.next_cursor;
-        // 200 pages of 17 stay short of the corpus, so the last one is late
-        // but not the end.
-        for _ in 0..200 {
-            let page = p.query_page(
-                ctx_for("needle", &[ResourceKind::File], &st, &doc),
-                cursor.as_ref(),
-                budget,
-            );
-            assert!(!page.stale_cursor);
-            assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
-            cursor = page.next_cursor;
-        }
-        assert!(cursor.is_some(), "fixture must reach a genuine late page");
-    }
-
-    #[test]
-    fn late_leaf_prefix_outranks_thousands_of_path_substrings() {
-        let mut paths = (0..LARGE_CORPUS)
-            .map(|i| format!("~/report/archive/item-{i:06}.md"))
-            .collect::<Vec<_>>();
-        paths.push("~/later/report-final.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let page = eventually_page(|| {
-            p.query_page(
-                ctx_for("report", &[ResourceKind::File], &st, &doc),
-                None,
-                SearchBudget {
-                    max_results: 8,
-                    max_bytes: 8_192,
-                    max_work: 32,
-                },
-            )
-        });
-        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
-        assert_eq!(page.results[0].title, "report-final.md");
-    }
-
-    #[test]
-    fn late_leaf_substring_uses_retained_trigram_postings() {
-        let mut paths = (0..LARGE_CORPUS)
-            .map(|i| format!("~/lunar/archive/item-{i:06}.md"))
-            .collect::<Vec<_>>();
-        paths.push("~/later/monthlylunarlog.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let page = eventually_page(|| {
-            p.query_page(
-                ctx_for("lunar", &[ResourceKind::File], &st, &doc),
-                None,
-                SearchBudget {
-                    max_results: 8,
-                    max_bytes: 8_192,
-                    max_work: 32,
-                },
-            )
-        });
-        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
-        assert_eq!(page.results[0].title, "monthlylunarlog.md");
-    }
-
-    #[test]
-    fn late_fuzzy_hit_uses_a_retained_character_bucket() {
-        let mut paths = (0..LARGE_CORPUS)
-            .map(|i| format!("~/archive/item-{i:06}.md"))
-            .collect::<Vec<_>>();
-        paths.push("~/later/monthlylunarlog.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let page = eventually_page(|| {
-            p.query_page(
-                ctx_for("mnlr", &[ResourceKind::File], &st, &doc),
-                None,
-                SearchBudget {
-                    max_results: 8,
-                    max_bytes: 8_192,
-                    max_work: 32,
-                },
-            )
-        });
-        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
-        assert_eq!(page.results[0].title, "monthlylunarlog.md");
-    }
-
-    #[test]
-    fn one_character_bucket_is_preranked_before_the_palette_opens() {
-        let mut paths = (0..LARGE_CORPUS)
-            .map(|i| format!("~/archive/another-item-{i:06}.md"))
-            .collect::<Vec<_>>();
-        paths.push("~/later/zreport.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let page = p.query_page(
-            ctx_for("r", &[ResourceKind::File], &st, &doc),
-            None,
-            SearchBudget {
-                max_results: 8,
+            let mut paths = (0..LARGE_CORPUS)
+                .map(|i| format!("~/archive/{i:06}-target-needle.md"))
+                .collect::<Vec<_>>();
+            // The exact filename is deliberately last: page quality must come
+            // from the retained exact-name index, not traversal position.
+            paths.push("~/archive/target-needle.md".into());
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let budget = SearchBudget {
+                max_results: 17,
                 max_bytes: 8_192,
-                max_work: 32,
-            },
-        );
-        assert_eq!(p.last_scanned.load(Ordering::Relaxed), 32);
-        assert_eq!(page.results[0].title, "zreport.md");
+                max_work: 113,
+            };
+            let first = eventually_page(|| {
+                p.query_page(
+                    ctx_for("target-needle", &[ResourceKind::File], &st, &doc),
+                    None,
+                    budget,
+                )
+            });
+            assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
+            assert!(first.results.len() <= 17);
+            assert_eq!(
+                first.results.first().map(|row| row.title.as_str()),
+                Some("target-needle.md"),
+                "an exact filename behind thousands of earlier candidates must lead"
+            );
+        }
+
+        // Phase `late_non_exact_pages_keep_the_same_work_ceiling`.
+        {
+            let paths = (0..=LARGE_CORPUS)
+                .map(|i| format!("~/archive/{i:06}-needle.md"))
+                .collect::<Vec<_>>();
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let budget = SearchBudget {
+                max_results: 17,
+                max_bytes: 8_192,
+                max_work: 113,
+            };
+            let first = eventually_page(|| {
+                p.query_page(
+                    ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                    None,
+                    budget,
+                )
+            });
+            let mut cursor = first.next_cursor;
+            // 200 pages of 17 stay short of the corpus, so the last one is late
+            // but not the end.
+            for _ in 0..200 {
+                let page = p.query_page(
+                    ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                    cursor.as_ref(),
+                    budget,
+                );
+                assert!(!page.stale_cursor);
+                assert!(p.last_scanned.load(Ordering::Relaxed) <= 113);
+                cursor = page.next_cursor;
+            }
+            assert!(cursor.is_some(), "fixture must reach a genuine late page");
+        }
+
+        // Phase `rejects_a_cursor_after_the_retained_index_changes`.
+        {
+            let p =
+                provider_with_index(vec![("~/one/needle.md", false), ("~/two/needle.md", false)]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let page = eventually_page(|| {
+                p.query_page(
+                    ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
+                    None,
+                    SearchBudget {
+                        max_results: 1,
+                        max_bytes: 8_192,
+                        max_work: 1,
+                    },
+                )
+            });
+            let cursor = page.next_cursor.expect("a continuation page");
+            {
+                let mut publication = p.name_index.lock().unwrap();
+                *publication = Arc::new(NameIndex::from_entries(
+                    publication.entries.as_ref().clone(),
+                    2,
+                ));
+            }
+            let stale = p.query_page(
+                ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
+                Some(&cursor),
+                SearchBudget::PALETTE,
+            );
+            assert!(stale.stale_cursor);
+            assert!(stale.results.is_empty());
+        }
+
+        // Phase `byte_limited_page_does_not_skip_the_first_unemitted_match`.
+        {
+            let huge = format!("~/{}-needle.md", "x".repeat(4_096));
+            let p = provider_with_index(vec![("~/a-needle.md", false), (&huge, false)]);
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let first = p.query_page(
+                ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 10,
+                    max_bytes: 512,
+                    max_work: 10,
+                },
+            );
+            assert_eq!(first.results.len(), 1);
+            assert!(first.budget_exhausted);
+            let retry = p.query_page(
+                ctx_for("needle", &[ResourceKind::File], &st, &doc),
+                first.next_cursor.as_ref(),
+                SearchBudget {
+                    max_results: 10,
+                    max_bytes: 16_384,
+                    max_work: 10,
+                },
+            );
+            assert_eq!(retry.results.len(), 1, "the oversized match was skipped");
+            assert_eq!(
+                retry.results[0].title.len(),
+                huge.rsplit('/').next().unwrap().len()
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn late_queries_use_retained_postings_and_preranked_buckets() {
+        // Phase `late_leaf_prefix_outranks_thousands_of_path_substrings`.
+        {
+            let mut paths = (0..LARGE_CORPUS)
+                .map(|i| format!("~/report/archive/item-{i:06}.md"))
+                .collect::<Vec<_>>();
+            paths.push("~/later/report-final.md".into());
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let page = eventually_page(|| {
+                p.query_page(
+                    ctx_for("report", &[ResourceKind::File], &st, &doc),
+                    None,
+                    SearchBudget {
+                        max_results: 8,
+                        max_bytes: 8_192,
+                        max_work: 32,
+                    },
+                )
+            });
+            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
+            assert_eq!(page.results[0].title, "report-final.md");
+        }
+
+        // Phase `late_leaf_substring_uses_retained_trigram_postings`.
+        {
+            let mut paths = (0..LARGE_CORPUS)
+                .map(|i| format!("~/lunar/archive/item-{i:06}.md"))
+                .collect::<Vec<_>>();
+            paths.push("~/later/monthlylunarlog.md".into());
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let page = eventually_page(|| {
+                p.query_page(
+                    ctx_for("lunar", &[ResourceKind::File], &st, &doc),
+                    None,
+                    SearchBudget {
+                        max_results: 8,
+                        max_bytes: 8_192,
+                        max_work: 32,
+                    },
+                )
+            });
+            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
+            assert_eq!(page.results[0].title, "monthlylunarlog.md");
+        }
+
+        // Phase `late_fuzzy_hit_uses_a_retained_character_bucket`.
+        {
+            let mut paths = (0..LARGE_CORPUS)
+                .map(|i| format!("~/archive/item-{i:06}.md"))
+                .collect::<Vec<_>>();
+            paths.push("~/later/monthlylunarlog.md".into());
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let page = eventually_page(|| {
+                p.query_page(
+                    ctx_for("mnlr", &[ResourceKind::File], &st, &doc),
+                    None,
+                    SearchBudget {
+                        max_results: 8,
+                        max_bytes: 8_192,
+                        max_work: 32,
+                    },
+                )
+            });
+            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 1);
+            assert_eq!(page.results[0].title, "monthlylunarlog.md");
+        }
+
+        // Phase `one_character_bucket_is_preranked_before_the_palette_opens`.
+        {
+            let mut paths = (0..LARGE_CORPUS)
+                .map(|i| format!("~/archive/another-item-{i:06}.md"))
+                .collect::<Vec<_>>();
+            paths.push("~/later/zreport.md".into());
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let page = p.query_page(
+                ctx_for("r", &[ResourceKind::File], &st, &doc),
+                None,
+                SearchBudget {
+                    max_results: 8,
+                    max_bytes: 8_192,
+                    max_work: 32,
+                },
+            );
+            assert_eq!(p.last_scanned.load(Ordering::Relaxed), 32);
+            assert_eq!(page.results[0].title, "zreport.md");
+        }
+
+        // Phase `path_substring_uses_a_retained_path_trigram_without_a_corpus_copy`.
+        {
+            let mut paths = (0..LARGE_CORPUS)
+                .map(|i| format!("~/very-long-project-{i:06}/unrelated.md"))
+                .collect::<Vec<_>>();
+            paths.push("~/later/ordinary.md".into());
+            let entries = paths.iter().map(|path| NameEntry {
+                path: PathBuf::from(path.replace('~', "/home/tester")),
+                display: path.clone(),
+                facts: NameFacts::new(path, None),
+                is_dir: false,
+            });
+            let p = provider_from_entries(entries.collect());
+            let chrome = empty_chrome();
+            let st = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let page = eventually_page(|| {
+                p.query_page(
+                    ctx_for("project-0039", &[ResourceKind::File], &st, &doc),
+                    None,
+                    SearchBudget {
+                        max_results: 8,
+                        max_bytes: 8_192,
+                        max_work: 32,
+                    },
+                )
+            });
+            assert!(
+                page.results
+                    .iter()
+                    .all(|row| row.id.contains("project-0039"))
+            );
+            assert!(p.last_scanned.load(Ordering::Relaxed) <= 32);
+        }
     }
 
     #[allow(
@@ -2321,115 +2465,5 @@ mod tests {
                 .sum::<usize>()
                 <= RANKED_QUERY_CACHE_MAX_POSITIONS
         );
-    }
-
-    #[test]
-    fn path_substring_uses_a_retained_path_trigram_without_a_corpus_copy() {
-        let mut paths = (0..LARGE_CORPUS)
-            .map(|i| format!("~/very-long-project-{i:06}/unrelated.md"))
-            .collect::<Vec<_>>();
-        paths.push("~/later/ordinary.md".into());
-        let entries = paths.iter().map(|path| NameEntry {
-            path: PathBuf::from(path.replace('~', "/home/tester")),
-            display: path.clone(),
-            facts: NameFacts::new(path, None),
-            is_dir: false,
-        });
-        let p = provider_from_entries(entries.collect());
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let page = eventually_page(|| {
-            p.query_page(
-                ctx_for("project-0039", &[ResourceKind::File], &st, &doc),
-                None,
-                SearchBudget {
-                    max_results: 8,
-                    max_bytes: 8_192,
-                    max_work: 32,
-                },
-            )
-        });
-        assert!(
-            page.results
-                .iter()
-                .all(|row| row.id.contains("project-0039"))
-        );
-        assert!(p.last_scanned.load(Ordering::Relaxed) <= 32);
-    }
-
-    #[test]
-    fn rejects_a_cursor_after_the_retained_index_changes() {
-        let p = provider_with_index(vec![("~/one/needle.md", false), ("~/two/needle.md", false)]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let page = eventually_page(|| {
-            p.query_page(
-                ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
-                None,
-                SearchBudget {
-                    max_results: 1,
-                    max_bytes: 8_192,
-                    max_work: 1,
-                },
-            )
-        });
-        let cursor = page.next_cursor.expect("a continuation page");
-        {
-            let mut publication = p.name_index.lock().unwrap();
-            *publication = Arc::new(NameIndex::from_entries(
-                publication.entries.as_ref().clone(),
-                2,
-            ));
-        }
-        let stale = p.query_page(
-            ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
-            Some(&cursor),
-            SearchBudget::PALETTE,
-        );
-        assert!(stale.stale_cursor);
-        assert!(stale.results.is_empty());
-    }
-
-    #[test]
-    fn byte_limited_page_does_not_skip_the_first_unemitted_match() {
-        let huge = format!("~/{}-needle.md", "x".repeat(4_096));
-        let p = provider_with_index(vec![("~/a-needle.md", false), (&huge, false)]);
-        let chrome = empty_chrome();
-        let st = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let first = p.query_page(
-            ctx_for("needle", &[ResourceKind::File], &st, &doc),
-            None,
-            SearchBudget {
-                max_results: 10,
-                max_bytes: 512,
-                max_work: 10,
-            },
-        );
-        assert_eq!(first.results.len(), 1);
-        assert!(first.budget_exhausted);
-        let retry = p.query_page(
-            ctx_for("needle", &[ResourceKind::File], &st, &doc),
-            first.next_cursor.as_ref(),
-            SearchBudget {
-                max_results: 10,
-                max_bytes: 16_384,
-                max_work: 10,
-            },
-        );
-        assert_eq!(retry.results.len(), 1, "the oversized match was skipped");
-        assert_eq!(
-            retry.results[0].title.len(),
-            huge.rsplit('/').next().unwrap().len()
-        );
-    }
-
-    #[test]
-    fn fuzzy_subsequence_true_and_false() {
-        assert!(fuzzy_subsequence("ntes", "notes"));
-        assert!(fuzzy_subsequence("tdo", "todo.md"));
-        assert!(!fuzzy_subsequence("xz", "notes"));
     }
 }

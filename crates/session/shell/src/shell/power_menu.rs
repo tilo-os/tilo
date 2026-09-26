@@ -38,16 +38,16 @@ pub(crate) struct PowerMenu {
     /// the type; hit-testing has no theme, so the scale is remembered here
     /// and the same geometry serves paint, clicks and keyboard focus.
     text_scale: f32,
+    /// Whether the display manager can open a greeter beside this session.
+    /// Without it, Switch user is not offered at all rather than failing.
+    user_switching: bool,
 }
 
 impl Default for PowerMenu {
+    /// Every action. The live session builds its menu with
+    /// [`PowerMenu::for_session`] from what the display manager supports.
     fn default() -> Self {
-        Self {
-            open: false,
-            transition: ui::Transition::closed(),
-            selected: 0,
-            text_scale: 1.0,
-        }
+        Self::for_session(true)
     }
 }
 
@@ -95,6 +95,32 @@ impl PowerMenuMetrics {
 }
 
 impl PowerMenu {
+    pub(crate) fn for_session(user_switching: bool) -> Self {
+        Self {
+            open: false,
+            transition: ui::Transition::closed(),
+            selected: 0,
+            text_scale: 1.0,
+            user_switching,
+        }
+    }
+
+    /// The rows this session offers, in paint order. Paint, clicks, keys,
+    /// semantic targets and the accessibility tree all index this list.
+    fn rows(&self) -> impl Iterator<Item = &'static PowerMenuRow> + '_ {
+        ACTIONS.iter().filter(|(action, ..)| {
+            self.user_switching
+                || !matches!(
+                    action,
+                    PowerMenuAction::External(os_actions::SessionAction::SwitchUser)
+                )
+        })
+    }
+
+    fn row_count(&self) -> usize {
+        self.rows().count()
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         self.open
     }
@@ -107,8 +133,7 @@ impl PowerMenu {
         if !self.open {
             return Vec::new();
         }
-        ACTIONS
-            .iter()
+        self.rows()
             .enumerate()
             .map(|(index, (action, _, _, _))| {
                 (action.semantic_name(), self.action_rect(viewport, index))
@@ -121,13 +146,14 @@ impl PowerMenu {
         self.open.then(|| {
             AccessNode::new(Role::Dialog)
                 .with_name("Session")
-                .with_description(
-                    "Lock, leave, switch user, suspend, restart, or shut down this computer",
-                )
+                .with_description(if self.user_switching {
+                    "Lock, leave, switch user, suspend, restart, or shut down this computer"
+                } else {
+                    "Lock, leave, suspend, restart, or shut down this computer"
+                })
                 .with_state(AccessState::new().modal(true))
                 .with_children(
-                    ACTIONS
-                        .iter()
+                    self.rows()
                         .map(|(_, label, detail, _)| {
                             AccessNode::new(Role::Button)
                                 .with_name(*label)
@@ -149,7 +175,7 @@ impl PowerMenu {
         }
         match path {
             [] => Some(self.panel_rect(viewport)),
-            [index] if *index < ACTIONS.len() => Some(self.action_rect(viewport, *index)),
+            [index] if *index < self.row_count() => Some(self.action_rect(viewport, *index)),
             _ => None,
         }
     }
@@ -158,7 +184,7 @@ impl PowerMenu {
         let [index] = path else {
             return false;
         };
-        if !self.open || *index >= ACTIONS.len() {
+        if !self.open || *index >= self.row_count() {
             return false;
         }
         self.selected = *index;
@@ -210,11 +236,11 @@ impl PowerMenu {
         // adjacent actions cannot be confused. The stable rectangles remain
         // valid semantic hit targets too: `action_rects` publishes them to
         // accessibility and automation before the transition settles.
-        let Some(index) = (0..ACTIONS.len())
+        let count = self.row_count();
+        let Some(index) = (0..count)
             .find(|&index| self.action_rect(viewport, index).contains(painted_point))
             .or_else(|| {
-                (0..ACTIONS.len())
-                    .find(|&index| self.action_rect(viewport, index).contains(stable_point))
+                (0..count).find(|&index| self.action_rect(viewport, index).contains(stable_point))
             })
         else {
             return PowerMenuClick::Consumed;
@@ -231,12 +257,12 @@ impl PowerMenu {
     /// from, at the list-Panel width (HIG §9.6) and as tall as its rows need
     /// at the current text scale — capped to the viewport's bottom inset.
     pub(crate) fn panel_rect(&self, viewport: Rect) -> Rect {
-        panel_rect_with(viewport, self.metrics())
+        panel_rect_with(viewport, self.metrics(), self.row_count())
     }
 
     /// Row `index`, inset by the panel padding, on the metrics' pitch.
     pub(crate) fn action_rect(&self, viewport: Rect, index: usize) -> Rect {
-        action_rect_with(viewport, index, self.metrics())
+        action_rect_with(viewport, index, self.metrics(), self.row_count())
     }
 
     /// Convert a pointer in painted viewport coordinates back into the
@@ -261,6 +287,7 @@ impl PowerMenu {
         if !self.open {
             return PowerMenuClick::Ignored;
         }
+        let count = self.row_count();
         match key {
             Key::Named(NamedKey::Escape) => {
                 self.close();
@@ -270,11 +297,11 @@ impl PowerMenu {
                 self.selected = self
                     .selected
                     .checked_sub(1)
-                    .unwrap_or(ACTIONS.len().saturating_sub(1));
+                    .unwrap_or_else(|| count.saturating_sub(1));
                 PowerMenuClick::Consumed
             }
             Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                self.selected = if self.selected.saturating_add(1) >= ACTIONS.len() {
+                self.selected = if self.selected.saturating_add(1) >= count {
                     0
                 } else {
                     self.selected.saturating_add(1)
@@ -286,9 +313,9 @@ impl PowerMenu {
                     self.selected = self
                         .selected
                         .checked_sub(1)
-                        .unwrap_or(ACTIONS.len().saturating_sub(1));
+                        .unwrap_or_else(|| count.saturating_sub(1));
                 } else {
-                    self.selected = if self.selected.saturating_add(1) >= ACTIONS.len() {
+                    self.selected = if self.selected.saturating_add(1) >= count {
                         0
                     } else {
                         self.selected.saturating_add(1)
@@ -302,7 +329,7 @@ impl PowerMenu {
     }
 
     fn activate(&mut self, index: usize) -> PowerMenuClick {
-        let Some(action) = ACTIONS.get(index) else {
+        let Some(action) = self.rows().nth(index) else {
             return PowerMenuClick::Consumed;
         };
         self.close();
@@ -431,7 +458,7 @@ impl PowerMenu {
         );
         let inset = f64::from(theme.tokens.spacing.s3);
         let icon_px = f64::from(theme.tokens.metrics.icon_md);
-        for (index, (_, label, detail, icon)) in ACTIONS.iter().enumerate() {
+        for (index, (_, label, detail, icon)) in self.rows().enumerate() {
             let row = self.action_rect(viewport, index);
             let selected = self.selected == index;
             // Control role: the chosen row is a lift (HIG §9.3), never an
@@ -551,7 +578,9 @@ impl PowerMenuAction {
     }
 }
 
-const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
+type PowerMenuRow = (PowerMenuAction, &'static str, &'static str, ui::icons::Icon);
+
+const ACTIONS: [PowerMenuRow; 6] = [
     (
         PowerMenuAction::Lock,
         "Lock",
@@ -592,12 +621,21 @@ const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
 
 #[cfg(test)]
 fn panel_rect(viewport: Rect) -> Rect {
-    panel_rect_with(viewport, PowerMenuMetrics::for_text_scale(1.0))
+    panel_rect_with(
+        viewport,
+        PowerMenuMetrics::for_text_scale(1.0),
+        ACTIONS.len(),
+    )
 }
 
 #[cfg(test)]
 fn action_rect(viewport: Rect, index: usize) -> Rect {
-    action_rect_with(viewport, index, PowerMenuMetrics::for_text_scale(1.0))
+    action_rect_with(
+        viewport,
+        index,
+        PowerMenuMetrics::for_text_scale(1.0),
+        ACTIONS.len(),
+    )
 }
 
 fn layout_metrics(viewport: Rect, m: PowerMenuMetrics) -> (usize, f64, f64, f64) {
@@ -608,9 +646,9 @@ fn layout_metrics(viewport: Rect, m: PowerMenuMetrics) -> (usize, f64, f64, f64)
     (columns, top, row_h, action_gap(columns))
 }
 
-fn panel_rect_with(viewport: Rect, m: PowerMenuMetrics) -> Rect {
+fn panel_rect_with(viewport: Rect, m: PowerMenuMetrics, count: usize) -> Rect {
     let (columns, top, row_h, gap) = layout_metrics(viewport, m);
-    let rows = ACTIONS.len().div_ceil(columns);
+    let rows = count.div_ceil(columns);
     let preferred_width: f64 = if columns == 2 { 424.0 } else { 336.0 };
     let width = preferred_width.min((viewport.width() - 16.0).max(1.0));
     let height = top
@@ -631,10 +669,10 @@ fn panel_rect_with(viewport: Rect, m: PowerMenuMetrics) -> Rect {
     clippy::arithmetic_side_effects,
     reason = "`columns` comes from action_columns, which only returns 1 or 2, so the remainder and quotient cannot divide by zero"
 )]
-fn action_rect_with(viewport: Rect, index: usize, m: PowerMenuMetrics) -> Rect {
-    let panel = panel_rect_with(viewport, m);
+fn action_rect_with(viewport: Rect, index: usize, m: PowerMenuMetrics, count: usize) -> Rect {
+    let panel = panel_rect_with(viewport, m, count);
     let (columns, top, wanted_h, gap) = layout_metrics(viewport, m);
-    let rows = ACTIONS.len().div_ceil(columns);
+    let rows = count.div_ceil(columns);
     let width = (panel.width() - 24.0 - small_count_to_f64(columns.saturating_sub(1)) * gap)
         / small_count_to_f64(columns);
     let row_h = wanted_h.min(
@@ -708,376 +746,481 @@ mod tests {
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
     #[test]
-    fn open_menu_exports_the_same_six_semantic_rows_it_paints() {
-        let mut menu = PowerMenu::default();
-        assert!(menu.action_rects(VIEWPORT).is_empty());
-        assert!(menu.accessibility_snapshot().is_none());
-        menu.open();
-        let targets = menu.action_rects(VIEWPORT);
-        assert_eq!(
-            targets.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            [
-                "power_lock",
-                "power_logout",
-                "power_switch_user",
-                "power_suspend",
-                "power_restart",
-                "power_shut_down",
-            ]
-        );
-        assert!(targets.iter().all(|(_, rect)| rect.area() > 0.0));
-        assert_eq!(
-            menu.accessibility_snapshot()
-                .expect("open session menu")
-                .children
-                .len(),
-            ACTIONS.len()
-        );
-    }
-    #[test]
-    fn lock_switch_user_and_suspend_execute_on_first_click() {
-        let mut menu = PowerMenu::default();
-        for (index, expected) in [
-            (0, PowerMenuClick::Lock),
-            (
-                2,
-                PowerMenuClick::Execute(os_actions::SessionAction::SwitchUser),
-            ),
-            (
-                3,
-                PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
-            ),
-        ] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn power_menu_rows_export_and_execute_on_first_click_or_key() {
+        fn open_menu_exports_the_same_six_semantic_rows_it_paints() {
+            let mut menu = PowerMenu::default();
+            assert!(menu.action_rects(VIEWPORT).is_empty());
+            assert!(menu.accessibility_snapshot().is_none());
             menu.open();
-            menu.force_settled_for_visual_test();
-            let point = menu.action_rect(VIEWPORT, index).center();
-            assert_eq!(menu.click(VIEWPORT, point), expected);
-            assert!(!menu.open);
+            let targets = menu.action_rects(VIEWPORT);
+            assert_eq!(
+                targets.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+                [
+                    "power_lock",
+                    "power_logout",
+                    "power_switch_user",
+                    "power_suspend",
+                    "power_restart",
+                    "power_shut_down",
+                ]
+            );
+            assert!(targets.iter().all(|(_, rect)| rect.area() > 0.0));
+            assert_eq!(
+                menu.accessibility_snapshot()
+                    .expect("open session menu")
+                    .children
+                    .len(),
+                ACTIONS.len()
+            );
         }
-    }
 
-    #[test]
-    fn every_visible_action_executes_on_first_click() {
-        for (index, expected) in [
-            (1, os_actions::SessionAction::Logout),
-            (4, os_actions::SessionAction::Restart),
-            (5, os_actions::SessionAction::ShutDown),
-        ] {
+        fn lock_switch_user_and_suspend_execute_on_first_click() {
+            let mut menu = PowerMenu::default();
+            for (index, expected) in [
+                (0, PowerMenuClick::Lock),
+                (
+                    2,
+                    PowerMenuClick::Execute(os_actions::SessionAction::SwitchUser),
+                ),
+                (
+                    3,
+                    PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
+                ),
+            ] {
+                menu.open();
+                menu.force_settled_for_visual_test();
+                let point = menu.action_rect(VIEWPORT, index).center();
+                assert_eq!(menu.click(VIEWPORT, point), expected);
+                assert!(!menu.open);
+            }
+        }
+
+        fn every_visible_action_executes_on_first_click() {
+            for (index, expected) in [
+                (1, os_actions::SessionAction::Logout),
+                (4, os_actions::SessionAction::Restart),
+                (5, os_actions::SessionAction::ShutDown),
+            ] {
+                let mut menu = PowerMenu::default();
+                menu.open();
+                menu.force_settled_for_visual_test();
+                let point = menu.action_rect(VIEWPORT, index).center();
+                assert_eq!(
+                    menu.click(VIEWPORT, point),
+                    PowerMenuClick::Execute(expected)
+                );
+                assert!(!menu.open);
+            }
+        }
+
+        fn opening_animation_hit_test_tracks_the_painted_logout_row() {
             let mut menu = PowerMenu::default();
             menu.open();
-            menu.force_settled_for_visual_test();
-            let point = menu.action_rect(VIEWPORT, index).center();
+            let now = Instant::now();
+            let panel = panel_rect(VIEWPORT);
+            let stable = action_rect(VIEWPORT, 1).center();
+            let (_, dy, scale) = modal_transition_curve(&menu.transition, now, 0.94);
+            let centre = panel.center();
+            let painted = Point::new(
+                centre.x + (stable.x - centre.x) * scale,
+                centre.y + dy + (stable.y - centre.y) * scale,
+            );
+            let logical = menu.untransform_pointer(VIEWPORT, painted, now);
+            assert!((logical.x - stable.x).abs() < 0.001);
+            assert!((logical.y - stable.y).abs() < 0.001);
+            // The production click samples a fresh instant. Freeze the transition
+            // at this same intermediate value so the regression remains exact.
             assert_eq!(
-                menu.click(VIEWPORT, point),
-                PowerMenuClick::Execute(expected)
+                (0..ACTIONS.len()).find(|&index| action_rect(VIEWPORT, index).contains(logical)),
+                Some(1)
+            );
+        }
+
+        fn keyboard_navigation_reaches_actions_and_activates_once() {
+            use winit::keyboard::{Key, NamedKey};
+
+            let mut menu = PowerMenu::default();
+            menu.open();
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::ArrowDown), false),
+                PowerMenuClick::Consumed
+            );
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::Enter), false),
+                PowerMenuClick::Execute(os_actions::SessionAction::Logout)
+            );
+
+            menu.open();
+            menu.selected = 5;
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::Space), false),
+                PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
+            );
+        }
+
+        /// A display manager that cannot open a second greeter (greetd) gets no
+        /// Switch user row at all, and every remaining row keeps paint, click,
+        /// keyboard and accessibility on the same index.
+        fn switch_user_is_offered_only_when_the_display_manager_supports_it() {
+            use winit::keyboard::{Key, NamedKey};
+
+            let mut menu = PowerMenu::for_session(false);
+            menu.open();
+            menu.force_settled_for_visual_test();
+            let targets = menu.action_rects(VIEWPORT);
+            assert_eq!(
+                targets.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+                [
+                    "power_lock",
+                    "power_logout",
+                    "power_suspend",
+                    "power_restart",
+                    "power_shut_down",
+                ]
+            );
+            let tree = menu.accessibility_snapshot().expect("open session menu");
+            assert_eq!(tree.children.len(), targets.len());
+            assert!(
+                tree.children
+                    .iter()
+                    .all(|node| node.name.as_deref() != Some("Switch user"))
+            );
+            for (index, expected) in [
+                PowerMenuClick::Lock,
+                PowerMenuClick::Execute(os_actions::SessionAction::Logout),
+                PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
+                PowerMenuClick::Execute(os_actions::SessionAction::Restart),
+                PowerMenuClick::Execute(os_actions::SessionAction::ShutDown),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                menu.open();
+                menu.force_settled_for_visual_test();
+                assert_eq!(menu.click(VIEWPORT, targets[index].1.center()), expected);
+            }
+
+            menu.open();
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::ArrowUp), false),
+                PowerMenuClick::Consumed
+            );
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::Enter), false),
+                PowerMenuClick::Execute(os_actions::SessionAction::ShutDown),
+                "wrapping up from the first row lands on the last offered row"
+            );
+            menu.open();
+            menu.selected = 2;
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::Space), false),
+                PowerMenuClick::Execute(os_actions::SessionAction::Suspend)
+            );
+        }
+
+        open_menu_exports_the_same_six_semantic_rows_it_paints();
+        lock_switch_user_and_suspend_execute_on_first_click();
+        every_visible_action_executes_on_first_click();
+        opening_animation_hit_test_tracks_the_painted_logout_row();
+        keyboard_navigation_reaches_actions_and_activates_once();
+        switch_user_is_offered_only_when_the_display_manager_supports_it();
+    }
+    #[test]
+    fn power_menu_dismisses_without_acting_and_animates_immediately() {
+        fn outside_click_closes_without_an_action() {
+            let mut menu = PowerMenu::default();
+            menu.open();
+            assert_eq!(menu.click(VIEWPORT, Point::ZERO), PowerMenuClick::Consumed);
+            assert!(!menu.open);
+        }
+
+        fn escape_closes_the_keyboard_modal_without_an_action() {
+            use winit::keyboard::{Key, NamedKey};
+
+            let mut menu = PowerMenu::default();
+            menu.open();
+            assert_eq!(
+                menu.key(&Key::Named(NamedKey::Escape), false),
+                PowerMenuClick::Consumed
             );
             assert!(!menu.open);
         }
-    }
 
-    #[test]
-    fn opening_animation_hit_test_tracks_the_painted_logout_row() {
-        let mut menu = PowerMenu::default();
-        menu.open();
-        let now = Instant::now();
-        let panel = panel_rect(VIEWPORT);
-        let stable = action_rect(VIEWPORT, 1).center();
-        let (_, dy, scale) = modal_transition_curve(&menu.transition, now, 0.94);
-        let centre = panel.center();
-        let painted = Point::new(
-            centre.x + (stable.x - centre.x) * scale,
-            centre.y + dy + (stable.y - centre.y) * scale,
-        );
-        let logical = menu.untransform_pointer(VIEWPORT, painted, now);
-        assert!((logical.x - stable.x).abs() < 0.001);
-        assert!((logical.y - stable.y).abs() < 0.001);
-        // The production click samples a fresh instant. Freeze the transition
-        // at this same intermediate value so the regression remains exact.
-        assert_eq!(
-            (0..ACTIONS.len()).find(|&index| action_rect(VIEWPORT, index).contains(logical)),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn outside_click_closes_without_an_action() {
-        let mut menu = PowerMenu::default();
-        menu.open();
-        assert_eq!(menu.click(VIEWPORT, Point::ZERO), PowerMenuClick::Consumed);
-        assert!(!menu.open);
-    }
-
-    #[test]
-    fn menu_is_anchored_below_the_top_right_status_area() {
-        let menu = PowerMenu::default();
-        for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 960.0, 540.0)] {
-            let panel = menu.panel_rect(viewport);
-            assert_eq!(panel.x1, viewport.x1 - 4.0);
-            assert_eq!(panel.y0, viewport.y0 + 48.0);
-            assert!(panel.y1 <= viewport.y1 - 8.0);
-            for index in 0..ACTIONS.len() {
-                assert!(
-                    panel.contains(menu.action_rect(viewport, index).center()),
-                    "action {index} must remain inside the anchored menu at {viewport:?}"
-                );
-            }
+        fn opening_requests_animation_frames_without_waiting_for_draw() {
+            let mut menu = PowerMenu::default();
+            menu.open();
+            assert!(menu.is_animating(Instant::now()));
         }
+
+        outside_click_closes_without_an_action();
+        escape_closes_the_keyboard_modal_without_an_action();
+        opening_requests_animation_frames_without_waiting_for_draw();
     }
 
     #[test]
-    fn compact_flyout_is_materially_smaller_than_the_old_modal_sheet() {
-        let panel = panel_rect(Rect::new(0.0, 0.0, 960.0, 540.0));
-        assert_eq!(panel.width(), 424.0);
-        assert_eq!(panel.height(), 248.0);
-        assert!(panel.area() < 420.0 * 446.0 * 0.65);
-    }
-
-    #[test]
-    fn two_column_layout_fits_both_visual_audit_viewports() {
-        for viewport in [
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        ] {
-            let panel = panel_rect(viewport);
-            assert_eq!(action_columns(viewport), 2);
-            assert_eq!(panel.height(), 248.0);
-            assert!(panel.x1 >= viewport.x1 - 4.0);
-            let rows = (0..ACTIONS.len())
-                .map(|index| action_rect(viewport, index))
-                .collect::<Vec<_>>();
-            assert!(rows.iter().all(|row| panel.contains(row.center())));
-            assert!(rows.iter().all(|row| row.width() >= 180.0));
-            for (index, row) in rows.iter().enumerate() {
-                for earlier in &rows[..index] {
-                    let overlap = row.intersect(*earlier);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn power_menu_layout_anchors_and_fits_every_viewport() {
+        fn menu_is_anchored_below_the_top_right_status_area() {
+            let menu = PowerMenu::default();
+            for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 960.0, 540.0)] {
+                let panel = menu.panel_rect(viewport);
+                assert_eq!(panel.x1, viewport.x1 - 4.0);
+                assert_eq!(panel.y0, viewport.y0 + 48.0);
+                assert!(panel.y1 <= viewport.y1 - 8.0);
+                for index in 0..ACTIONS.len() {
                     assert!(
-                        overlap.width() <= 0.0 || overlap.height() <= 0.0,
-                        "action {index} overlaps an earlier action at {viewport:?}"
+                        panel.contains(menu.action_rect(viewport, index).center()),
+                        "action {index} must remain inside the anchored menu at {viewport:?}"
                     );
                 }
             }
         }
-    }
 
-    #[test]
-    fn narrow_layout_falls_back_to_one_column_without_clipping_actions() {
-        let viewport = Rect::new(0.0, 0.0, 480.0, 600.0);
-        let panel = panel_rect(viewport);
-        assert_eq!(action_columns(viewport), 1);
-        assert_eq!(panel.height(), 348.0);
-        for index in 0..ACTIONS.len() {
-            let row = action_rect(viewport, index);
-            assert!(panel.contains(row.center()));
-            assert!(row.width() >= 44.0 && row.height() >= 44.0);
+        fn compact_flyout_is_materially_smaller_than_the_old_modal_sheet() {
+            let panel = panel_rect(Rect::new(0.0, 0.0, 960.0, 540.0));
+            assert_eq!(panel.width(), 424.0);
+            assert_eq!(panel.height(), 248.0);
+            assert!(panel.area() < 420.0 * 446.0 * 0.65);
         }
-    }
 
-    #[test]
-    fn tiny_viewport_uses_compact_two_columns_for_all_actions() {
-        let viewport = Rect::new(0.0, 0.0, 480.0, 300.0);
-        let panel = panel_rect(viewport);
-        assert_eq!(action_columns(viewport), 2);
-        assert!(panel.y1 <= viewport.y1 - 8.0);
-        for index in 0..ACTIONS.len() {
-            let row = action_rect(viewport, index);
-            assert!(
-                row.x0 >= panel.x0
-                    && row.y0 >= panel.y0
-                    && row.x1 <= panel.x1
-                    && row.y1 <= panel.y1,
-                "action {index} must be fully inside the compact panel: {row:?} / {panel:?}"
-            );
-            assert!(
-                row.x0 >= viewport.x0
-                    && row.y0 >= viewport.y0
-                    && row.x1 <= viewport.x1
-                    && row.y1 <= viewport.y1,
-                "action {index} must be fully inside the viewport: {row:?}"
-            );
+        fn two_column_layout_fits_both_visual_audit_viewports() {
+            for viewport in [
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+            ] {
+                let panel = panel_rect(viewport);
+                assert_eq!(action_columns(viewport), 2);
+                assert_eq!(panel.height(), 248.0);
+                assert!(panel.x1 >= viewport.x1 - 4.0);
+                let rows = (0..ACTIONS.len())
+                    .map(|index| action_rect(viewport, index))
+                    .collect::<Vec<_>>();
+                assert!(rows.iter().all(|row| panel.contains(row.center())));
+                assert!(rows.iter().all(|row| row.width() >= 180.0));
+                for (index, row) in rows.iter().enumerate() {
+                    for earlier in &rows[..index] {
+                        let overlap = row.intersect(*earlier);
+                        assert!(
+                            overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                            "action {index} overlaps an earlier action at {viewport:?}"
+                        );
+                    }
+                }
+            }
         }
+
+        fn narrow_layout_falls_back_to_one_column_without_clipping_actions() {
+            let viewport = Rect::new(0.0, 0.0, 480.0, 600.0);
+            let panel = panel_rect(viewport);
+            assert_eq!(action_columns(viewport), 1);
+            assert_eq!(panel.height(), 348.0);
+            for index in 0..ACTIONS.len() {
+                let row = action_rect(viewport, index);
+                assert!(panel.contains(row.center()));
+                assert!(row.width() >= 44.0 && row.height() >= 44.0);
+            }
+        }
+
+        fn tiny_viewport_uses_compact_two_columns_for_all_actions() {
+            let viewport = Rect::new(0.0, 0.0, 480.0, 300.0);
+            let panel = panel_rect(viewport);
+            assert_eq!(action_columns(viewport), 2);
+            assert!(panel.y1 <= viewport.y1 - 8.0);
+            for index in 0..ACTIONS.len() {
+                let row = action_rect(viewport, index);
+                assert!(
+                    row.x0 >= panel.x0
+                        && row.y0 >= panel.y0
+                        && row.x1 <= panel.x1
+                        && row.y1 <= panel.y1,
+                    "action {index} must be fully inside the compact panel: {row:?} / {panel:?}"
+                );
+                assert!(
+                    row.x0 >= viewport.x0
+                        && row.y0 >= viewport.y0
+                        && row.x1 <= viewport.x1
+                        && row.y1 <= viewport.y1,
+                    "action {index} must be fully inside the viewport: {row:?}"
+                );
+            }
+        }
+
+        fn tiny_viewport_all_six_actions_are_reachable_by_click() {
+            let viewport = Rect::new(0.0, 0.0, 480.0, 300.0);
+            let expected = [
+                PowerMenuClick::Lock,
+                PowerMenuClick::Execute(os_actions::SessionAction::Logout),
+                PowerMenuClick::Execute(os_actions::SessionAction::SwitchUser),
+                PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
+                PowerMenuClick::Execute(os_actions::SessionAction::Restart),
+                PowerMenuClick::Execute(os_actions::SessionAction::ShutDown),
+            ];
+            for (index, expected) in expected.into_iter().enumerate() {
+                let mut menu = PowerMenu::default();
+                menu.open();
+                menu.force_settled_for_visual_test();
+                assert_eq!(
+                    menu.click(viewport, action_rect(viewport, index).center()),
+                    expected
+                );
+                assert!(!menu.open);
+            }
+        }
+
+        menu_is_anchored_below_the_top_right_status_area();
+        compact_flyout_is_materially_smaller_than_the_old_modal_sheet();
+        two_column_layout_fits_both_visual_audit_viewports();
+        narrow_layout_falls_back_to_one_column_without_clipping_actions();
+        tiny_viewport_uses_compact_two_columns_for_all_actions();
+        tiny_viewport_all_six_actions_are_reachable_by_click();
     }
 
     #[test]
-    fn tiny_viewport_all_six_actions_are_reachable_by_click() {
-        let viewport = Rect::new(0.0, 0.0, 480.0, 300.0);
-        let expected = [
-            PowerMenuClick::Lock,
-            PowerMenuClick::Execute(os_actions::SessionAction::Logout),
-            PowerMenuClick::Execute(os_actions::SessionAction::SwitchUser),
-            PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
-            PowerMenuClick::Execute(os_actions::SessionAction::Restart),
-            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown),
-        ];
-        for (index, expected) in expected.into_iter().enumerate() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn power_menu_rows_hold_their_text_at_every_scale_and_contrast() {
+        /// HIG §9.6: a list Panel at the roster width, Control rows on the
+        /// `s2` pitch inside `s4` padding — read from the tokens, not restated.
+        fn rows_are_control_rows_on_the_token_pitch_at_default_text() {
+            let m = PowerMenuMetrics::for_text_scale(1.0);
+            assert_eq!(
+                m.row_h,
+                f64::from(ui::tokens::Metrics::BASE.panel_row_height)
+            );
+            assert_eq!(m.row_gap, f64::from(ui::tokens::Spacing::BASE.s2));
+            assert_eq!(m.pad, f64::from(ui::tokens::Spacing::BASE.s4));
+            let menu = PowerMenu::default();
+            let panel = menu.panel_rect(VIEWPORT);
+            assert_eq!(panel.width(), 424.0);
+            let first = menu.action_rect(VIEWPORT, 0);
+            let last = menu.action_rect(VIEWPORT, ACTIONS.len() - 1);
+            assert!(
+                first.height() >= m.row_h,
+                "an uncapped panel keeps the Control row"
+            );
+            assert_eq!(first.x0 - panel.x0, 12.0);
+            assert_eq!(panel.x1 - menu.action_rect(VIEWPORT, 1).x1, 12.0);
+            assert!(
+                (panel.y1 - last.y1 - 12.0).abs() < 1e-9,
+                "the last row sits on the panel padding: {panel:?} / {last:?}"
+            );
+            assert_eq!(menu.action_rect(VIEWPORT, 2).y0 - first.y1, m.row_gap);
+        }
+
+        /// When the viewport caps the panel (3–4× text on a short output) the
+        /// rows shrink to tile the capped panel rather than being laid on the
+        /// uncapped pitch past its bottom edge, where they could be painted but
+        /// never pressed — and none drops under the minimum pointer target.
+        fn a_capped_panel_still_tiles_every_row_inside_it() {
+            for (viewport, scale) in [
+                (Rect::new(0.0, 0.0, 1280.0, 350.0), 3.0_f32),
+                (Rect::new(0.0, 0.0, 1280.0, 400.0), 4.0),
+            ] {
+                let m = PowerMenuMetrics::for_text_scale(scale);
+                let panel = panel_rect_with(viewport, m, ACTIONS.len());
+                assert!(
+                    (panel.y1 - (viewport.y1 - 8.0)).abs() < 1e-9,
+                    "the test needs a capped panel at {scale}× on {viewport:?}"
+                );
+                let target = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
+                for index in 0..ACTIONS.len() {
+                    let row = action_rect_with(viewport, index, m, ACTIONS.len());
+                    assert!(
+                        row.y1 <= panel.y1 - 12.0 + 1e-9,
+                        "row {index} stays inside the capped panel: {row:?} in {panel:?}"
+                    );
+                    assert!(row.height() >= target, "row {index} keeps a pointer target");
+                    if let Some(next) = index
+                        .checked_add(action_columns(viewport))
+                        .filter(|n| *n < ACTIONS.len())
+                    {
+                        assert!(action_rect_with(viewport, next, m, ACTIONS.len()).y0 >= row.y1);
+                    }
+                }
+            }
+        }
+
+        /// At 200 % a label and a detail line no longer fit a 44 px row; the
+        /// row grows to hold both and the panel grows to hold every row, so
+        /// nothing paints through its neighbour.
+        fn large_text_grows_the_rows_and_the_panel_holds_them() {
+            let one = PowerMenuMetrics::for_text_scale(1.0);
+            let two = PowerMenuMetrics::for_text_scale(2.0);
+            let inner = f64::from(ui::tokens::Spacing::BASE.s2);
+            assert!(two.row_h >= two.label_h + two.detail_h + 2.0 * inner);
+            assert!(two.row_h > one.row_h);
+            for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 800.0, 700.0)] {
+                let panel = panel_rect_with(viewport, two, ACTIONS.len());
+                for index in 0..ACTIONS.len() {
+                    let row = action_rect_with(viewport, index, two, ACTIONS.len());
+                    assert!(
+                        row.y1 <= panel.y1 - 12.0 + 1e-9,
+                        "row {index} must stay inside the panel at {viewport:?}"
+                    );
+                    if let Some(next) = index
+                        .checked_add(action_columns(viewport))
+                        .filter(|n| *n < ACTIONS.len())
+                    {
+                        assert!(action_rect_with(viewport, next, two, ACTIONS.len()).y0 >= row.y1);
+                    }
+                }
+            }
+        }
+
+        /// The click path has no theme: it must hit-test the rows where the
+        /// last frame painted them, so a 200 % session activates the row under
+        /// the pointer rather than the one the 1× geometry would put there.
+        fn clicks_hit_the_rows_where_a_large_text_frame_painted_them() {
             let mut menu = PowerMenu::default();
             menu.open();
             menu.force_settled_for_visual_test();
-            assert_eq!(
-                menu.click(viewport, action_rect(viewport, index).center()),
-                expected
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let mut scene = Scene::new();
+            menu.draw(VIEWPORT, &mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let painted = action_rect_with(
+                VIEWPORT,
+                3,
+                PowerMenuMetrics::for_text_scale(2.0),
+                ACTIONS.len(),
             );
-            assert!(!menu.open);
-        }
-    }
-
-    #[test]
-    fn keyboard_navigation_reaches_actions_and_activates_once() {
-        use winit::keyboard::{Key, NamedKey};
-
-        let mut menu = PowerMenu::default();
-        menu.open();
-        assert_eq!(
-            menu.key(&Key::Named(NamedKey::ArrowDown), false),
-            PowerMenuClick::Consumed
-        );
-        assert_eq!(
-            menu.key(&Key::Named(NamedKey::Enter), false),
-            PowerMenuClick::Execute(os_actions::SessionAction::Logout)
-        );
-
-        menu.open();
-        menu.selected = 5;
-        assert_eq!(
-            menu.key(&Key::Named(NamedKey::Space), false),
-            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
-        );
-    }
-
-    #[test]
-    fn escape_closes_the_keyboard_modal_without_an_action() {
-        use winit::keyboard::{Key, NamedKey};
-
-        let mut menu = PowerMenu::default();
-        menu.open();
-        assert_eq!(
-            menu.key(&Key::Named(NamedKey::Escape), false),
-            PowerMenuClick::Consumed
-        );
-        assert!(!menu.open);
-    }
-
-    #[test]
-    fn opening_requests_animation_frames_without_waiting_for_draw() {
-        let mut menu = PowerMenu::default();
-        menu.open();
-        assert!(menu.is_animating(Instant::now()));
-    }
-
-    /// HIG §9.6: a list Panel at the roster width, Control rows on the
-    /// `s2` pitch inside `s4` padding — read from the tokens, not restated.
-    #[test]
-    fn rows_are_control_rows_on_the_token_pitch_at_default_text() {
-        let m = PowerMenuMetrics::for_text_scale(1.0);
-        assert_eq!(
-            m.row_h,
-            f64::from(ui::tokens::Metrics::BASE.panel_row_height)
-        );
-        assert_eq!(m.row_gap, f64::from(ui::tokens::Spacing::BASE.s2));
-        assert_eq!(m.pad, f64::from(ui::tokens::Spacing::BASE.s4));
-        let menu = PowerMenu::default();
-        let panel = menu.panel_rect(VIEWPORT);
-        assert_eq!(panel.width(), 424.0);
-        let first = menu.action_rect(VIEWPORT, 0);
-        let last = menu.action_rect(VIEWPORT, ACTIONS.len() - 1);
-        assert!(
-            first.height() >= m.row_h,
-            "an uncapped panel keeps the Control row"
-        );
-        assert_eq!(first.x0 - panel.x0, 12.0);
-        assert_eq!(panel.x1 - menu.action_rect(VIEWPORT, 1).x1, 12.0);
-        assert!(
-            (panel.y1 - last.y1 - 12.0).abs() < 1e-9,
-            "the last row sits on the panel padding: {panel:?} / {last:?}"
-        );
-        assert_eq!(menu.action_rect(VIEWPORT, 2).y0 - first.y1, m.row_gap);
-    }
-
-    /// When the viewport caps the panel (3–4× text on a short output) the
-    /// rows shrink to tile the capped panel rather than being laid on the
-    /// uncapped pitch past its bottom edge, where they could be painted but
-    /// never pressed — and none drops under the minimum pointer target.
-    #[test]
-    fn a_capped_panel_still_tiles_every_row_inside_it() {
-        for (viewport, scale) in [
-            (Rect::new(0.0, 0.0, 1280.0, 350.0), 3.0_f32),
-            (Rect::new(0.0, 0.0, 1280.0, 400.0), 4.0),
-        ] {
-            let m = PowerMenuMetrics::for_text_scale(scale);
-            let panel = panel_rect_with(viewport, m);
             assert!(
-                (panel.y1 - (viewport.y1 - 8.0)).abs() < 1e-9,
-                "the test needs a capped panel at {scale}× on {viewport:?}"
+                !PowerMenu::default()
+                    .action_rect(VIEWPORT, 3)
+                    .contains(painted.center()),
+                "the test is only meaningful if 1× and 2× geometry disagree"
             );
-            let target = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
-            for index in 0..ACTIONS.len() {
-                let row = action_rect_with(viewport, index, m);
-                assert!(
-                    row.y1 <= panel.y1 - 12.0 + 1e-9,
-                    "row {index} stays inside the capped panel: {row:?} in {panel:?}"
+            assert_eq!(
+                menu.click(VIEWPORT, painted.center()),
+                PowerMenuClick::Execute(os_actions::SessionAction::Suspend)
+            );
+        }
+
+        fn power_flyout_surface_is_opaque_on_every_shipped_contrast_mode() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                assert_eq!(
+                    ui::chrome::shell::panel_ground(&theme).a(),
+                    255,
+                    "power flyout must fully cover bright app content"
                 );
-                assert!(row.height() >= target, "row {index} keeps a pointer target");
-                if let Some(next) = index
-                    .checked_add(action_columns(viewport))
-                    .filter(|n| *n < ACTIONS.len())
-                {
-                    assert!(action_rect_with(viewport, next, m).y0 >= row.y1);
-                }
             }
         }
-    }
 
-    /// At 200 % a label and a detail line no longer fit a 44 px row; the
-    /// row grows to hold both and the panel grows to hold every row, so
-    /// nothing paints through its neighbour.
-    #[test]
-    fn large_text_grows_the_rows_and_the_panel_holds_them() {
-        let one = PowerMenuMetrics::for_text_scale(1.0);
-        let two = PowerMenuMetrics::for_text_scale(2.0);
-        let inner = f64::from(ui::tokens::Spacing::BASE.s2);
-        assert!(two.row_h >= two.label_h + two.detail_h + 2.0 * inner);
-        assert!(two.row_h > one.row_h);
-        for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 800.0, 700.0)] {
-            let panel = panel_rect_with(viewport, two);
-            for index in 0..ACTIONS.len() {
-                let row = action_rect_with(viewport, index, two);
-                assert!(
-                    row.y1 <= panel.y1 - 12.0 + 1e-9,
-                    "row {index} must stay inside the panel at {viewport:?}"
-                );
-                if let Some(next) = index
-                    .checked_add(action_columns(viewport))
-                    .filter(|n| *n < ACTIONS.len())
-                {
-                    assert!(action_rect_with(viewport, next, two).y0 >= row.y1);
-                }
-            }
-        }
-    }
-
-    /// The click path has no theme: it must hit-test the rows where the
-    /// last frame painted them, so a 200 % session activates the row under
-    /// the pointer rather than the one the 1× geometry would put there.
-    #[test]
-    fn clicks_hit_the_rows_where_a_large_text_frame_painted_them() {
-        let mut menu = PowerMenu::default();
-        menu.open();
-        menu.force_settled_for_visual_test();
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        menu.draw(VIEWPORT, &mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let painted = action_rect_with(VIEWPORT, 3, PowerMenuMetrics::for_text_scale(2.0));
-        assert!(
-            !PowerMenu::default()
-                .action_rect(VIEWPORT, 3)
-                .contains(painted.center()),
-            "the test is only meaningful if 1× and 2× geometry disagree"
-        );
-        assert_eq!(
-            menu.click(VIEWPORT, painted.center()),
-            PowerMenuClick::Execute(os_actions::SessionAction::Suspend)
-        );
+        rows_are_control_rows_on_the_token_pitch_at_default_text();
+        a_capped_panel_still_tiles_every_row_inside_it();
+        large_text_grows_the_rows_and_the_panel_holds_them();
+        clicks_hit_the_rows_where_a_large_text_frame_painted_them();
+        power_flyout_surface_is_opaque_on_every_shipped_contrast_mode();
     }
 
     /// Review fixtures: the ux-bench cannot open the power menu on macOS,
@@ -1182,17 +1325,6 @@ mod tests {
                     e.b
                 );
             }
-        }
-    }
-
-    #[test]
-    fn power_flyout_surface_is_opaque_on_every_shipped_contrast_mode() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            assert_eq!(
-                ui::chrome::shell::panel_ground(&theme).a(),
-                255,
-                "power flyout must fully cover bright app content"
-            );
         }
     }
 }

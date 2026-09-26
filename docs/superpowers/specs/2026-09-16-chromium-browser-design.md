@@ -5,12 +5,12 @@
 The user approved macOS and Linux together, everyday browsing and Chrome
 extensions, with built-in ad blocking the main priority. They then instructed
 implementation using subagent-driven development, with completion requiring
-actually using this browser to reach https://sandbox.example. That is an additional
+actually using this browser to reach https://tilo.so. That is an additional
 acceptance gate, not a substitute for the agreed capabilities.
 
 ## Architecture
 
-Retain the Rust qOS browser chrome. A separate native CEF helper owns Chromium's
+Retain the Rust Tilo browser chrome. A separate native CEF helper owns Chromium's
 main loop and launches Chromium's sandboxed renderer/GPU/utility processes. Rust
 implements WebViewEngine against bounded framed IPC. Missing or crashed helpers
 produce a visible error, never simulated browsing. TestEngine remains explicitly
@@ -48,7 +48,7 @@ Persistent profile/session data; working downloads; explicit site permissions;
 clipboard, audio/video, developer tools; Chrome Manifest V3 extension capability
 tests (service worker, storage, content scripts, action UI); data clearing at actual
 exit when enabled. Do not claim universal extension compatibility or DRM playback.
-Preserve bookmarks, history, address suggestions and qOS actions. Existing WPE is
+Preserve bookmarks, history, address suggestions and Tilo actions. Existing WPE is
 an explicit migration option, not an automatic fallback after Chromium failure.
 
 ## Validation
@@ -57,7 +57,7 @@ Test IPC bounds, host disconnect, input/navigation, blocker semantics and existi
 browser regressions. Build the real helper and browser on macOS and Linux; use
 fixture pages for network blocking, permissions, download and extension behavior.
 Record runtime version, frame backend, load result, rendered output and final URL
-for https://sandbox.example using the actual Rust browser. Measure warm build, startup,
+for https://tilo.so using the actual Rust browser. Measure warm build, startup,
 frame delivery and memory without labeling simulated-engine tests as web evidence.
 
 ## Delivery constraints

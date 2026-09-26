@@ -73,7 +73,7 @@ rustPlatform.buildRustPackage rec {
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
   # into the compositor or locking the session could never invoke PAM.
   preBuild = ''
-    export QOS_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
+    export TILO_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
     export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
   '';
 
@@ -94,6 +94,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
     install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
+    install -Dm644 "$p/pipewire/tilo-echo-cancel.conf" "$out/share/pipewire/tilo-echo-cancel.conf"
     install -Dm644 "$p/systemd-user/tilo-graphical-session.target" "$out/share/systemd/user/tilo-graphical-session.target"
     install -Dm644 "$p/license/LICENSE" "$out/share/licenses/tilo-session/LICENSE"
     install -Dm755 "$p/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
@@ -134,7 +135,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
-    homepage = "https://code.sandbox.example/qos/qos";
+    homepage = "https://code.tilo.so/tilo/tilo";
     license = lib.licenses.agpl3Only;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
     mainProgram = "tilo-shell";

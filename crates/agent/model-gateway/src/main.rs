@@ -314,6 +314,29 @@ async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Respo
         .await
         .map(output),
         Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
+        Request::Transform {
+            profile_id,
+            model_id,
+            instructions,
+            input,
+            max_output_tokens,
+            timeout_ms,
+        } if app_id == AGENT_APP => transform(
+            http,
+            profile_id,
+            model_id,
+            TransformAsk {
+                instructions,
+                input,
+                max_output_tokens,
+                timeout: Duration::from_millis(timeout_ms),
+            },
+        )
+        .await
+        .map(output),
+        Request::Transform { .. } => {
+            Err("only tilo-agent may run transforms through the model gateway".into())
+        }
         Request::AnalyzeImage {
             profile_id,
             model_id,
@@ -495,6 +518,147 @@ async fn plan(
     .await;
     secret.zeroize();
     result
+}
+
+/// One single-shot transformation, as tilo-agent asked for it.
+struct TransformAsk {
+    instructions: String,
+    input: String,
+    max_output_tokens: u32,
+    timeout: Duration,
+}
+
+/// Refuse a transformation past any of the published bounds. Refused, not
+/// truncated: a silently shortened input would be answered as if it were
+/// whole.
+fn validate_transform(ask: &TransformAsk) -> Result<(), String> {
+    if ask.instructions.trim().is_empty() || ask.input.trim().is_empty() {
+        return Err("a transform needs instructions and an input".into());
+    }
+    if ask.instructions.len() > tilo_model_gateway::MAX_TRANSFORM_INSTRUCTIONS_BYTES {
+        return Err("transform instructions exceed the 16 KiB limit".into());
+    }
+    if ask.input.len() > tilo_model_gateway::MAX_TRANSFORM_INPUT_BYTES {
+        return Err("transform input exceeds the 256 KiB limit".into());
+    }
+    if ask.max_output_tokens == 0
+        || ask.max_output_tokens > tilo_model_gateway::MAX_TRANSFORM_OUTPUT_TOKENS
+    {
+        return Err("transform output must be between 1 and 4096 tokens".into());
+    }
+    if ask.timeout.is_zero() {
+        return Err("a transform needs a deadline".into());
+    }
+    Ok(())
+}
+
+/// The provider request for one transformation. Deterministic sampling, one
+/// system instruction, one user turn, and no tools in either dialect.
+fn transform_body(
+    protocol: ProviderProtocol,
+    model_id: &str,
+    ask: &TransformAsk,
+) -> serde_json::Value {
+    match protocol {
+        ProviderProtocol::Anthropic => serde_json::json!({
+            "model": model_id,
+            "max_tokens": ask.max_output_tokens,
+            "temperature": 0,
+            "system": ask.instructions,
+            "messages": [{ "role": "user", "content": ask.input }]
+        }),
+        ProviderProtocol::OpenAiCompatible => serde_json::json!({
+            "model": model_id,
+            "max_tokens": ask.max_output_tokens,
+            "temperature": 0,
+            "response_format": { "type": "json_object" },
+            "messages": [
+                { "role": "system", "content": ask.instructions },
+                { "role": "user", "content": ask.input }
+            ]
+        }),
+    }
+}
+
+/// The answer text out of a provider response. A refusal or a cut-off answer
+/// is an error rather than text: the caller would otherwise validate half an
+/// answer.
+fn transform_answer(protocol: ProviderProtocol, body: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
+    let text = match protocol {
+        ProviderProtocol::Anthropic => {
+            match value.get("stop_reason").and_then(serde_json::Value::as_str) {
+                Some("refusal") => return Err("the model declined the transform".into()),
+                Some("max_tokens") => return Err("the model's answer was cut off".into()),
+                _ => {}
+            }
+            value
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|blocks| {
+                    blocks.iter().find(|block| {
+                        block.get("type").and_then(serde_json::Value::as_str) == Some("text")
+                    })
+                })
+                .and_then(|block| block.get("text"))
+                .and_then(serde_json::Value::as_str)
+        }
+        ProviderProtocol::OpenAiCompatible => {
+            let choice = value
+                .get("choices")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|choices| choices.first());
+            if choice
+                .and_then(|choice| choice.get("finish_reason"))
+                .and_then(serde_json::Value::as_str)
+                == Some("length")
+            {
+                return Err("the model's answer was cut off".into());
+            }
+            choice
+                .and_then(|choice| choice.get("message"))
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_str)
+        }
+    }
+    .ok_or_else(|| "provider response carried no answer text".to_string())?;
+    if text.len() > tilo_model_gateway::MAX_TRANSFORM_OUTPUT_BYTES {
+        return Err("the model's answer exceeds the 256 KiB limit".into());
+    }
+    Ok(text.to_string())
+}
+
+async fn transform(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    ask: TransformAsk,
+) -> Result<String, String> {
+    validate_transform(&ask)?;
+    let model = model_id.clone();
+    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model)).await?;
+    let body = transform_body(profile.protocol, &model_id, &ask);
+    let endpoint = provider_url(&profile);
+    let timeout = ask.timeout.min(tilo_model_gateway::MAX_TRANSFORM_TIMEOUT);
+    let began = Instant::now();
+    let result = while_busy(
+        || timeout.checked_sub(began.elapsed()),
+        tokio::time::sleep,
+        |budget| {
+            provider_attempt(
+                http,
+                &profile,
+                &endpoint,
+                Some(secret.as_str()),
+                &body,
+                budget,
+            )
+        },
+    )
+    .await;
+    secret.zeroize();
+    transform_answer(profile.protocol, &result?)
 }
 
 /// Validate Photos' one fixed local-only visual-analysis operation and
@@ -894,84 +1058,169 @@ mod tests {
         }
     }
 
-    /// The launcher's handoff: a little-endian `u32` length, then JSON.
+    /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never routes to
+    /// a LAN or hosted endpoint, requires an immutable model revision, and uses a fixed prompt with no
+    /// identity request; local face input is bounded and never requests identity.
     #[test]
-    fn launcher_handoff_bytes_are_pinned() {
-        use std::io::Write as _;
-        let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
-        launcher.write_all(&[39, 0, 0, 0]).unwrap();
-        launcher
-            .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
-            .unwrap();
-        gateway.set_nonblocking(true).unwrap();
-        let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
-        let handoff = runtime.block_on(async {
-            let mut gateway = UnixStream::from_std(gateway).unwrap();
-            read_handoff(&mut gateway).await
-        });
-        assert_eq!(handoff.unwrap().app_id, AGENT_APP);
+    fn local_vision_is_pinned_bounded_local_and_never_asks_identity() {
+        // Phase: launcher_handoff_bytes_are_pinned.
+        // The launcher's handoff: a little-endian `u32` length, then JSON.
+        {
+            use std::io::Write as _;
+            let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
+            launcher.write_all(&[39, 0, 0, 0]).unwrap();
+            launcher
+                .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
+                .unwrap();
+            gateway.set_nonblocking(true).unwrap();
+            let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+            let handoff = runtime.block_on(async {
+                let mut gateway = UnixStream::from_std(gateway).unwrap();
+                read_handoff(&mut gateway).await
+            });
+            assert_eq!(handoff.unwrap().app_id, AGENT_APP);
+        }
+
+        // Phase: local_vision_input_is_closed_and_bounded.
+        {
+            assert!(validate_vision_image(&vision_image()).is_ok());
+            let mut foreign = vision_image();
+            foreign.media_type = "image/svg+xml".into();
+            assert!(validate_vision_image(&foreign).is_err());
+            let mut corrupt = vision_image();
+            corrupt.data_base64 = "not base64".into();
+            assert!(validate_vision_image(&corrupt).is_err());
+            let mut bad_hash = vision_image();
+            bad_hash.source_content_hash = "x".repeat(64);
+            assert!(validate_vision_image(&bad_hash).is_err());
+        }
+
+        // Phase: local_vision_never_routes_to_a_lan_or_hosted_endpoint.
+        {
+            assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+            assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+            assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+            assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+            assert!(!loopback_http_endpoint(
+                "http://localhost.evil.test:8123/v1"
+            ));
+        }
+
+        // Phase: local_vision_requires_an_immutable_model_revision.
+        {
+            assert!(is_pinned_revision(&"a".repeat(40)));
+            assert!(is_pinned_revision(&"b".repeat(64)));
+            assert!(!is_pinned_revision("main"));
+            assert!(!is_pinned_revision(&"A".repeat(40)));
+        }
+
+        // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.
+        {
+            let body = local_vision_body("vision-model", &vision_image());
+            let encoded = body.to_string();
+            assert!(encoded.contains("device-local image indexing component"));
+            assert!(encoded.contains("Do not name people"));
+            assert!(!encoded.contains("ignore previous"));
+            assert_eq!(body["model"], "vision-model");
+        }
+
+        // Phase: local_face_input_is_bounded_and_prompt_never_requests_identity.
+        {
+            let face = FaceImage {
+                photo_id: "photos.photo:one".into(),
+                media_type: "image/jpeg".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+                source_content_hash: "a".repeat(64),
+            };
+            assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
+            let mut duplicate = face.clone();
+            duplicate.photo_id = face.photo_id.clone();
+            assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
+            let body = local_face_body("face-model", &[face]);
+            let encoded = body.to_string();
+            assert!(encoded.contains("face detection and clustering"));
+            assert!(encoded.contains("Never output a person's name"));
+            assert!(!encoded.contains("identify the person"));
+        }
+    }
+
+    fn ask(input: &str) -> TransformAsk {
+        TransformAsk {
+            instructions: "Answer with JSON.".into(),
+            input: input.into(),
+            max_output_tokens: 512,
+            timeout: Duration::from_secs(5),
+        }
     }
 
     #[test]
-    fn local_vision_input_is_closed_and_bounded() {
-        assert!(validate_vision_image(&vision_image()).is_ok());
-        let mut foreign = vision_image();
-        foreign.media_type = "image/svg+xml".into();
-        assert!(validate_vision_image(&foreign).is_err());
-        let mut corrupt = vision_image();
-        corrupt.data_base64 = "not base64".into();
-        assert!(validate_vision_image(&corrupt).is_err());
-        let mut bad_hash = vision_image();
-        bad_hash.source_content_hash = "x".repeat(64);
-        assert!(validate_vision_image(&bad_hash).is_err());
+    fn transform_requests_are_bounded_before_any_provider_is_asked() {
+        assert!(validate_transform(&ask("text")).is_ok());
+        let huge = "x".repeat(tilo_model_gateway::MAX_TRANSFORM_INPUT_BYTES + 1);
+        assert!(validate_transform(&ask(&huge)).is_err());
+        assert!(validate_transform(&ask("  ")).is_err());
+        let mut greedy = ask("text");
+        greedy.max_output_tokens = tilo_model_gateway::MAX_TRANSFORM_OUTPUT_TOKENS + 1;
+        assert!(validate_transform(&greedy).is_err());
+        let mut rushed = ask("text");
+        rushed.timeout = Duration::ZERO;
+        assert!(validate_transform(&rushed).is_err());
     }
 
     #[test]
-    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
-        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
-        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
-        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
-        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
-        assert!(!loopback_http_endpoint(
-            "http://localhost.evil.test:8123/v1"
-        ));
+    fn transform_bodies_carry_no_tools_in_either_dialect() {
+        for protocol in [
+            ProviderProtocol::Anthropic,
+            ProviderProtocol::OpenAiCompatible,
+        ] {
+            let body = transform_body(protocol, "model-x", &ask("the input"));
+            assert_eq!(body["model"], "model-x");
+            assert_eq!(body["max_tokens"], 512);
+            assert!(body.get("tools").is_none());
+            assert!(body.to_string().contains("the input"));
+        }
     }
 
     #[test]
-    fn local_vision_requires_an_immutable_model_revision() {
-        assert!(is_pinned_revision(&"a".repeat(40)));
-        assert!(is_pinned_revision(&"b".repeat(64)));
-        assert!(!is_pinned_revision("main"));
-        assert!(!is_pinned_revision(&"A".repeat(40)));
+    fn transform_answers_are_the_text_and_never_a_refusal_or_a_fragment() {
+        let anthropic =
+            r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"result\":1}"}]}"#;
+        assert_eq!(
+            transform_answer(ProviderProtocol::Anthropic, anthropic).unwrap(),
+            r#"{"result":1}"#
+        );
+        let refused = r#"{"stop_reason":"refusal","content":[]}"#;
+        assert!(transform_answer(ProviderProtocol::Anthropic, refused).is_err());
+        let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
+        assert!(transform_answer(ProviderProtocol::Anthropic, cut).is_err());
+        let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
+        assert_eq!(
+            transform_answer(ProviderProtocol::OpenAiCompatible, openai).unwrap(),
+            "{}"
+        );
+        let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
+        assert!(transform_answer(ProviderProtocol::OpenAiCompatible, truncated).is_err());
     }
 
     #[test]
-    fn local_vision_prompt_is_fixed_and_contains_no_identity_request() {
-        let body = local_vision_body("vision-model", &vision_image());
-        let encoded = body.to_string();
-        assert!(encoded.contains("device-local image indexing component"));
-        assert!(encoded.contains("Do not name people"));
-        assert!(!encoded.contains("ignore previous"));
-        assert_eq!(body["model"], "vision-model");
-    }
-
-    #[test]
-    fn local_face_input_is_bounded_and_prompt_never_requests_identity() {
-        let face = FaceImage {
-            photo_id: "photos.photo:one".into(),
-            media_type: "image/jpeg".into(),
-            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
-            source_content_hash: "a".repeat(64),
+    fn only_the_agent_may_transform() {
+        let http = provider_client().unwrap();
+        let request = || Request::Transform {
+            profile_id: "hosted".into(),
+            model_id: "model".into(),
+            instructions: "Answer.".into(),
+            input: "text".into(),
+            max_output_tokens: 16,
+            timeout_ms: 1000,
         };
-        assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
-        let mut duplicate = face.clone();
-        duplicate.photo_id = face.photo_id.clone();
-        assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
-        let body = local_face_body("face-model", &[face]);
-        let encoded = body.to_string();
-        assert!(encoded.contains("face detection and clustering"));
-        assert!(encoded.contains("Never output a person's name"));
-        assert!(!encoded.contains("identify the person"));
+        for caller in [PHOTOS_APP, SETTINGS_APP] {
+            let response = tilo_rt::block_on(handle(caller, request(), &http)).unwrap();
+            assert!(!response.ok, "{caller}");
+            assert_eq!(
+                response.error.as_deref(),
+                Some("only tilo-agent may run transforms through the model gateway")
+            );
+        }
     }
 
     struct Fake {
@@ -1018,48 +1267,54 @@ mod tests {
         (result, fake.into_inner())
     }
 
+    /// Transient provider failures are retried at the gateway, settled ones are not, Retry-After and
+    /// transient statuses are classified on the HTTP side, and retries never consume room needed for an
+    /// answer.
     #[test]
-    fn transient_provider_failures_are_retried_at_the_gateway() {
-        let (result, fake) = run_retries(
-            Duration::from_secs(20),
-            &[Err((529, None)), Err((503, None)), Ok("answer")],
-        );
-        assert_eq!(result.as_deref(), Ok("answer"));
-        assert_eq!(fake.calls, 3);
-        assert_eq!(
-            fake.waits,
-            [Duration::from_millis(500), Duration::from_secs(1)]
-        );
-    }
-
-    #[test]
-    fn settled_provider_failures_are_not_retried() {
-        for status in [400, 401, 403, 404, 422] {
-            let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
-            assert!(result.unwrap_err().contains(&status.to_string()));
-            assert_eq!(fake.calls, 1, "HTTP {status}");
-            assert!(fake.waits.is_empty(), "HTTP {status}");
+    fn the_gateway_retries_only_transient_failures_within_the_answer_budget() {
+        // Phase: transient_provider_failures_are_retried_at_the_gateway.
+        {
+            let (result, fake) = run_retries(
+                Duration::from_secs(20),
+                &[Err((529, None)), Err((503, None)), Ok("answer")],
+            );
+            assert_eq!(result.as_deref(), Ok("answer"));
+            assert_eq!(fake.calls, 3);
+            assert_eq!(
+                fake.waits,
+                [Duration::from_millis(500), Duration::from_secs(1)]
+            );
         }
-    }
 
-    #[test]
-    fn retry_after_and_transient_statuses_are_classified_on_the_http_side() {
-        for status in [408, 429, 500, 502, 503, 504, 529] {
-            assert_eq!(again_after(status, None), Again::Soon(None));
+        // Phase: settled_provider_failures_are_not_retried.
+        {
+            for status in [400, 401, 403, 404, 422] {
+                let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
+                assert!(result.unwrap_err().contains(&status.to_string()));
+                assert_eq!(fake.calls, 1, "HTTP {status}");
+                assert!(fake.waits.is_empty(), "HTTP {status}");
+            }
         }
-        assert_eq!(
-            again_after(429, Some("0.25")),
-            Again::Soon(Some(Duration::from_millis(250)))
-        );
-        assert_eq!(again_after(401, Some("1")), Again::Never);
-    }
 
-    #[test]
-    fn retries_never_consume_room_needed_for_an_answer() {
-        let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
-        assert!(result.is_err());
-        assert_eq!(fake.calls, 1);
-        assert!(fake.waits.is_empty());
+        // Phase: retry_after_and_transient_statuses_are_classified_on_the_http_side.
+        {
+            for status in [408, 429, 500, 502, 503, 504, 529] {
+                assert_eq!(again_after(status, None), Again::Soon(None));
+            }
+            assert_eq!(
+                again_after(429, Some("0.25")),
+                Again::Soon(Some(Duration::from_millis(250)))
+            );
+            assert_eq!(again_after(401, Some("1")), Again::Never);
+        }
+
+        // Phase: retries_never_consume_room_needed_for_an_answer.
+        {
+            let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
+            assert!(result.is_err());
+            assert_eq!(fake.calls, 1);
+            assert!(fake.waits.is_empty());
+        }
     }
 
     #[test]

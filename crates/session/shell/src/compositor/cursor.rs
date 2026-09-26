@@ -1,20 +1,22 @@
-//! One source of truth for the compositor-owned pointer.
+//! One source of truth for the pointer image.
 //!
-//! The shape is stored as vector geometry in a 24-unit design space and
-//! rasterised with supersampling. DRM cursor planes, the software fallback,
-//! and captures all consume this same bitmap, so changing render paths never
-//! changes the pointer's silhouette or hotspot.
+//! Compositor-drawn shapes are vector geometry in a 24-unit design space,
+//! rasterised with supersampling. A client that supplies its own cursor
+//! surface is converted into the same premultiplied bitmap. DRM cursor planes,
+//! the software fallback and captures all consume that one bitmap, so changing
+//! render paths never changes the pointer's silhouette or hotspot.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ui::ColorCompat;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Rect};
+use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
 /// Cursor ink comes from the shared dark desktop theme rather than bypassing
-/// the design-token contract.  Keeping the pair here also makes the hardware
-/// plane, software fallback, and captured pointer use identical colours.
+/// the design-token contract. The system pointer deliberately keeps the same
+/// light fill and dark outline across themes so it stays identifiable over
+/// arbitrary client content, which the shell theme does not control.
 pub(crate) fn palette() -> (Color, Color) {
     let colors = &ui::theme::Theme::dark().tokens.colors;
     (colors.text_primary, colors.surfaces.base)
@@ -22,16 +24,228 @@ pub(crate) fn palette() -> (Color, Color) {
 
 /// Largest legacy KMS cursor plane supported by every backend we target.
 pub const PLANE_SIZE: u32 = 64;
-/// Side of the square grid the cursor outline is authored on.
+/// Side of the square grid the cursor outlines are authored on.
 const DESIGN_SIZE: u32 = 24;
 const SUPERSAMPLE: u32 = 4;
 
-/// Shapes owned by the compositor. More named shapes can be added without
-/// changing the transport used by the scanout backends.
+/// Shapes the compositor draws itself: its own default, what its chrome
+/// asks for, and what a client names through `wp_cursor_shape_v1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CursorShape {
     #[default]
     Default,
+    Text,
+    Pointer,
+    Grab,
+    Grabbing,
+    NotAllowed,
+    Wait,
+    Progress,
+    Crosshair,
+    Help,
+    ContextMenu,
+    Move,
+    ResizeN,
+    ResizeS,
+    ResizeE,
+    ResizeW,
+    ResizeNe,
+    ResizeNw,
+    ResizeSe,
+    ResizeSw,
+    ResizeEw,
+    ResizeNs,
+    ResizeNesw,
+    ResizeNwse,
+}
+
+impl CursorShape {
+    /// Every shape, for exhaustive rendering checks.
+    pub const ALL: [Self; 24] = [
+        Self::Default,
+        Self::Text,
+        Self::Pointer,
+        Self::Grab,
+        Self::Grabbing,
+        Self::NotAllowed,
+        Self::Wait,
+        Self::Progress,
+        Self::Crosshair,
+        Self::Help,
+        Self::ContextMenu,
+        Self::Move,
+        Self::ResizeN,
+        Self::ResizeS,
+        Self::ResizeE,
+        Self::ResizeW,
+        Self::ResizeNe,
+        Self::ResizeNw,
+        Self::ResizeSe,
+        Self::ResizeSw,
+        Self::ResizeEw,
+        Self::ResizeNs,
+        Self::ResizeNesw,
+        Self::ResizeNwse,
+    ];
+
+    /// The drawn shape for a CSS/`wp_cursor_shape_v1` cursor name. Names
+    /// without a dedicated drawing fall back to their closest relative
+    /// rather than to an arrow that says nothing about the action.
+    pub fn from_icon(icon: winit::window::CursorIcon) -> Self {
+        use winit::window::CursorIcon as I;
+        match icon {
+            I::Text | I::VerticalText => Self::Text,
+            I::Pointer => Self::Pointer,
+            I::Grab => Self::Grab,
+            I::Grabbing => Self::Grabbing,
+            I::NotAllowed | I::NoDrop => Self::NotAllowed,
+            I::Wait => Self::Wait,
+            I::Progress => Self::Progress,
+            I::Crosshair | I::Cell => Self::Crosshair,
+            I::Help | I::DndAsk => Self::Help,
+            I::ContextMenu => Self::ContextMenu,
+            I::Move | I::AllScroll | I::AllResize => Self::Move,
+            I::NResize => Self::ResizeN,
+            I::SResize => Self::ResizeS,
+            I::EResize => Self::ResizeE,
+            I::WResize => Self::ResizeW,
+            I::NeResize => Self::ResizeNe,
+            I::NwResize => Self::ResizeNw,
+            I::SeResize => Self::ResizeSe,
+            I::SwResize => Self::ResizeSw,
+            I::EwResize | I::ColResize => Self::ResizeEw,
+            I::NsResize | I::RowResize => Self::ResizeNs,
+            I::NeswResize => Self::ResizeNesw,
+            I::NwseResize => Self::ResizeNwse,
+            _ => Self::Default,
+        }
+    }
+
+    /// The standard cursor name this drawing stands for, for a host that
+    /// draws the pointer itself (the nested development backend).
+    pub fn icon(self) -> winit::window::CursorIcon {
+        use winit::window::CursorIcon as I;
+        match self {
+            Self::Default => I::Default,
+            Self::Text => I::Text,
+            Self::Pointer => I::Pointer,
+            Self::Grab => I::Grab,
+            Self::Grabbing => I::Grabbing,
+            Self::NotAllowed => I::NotAllowed,
+            Self::Wait => I::Wait,
+            Self::Progress => I::Progress,
+            Self::Crosshair => I::Crosshair,
+            Self::Help => I::Help,
+            Self::ContextMenu => I::ContextMenu,
+            Self::Move => I::Move,
+            Self::ResizeN => I::NResize,
+            Self::ResizeS => I::SResize,
+            Self::ResizeE => I::EResize,
+            Self::ResizeW => I::WResize,
+            Self::ResizeNe => I::NeResize,
+            Self::ResizeNw => I::NwResize,
+            Self::ResizeSe => I::SeResize,
+            Self::ResizeSw => I::SwResize,
+            Self::ResizeEw => I::EwResize,
+            Self::ResizeNs => I::NsResize,
+            Self::ResizeNesw => I::NeswResize,
+            Self::ResizeNwse => I::NwseResize,
+        }
+    }
+
+    /// Stable lowercase name, used by the state dump.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Text => "text",
+            Self::Pointer => "pointer",
+            Self::Grab => "grab",
+            Self::Grabbing => "grabbing",
+            Self::NotAllowed => "not-allowed",
+            Self::Wait => "wait",
+            Self::Progress => "progress",
+            Self::Crosshair => "crosshair",
+            Self::Help => "help",
+            Self::ContextMenu => "context-menu",
+            Self::Move => "move",
+            Self::ResizeN => "n-resize",
+            Self::ResizeS => "s-resize",
+            Self::ResizeE => "e-resize",
+            Self::ResizeW => "w-resize",
+            Self::ResizeNe => "ne-resize",
+            Self::ResizeNw => "nw-resize",
+            Self::ResizeSe => "se-resize",
+            Self::ResizeSw => "sw-resize",
+            Self::ResizeEw => "ew-resize",
+            Self::ResizeNs => "ns-resize",
+            Self::ResizeNesw => "nesw-resize",
+            Self::ResizeNwse => "nwse-resize",
+        }
+    }
+
+    /// Where the pointer position sits on the shape, in design units.
+    fn hotspot(self) -> (f64, f64) {
+        match self {
+            Self::Default | Self::Progress | Self::Help | Self::ContextMenu => (0.0, 0.0),
+            Self::Pointer => (9.25, 1.0),
+            _ => (12.0, 12.0),
+        }
+    }
+}
+
+/// What the pointer currently shows.
+#[derive(Clone, Debug)]
+pub enum PointerImage {
+    /// A compositor-drawn shape, sized from the accessibility cursor size.
+    Shape(CursorShape),
+    /// The focused client hid the pointer (`set_cursor` with no surface, or
+    /// a cursor surface without a buffer).
+    Hidden,
+    /// The focused client's own cursor surface, already converted.
+    Client(Arc<CursorBitmap>),
+}
+
+impl Default for PointerImage {
+    fn default() -> Self {
+        Self::Shape(CursorShape::Default)
+    }
+}
+
+impl PartialEq for PointerImage {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Shape(a), Self::Shape(b)) => a == b,
+            (Self::Hidden, Self::Hidden) => true,
+            (Self::Client(a), Self::Client(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl PointerImage {
+    /// The pixels to show at `size` (the accessibility cursor size, which
+    /// only compositor-drawn shapes follow), or `None` when hidden.
+    pub fn bitmap(&self, size: u32) -> Option<Arc<CursorBitmap>> {
+        match self {
+            Self::Shape(shape) => Some(bitmap(*shape, size)),
+            Self::Hidden => None,
+            Self::Client(bitmap) => Some(Arc::clone(bitmap)),
+        }
+    }
+
+    /// Machine-readable description for the state dump.
+    pub fn describe(&self) -> serde_json::Value {
+        match self {
+            Self::Shape(shape) => serde_json::json!({ "kind": "shape", "shape": shape.name() }),
+            Self::Hidden => serde_json::json!({ "kind": "hidden" }),
+            Self::Client(bitmap) => serde_json::json!({
+                "kind": "surface",
+                "width": bitmap.width,
+                "height": bitmap.height,
+                "hotspot": [bitmap.hotspot.0, bitmap.hotspot.1],
+            }),
+        }
+    }
 }
 
 /// Premultiplied RGBA cursor pixels and their explicit hotspot.
@@ -40,13 +254,99 @@ pub struct CursorBitmap {
     pub width: u32,
     pub height: u32,
     pub hotspot: (u32, u32),
-    rgba: Arc<[u8]>,
+    rgba: Arc<Vec<u8>>,
 }
 
 impl CursorBitmap {
     pub fn rgba(&self) -> &[u8] {
         &self.rgba
     }
+
+    /// Convert a client's cursor buffer (premultiplied RGBA, as `wl_shm`
+    /// ARGB8888 is) to output pixels. The buffer is `buffer_scale` times its
+    /// logical size and the hotspot is surface-local logical coordinates;
+    /// both are resampled to `output_scale` and bounded to the cursor plane,
+    /// preserving the aspect ratio. `None` for an empty or truncated buffer.
+    pub fn from_client(
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        hotspot: (i32, i32),
+        buffer_scale: i32,
+        output_scale: f64,
+    ) -> Option<Self> {
+        let expected = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
+        if width == 0 || height == 0 || rgba.len() < expected {
+            return None;
+        }
+        let buffer_scale = f64::from(buffer_scale.max(1));
+        let output_scale = if output_scale.is_finite() && output_scale > 0.0 {
+            output_scale
+        } else {
+            1.0
+        };
+        let mut factor = output_scale / buffer_scale;
+        let longest = f64::from(width.max(height)) * factor;
+        if longest > f64::from(PLANE_SIZE) {
+            factor *= f64::from(PLANE_SIZE) / longest;
+        }
+        let out_w = scaled_dimension(width, factor);
+        let out_h = scaled_dimension(height, factor);
+        let mut out =
+            vec![0_u8; usize::try_from(out_w.saturating_mul(out_h).saturating_mul(4)).ok()?];
+        for (index, pixel) in out.chunks_exact_mut(4).enumerate() {
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            let (x, y) = (
+                index.checked_rem(out_w).unwrap_or(0),
+                index.checked_div(out_w).unwrap_or(0),
+            );
+            let sx = source_coordinate(x, factor, width);
+            let sy = source_coordinate(y, factor, height);
+            let offset = usize::try_from(
+                sy.saturating_mul(width)
+                    .saturating_add(sx)
+                    .saturating_mul(4),
+            )
+            .unwrap_or(usize::MAX);
+            if let Some(source) = pixel_at(rgba, offset) {
+                pixel.copy_from_slice(&source);
+            }
+        }
+        let scale_hotspot = |value: i32, limit: u32| {
+            let scaled = (f64::from(value.max(0)) * output_scale).round();
+            clamp_to_u32(scaled).min(limit.saturating_sub(1))
+        };
+        Some(Self {
+            width: out_w,
+            height: out_h,
+            hotspot: (
+                scale_hotspot(hotspot.0, out_w),
+                scale_hotspot(hotspot.1, out_h),
+            ),
+            rgba: Arc::new(out),
+        })
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is rounded and clamped to the u32 range before the cast"
+)]
+fn clamp_to_u32(value: f64) -> u32 {
+    if value.is_nan() {
+        return 0;
+    }
+    value.clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+fn scaled_dimension(source: u32, factor: f64) -> u32 {
+    clamp_to_u32((f64::from(source) * factor).round()).clamp(1, PLANE_SIZE)
+}
+
+/// Nearest source texel for output coordinate `out` under `factor`.
+fn source_coordinate(out: u32, factor: f64, limit: u32) -> u32 {
+    clamp_to_u32(((f64::from(out) + 0.5) / factor).floor()).min(limit.saturating_sub(1))
 }
 
 type Cache = Vec<((CursorShape, u32), Arc<CursorBitmap>)>;
@@ -67,19 +367,166 @@ pub fn bitmap(shape: CursorShape, size: u32) -> Arc<CursorBitmap> {
     rendered
 }
 
-/// Paint the shared cursor into a scene at its hotspot. Capture uses this
-/// rather than maintaining a second approximation of the pointer.
-pub fn draw_scene(scene: &mut Scene, shape: CursorShape, size: u32, hotspot: vello::kurbo::Point) {
-    let size = size.clamp(24, PLANE_SIZE);
-    let scale = f64::from(size) / f64::from(DESIGN_SIZE);
-    let transform = Affine::translate((hotspot.x, hotspot.y)).then_scale(scale);
-    draw_vector(scene, shape, transform, scale.recip());
+/// Paint a cursor bitmap into a scene with its hotspot at `at`. Capture uses
+/// the very pixels the cursor plane shows rather than a second rendition.
+pub fn draw_scene(scene: &mut Scene, cursor: &CursorBitmap, at: vello::kurbo::Point) {
+    if cursor.width == 0 || cursor.height == 0 {
+        return;
+    }
+    let data: Arc<dyn AsRef<[u8]> + Send + Sync> = cursor.rgba.clone();
+    let image = ImageData {
+        data: Blob::new(data),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: cursor.width,
+        height: cursor.height,
+    };
+    let origin = (
+        at.x - f64::from(cursor.hotspot.0),
+        at.y - f64::from(cursor.hotspot.1),
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::translate(origin),
+        &ImageBrush::new(image),
+        None,
+        &Rect::new(0.0, 0.0, f64::from(cursor.width), f64::from(cursor.height)),
+    );
 }
 
-fn default_path() -> BezPath {
+type Point2 = (f64, f64);
+
+/// One filled region: an outer contour minus its holes.
+struct Part {
+    outer: Vec<Point2>,
+    holes: Vec<Vec<Point2>>,
+}
+
+impl Part {
+    fn solid(outer: Vec<Point2>) -> Self {
+        Self {
+            outer,
+            holes: Vec::new(),
+        }
+    }
+
+    fn with_holes(outer: Vec<Point2>, holes: Vec<Vec<Point2>>) -> Self {
+        Self { outer, holes }
+    }
+
+    fn contains(&self, point: Point2) -> bool {
+        point_in_polygon(point, &self.outer)
+            && !self.holes.iter().any(|hole| point_in_polygon(point, hole))
+    }
+
+    fn edge_distance(&self, point: Point2) -> f64 {
+        self.holes
+            .iter()
+            .map(|hole| polygon_distance(point, hole))
+            .fold(polygon_distance(point, &self.outer), f64::min)
+    }
+
+    fn map(self, f: impl Fn(Point2) -> Point2) -> Self {
+        Self {
+            outer: self.outer.into_iter().map(&f).collect(),
+            holes: self
+                .holes
+                .into_iter()
+                .map(|hole| hole.into_iter().map(&f).collect())
+                .collect(),
+        }
+    }
+}
+
+fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point2> {
+    vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+}
+
+fn arc_points(center: Point2, radius: f64, from: f64, to: f64, steps: u32) -> Vec<Point2> {
+    (0..=steps)
+        .map(|step| {
+            let t = f64::from(step) / f64::from(steps.max(1));
+            let angle = from + (to - from) * t;
+            (
+                center.0 + radius * angle.cos(),
+                center.1 + radius * angle.sin(),
+            )
+        })
+        .collect()
+}
+
+fn circle(center: Point2, radius: f64) -> Vec<Point2> {
+    let mut points = arc_points(center, radius, 0.0, std::f64::consts::TAU, 32);
+    points.pop();
+    points
+}
+
+/// A stadium: the segment `a`→`b` thickened by `radius` with round ends.
+fn capsule(a: Point2, b: Point2, radius: f64) -> Vec<Point2> {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let heading = (b.1 - a.1).atan2(b.0 - a.0);
+    let mut points = arc_points(b, radius, heading - FRAC_PI_2, heading + FRAC_PI_2, 8);
+    points.extend(arc_points(
+        a,
+        radius,
+        heading + FRAC_PI_2,
+        heading + PI + FRAC_PI_2,
+        8,
+    ));
+    points
+}
+
+fn rounded_rect(x0: f64, y0: f64, x1: f64, y1: f64, radius: f64) -> Vec<Point2> {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let mut points = arc_points((x1 - radius, y0 + radius), radius, -FRAC_PI_2, 0.0, 5);
+    points.extend(arc_points(
+        (x1 - radius, y1 - radius),
+        radius,
+        0.0,
+        FRAC_PI_2,
+        5,
+    ));
+    points.extend(arc_points(
+        (x0 + radius, y1 - radius),
+        radius,
+        FRAC_PI_2,
+        PI,
+        5,
+    ));
+    points.extend(arc_points(
+        (x0 + radius, y0 + radius),
+        radius,
+        PI,
+        PI + FRAC_PI_2,
+        5,
+    ));
+    points
+}
+
+/// A thick arc band between `from` and `to` (radians, y down).
+fn arc_band(center: Point2, radius: f64, width: f64, from: f64, to: f64) -> Vec<Point2> {
+    let mut points = arc_points(center, radius + width / 2.0, from, to, 16);
+    let mut inner = arc_points(center, radius - width / 2.0, from, to, 16);
+    inner.reverse();
+    points.extend(inner);
+    points
+}
+
+fn rotate_about(center: Point2, angle: f64) -> impl Fn(Point2) -> Point2 {
+    let (sin, cos) = angle.sin_cos();
+    move |(x, y)| {
+        let (dx, dy) = (x - center.0, y - center.1);
+        (
+            center.0 + dx * cos - dy * sin,
+            center.1 + dx * sin + dy * cos,
+        )
+    }
+}
+
+fn default_arrow() -> Vec<Point2> {
     // A compact, slightly softened modern arrow. The tip is deliberately
     // (0,0), matching the explicit hotspot and existing pointer coordinates.
-    const OUTLINE: [(f64, f64); 7] = [
+    vec![
         (1.0, 0.75),
         (1.2, 19.15),
         (5.8, 14.75),
@@ -87,76 +534,218 @@ fn default_path() -> BezPath {
         (13.25, 20.35),
         (9.45, 13.1),
         (16.05, 12.7),
-    ];
-    let mut path = BezPath::new();
-    let mut points = OUTLINE.into_iter();
-    if let Some(start) = points.next() {
-        path.move_to(start);
-    }
-    for point in points {
-        path.line_to(point);
-    }
-    path.close_path();
-    path
+    ]
 }
 
-fn draw_vector(scene: &mut Scene, shape: CursorShape, transform: Affine, inverse_scale: f64) {
-    let path = match shape {
-        CursorShape::Default => default_path(),
-    };
-    // Scale stroke back into design space so its final physical width stays
-    // close to two pixels at all supported accessibility sizes.
-    // The system pointer deliberately keeps canonical white fill and black
-    // outline across themes so it remains identifiable over arbitrary client
-    // content, which is not controlled by the shell theme.
-    let stroke = Stroke::new(2.0 * inverse_scale);
-    let (fill, outline) = palette();
-    scene.fill(Fill::NonZero, transform, fill, None, &path);
-    scene.stroke(&stroke, transform, outline, None, &path);
+/// A two-headed arrow through (12, 12), pointing along `angle`.
+fn double_arrow(angle: f64) -> Part {
+    // Design-grid units: half the length, head length, head half-width
+    // and shaft half-width.
+    let (half, head, head_half_width, shaft) = (9.0, 5.0, 4.5, 1.3);
+    let local = vec![
+        (-half, 0.0),
+        (-half + head, -head_half_width),
+        (-half + head, -shaft),
+        (half - head, -shaft),
+        (half - head, -head_half_width),
+        (half, 0.0),
+        (half - head, head_half_width),
+        (half - head, shaft),
+        (-half + head, shaft),
+        (-half + head, head_half_width),
+    ];
+    Part::solid(local)
+        .map(|(x, y)| (x + 12.0, y + 12.0))
+        .map(rotate_about((12.0, 12.0), angle))
+}
+
+/// An arrow towards an edge along `angle`, stopped by a bar marking it.
+fn edge_arrow(angle: f64) -> Vec<Part> {
+    let arrow = vec![
+        (-7.0, -1.3),
+        (1.0, -1.3),
+        (1.0, -4.5),
+        (6.0, 0.0),
+        (1.0, 4.5),
+        (1.0, 1.3),
+        (-7.0, 1.3),
+    ];
+    let bar = rect(6.9, -6.0, 8.9, 6.0);
+    [arrow, bar]
+        .into_iter()
+        .map(|points| {
+            Part::solid(points)
+                .map(|(x, y)| (x + 11.0, y + 12.0))
+                .map(rotate_about((12.0, 12.0), angle))
+        })
+        .collect()
+}
+
+fn hourglass() -> Vec<Part> {
+    let glass = vec![
+        (7.5, 4.0),
+        (16.5, 4.0),
+        (16.5, 6.0),
+        (13.2, 12.0),
+        (16.5, 18.0),
+        (16.5, 20.0),
+        (7.5, 20.0),
+        (7.5, 18.0),
+        (10.8, 12.0),
+        (7.5, 6.0),
+    ];
+    // The emptied upper bulb reads as time having passed.
+    let emptied = vec![(9.6, 5.9), (14.4, 5.9), (12.0, 10.3)];
+    vec![
+        Part::with_holes(glass, vec![emptied]),
+        Part::solid(rect(6.0, 2.0, 18.0, 4.5)),
+        Part::solid(rect(6.0, 19.5, 18.0, 22.0)),
+    ]
+}
+
+fn open_hand(fingers: &[(Point2, Point2, f64)], palm: Vec<Point2>) -> Vec<Part> {
+    let mut parts = vec![Part::solid(palm)];
+    parts.extend(
+        fingers
+            .iter()
+            .map(|&(a, b, radius)| Part::solid(capsule(a, b, radius))),
+    );
+    parts
+}
+
+fn geometry(shape: CursorShape) -> Vec<Part> {
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+    match shape {
+        CursorShape::Default => vec![Part::solid(default_arrow())],
+        CursorShape::Text => vec![
+            Part::solid(rect(10.7, 4.0, 13.3, 20.0)),
+            Part::solid(rect(8.0, 2.7, 16.0, 5.3)),
+            Part::solid(rect(8.0, 18.7, 16.0, 21.3)),
+        ],
+        CursorShape::Pointer => open_hand(
+            &[
+                ((9.25, 2.75), (9.25, 13.0), 1.75),
+                ((12.6, 9.3), (12.6, 13.0), 1.6),
+                ((15.3, 10.1), (15.3, 13.5), 1.5),
+                ((17.7, 11.2), (17.7, 14.0), 1.35),
+                ((4.6, 13.4), (8.6, 18.2), 1.55),
+            ],
+            rounded_rect(7.5, 11.5, 19.05, 21.5, 3.0),
+        ),
+        CursorShape::Grab => open_hand(
+            &[
+                ((8.3, 5.5), (8.3, 12.0), 1.55),
+                ((11.3, 4.2), (11.3, 12.0), 1.55),
+                ((14.3, 4.6), (14.3, 12.0), 1.55),
+                ((17.1, 6.3), (17.1, 12.0), 1.45),
+                ((3.8, 10.2), (7.5, 15.5), 1.5),
+            ],
+            rounded_rect(6.5, 10.0, 18.5, 20.5, 3.2),
+        ),
+        CursorShape::Grabbing => open_hand(
+            &[
+                ((8.3, 8.6), (8.3, 10.0), 1.55),
+                ((11.3, 8.0), (11.3, 10.0), 1.55),
+                ((14.3, 8.2), (14.3, 10.0), 1.55),
+                ((17.0, 9.0), (17.0, 10.5), 1.45),
+                ((5.2, 12.0), (9.5, 14.6), 1.45),
+            ],
+            rounded_rect(6.5, 9.5, 18.5, 20.5, 3.2),
+        ),
+        CursorShape::NotAllowed => vec![
+            Part::with_holes(circle((12.0, 12.0), 8.5), vec![circle((12.0, 12.0), 5.5)]),
+            Part::solid(rect(5.0, 10.5, 19.0, 13.5)).map(rotate_about((12.0, 12.0), FRAC_PI_4)),
+        ],
+        CursorShape::Wait => hourglass(),
+        CursorShape::Progress => {
+            let mut parts = vec![Part::solid(default_arrow())];
+            parts.extend(hourglass().into_iter().map(|part| {
+                Part::solid(part.outer)
+                    .map(|(x, y)| (19.5 + (x - 12.0) * 0.45, 18.5 + (y - 12.0) * 0.45))
+            }));
+            parts
+        }
+        CursorShape::Crosshair => vec![
+            Part::solid(rect(10.3, 2.0, 13.7, 9.0)),
+            Part::solid(rect(10.3, 15.0, 13.7, 22.0)),
+            Part::solid(rect(2.0, 10.3, 9.0, 13.7)),
+            Part::solid(rect(15.0, 10.3, 22.0, 13.7)),
+        ],
+        CursorShape::Help => vec![
+            Part::solid(default_arrow()),
+            Part::solid(arc_band((19.6, 15.2), 2.5, 1.9, PI, PI + 1.5 * PI)),
+            Part::solid(rect(18.65, 17.2, 20.55, 19.3)),
+            Part::solid(circle((19.6, 21.6), 1.15)),
+        ],
+        CursorShape::ContextMenu => vec![
+            Part::solid(default_arrow()),
+            Part::with_holes(
+                rect(14.5, 14.0, 23.0, 23.0),
+                vec![
+                    rect(16.3, 16.0, 21.2, 16.9),
+                    rect(16.3, 18.3, 21.2, 19.2),
+                    rect(16.3, 20.6, 21.2, 21.5),
+                ],
+            ),
+        ],
+        CursorShape::Move => vec![double_arrow(0.0), double_arrow(FRAC_PI_2)],
+        CursorShape::ResizeE => edge_arrow(0.0),
+        CursorShape::ResizeSe => edge_arrow(FRAC_PI_4),
+        CursorShape::ResizeS => edge_arrow(FRAC_PI_2),
+        CursorShape::ResizeSw => edge_arrow(FRAC_PI_2 + FRAC_PI_4),
+        CursorShape::ResizeW => edge_arrow(PI),
+        CursorShape::ResizeNw => edge_arrow(PI + FRAC_PI_4),
+        CursorShape::ResizeN => edge_arrow(PI + FRAC_PI_2),
+        CursorShape::ResizeNe => edge_arrow(-FRAC_PI_4),
+        CursorShape::ResizeEw => vec![double_arrow(0.0)],
+        CursorShape::ResizeNs => vec![double_arrow(FRAC_PI_2)],
+        CursorShape::ResizeNwse => vec![double_arrow(FRAC_PI_4)],
+        CursorShape::ResizeNesw => vec![double_arrow(-FRAC_PI_4)],
+    }
 }
 
 fn rasterise(shape: CursorShape, size: u32) -> CursorBitmap {
     let supersampled = size.saturating_mul(SUPERSAMPLE);
     let high = rasterise_cpu(shape, supersampled);
     let rgba = downsample_premultiplied(&high, supersampled, size);
+    let scale = f64::from(size) / f64::from(DESIGN_SIZE);
+    let (hx, hy) = shape.hotspot();
+    let hotspot = |value: f64| clamp_to_u32((value * scale).round()).min(size.saturating_sub(1));
     CursorBitmap {
         width: size,
         height: size,
-        hotspot: (0, 0),
-        rgba: Arc::from(rgba),
+        hotspot: (hotspot(hx), hotspot(hy)),
+        rgba: Arc::new(rgba),
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "cursor coverage and coordinates are bounded to a 256px supersampled plane"
-)]
+/// Classify every supersampled pixel as fill, outline or empty. Parts are a
+/// union: an edge that lies deep inside another part is an internal seam and
+/// takes the fill colour, so overlapping pieces read as one silhouette.
 fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
     let mut rgba =
         vec![0_u8; usize::try_from(size.saturating_mul(size).saturating_mul(4)).unwrap_or(0)];
     let scale = f64::from(size) / f64::from(DESIGN_SIZE);
-    let path = match shape {
-        CursorShape::Default => default_path(),
-    };
-    let outline_points = path
-        .elements()
-        .iter()
-        .filter_map(|element| match element {
-            vello::kurbo::PathEl::MoveTo(point) | vello::kurbo::PathEl::LineTo(point) => {
-                Some((point.x * scale, point.y * scale))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let parts: Vec<Part> = geometry(shape)
+        .into_iter()
+        .map(|part| part.map(|(x, y)| (x * scale, y * scale)))
+        .collect();
     let stroke_radius = (f64::from(SUPERSAMPLE) * 0.85).max(1.0);
     let (fill, outline_color) = palette();
     for y in 0..size {
         for x in 0..size {
             let point = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-            let inside = point_in_polygon(point, &outline_points);
-            let edge_distance = polygon_distance(point, &outline_points);
-            let (color, alpha) = if edge_distance <= stroke_radius {
+            let mut inside = false;
+            let mut near_edge = false;
+            let mut deep_inside = false;
+            for part in &parts {
+                let distance = part.edge_distance(point);
+                let contained = part.contains(point);
+                inside |= contained;
+                near_edge |= distance <= stroke_radius;
+                deep_inside |= contained && distance > stroke_radius;
+            }
+            let (color, alpha) = if near_edge && !deep_inside {
                 (
                     [outline_color.r(), outline_color.g(), outline_color.b()],
                     outline_color.a(),
@@ -335,8 +924,27 @@ pub fn composite_xrgb(
 mod tests {
     use super::*;
 
+    fn opaque_bounds(bitmap: &CursorBitmap) -> Option<(u32, u32, u32, u32)> {
+        let mut bounds: Option<(u32, u32, u32, u32)> = None;
+        for (index, pixel) in bitmap.rgba().chunks_exact(4).enumerate() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let index = u32::try_from(index).unwrap();
+            let (x, y) = (
+                index.checked_rem(bitmap.width).unwrap(),
+                index.checked_div(bitmap.width).unwrap(),
+            );
+            bounds = Some(bounds.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+            }));
+        }
+        bounds
+    }
+
     #[test]
-    fn default_cursor_is_cached_and_antialiased_at_accessibility_sizes() {
+    fn cursor_images_are_cached_antialiased_and_composited_with_clipping() {
+        // Phase `default_cursor_is_cached_and_antialiased_at_accessibility_sizes`.
         for size in [24, 48, 64] {
             let first = bitmap(CursorShape::Default, size);
             let second = bitmap(CursorShape::Default, size);
@@ -353,14 +961,146 @@ mod tests {
             );
             assert!(first.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
         }
+        // Phase `software_composite_clips_and_preserves_uncovered_pixels`.
+        {
+            let cursor = bitmap(CursorShape::Default, 24);
+            let mut dst = vec![17_u8; 12 * 12 * 4];
+            composite_xrgb(&mut dst, 12 * 4, 12, 12, -3, -3, &cursor);
+            assert!(dst.chunks_exact(4).any(|pixel| pixel != [17, 17, 17, 17]));
+            assert_eq!(&dst[(11 * 12 + 11) * 4..][..4], &[17, 17, 17, 17]);
+        }
     }
 
     #[test]
-    fn software_composite_clips_and_preserves_uncovered_pixels() {
-        let cursor = bitmap(CursorShape::Default, 24);
-        let mut dst = vec![17_u8; 12 * 12 * 4];
-        composite_xrgb(&mut dst, 12 * 4, 12, 12, -3, -3, &cursor);
-        assert!(dst.chunks_exact(4).any(|pixel| pixel != [17, 17, 17, 17]));
-        assert_eq!(&dst[(11 * 12 + 11) * 4..][..4], &[17, 17, 17, 17]);
+    fn every_shape_rasterises_with_fill_outline_and_its_hotspot_on_the_ink() {
+        let (fill, outline) = palette();
+        for shape in CursorShape::ALL {
+            for size in [24, 48] {
+                let cursor = bitmap(shape, size);
+                let pixels = cursor.rgba();
+                // Thin strokes blend fill and outline at 24 px, so judge
+                // opaque pixels by which ink they are closer to.
+                let midpoint = u16::midpoint(u16::from(fill.r()), u16::from(outline.r()));
+                let light = |p: &[u8]| u16::from(p[0]) > midpoint;
+                assert!(
+                    pixels
+                        .chunks_exact(4)
+                        .any(|p| p[3] == 255 && light(p) == (fill.r() > outline.r())),
+                    "{shape:?}@{size} shows no fill ink"
+                );
+                assert!(
+                    pixels
+                        .chunks_exact(4)
+                        .any(|p| p[3] == 255 && light(p) == (outline.r() > fill.r())),
+                    "{shape:?}@{size} shows no outline ink"
+                );
+                let (x0, y0, x1, y1) = opaque_bounds(&cursor).expect("visible ink");
+                let covered = pixels.chunks_exact(4).filter(|p| p[3] > 0).count();
+                assert!(
+                    covered * 10 < pixels.len() / 4 * 7,
+                    "{shape:?}@{size} flooded the plane ({covered} pixels)"
+                );
+                // The hotspot lies within (or right beside, for the arrow
+                // tip) the drawn silhouette, never in empty space far away.
+                let (hx, hy) = cursor.hotspot;
+                assert!(
+                    hx + 2 >= x0 && hx <= x1 + 2 && hy + 2 >= y0 && hy <= y1 + 2,
+                    "{shape:?}@{size} hotspot {:?} outside ink {:?}",
+                    cursor.hotspot,
+                    (x0, y0, x1, y1)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn centred_shapes_scale_their_hotspot_with_the_accessibility_size() {
+        assert_eq!(bitmap(CursorShape::Text, 24).hotspot, (12, 12));
+        assert_eq!(bitmap(CursorShape::Text, 48).hotspot, (24, 24));
+        assert_eq!(bitmap(CursorShape::Pointer, 48).hotspot, (19, 2));
+    }
+
+    #[test]
+    fn shapes_are_distinct_drawings() {
+        let mut seen: Vec<(CursorShape, Arc<CursorBitmap>)> = Vec::new();
+        for shape in CursorShape::ALL {
+            let cursor = bitmap(shape, 24);
+            for (other, drawn) in &seen {
+                assert_ne!(
+                    drawn.rgba(),
+                    cursor.rgba(),
+                    "{shape:?} draws exactly like {other:?}"
+                );
+            }
+            seen.push((shape, cursor));
+        }
+    }
+
+    #[test]
+    fn named_icons_map_to_their_drawing() {
+        use winit::window::CursorIcon as I;
+        assert_eq!(CursorShape::from_icon(I::Text), CursorShape::Text);
+        assert_eq!(CursorShape::from_icon(I::Pointer), CursorShape::Pointer);
+        assert_eq!(CursorShape::from_icon(I::ColResize), CursorShape::ResizeEw);
+        assert_eq!(CursorShape::from_icon(I::NoDrop), CursorShape::NotAllowed);
+        assert_eq!(CursorShape::from_icon(I::Alias), CursorShape::Default);
+    }
+
+    #[test]
+    fn client_cursor_is_resampled_to_output_scale_with_its_hotspot() {
+        // A 2x buffer for a 16-logical-pixel cursor, on a 1x output.
+        let rgba: Vec<u8> = (0..32 * 32).flat_map(|_| [10, 20, 30, 255]).collect();
+        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2, 1.0).unwrap();
+        assert_eq!((cursor.width, cursor.height), (16, 16));
+        assert_eq!(cursor.hotspot, (4, 6));
+        assert!(
+            cursor
+                .rgba()
+                .chunks_exact(4)
+                .all(|p| p == [10, 20, 30, 255])
+        );
+
+        // The same logical cursor on a 1.5x output keeps its logical size.
+        let cursor = CursorBitmap::from_client(&rgba, 32, 32, (4, 6), 2, 1.5).unwrap();
+        assert_eq!((cursor.width, cursor.height), (24, 24));
+        assert_eq!(cursor.hotspot, (6, 9));
+
+        // Oversized cursors are bounded to the plane, aspect preserved.
+        let wide: Vec<u8> = vec![255; 256 * 64 * 4];
+        let cursor = CursorBitmap::from_client(&wide, 256, 64, (300, 300), 1, 1.0).unwrap();
+        assert_eq!((cursor.width, cursor.height), (PLANE_SIZE, 16));
+        assert!(cursor.hotspot.0 < cursor.width && cursor.hotspot.1 < cursor.height);
+
+        assert!(CursorBitmap::from_client(&rgba[..10], 32, 32, (0, 0), 1, 1.0).is_none());
+    }
+
+    #[test]
+    fn hidden_pointer_has_no_pixels() {
+        assert!(PointerImage::Hidden.bitmap(24).is_none());
+        assert_eq!(
+            PointerImage::Hidden.describe(),
+            serde_json::json!({ "kind": "hidden" })
+        );
+        assert_eq!(
+            PointerImage::Shape(CursorShape::Text).describe()["shape"],
+            "text"
+        );
+    }
+
+    #[test]
+    fn software_composite_honours_the_hotspot() {
+        let cursor = bitmap(CursorShape::Crosshair, 24);
+        let (w, h) = (48_usize, 48_usize);
+        let mut dst = vec![0_u8; w * h * 4];
+        composite_xrgb(&mut dst, w * 4, w, h, 24, 24, &cursor);
+        // Crosshair bars are centred on the pointer: ink both left and right
+        // of x = 24 on the pointer's row.
+        let row = 24 * w * 4;
+        assert!(dst[row..row + 20 * 4].chunks_exact(4).any(|p| p[3] == 0xff));
+        assert!(
+            dst[row + 28 * 4..row + 48 * 4]
+                .chunks_exact(4)
+                .any(|p| p[3] == 0xff)
+        );
     }
 }

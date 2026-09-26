@@ -4,9 +4,9 @@
   "workflow_id": "canonical-verifier-bundle.yml",
   "event": "",
   "status": "waiting",
-  "html_url": "https://code.sandbox.example/qos/qos/actions/runs/9525",
+  "html_url": "https://code.tilo.so/tilo/tilo/actions/runs/9525",
   "repository": {
     "id": 23,
-    "full_name": "qos/qos"
+    "full_name": "tilo/tilo"
   }
 }

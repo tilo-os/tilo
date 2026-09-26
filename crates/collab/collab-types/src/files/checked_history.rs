@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 pub const CHECKED_HISTORY_VERSION: u16 = 1;
 pub const MAX_CHECKED_HISTORY_REQUEST_BYTES: usize = 1024;
-pub const CHECKED_HISTORY_REVIEW_XATTR: &str = "user.qos.history-review";
-pub const CHECKED_HISTORY_RESTORE_XATTR: &str = "user.qos.history-restore";
-pub const CHECKED_HISTORY_RESULT_XATTR_PREFIX: &str = "user.qos.history-result.";
+pub const CHECKED_HISTORY_REVIEW_XATTR: &str = "user.tilo.history-review";
+pub const CHECKED_HISTORY_RESTORE_XATTR: &str = "user.tilo.history-restore";
+pub const CHECKED_HISTORY_RESULT_XATTR_PREFIX: &str = "user.tilo.history-result.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,24 +162,29 @@ mod tests {
             },
         }
     }
+    /// An exact request round-trips; wrong version, nil scope and unchecked requests are rejected.
     #[test]
-    fn checked_history_exact_request_round_trip() {
-        let request = request();
-        assert_eq!(
-            CheckedHistoryRequestV1::parse(&serde_json::to_vec(&request).unwrap()).unwrap(),
-            request
-        );
-    }
-    #[test]
-    fn checked_history_rejects_wrong_version_nil_scope_and_unchecked_request() {
-        let mut value = request();
-        value.review.mount_lifetime = Uuid::nil();
-        assert!(CheckedHistoryRequestV1::parse(&serde_json::to_vec(&value).unwrap()).is_err());
-        value = request();
-        value.schema_version = 2;
-        assert!(CheckedHistoryRequestV1::parse(&serde_json::to_vec(&value).unwrap()).is_err());
-        assert!(CheckedHistoryRequestV1::parse(br#"{"schema_version":1,"operation":{"operation":"restore","version_id":"00000000-0000-0000-0000-000000000001"}}"#).is_err());
-        assert!(CheckedHistoryRequestV1::parse(&vec![b' '; 1025]).is_err());
+    fn checked_history_requests_round_trip_exactly_and_reject_malformed_ones() {
+        // Phase: checked_history_exact_request_round_trip.
+        {
+            let request = request();
+            assert_eq!(
+                CheckedHistoryRequestV1::parse(&serde_json::to_vec(&request).unwrap()).unwrap(),
+                request
+            );
+        }
+
+        // Phase: checked_history_rejects_wrong_version_nil_scope_and_unchecked_request.
+        {
+            let mut value = request();
+            value.review.mount_lifetime = Uuid::nil();
+            assert!(CheckedHistoryRequestV1::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+            value = request();
+            value.schema_version = 2;
+            assert!(CheckedHistoryRequestV1::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+            assert!(CheckedHistoryRequestV1::parse(br#"{"schema_version":1,"operation":{"operation":"restore","version_id":"00000000-0000-0000-0000-000000000001"}}"#).is_err());
+            assert!(CheckedHistoryRequestV1::parse(&vec![b' '; 1025]).is_err());
+        }
     }
 }
 

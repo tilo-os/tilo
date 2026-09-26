@@ -17,6 +17,7 @@ pub mod drm;
 #[path = "drm/policy.rs"]
 pub mod drm;
 pub mod headless;
+pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod winit;
 
@@ -31,14 +32,19 @@ pub use crate::shell::render::OutputId;
 #[derive(Clone, Debug)]
 pub struct Output {
     pub id: OutputId,
-    /// Top-left corner of this output in the compositor's combined
-    /// coordinate space. Single-output backends place their one output
-    /// at the origin; the multi-output DRM backend lays connectors out
-    /// side-by-side, so the second monitor sits at e.g. `(1920, 0)`.
-    /// The compositor renders one scene spanning the bounding box of all
-    /// outputs (see [`combined_geometry`]) and each output presents the
-    /// sub-rect at its `position`.
+    /// Top-left corner of this output in the scene: the one texture the
+    /// compositor paints, in physical pixels, spanning the bounding box of
+    /// all outputs (see [`combined_geometry`]). Each output presents the
+    /// sub-rect at its `position`. Derived from [`Self::logical_position`]
+    /// by [`layout::scene_positions`]; see [`layout`] for why the two
+    /// differ once scales do.
     pub position: (i32, i32),
+    /// Top-left corner in the logical desktop layout — the coordinates
+    /// Settings stores, `wl_output`/`zxdg_output_v1` advertise and the
+    /// pointer moves in. Outputs tile edge to edge in
+    /// [`Self::logical_size`] units.
+    pub logical_position: (i32, i32),
+    /// Extent in the scene, in physical pixels (the mode, rotated).
     pub size: (u32, u32),
     pub scale: f32,
     /// Compositor-space orientation. `size` is the post-transform logical
@@ -47,6 +53,66 @@ pub struct Output {
     /// Canonical ICC path selected from the compositor-discovered profile
     /// set. Presenter re-validates/parses it with qcms before use.
     pub color_profile: Option<String>,
+    /// The rate this output's mode scans out at, in millihertz, when the
+    /// backend drives a real display. Advertised on this output's own
+    /// `wl_output`, so a client on a 144 Hz monitor beside a 60 Hz panel
+    /// paces to 144. `None` falls back to the compositor's pacing rate.
+    pub refresh_mhz: Option<u32>,
+    /// What clients are told this output is (`wl_output` name, make, model).
+    pub identity: OutputIdentity,
+}
+
+/// A presentation interval as the millihertz a `wl_output` mode carries.
+/// `None` for a zero interval, which has no rate.
+pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
+    if interval.is_zero() {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the cast to u32 \
+                  neither truncates a fraction nor loses a sign"
+    )]
+    let mhz = (1000.0 / interval.as_secs_f64())
+        .round()
+        .clamp(0.0, f64::from(u32::MAX)) as u32;
+    Some(mhz)
+}
+
+/// The identity a `wl_output` advertises. Backends without real monitor
+/// data leave it empty and the advertiser falls back to generic values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutputIdentity {
+    /// Connector key, e.g. `DP-2` — qualified by card when two GPUs share
+    /// a connector name; also the `wl_output` name and the head name.
+    pub connector: String,
+    pub make: String,
+    pub model: String,
+    pub serial: String,
+    /// Physical image size, zero when unknown.
+    pub physical_mm: (u32, u32),
+}
+
+impl OutputIdentity {
+    /// Identity from a connector and its EDID. EDID size wins over the
+    /// connector-reported one, which some adapters leave at zero.
+    pub fn from_monitor(
+        connector: &str,
+        monitor: Option<&settings_store::hardware::MonitorIdentity>,
+        connector_mm: Option<(u32, u32)>,
+    ) -> Self {
+        Self {
+            connector: connector.to_owned(),
+            make: monitor.map(|m| m.make.clone()).unwrap_or_default(),
+            model: monitor.map(|m| m.model.clone()).unwrap_or_default(),
+            serial: monitor.map(|m| m.serial.clone()).unwrap_or_default(),
+            physical_mm: monitor
+                .and_then(|m| m.physical_size_mm)
+                .or(connector_mm)
+                .unwrap_or((0, 0)),
+        }
+    }
 }
 
 impl Output {
@@ -62,7 +128,32 @@ impl Output {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
+            logical_position: (0, 0),
+            identity: OutputIdentity::default(),
         }
+    }
+
+    /// Extent in the logical layout: the mode over the scale, rotated.
+    pub fn logical_size(&self) -> (u32, u32) {
+        layout::logical_extent(self.physical_size(), f64::from(self.scale), self.transform)
+    }
+
+    /// Where the output sits in the logical desktop — the space the shell
+    /// lays out in, clients are configured in and the pointer moves in.
+    pub fn logical_rect(&self) -> vello::kurbo::Rect {
+        let (w, h) = self.logical_size();
+        let (x, y) = (
+            f64::from(self.logical_position.0),
+            f64::from(self.logical_position.1),
+        );
+        vello::kurbo::Rect::new(x, y, x + f64::from(w), y + f64::from(h))
+    }
+
+    /// Where the output's pixels sit in the painted scene.
+    pub fn scene_rect(&self) -> vello::kurbo::Rect {
+        let (x, y) = (f64::from(self.position.0), f64::from(self.position.1));
+        vello::kurbo::Rect::new(x, y, x + f64::from(self.size.0), y + f64::from(self.size.1))
     }
 
     pub fn physical_size(&self) -> (u32, u32) {
@@ -97,6 +188,50 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
     let w = u32::try_from(w.max(0)).unwrap_or(u32::MAX);
     let h = u32::try_from(h.max(0)).unwrap_or(u32::MAX);
     (w, h)
+}
+
+/// Bounding box (width, height) of every output's logical rectangle: the
+/// size of the desktop the shell lays out. Equal to [`combined_geometry`]
+/// when every scale is 1.
+pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
+    let mut w: i64 = 0;
+    let mut h: i64 = 0;
+    for o in outputs {
+        let (lw, lh) = o.logical_size();
+        w = w.max(i64::from(o.logical_position.0).saturating_add(i64::from(lw)));
+        h = h.max(i64::from(o.logical_position.1).saturating_add(i64::from(lh)));
+    }
+    let w = u32::try_from(w.max(0)).unwrap_or(u32::MAX);
+    let h = u32::try_from(h.max(0)).unwrap_or(u32::MAX);
+    (w, h)
+}
+
+/// Translate the backend's output list into the geometry the shell lays out
+/// and paints across: each display's logical rectangle, its scale, and
+/// where its pixels go in the scene.
+///
+/// Outputs with a zero dimension are dropped: a connector mid-modeset
+/// reports 0×0, which would hand a strip a display it can't place a window on.
+pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::OutputGeometry> {
+    outputs
+        .iter()
+        .filter(|o| {
+            let (lw, lh) = o.logical_size();
+            o.size.0 > 0 && o.size.1 > 0 && lw > 0 && lh > 0
+        })
+        .map(|o| {
+            let logical = o.logical_rect();
+            crate::shell::overlay_host::OutputGeometry {
+                id: o.id.0,
+                x: logical.x0,
+                y: logical.y0,
+                width: logical.width(),
+                height: logical.height(),
+                scale: f64::from(o.scale),
+                scene: o.scene_rect(),
+            }
+        })
+        .collect()
 }
 
 /// A touchpad gesture, in the shape `zwp_pointer_gestures_v1` carries.
@@ -136,7 +271,9 @@ pub enum GestureEvent {
     },
 }
 
-/// One touch point's movement, in combined-output coordinates.
+/// One touch point's movement. A backend reports it in scene pixels; the
+/// compositor carries it into the logical desktop with
+/// [`layout::event_to_logical`] before anything hit-tests it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TouchEvent {
     Down { slot: u32, x: f64, y: f64 },
@@ -168,9 +305,14 @@ pub enum BackendEvent {
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.
+    /// The same delta before pointer acceleration and the event time in
+    /// microseconds are what `zwp_relative_pointer_v1` hands to games.
     RelativePointerMotion {
         dx: f64,
         dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+        time_usec: u64,
     },
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
@@ -187,12 +329,62 @@ pub enum BackendEvent {
     /// navigation it means. Never also delivered as [`Self::Gesture`].
     ShellGesture(crate::compositor::backend::drm::gestures::GestureAction),
     /// A touch point, for forwarding to the focused client over
-    /// `wl_touch`. The same touch is *also* delivered as pointer
-    /// [`Self::Input`] events so the shell chrome — which has no touch
-    /// path — responds to a finger.
+    /// `wl_touch`. The shell receives the same contact as raw
+    /// `WindowEvent::Touch` through [`Self::Input`].
     Touch(TouchEvent),
+    /// A confirmed one-finger tap ended at this global position. The
+    /// compositor turns it into a pointer click only when the tap's touch
+    /// sequence did not already reach a client over `wl_touch`; otherwise
+    /// the client would be activated once per protocol.
+    TouchTap {
+        x: f64,
+        y: f64,
+    },
+    /// An accessibility filter rejected input (a bounce-keys press) and the
+    /// user asked to see it: flash the shell's visual alert.
+    VisualAlert,
     Redraw,
     Focus(bool),
+}
+
+/// Where local pointer motion may take the pointer, in global coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PointerConstraintRegion {
+    #[default]
+    Free,
+    /// The pointer stays where it is; only relative motion is reported.
+    Locked,
+    /// The pointer stays inside the union of these `(x0, y0, x1, y1)` rects.
+    Confined(Vec<(f64, f64, f64, f64)>),
+}
+
+impl PointerConstraintRegion {
+    /// Where motion from `current` towards `requested` ends up, or `None`
+    /// when the pointer must not move at all.
+    pub fn constrain(&self, current: (f64, f64), requested: (f64, f64)) -> Option<(f64, f64)> {
+        match self {
+            Self::Free => Some(requested),
+            Self::Locked => None,
+            Self::Confined(rects) => {
+                let inside = |(x, y): (f64, f64), &(x0, y0, x1, y1): &(f64, f64, f64, f64)| {
+                    x >= x0 && x < x1 && y >= y0 && y < y1
+                };
+                if rects.iter().any(|rect| inside(requested, rect)) {
+                    return Some(requested);
+                }
+                // Slide along the edge of the rect the pointer is in (or the
+                // first one, if a relayout left it outside all of them).
+                let &(x0, y0, x1, y1) = rects
+                    .iter()
+                    .find(|rect| inside(current, rect))
+                    .or_else(|| rects.first())?;
+                Some((
+                    requested.0.clamp(x0, (x1 - 1.0).max(x0)),
+                    requested.1.clamp(y0, (y1 - 1.0).max(y0)),
+                ))
+            }
+        }
+    }
 }
 
 pub trait Backend {
@@ -279,6 +471,27 @@ pub trait Backend {
     /// Idempotent: redundant calls are harmless.
     fn set_dpms(&mut self, _on: bool) {}
 
+    /// Every connector this backend knows, enabled or not, as advertised to
+    /// output-management clients. The default treats each live output as a
+    /// virtual connector whose only mode is the one it runs.
+    fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        crate::compositor::output_heads::heads_from_outputs(self.outputs())
+    }
+
+    /// Power one output's panel on or off for an output-power client,
+    /// independently of idle blanking ([`Self::set_dpms`]). Default no-op
+    /// for backends with no physical panel.
+    fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
+
+    /// Turn the built-in panel to `rotation` because the device was turned
+    /// (`None` restores its configured transform). External monitors never
+    /// follow. Default no-op for backends without a built-in panel.
+    fn set_device_rotation(
+        &mut self,
+        _rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+    }
+
     /// Re-establish the display after the system came back from suspend.
     ///
     /// Default no-op: a hosted backend's display is the host's problem,
@@ -296,6 +509,19 @@ pub trait Backend {
     /// when the Settings app writes a change, so pointer speed and
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
+
+    /// Show `image` as the pointer. Default no-op: a hosted backend's
+    /// pointer belongs to the host and a headless one has none.
+    fn set_pointer_image(&mut self, _image: crate::compositor::cursor::PointerImage) {}
+
+    /// Hold the pointer still (a game locked it) or keep it inside a region
+    /// (a game confined it). Relative motion keeps being reported either
+    /// way. Default no-op for backends that own no pointer.
+    fn set_pointer_constraint(&mut self, _constraint: PointerConstraintRegion) {}
+
+    /// Move the pointer to global `(x, y)` without a physical motion, as a
+    /// released pointer lock asks with its cursor position hint.
+    fn warp_pointer(&mut self, _x: f64, _y: f64) {}
 
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
@@ -316,14 +542,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combined_geometry_single_output_equals_its_size() {
-        let outs = [Output::new(OutputId(0), (1920, 1080), 1.0)];
-        assert_eq!(combined_geometry(&outs), (1920, 1080));
-    }
+    fn combined_geometry_spans_every_output_and_is_zero_for_none() {
+        let single = [Output::new(OutputId(0), (1920, 1080), 1.0)];
+        assert_eq!(
+            combined_geometry(&single),
+            (1920, 1080),
+            "single output equals its size"
+        );
 
-    #[test]
-    fn combined_geometry_side_by_side_sums_width_takes_max_height() {
-        let outs = [
+        let side_by_side = [
             Output {
                 id: OutputId(0),
                 position: (0, 0),
@@ -331,6 +558,9 @@ mod tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
+                logical_position: (0, 0),
+                identity: OutputIdentity::default(),
             },
             Output {
                 id: OutputId(1),
@@ -339,15 +569,55 @@ mod tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
+                logical_position: (1920, 0),
+                identity: OutputIdentity::default(),
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
-        assert_eq!(combined_geometry(&outs), (3200, 1080));
+        assert_eq!(
+            combined_geometry(&side_by_side),
+            (3200, 1080),
+            "side by side"
+        );
+
+        assert_eq!(combined_geometry(&[]), (0, 0), "empty");
     }
 
     #[test]
-    fn combined_geometry_empty_is_zero() {
-        assert_eq!(combined_geometry(&[]), (0, 0));
+    fn pointer_constraints_hold_or_bound_motion() {
+        assert_eq!(
+            PointerConstraintRegion::Free.constrain((1.0, 1.0), (5.0, 6.0)),
+            Some((5.0, 6.0))
+        );
+        assert_eq!(
+            PointerConstraintRegion::Locked.constrain((1.0, 1.0), (5.0, 6.0)),
+            None
+        );
+        let confined = PointerConstraintRegion::Confined(vec![
+            (0.0, 0.0, 100.0, 50.0),
+            (200.0, 0.0, 300.0, 50.0),
+        ]);
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (20.0, 30.0)),
+            Some((20.0, 30.0))
+        );
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (150.0, 80.0)),
+            Some((99.0, 49.0))
+        );
+        assert_eq!(
+            confined.constrain((250.0, 10.0), (-5.0, 10.0)),
+            Some((200.0, 10.0))
+        );
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (210.0, 10.0)),
+            Some((210.0, 10.0))
+        );
+        assert_eq!(
+            PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
+            None
+        );
     }
 }
 

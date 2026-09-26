@@ -315,55 +315,78 @@ mod tests {
     }
 
     #[test]
-    fn char_motion_steps_and_clamps_at_the_ends() {
-        let t = "abc";
-        let mut c = EditCore::at(1);
-        c.motion(t, Motion::Left, false);
-        assert_eq!(c.caret(), 0);
-        c.motion(t, Motion::Left, false);
-        assert_eq!(c.caret(), 0, "left at start stays");
-        c.set_caret(2);
-        c.motion(t, Motion::Right, false);
-        assert_eq!(c.caret(), 3);
-        c.motion(t, Motion::Right, false);
-        assert_eq!(c.caret(), 3, "right at end stays");
-    }
+    fn caret_motion_selection_and_clamping_land_on_shared_boundaries() {
+        // (case, text, starting caret, [(motion, caret after it, why)])
+        let cases: &[(&str, &str, usize, &[(Motion, usize, &str)])] = &[
+            (
+                "char motion clamps at the start",
+                "abc",
+                1,
+                &[
+                    (Motion::Left, 0, "left steps"),
+                    (Motion::Left, 0, "left at start stays"),
+                ],
+            ),
+            (
+                "char motion clamps at the end",
+                "abc",
+                2,
+                &[
+                    (Motion::Right, 3, "right steps"),
+                    (Motion::Right, 3, "right at end stays"),
+                ],
+            ),
+            (
+                "word motion uses shared boundaries",
+                "hello world quick",
+                0,
+                &[
+                    (
+                        Motion::WordRight,
+                        6,
+                        "word-right lands on the next word start",
+                    ),
+                    (Motion::WordRight, 12, "word-right again"),
+                    (
+                        Motion::WordLeft,
+                        6,
+                        "word-left walks back to the word start",
+                    ),
+                ],
+            ),
+            (
+                "line and document motion",
+                "first\nsecond\nthird",
+                8, // inside "second"
+                &[
+                    (Motion::LineStart, 6, "Home goes to the line start"),
+                    (
+                        Motion::LineEnd,
+                        12,
+                        "End goes to the line end (the trailing \\n)",
+                    ),
+                    (Motion::DocStart, 0, "document start"),
+                    (Motion::DocEnd, 18, "document end"),
+                ],
+            ),
+        ];
+        for (case, text, start, steps) in cases {
+            let mut c = EditCore::at(*start);
+            for (motion, want, why) in *steps {
+                c.motion(text, *motion, false);
+                assert_eq!(c.caret(), *want, "case {case}: {why}");
+            }
+        }
+        assert_eq!("first\nsecond\nthird".len(), 18);
 
-    #[test]
-    fn word_motion_uses_shared_boundaries() {
-        let t = "hello world quick";
-        let mut c = EditCore::at(0);
-        c.motion(t, Motion::WordRight, false);
-        assert_eq!(c.caret(), 6, "word-right lands on the next word start");
-        c.motion(t, Motion::WordRight, false);
-        assert_eq!(c.caret(), 12);
-        c.motion(t, Motion::WordLeft, false);
-        assert_eq!(c.caret(), 6, "word-left walks back to the word start");
-    }
-
-    #[test]
-    fn line_and_doc_motion() {
-        let t = "first\nsecond\nthird";
-        let mut c = EditCore::at(8); // inside "second"
-        c.motion(t, Motion::LineStart, false);
-        assert_eq!(c.caret(), 6, "Home goes to the line start");
-        c.motion(t, Motion::LineEnd, false);
-        assert_eq!(c.caret(), 12, "End goes to the line end (the trailing \\n)");
-        c.motion(t, Motion::DocStart, false);
-        assert_eq!(c.caret(), 0);
-        c.motion(t, Motion::DocEnd, false);
-        assert_eq!(c.caret(), t.len());
-    }
-
-    #[test]
-    fn shift_motion_extends_then_plain_collapses_to_edge() {
+        // Shift motion extends; a plain Left collapses to the LEFT edge of
+        // the selection, not 3.
         let t = "abcdef";
         let mut c = EditCore::at(2);
         c.motion(t, Motion::Right, true);
         c.motion(t, Motion::Right, true);
         assert!(c.has_selection());
         assert_eq!(c.range(), 2..4, "shift-right extends the selection");
-        // A plain Left collapses to the LEFT edge of the selection, not 3.
         c.motion(t, Motion::Left, false);
         assert!(!c.has_selection());
         assert_eq!(
@@ -371,86 +394,17 @@ mod tests {
             2,
             "plain left collapses to the selection's near edge"
         );
-    }
 
-    #[test]
-    fn select_all_and_word() {
+        // Select all, then a word.
         let t = "alpha beta";
         let mut c = EditCore::new();
         c.select_all(t);
         assert_eq!(c.range(), 0..t.len());
         c.select_word(t, 7); // inside "beta"
         assert_eq!(c.range(), 6..10);
-    }
 
-    #[test]
-    fn insert_at_caret_and_over_selection() {
-        let t = "abc";
-        let mut c = EditCore::at(1);
-        let e = c.insert("XY");
-        assert_eq!(
-            e,
-            Edit {
-                at: 1,
-                removed: 0,
-                inserted: "XY".into()
-            }
-        );
-        assert_eq!(apply(t, &e), "aXYbc");
-        assert_eq!(c.caret(), 3, "caret sits after the insert");
-
-        // Insert over a selection replaces it.
-        let t2 = "aXYbc";
-        let mut c2 = EditCore::new();
-        c2.set_selection(1, 3); // "XY"
-        let e2 = c2.insert("Z");
-        assert_eq!(apply(t2, &e2), "aZbc");
-        assert_eq!(c2.caret(), 2);
-        assert!(!c2.has_selection());
-    }
-
-    #[test]
-    fn backspace_char_word_and_selection() {
-        // Char-wise.
-        let t = "abc";
-        let mut c = EditCore::at(2);
-        let e = c.delete_backward(t, false);
-        assert_eq!(apply(t, &e), "ac");
-        assert_eq!(c.caret(), 1);
-        // No-op at the start.
-        let mut c0 = EditCore::at(0);
-        assert!(c0.delete_backward(t, false).is_noop());
-        // Word-wise.
-        let tw = "hello world";
-        let mut cw = EditCore::at(tw.len());
-        let ew = cw.delete_backward(tw, true);
-        assert_eq!(apply(tw, &ew), "hello ");
-        // Over a selection.
-        let mut cs = EditCore::new();
-        cs.set_selection(0, 5);
-        let es = cs.delete_backward(tw, false);
-        assert_eq!(apply(tw, &es), " world");
-    }
-
-    #[test]
-    fn delete_forward_char_word_and_end() {
-        let t = "abc";
-        let mut c = EditCore::at(1);
-        let e = c.delete_forward(t, false);
-        assert_eq!(apply(t, &e), "ac");
-        assert_eq!(c.caret(), 1, "forward delete keeps the caret put");
-        let mut cend = EditCore::at(t.len());
-        assert!(cend.delete_forward(t, false).is_noop());
-        let tw = "hello world";
-        let mut cw = EditCore::at(0);
-        let ew = cw.delete_forward(tw, true);
-        assert_eq!(apply(tw, &ew), "world");
-    }
-
-    #[test]
-    fn clamp_after_external_shrink_keeps_grapheme_boundaries() {
-        // "café" — é is two bytes (3..5). Caret past a shrunk text must land on a
-        // char boundary, never inside the é.
+        // "café" — é is two bytes (3..5). A caret past a shrunk text must land
+        // on a char boundary, never inside the é.
         let mut c = EditCore::at(20);
         c.clamp_to("café");
         assert_eq!(c.caret(), "café".len());
@@ -460,7 +414,6 @@ mod tests {
             "café".is_char_boundary(c.caret()),
             "clamp lands on a char boundary"
         );
-
         let combining = "a\u{301}b";
         c.set_caret(1); // between the base and combining mark
         c.clamp_to(combining);
@@ -468,16 +421,83 @@ mod tests {
     }
 
     #[test]
-    fn delete_treats_emoji_sequence_as_one_character() {
-        let text = "A👩‍👩‍👧‍👦B";
-        let after_emoji = text.len() - 1;
-        let mut backward = EditCore::at(after_emoji);
-        let edit = backward.delete_backward(text, false);
-        assert_eq!(apply(text, &edit), "AB");
-        assert_eq!(backward.caret(), 1);
+    fn edits_insert_and_delete_by_char_word_selection_and_grapheme() {
+        // Case `insert_at_caret_and_over_selection`.
+        {
+            let t = "abc";
+            let mut c = EditCore::at(1);
+            let e = c.insert("XY");
+            assert_eq!(
+                e,
+                Edit {
+                    at: 1,
+                    removed: 0,
+                    inserted: "XY".into()
+                }
+            );
+            assert_eq!(apply(t, &e), "aXYbc");
+            assert_eq!(c.caret(), 3, "caret sits after the insert");
 
-        let mut forward = EditCore::at(1);
-        let edit = forward.delete_forward(text, false);
-        assert_eq!(apply(text, &edit), "AB");
+            // Insert over a selection replaces it.
+            let t2 = "aXYbc";
+            let mut c2 = EditCore::new();
+            c2.set_selection(1, 3); // "XY"
+            let e2 = c2.insert("Z");
+            assert_eq!(apply(t2, &e2), "aZbc");
+            assert_eq!(c2.caret(), 2);
+            assert!(!c2.has_selection());
+        }
+
+        // Case `backspace_char_word_and_selection`.
+        {
+            // Char-wise.
+            let t = "abc";
+            let mut c = EditCore::at(2);
+            let e = c.delete_backward(t, false);
+            assert_eq!(apply(t, &e), "ac");
+            assert_eq!(c.caret(), 1);
+            // No-op at the start.
+            let mut c0 = EditCore::at(0);
+            assert!(c0.delete_backward(t, false).is_noop());
+            // Word-wise.
+            let tw = "hello world";
+            let mut cw = EditCore::at(tw.len());
+            let ew = cw.delete_backward(tw, true);
+            assert_eq!(apply(tw, &ew), "hello ");
+            // Over a selection.
+            let mut cs = EditCore::new();
+            cs.set_selection(0, 5);
+            let es = cs.delete_backward(tw, false);
+            assert_eq!(apply(tw, &es), " world");
+        }
+
+        // Case `delete_forward_char_word_and_end`.
+        {
+            let t = "abc";
+            let mut c = EditCore::at(1);
+            let e = c.delete_forward(t, false);
+            assert_eq!(apply(t, &e), "ac");
+            assert_eq!(c.caret(), 1, "forward delete keeps the caret put");
+            let mut cend = EditCore::at(t.len());
+            assert!(cend.delete_forward(t, false).is_noop());
+            let tw = "hello world";
+            let mut cw = EditCore::at(0);
+            let ew = cw.delete_forward(tw, true);
+            assert_eq!(apply(tw, &ew), "world");
+        }
+
+        // Case `delete_treats_emoji_sequence_as_one_character`.
+        {
+            let text = "A👩‍👩‍👧‍👦B";
+            let after_emoji = text.len() - 1;
+            let mut backward = EditCore::at(after_emoji);
+            let edit = backward.delete_backward(text, false);
+            assert_eq!(apply(text, &edit), "AB");
+            assert_eq!(backward.caret(), 1);
+
+            let mut forward = EditCore::at(1);
+            let edit = forward.delete_forward(text, false);
+            assert_eq!(apply(text, &edit), "AB");
+        }
     }
 }

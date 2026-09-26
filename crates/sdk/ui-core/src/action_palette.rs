@@ -38,7 +38,9 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::{SearchCursor, SearchGroup, SearchProvider, SearchResult, fuzzy_score};
+use crate::search::{
+    SearchCursor, SearchGroup, SearchProvider, SearchResult, fuzzy_score, result_relevance,
+};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
@@ -1717,20 +1719,19 @@ impl ActionPalette {
     }
 }
 
-/// Rank `rows` by fit against `query` and bucket by kind. Reuses the shared
-/// [`fuzzy_score`] primitive so a hit from one source is comparable to a hit
-/// from another. Caps each group so no single source floods the overlay.
+/// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
+/// [`result_relevance`] ranker so a hit from one source is comparable to a
+/// hit from another. Caps each group so no single source floods the overlay.
 fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
     /// A provider bias notch is worth this many query-match points.
     const BIAS_WEIGHT: i32 = 4;
     let key = |r: &SearchResult| -> i32 {
-        let bonus = fuzzy_score(query, &r.title)
-            .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
-            .unwrap_or(0);
-        r.score.saturating_mul(BIAS_WEIGHT).saturating_add(bonus)
+        r.score
+            .saturating_mul(BIAS_WEIGHT)
+            .saturating_add(result_relevance(query, r))
     };
     let mut ranked = rows;
-    ranked.sort_by_key(|b| std::cmp::Reverse(key(b)));
+    ranked.sort_by_cached_key(|b| std::cmp::Reverse(key(b)));
     let mut groups: Vec<SearchGroup> = Vec::new();
     for r in ranked {
         if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
@@ -1908,25 +1909,52 @@ mod tests {
     }
 
     #[test]
-    fn large_lazy_provider_is_budgeted_but_cannot_supply_its_own_authority() {
-        let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut palette = ActionPalette::new();
-        palette.load_open_resources(&[]);
-        palette.set_providers(vec![Box::new(LazyCorpus {
-            materialized: Arc::clone(&materialized),
-        })]);
-        materialized.store(0, std::sync::atomic::Ordering::Relaxed);
-        palette.open();
-        assert_eq!(
-            materialized.load(std::sync::atomic::Ordering::Relaxed),
-            PROVIDER_HIT_BUDGET
-        );
-        assert_eq!(palette.len(), PER_GROUP_CAP);
-        palette.activate_selected();
-        assert!(
-            palette.take_operation().is_none(),
-            "provider discovery must not become dispatch authority"
-        );
+    fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
+        // Case `large_lazy_provider_is_budgeted_but_cannot_supply_its_own_authority`.
+        {
+            let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut palette = ActionPalette::new();
+            palette.load_open_resources(&[]);
+            palette.set_providers(vec![Box::new(LazyCorpus {
+                materialized: Arc::clone(&materialized),
+            })]);
+            materialized.store(0, std::sync::atomic::Ordering::Relaxed);
+            palette.open();
+            assert_eq!(
+                materialized.load(std::sync::atomic::Ordering::Relaxed),
+                PROVIDER_HIT_BUDGET
+            );
+            assert_eq!(palette.len(), PER_GROUP_CAP);
+            palette.activate_selected();
+            assert!(
+                palette.take_operation().is_none(),
+                "provider discovery must not become dispatch authority"
+            );
+        }
+
+        // Case `actions_and_content_both_surface_grouped`:
+        // Both an ACTION (from the resource tree) and a searchable CONTENT hit
+        // (from a folded-in provider) surface, grouped, for one query.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.set_providers(vec![Box::new(People)]);
+            p.open();
+
+            let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
+            assert!(
+                groups.contains(&ACTIONS_KIND.to_string()),
+                "Actions group present: {groups:?}"
+            );
+            assert!(
+                groups.contains(&"People".to_string()),
+                "content group present: {groups:?}"
+            );
+
+            let labels = p.result_labels();
+            assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
+            assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
+        }
     }
 
     #[test]
@@ -2005,417 +2033,402 @@ mod tests {
         assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
     }
 
-    /// Both an ACTION (from the resource tree) and a searchable CONTENT hit
-    /// (from a folded-in provider) surface, grouped, for one query.
     #[test]
-    fn actions_and_content_both_surface_grouped() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.set_providers(vec![Box::new(People)]);
-        p.open();
+    fn palette_activation_dispatches_navigates_prompts_or_queues() {
+        // Case `activating_an_action_dispatches_and_mutates`:
+        // Activating an ACTION row dispatches through `tilo_actions` and mutates the
+        // CRDT — the real replay path.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.open();
 
-        let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
-        assert!(
-            groups.contains(&ACTIONS_KIND.to_string()),
-            "Actions group present: {groups:?}"
-        );
-        assert!(
-            groups.contains(&"People".to_string()),
-            "content group present: {groups:?}"
-        );
+            let idx = p
+                .result_labels()
+                .iter()
+                .position(|l| l.contains("Mark done"))
+                .expect("mark row");
+            p.set_cursor(idx);
+            p.activate_selected();
 
-        let labels = p.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
-        assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
-    }
+            let mut doc = AutoCommit::new();
+            assert!(doc.get(&ROOT, "marked").unwrap().is_none());
+            let mut tx = LocalTransport::new();
+            let d = p
+                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .expect("an action was pending")
+                .expect("dispatch ok");
+            assert!(matches!(d, Dispatched::AppliedLocal(_)));
+            let context = d.envelope().context.as_ref().expect("palette provenance");
+            assert_eq!(context.action_label, "Mark done");
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.label.as_str()),
+                Some("Thing")
+            );
+            assert_eq!(
+                doc.get(&ROOT, "marked")
+                    .unwrap()
+                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                Some("yes".to_string()),
+            );
+            assert!(!p.is_open(), "an immediate action closes the palette");
+            assert!(
+                p.take_navigation().is_none(),
+                "an action is not a navigation"
+            );
+        }
 
-    /// Activating an ACTION row dispatches through `tilo_actions` and mutates the
-    /// CRDT — the real replay path.
-    #[test]
-    fn activating_an_action_dispatches_and_mutates() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.open();
+        // Case `ambient_task_context_reaches_palette_actions_without_overwriting_resource`.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.set_ambient_context(Some(
+                ActionContext::default()
+                    .with_app("org.tilo.Agent", "Agent")
+                    .with_purpose("Prepare launch")
+                    .with_group("issue:42", "Launch", "issue"),
+            ));
+            p.open();
+            p.activate_selected();
 
-        let idx = p
-            .result_labels()
-            .iter()
-            .position(|l| l.contains("Mark done"))
-            .expect("mark row");
-        p.set_cursor(idx);
-        p.activate_selected();
+            let mut doc = AutoCommit::new();
+            let mut tx = LocalTransport::new();
+            let dispatched = p
+                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .expect("action pending")
+                .expect("dispatch succeeds");
+            let context = dispatched.envelope().context.as_ref().expect("context");
+            assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+            assert_eq!(
+                context.group.as_ref().map(|group| group.id.as_str()),
+                Some("issue:42")
+            );
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.id.as_str()),
+                Some("test.thing:1"),
+                "the concrete palette resource wins over ambient provenance"
+            );
+        }
 
-        let mut doc = AutoCommit::new();
-        assert!(doc.get(&ROOT, "marked").unwrap().is_none());
-        let mut tx = LocalTransport::new();
-        let d = p
-            .take_dispatch(&mut doc, &registry(), &mut tx)
-            .expect("an action was pending")
-            .expect("dispatch ok");
-        assert!(matches!(d, Dispatched::AppliedLocal(_)));
-        let context = d.envelope().context.as_ref().expect("palette provenance");
-        assert_eq!(context.action_label, "Mark done");
-        assert_eq!(
-            context
-                .resource
-                .as_ref()
-                .map(|resource| resource.label.as_str()),
-            Some("Thing")
-        );
-        assert_eq!(
-            doc.get(&ROOT, "marked")
-                .unwrap()
-                .and_then(|(v, _)| v.as_str().map(str::to_string)),
-            Some("yes".to_string()),
-        );
-        assert!(!p.is_open(), "an immediate action closes the palette");
-        assert!(
-            p.take_navigation().is_none(),
-            "an action is not a navigation"
-        );
-    }
+        // Case `activating_content_navigates_not_dispatches`:
+        // Activating a CONTENT row queues a navigation (its opaque id), NOT a
+        // dispatch.
+        {
+            let mut p = ActionPalette::new();
+            p.set_providers(vec![Box::new(People)]);
+            p.open();
+            p.set_query("ada");
 
-    #[test]
-    fn ambient_task_context_reaches_palette_actions_without_overwriting_resource() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.set_ambient_context(Some(
-            ActionContext::default()
-                .with_app("org.tilo.Agent", "Agent")
-                .with_purpose("Prepare launch")
-                .with_group("issue:42", "Launch", "issue"),
-        ));
-        p.open();
-        p.activate_selected();
+            let idx = p
+                .result_labels()
+                .iter()
+                .position(|l| l == "Ada Lovelace")
+                .expect("ada row");
+            p.set_cursor(idx);
+            p.activate_selected();
 
-        let mut doc = AutoCommit::new();
-        let mut tx = LocalTransport::new();
-        let dispatched = p
-            .take_dispatch(&mut doc, &registry(), &mut tx)
-            .expect("action pending")
-            .expect("dispatch succeeds");
-        let context = dispatched.envelope().context.as_ref().expect("context");
-        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
-        assert_eq!(
-            context.group.as_ref().map(|group| group.id.as_str()),
-            Some("issue:42")
-        );
-        assert_eq!(
-            context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some("test.thing:1"),
-            "the concrete palette resource wins over ambient provenance"
-        );
-    }
+            let mut doc = AutoCommit::new();
+            let mut tx = LocalTransport::new();
+            assert!(
+                p.take_dispatch(&mut doc, &registry(), &mut tx).is_none(),
+                "a content row is not a dispatch"
+            );
+            assert_eq!(
+                p.take_navigation().as_deref(),
+                Some("person:Ada Lovelace"),
+                "the opaque provider id is handed back for navigation"
+            );
+            assert!(!p.is_open(), "navigation closes the palette");
+        }
 
-    /// Activating a CONTENT row queues a navigation (its opaque id), NOT a
-    /// dispatch.
-    #[test]
-    fn activating_content_navigates_not_dispatches() {
-        let mut p = ActionPalette::new();
-        p.set_providers(vec![Box::new(People)]);
-        p.open();
-        p.set_query("ada");
+        // Case `activating_canonical_search_hit_queues_pending_operation`:
+        // Canonical provider hits are broker operations, not opaque navigation
+        // callbacks. This is the per-app migration contract.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.set_providers(vec![Box::new(CanonicalPeople)]);
+            p.open();
+            p.set_query("ada");
 
-        let idx = p
-            .result_labels()
-            .iter()
-            .position(|l| l == "Ada Lovelace")
-            .expect("ada row");
-        p.set_cursor(idx);
-        p.activate_selected();
+            assert_eq!(p.result_labels(), vec!["Ada Lovelace"]);
+            p.activate_selected();
 
-        let mut doc = AutoCommit::new();
-        let mut tx = LocalTransport::new();
-        assert!(
-            p.take_dispatch(&mut doc, &registry(), &mut tx).is_none(),
-            "a content row is not a dispatch"
-        );
-        assert_eq!(
-            p.take_navigation().as_deref(),
-            Some("person:Ada Lovelace"),
-            "the opaque provider id is handed back for navigation"
-        );
-        assert!(!p.is_open(), "navigation closes the palette");
-    }
+            let pending = p.take_operation().expect("broker operation pending");
+            assert_eq!(
+                pending.address,
+                tilo_actions::ActionAddress::new("test.thing:1", "mark")
+            );
+            assert_eq!(pending.encoded.type_id, NOTE_TYPE);
+            assert_eq!(pending.kind, OperationKind::Document);
+            assert_eq!(
+                pending
+                    .context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.id.as_str()),
+                Some("test.thing:1")
+            );
+            assert!(
+                p.take_navigation().is_none(),
+                "canonical hits never enter the legacy navigation callback"
+            );
+            assert!(!p.is_open());
+        }
 
-    /// Canonical provider hits are broker operations, not opaque navigation
-    /// callbacks. This is the per-app migration contract.
-    #[test]
-    fn activating_canonical_search_hit_queues_pending_operation() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.set_providers(vec![Box::new(CanonicalPeople)]);
-        p.open();
-        p.set_query("ada");
+        // Case `prompted_action_collects_argument_then_dispatches`:
+        // A PROMPTED action collects its argument in the field, then dispatches the
+        // action built from the typed text.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.open();
 
-        assert_eq!(p.result_labels(), vec!["Ada Lovelace"]);
-        p.activate_selected();
+            let idx = p
+                .result_labels()
+                .iter()
+                .position(|l| l.contains("Rename"))
+                .expect("rename row");
+            p.set_cursor(idx);
+            p.activate_selected();
+            assert!(
+                p.in_argument_mode(),
+                "a prompted action opens the argument step"
+            );
+            assert!(p.is_open(), "still open while collecting the argument");
 
-        let pending = p.take_operation().expect("broker operation pending");
-        assert_eq!(
-            pending.address,
-            tilo_actions::ActionAddress::new("test.thing:1", "mark")
-        );
-        assert_eq!(pending.encoded.type_id, NOTE_TYPE);
-        assert_eq!(pending.kind, OperationKind::Document);
-        assert_eq!(
-            pending
-                .context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some("test.thing:1")
-        );
-        assert!(
-            p.take_navigation().is_none(),
-            "canonical hits never enter the legacy navigation callback"
-        );
-        assert!(!p.is_open());
-    }
+            // Type the argument into the field and confirm.
+            p.field.set_query("Sprocket");
+            let mut doc = AutoCommit::new();
+            let root = ROOT;
+            let mods = Modifiers::default();
+            p.handle_key(&enter(), &mods, &mut doc, &root);
 
-    #[test]
-    fn removed_canonical_action_is_refused_at_activation() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.set_providers(vec![Box::new(CanonicalPeople)]);
-        p.open();
-        p.set_query("ada");
-
-        // The row remains visually selected for this key press, but its
-        // authority snapshot is fresh and no longer contains the address.
-        p.refresh_open_resources(&[]);
-        p.activate_selected();
-
-        assert!(p.take_operation().is_none());
-        assert!(p.take_navigation().is_none());
-        assert!(p.is_open(), "a stale selection leaves the palette usable");
-        assert!(
-            !p.is_empty(),
-            "discovery may remain visible so a later permission/resource refresh can enable it"
-        );
-    }
-
-    #[test]
-    fn disabled_canonical_action_is_refused_at_activation() {
-        let mut disabled = thing_resource();
-        disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
-            code: "offline".into(),
-            reason: "The service went offline".into(),
-        };
-
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.set_providers(vec![Box::new(CanonicalPeople)]);
-        p.open();
-        p.set_query("ada");
-        p.refresh_open_resources(&[disabled]);
-        p.activate_selected();
-
-        assert!(p.take_operation().is_none());
-        assert!(p.take_navigation().is_none());
-        assert!(!p.is_empty());
+            let mut tx = LocalTransport::new();
+            let d = p
+                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .expect("prompted action pending")
+                .expect("dispatch ok");
+            assert!(matches!(d, Dispatched::AppliedLocal(_)));
+            assert_eq!(
+                doc.get(&ROOT, "name")
+                    .unwrap()
+                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                Some("Sprocket".to_string()),
+                "the action carries the typed argument",
+            );
+        }
     }
 
     #[test]
-    fn removed_action_is_refused_again_at_dispatch_boundary() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.set_providers(vec![Box::new(CanonicalPeople)]);
-        p.open();
-        p.set_query("ada");
-        p.activate_selected();
+    fn removed_or_disabled_actions_are_refused_at_activation_and_dispatch() {
+        // Case `removed_canonical_action_is_refused_at_activation`.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.set_providers(vec![Box::new(CanonicalPeople)]);
+            p.open();
+            p.set_query("ada");
 
-        // Covers state changing after activation but before the host drains
-        // the pending operation (and consequential confirmation flows).
-        p.refresh_open_resources(&[]);
-        assert!(p.take_operation().is_none());
-        assert!(p.take_navigation().is_none());
+            // The row remains visually selected for this key press, but its
+            // authority snapshot is fresh and no longer contains the address.
+            p.refresh_open_resources(&[]);
+            p.activate_selected();
+
+            assert!(p.take_operation().is_none());
+            assert!(p.take_navigation().is_none());
+            assert!(p.is_open(), "a stale selection leaves the palette usable");
+            assert!(
+                !p.is_empty(),
+                "discovery may remain visible so a later permission/resource refresh can enable it"
+            );
+        }
+
+        // Case `disabled_canonical_action_is_refused_at_activation`.
+        {
+            let mut disabled = thing_resource();
+            disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
+                code: "offline".into(),
+                reason: "The service went offline".into(),
+            };
+
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.set_providers(vec![Box::new(CanonicalPeople)]);
+            p.open();
+            p.set_query("ada");
+            p.refresh_open_resources(&[disabled]);
+            p.activate_selected();
+
+            assert!(p.take_operation().is_none());
+            assert!(p.take_navigation().is_none());
+            assert!(!p.is_empty());
+        }
+
+        // Case `removed_action_is_refused_again_at_dispatch_boundary`.
+        {
+            let mut p = ActionPalette::new();
+            p.load_open_resources(&[thing_resource()]);
+            p.set_providers(vec![Box::new(CanonicalPeople)]);
+            p.open();
+            p.set_query("ada");
+            p.activate_selected();
+
+            // Covers state changing after activation but before the host drains
+            // the pending operation (and consequential confirmation flows).
+            p.refresh_open_resources(&[]);
+            assert!(p.take_operation().is_none());
+            assert!(p.take_navigation().is_none());
+        }
     }
 
-    /// A PROMPTED action collects its argument in the field, then dispatches the
-    /// action built from the typed text.
     #[test]
-    fn prompted_action_collects_argument_then_dispatches() {
-        let mut p = ActionPalette::new();
-        p.load_open_resources(&[thing_resource()]);
-        p.open();
-
-        let idx = p
-            .result_labels()
-            .iter()
-            .position(|l| l.contains("Rename"))
-            .expect("rename row");
-        p.set_cursor(idx);
-        p.activate_selected();
-        assert!(
-            p.in_argument_mode(),
-            "a prompted action opens the argument step"
-        );
-        assert!(p.is_open(), "still open while collecting the argument");
-
-        // Type the argument into the field and confirm.
-        p.field.set_query("Sprocket");
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        let mods = Modifiers::default();
-        p.handle_key(&enter(), &mods, &mut doc, &root);
-
-        let mut tx = LocalTransport::new();
-        let d = p
-            .take_dispatch(&mut doc, &registry(), &mut tx)
-            .expect("prompted action pending")
-            .expect("dispatch ok");
-        assert!(matches!(d, Dispatched::AppliedLocal(_)));
-        assert_eq!(
-            doc.get(&ROOT, "name")
-                .unwrap()
-                .and_then(|(v, _)| v.as_str().map(str::to_string)),
-            Some("Sprocket".to_string()),
-            "the action carries the typed argument",
-        );
-    }
-
-    #[test]
-    fn consequential_action_waits_for_exact_confirmation() {
-        let resource = Resource::new("test.thing:1", "test.thing", "Thing").with_action(
-            ActionSpec::immediate(
-                "mark",
-                "Mark done",
-                NOTE_TYPE,
-                &Note {
-                    key: "marked".into(),
-                    value: "yes".into(),
-                },
-            )
-            .unwrap()
-            .with_contract(tilo_actions::ActionContract {
-                confirmation: ConfirmationPolicy::Phrase {
-                    phrase: "MARK THING".into(),
-                },
-                ..tilo_actions::ActionContract::default()
-            }),
-        );
-        let mut palette = ActionPalette::new();
-        palette.load_open_resources(&[resource]);
-        palette.open();
-        palette.activate_selected();
-        assert!(palette.in_argument_mode());
-
-        let mut doc = AutoCommit::new();
-        let mut transport = LocalTransport::new();
-        assert!(
-            palette
-                .take_dispatch(&mut doc, &registry(), &mut transport)
-                .is_none(),
-            "activation alone must not queue the operation"
-        );
-
-        palette.field.set_query("mark thing");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
-        assert!(
-            palette
-                .take_dispatch(&mut doc, &registry(), &mut transport)
-                .is_none(),
-            "confirmation is exact and case-sensitive"
-        );
-
-        palette.field.set_query("MARK THING");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
-        let pending = palette
-            .take_operation()
-            .expect("exact confirmation queues the operation");
-        assert_eq!(
-            pending.confirmation_evidence(),
-            &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
-            "the broker receives the exact evidence the palette verified"
-        );
-        ActionPalette::dispatch_encoded(
-            &mut doc,
-            &pending.encoded,
-            &registry(),
-            &mut transport,
-            pending.context,
-        )
-        .expect("confirmed dispatch succeeds");
-        assert_eq!(
-            doc.get(&ROOT, "marked")
-                .unwrap()
-                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
-            Some("yes".into())
-        );
-    }
-
-    /// A programmatic generic edit is never a row, yet a control that submits
-    /// a destructive value of it still gets the palette's confirmation step,
-    /// and an ordinary value queues directly.
-    #[test]
-    fn programmatic_actions_are_not_rows_but_confirm_by_value() {
-        let edit = ActionSpec::typed(
-            "edit",
-            "Edit thing",
-            "value",
-            ExecutionLocus::ClientLocal,
-            vec![tilo_actions::ActionParam::required(
-                "value",
-                tilo_actions::ParamType::Text,
-                "Value",
-            )],
-            |args| {
-                EncodedAction::encode(
+    fn consequential_actions_confirm_by_exact_value() {
+        // Case `consequential_action_waits_for_exact_confirmation`.
+        {
+            let resource = Resource::new("test.thing:1", "test.thing", "Thing").with_action(
+                ActionSpec::immediate(
+                    "mark",
+                    "Mark done",
                     NOTE_TYPE,
                     &Note {
-                        key: "value".into(),
-                        value: args.text("value").unwrap_or("").into(),
+                        key: "marked".into(),
+                        value: "yes".into(),
                     },
                 )
                 .unwrap()
-            },
-        )
-        .programmatic()
-        .with_risk(|args| {
-            if args.text("value") == Some("wipe") {
-                tilo_actions::RiskLevel::Destructive
-            } else {
-                tilo_actions::RiskLevel::Low
-            }
-        });
-        let resource = thing_resource().with_action(edit);
-        let address = tilo_actions::ActionAddress::new("test.thing:1", "edit");
-        let value = |value: &str| {
-            serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(value))])
-        };
-        let mut palette = ActionPalette::new();
-        palette.load_open_resources(&[resource]);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
-        assert!(
-            !labels.iter().any(|l| l.contains("Edit thing")),
-            "a programmatic action is never offered as a row: {labels:?}"
-        );
+                .with_contract(tilo_actions::ActionContract {
+                    confirmation: ConfirmationPolicy::Phrase {
+                        phrase: "MARK THING".into(),
+                    },
+                    ..tilo_actions::ActionContract::default()
+                }),
+            );
+            let mut palette = ActionPalette::new();
+            palette.load_open_resources(&[resource]);
+            palette.open();
+            palette.activate_selected();
+            assert!(palette.in_argument_mode());
 
-        assert!(palette.activate_address_with_arguments(&address, &value("tidy")));
-        assert!(
-            palette.take_operation().is_some(),
-            "an ordinary value needs no confirmation"
-        );
+            let mut doc = AutoCommit::new();
+            let mut transport = LocalTransport::new();
+            assert!(
+                palette
+                    .take_dispatch(&mut doc, &registry(), &mut transport)
+                    .is_none(),
+                "activation alone must not queue the operation"
+            );
 
-        palette.open();
-        assert!(palette.activate_address_with_arguments(&address, &value("wipe")));
-        assert!(
-            palette.take_operation().is_none(),
-            "a destructive value waits for confirmation"
-        );
-        let mut doc = AutoCommit::new();
-        palette.field.set_query("CONFIRM");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
-        let pending = palette
-            .take_operation()
-            .expect("the confirmed destructive value queues");
-        assert_eq!(pending.address, address);
+            palette.field.set_query("mark thing");
+            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            assert!(
+                palette
+                    .take_dispatch(&mut doc, &registry(), &mut transport)
+                    .is_none(),
+                "confirmation is exact and case-sensitive"
+            );
+
+            palette.field.set_query("MARK THING");
+            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            let pending = palette
+                .take_operation()
+                .expect("exact confirmation queues the operation");
+            assert_eq!(
+                pending.confirmation_evidence(),
+                &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
+                "the broker receives the exact evidence the palette verified"
+            );
+            ActionPalette::dispatch_encoded(
+                &mut doc,
+                &pending.encoded,
+                &registry(),
+                &mut transport,
+                pending.context,
+            )
+            .expect("confirmed dispatch succeeds");
+            assert_eq!(
+                doc.get(&ROOT, "marked")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)),
+                Some("yes".into())
+            );
+        }
+
+        // Case `programmatic_actions_are_not_rows_but_confirm_by_value`:
+        // A programmatic generic edit is never a row, yet a control that submits
+        // a destructive value of it still gets the palette's confirmation step,
+        // and an ordinary value queues directly.
+        {
+            let edit = ActionSpec::typed(
+                "edit",
+                "Edit thing",
+                "value",
+                ExecutionLocus::ClientLocal,
+                vec![tilo_actions::ActionParam::required(
+                    "value",
+                    tilo_actions::ParamType::Text,
+                    "Value",
+                )],
+                |args| {
+                    EncodedAction::encode(
+                        NOTE_TYPE,
+                        &Note {
+                            key: "value".into(),
+                            value: args.text("value").unwrap_or("").into(),
+                        },
+                    )
+                    .unwrap()
+                },
+            )
+            .programmatic()
+            .with_risk(|args| {
+                if args.text("value") == Some("wipe") {
+                    tilo_actions::RiskLevel::Destructive
+                } else {
+                    tilo_actions::RiskLevel::Low
+                }
+            });
+            let resource = thing_resource().with_action(edit);
+            let address = tilo_actions::ActionAddress::new("test.thing:1", "edit");
+            let value = |value: &str| {
+                serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(value))])
+            };
+            let mut palette = ActionPalette::new();
+            palette.load_open_resources(&[resource]);
+            palette.open();
+            let labels = palette.result_labels();
+            assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
+            assert!(
+                !labels.iter().any(|l| l.contains("Edit thing")),
+                "a programmatic action is never offered as a row: {labels:?}"
+            );
+
+            assert!(palette.activate_address_with_arguments(&address, &value("tidy")));
+            assert!(
+                palette.take_operation().is_some(),
+                "an ordinary value needs no confirmation"
+            );
+
+            palette.open();
+            assert!(palette.activate_address_with_arguments(&address, &value("wipe")));
+            assert!(
+                palette.take_operation().is_none(),
+                "a destructive value waits for confirmation"
+            );
+            let mut doc = AutoCommit::new();
+            palette.field.set_query("CONFIRM");
+            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            let pending = palette
+                .take_operation()
+                .expect("the confirmed destructive value queues");
+            assert_eq!(pending.address, address);
+        }
     }
 
     fn enter_key() -> KeyEvent {

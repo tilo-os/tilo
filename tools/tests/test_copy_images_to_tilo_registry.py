@@ -34,6 +34,8 @@ class CopyPlanTests(unittest.TestCase):
             'OTHER=old.example/someone-else/image:v1',
             'TEMPLATED=old.example/legacy/tilo-vm:main-${sha}',
             'CLONE=https://old.example/legacy/tilo.git',
+            f'FIRMWARE=old.example/legacy/tilo-lenovo-83ed-firmware@{DIGEST}',
+            'BOARD=old.example/legacy/tilo:lenovo-83ed-' + 'c' * 40,
         ]) + '\n')
         (self.root / 'tests').mkdir()
         (self.root / 'tests/fixture.txt').write_text('old.example/legacy/never-published:v1\n')
@@ -86,6 +88,24 @@ class CopyPlanTests(unittest.TestCase):
         ]))
         self.assertTrue(lines[0].startswith('# dry run'))
 
+    def test_extra_references_are_planned_under_the_same_owner_rules(self):
+        lines = self.plan(EXTRA_REFERENCES=' '.join([
+            f'old.example/public/runner-image@{CHILD}',
+            f'old.example/someone-else/image@{CHILD}',
+            f'old.example/legacy/tilo-lenovo-83ed-firmware@{CHILD}',
+        ]))
+        self.assertIn(
+            f'copy digest    old.example/public/runner-image@{CHILD} -> '
+            f'registry.tilo.so/tilo/runner-image@{CHILD} (+ cosign tags)', lines)
+        self.assertFalse([line for line in lines if 'someone-else' in line or 'lenovo' in line], lines)
+
+    def test_extra_references_outside_the_source_registry_are_refused(self):
+        for bad in (f'elsewhere.example/public/runner-image@{CHILD}', 'old.example/public/runner-image@sha256:zz'):
+            result = self.run_script(f'{self.stubs}{os.pathsep}{self.bare}', EXTRA_REFERENCES=bad)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn('EXTRA_REFERENCES', result.stderr)
+        self.assertFalse(self.calls.exists())
+
     def test_resign_is_planned_only_for_policy_verified_repositories(self):
         resign = [line for line in self.plan(RESIGN='1') if line.startswith('re-sign')]
         self.assertEqual(resign, ['re-sign        registry.tilo.so/tilo/tilo@<digest of :latest>'])
@@ -107,9 +127,9 @@ class CopyPlanTests(unittest.TestCase):
             key: value for key, value in dict(
                 os.environ, SCAN_ROOT=str(self.root), SOURCE_REGISTRY='old.example',
                 OWNER_MOVES='legacy:tilo', PATH=f'{self.stubs}{os.pathsep}{self.bare}', **extra).items()
-            if key not in ('DEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL')})
+            if key not in ('DEST_TOKEN', 'DEST_USERNAME')})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('enable-openid-connect', result.stderr)
+        self.assertIn('DEST_TOKEN', result.stderr)
         self.assertFalse(self.calls.exists(), 'registry client ran before credentials were checked')
 
     def test_owner_moves_are_required(self):

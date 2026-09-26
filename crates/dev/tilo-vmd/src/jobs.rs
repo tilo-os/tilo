@@ -25,7 +25,8 @@ use crate::fsutil;
 
 /// Shared compiler cache for every worktree's in-VM builds.
 pub const SCCACHE_DIR: &str = "/var/cache/tilo-vm/sccache";
-/// bootc's registry credentials; one `podman login` serves upgrades and CI layers.
+/// bootc's registry credentials, used for upgrades and CI layers alike. Tilo
+/// images are public; only a private registry needs an entry here.
 pub const AUTH_FILE: &str = "/etc/ostree/auth.json";
 
 /// Run `command`, streaming its stdout and stderr to our stderr (stdout
@@ -580,97 +581,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pull_failures_are_classified() {
-        assert!(matches!(
-            pull_error(
-                "i",
-                "Error: reading manifest: unauthorized: reqPackageAccess"
-            ),
-            DaemonError::RegistryAuth { .. }
-        ));
-        assert!(matches!(
-            pull_error("i", "manifest unknown: manifest unknown"),
-            DaemonError::ImageNotFound { .. }
-        ));
-        assert!(matches!(
-            pull_error("i", "no space left on device\n"),
-            DaemonError::Job { .. }
-        ));
+    fn job_failures_are_classified_and_reported() {
+        // Phase `pull_failures_are_classified`.
+        {
+            assert!(matches!(
+                pull_error(
+                    "i",
+                    "Error: reading manifest: unauthorized: reqPackageAccess"
+                ),
+                DaemonError::RegistryAuth { .. }
+            ));
+            assert!(matches!(
+                pull_error("i", "manifest unknown: manifest unknown"),
+                DaemonError::ImageNotFound { .. }
+            ));
+            assert!(matches!(
+                pull_error("i", "no space left on device\n"),
+                DaemonError::Job { .. }
+            ));
+        }
+        // Phase `job_lines_report_errors_and_bad_input`.
+        {
+            let mut out = Vec::new();
+            let ok = run_job::<CiJob>(&b"not json"[..], &mut out, |_| {
+                Err(DaemonError::HelloRequired)
+            });
+            assert!(!ok);
+            let line = JobLine::find(&String::from_utf8(out).unwrap()).unwrap();
+            assert!(line.error.unwrap().message.contains("bad job"));
+        }
     }
 
     #[test]
-    fn extraction_copies_files_trees_and_links() {
-        let image = tempfile::tempdir().unwrap();
-        let root = image.path();
-        std::fs::create_dir_all(root.join("usr/bin")).unwrap();
-        std::fs::write(root.join("usr/bin/app"), b"bin").unwrap();
-        fsutil::symlink(Path::new("app"), &root.join("usr/bin/store")).unwrap();
-        std::fs::create_dir_all(root.join("usr/lib/tilo-runtime/sub")).unwrap();
-        std::fs::write(root.join("usr/lib/tilo-runtime/sub/lib.so"), b"so").unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        extract_paths(
-            root,
-            dest.path(),
-            &[
-                "/usr/bin/app".into(),
-                "/usr/bin/store".into(),
-                "/usr/lib/tilo-runtime/".into(),
-            ],
-            "img",
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read(dest.path().join("usr/bin/app")).unwrap(),
-            b"bin"
-        );
-        assert_eq!(
-            std::fs::read_link(dest.path().join("usr/bin/store")).unwrap(),
-            Path::new("app")
-        );
-        assert!(
-            dest.path()
-                .join("usr/lib/tilo-runtime/sub/lib.so")
-                .is_file()
-        );
-        let missing = extract_paths(root, dest.path(), &["/usr/bin/nope".into()], "img");
-        assert!(matches!(missing, Err(DaemonError::MissingInImage { .. })));
-    }
-
-    #[test]
-    fn ci_layers_carry_ci_authority() {
-        let job = CiJob {
-            image: "code.sandbox.example/qos/tilo:main-abc1234".into(),
-            component: "shell".into(),
-            paths: vec!["/usr/bin/shell".into()],
-            provenance: Provenance::local("shell"),
-        };
-        let p = ci_provenance(&job, Some("sha256:d".into()), Some("abc".into()));
-        assert_eq!(p.authority, "ci");
-        assert_eq!(p.builder.as_deref(), Some("ci"));
-        assert_eq!(p.source_commit.as_deref(), Some("abc"));
-        assert_eq!(p.base_image_digest.as_deref(), Some("sha256:d"));
-    }
-
-    #[test]
-    fn app_packaging_commands() {
-        assert_eq!(
-            app_tool_args().join(" "),
-            "build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
-        );
-        assert_eq!(
-            app_package_args("notes", Path::new("/s/notes.tapp")).join(" "),
-            "package apps/notes --output /s/notes.tapp --force"
-        );
-    }
-
-    #[test]
-    fn job_lines_report_errors_and_bad_input() {
-        let mut out = Vec::new();
-        let ok = run_job::<CiJob>(&b"not json"[..], &mut out, |_| {
-            Err(DaemonError::HelloRequired)
-        });
-        assert!(!ok);
-        let line = JobLine::find(&String::from_utf8(out).unwrap()).unwrap();
-        assert!(line.error.unwrap().message.contains("bad job"));
+    fn job_extraction_layers_and_packaging_commands() {
+        // Phase `extraction_copies_files_trees_and_links`.
+        {
+            let image = tempfile::tempdir().unwrap();
+            let root = image.path();
+            std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+            std::fs::write(root.join("usr/bin/app"), b"bin").unwrap();
+            fsutil::symlink(Path::new("app"), &root.join("usr/bin/store")).unwrap();
+            std::fs::create_dir_all(root.join("usr/lib/tilo-runtime/sub")).unwrap();
+            std::fs::write(root.join("usr/lib/tilo-runtime/sub/lib.so"), b"so").unwrap();
+            let dest = tempfile::tempdir().unwrap();
+            extract_paths(
+                root,
+                dest.path(),
+                &[
+                    "/usr/bin/app".into(),
+                    "/usr/bin/store".into(),
+                    "/usr/lib/tilo-runtime/".into(),
+                ],
+                "img",
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read(dest.path().join("usr/bin/app")).unwrap(),
+                b"bin"
+            );
+            assert_eq!(
+                std::fs::read_link(dest.path().join("usr/bin/store")).unwrap(),
+                Path::new("app")
+            );
+            assert!(
+                dest.path()
+                    .join("usr/lib/tilo-runtime/sub/lib.so")
+                    .is_file()
+            );
+            let missing = extract_paths(root, dest.path(), &["/usr/bin/nope".into()], "img");
+            assert!(matches!(missing, Err(DaemonError::MissingInImage { .. })));
+        }
+        // Phase `ci_layers_carry_ci_authority`.
+        {
+            let job = CiJob {
+                image: "registry.tilo.so/tilo/tilo:main-abc1234".into(),
+                component: "shell".into(),
+                paths: vec!["/usr/bin/shell".into()],
+                provenance: Provenance::local("shell"),
+            };
+            let p = ci_provenance(&job, Some("sha256:d".into()), Some("abc".into()));
+            assert_eq!(p.authority, "ci");
+            assert_eq!(p.builder.as_deref(), Some("ci"));
+            assert_eq!(p.source_commit.as_deref(), Some("abc"));
+            assert_eq!(p.base_image_digest.as_deref(), Some("sha256:d"));
+        }
+        // Phase `app_packaging_commands`.
+        {
+            assert_eq!(
+                app_tool_args().join(" "),
+                "build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
+            );
+            assert_eq!(
+                app_package_args("notes", Path::new("/s/notes.tapp")).join(" "),
+                "package apps/notes --output /s/notes.tapp --force"
+            );
+        }
     }
 }

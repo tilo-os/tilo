@@ -29,11 +29,11 @@ live-media = [
     "dep:tokio",
     "dep:wire-frame",
     "dep:tilo-callstream",
-    "ui/portal",
 ]
 
 [dependencies]
 hex.workspace = true
+emoji = { path = "../../crates/text/emoji" }
 tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

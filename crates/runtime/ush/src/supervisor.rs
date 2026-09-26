@@ -366,6 +366,11 @@ pub enum ServeRequest {
         rows: u16,
         #[serde(default)]
         term: Option<String>,
+        /// A program to run in the guest instead of the interactive shell.
+        /// It runs with exactly the guest's confinement, so asking for one
+        /// grants nothing a user typing it at the prompt would not have.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        command: Vec<String>,
     },
 }
 
@@ -530,7 +535,11 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     };
 
     let ServeRequest::OpenSession {
-        cols, rows, term, ..
+        cols,
+        rows,
+        term,
+        command,
+        ..
     } = req;
     let (master, slave) = open_pty(cols, rows)?;
 
@@ -540,7 +549,7 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
         term: term.unwrap_or_else(|| "xterm-256color".into()),
         ..SessionOptions::default()
     };
-    opts.command.clear();
+    opts.command = command;
 
     let session = Session::new(store.clone(), opts);
     let id = session.session_id.clone();
@@ -766,214 +775,234 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_guest_that_exits_first_ends_the_session_without_the_terminal() {
-        let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
-        let mut child = std::process::Command::new("true")
-            .spawn()
-            .expect("spawn guest");
-        assert_eq!(
-            wait_for_guest_or_terminal(&supervisor_end, &child),
-            LifetimeEnd::GuestExited,
-            "an exited guest must end the session while Terminal still holds its end"
-        );
-        assert!(child.wait().expect("reap guest").success());
+    fn the_session_ends_when_the_guest_or_the_terminal_does() {
+        // phase: a_guest_that_exits_first_ends_the_session_without_the_terminal
+        {
+            let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
+            let mut child = std::process::Command::new("true")
+                .spawn()
+                .expect("spawn guest");
+            assert_eq!(
+                wait_for_guest_or_terminal(&supervisor_end, &child),
+                LifetimeEnd::GuestExited,
+                "an exited guest must end the session while Terminal still holds its end"
+            );
+            assert!(child.wait().expect("reap guest").success());
+        }
+        // phase: a_closed_terminal_ends_the_session_of_a_running_guest
+        {
+            let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
+            let mut child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("spawn guest");
+            drop(terminal_end);
+            assert_eq!(
+                wait_for_guest_or_terminal(&supervisor_end, &child),
+                LifetimeEnd::TerminalClosed
+            );
+            assert!(child.try_wait().expect("guest status").is_none());
+            child.kill().expect("stop guest");
+            let _ = child.wait();
+        }
     }
 
-    #[test]
-    fn a_closed_terminal_ends_the_session_of_a_running_guest() {
-        let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn guest");
-        drop(terminal_end);
-        assert_eq!(
-            wait_for_guest_or_terminal(&supervisor_end, &child),
-            LifetimeEnd::TerminalClosed
-        );
-        assert!(child.try_wait().expect("guest status").is_none());
-        child.kill().expect("stop guest");
-        let _ = child.wait();
-    }
     use crate::layer::LayerKind;
 
     /// The gate on the deliberate exception, at the place an app would hit it.
     #[test]
-    fn serve_refuses_a_dsh_session() {
-        let req = ServeRequest::OpenSession {
-            profile: "dsh".into(),
+    fn serve_refuses_dsh_and_defaults_every_other_profile_to_ush() {
+        let open = |profile: &str| ServeRequest::OpenSession {
+            profile: profile.into(),
             cols: 80,
             rows: 24,
             term: None,
+            command: Vec::new(),
         };
-        let err = decide_serve(&req).unwrap_err();
+        let err = decide_serve(&open("dsh")).unwrap_err();
         assert!(err.contains("not a sandbox"), "{err}");
-    }
-
-    #[test]
-    fn serve_allows_a_ush_session_and_defaults_to_one() {
         for name in ["ush", "", "nonsense"] {
-            let req = ServeRequest::OpenSession {
-                profile: name.into(),
-                cols: 80,
-                rows: 24,
-                term: None,
-            };
-            assert_eq!(decide_serve(&req).unwrap(), Profile::Ush, "{name:?}");
+            assert_eq!(decide_serve(&open(name)).unwrap(), Profile::Ush, "{name:?}");
         }
     }
 
     #[test]
-    fn an_ephemeral_session_stacks_the_persistent_layer_and_a_normal_one_does_not() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
-        // A persistent layer has to exist to be stacked.
-        std::fs::create_dir_all(store.persistent_dir()).unwrap();
-        std::fs::write(store.persistent_dir().join(".ush-layer"), b"persistent\n").unwrap();
-
-        let normal = Session::new(store.clone(), SessionOptions::default());
-        assert!(normal.lower_layers().is_empty());
-        assert_eq!(normal.layer().kind(), LayerKind::Persistent);
-
-        let ephemeral = Session::new(
-            store.clone(),
-            SessionOptions {
-                ephemeral: true,
-                ..SessionOptions::default()
-            },
-        );
-        assert_eq!(
-            ephemeral.lower_layers(),
-            vec![store.persistent_dir()],
-            "an ephemeral session must still see what you installed for good"
-        );
-        assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
-    }
-
-    /// `pkg burn` asks for a restart so the guest comes back on a fresh layer;
-    /// under `ush -c` that would re-run the command that asked, looping forever.
-    #[test]
-    fn a_one_shot_command_never_restarts_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-
-        let interactive = Session::new(store.clone(), SessionOptions::default());
-        assert!(interactive.restarts_in_place());
-
-        let one_shot = Session::new(
-            store,
-            SessionOptions {
-                command: vec!["/bin/sh".into(), "-c".into(), "pkg burn".into()],
-                ..SessionOptions::default()
-            },
-        );
+    fn a_session_request_may_name_a_program_and_defaults_to_the_shell() {
+        let shell: ServeRequest =
+            serde_json::from_str(r#"{"op":"open-session","profile":"ush"}"#).unwrap();
         assert!(
-            !one_shot.restarts_in_place(),
-            "restarting a session that was given a command re-runs the command"
+            matches!(shell, ServeRequest::OpenSession { ref command, .. } if command.is_empty())
         );
-    }
-
-    #[test]
-    fn the_plan_takes_its_grants_from_the_policy_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
-        let trusted = dir.path().join("src");
-        std::fs::create_dir_all(&trusted).unwrap();
-
-        let mut policy = Policy::default();
-        policy.trust_dir(&trusted).unwrap();
-        policy.save(&store.policy_path()).unwrap();
-
-        let session = Session::new(store, SessionOptions::default());
-        let plan = session
-            .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
-            .unwrap();
-        assert_eq!(plan.trusted_dirs, vec![trusted]);
-    }
-
-    /// A guest with an empty policy sees no host directory. The plan is where
-    /// that is decided, so it is where it is asserted.
-    #[test]
-    fn a_session_with_no_policy_grants_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
-        let session = Session::new(store, SessionOptions::default());
-        let plan = session
-            .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
-            .unwrap();
-        assert!(plan.trusted_dirs.is_empty());
-        assert!(plan.readable_dirs.is_empty());
-    }
-
-    #[test]
-    fn the_guest_home_is_seeded_once_and_not_from_the_real_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        seed_guest_home(&home).unwrap();
-        let rc = home.join(".bashrc");
-        assert!(rc.is_file());
-        std::fs::write(&rc, b"# edited by the user\n").unwrap();
-        seed_guest_home(&home).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&rc).unwrap(),
-            "# edited by the user\n",
-            "re-seeding must not overwrite what the user put in their guest home"
-        );
-    }
-
-    #[test]
-    fn a_pty_pair_opens_at_the_requested_size() {
-        let (master, _slave) = open_pty(120, 40).unwrap();
-        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-        // SAFETY: `master` is a live pty master descriptor.
-        let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
-        assert_eq!(rc, 0);
-        assert_eq!((size.ws_col, size.ws_row), (120, 40));
-    }
-
-    /// The descriptor really crosses the socket — this is the whole mechanism
-    /// by which a sandboxed app gets a terminal without getting a namespace.
-    #[test]
-    fn a_descriptor_survives_the_socket() {
-        let (a, b) = UnixStream::pair().unwrap();
-        let (master, mut slave) = open_pty(80, 24).unwrap();
-
-        send_with_fd(
-            a.as_raw_fd(),
-            b"{\"result\":\"session\"}\n",
-            master.as_raw_fd(),
+        let program: ServeRequest = serde_json::from_str(
+            r#"{"op":"open-session","profile":"ush","command":["htop","-d","5"]}"#,
         )
         .unwrap();
-        let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
-        assert!(String::from_utf8_lossy(&payload).contains("session"));
-        let fd = fd.expect("no descriptor arrived");
-
-        // Write on the slave, read it back through the received master. If the
-        // descriptor were not the same terminal this would block or fail.
-        slave.write_all(b"hello\n").unwrap();
-        slave.flush().unwrap();
-        let mut buf = [0u8; 32];
-        // SAFETY: `fd` is the descriptor just received and still open.
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
-        assert!(n > 0, "nothing came back through the received descriptor");
-        // `n > 0` was just asserted above, so the cast below cannot lose the sign.
-        #[allow(clippy::cast_sign_loss, reason = "n > 0 was just asserted above")]
-        let n = n as usize;
-        assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
-        // SAFETY: we own `fd` now.
-        unsafe { libc::close(fd) };
+        assert!(matches!(
+            program,
+            ServeRequest::OpenSession { ref command, .. } if command == &["htop", "-d", "5"]
+        ));
+        assert_eq!(decide_serve(&program).unwrap(), Profile::Ush);
     }
 
     #[test]
-    fn the_guest_shell_falls_back_rather_than_failing_the_session() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("SHELL", "/usr/bin/definitely-not-here");
-        assert_eq!(guest_shell(dir.path()), PathBuf::from("/usr/bin/bash"));
+    fn session_options_choose_layers_and_restart_behaviour() {
+        // phase: an_ephemeral_session_stacks_the_persistent_layer_and_a_normal_one_does_not
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+            store.ensure().unwrap();
+            // A persistent layer has to exist to be stacked.
+            std::fs::create_dir_all(store.persistent_dir()).unwrap();
+            std::fs::write(store.persistent_dir().join(".ush-layer"), b"persistent\n").unwrap();
+
+            let normal = Session::new(store.clone(), SessionOptions::default());
+            assert!(normal.lower_layers().is_empty());
+            assert_eq!(normal.layer().kind(), LayerKind::Persistent);
+
+            let ephemeral = Session::new(
+                store.clone(),
+                SessionOptions {
+                    ephemeral: true,
+                    ..SessionOptions::default()
+                },
+            );
+            assert_eq!(
+                ephemeral.lower_layers(),
+                vec![store.persistent_dir()],
+                "an ephemeral session must still see what you installed for good"
+            );
+            assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
+        }
+        // phase: a_one_shot_command_never_restarts_in_place
+        // `pkg burn` asks for a restart so the guest comes back on a fresh layer;
+        // under `ush -c` that would re-run the command that asked, looping forever.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+
+            let interactive = Session::new(store.clone(), SessionOptions::default());
+            assert!(interactive.restarts_in_place());
+
+            let one_shot = Session::new(
+                store,
+                SessionOptions {
+                    command: vec!["/bin/sh".into(), "-c".into(), "pkg burn".into()],
+                    ..SessionOptions::default()
+                },
+            );
+            assert!(
+                !one_shot.restarts_in_place(),
+                "restarting a session that was given a command re-runs the command"
+            );
+        }
+    }
+
+    #[test]
+    fn the_plan_grants_exactly_what_the_policy_file_names() {
+        // phase: the_plan_takes_its_grants_from_the_policy_file
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+            store.ensure().unwrap();
+            let trusted = dir.path().join("src");
+            std::fs::create_dir_all(&trusted).unwrap();
+
+            let mut policy = Policy::default();
+            policy.trust_dir(&trusted).unwrap();
+            policy.save(&store.policy_path()).unwrap();
+
+            let session = Session::new(store, SessionOptions::default());
+            let plan = session
+                .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
+                .unwrap();
+            assert_eq!(plan.trusted_dirs, vec![trusted]);
+        }
+        // phase: a_session_with_no_policy_grants_nothing
+        // A guest with an empty policy sees no host directory. The plan is where
+        // that is decided, so it is where it is asserted.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+            store.ensure().unwrap();
+            let session = Session::new(store, SessionOptions::default());
+            let plan = session
+                .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
+                .unwrap();
+            assert!(plan.trusted_dirs.is_empty());
+            assert!(plan.readable_dirs.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_guest_home_and_shell_are_prepared_without_the_real_ones() {
+        // phase: the_guest_home_is_seeded_once_and_not_from_the_real_one
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("home");
+            seed_guest_home(&home).unwrap();
+            let rc = home.join(".bashrc");
+            assert!(rc.is_file());
+            std::fs::write(&rc, b"# edited by the user\n").unwrap();
+            seed_guest_home(&home).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&rc).unwrap(),
+                "# edited by the user\n",
+                "re-seeding must not overwrite what the user put in their guest home"
+            );
+        }
+        // phase: the_guest_shell_falls_back_rather_than_failing_the_session
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("SHELL", "/usr/bin/definitely-not-here");
+            assert_eq!(guest_shell(dir.path()), PathBuf::from("/usr/bin/bash"));
+        }
+    }
+
+    #[test]
+    fn a_pty_opens_at_the_requested_size_and_survives_the_socket() {
+        // phase: a_pty_pair_opens_at_the_requested_size
+        {
+            let (master, _slave) = open_pty(120, 40).unwrap();
+            let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+            // SAFETY: `master` is a live pty master descriptor.
+            let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+            assert_eq!(rc, 0);
+            assert_eq!((size.ws_col, size.ws_row), (120, 40));
+        }
+        // phase: a_descriptor_survives_the_socket
+        // The descriptor really crosses the socket — this is the whole mechanism
+        // by which a sandboxed app gets a terminal without getting a namespace.
+        {
+            let (a, b) = UnixStream::pair().unwrap();
+            let (master, mut slave) = open_pty(80, 24).unwrap();
+
+            send_with_fd(
+                a.as_raw_fd(),
+                b"{\"result\":\"session\"}\n",
+                master.as_raw_fd(),
+            )
+            .unwrap();
+            let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
+            assert!(String::from_utf8_lossy(&payload).contains("session"));
+            let fd = fd.expect("no descriptor arrived");
+
+            // Write on the slave, read it back through the received master. If the
+            // descriptor were not the same terminal this would block or fail.
+            slave.write_all(b"hello\n").unwrap();
+            slave.flush().unwrap();
+            let mut buf = [0u8; 32];
+            // SAFETY: `fd` is the descriptor just received and still open.
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
+            assert!(n > 0, "nothing came back through the received descriptor");
+            // `n > 0` was just asserted above, so the cast below cannot lose the sign.
+            #[allow(clippy::cast_sign_loss, reason = "n > 0 was just asserted above")]
+            let n = n as usize;
+            assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
+            // SAFETY: we own `fd` now.
+            unsafe { libc::close(fd) };
+        }
     }
 }

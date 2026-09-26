@@ -37,83 +37,156 @@ fn verify_restored(doc: &AutoCommit) {
     );
 }
 
+/// Legacy library restore, edits and reset/delete precedence.
 #[test]
-fn legacy_library_restore_and_fresh_live_sync_preserve_exact_content() {
-    use ui::widget::Widget;
-    let mut doc = AutoCommit::new();
-    let mut one = crate::model::seed_custom();
-    one.name = "Legacy selected".into();
-    let mut two = one.clone();
-    two.id = "second".into();
-    crate::doc::put_text(
-        &mut doc,
-        &ROOT,
-        "catalog",
-        &serde_json::to_string(&[one, two]).unwrap(),
-    );
-    doc.put(ROOT, "active", "saved-applied-identity").unwrap();
-    let selected = doc.get_heads()[0];
-    let expected = project_content(&doc, &crate::framework_history::SCHEMA).unwrap();
-    crate::doc::save_catalog(&mut doc, &ROOT, &[crate::model::seed_custom()]);
-    doc.get_heads();
-    let prepared = prepare_content_restore(
-        &doc,
-        &crate::framework_history::SCHEMA,
-        &doc.base_heads(),
-        &[selected],
-    )
-    .unwrap();
-    apply_prepared_content_restore(&mut doc, &prepared).unwrap();
-    doc.get_heads();
-    for _ in 0..2 {
-        let mut app = crate::ThemesApp::new();
-        app.sync(&mut doc, &ROOT);
-        doc.get_heads();
-        assert_eq!(
-            project_content(&doc, &crate::framework_history::SCHEMA).unwrap(),
-            expected
+#[expect(
+    clippy::too_many_lines,
+    reason = "cases merged from separate tests; each case stays self-contained"
+)]
+fn legacy_library_history_restores_exact_records_with_one_undo() {
+    // Case `legacy_library_restore_and_fresh_live_sync_preserve_exact_content`.
+    {
+        use ui::widget::Widget;
+        let mut doc = AutoCommit::new();
+        let mut one = crate::model::seed_custom();
+        one.name = "Legacy selected".into();
+        let mut two = one.clone();
+        two.id = "second".into();
+        crate::doc::put_text(
+            &mut doc,
+            &ROOT,
+            "catalog",
+            &serde_json::to_string(&[one, two]).unwrap(),
         );
-        doc = AutoCommit::load(&doc.save()).unwrap();
+        doc.put(ROOT, "active", "saved-applied-identity").unwrap();
+        let selected = doc.get_heads()[0];
+        let expected = project_content(&doc, &crate::framework_history::SCHEMA).unwrap();
+        crate::doc::save_catalog(&mut doc, &ROOT, &[crate::model::seed_custom()]);
+        doc.get_heads();
+        let prepared = prepare_content_restore(
+            &doc,
+            &crate::framework_history::SCHEMA,
+            &doc.base_heads(),
+            &[selected],
+        )
+        .unwrap();
+        apply_prepared_content_restore(&mut doc, &prepared).unwrap();
+        doc.get_heads();
+        for _ in 0..2 {
+            let mut app = crate::ThemesApp::new();
+            app.sync(&mut doc, &ROOT);
+            doc.get_heads();
+            assert_eq!(
+                project_content(&doc, &crate::framework_history::SCHEMA).unwrap(),
+                expected
+            );
+            doc = AutoCommit::load(&doc.save()).unwrap();
+        }
     }
-}
 
-#[test]
-fn valid_legacy_edit_materializes_only_addressed_record_and_invalid_edit_does_nothing() {
-    use tilo_actions::Action;
-    let mut doc = AutoCommit::new();
-    let one = crate::model::seed_custom();
-    let mut two = one.clone();
-    two.id = "second".into();
-    crate::doc::put_text(
-        &mut doc,
-        &ROOT,
-        "catalog",
-        &serde_json::to_string(&[one, two]).unwrap(),
-    );
-    let before = doc.get_heads();
-    for action in [
-        crate::actions::set_custom_theme_name_action("sunset", ""),
-        crate::actions::set_custom_theme_font_action("sunset", "unknown"),
-        crate::actions::set_custom_theme_radius_action("sunset", f32::NAN),
-    ] {
-        action.apply(&mut doc).unwrap();
+    // Case `valid_legacy_edit_materializes_only_addressed_record_and_invalid_edit_does_nothing`.
+    {
+        use tilo_actions::Action;
+        let mut doc = AutoCommit::new();
+        let one = crate::model::seed_custom();
+        let mut two = one.clone();
+        two.id = "second".into();
+        crate::doc::put_text(
+            &mut doc,
+            &ROOT,
+            "catalog",
+            &serde_json::to_string(&[one, two]).unwrap(),
+        );
+        let before = doc.get_heads();
+        for action in [
+            crate::actions::set_custom_theme_name_action("sunset", ""),
+            crate::actions::set_custom_theme_font_action("sunset", "unknown"),
+            crate::actions::set_custom_theme_radius_action("sunset", f32::NAN),
+        ] {
+            action.apply(&mut doc).unwrap();
+        }
+        assert_eq!(doc.get_heads(), before);
+        let action = crate::actions::set_custom_theme_name_action("sunset", "Explicit legacy edit");
+        tilo_actions::apply_local(&mut doc, &action, crate::actions::encode(&action)).unwrap();
+        let themes = doc.get(ROOT, "themes").unwrap().unwrap().1;
+        assert!(doc.get(&themes, "sunset").unwrap().is_some());
+        assert!(doc.get(&themes, "second").unwrap().is_none());
+        assert_eq!(
+            crate::doc::load_catalog(&doc, &ROOT)
+                .unwrap()
+                .iter()
+                .find(|s| s.id == "sunset")
+                .unwrap()
+                .name,
+            "Explicit legacy edit"
+        );
+        assert_eq!(doc.get_changes(&before).len(), 1);
     }
-    assert_eq!(doc.get_heads(), before);
-    let action = crate::actions::set_custom_theme_name_action("sunset", "Explicit legacy edit");
-    tilo_actions::apply_local(&mut doc, &action, crate::actions::encode(&action)).unwrap();
-    let themes = doc.get(ROOT, "themes").unwrap().unwrap().1;
-    assert!(doc.get(&themes, "sunset").unwrap().is_some());
-    assert!(doc.get(&themes, "second").unwrap().is_none());
-    assert_eq!(
-        crate::doc::load_catalog(&doc, &ROOT)
-            .unwrap()
-            .iter()
-            .find(|s| s.id == "sunset")
-            .unwrap()
-            .name,
-        "Explicit legacy edit"
-    );
-    assert_eq!(doc.get_changes(&before).len(), 1);
+
+    // Case `legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo`.
+    {
+        for action in [
+            crate::actions::reset_custom_theme_action("sunset"),
+            crate::actions::delete_custom_theme_action("sunset"),
+        ] {
+            let mut state = ui::State::new();
+            let mut one = crate::model::seed_custom();
+            one.accent = [1, 2, 3];
+            let mut two = one.clone();
+            two.id = "second".into();
+            let legacy = serde_json::to_string(&[one.clone(), two]).unwrap();
+            crate::doc::put_text(&mut state.doc, &ROOT, "catalog", &legacy);
+            let before = state.doc.get_heads();
+            tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action))
+                .unwrap();
+            state.record_committed_action(before.clone(), None, None);
+            assert_eq!(state.doc.get_changes(&before).len(), 1);
+            assert_eq!(
+                ui::doc::read_text(&state.doc, &ROOT, "catalog").as_deref(),
+                Some(legacy.as_str())
+            );
+            let catalog = crate::doc::load_catalog(&state.doc, &ROOT).unwrap();
+            assert!(catalog.iter().any(|s| s.id == "second"));
+            match action {
+                crate::actions::ThemesAction::DeleteCustomTheme { .. } => {
+                    assert!(!catalog.iter().any(|s| s.id == "sunset"));
+                    let heads = state.doc.base_heads();
+                    assert!(!crate::doc::set_name(
+                        &mut state.doc,
+                        &ROOT,
+                        "sunset",
+                        "Resurrect"
+                    ));
+                    assert_eq!(state.doc.get_heads(), heads);
+                }
+                _ => assert_ne!(
+                    catalog.iter().find(|s| s.id == "sunset").unwrap().accent,
+                    [1, 2, 3]
+                ),
+            }
+            assert!(state.undo(None, None).is_some());
+            assert_eq!(
+                crate::doc::load_catalog(&state.doc, &ROOT)
+                    .unwrap()
+                    .iter()
+                    .find(|s| s.id == "sunset")
+                    .unwrap()
+                    .accent,
+                [1, 2, 3]
+            );
+            one.name = "Native precedence".into();
+            crate::doc::create_custom_theme(&mut state.doc, &ROOT, &one);
+            assert_eq!(
+                crate::doc::load_catalog(&state.doc, &ROOT)
+                    .unwrap()
+                    .iter()
+                    .find(|s| s.id == "sunset")
+                    .unwrap()
+                    .name,
+                "Native precedence"
+            );
+        }
+    }
 }
 
 fn test_root() -> Box<dyn ui::widget::Widget> {
@@ -122,7 +195,7 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 
 #[test]
 fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
-    if let Ok(stage) = std::env::var("QOS_SLICE5_THEMES_STAGE") {
+    if let Ok(stage) = std::env::var("TILO_SLICE5_THEMES_STAGE") {
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.themes").unwrap();
         let store = crate::store::store_path().unwrap();
         if stage == "write" {
@@ -177,83 +250,25 @@ fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
         }
         return;
     }
-    let dir = std::env::temp_dir().join(format!("qos-slice5-themes-legacy-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("tilo-slice5-themes-legacy-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
-        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::legacy_restore_actual_storage_reopen_never_applies_os_theme","--nocapture"]).env("QOS_SLICE5_THEMES_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).output().unwrap();
+        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::legacy_restore_actual_storage_reopen_never_applies_os_theme","--nocapture"]).env("TILO_SLICE5_THEMES_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).output().unwrap();
         assert!(
             out.status.success(),
             "{stage}: {} {}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("test result: ok. 1 passed"),
+            "{stage}: the child ran no test: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
     std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo() {
-    for action in [
-        crate::actions::reset_custom_theme_action("sunset"),
-        crate::actions::delete_custom_theme_action("sunset"),
-    ] {
-        let mut state = ui::State::new();
-        let mut one = crate::model::seed_custom();
-        one.accent = [1, 2, 3];
-        let mut two = one.clone();
-        two.id = "second".into();
-        let legacy = serde_json::to_string(&[one.clone(), two]).unwrap();
-        crate::doc::put_text(&mut state.doc, &ROOT, "catalog", &legacy);
-        let before = state.doc.get_heads();
-        tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action))
-            .unwrap();
-        state.record_committed_action(before.clone(), None, None);
-        assert_eq!(state.doc.get_changes(&before).len(), 1);
-        assert_eq!(
-            ui::doc::read_text(&state.doc, &ROOT, "catalog").as_deref(),
-            Some(legacy.as_str())
-        );
-        let catalog = crate::doc::load_catalog(&state.doc, &ROOT).unwrap();
-        assert!(catalog.iter().any(|s| s.id == "second"));
-        match action {
-            crate::actions::ThemesAction::DeleteCustomTheme { .. } => {
-                assert!(!catalog.iter().any(|s| s.id == "sunset"));
-                let heads = state.doc.base_heads();
-                assert!(!crate::doc::set_name(
-                    &mut state.doc,
-                    &ROOT,
-                    "sunset",
-                    "Resurrect"
-                ));
-                assert_eq!(state.doc.get_heads(), heads);
-            }
-            _ => assert_ne!(
-                catalog.iter().find(|s| s.id == "sunset").unwrap().accent,
-                [1, 2, 3]
-            ),
-        }
-        assert!(state.undo(None, None).is_some());
-        assert_eq!(
-            crate::doc::load_catalog(&state.doc, &ROOT)
-                .unwrap()
-                .iter()
-                .find(|s| s.id == "sunset")
-                .unwrap()
-                .accent,
-            [1, 2, 3]
-        );
-        one.name = "Native precedence".into();
-        crate::doc::create_custom_theme(&mut state.doc, &ROOT, &one);
-        assert_eq!(
-            crate::doc::load_catalog(&state.doc, &ROOT)
-                .unwrap()
-                .iter()
-                .find(|s| s.id == "sunset")
-                .unwrap()
-                .name,
-            "Native precedence"
-        );
-    }
 }
 
 /// The frozen library panel is a raised surface on the history host's

@@ -956,79 +956,79 @@ mod tests {
     }
 
     #[test]
-    fn create_drag_owns_threshold_day_mapping_and_snap() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let from = point_at(2, 9 * 60 + 7);
-        assert!(controller.begin_drag(area(), &days, &[], from));
-        controller.update_drag(Point::new(from.x + 2.0, from.y + 2.0));
-        assert!(controller.preview(area(), &days).is_none());
-        controller.update_drag(point_at(2, 10 * 60 + 53));
-        assert_eq!(
-            controller.preview(area(), &days),
-            Some(TimelineEffect::Create {
-                day: days[2],
-                start_min: 9 * 60,
-                end_min: 11 * 60,
-            })
-        );
-    }
-
-    #[test]
-    fn move_drag_preserves_duration_and_pointer_grab_offset() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let id = Uuid::new_v4();
-        let span = TimelineSpan {
-            id,
-            day: days[1],
-            start_min: 10 * 60,
-            end_min: 11 * 60,
-        };
-        let from = point_at(1, 10 * 60 + 15);
-        assert!(controller.begin_drag(area(), &days, &[span], from));
-        controller.update_drag(point_at(4, 14 * 60 + 15));
-        assert_eq!(
-            controller.preview(area(), &days),
-            Some(TimelineEffect::Move {
+    fn drag_gestures_own_threshold_snap_grab_offset_select_and_cancel() {
+        // Case `create_drag_owns_threshold_day_mapping_and_snap`.
+        {
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let from = point_at(2, 9 * 60 + 7);
+            assert!(controller.begin_drag(area(), &days, &[], from));
+            controller.update_drag(Point::new(from.x + 2.0, from.y + 2.0));
+            assert!(controller.preview(area(), &days).is_none());
+            controller.update_drag(point_at(2, 10 * 60 + 53));
+            assert_eq!(
+                controller.preview(area(), &days),
+                Some(TimelineEffect::Create {
+                    day: days[2],
+                    start_min: 9 * 60,
+                    end_min: 11 * 60,
+                })
+            );
+        }
+        // Case `move_drag_preserves_duration_and_pointer_grab_offset`.
+        {
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let id = Uuid::new_v4();
+            let span = TimelineSpan {
                 id,
-                day: days[4],
-                start_min: 14 * 60,
-                dur_min: 60,
-            })
-        );
-    }
-
-    #[test]
-    fn pending_event_press_is_a_select_not_a_move() {
-        let mut controller = TimelineInteraction::new();
-        controller.test_set_offset_y(0.0);
-        let days = days();
-        let id = Uuid::new_v4();
-        let span = TimelineSpan {
-            id,
-            day: days[0],
-            start_min: 8 * 60,
-            end_min: 9 * 60,
-        };
-        let point = point_at(0, 8 * 60 + 30);
-        controller.pointer = point;
-        assert!(controller.begin_drag(area(), &days, &[span], point));
-        assert_eq!(
-            controller.finish_drag(area(), &days, &[span]),
-            Some(TimelineEffect::Select(id))
-        );
-    }
-
-    #[test]
-    fn cancel_discards_pending_drag_without_an_effect() {
-        let mut controller = TimelineInteraction::new();
-        let days = days();
-        assert!(controller.begin_drag(area(), &days, &[], point_at(3, 12 * 60)));
-        assert!(controller.cancel_drag());
-        assert!(controller.preview(area(), &days).is_none());
-        assert!(!controller.cancel_drag());
+                day: days[1],
+                start_min: 10 * 60,
+                end_min: 11 * 60,
+            };
+            let from = point_at(1, 10 * 60 + 15);
+            assert!(controller.begin_drag(area(), &days, &[span], from));
+            controller.update_drag(point_at(4, 14 * 60 + 15));
+            assert_eq!(
+                controller.preview(area(), &days),
+                Some(TimelineEffect::Move {
+                    id,
+                    day: days[4],
+                    start_min: 14 * 60,
+                    dur_min: 60,
+                })
+            );
+        }
+        // Case `pending_event_press_is_a_select_not_a_move`.
+        {
+            let mut controller = TimelineInteraction::new();
+            controller.test_set_offset_y(0.0);
+            let days = days();
+            let id = Uuid::new_v4();
+            let span = TimelineSpan {
+                id,
+                day: days[0],
+                start_min: 8 * 60,
+                end_min: 9 * 60,
+            };
+            let point = point_at(0, 8 * 60 + 30);
+            controller.pointer = point;
+            assert!(controller.begin_drag(area(), &days, &[span], point));
+            assert_eq!(
+                controller.finish_drag(area(), &days, &[span]),
+                Some(TimelineEffect::Select(id))
+            );
+        }
+        // Case `cancel_discards_pending_drag_without_an_effect`.
+        {
+            let mut controller = TimelineInteraction::new();
+            let days = days();
+            assert!(controller.begin_drag(area(), &days, &[], point_at(3, 12 * 60)));
+            assert!(controller.cancel_drag());
+            assert!(controller.preview(area(), &days).is_none());
+            assert!(!controller.cancel_drag());
+        }
     }
 }

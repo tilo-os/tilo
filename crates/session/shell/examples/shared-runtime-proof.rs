@@ -20,8 +20,8 @@ mod edited_handoff_proof;
 #[path = "runtime_benchmark/mod.rs"]
 mod runtime_benchmark;
 
-const PHOTOS: &str = "dev.qos.photos";
-const WRITER: &str = "dev.qos.word-processor";
+const PHOTOS: &str = "dev.tilo.photos";
+const WRITER: &str = "dev.tilo.word-processor";
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 struct Children(Vec<Child>);
@@ -210,12 +210,12 @@ fn main() -> Result<()> {
             .stderr(Stdio::from(log));
         if benchmark {
             command
-                .env("QOS_PROFILE_OUT", root.join(format!("{id}.frames.jsonl")))
+                .env("TILO_PROFILE_OUT", root.join(format!("{id}.frames.jsonl")))
                 .env("QUICK_UI_PRESENT", "1")
-                .env("QOS_PROFILE_WINDOW_FRONT", "1")
-                .env("QOS_PROFILE_RESOURCES", "1")
+                .env("TILO_PROFILE_WINDOW_FRONT", "1")
+                .env("TILO_PROFILE_RESOURCES", "1")
                 .env(
-                    "QOS_PROFILE_WINDOW_POSITION",
+                    "TILO_PROFILE_WINDOW_POSITION",
                     if id == PHOTOS { "20,60" } else { "840,60" },
                 );
         }

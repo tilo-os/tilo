@@ -20,17 +20,17 @@ def main():
         subprocess.run([sys.executable, str(ROOT / "scripts/browser/build-host.py")], check=True)
     subprocess.run(["cargo", "build", "-p", "browser", "--profile", args.profile], cwd=ROOT, check=True)
     subprocess.run([
-        "cargo", "build", "-p", "shell", "--bin", "qos-runtime-mcp",
+        "cargo", "build", "-p", "shell", "--bin", "tilo-runtime-mcp",
         "--no-default-features", "--profile", args.profile,
     ], cwd=ROOT, check=True)
     binaries = ROOT / "target" / ("debug" if args.profile == "dev" else args.profile)
     binary = binaries / "browser"
-    runtime_host = binaries / "qos-runtime-mcp"
+    runtime_host = binaries / "tilo-runtime-mcp"
     output = ROOT / "target/browser-package"
     output.mkdir(parents=True, exist_ok=True)
     if platform.system() == "Darwin":
         runtime = ROOT / "target/chromium/Browser Engine.app"
-        if not (runtime / "Contents/MacOS/qos-chromium-host").is_file():
+        if not (runtime / "Contents/MacOS/tilo-chromium-host").is_file():
             raise SystemExit("Native runtime missing; run scripts/browser/build-host.py first")
         bundle = output / "Browser.app"
         contents = bundle / "Contents"
@@ -42,12 +42,12 @@ def main():
             shutil.rmtree(destination)
         shutil.copytree(runtime, destination, symlinks=True)
         shutil.copy2(binary, contents / "MacOS/browser")
-        bundled_host = contents / "MacOS/qos-runtime-mcp"
+        bundled_host = contents / "MacOS/tilo-runtime-mcp"
         shutil.copy2(runtime_host, bundled_host)
         info = {
-            "CFBundleIdentifier": "dev.qos.browser",
-            "CFBundleName": "qOS Browser",
-            "CFBundleDisplayName": "qOS Browser",
+            "CFBundleIdentifier": "dev.tilo.browser",
+            "CFBundleName": "Tilo Browser",
+            "CFBundleDisplayName": "Tilo Browser",
             "CFBundleExecutable": "browser",
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "0.1.0",
@@ -64,16 +64,16 @@ def main():
         print(bundle)
     elif platform.system() == "Linux":
         runtime = ROOT / "target/chromium"
-        if not (runtime / "qos-chromium-host").is_file():
+        if not (runtime / "tilo-chromium-host").is_file():
             raise SystemExit("Native runtime missing; run scripts/browser/build-host.py first")
-        destination = output / "qos-browser"
+        destination = output / "tilo-browser"
         destination.mkdir(exist_ok=True)
         engine = destination / "chromium"
         if engine.exists():
             shutil.rmtree(engine)
         shutil.copytree(runtime, engine, symlinks=True)
         shutil.copy2(binary, destination / "browser")
-        shutil.copy2(runtime_host, destination / "qos-runtime-mcp")
+        shutil.copy2(runtime_host, destination / "tilo-runtime-mcp")
         print(destination / "browser")
     else:
         raise SystemExit("Only macOS and Linux are supported")

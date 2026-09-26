@@ -63,47 +63,44 @@ class UnsealRootfsTests(unittest.TestCase):
         (extra / "dtb.addon.efi").write_bytes(b"addon")
         return path
 
-    def test_restores_the_kernel_from_the_uki_and_removes_it(self):
-        root = self.root()
-        uki = self.uki(root)
-        self.assertEqual(unseal.main(["unseal", str(root)]), 0)
-        kdir = root / "usr/lib/modules" / KVER
-        self.assertEqual((kdir / "vmlinuz").read_bytes(), b"KERNEL-FROM-UKI")
-        self.assertEqual((kdir / "initramfs.img").read_bytes(), b"INITRD-FROM-UKI")
-        self.assertFalse(uki.exists())
-        self.assertFalse(uki.with_name(uki.name + ".extra.d").exists())
-
-    def test_prefers_the_split_kernel_directory(self):
-        root = self.root()
-        self.uki(root)
-        split = root / "kernel" / KVER
-        split.mkdir(parents=True)
-        (split / "vmlinuz").write_bytes(b"SPLIT-KERNEL")
-        (split / "initramfs.img").write_bytes(b"SPLIT-INITRD")
-        self.assertEqual(unseal.main(["unseal", str(root)]), 0)
-        self.assertEqual((root / "usr/lib/modules" / KVER / "vmlinuz").read_bytes(), b"SPLIT-KERNEL")
-        self.assertFalse((root / "kernel").exists())
-        self.assertEqual(list((root / "boot").rglob("*.efi")), [])
-
-    def test_an_unsealed_root_passes_through(self):
-        root = self.root()
-        kdir = root / "usr/lib/modules" / KVER
-        (kdir / "vmlinuz").write_bytes(b"K")
-        (kdir / "initramfs.img").write_bytes(b"I")
-        self.assertEqual(unseal.main(["unseal", str(root)]), 0)
-        self.assertEqual((kdir / "vmlinuz").read_bytes(), b"K")
-
-    def test_no_kernel_anywhere_fails(self):
-        with self.assertRaisesRegex(SystemExit, "no kernel to restore"):
-            unseal.main(["unseal", str(self.root())])
-
-    def test_a_uki_without_an_initrd_fails(self):
-        root = self.root()
-        path = root / "boot/EFI/Linux" / f"{KVER}.efi"
-        path.parent.mkdir(parents=True)
-        path.write_bytes(fake_uki({".linux": b"K"}))
-        with self.assertRaisesRegex(SystemExit, "no .initrd section"):
-            unseal.main(["unseal", str(root)])
+    def test_unsealing_restores_the_kernel_or_fails_without_one(self):
+        with self.subTest(phase='restores the kernel from the uki and removes it'):
+            root = self.root()
+            uki = self.uki(root)
+            self.assertEqual(unseal.main(["unseal", str(root)]), 0)
+            kdir = root / "usr/lib/modules" / KVER
+            self.assertEqual((kdir / "vmlinuz").read_bytes(), b"KERNEL-FROM-UKI")
+            self.assertEqual((kdir / "initramfs.img").read_bytes(), b"INITRD-FROM-UKI")
+            self.assertFalse(uki.exists())
+            self.assertFalse(uki.with_name(uki.name + ".extra.d").exists())
+        with self.subTest(phase='prefers the split kernel directory'):
+            root = self.root()
+            self.uki(root)
+            split = root / "kernel" / KVER
+            split.mkdir(parents=True)
+            (split / "vmlinuz").write_bytes(b"SPLIT-KERNEL")
+            (split / "initramfs.img").write_bytes(b"SPLIT-INITRD")
+            self.assertEqual(unseal.main(["unseal", str(root)]), 0)
+            self.assertEqual((root / "usr/lib/modules" / KVER / "vmlinuz").read_bytes(), b"SPLIT-KERNEL")
+            self.assertFalse((root / "kernel").exists())
+            self.assertEqual(list((root / "boot").rglob("*.efi")), [])
+        with self.subTest(phase='an unsealed root passes through'):
+            root = self.root()
+            kdir = root / "usr/lib/modules" / KVER
+            (kdir / "vmlinuz").write_bytes(b"K")
+            (kdir / "initramfs.img").write_bytes(b"I")
+            self.assertEqual(unseal.main(["unseal", str(root)]), 0)
+            self.assertEqual((kdir / "vmlinuz").read_bytes(), b"K")
+        with self.subTest(phase='no kernel anywhere fails'):
+            with self.assertRaisesRegex(SystemExit, "no kernel to restore"):
+                unseal.main(["unseal", str(self.root())])
+        with self.subTest(phase='a uki without an initrd fails'):
+            root = self.root()
+            path = root / "boot/EFI/Linux" / f"{KVER}.efi"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(fake_uki({".linux": b"K"}))
+            with self.assertRaisesRegex(SystemExit, "no .initrd section"):
+                unseal.main(["unseal", str(root)])
 
 
 if __name__ == "__main__":

@@ -2,10 +2,10 @@
 // replacing its document, changing its origin, or submitting any values.
 (() => {
   if (location.protocol !== 'https:') throw new Error('Fixture needs HTTPS');
-  const prior = document.getElementById('qos-credential-fixture');
+  const prior = document.getElementById('tilo-credential-fixture');
   if (prior) prior.remove();
   const root = document.createElement('section');
-  root.id = 'qos-credential-fixture';
+  root.id = 'tilo-credential-fixture';
   root.style.cssText = 'position:relative;z-index:2147483647;background:white;color:black;padding:24px;font:16px system-ui;display:block';
   const heading = document.createElement('h1');
   heading.textContent = 'Synthetic credential and autofill fixture';
@@ -32,9 +32,9 @@
     root.append(node);
     return node;
   }
-  form('qos-login', [['username','text','username'],['password','password','current-password']]);
-  form('qos-address', [['given','text','given-name'],['family','text','family-name'],['street','text','address-line1'],['city','text','address-level2'],['region','text','address-level1'],['postal','text','postal-code'],['country','text','country-name']]);
-  const hidden = form('qos-hidden', [['password','password','current-password']]);
+  form('tilo-login', [['username','text','username'],['password','password','current-password']]);
+  form('tilo-address', [['given','text','given-name'],['family','text','family-name'],['street','text','address-line1'],['city','text','address-level2'],['region','text','address-level1'],['postal','text','postal-code'],['country','text','country-name']]);
+  const hidden = form('tilo-hidden', [['password','password','current-password']]);
   hidden.hidden = true;
   document.body.prepend(root);
   return {installed:true, origin:location.origin, forms:3};

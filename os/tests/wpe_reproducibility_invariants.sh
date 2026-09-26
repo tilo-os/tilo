@@ -74,24 +74,24 @@ has "$buildroot" 'find /etc/yum.repos.d -type f -delete' \
 has "$buildroot" '/usr/lib/tilo/wpe-buildroot-packages.txt' \
   'promoted WPE buildroot records its exact installed package set'
 
-published_pattern='^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$'
+published_pattern='^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$'
 for consumer in "$image_script" "$image_workflow" "$snapshot_workflow"; do
   has "$consumer" "$published_pattern" 'WPE verifier accepts the namespace actually published by the snapshot'
 done
-has "$snapshot_workflow" 'ref="code.sandbox.example/qos/tilo-wpe-buildroot@$DIGEST"' \
+has "$snapshot_workflow" 'ref="registry.tilo.so/tilo/tilo-wpe-buildroot@$DIGEST"' \
   'WPE producer and verifiers share the same repository'
 digest=$(printf 'a%.0s' {1..64})
-[[ "code.sandbox.example/qos/tilo-wpe-buildroot@sha256:$digest" =~ $published_pattern ]] \
+[[ "registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:$digest" =~ $published_pattern ]] \
   && ok 'published immutable WPE reference is accepted' || bad 'published WPE reference is rejected'
-for invalid in "code.sandbox.example/tilo/tilo-wpe-buildroot@sha256:$digest" \
-    'code.sandbox.example/qos/tilo-wpe-buildroot:latest'; do
+for invalid in "registry.tilo.so/other/tilo-wpe-buildroot@sha256:$digest" \
+    'registry.tilo.so/tilo/tilo-wpe-buildroot:latest'; do
   [[ ! "$invalid" =~ $published_pattern ]] \
     && ok 'wrong namespace or mutable WPE reference is rejected' || bad 'invalid WPE reference accepted'
 done
 
 for arch in X86_64 AARCH64; do
   value="$(sed -n "s/^WPE_BUILDROOT_${arch}_REF=//p" "$pins")"
-  if [ -z "$value" ] || [[ "$value" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]; then
+  if [ -z "$value" ] || [[ "$value" =~ ^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]; then
     ok "$arch buildroot pin is either explicit bootstrap-empty or digest-pinned"
   else
     bad "$arch WPE buildroot uses a mutable or malformed reference"
@@ -122,7 +122,7 @@ if grep -Eq 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|WPE_SNAPSHOT_CREDENTIAL_BROKER' 
 else
   ok 'WPE snapshot has no exportable signing key path'
 fi
-has "$snapshot_workflow" 'REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}' \
+has "$snapshot_workflow" 'registry: registry.tilo.so' \
   'WPE snapshot authenticates to the registry like the other snapshot workflows'
 has "$snapshot_workflow" 'token: ${{ github.token }}' \
   'WPE pin branch is pushed with the job-scoped Forgejo token'
@@ -152,7 +152,6 @@ snapshot_inputs=(
   os/dev/cache-github-assets.sh
   os/dev/install-cached-cosign.sh
   os/dev/configure-cosign-kms.sh
-  os/dev/login-registry-with-retry.sh
   os/dev/open-snapshot-pr.py
   .forgejo/actions/install-cosign
   keys/cosign.pub

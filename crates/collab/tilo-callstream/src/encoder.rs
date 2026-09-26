@@ -265,7 +265,16 @@ pub(crate) mod tests {
         }
     }
 
+    /// A gradient round-trips at >= 35 dB PSNR, a mis-sized buffer is caught, and the configured
+    /// keyframe interval emits periodic keyframes.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_encoder_keeps_quality_checks_buffer_size_and_paces_keyframes() {
+        gradient_round_trip_psnr_at_least_35_db();
+        buffer_size_mismatch_is_caught();
+        configured_keyframe_interval_emits_periodic_keyframes();
+    }
+
     fn gradient_round_trip_psnr_at_least_35_db() {
         const W: u32 = 128;
         const H: u32 = 96;
@@ -288,7 +297,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
     fn buffer_size_mismatch_is_caught() {
         let mut enc = software_encoder(StreamCodec::Vp9, 32, 32, 0);
         let too_small = vec![0u8; 32 * 32 * 3]; // RGB, not RGBA
@@ -296,7 +304,6 @@ pub(crate) mod tests {
         assert!(matches!(err, EncodeError::BufferSize { .. }));
     }
 
-    #[test]
     fn configured_keyframe_interval_emits_periodic_keyframes() {
         const W: u32 = 64;
         const H: u32 = 64;

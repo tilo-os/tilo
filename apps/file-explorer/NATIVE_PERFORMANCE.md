@@ -27,7 +27,7 @@ does not claim file-content integrity.
 
 The opt-in framework native observer receives a read-only root snapshot:
 
-- `app: "dev.qos.file-explorer"`, `view_id: "file_view"`, `directory`;
+- `app: "dev.tilo.file-explorer"`, `view_id: "file_view"`, `directory`;
 - `entry_count`, `order_hash`, `hash_algorithm: "sha256"` from the loaded model;
 - `ready`, `is_loading`, `has_error`, `thumbnail_pending` (null without service);
 - `selected_indices`, corresponding `selected_names`, and nullable `primary_index`;

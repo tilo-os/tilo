@@ -125,6 +125,12 @@ impl Predictor {
         *count = count.saturating_add(1);
     }
 
+    /// Whether this user has committed `word` before (in any context).
+    pub fn has_learned(&self, word: &str) -> bool {
+        let word = word.to_lowercase();
+        self.learned.values().any(|words| words.contains_key(&word))
+    }
+
     /// Forget all on-device adaptation immediately. The embedded dictionary
     /// and bundled bigram model remain available, but no typed words stay in
     /// this process after a privacy reset.
@@ -271,110 +277,143 @@ mod tests {
     }
 
     #[test]
-    fn embedded_predictor_loads_bigrams() {
-        let p = Predictor::english();
-        assert!(
-            p.bigram_contexts() > 1000,
-            "want many bigram contexts, got {}",
-            p.bigram_contexts()
-        );
-    }
-
-    #[test]
-    fn next_word_uses_bigram_context() {
-        let p = small();
-        let preds = p.predict_next(Some("good"), "");
-        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-        // "morning" and "luck" are good's bigram successors and should lead.
-        assert_eq!(words[0], "morning", "got {words:?}");
-        assert!(words.contains(&"luck"));
-    }
-
-    #[test]
-    fn prefix_completion_respects_prefix() {
-        let p = small();
-        let preds = p.predict_next(None, "mo");
-        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-        assert!(words.iter().all(|w| w.starts_with("mo")), "got {words:?}");
-        // Frequency order among "mo*": more(70) > morning(60) > mood(40).
-        assert_eq!(words[0], "more", "got {words:?}");
-    }
-
-    #[test]
-    fn bigram_plus_prefix_filters_to_matching_successor() {
-        let p = small();
-        // After "good", typing "m" should surface "morning" (the matching
-        // bigram successor), not "luck".
-        let preds = p.predict_next(Some("good"), "m");
-        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-        assert_eq!(words[0], "morning", "got {words:?}");
-        assert!(!words.contains(&"luck"), "luck doesn't start with m");
-    }
-
-    #[test]
-    fn embedded_real_bigram_predicts_sensibly() {
-        let p = Predictor::english();
-        // "of" -> "the" is the single most common English bigram.
-        let preds = p.predict_next(Some("of"), "");
-        assert!(!preds.is_empty());
-        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-        assert_eq!(words[0], "the", "expected 'the' after 'of', got {words:?}");
-    }
-
-    #[test]
-    fn cold_start_returns_common_words() {
-        let p = small();
-        let preds = p.predict_next(None, "");
-        assert!(!preds.is_empty());
-        // Most common word in the toy dict is "the".
-        assert_eq!(preds[0].0, "the");
-    }
-
-    #[test]
-    fn unknown_context_falls_back_to_prefix_or_common() {
-        let p = small();
-        // No bigram for "xyzzy"; with a prefix we still complete.
-        let preds = p.predict_next(Some("xyzzy"), "ar");
-        let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
-        assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
-        assert!(words.contains(&"are"));
-    }
-
-    #[test]
-    fn next_key_distribution_blends_lexicon_with_bigram_context() {
-        let p = small();
-        // Lexicon alone: "mo" continues as "more" (r), "morning" (r), "mood" (o).
-        let plain = p.next_key_distribution(None, "mo");
-        assert!(plain.prob('r') > plain.prob('o'));
-        // After "good" only "morning" follows, reinforcing 'r' further.
-        let ctx = p.next_key_distribution(Some("good"), "mo");
-        assert!(ctx.prob('r') > plain.prob('r'));
-        // A prefix nothing extends carries no context at all.
-        assert!(p.next_key_distribution(None, "zzq").is_uniform());
-    }
-
-    #[test]
-    fn committed_transitions_adapt_predictions_locally() {
-        let mut p = small();
-        for _ in 0..4 {
-            p.learn_transition(Some("good"), "mood");
+    fn embedded_bigrams_predict_next_words_sensibly() {
+        eprintln!("phase embedded_predictor_loads_bigrams");
+        {
+            let p = Predictor::english();
+            assert!(
+                p.bigram_contexts() > 1000,
+                "want many bigram contexts, got {}",
+                p.bigram_contexts()
+            );
         }
-        let predictions = p.predict_next(Some("good"), "");
-        assert_eq!(
-            predictions.first().map(|(word, _)| word.as_str()),
-            Some("mood"),
-            "repeated personal usage should outrank the generic corpus"
-        );
+
+        eprintln!("phase next_word_uses_bigram_context");
+        {
+            let p = small();
+            let preds = p.predict_next(Some("good"), "");
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            // "morning" and "luck" are good's bigram successors and should lead.
+            assert_eq!(words[0], "morning", "got {words:?}");
+            assert!(words.contains(&"luck"));
+        }
+
+        eprintln!("phase embedded_real_bigram_predicts_sensibly");
+        {
+            let p = Predictor::english();
+            // "of" -> "the" is the single most common English bigram.
+            let preds = p.predict_next(Some("of"), "");
+            assert!(!preds.is_empty());
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            assert_eq!(words[0], "the", "expected 'the' after 'of', got {words:?}");
+        }
+
+        eprintln!("phase embedded_tables_are_consistent");
+        {
+            let p = Predictor::english();
+            let dict = p.dictionary();
+            assert!(
+                dict.words()
+                    .iter()
+                    .all(|e| e.word.bytes().all(|b| b.is_ascii_lowercase())),
+                "the dictionary holds lower-case a-z words only"
+            );
+            for (w1, successors) in &p.bigrams {
+                assert!(dict.contains(w1), "bigram context {w1:?} not in dictionary");
+                for (w2, _) in successors {
+                    assert!(dict.contains(w2), "bigram {w1:?} {w2:?} not in dictionary");
+                }
+            }
+            let after_thank = p.predict_next(Some("thank"), "");
+            assert_eq!(
+                after_thank.first().map(|(w, _)| w.as_str()),
+                Some("you"),
+                "got {after_thank:?}"
+            );
+        }
     }
 
     #[test]
-    fn local_adaptation_is_bounded_and_clearable() {
-        let mut predictor = small();
-        for index in 0..(MAX_LEARNED_CONTEXTS + 10) {
-            predictor.learn_transition(Some(&format!("context-{index}")), "word");
+    fn prefix_completion_filters_context_and_falls_back_to_common_words() {
+        eprintln!("phase prefix_completion_respects_prefix");
+        {
+            let p = small();
+            let preds = p.predict_next(None, "mo");
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            assert!(words.iter().all(|w| w.starts_with("mo")), "got {words:?}");
+            // Frequency order among "mo*": more(70) > morning(60) > mood(40).
+            assert_eq!(words[0], "more", "got {words:?}");
         }
-        assert_eq!(predictor.learned_context_count(), MAX_LEARNED_CONTEXTS);
-        predictor.clear_learned();
-        assert_eq!(predictor.learned_context_count(), 0);
+
+        eprintln!("phase bigram_plus_prefix_filters_to_matching_successor");
+        {
+            let p = small();
+            // After "good", typing "m" should surface "morning" (the matching
+            // bigram successor), not "luck".
+            let preds = p.predict_next(Some("good"), "m");
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            assert_eq!(words[0], "morning", "got {words:?}");
+            assert!(!words.contains(&"luck"), "luck doesn't start with m");
+        }
+
+        eprintln!("phase cold_start_returns_common_words");
+        {
+            let p = small();
+            let preds = p.predict_next(None, "");
+            assert!(!preds.is_empty());
+            // Most common word in the toy dict is "the".
+            assert_eq!(preds[0].0, "the");
+        }
+
+        eprintln!("phase unknown_context_falls_back_to_prefix_or_common");
+        {
+            let p = small();
+            // No bigram for "xyzzy"; with a prefix we still complete.
+            let preds = p.predict_next(Some("xyzzy"), "ar");
+            let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
+            assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
+            assert!(words.contains(&"are"));
+        }
+
+        eprintln!("phase next_key_distribution_blends_lexicon_with_bigram_context");
+        {
+            let p = small();
+            // Lexicon alone: "mo" continues as "more" (r), "morning" (r), "mood" (o).
+            let plain = p.next_key_distribution(None, "mo");
+            assert!(plain.prob('r') > plain.prob('o'));
+            // After "good" only "morning" follows, reinforcing 'r' further.
+            let ctx = p.next_key_distribution(Some("good"), "mo");
+            assert!(ctx.prob('r') > plain.prob('r'));
+            // A prefix nothing extends carries no context at all.
+            assert!(p.next_key_distribution(None, "zzq").is_uniform());
+        }
+    }
+
+    #[test]
+    fn local_adaptation_learns_commits_within_bounds_and_clears() {
+        eprintln!("phase committed_transitions_adapt_predictions_locally");
+        {
+            let mut p = small();
+            for _ in 0..4 {
+                p.learn_transition(Some("good"), "mood");
+            }
+            let predictions = p.predict_next(Some("good"), "");
+            assert_eq!(
+                predictions.first().map(|(word, _)| word.as_str()),
+                Some("mood"),
+                "repeated personal usage should outrank the generic corpus"
+            );
+        }
+
+        eprintln!("phase local_adaptation_is_bounded_and_clearable");
+        {
+            let mut predictor = small();
+            for index in 0..(MAX_LEARNED_CONTEXTS + 10) {
+                predictor.learn_transition(Some(&format!("context-{index}")), "word");
+            }
+            assert_eq!(predictor.learned_context_count(), MAX_LEARNED_CONTEXTS);
+            predictor.clear_learned();
+            assert_eq!(predictor.learned_context_count(), 0);
+        }
     }
 }

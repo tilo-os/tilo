@@ -727,74 +727,85 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+                "{mode}: the child ran no test: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
         }
         assert!(!temp.path().join("relative-notebook").exists());
     }
 
     #[test]
-    fn encode_decode_roundtrip() {
-        let mut w = Workspace::new();
-        let a = w.create_page(None);
-        let b = w.create_page(Some(a));
-        w.rename(a, "Root");
-        w.rename(b, "Child");
-        w.set_selected(Some(b));
-        let bytes = encode_workspace(&w).unwrap();
-        let back = decode_workspace(&bytes).unwrap();
-        assert_eq!(back.pages().len(), 2);
-        assert_eq!(back.get(a).unwrap().title, "Root");
-        assert_eq!(back.get(b).unwrap().title, "Child");
-        assert_eq!(back.selected(), Some(b));
-    }
+    fn workspace_storage_round_trips_and_reports_missing_or_failed_writes() {
+        eprintln!("phase encode_decode_roundtrip");
+        {
+            let mut w = Workspace::new();
+            let a = w.create_page(None);
+            let b = w.create_page(Some(a));
+            w.rename(a, "Root");
+            w.rename(b, "Child");
+            w.set_selected(Some(b));
+            let bytes = encode_workspace(&w).unwrap();
+            let back = decode_workspace(&bytes).unwrap();
+            assert_eq!(back.pages().len(), 2);
+            assert_eq!(back.get(a).unwrap().title, "Root");
+            assert_eq!(back.get(b).unwrap().title, "Child");
+            assert_eq!(back.selected(), Some(b));
+        }
 
-    #[test]
-    fn checked_flush_reports_and_retains_failed_writes_until_recovery() {
-        let temp = TempDir::new().unwrap();
-        ensure_layout(temp.path()).unwrap();
-        let mut workspace = Workspace::new();
-        let page = workspace.create_page(None);
-        let body_path = page_file_path(temp.path(), page);
-        std::fs::create_dir(&body_path).unwrap();
-        let bodies = PageSaver::spawn(temp.path().to_path_buf(), Duration::from_secs(60)).unwrap();
-        bodies.request(page, "Retained body".into());
-        assert!(bodies.try_flush().is_err());
-        assert_eq!(bodies.status(), SaveStatus::Failed);
-        assert!(
-            bodies.try_flush().is_err(),
-            "empty subsequent flush must not erase a failed write"
-        );
-        std::fs::remove_dir(&body_path).unwrap();
-        bodies.try_flush().unwrap();
-        assert_eq!(std::fs::read_to_string(body_path).unwrap(), "Retained body");
+        eprintln!("phase save_load_workspace_roundtrip");
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut w = Workspace::new();
+            w.create_page(None);
+            save_workspace(tmp.path(), &w).unwrap();
+            let loaded = load_workspace(tmp.path()).unwrap().expect("present");
+            assert_eq!(loaded.pages().len(), 1);
+        }
 
-        let metadata_path = workspace_file_path(temp.path());
-        std::fs::create_dir(&metadata_path).unwrap();
-        let metadata = Saver::spawn(temp.path().to_path_buf(), Duration::from_secs(60)).unwrap();
-        metadata.request(workspace);
-        assert!(metadata.try_flush().is_err());
-        assert!(metadata.try_flush().is_err());
-        std::fs::remove_dir(metadata_path).unwrap();
-        metadata.try_flush().unwrap();
-        assert_eq!(
-            load_workspace(temp.path()).unwrap().unwrap().pages().len(),
-            1
-        );
-    }
+        eprintln!("phase load_workspace_returns_none_when_missing");
+        {
+            let tmp = TempDir::new().unwrap();
+            let res = load_workspace(tmp.path()).unwrap();
+            assert!(res.is_none());
+        }
 
-    #[test]
-    fn save_load_workspace_roundtrip() {
-        let tmp = TempDir::new().unwrap();
-        let mut w = Workspace::new();
-        w.create_page(None);
-        save_workspace(tmp.path(), &w).unwrap();
-        let loaded = load_workspace(tmp.path()).unwrap().expect("present");
-        assert_eq!(loaded.pages().len(), 1);
-    }
+        eprintln!("phase checked_flush_reports_and_retains_failed_writes_until_recovery");
+        {
+            let temp = TempDir::new().unwrap();
+            ensure_layout(temp.path()).unwrap();
+            let mut workspace = Workspace::new();
+            let page = workspace.create_page(None);
+            let body_path = page_file_path(temp.path(), page);
+            std::fs::create_dir(&body_path).unwrap();
+            let bodies =
+                PageSaver::spawn(temp.path().to_path_buf(), Duration::from_secs(60)).unwrap();
+            bodies.request(page, "Retained body".into());
+            assert!(bodies.try_flush().is_err());
+            assert_eq!(bodies.status(), SaveStatus::Failed);
+            assert!(
+                bodies.try_flush().is_err(),
+                "empty subsequent flush must not erase a failed write"
+            );
+            std::fs::remove_dir(&body_path).unwrap();
+            bodies.try_flush().unwrap();
+            assert_eq!(std::fs::read_to_string(body_path).unwrap(), "Retained body");
 
-    #[test]
-    fn load_workspace_returns_none_when_missing() {
-        let tmp = TempDir::new().unwrap();
-        let res = load_workspace(tmp.path()).unwrap();
-        assert!(res.is_none());
+            let metadata_path = workspace_file_path(temp.path());
+            std::fs::create_dir(&metadata_path).unwrap();
+            let metadata =
+                Saver::spawn(temp.path().to_path_buf(), Duration::from_secs(60)).unwrap();
+            metadata.request(workspace);
+            assert!(metadata.try_flush().is_err());
+            assert!(metadata.try_flush().is_err());
+            std::fs::remove_dir(metadata_path).unwrap();
+            metadata.try_flush().unwrap();
+            assert_eq!(
+                load_workspace(temp.path()).unwrap().unwrap().pages().len(),
+                1
+            );
+        }
     }
 }

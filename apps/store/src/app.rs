@@ -1438,7 +1438,7 @@ impl StoreApp {
             });
         } else {
             let q = self.query.clone();
-            hits.sort_by_key(|i| std::cmp::Reverse(i.fuzzy_score(&q)));
+            hits.sort_by_cached_key(|i| std::cmp::Reverse(i.relevance(&q)));
         }
         hits
     }
@@ -4909,252 +4909,398 @@ mod tests {
         app
     }
 
+    /// Source, installed and category filters, search ranking and the category list.
     #[test]
-    fn visible_items_show_everything_when_filter_is_all() {
-        let app = seeded_app();
-        assert_eq!(app.visible_items().len(), 3);
+    fn catalogue_filters_and_search_rank_visible_items() {
+        // Case `visible_items_show_everything_when_filter_is_all`.
+        {
+            let app = seeded_app();
+            assert_eq!(app.visible_items().len(), 3);
+        }
+
+        // Case `filter_tilo_hides_flatpak`.
+        {
+            let mut app = seeded_app();
+            app.set_active_filter(SourceFilter::Tilo);
+            let names: Vec<&str> = app
+                .visible_items()
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            assert!(names.contains(&"Notes"));
+            assert!(names.contains(&"Terminal"));
+            assert!(!names.contains(&"Chess"));
+        }
+
+        // Case `filter_installed_shows_only_installed`.
+        {
+            let mut app = seeded_app();
+            app.set_active_filter(SourceFilter::Installed);
+            let names: Vec<&str> = app
+                .visible_items()
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            assert_eq!(names, vec!["Terminal"]);
+        }
+
+        // Case `category_filter_gates_the_list`.
+        {
+            let mut app = seeded_app();
+            app.set_active_category(Some("Games".into()));
+            let names: Vec<&str> = app
+                .visible_items()
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            assert_eq!(names, vec!["Chess"]);
+        }
+
+        // Case `search_narrows_and_ranks_by_score`.
+        {
+            let mut app = seeded_app();
+            // "Term" only matches Terminal — Notes contains "te" but not
+            // "term", so the substring gate drops it.
+            app.set_query("Term".into());
+            let visible = app.visible_items();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible[0].name, "Terminal");
+        }
+
+        // Case `search_ranks_name_prefix_hits_first`.
+        {
+            let mut app = seeded_app();
+            // Both "Notes" (name contains "te" mid-string) and
+            // "Terminal" (name starts with "Te") match "te".
+            app.set_query("te".into());
+            let visible = app.visible_items();
+            assert!(visible.len() >= 2);
+            assert_eq!(visible[0].name, "Terminal", "prefix hit ranks first");
+        }
+
+        // Case `categories_include_all_plus_distinct`.
+        {
+            let app = seeded_app();
+            let cats = app.category_labels();
+            assert_eq!(cats[0], "All");
+            assert!(cats.iter().any(|c| c == "Productivity"));
+            assert!(cats.iter().any(|c| c == "Games"));
+            assert!(cats.iter().any(|c| c == "System"));
+        }
     }
 
+    /// Resource snapshots come from the worker, stay bounded, and resolve by canonical id.
     #[test]
-    fn worker_snapshot_does_not_reindex_on_the_ui_thread() {
-        let index = crate::search_provider::StoreSearchIndex::default();
-        let mut app = StoreApp::new().with_search_index(index.clone());
-        let indexed = item(
-            "Indexed catalogue row",
-            StoreSource::Flathub,
-            "Utilities",
-            InstalledState::Not,
-        );
-        let rendered = item(
-            "Rendered worker snapshot",
-            StoreSource::Flathub,
-            "Utilities",
-            InstalledState::Not,
-        );
-
-        // The worker publishes the retained directory before its snapshot.
-        // If `set_items_from_worker` ever silently rebuilt it, this assertion
-        // would instead find the rendered row and reintroduce refresh work to
-        // the frame path.
-        index.sync(&[indexed]);
-        app.set_items_from_worker(vec![rendered]);
-
-        assert_eq!(app.items()[0].name, "Rendered worker snapshot");
-        let hits = index.provider().search("Indexed catalogue row");
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].title, "Indexed catalogue row");
-    }
-
-    #[test]
-    fn contextual_resource_snapshot_is_bounded_and_omitted_apps_resolve_lazily() {
-        let mut app = StoreApp::new();
-        let mut items = Vec::new();
-        for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
-            let mut entry = item(
-                "Utility",
-                StoreSource::Tilo {
-                    registry_name: "Tilo".into(),
-                },
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn resource_snapshots_are_bounded_and_resolve_canonically() {
+        // Case `worker_snapshot_does_not_reindex_on_the_ui_thread`.
+        {
+            let index = crate::search_provider::StoreSearchIndex::default();
+            let mut app = StoreApp::new().with_search_index(index.clone());
+            let indexed = item(
+                "Indexed catalogue row",
+                StoreSource::Flathub,
                 "Utilities",
                 InstalledState::Not,
             );
-            entry.id = format!("dev.example.utility{index:04}");
-            entry.name = format!("Utility {index:04}");
-            items.push(entry);
+            let rendered = item(
+                "Rendered worker snapshot",
+                StoreSource::Flathub,
+                "Utilities",
+                InstalledState::Not,
+            );
+
+            // The worker publishes the retained directory before its snapshot.
+            // If `set_items_from_worker` ever silently rebuilt it, this assertion
+            // would instead find the rendered row and reintroduce refresh work to
+            // the frame path.
+            index.sync(&[indexed]);
+            app.set_items_from_worker(vec![rendered]);
+
+            assert_eq!(app.items()[0].name, "Rendered worker snapshot");
+            let hits = index.provider().search("Indexed catalogue row");
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].title, "Indexed catalogue row");
         }
-        app.set_items(items);
-        let doc = AutoCommit::new();
-        let root = Widget::resources(&app, &doc).pop().unwrap();
-        let snapshot_count = root
-            .children
-            .iter()
-            .filter(|resource| resource.kind == "store.publisher")
-            .flat_map(|publisher| publisher.children.iter())
-            .count();
-        assert_eq!(snapshot_count, RESOURCE_SNAPSHOT_LIMIT);
-        let omitted = "app:dev.example.utility0216";
-        let resolved = Widget::resource(&app, &doc, omitted).unwrap();
-        assert_eq!(resolved.id.0, omitted);
-        assert!(
-            resolved
-                .actions
+
+        // Case `contextual_resource_snapshot_is_bounded_and_omitted_apps_resolve_lazily`.
+        {
+            let mut app = StoreApp::new();
+            let mut items = Vec::new();
+            for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
+                let mut entry = item(
+                    "Utility",
+                    StoreSource::Tilo {
+                        registry_name: "Tilo".into(),
+                    },
+                    "Utilities",
+                    InstalledState::Not,
+                );
+                entry.id = format!("dev.example.utility{index:04}");
+                entry.name = format!("Utility {index:04}");
+                items.push(entry);
+            }
+            app.set_items(items);
+            let doc = AutoCommit::new();
+            let root = Widget::resources(&app, &doc).pop().unwrap();
+            let snapshot_count = root
+                .children
                 .iter()
-                .any(|action| action.id == "show-details")
-        );
-    }
-
-    #[test]
-    fn every_top_level_remote_and_moderation_resource_resolves_by_canonical_id() {
-        let mut app = seeded_app();
-        app.set_remotes(vec![crate::flathub_client::Remote {
-            name: "flathub".into(),
-            url: "https://dl.flathub.org/repo/".into(),
-            title: "Flathub".into(),
-            disabled: false,
-        }]);
-        let doc = AutoCommit::new();
-
-        for id in [
-            "store",
-            crate::browse_actions::BROWSE_RESOURCE_ID,
-            "store:remotes",
-            "remote:flathub",
-            "store:moderation",
-        ] {
+                .filter(|resource| resource.kind == "store.publisher")
+                .flat_map(|publisher| publisher.children.iter())
+                .count();
+            assert_eq!(snapshot_count, RESOURCE_SNAPSHOT_LIMIT);
+            let omitted = "app:dev.example.utility0216";
+            let resolved = Widget::resource(&app, &doc, omitted).unwrap();
+            assert_eq!(resolved.id.0, omitted);
             assert!(
-                Widget::resource(&app, &doc, id).is_some(),
-                "published resource {id} must remain directly resolvable"
+                resolved
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "show-details")
             );
         }
-        let remote = Widget::resource(&app, &doc, "remote:flathub").unwrap();
-        assert!(remote.actions.iter().any(|action| action.id == "remove"));
-        let browse =
-            Widget::resource(&app, &doc, crate::browse_actions::BROWSE_RESOURCE_ID).unwrap();
-        assert!(
-            browse
-                .actions
-                .iter()
-                .all(|action| action.kind == OperationKind::View)
-        );
-        assert!(
-            browse
-                .actions
-                .iter()
-                .any(|action| action.id == "set-search")
-        );
+
+        // Case `every_top_level_remote_and_moderation_resource_resolves_by_canonical_id`.
+        {
+            let mut app = seeded_app();
+            app.set_remotes(vec![crate::flathub_client::Remote {
+                name: "flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                title: "Flathub".into(),
+                disabled: false,
+            }]);
+            let doc = AutoCommit::new();
+
+            for id in [
+                "store",
+                crate::browse_actions::BROWSE_RESOURCE_ID,
+                "store:remotes",
+                "remote:flathub",
+                "store:moderation",
+            ] {
+                assert!(
+                    Widget::resource(&app, &doc, id).is_some(),
+                    "published resource {id} must remain directly resolvable"
+                );
+            }
+            let remote = Widget::resource(&app, &doc, "remote:flathub").unwrap();
+            assert!(remote.actions.iter().any(|action| action.id == "remove"));
+            let browse =
+                Widget::resource(&app, &doc, crate::browse_actions::BROWSE_RESOURCE_ID).unwrap();
+            assert!(
+                browse
+                    .actions
+                    .iter()
+                    .all(|action| action.kind == OperationKind::View)
+            );
+            assert!(
+                browse
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "set-search")
+            );
+        }
+
+        // Case `app_resources_include_bounded_catalogue_context_for_nonvisual_clients`.
+        {
+            let app = seeded_app();
+            let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
+            let resource = store_app_resource(item, true);
+            let presentation = resource
+                .presentation
+                .expect("app resource has a search and history summary");
+            assert_eq!(presentation.badge.as_deref(), Some("Tilo verified · v1"));
+            assert!(
+                presentation
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("Notes description"))
+            );
+        }
     }
 
+    /// Remote configuration rejects hostile input and unsubmitted drafts stay on their device.
     #[test]
-    fn remote_configuration_rejects_hostile_sizes_and_control_characters() {
-        assert!(validate_remote_name("flathub").is_ok());
-        assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
-        assert!(validate_remote_name("bad\nname").is_err());
-        assert!(validate_remote_url("https://dl.flathub.org/repo/").is_ok());
-        assert!(
-            validate_remote_url(&format!(
-                "https://example.invalid/{}",
-                "a".repeat(MAX_REMOTE_URL_BYTES)
-            ))
-            .is_err()
-        );
-        assert!(valid_case_id("case-authoritative_1"));
-        assert!(!valid_case_id("case-../../escape"));
-        assert!(!valid_case_id(&format!(
-            "case-{}",
-            "x".repeat(MAX_CASE_ID_CHARS)
-        )));
+    fn remote_configuration_is_validated_and_drafts_stay_local() {
+        // Case `remote_configuration_rejects_hostile_sizes_and_control_characters`.
+        {
+            assert!(validate_remote_name("flathub").is_ok());
+            assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
+            assert!(validate_remote_name("bad\nname").is_err());
+            assert!(validate_remote_url("https://dl.flathub.org/repo/").is_ok());
+            assert!(
+                validate_remote_url(&format!(
+                    "https://example.invalid/{}",
+                    "a".repeat(MAX_REMOTE_URL_BYTES)
+                ))
+                .is_err()
+            );
+            assert!(valid_case_id("case-authoritative_1"));
+            assert!(!valid_case_id("case-../../escape"));
+            assert!(!valid_case_id(&format!(
+                "case-{}",
+                "x".repeat(MAX_CASE_ID_CHARS)
+            )));
+        }
+
+        // Case `unsubmitted_remote_draft_stays_on_its_device`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            app.remote_name_state.set("studio-tools".into());
+            app.remote_url_state
+                .set("https://apps.tilo.so/artifacts/repo".into());
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(doc.keys(&automerge::ROOT).all(|key| {
+                !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
+            }));
+        }
     }
 
+    /// Device, heading and source-summary copy tell the truth about what is loaded.
     #[test]
-    fn device_copy_distinguishes_tilo_on_demand_from_flatpak_installation() {
-        let tilo = item(
-            "Notes",
-            StoreSource::Tilo {
-                registry_name: "Tilo".into(),
-            },
-            "Productivity",
-            InstalledState::Not,
-        );
-        let flatpak = item("Chess", StoreSource::Flathub, "Games", InstalledState::Not);
-        assert_eq!(
-            device_state_label(&tilo),
-            "Available on demand · fetched when opened\nNot kept on this device"
-        );
-        assert_eq!(device_state_label(&flatpak), "Not installed");
-        assert_eq!(tilo.action_kind(true).label(), "Open");
-        assert_eq!(flatpak.action_kind(true).label(), "Install");
+    fn catalogue_copy_is_honest_about_sources_and_queries() {
+        // Case `device_copy_distinguishes_tilo_on_demand_from_flatpak_installation`.
+        {
+            let tilo = item(
+                "Notes",
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
+                },
+                "Productivity",
+                InstalledState::Not,
+            );
+            let flatpak = item("Chess", StoreSource::Flathub, "Games", InstalledState::Not);
+            assert_eq!(
+                device_state_label(&tilo),
+                "Available on demand · fetched when opened\nNot kept on this device"
+            );
+            assert_eq!(device_state_label(&flatpak), "Not installed");
+            assert_eq!(tilo.action_kind(true).label(), "Open");
+            assert_eq!(flatpak.action_kind(true).label(), "Install");
+        }
+
+        // Case `catalogue_heading_does_not_claim_an_empty_query_is_a_search`.
+        {
+            assert_eq!(catalogue_region_heading(true, ""), "Browse apps");
+            assert_eq!(catalogue_region_heading(false, "  "), "All apps");
+            assert_eq!(catalogue_region_heading(false, "notes"), "Search results");
+        }
+
+        // Case `catalogue_source_summary_is_honest_about_loaded_sources`.
+        {
+            let app = seeded_app();
+            assert_eq!(
+                app.catalogue_source_summary(),
+                "3 apps from 2 configured sources"
+            );
+
+            let empty = StoreApp::new();
+            assert_eq!(
+                empty.catalogue_source_summary(),
+                "No apps loaded from configured sources yet"
+            );
+        }
     }
 
+    /// Availability groups, narrow cards, medium summaries and the narrow discover section.
     #[test]
-    fn filter_tilo_hides_flatpak() {
-        let mut app = seeded_app();
-        app.set_active_filter(SourceFilter::Tilo);
-        let names: Vec<&str> = app
-            .visible_items()
-            .iter()
-            .map(|i| i.name.as_str())
-            .collect();
-        assert!(names.contains(&"Notes"));
-        assert!(names.contains(&"Terminal"));
-        assert!(!names.contains(&"Chess"));
-    }
+    fn catalogue_grids_keep_cards_apart_at_narrow_and_medium_widths() {
+        // Case `availability_groups_avoid_an_odd_medium_desktop_grid`.
+        {
+            let mut app = seeded_app();
+            app.set_layout_width_hint(1_024.0);
+            assert!(
+                !app.group_catalogue_by_availability(),
+                "a medium desktop uses one balanced catalogue grid"
+            );
 
-    #[test]
-    fn filter_installed_shows_only_installed() {
-        let mut app = seeded_app();
-        app.set_active_filter(SourceFilter::Installed);
-        let names: Vec<&str> = app
-            .visible_items()
-            .iter()
-            .map(|i| i.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["Terminal"]);
-    }
+            app.set_layout_width_hint(1_440.0);
+            assert!(app.group_catalogue_by_availability());
 
-    #[test]
-    fn category_filter_gates_the_list() {
-        let mut app = seeded_app();
-        app.set_active_category(Some("Games".into()));
-        let names: Vec<&str> = app
-            .visible_items()
-            .iter()
-            .map(|i| i.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["Chess"]);
-    }
+            app.set_layout_width_hint(480.0);
+            assert!(app.group_catalogue_by_availability());
 
-    #[test]
-    fn search_narrows_and_ranks_by_score() {
-        let mut app = seeded_app();
-        // "Term" only matches Terminal — Notes contains "te" but not
-        // "term", so the substring gate drops it.
-        app.set_query("Term".into());
-        let visible = app.visible_items();
-        assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].name, "Terminal");
-    }
+            app.set_query("notes".into());
+            assert!(
+                !app.group_catalogue_by_availability(),
+                "search results remain a single relevance-ranked sequence"
+            );
+        }
 
-    #[test]
-    fn search_ranks_name_prefix_hits_first() {
-        let mut app = seeded_app();
-        // Both "Notes" (name contains "te" mid-string) and
-        // "Terminal" (name starts with "Te") match "te".
-        app.set_query("te".into());
-        let visible = app.visible_items();
-        assert!(visible.len() >= 2);
-        assert_eq!(visible[0].name, "Terminal", "prefix hit ranks first");
-    }
+        // Case `narrow_cards_do_not_cover_each_others_actions`.
+        {
+            fn check(widget: &dyn Widget) {
+                if widget.name() == "ContentCard" {
+                    let mut buttons = Vec::new();
+                    named_rects(widget, "Button", &mut buttons);
+                    for button in buttons {
+                        assert!(
+                            button.y1 <= widget.get_rect().y1 - 8.0,
+                            "action {button:?} outside {:?}",
+                            widget.get_rect()
+                        );
+                    }
+                }
+                for child in widget.children() {
+                    check(child);
+                }
+            }
+            let mut app = seeded_app();
+            app.items.extend(app.items.clone());
+            for (i, item) in app.items.iter_mut().enumerate() {
+                item.id = format!("test-{i}");
+                item.description =
+                    "Useful software with a description that wraps onto another line.".into();
+            }
+            app.set_layout_width_hint(480.0);
+            let mut list = app.compose(&Theme::dark());
+            layout_composition(list.as_mut(), 480.0);
+            check(list.as_ref());
+        }
 
-    #[test]
-    fn categories_include_all_plus_distinct() {
-        let app = seeded_app();
-        let cats = app.category_labels();
-        assert_eq!(cats[0], "All");
-        assert!(cats.iter().any(|c| c == "Productivity"));
-        assert!(cats.iter().any(|c| c == "Games"));
-        assert!(cats.iter().any(|c| c == "System"));
-    }
+        // Case `medium_short_viewport_uses_one_width_appropriate_source_summary`.
+        {
+            let mut app = seeded_app();
+            app.set_layout_width_hint(800.0);
+            let tree = app.compose(&Theme::dark());
+            let summary = app.catalogue_source_summary();
+            assert_eq!(accessible_name_count(tree.as_ref(), &summary), 1);
+            assert_eq!(accessible_name_count(tree.as_ref(), "App Store"), 1);
+            assert_eq!(accessible_name_count(tree.as_ref(), "Apps"), 0);
+        }
 
-    #[test]
-    fn availability_groups_avoid_an_odd_medium_desktop_grid() {
-        let mut app = seeded_app();
-        app.set_layout_width_hint(1_024.0);
-        assert!(
-            !app.group_catalogue_by_availability(),
-            "a medium desktop uses one balanced catalogue grid"
-        );
+        // Case `full_narrow_catalogue_keeps_discover_section_below_ready_cards`.
+        {
+            let mut app = seeded_app();
+            app.set_items(crate::shots::fixture_catalog());
+            app.set_layout_width_hint(480.0);
+            let mut tree = app.compose(&Theme::dark());
+            layout_composition(tree.as_mut(), 480.0);
 
-        app.set_layout_width_hint(1_440.0);
-        assert!(app.group_catalogue_by_availability());
-
-        app.set_layout_width_hint(480.0);
-        assert!(app.group_catalogue_by_availability());
-
-        app.set_query("notes".into());
-        assert!(
-            !app.group_catalogue_by_availability(),
-            "search results remain a single relevance-ranked sequence"
-        );
+            let discover = accessible_rect(tree.as_ref(), "Discover more · 3")
+                .expect("discover heading in full catalogue");
+            let mut grids = Vec::new();
+            card_grid_extents(tree.as_ref(), &mut grids);
+            assert_eq!(grids.len(), 2, "ready and discover grids");
+            assert!(
+                grids[0].1 <= discover.y0,
+                "ready descendants end at {}, over discover heading {:?}; allocated grid {:?}",
+                grids[0].1,
+                discover,
+                grids[0].0
+            );
+            assert!(
+                discover.y1 <= grids[1].0.y0,
+                "discover heading {:?} must precede discover grid {:?}",
+                discover,
+                grids[1].0
+            );
+        }
     }
 
     fn layout_composition(widget: &mut dyn Widget, width: f32) -> (TaffyTree<()>, NodeId) {
@@ -5274,776 +5420,826 @@ mod tests {
         None
     }
 
+    /// Card pointer/primary activation and detail/remote controls use typed local actions.
     #[test]
-    fn card_pointer_details_and_primary_activation_keep_typed_bindings() {
-        use winit::event::WindowEvent;
-        for width in [480.0, 1200.0] {
-            let app = seeded_app();
-            let item = &app.items[1];
-            let action = item.action_kind(true);
-            for busy in [false, true] {
-                let card = crate::widgets::store_card(
-                    item,
-                    action,
-                    "select",
-                    "primary",
-                    &Theme::dark(),
-                    None,
-                    item_action_binding(item, action),
-                    detail_binding(item),
-                    width < 600.0,
-                    false,
-                    busy,
-                );
-                let mut grid = CardGrid::content_sized(vec![card]);
-                let (tree, node) = layout_composition(&mut grid, width);
-                let center = control_mut(&mut grid, "select.button")
-                    .unwrap()
-                    .get_rect()
-                    .center();
-                let mut doc = AutoCommit::new();
-                let mut focus = None;
-                let cursor = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-                };
-                let events = [
-                    cursor,
-                    WindowEvent::MouseInput {
-                        device_id: unsafe { std::mem::zeroed() },
-                        state: winit::event::ElementState::Pressed,
-                        button: winit::event::MouseButton::Left,
-                    },
-                    WindowEvent::MouseInput {
-                        device_id: unsafe { std::mem::zeroed() },
-                        state: winit::event::ElementState::Released,
-                        button: winit::event::MouseButton::Left,
-                    },
-                ];
-                for event in events {
-                    grid.handle_event(
-                        &event,
-                        1.0,
-                        &winit::event::Modifiers::default(),
-                        &mut doc,
-                        &automerge::ROOT,
-                        &mut false,
-                        &mut focus,
-                        node,
-                        &tree,
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn cards_and_detail_controls_keep_typed_local_bindings() {
+        // Case `card_pointer_details_and_primary_activation_keep_typed_bindings`.
+        {
+            use winit::event::WindowEvent;
+            for width in [480.0, 1200.0] {
+                let app = seeded_app();
+                let item = &app.items[1];
+                let action = item.action_kind(true);
+                for busy in [false, true] {
+                    let card = crate::widgets::store_card(
+                        item,
+                        action,
+                        "select",
+                        "primary",
+                        &Theme::dark(),
+                        None,
+                        item_action_binding(item, action),
+                        detail_binding(item),
+                        width < 600.0,
+                        false,
+                        busy,
                     );
-                }
-                let details = grid.take_control_invocation().expect("pointer Details");
-                assert_eq!(details.address.resource, format!("app:{}", item.id));
-                assert_eq!(details.address.action, "show-details");
-                let primary = control_mut(&mut grid, "primary").unwrap();
-                assert_eq!(primary.is_enabled(), !busy);
-                assert_eq!(
-                    primary.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT),
-                    !busy
-                );
-                let invoked = grid.take_control_invocation();
-                if busy {
-                    assert!(invoked.is_none());
-                } else {
-                    assert_eq!(invoked.unwrap().address.action, action_code(action));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn narrow_cards_do_not_cover_each_others_actions() {
-        fn check(widget: &dyn Widget) {
-            if widget.name() == "ContentCard" {
-                let mut buttons = Vec::new();
-                named_rects(widget, "Button", &mut buttons);
-                for button in buttons {
-                    assert!(
-                        button.y1 <= widget.get_rect().y1 - 8.0,
-                        "action {button:?} outside {:?}",
-                        widget.get_rect()
-                    );
-                }
-            }
-            for child in widget.children() {
-                check(child);
-            }
-        }
-        let mut app = seeded_app();
-        app.items.extend(app.items.clone());
-        for (i, item) in app.items.iter_mut().enumerate() {
-            item.id = format!("test-{i}");
-            item.description =
-                "Useful software with a description that wraps onto another line.".into();
-        }
-        app.set_layout_width_hint(480.0);
-        let mut list = app.compose(&Theme::dark());
-        layout_composition(list.as_mut(), 480.0);
-        check(list.as_ref());
-    }
-
-    #[test]
-    fn medium_short_viewport_uses_one_width_appropriate_source_summary() {
-        let mut app = seeded_app();
-        app.set_layout_width_hint(800.0);
-        let tree = app.compose(&Theme::dark());
-        let summary = app.catalogue_source_summary();
-        assert_eq!(accessible_name_count(tree.as_ref(), &summary), 1);
-        assert_eq!(accessible_name_count(tree.as_ref(), "App Store"), 1);
-        assert_eq!(accessible_name_count(tree.as_ref(), "Apps"), 0);
-    }
-
-    #[test]
-    fn full_narrow_catalogue_keeps_discover_section_below_ready_cards() {
-        let mut app = seeded_app();
-        app.set_items(crate::shots::fixture_catalog());
-        app.set_layout_width_hint(480.0);
-        let mut tree = app.compose(&Theme::dark());
-        layout_composition(tree.as_mut(), 480.0);
-
-        let discover = accessible_rect(tree.as_ref(), "Discover more · 3")
-            .expect("discover heading in full catalogue");
-        let mut grids = Vec::new();
-        card_grid_extents(tree.as_ref(), &mut grids);
-        assert_eq!(grids.len(), 2, "ready and discover grids");
-        assert!(
-            grids[0].1 <= discover.y0,
-            "ready descendants end at {}, over discover heading {:?}; allocated grid {:?}",
-            grids[0].1,
-            discover,
-            grids[0].0
-        );
-        assert!(
-            discover.y1 <= grids[1].0.y0,
-            "discover heading {:?} must precede discover grid {:?}",
-            discover,
-            grids[1].0
-        );
-    }
-
-    #[test]
-    fn full_catalogue_geometry_stays_finite_in_stacked_layouts() {
-        for (width, scale) in [(480.0, 1.0), (1_280.0, 2.0)] {
-            let mut app = seeded_app();
-            app.set_items(crate::shots::fixture_catalog());
-            app.set_layout_width_hint(width);
-            app.text_scale = scale;
-            let mut tree = app.compose(&Theme::dark().with_text_scale(scale));
-            layout_composition(tree.as_mut(), width as f32);
-            assert_finite_rects(tree.as_ref());
-        }
-    }
-
-    #[test]
-    fn catalogue_cards_contain_actions_and_align_long_descriptions() {
-        fn check(widget: &dyn Widget, found: &mut usize) {
-            if widget.name() == "CardGrid" {
-                let cards = widget.children();
-                let mut bottoms = Vec::new();
-                for card in cards {
-                    let mut buttons = Vec::new();
-                    named_rects(card, "Button", &mut buttons);
-                    for button in &buttons {
-                        assert!(
-                            button.y1 <= card.get_rect().y1 - 8.0,
-                            "button {button:?} must fit padded card {:?}",
-                            card.get_rect()
+                    let mut grid = CardGrid::content_sized(vec![card]);
+                    let (tree, node) = layout_composition(&mut grid, width);
+                    let center = control_mut(&mut grid, "select.button")
+                        .unwrap()
+                        .get_rect()
+                        .center();
+                    let mut doc = AutoCommit::new();
+                    let mut focus = None;
+                    let cursor = WindowEvent::CursorMoved {
+                        device_id: unsafe { std::mem::zeroed() },
+                        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                    };
+                    let events = [
+                        cursor,
+                        WindowEvent::MouseInput {
+                            device_id: unsafe { std::mem::zeroed() },
+                            state: winit::event::ElementState::Pressed,
+                            button: winit::event::MouseButton::Left,
+                        },
+                        WindowEvent::MouseInput {
+                            device_id: unsafe { std::mem::zeroed() },
+                            state: winit::event::ElementState::Released,
+                            button: winit::event::MouseButton::Left,
+                        },
+                    ];
+                    for event in events {
+                        grid.handle_event(
+                            &event,
+                            1.0,
+                            &winit::event::Modifiers::default(),
+                            &mut doc,
+                            &automerge::ROOT,
+                            &mut false,
+                            &mut focus,
+                            node,
+                            &tree,
                         );
-                        assert!(button.x0 >= card.get_rect().x0 && button.x1 <= card.get_rect().x1);
                     }
-                    bottoms.push(buttons.last().unwrap().y1);
-                    *found += 1;
+                    let details = grid.take_control_invocation().expect("pointer Details");
+                    assert_eq!(details.address.resource, format!("app:{}", item.id));
+                    assert_eq!(details.address.action, "show-details");
+                    let primary = control_mut(&mut grid, "primary").unwrap();
+                    assert_eq!(primary.is_enabled(), !busy);
+                    assert_eq!(
+                        primary.perform_action(
+                            &ui::a11y::Action::Activate,
+                            &mut doc,
+                            &automerge::ROOT
+                        ),
+                        !busy
+                    );
+                    let invoked = grid.take_control_invocation();
+                    if busy {
+                        assert!(invoked.is_none());
+                    } else {
+                        assert_eq!(invoked.unwrap().address.action, action_code(action));
+                    }
                 }
-                for bottom in &bottoms {
-                    assert!((bottom - bottoms[0]).abs() < 1.0);
-                }
-            }
-            for child in widget.children() {
-                check(child, found);
             }
         }
-        let mut app = seeded_app();
-        app.set_layout_width_hint(1200.0);
-        app.items[0].description = "A useful app with a longer description. ".repeat(7);
-        let mut list = app.build_list(&Theme::dark());
-        layout_composition(list.as_mut(), 1200.0);
-        let mut found = 0;
-        check(list.as_ref(), &mut found);
-        assert_eq!(found, 3);
-    }
 
-    #[test]
-    fn bounded_desktop_catalogue_keeps_a_balanced_three_column_measure() {
-        let mut app = seeded_app();
-        app.set_layout_width_hint(1_440.0);
-        assert!((app.catalogue_card_min_width() - 348.0).abs() < f64::EPSILON);
-        assert_eq!(
-            ui::widget::card_columns(1_120.0, app.catalogue_card_min_width(), 16.0),
-            3
-        );
-
-        app.set_layout_width_hint(1_024.0);
-        assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
-
-        app.text_scale = 2.0;
-        assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn catalogue_heading_does_not_claim_an_empty_query_is_a_search() {
-        assert_eq!(catalogue_region_heading(true, ""), "Browse apps");
-        assert_eq!(catalogue_region_heading(false, "  "), "All apps");
-        assert_eq!(catalogue_region_heading(false, "notes"), "Search results");
-    }
-
-    #[test]
-    fn large_text_uses_the_safe_stacked_catalogue_layout() {
-        let mut app = seeded_app();
-        app.set_layout_width_hint(1_280.0);
-        assert!(!app.stacked_catalogue_layout());
-
-        app.text_scale = 2.0;
-        assert!(app.stacked_catalogue_layout());
-    }
-
-    #[test]
-    fn catalogue_source_summary_is_honest_about_loaded_sources() {
-        let app = seeded_app();
-        assert_eq!(
-            app.catalogue_source_summary(),
-            "3 apps from 2 configured sources"
-        );
-
-        let empty = StoreApp::new();
-        assert_eq!(
-            empty.catalogue_source_summary(),
-            "No apps loaded from configured sources yet"
-        );
-    }
-
-    #[test]
-    fn operation_notice_uses_shared_live_banner_semantics() {
-        let mut app = seeded_app();
-        assert!(app.operation_notice().is_none());
-
-        app.set_status_line("Installing Notes…");
-        app.set_worker_busy(true);
-        let busy_notice = app
-            .operation_notice()
-            .expect("busy work has a semantic notice");
-        let busy = busy_notice
-            .children()
-            .first()
-            .and_then(|child| child.accessibility())
-            .expect("busy banner remains a live child of the progress notice");
-        assert_eq!(busy.name.as_deref(), Some("Working in background"));
-        assert_eq!(busy.live, Some(Politeness::Polite));
-        assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
-        let progress = busy_notice
-            .children()
-            .get(1)
-            .and_then(|child| child.accessibility())
-            .expect("progress remains visible to a screen reader");
-        assert_eq!(progress.name.as_deref(), Some("Operation in progress"));
-
-        app.set_worker_busy(false);
-        app.set_operation_error(Some("signature mismatch".into()));
-        let error = app
-            .operation_notice()
-            .and_then(|notice| notice.accessibility())
-            .expect("failure has a semantic notice");
-        assert_eq!(error.name.as_deref(), Some("The last operation failed"));
-        assert_eq!(error.live, Some(Politeness::Assertive));
-    }
-
-    #[test]
-    fn update_priority_follows_the_current_catalogue_snapshot() {
-        let mut app = seeded_app();
-        let mut files = item(
-            "Files",
-            StoreSource::Tilo {
-                registry_name: "Tilo".into(),
-            },
-            "System",
-            InstalledState::Installed {
-                version: "1.0.0".into(),
-                available: "1.1.0".into(),
-                pinned: false,
-                user_managed: true,
-            },
-        );
-        files.versions[0].version = "1.1.0".into();
-        app.set_items({
-            let mut items = app.items().to_vec();
-            items.push(files);
-            items
-        });
-        assert!(
-            app.visible_items()
-                .iter()
-                .any(|item| item.installed.update_available()),
-            "the current catalogue exposes the verified update candidate"
-        );
-
-        app.set_active_filter(SourceFilter::Flatpak);
-        assert!(
-            app.visible_items()
-                .iter()
-                .all(|item| !item.installed.update_available()),
-            "the update shelf must be derived from the active visible catalogue"
-        );
-    }
-
-    #[test]
-    fn live_constructor_starts_empty() {
-        // The live app must show a real (empty) catalog until the
-        // refresh worker streams one — never a fabricated one.
-        let app = StoreApp::new();
-        assert!(
-            app.items().is_empty(),
-            "live StoreApp must not fabricate a catalog"
-        );
-        assert_eq!(app.active_filter(), SourceFilter::All);
-        assert!(app.query().is_empty());
-    }
-
-    #[test]
-    fn typed_search_query_filters_through_local_sync() {
-        // The field is window-local, yet still updates the catalogue on the
-        // normal widget synchronization path.
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        app.query_state.set("Term".into());
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.query(), "Term");
-        assert_eq!(app.take_search_requested().as_deref(), Some("Term"));
-        assert!(app.take_search_requested().is_none());
-        let names: Vec<&str> = app
-            .visible_items()
-            .iter()
-            .map(|i| i.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["Terminal"]);
-    }
-
-    #[test]
-    fn source_filter_is_local_and_re_filters_the_catalogue() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        app.source_filter_state.set("Tilo".into());
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.active_filter(), SourceFilter::Tilo);
-        let names: Vec<&str> = app
-            .visible_items()
-            .iter()
-            .map(|i| i.name.as_str())
-            .collect();
-        assert!(names.contains(&"Notes"));
-        assert!(!names.contains(&"Chess"), "Tilo filter hides Flatpak items");
-    }
-
-    #[test]
-    fn category_selection_is_semantic_and_resets_the_result_position() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        app.scroll_offset.set((0.0, 240.0));
-        app.category_filter_state.set("Games".into());
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.active_category(), Some("Games"));
-        assert_eq!(app.scroll_offset.get(), (0.0, 0.0));
-        assert_eq!(app.visible_items()[0].name, "Chess");
-    }
-
-    #[test]
-    fn one_window_cannot_navigate_another_with_document_filters() {
-        let mut first = seeded_app();
-        let mut second = seeded_app();
-        let mut doc = AutoCommit::new();
-        first.source_filter_state.set("Tilo".into());
-        first.category_filter_state.set("Games".into());
-        first.sync(&mut doc, &automerge::ROOT);
-        second.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(first.active_filter(), SourceFilter::Tilo);
-        assert_eq!(first.active_category(), Some("Games"));
-        assert_eq!(second.active_filter(), SourceFilter::All);
-        assert_eq!(second.active_category(), None);
-        assert!(
-            doc.keys(&automerge::ROOT)
-                .all(|key| !key.starts_with("store.search")
-                    && !key.starts_with("store.source_filter")
-                    && !key.starts_with("store.category_filter"))
-        );
-    }
-
-    #[test]
-    fn agent_browse_operations_match_local_controls_without_document_mutation() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        let heads = doc.get_heads();
-        let encoded = tilo_actions::EncodedAction::encode_operation(
-            crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
-            &crate::browse_actions::BrowseOperation::SetSource {
-                source: "Tilo".into(),
-            },
-        )
-        .unwrap();
-        assert!(
+        // Case `detail_and_remote_controls_use_typed_local_actions`.
+        {
+            let mut app = seeded_app();
+            let doc = AutoCommit::new();
             app.invoke_resource_operation(
                 OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.active_filter(), SourceFilter::Tilo);
-        assert!(
-            app.visible_items()
-                .iter()
-                .all(|item| matches!(item.source, StoreSource::Tilo { .. }))
-        );
-        assert_eq!(
-            doc.get_heads(),
-            heads,
-            "local browse must not change document heads"
-        );
-    }
-
-    #[test]
-    fn unsubmitted_remote_draft_stays_on_its_device() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        app.remote_name_state.set("studio-tools".into());
-        app.remote_url_state
-            .set("https://apps.tilo.so/artifacts/repo".into());
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(doc.keys(&automerge::ROOT).all(|key| {
-            !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
-        }));
-    }
-
-    #[test]
-    fn refresh_action_is_lifecycle_scoped_and_does_not_write_the_document() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        let heads = doc.get_heads();
-        let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            app.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                "store.refresh",
-                &serde_json::to_vec(&"").unwrap(),
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
-        assert_eq!(app.take_lifecycle_refresh(), Some(invocation));
-        assert_eq!(doc.get_heads(), heads);
-    }
-
-    #[test]
-    fn detail_and_remote_controls_use_typed_local_actions() {
-        let mut app = seeded_app();
-        let doc = AutoCommit::new();
-        app.invoke_resource_operation(
-            OperationKind::View,
-            "store.view",
-            &serde_json::to_vec(&"id.chess").unwrap(),
-            &doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert_eq!(app.take_detail_requested().as_deref(), Some("id.chess"));
-        assert!(app.take_detail_requested().is_none());
-
-        app.invoke_resource_operation(
-            OperationKind::View,
-            "store.view-remotes",
-            &serde_json::to_vec(&()).unwrap(),
-            &doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
-        let intent = app
-            .take_control_invocation()
-            .expect("refresh action intent");
-        assert_eq!(intent.address.resource, "store:remotes");
-        assert_eq!(intent.address.action, "refresh");
-    }
-
-    #[test]
-    fn exported_refresh_is_accepted_until_worker_completion() {
-        let mut app = seeded_app();
-        let doc = AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let started = app
-            .start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                "store.refresh",
-                &serde_json::to_vec(&"").unwrap(),
+                "store.view",
+                &serde_json::to_vec(&"id.chess").unwrap(),
                 &doc,
                 &automerge::ROOT,
             )
             .unwrap();
-        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
-        assert_eq!(app.take_lifecycle_refresh(), Some(invocation));
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
-        );
-        app.complete_lifecycle_invocation(invocation, None);
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
+            assert_eq!(app.take_detail_requested().as_deref(), Some("id.chess"));
+            assert!(app.take_detail_requested().is_none());
 
-    #[test]
-    fn app_operation_locks_the_target_card_until_the_worker_is_idle() {
-        let mut app = seeded_app();
-        let doc = AutoCommit::new();
-        let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
-        let first = app
-            .start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.app",
-                &payload,
+            app.invoke_resource_operation(
+                OperationKind::View,
+                "store.view-remotes",
+                &serde_json::to_vec(&()).unwrap(),
                 &doc,
                 &automerge::ROOT,
             )
             .unwrap();
-        assert_eq!(first, Some(ui::widget::ResourceOperationStart::Accepted));
-        assert_eq!(
-            app.active_operation,
-            Some(("id.notes".into(), ActionKind::Open))
-        );
-        assert_eq!(app.status_line(), "Starting Notes…");
-        assert_eq!(app.take_lifecycle_actions().len(), 1);
-        assert!(
-            app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.app",
-                &payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .is_err(),
-            "the card action cannot double-submit while the worker owns it"
-        );
-        app.set_worker_busy(true);
-        app.set_worker_busy(false);
-        assert!(app.active_operation.is_none());
+            let intent = app
+                .take_control_invocation()
+                .expect("refresh action intent");
+            assert_eq!(intent.address.resource, "store:remotes");
+            assert_eq!(intent.address.action, "refresh");
+        }
     }
 
+    /// Stacked geometry, contained actions, the three-column measure and the large-text layout.
     #[test]
-    fn stale_resource_action_cannot_escalate_to_an_unoffered_mutation() {
-        let mut app = seeded_app();
-        let doc = AutoCommit::new();
-        let result = app.start_resource_operation(
-            tilo_actions::InvocationId::new(),
-            OperationKind::Effect,
-            "store.app",
-            &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
-            &doc,
-            &automerge::ROOT,
-        );
-        assert!(
-            result.is_err(),
-            "an uninstalled app publishes Open, not an arbitrary stale Remove effect"
-        );
-        assert!(app.take_lifecycle_actions().is_empty());
+    fn catalogue_measures_stay_finite_contained_and_stacked_under_large_text() {
+        // Case `full_catalogue_geometry_stays_finite_in_stacked_layouts`.
+        {
+            for (width, scale) in [(480.0, 1.0), (1_280.0, 2.0)] {
+                let mut app = seeded_app();
+                app.set_items(crate::shots::fixture_catalog());
+                app.set_layout_width_hint(width);
+                app.text_scale = scale;
+                let mut tree = app.compose(&Theme::dark().with_text_scale(scale));
+                layout_composition(tree.as_mut(), width as f32);
+                assert_finite_rects(tree.as_ref());
+            }
+        }
+
+        // Case `catalogue_cards_contain_actions_and_align_long_descriptions`.
+        {
+            fn check(widget: &dyn Widget, found: &mut usize) {
+                if widget.name() == "CardGrid" {
+                    let cards = widget.children();
+                    let mut bottoms = Vec::new();
+                    for card in cards {
+                        let mut buttons = Vec::new();
+                        named_rects(card, "Button", &mut buttons);
+                        for button in &buttons {
+                            assert!(
+                                button.y1 <= card.get_rect().y1 - 8.0,
+                                "button {button:?} must fit padded card {:?}",
+                                card.get_rect()
+                            );
+                            assert!(
+                                button.x0 >= card.get_rect().x0 && button.x1 <= card.get_rect().x1
+                            );
+                        }
+                        bottoms.push(buttons.last().unwrap().y1);
+                        *found += 1;
+                    }
+                    for bottom in &bottoms {
+                        assert!((bottom - bottoms[0]).abs() < 1.0);
+                    }
+                }
+                for child in widget.children() {
+                    check(child, found);
+                }
+            }
+            let mut app = seeded_app();
+            app.set_layout_width_hint(1200.0);
+            app.items[0].description = "A useful app with a longer description. ".repeat(7);
+            let mut list = app.build_list(&Theme::dark());
+            layout_composition(list.as_mut(), 1200.0);
+            let mut found = 0;
+            check(list.as_ref(), &mut found);
+            assert_eq!(found, 3);
+        }
+
+        // Case `bounded_desktop_catalogue_keeps_a_balanced_three_column_measure`.
+        {
+            let mut app = seeded_app();
+            app.set_layout_width_hint(1_440.0);
+            assert!((app.catalogue_card_min_width() - 348.0).abs() < f64::EPSILON);
+            assert_eq!(
+                ui::widget::card_columns(1_120.0, app.catalogue_card_min_width(), 16.0),
+                3
+            );
+
+            app.set_layout_width_hint(1_024.0);
+            assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
+
+            app.text_scale = 2.0;
+            assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
+        }
+
+        // Case `large_text_uses_the_safe_stacked_catalogue_layout`.
+        {
+            let mut app = seeded_app();
+            app.set_layout_width_hint(1_280.0);
+            assert!(!app.stacked_catalogue_layout());
+
+            app.text_scale = 2.0;
+            assert!(app.stacked_catalogue_layout());
+        }
     }
 
+    /// Operation notices, root accessibility, trust summary and bounded, printable live status.
     #[test]
-    fn flatpak_actions_are_explicitly_unavailable_without_a_flatpak_host() {
-        let mut app = seeded_app();
-        app.set_flatpak_available(false);
-        let doc = AutoCommit::new();
-        let root = Widget::resources(&app, &doc).pop().unwrap();
-        let chess = root
-            .children
-            .iter()
-            .flat_map(|publisher| publisher.children.iter())
-            .find(|resource| resource.id.0 == "app:id.chess")
-            .unwrap();
-        let install = chess
-            .actions
-            .iter()
-            .find(|action| action.id == "flatpak-setup")
-            .unwrap();
-        assert!(matches!(
-            install.contract.availability,
-            Availability::Unavailable { ref code, .. } if code == "flatpak_host_unavailable"
-        ));
+    fn status_and_accessibility_surfaces_are_named_bounded_live_regions() {
+        // Case `operation_notice_uses_shared_live_banner_semantics`.
+        {
+            let mut app = seeded_app();
+            assert!(app.operation_notice().is_none());
+
+            app.set_status_line("Installing Notes…");
+            app.set_worker_busy(true);
+            let busy_notice = app
+                .operation_notice()
+                .expect("busy work has a semantic notice");
+            let busy = busy_notice
+                .children()
+                .first()
+                .and_then(|child| child.accessibility())
+                .expect("busy banner remains a live child of the progress notice");
+            assert_eq!(busy.name.as_deref(), Some("Working in background"));
+            assert_eq!(busy.live, Some(Politeness::Polite));
+            assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
+            let progress = busy_notice
+                .children()
+                .get(1)
+                .and_then(|child| child.accessibility())
+                .expect("progress remains visible to a screen reader");
+            assert_eq!(progress.name.as_deref(), Some("Operation in progress"));
+
+            app.set_worker_busy(false);
+            app.set_operation_error(Some("signature mismatch".into()));
+            let error = app
+                .operation_notice()
+                .and_then(|notice| notice.accessibility())
+                .expect("failure has a semantic notice");
+            assert_eq!(error.name.as_deref(), Some("The last operation failed"));
+            assert_eq!(error.live, Some(Politeness::Assertive));
+        }
+
+        // Case `root_accessibility_is_a_named_window_not_an_empty_generic`.
+        {
+            let mut app = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+            let node = app.accessibility().expect("store exports a root node");
+            assert_eq!(node.role, Role::Window);
+            assert_eq!(node.name.as_deref(), Some("App Store"));
+            assert!(node.bounds.is_some());
+        }
+
+        // Case `trust_sheet_uses_a_scannable_publisher_identity_summary`.
+        {
+            let mut signed = item(
+                "Signed",
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
+                },
+                "Utilities",
+                InstalledState::Not,
+            );
+            signed.publisher_pubkey_hex = Some("ab".repeat(32));
+            let lines = publisher_identity_lines(&signed);
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].contains("ed25519:abababababab…abababababab"));
+            assert!(lines[0].contains("64 characters"));
+        }
+
+        // Case `visible_operation_status_is_printable_and_bounded`.
+        {
+            assert_eq!(visible_operation_status("\n\t"), UNKNOWN_OPERATION_STATUS);
+            assert_eq!(
+                visible_operation_status("Install failed\n\tpackage signature did not match"),
+                "Install failed package signature did not match"
+            );
+            let long = "x".repeat(MAX_VISIBLE_OPERATION_STATUS_CHARS + 1);
+            let visible = visible_operation_status(&long);
+            assert_eq!(
+                visible.chars().count(),
+                MAX_VISIBLE_OPERATION_STATUS_CHARS + 1
+            );
+            assert!(visible.ends_with('…'));
+        }
+
+        // Case `resource_detail_excerpt_is_printable_and_byte_bounded`.
+        {
+            assert_eq!(resource_detail_excerpt(" one\n\ttwo  "), "one two");
+            let detail = resource_detail_excerpt(&format!("{}\nignored", "界".repeat(200)));
+            assert!(detail.len() <= MAX_RESOURCE_DETAIL_BYTES);
+            assert!(detail.ends_with('…'));
+            assert!(!detail.contains('\n'));
+        }
+
+        // Case `operation_status_is_exposed_as_a_polite_live_region`.
+        {
+            let mut app = seeded_app();
+            app.set_status_line("Installing Notes…");
+            let node = app.accessibility().expect("store exports a root node");
+            let status = node.children.first().expect("status live region");
+            assert_eq!(status.name.as_deref(), Some("Installing Notes…"));
+            assert_eq!(status.live, Some(Politeness::Polite));
+        }
     }
 
+    /// Update priority, refresh and app operations run as lifecycle-scoped background jobs.
     #[test]
-    fn installed_flatpak_remove_is_unavailable_and_refused_without_host() {
-        let mut app = seeded_app();
-        app.items
-            .iter_mut()
-            .find(|item| item.id == "id.chess")
-            .unwrap()
-            .installed = InstalledState::Installed {
-            version: "1".into(),
-            available: "1".into(),
-            pinned: false,
-            user_managed: true,
-        };
-        app.set_flatpak_available(false);
-        let doc = AutoCommit::new();
-        let root = Widget::resources(&app, &doc).pop().unwrap();
-        let chess = root
-            .children
-            .iter()
-            .flat_map(|publisher| publisher.children.iter())
-            .find(|resource| resource.id.0 == "app:id.chess")
-            .unwrap();
-        for id in ["flatpak-setup", "flatpak-remove"] {
-            let action = chess.actions.iter().find(|action| action.id == id).unwrap();
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn refresh_and_operations_are_lifecycle_scoped_worker_jobs() {
+        // Case `update_priority_follows_the_current_catalogue_snapshot`.
+        {
+            let mut app = seeded_app();
+            let mut files = item(
+                "Files",
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
+                },
+                "System",
+                InstalledState::Installed {
+                    version: "1.0.0".into(),
+                    available: "1.1.0".into(),
+                    pinned: false,
+                    user_managed: true,
+                },
+            );
+            files.versions[0].version = "1.1.0".into();
+            app.set_items({
+                let mut items = app.items().to_vec();
+                items.push(files);
+                items
+            });
+            assert!(
+                app.visible_items()
+                    .iter()
+                    .any(|item| item.installed.update_available()),
+                "the current catalogue exposes the verified update candidate"
+            );
+
+            app.set_active_filter(SourceFilter::Flatpak);
+            assert!(
+                app.visible_items()
+                    .iter()
+                    .all(|item| !item.installed.update_available()),
+                "the update shelf must be derived from the active visible catalogue"
+            );
+        }
+
+        // Case `refresh_action_is_lifecycle_scoped_and_does_not_write_the_document`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            let heads = doc.get_heads();
+            let invocation = tilo_actions::InvocationId::new();
+            assert_eq!(
+                app.start_resource_operation(
+                    invocation,
+                    OperationKind::Effect,
+                    "store.refresh",
+                    &serde_json::to_vec(&"").unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            assert_eq!(app.take_lifecycle_refresh(), Some(invocation));
+            assert_eq!(doc.get_heads(), heads);
+        }
+
+        // Case `exported_refresh_is_accepted_until_worker_completion`.
+        {
+            let mut app = seeded_app();
+            let doc = AutoCommit::new();
+            let invocation = tilo_actions::InvocationId::new();
+            let started = app
+                .start_resource_operation(
+                    invocation,
+                    OperationKind::Effect,
+                    "store.refresh",
+                    &serde_json::to_vec(&"").unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+            assert_eq!(app.take_lifecycle_refresh(), Some(invocation));
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                    .is_none()
+            );
+            app.complete_lifecycle_invocation(invocation, None);
             assert!(matches!(
-                action.contract.availability,
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // Case `app_operation_locks_the_target_card_until_the_worker_is_idle`.
+        {
+            let mut app = seeded_app();
+            let doc = AutoCommit::new();
+            let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
+            let first = app
+                .start_resource_operation(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.app",
+                    &payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert_eq!(first, Some(ui::widget::ResourceOperationStart::Accepted));
+            assert_eq!(
+                app.active_operation,
+                Some(("id.notes".into(), ActionKind::Open))
+            );
+            assert_eq!(app.status_line(), "Starting Notes…");
+            assert_eq!(app.take_lifecycle_actions().len(), 1);
+            assert!(
+                app.start_resource_operation(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.app",
+                    &payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .is_err(),
+                "the card action cannot double-submit while the worker owns it"
+            );
+            app.set_worker_busy(true);
+            app.set_worker_busy(false);
+            assert!(app.active_operation.is_none());
+        }
+
+        // Case `exported_store_effects_are_background_jobs`.
+        {
+            let app = seeded_app();
+            let doc = AutoCommit::new();
+            for action in Widget::resources(&app, &doc).iter().flat_map(|resource| {
+                resource.actions.iter().chain(
+                    resource
+                        .children
+                        .iter()
+                        .flat_map(|child| child.actions.iter()),
+                )
+            }) {
+                if action.kind != OperationKind::Effect {
+                    continue;
+                }
+                assert!(matches!(
+                    action.contract.execution,
+                    ExecutionMode::Background { cancellable: false }
+                ));
+                assert!(matches!(
+                    action.contract.result,
+                    ResultSpec::Job | ResultSpec::Resource { .. }
+                ));
+            }
+        }
+    }
+
+    /// The live store starts empty and its search/source/category controls stay local to the window.
+    #[test]
+    fn local_browse_controls_filter_without_document_writes() {
+        // Case `live_constructor_starts_empty`.
+        {
+            // The live app must show a real (empty) catalog until the
+            // refresh worker streams one — never a fabricated one.
+            let app = StoreApp::new();
+            assert!(
+                app.items().is_empty(),
+                "live StoreApp must not fabricate a catalog"
+            );
+            assert_eq!(app.active_filter(), SourceFilter::All);
+            assert!(app.query().is_empty());
+        }
+
+        // Case `typed_search_query_filters_through_local_sync`.
+        {
+            // The field is window-local, yet still updates the catalogue on the
+            // normal widget synchronization path.
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            app.query_state.set("Term".into());
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(app.query(), "Term");
+            assert_eq!(app.take_search_requested().as_deref(), Some("Term"));
+            assert!(app.take_search_requested().is_none());
+            let names: Vec<&str> = app
+                .visible_items()
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            assert_eq!(names, vec!["Terminal"]);
+        }
+
+        // Case `source_filter_is_local_and_re_filters_the_catalogue`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            app.source_filter_state.set("Tilo".into());
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(app.active_filter(), SourceFilter::Tilo);
+            let names: Vec<&str> = app
+                .visible_items()
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            assert!(names.contains(&"Notes"));
+            assert!(!names.contains(&"Chess"), "Tilo filter hides Flatpak items");
+        }
+
+        // Case `category_selection_is_semantic_and_resets_the_result_position`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            app.scroll_offset.set((0.0, 240.0));
+            app.category_filter_state.set("Games".into());
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(app.active_category(), Some("Games"));
+            assert_eq!(app.scroll_offset.get(), (0.0, 0.0));
+            assert_eq!(app.visible_items()[0].name, "Chess");
+        }
+
+        // Case `one_window_cannot_navigate_another_with_document_filters`.
+        {
+            let mut first = seeded_app();
+            let mut second = seeded_app();
+            let mut doc = AutoCommit::new();
+            first.source_filter_state.set("Tilo".into());
+            first.category_filter_state.set("Games".into());
+            first.sync(&mut doc, &automerge::ROOT);
+            second.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(first.active_filter(), SourceFilter::Tilo);
+            assert_eq!(first.active_category(), Some("Games"));
+            assert_eq!(second.active_filter(), SourceFilter::All);
+            assert_eq!(second.active_category(), None);
+            assert!(
+                doc.keys(&automerge::ROOT)
+                    .all(|key| !key.starts_with("store.search")
+                        && !key.starts_with("store.source_filter")
+                        && !key.starts_with("store.category_filter"))
+            );
+        }
+
+        // Case `agent_browse_operations_match_local_controls_without_document_mutation`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            let heads = doc.get_heads();
+            let encoded = tilo_actions::EncodedAction::encode_operation(
+                crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
+                &crate::browse_actions::BrowseOperation::SetSource {
+                    source: "Tilo".into(),
+                },
+            )
+            .unwrap();
+            assert!(
+                app.invoke_resource_operation(
+                    OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap()
+            );
+            assert_eq!(app.active_filter(), SourceFilter::Tilo);
+            assert!(
+                app.visible_items()
+                    .iter()
+                    .all(|item| matches!(item.source, StoreSource::Tilo { .. }))
+            );
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "local browse must not change document heads"
+            );
+        }
+    }
+
+    /// Stale or host-less Flatpak actions are unavailable/refused and removal uses its exact address.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn flatpak_and_stale_actions_are_refused_without_escalation() {
+        // Case `stale_resource_action_cannot_escalate_to_an_unoffered_mutation`.
+        {
+            let mut app = seeded_app();
+            let doc = AutoCommit::new();
+            let result = app.start_resource_operation(
+                tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "store.app",
+                &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            );
+            assert!(
+                result.is_err(),
+                "an uninstalled app publishes Open, not an arbitrary stale Remove effect"
+            );
+            assert!(app.take_lifecycle_actions().is_empty());
+        }
+
+        // Case `flatpak_actions_are_explicitly_unavailable_without_a_flatpak_host`.
+        {
+            let mut app = seeded_app();
+            app.set_flatpak_available(false);
+            let doc = AutoCommit::new();
+            let root = Widget::resources(&app, &doc).pop().unwrap();
+            let chess = root
+                .children
+                .iter()
+                .flat_map(|publisher| publisher.children.iter())
+                .find(|resource| resource.id.0 == "app:id.chess")
+                .unwrap();
+            let install = chess
+                .actions
+                .iter()
+                .find(|action| action.id == "flatpak-setup")
+                .unwrap();
+            assert!(matches!(
+                install.contract.availability,
                 Availability::Unavailable { ref code, .. } if code == "flatpak_host_unavailable"
             ));
         }
-        assert!(
-            app.start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                "store.app",
-                &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
-                &doc,
-                &automerge::ROOT,
-            )
-            .is_err(),
-            "direct/stale invocation cannot bypass the unavailable resource contract"
-        );
-    }
 
-    #[test]
-    fn exported_store_effects_are_background_jobs() {
-        let app = seeded_app();
-        let doc = AutoCommit::new();
-        for action in Widget::resources(&app, &doc).iter().flat_map(|resource| {
-            resource.actions.iter().chain(
-                resource
-                    .children
-                    .iter()
-                    .flat_map(|child| child.actions.iter()),
-            )
-        }) {
-            if action.kind != OperationKind::Effect {
-                continue;
+        // Case `installed_flatpak_remove_is_unavailable_and_refused_without_host`.
+        {
+            let mut app = seeded_app();
+            app.items
+                .iter_mut()
+                .find(|item| item.id == "id.chess")
+                .unwrap()
+                .installed = InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+                user_managed: true,
+            };
+            app.set_flatpak_available(false);
+            let doc = AutoCommit::new();
+            let root = Widget::resources(&app, &doc).pop().unwrap();
+            let chess = root
+                .children
+                .iter()
+                .flat_map(|publisher| publisher.children.iter())
+                .find(|resource| resource.id.0 == "app:id.chess")
+                .unwrap();
+            for id in ["flatpak-setup", "flatpak-remove"] {
+                let action = chess.actions.iter().find(|action| action.id == id).unwrap();
+                assert!(matches!(
+                    action.contract.availability,
+                    Availability::Unavailable { ref code, .. } if code == "flatpak_host_unavailable"
+                ));
             }
-            assert!(matches!(
-                action.contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            ));
-            assert!(matches!(
-                action.contract.result,
-                ResultSpec::Job | ResultSpec::Resource { .. }
-            ));
+            assert!(
+                app.start_resource_operation(
+                    tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    "store.app",
+                    &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .is_err(),
+                "direct/stale invocation cannot bypass the unavailable resource contract"
+            );
+        }
+
+        // Case `flatpak_remove_uses_its_exact_published_action_address`.
+        {
+            let mut app = seeded_app();
+            app.items
+                .iter_mut()
+                .find(|item| item.id == "id.chess")
+                .unwrap()
+                .installed = InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+                user_managed: true,
+            };
+            let resource = store_app_resource(
+                app.items.iter().find(|item| item.id == "id.chess").unwrap(),
+                true,
+            );
+            let remove = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "flatpak-remove")
+                .expect("Flatpak remove action is published at its concrete address");
+            assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert!(
+                item_action_binding(
+                    app.items.iter().find(|item| item.id == "id.chess").unwrap(),
+                    ActionKind::FlatpakRemove,
+                )
+                .is_some()
+            );
         }
     }
 
+    /// Moderation effects wait for authoritative cases, stay bounded and refuse stale targets.
     #[test]
-    fn moderation_effect_waits_for_authoritative_case_before_materializing_status() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        app.reports.push(ReportRecord {
-            id: "report:id.notes".into(),
-            app_id: "id.notes".into(),
-            status: "Draft · not submitted".into(),
-        });
-        app.report_notes.insert(
-            "id.notes".into(),
-            "The app connected to a remote host while offline mode was active.".into(),
-        );
-        let note = app.report_notes.get("id.notes").unwrap();
-        let envelope = report_envelope(
-            app.reports.first().unwrap(),
-            app.items.iter().find(|item| item.id == "id.notes"),
-            note,
-        );
-        assert_eq!(
-            app.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                "store.moderation",
-                &serde_json::to_vec(&("Tilo", &envelope)).unwrap(),
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
-        let pending = app.take_moderation_requests();
-        assert!(
-            matches!(pending.as_slice(), [(ModerationIntent::Submit { .. }, id)] if *id == invocation)
-        );
-        assert!(
-            doc.get(&automerge::ROOT, "store.report_case.id.notes")
-                .unwrap()
-                .is_none()
-        );
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn moderation_effects_are_authoritative_bounded_and_target_checked() {
+        // Case `moderation_effect_waits_for_authoritative_case_before_materializing_status`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            let invocation = tilo_actions::InvocationId::new();
+            app.reports.push(ReportRecord {
+                id: "report:id.notes".into(),
+                app_id: "id.notes".into(),
+                status: "Draft · not submitted".into(),
+            });
+            app.report_notes.insert(
+                "id.notes".into(),
+                "The app connected to a remote host while offline mode was active.".into(),
+            );
+            let note = app.report_notes.get("id.notes").unwrap();
+            let envelope = report_envelope(
+                app.reports.first().unwrap(),
+                app.items.iter().find(|item| item.id == "id.notes"),
+                note,
+            );
+            assert_eq!(
+                app.start_resource_operation(
+                    invocation,
+                    OperationKind::Effect,
+                    "store.moderation",
+                    &serde_json::to_vec(&("Tilo", &envelope)).unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Accepted)
+            );
+            let pending = app.take_moderation_requests();
+            assert!(
+                matches!(pending.as_slice(), [(ModerationIntent::Submit { .. }, id)] if *id == invocation)
+            );
+            assert!(
+                doc.get(&automerge::ROOT, "store.report_case.id.notes")
+                    .unwrap()
+                    .is_none()
+            );
 
-        let case = registry_types::ModerationCase {
-            case_id: "case-authoritative".into(),
-            package_id: "id.notes".into(),
-            publisher_pubkey_hex: "aa".repeat(32),
-            status: registry_types::ModerationCaseStatus::Open,
-            opened_at_unix: 10,
-            updated_at_unix: 10,
-            latest_sequence: 1,
-        };
-        app.set_moderation_case(&mut doc, &automerge::ROOT, &case);
-        assert_eq!(
-            doc.get(&automerge::ROOT, "store.report_case.id.notes")
-                .unwrap()
-                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
-            Some("case-authoritative".into())
-        );
-    }
+            let case = registry_types::ModerationCase {
+                case_id: "case-authoritative".into(),
+                package_id: "id.notes".into(),
+                publisher_pubkey_hex: "aa".repeat(32),
+                status: registry_types::ModerationCaseStatus::Open,
+                opened_at_unix: 10,
+                updated_at_unix: 10,
+                latest_sequence: 1,
+            };
+            app.set_moderation_case(&mut doc, &automerge::ROOT, &case);
+            assert_eq!(
+                doc.get(&automerge::ROOT, "store.report_case.id.notes")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)),
+                Some("case-authoritative".into())
+            );
+        }
 
-    #[test]
-    fn invalid_authoritative_case_id_never_enters_the_document() {
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        let case = registry_types::ModerationCase {
-            case_id: "case-../../outside".into(),
-            package_id: "id.notes".into(),
-            publisher_pubkey_hex: "aa".repeat(32),
-            status: registry_types::ModerationCaseStatus::Open,
-            opened_at_unix: 10,
-            updated_at_unix: 10,
-            latest_sequence: 1,
-        };
+        // Case `invalid_authoritative_case_id_never_enters_the_document`.
+        {
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            let case = registry_types::ModerationCase {
+                case_id: "case-../../outside".into(),
+                package_id: "id.notes".into(),
+                publisher_pubkey_hex: "aa".repeat(32),
+                status: registry_types::ModerationCaseStatus::Open,
+                opened_at_unix: 10,
+                updated_at_unix: 10,
+                latest_sequence: 1,
+            };
 
-        app.set_moderation_case(&mut doc, &automerge::ROOT, &case);
+            app.set_moderation_case(&mut doc, &automerge::ROOT, &case);
 
-        assert!(
-            doc.get(&automerge::ROOT, "store.report_case.id.notes")
-                .unwrap()
-                .is_none()
-        );
-        assert!(app.operation_error.is_some());
-    }
+            assert!(
+                doc.get(&automerge::ROOT, "store.report_case.id.notes")
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(app.operation_error.is_some());
+        }
 
-    #[test]
-    fn remote_effect_queue_is_bounded() {
-        let mut app = seeded_app();
-        let doc = AutoCommit::new();
-        let payload = serde_json::to_vec(&vec!["refresh".to_string()]).unwrap();
-        for _ in 0..MAX_PENDING_EXTERNAL_OPERATIONS {
+        // Case `remote_effect_queue_is_bounded`.
+        {
+            let mut app = seeded_app();
+            let doc = AutoCommit::new();
+            let payload = serde_json::to_vec(&vec!["refresh".to_string()]).unwrap();
+            for _ in 0..MAX_PENDING_EXTERNAL_OPERATIONS {
+                assert!(
+                    app.start_resource_operation(
+                        tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        "store.remote",
+                        &payload,
+                        &doc,
+                        &automerge::ROOT,
+                    )
+                    .is_ok()
+                );
+            }
             assert!(
                 app.start_resource_operation(
                     tilo_actions::InvocationId::new(),
@@ -6053,208 +6249,86 @@ mod tests {
                     &doc,
                     &automerge::ROOT,
                 )
-                .is_ok()
+                .is_err()
             );
         }
-        assert!(
-            app.start_resource_operation(
+
+        // Case `moderation_submission_refuses_a_stale_or_substituted_report_target`.
+        {
+            let mut app = seeded_app();
+            app.reports.push(ReportRecord {
+                id: "report:id.notes".into(),
+                app_id: "id.notes".into(),
+                status: "Draft · not submitted".into(),
+            });
+            app.report_notes.insert(
+                "id.notes".into(),
+                "The listing omitted a network dependency.".into(),
+            );
+            let note = app.report_notes.get("id.notes").unwrap();
+            let current = report_envelope(
+                app.reports.first().unwrap(),
+                app.items.iter().find(|item| item.id == "id.notes"),
+                note,
+            );
+            let doc = AutoCommit::new();
+            let accepted = app.start_resource_operation(
                 tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
-                "store.remote",
-                &payload,
+                "store.moderation",
+                &serde_json::to_vec(&("Tilo", &current)).unwrap(),
                 &doc,
                 &automerge::ROOT,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn flatpak_remove_uses_its_exact_published_action_address() {
-        let mut app = seeded_app();
-        app.items
-            .iter_mut()
-            .find(|item| item.id == "id.chess")
-            .unwrap()
-            .installed = InstalledState::Installed {
-            version: "1".into(),
-            available: "1".into(),
-            pinned: false,
-            user_managed: true,
-        };
-        let resource = store_app_resource(
-            app.items.iter().find(|item| item.id == "id.chess").unwrap(),
-            true,
-        );
-        let remove = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "flatpak-remove")
-            .expect("Flatpak remove action is published at its concrete address");
-        assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert!(
-            item_action_binding(
-                app.items.iter().find(|item| item.id == "id.chess").unwrap(),
-                ActionKind::FlatpakRemove,
-            )
-            .is_some()
-        );
-    }
-
-    #[test]
-    fn app_resources_include_bounded_catalogue_context_for_nonvisual_clients() {
-        let app = seeded_app();
-        let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
-        let resource = store_app_resource(item, true);
-        let presentation = resource
-            .presentation
-            .expect("app resource has a search and history summary");
-        assert_eq!(presentation.badge.as_deref(), Some("Tilo verified · v1"));
-        assert!(
-            presentation
-                .detail
-                .as_deref()
-                .is_some_and(|detail| detail.contains("Notes description"))
-        );
-    }
-
-    #[test]
-    fn moderation_submission_refuses_a_stale_or_substituted_report_target() {
-        let mut app = seeded_app();
-        app.reports.push(ReportRecord {
-            id: "report:id.notes".into(),
-            app_id: "id.notes".into(),
-            status: "Draft · not submitted".into(),
-        });
-        app.report_notes.insert(
-            "id.notes".into(),
-            "The listing omitted a network dependency.".into(),
-        );
-        let note = app.report_notes.get("id.notes").unwrap();
-        let current = report_envelope(
-            app.reports.first().unwrap(),
-            app.items.iter().find(|item| item.id == "id.notes"),
-            note,
-        );
-        let doc = AutoCommit::new();
-        let accepted = app.start_resource_operation(
-            tilo_actions::InvocationId::new(),
-            OperationKind::Effect,
-            "store.moderation",
-            &serde_json::to_vec(&("Tilo", &current)).unwrap(),
-            &doc,
-            &automerge::ROOT,
-        );
-        assert!(accepted.is_ok());
-        app.take_moderation_requests();
-
-        let mut stale = current;
-        stale.evidence_note = "Different text that was never saved in this draft.".into();
-        let rejected = app.start_resource_operation(
-            tilo_actions::InvocationId::new(),
-            OperationKind::Effect,
-            "store.moderation",
-            &serde_json::to_vec(&("Tilo", stale)).unwrap(),
-            &doc,
-            &automerge::ROOT,
-        );
-        assert!(rejected.is_err());
-        assert!(app.take_moderation_requests().is_empty());
-    }
-
-    #[test]
-    fn removed_collaborative_report_is_not_kept_as_a_stale_local_target() {
-        use automerge::transaction::Transactable;
-
-        let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        let key = format!("{REPORT_RESOURCE_KEY_PREFIX}id.notes");
-        doc.put(&automerge::ROOT, &key, "Draft · not submitted")
-            .unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.reports().len(), 1);
-        // A peer deletes the final shared draft. Once the report collection
-        // has been hydrated from the document, the empty state is authoritative.
-        doc.delete(&automerge::ROOT, &key).unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.reports().is_empty());
-    }
-
-    #[test]
-    fn root_accessibility_is_a_named_window_not_an_empty_generic() {
-        let mut app = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let node = app.accessibility().expect("store exports a root node");
-        assert_eq!(node.role, Role::Window);
-        assert_eq!(node.name.as_deref(), Some("App Store"));
-        assert!(node.bounds.is_some());
-    }
-
-    #[test]
-    fn trust_sheet_uses_a_scannable_publisher_identity_summary() {
-        let mut signed = item(
-            "Signed",
-            StoreSource::Tilo {
-                registry_name: "Tilo".into(),
-            },
-            "Utilities",
-            InstalledState::Not,
-        );
-        signed.publisher_pubkey_hex = Some("ab".repeat(32));
-        let lines = publisher_identity_lines(&signed);
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("ed25519:abababababab…abababababab"));
-        assert!(lines[0].contains("64 characters"));
-    }
-
-    #[test]
-    fn visible_operation_status_is_printable_and_bounded() {
-        assert_eq!(visible_operation_status("\n\t"), UNKNOWN_OPERATION_STATUS);
-        assert_eq!(
-            visible_operation_status("Install failed\n\tpackage signature did not match"),
-            "Install failed package signature did not match"
-        );
-        let long = "x".repeat(MAX_VISIBLE_OPERATION_STATUS_CHARS + 1);
-        let visible = visible_operation_status(&long);
-        assert_eq!(
-            visible.chars().count(),
-            MAX_VISIBLE_OPERATION_STATUS_CHARS + 1
-        );
-        assert!(visible.ends_with('…'));
-    }
-
-    #[test]
-    fn resource_detail_excerpt_is_printable_and_byte_bounded() {
-        assert_eq!(resource_detail_excerpt(" one\n\ttwo  "), "one two");
-        let detail = resource_detail_excerpt(&format!("{}\nignored", "界".repeat(200)));
-        assert!(detail.len() <= MAX_RESOURCE_DETAIL_BYTES);
-        assert!(detail.ends_with('…'));
-        assert!(!detail.contains('\n'));
-    }
-
-    #[test]
-    fn operation_status_is_exposed_as_a_polite_live_region() {
-        let mut app = seeded_app();
-        app.set_status_line("Installing Notes…");
-        let node = app.accessibility().expect("store exports a root node");
-        let status = node.children.first().expect("status live region");
-        assert_eq!(status.name.as_deref(), Some("Installing Notes…"));
-        assert_eq!(status.live, Some(Politeness::Polite));
-    }
-
-    #[test]
-    fn every_published_moderation_effect_has_a_local_operation_handler() {
-        let app = seeded_app();
-        let handlers = Widget::local_resource_operation_handlers(&app);
-        for type_id in [
-            "store.moderation",
-            "store.moderation-status",
-            "store.moderation-appeal",
-        ] {
-            assert!(
-                handlers.contains(&type_id),
-                "published {type_id} action must be callable by agents and collaboration"
             );
+            assert!(accepted.is_ok());
+            app.take_moderation_requests();
+
+            let mut stale = current;
+            stale.evidence_note = "Different text that was never saved in this draft.".into();
+            let rejected = app.start_resource_operation(
+                tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "store.moderation",
+                &serde_json::to_vec(&("Tilo", stale)).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            );
+            assert!(rejected.is_err());
+            assert!(app.take_moderation_requests().is_empty());
+        }
+
+        // Case `removed_collaborative_report_is_not_kept_as_a_stale_local_target`.
+        {
+            use automerge::transaction::Transactable;
+
+            let mut app = seeded_app();
+            let mut doc = AutoCommit::new();
+            let key = format!("{REPORT_RESOURCE_KEY_PREFIX}id.notes");
+            doc.put(&automerge::ROOT, &key, "Draft · not submitted")
+                .unwrap();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(app.reports().len(), 1);
+            // A peer deletes the final shared draft. Once the report collection
+            // has been hydrated from the document, the empty state is authoritative.
+            doc.delete(&automerge::ROOT, &key).unwrap();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.reports().is_empty());
+        }
+
+        // Case `every_published_moderation_effect_has_a_local_operation_handler`.
+        {
+            let app = seeded_app();
+            let handlers = Widget::local_resource_operation_handlers(&app);
+            for type_id in [
+                "store.moderation",
+                "store.moderation-status",
+                "store.moderation-appeal",
+            ] {
+                assert!(
+                    handlers.contains(&type_id),
+                    "published {type_id} action must be callable by agents and collaboration"
+                );
+            }
         }
     }
 }

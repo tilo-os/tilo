@@ -1,199 +1,437 @@
-//! Session-wide rootless Xwayland compatibility via `xwayland-satellite`.
+//! Rootless Xwayland, one per workspace, via `xwayland-satellite`.
 //!
 //! Tilo remains a Wayland compositor and does not grow an in-process XWM. The
 //! satellite is itself a Wayland client and maps each legacy X11 window to an
-//! ordinary `xdg_toplevel`, so existing host applications participate in the
-//! same layout. Failure is non-fatal: native Wayland software remains usable.
+//! ordinary `xdg_toplevel`, so X11 software participates in the same layout.
+//! Failure is non-fatal: native Wayland software remains usable.
+//!
+//! X11 has no client isolation: any client of a display can read every other
+//! client's input, windows and selections. One X server therefore never spans
+//! two workspaces. Each workspace that opens a host app gets its own display
+//! number, its own MIT-MAGIC-COOKIE authority and its own satellite, and the
+//! DISPLAY/XAUTHORITY pair reaches only launches into that workspace.
+//!
+//! Displays are lazy. The compositor binds the X11 socket itself and spawns
+//! satellite with `-listenfd` when the first client connects, so a workspace
+//! that never runs an X11 app never runs an X server. Satellite is stopped
+//! again when its workspace closes or no X client has been connected for
+//! [`IDLE_TIMEOUT`]; the socket stays, and the next client starts a fresh one.
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::os::unix::fs::{
-    FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
-};
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng as _;
+use smithay::reexports::calloop::{
+    self, Interest, LoopHandle, Mode, PostAction, RegistrationToken, generic::Generic,
+};
+
+use super::backend::drm::input_config::KeyboardSettings;
+use crate::shell::host_apps::X11Session;
 
 const DISPLAY_ATTEMPTS: usize = 64;
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Restarting a compatibility bridge forever turns one crashing helper into a
-/// busy loop. Three attempts give a transient host/service failure time to
+/// busy loop. Three quick exits in a row give a transient failure time to
 /// settle while making the eventual unavailable state deterministic.
-const MAX_RECOVERY_ATTEMPTS: u8 = 3;
+const MAX_RAPID_EXITS: u8 = 3;
+/// A bridge that stayed up this long proved itself healthy; its exit starts a
+/// fresh budget rather than counting towards [`MAX_RAPID_EXITS`].
 const STABLE_UPTIME: Duration = Duration::from_secs(30);
+/// How long a running X server may have no connected client before it is
+/// stopped. Long enough that an app restarting itself (installers, launchers
+/// that re-exec) finds the server still up.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const KEYMAP_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
+/// The frame loop polls far more often than an idle stop needs; reading the
+/// kernel's socket table once a second keeps idle detection off the frame
+/// budget.
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Keep the compatibility server out of the security-hardened Tilo image.
-pub(crate) const fn enabled_for(mode: super::InstallMode) -> bool {
-    matches!(mode, super::InstallMode::HostDesktop)
+/// Every workspace display of this session, shared by the host-launch path
+/// (which creates displays) and the compositor-thread supervisor (which
+/// starts, stops and removes them). `None` outside a running compositor, so
+/// headless tools and tests never bind X11 sockets.
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
+    displays: None,
+    wake: None,
+});
+
+struct Registry {
+    displays: Option<Displays>,
+    /// Wakes the compositor loop so it starts watching a display created by
+    /// a launch outside its own tick.
+    wake: Option<calloop::ping::Ping>,
 }
 
-pub(crate) struct SessionXwayland {
-    child: Child,
+fn registry() -> std::sync::MutexGuard<'static, Registry> {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The X11 connection for a host launch into `workspace`, creating that
+/// workspace's display on first use. `None` when X11 is unavailable there;
+/// the launch then proceeds Wayland-only.
+pub(crate) fn session_for_workspace(workspace: &str) -> Option<X11Session> {
+    let mut registry = registry();
+    let Registry { displays, wake } = &mut *registry;
+    let result = displays.as_mut()?.session_for(workspace);
+    let wake = wake.clone();
+    drop(registry);
+    match result {
+        Ok((session, created)) => {
+            if created && let Some(wake) = wake {
+                wake.ping();
+            }
+            Some(session)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "X11 apps unavailable in this workspace");
+            None
+        }
+    }
+}
+
+/// Where the X11 sockets, lock files and private authorities live.
+struct Paths {
+    /// The shared X11 socket directory, `/tmp/.X11-unix`.
+    sockets: PathBuf,
+    /// Where X servers claim a display number, `/tmp`.
+    locks: PathBuf,
+    /// This login's private directory for authority files.
     runtime: PathBuf,
-    display: String,
-    authority: PathBuf,
-    reservation: PathBuf,
-    /// Publication is a compositor-thread action. A startup worker must never
-    /// make its private result visible after its supervisor has gone away.
-    published: bool,
 }
 
-/// Owns the one session-wide Xwayland bridge and its bounded recovery policy.
-///
-/// There is deliberately no second launcher or per-app bridge here. The
-/// existing host-launch slot is unpublished as soon as the child exits, and a
-/// successful replacement republishes one fresh authenticated connection.
-pub(crate) struct XwaylandSupervisor {
-    bridge: Option<SessionXwayland>,
-    starting: Option<Receiver<Result<SessionXwayland, String>>>,
-    consecutive_failures: u8,
-    retry_at: Option<Instant>,
-    ready_since: Option<Instant>,
-    unavailable_announced: bool,
-    keyboard: super::backend::drm::input_config::KeyboardSettings,
+impl Paths {
+    fn session() -> Result<Self, String> {
+        let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
+        Ok(Self {
+            sockets: PathBuf::from("/tmp/.X11-unix"),
+            locks: PathBuf::from("/tmp"),
+            runtime: runtime_root.join("tilo-session/xwayland"),
+        })
+    }
+}
+
+/// The per-workspace displays and their bridges. Pure state plus process
+/// management; the compositor loop integration lives in the supervisor.
+pub(crate) struct Displays {
+    paths: Paths,
+    /// The satellite binary, or why X11 is unavailable on this machine.
+    satellite: Result<PathBuf, String>,
+    workspaces: HashMap<String, WorkspaceDisplay>,
+    /// Workspaces whose bridge kept crashing. They stay Wayland-only until
+    /// the workspace closes, so a broken helper cannot restart forever.
+    unavailable: HashSet<String>,
+}
+
+pub(crate) struct WorkspaceDisplay {
+    number: u16,
+    listener: UnixListener,
+    socket: PathBuf,
+    /// Device and inode of the socket file this display bound, so teardown
+    /// never unlinks a socket some later server placed at the same path.
+    socket_identity: (u64, u64),
+    lock: PathBuf,
+    authority: PathBuf,
+    bridge: Option<Bridge>,
+    rapid_exits: u8,
+    /// When the running bridge was first observed with no connected client.
+    idle_since: Option<Instant>,
+    idle_checked: Option<Instant>,
+}
+
+struct Bridge {
+    child: Child,
+    started: Instant,
+    /// The keymap the X server currently has.
+    keyboard: KeyboardSettings,
     keyboard_update: Option<KeyboardUpdate>,
     /// The newest settings observed while `setxkbmap` is still applying an
-    /// earlier snapshot. Only one helper may touch the private X server at a
-    /// time, but the final state must still converge without another settings
+    /// earlier snapshot. Only one helper may touch the X server at a time,
+    /// but the final state must still converge without another settings
     /// file write to wake the watcher.
-    pending_keyboard: Option<super::backend::drm::input_config::KeyboardSettings>,
+    pending_keyboard: Option<KeyboardSettings>,
 }
 
 struct KeyboardUpdate {
     child: Child,
-    requested: super::backend::drm::input_config::KeyboardSettings,
+    requested: KeyboardSettings,
     started: Instant,
 }
 
-impl XwaylandSupervisor {
-    pub(crate) fn start(wayland_socket: &OsStr) -> Self {
-        crate::shell::host_apps::set_x11_starting();
-        let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
-        let mut supervisor = Self {
-            bridge: None,
-            starting: None,
-            consecutive_failures: 0,
-            retry_at: None,
-            ready_since: None,
-            unavailable_announced: false,
-            keyboard,
-            keyboard_update: None,
-            pending_keyboard: None,
-        };
-        supervisor.start_async(wayland_socket, "starting");
-        supervisor
+/// Starts a satellite for a display that just received its first client.
+type Spawn<'a> = dyn FnMut(&WorkspaceDisplay) -> Result<(Child, KeyboardSettings), String> + 'a;
+
+impl Displays {
+    fn new(paths: Paths, satellite: Result<PathBuf, String>) -> Self {
+        Self {
+            paths,
+            satellite,
+            workspaces: HashMap::new(),
+            unavailable: HashSet::new(),
+        }
     }
 
-    /// Apply an updated Tilo keymap to the already-running private X server.
-    /// Xwayland cannot consume the Wayland seat's keymap, so without this an
-    /// Electron/X11 application keeps the layout from session startup until
-    /// logout. `setxkbmap` updates the server in place: existing windows stay
-    /// open and subsequent key events use the same map as native clients.
-    pub(crate) fn reload_keyboard_settings(&mut self) {
-        let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
-        if self.keyboard_update.is_some() {
-            // The desired layout may change back to the last successfully
-            // applied one while a different update is running. Preserve that
-            // request too: after the child succeeds, `self.keyboard` will no
-            // longer describe the X server and we must actively restore it.
-            self.pending_keyboard = Some(keyboard);
-            return;
+    /// The display of `workspace`, bound now if it has none yet. The second
+    /// value says whether it was just created and needs watching.
+    fn session_for(&mut self, workspace: &str) -> Result<(X11Session, bool), String> {
+        if let Some(display) = self.workspaces.get(workspace) {
+            return Ok((display.session(), false));
         }
-        if keyboard == self.keyboard {
-            return;
+        if let Err(reason) = &self.satellite {
+            return Err(reason.clone());
         }
-        let Some(bridge) = self.bridge.as_ref() else {
-            // A bridge currently starting will load the newest settings in its
-            // worker. Keep the old snapshot so the next settings poll retries
-            // after it has published rather than falsely considering it done.
+        if self.unavailable.contains(workspace) {
+            return Err("the X11 compatibility service kept exiting in this workspace".into());
+        }
+        let display = WorkspaceDisplay::bind(&self.paths)?;
+        let session = display.session();
+        tracing::info!(display = %session.display, "X11 display ready for a workspace");
+        self.workspaces.insert(workspace.to_string(), display);
+        Ok((session, true))
+    }
+
+    /// Remove every display whose workspace closed, stopping its X server.
+    fn retain_workspaces(&mut self, live: &HashSet<String>) {
+        self.workspaces
+            .retain(|workspace, _| live.contains(workspace));
+        self.unavailable
+            .retain(|workspace| live.contains(workspace));
+    }
+
+    /// Advance every display: reap exited bridges, stop idle ones and start
+    /// one for each display with a waiting client. Returns the workspaces
+    /// that just became unavailable.
+    fn poll(&mut self, now: Instant, spawn: &mut Spawn<'_>) -> Vec<String> {
+        let mut exhausted = Vec::new();
+        for (workspace, display) in &mut self.workspaces {
+            if display.poll(now, spawn) {
+                exhausted.push(workspace.clone());
+            }
+        }
+        for workspace in &exhausted {
+            self.workspaces.remove(workspace);
+            self.unavailable.insert(workspace.clone());
+        }
+        exhausted
+    }
+
+    fn reload_keyboard_settings(&mut self, keyboard: &KeyboardSettings) {
+        for display in self.workspaces.values_mut() {
+            display.request_keyboard(keyboard, Path::new("/usr/bin/setxkbmap"));
+        }
+    }
+}
+
+impl WorkspaceDisplay {
+    fn bind(paths: &Paths) -> Result<Self, String> {
+        ensure_socket_dir(&paths.sockets)?;
+        fs::create_dir_all(&paths.runtime)
+            .map_err(|error| format!("creating {}: {error}", paths.runtime.display()))?;
+        fs::set_permissions(&paths.runtime, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("protecting {}: {error}", paths.runtime.display()))?;
+
+        let mut random = [0_u8; 2];
+        UnwrapErr(SysRng).fill_bytes(&mut random);
+        let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
+        for offset in 0..DISPLAY_ATTEMPTS {
+            let number = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
+            let socket = paths.sockets.join(format!("X{number}"));
+            let lock = paths.locks.join(format!(".X{number}-lock"));
+            if fs::symlink_metadata(&socket).is_ok() || !claim_lock(&lock)? {
+                continue;
+            }
+            let listener = match UnixListener::bind(&socket) {
+                Ok(listener) => listener,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    let _ = fs::remove_file(&lock);
+                    continue;
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&lock);
+                    return Err(format!("binding {}: {error}", socket.display()));
+                }
+            };
+            let socket_identity = match fs::symlink_metadata(&socket) {
+                Ok(metadata) => (metadata.dev(), metadata.ino()),
+                Err(error) => {
+                    let _ = fs::remove_file(&lock);
+                    return Err(format!("inspecting {}: {error}", socket.display()));
+                }
+            };
+            let authority = paths.runtime.join(format!("Xauthority-{number}"));
+            let _ = fs::remove_file(&authority);
+            if let Err(error) = write_xauthority(&authority, number) {
+                let _ = fs::remove_file(&socket);
+                let _ = fs::remove_file(&lock);
+                return Err(error);
+            }
+            return Ok(Self {
+                number,
+                listener,
+                socket,
+                socket_identity,
+                lock,
+                authority,
+                bridge: None,
+                rapid_exits: 0,
+                idle_since: None,
+                idle_checked: None,
+            });
+        }
+        Err("no unused X display number is available".to_string())
+    }
+
+    fn session(&self) -> X11Session {
+        X11Session {
+            display: format!(":{}", self.number),
+            authority: self.authority.clone(),
+        }
+    }
+
+    /// Whether the compositor loop should wake when a client connects: only
+    /// while no bridge is running to accept it.
+    fn wants_watch(&self) -> bool {
+        self.bridge.is_none()
+    }
+
+    /// Returns `true` once the bridge has exited too often to restart.
+    fn poll(&mut self, now: Instant, spawn: &mut Spawn<'_>) -> bool {
+        let session = self.session();
+        if let Some(bridge) = self.bridge.as_mut() {
+            bridge.poll_keyboard_update(&session);
+            match bridge.child.try_wait() {
+                Ok(Some(status)) => {
+                    let uptime = now.saturating_duration_since(bridge.started);
+                    tracing::warn!(%status, display = self.number, "Xwayland bridge exited");
+                    self.stop_bridge();
+                    if uptime >= STABLE_UPTIME {
+                        self.rapid_exits = 0;
+                    }
+                    self.rapid_exits = self.rapid_exits.saturating_add(1);
+                    return self.rapid_exits >= MAX_RAPID_EXITS;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    // Do not start a second server when the kernel cannot
+                    // tell us whether the first one is alive.
+                    tracing::warn!(%error, "could not inspect Xwayland bridge");
+                    return false;
+                }
+            }
+            if self
+                .idle_checked
+                .is_some_and(|checked| now.saturating_duration_since(checked) < IDLE_CHECK_INTERVAL)
+            {
+                return false;
+            }
+            self.idle_checked = Some(now);
+            match connected_clients(&self.socket) {
+                Some(0) => {
+                    let idle_since = *self.idle_since.get_or_insert(now);
+                    if now.saturating_duration_since(idle_since) >= IDLE_TIMEOUT {
+                        tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                        self.stop_bridge();
+                    }
+                }
+                // An unreadable socket table must never stop a server that
+                // may still have clients.
+                Some(_) | None => self.idle_since = None,
+            }
+            return false;
+        }
+        if !has_pending_connection(&self.listener) {
+            return false;
+        }
+        match spawn(self) {
+            Ok((child, keyboard)) => {
+                tracing::info!(
+                    display = self.number,
+                    "starting Xwayland bridge for its first client"
+                );
+                self.bridge = Some(Bridge {
+                    child,
+                    started: now,
+                    keyboard,
+                    keyboard_update: None,
+                    pending_keyboard: None,
+                });
+                self.idle_since = None;
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%error, display = self.number, "could not start Xwayland bridge");
+                self.rapid_exits = self.rapid_exits.saturating_add(1);
+                self.rapid_exits >= MAX_RAPID_EXITS
+            }
+        }
+    }
+
+    fn stop_bridge(&mut self) {
+        self.idle_since = None;
+        self.idle_checked = None;
+        let Some(mut bridge) = self.bridge.take() else {
             return;
         };
-        match start_keyboard_update(bridge, keyboard) {
-            Ok(update) => self.keyboard_update = Some(update),
+        if let Some(mut update) = bridge.keyboard_update.take() {
+            let _ = update.child.kill();
+            let _ = update.child.wait();
+        }
+        if matches!(bridge.child.try_wait(), Ok(None)) {
+            let _ = bridge.child.kill();
+        }
+        let _ = bridge.child.wait();
+    }
+
+    /// Apply an updated Tilo keymap to a running X server. Xwayland cannot
+    /// consume the Wayland seat's keymap, so without this an X11 application
+    /// keeps the layout from its server's start. `setxkbmap` updates the
+    /// server in place: existing windows stay open and subsequent key events
+    /// use the same map as native clients. A display without a running
+    /// server needs nothing: the next one starts with the newest settings.
+    fn request_keyboard(&mut self, keyboard: &KeyboardSettings, setxkbmap: &Path) {
+        let session = self.session();
+        let Some(bridge) = self.bridge.as_mut() else {
+            return;
+        };
+        if bridge.keyboard_update.is_some() {
+            // The desired layout may change back to the last applied one
+            // while a different update is running. Preserve that request
+            // too: after the helper succeeds `bridge.keyboard` will no longer
+            // describe the X server and it must be actively restored.
+            bridge.pending_keyboard = Some(keyboard.clone());
+            return;
+        }
+        if *keyboard == bridge.keyboard {
+            return;
+        }
+        match start_keyboard_update(&session, keyboard.clone(), setxkbmap) {
+            Ok(update) => bridge.keyboard_update = Some(update),
             Err(error) => tracing::warn!(
                 %error,
                 "Xwayland: could not start keyboard settings update; preserving the working keymap"
             ),
         }
     }
+}
 
-    /// Poll from the compositor's frame loop. Retrying only happens after the
-    /// old child has exited and its X11 launch environment has been revoked.
-    /// That ordering matters for Electron: a renderer launched after a crash
-    /// must never inherit an authority file for the dead display.
-    pub(crate) fn poll(
-        &mut self,
-        wayland_socket: &OsStr,
-        chrome: &crate::shell::chrome_state::Chrome,
-    ) {
-        self.poll_keyboard_update();
-        if let Some(starting) = self.starting.as_ref() {
-            match starting.try_recv() {
-                Ok(Ok(mut bridge)) => {
-                    self.starting = None;
-                    // This is the sole point that publishes DISPLAY and
-                    // XAUTHORITY. If the receiver was dropped, the worker's
-                    // unpublished bridge is simply dropped and cleaned up.
-                    bridge.publish();
-                    self.bridge = Some(bridge);
-                    self.retry_at = None;
-                    self.ready_since = Some(Instant::now());
-                    self.unavailable_announced = false;
-                    tracing::info!("rootless Xwayland compatibility bridge ready");
-                    // A settings write can race the asynchronous startup. In
-                    // that case the earlier reload deliberately had no bridge
-                    // to update; retry now that the private X server exists.
-                    self.reload_keyboard_settings();
-                }
-                Ok(Err(error)) => {
-                    self.starting = None;
-                    tracing::warn!(%error, "rootless Xwayland compatibility startup failed");
-                    self.record_failure(Instant::now(), chrome);
-                }
-                Err(TryRecvError::Empty) => return,
-                Err(TryRecvError::Disconnected) => {
-                    self.starting = None;
-                    tracing::warn!("rootless Xwayland startup worker disconnected");
-                    self.record_failure(Instant::now(), chrome);
-                }
-            }
-        }
-
-        if let Some(bridge) = self.bridge.as_mut() {
-            match bridge.poll_exit() {
-                Ok(Some(status)) => {
-                    tracing::warn!(%status, "rootless Xwayland compatibility bridge exited");
-                    self.bridge = None;
-                    self.record_failure(Instant::now(), chrome);
-                }
-                Ok(None) => return,
-                Err(error) => {
-                    // Do not start a second server when the kernel cannot tell
-                    // us whether the first one is alive. The already-published
-                    // launch environment remains valid until an actual exit.
-                    tracing::warn!(%error, "could not inspect rootless Xwayland compatibility bridge");
-                    return;
-                }
-            }
-        }
-
-        let Some(retry_at) = self.retry_at else {
-            return;
-        };
-        if Instant::now() < retry_at {
-            return;
-        }
-        self.retry_at = None;
-        self.start_async(wayland_socket, "recovering");
-    }
-
-    fn poll_keyboard_update(&mut self) {
+impl Bridge {
+    fn poll_keyboard_update(&mut self, session: &X11Session) {
         let Some(update) = self.keyboard_update.as_mut() else {
             return;
         };
@@ -214,15 +452,14 @@ impl XwaylandSupervisor {
         match result {
             Ok(false) => return,
             Ok(true) => {
-                let Some(update) = self.keyboard_update.take() else {
-                    return;
-                };
-                tracing::info!(
-                    sources = ?update.requested.source_ids,
-                    active = update.requested.active_index,
-                    "Xwayland: applied per-user XKB sources"
-                );
-                self.keyboard = update.requested;
+                if let Some(update) = self.keyboard_update.take() {
+                    tracing::info!(
+                        sources = ?update.requested.source_ids,
+                        active = update.requested.active_index,
+                        "Xwayland: applied per-user XKB sources"
+                    );
+                    self.keyboard = update.requested;
+                }
             }
             Err(error) => {
                 self.keyboard_update = None;
@@ -232,334 +469,310 @@ impl XwaylandSupervisor {
                 );
             }
         }
-        self.start_pending_keyboard_update();
-    }
-
-    /// Start the latest coalesced request after the previous helper reached a
-    /// terminal state. Intermediate layouts are deliberately skipped; the X
-    /// server only needs to converge to the most recent saved preference.
-    fn start_pending_keyboard_update(&mut self) {
+        // Start the latest coalesced request. Intermediate layouts are
+        // deliberately skipped; the server only needs to converge to the
+        // most recent saved preference.
         let Some(keyboard) = self.pending_keyboard.take() else {
             return;
         };
         if keyboard == self.keyboard {
             return;
         }
-        let Some(bridge) = self.bridge.as_ref() else {
-            self.pending_keyboard = Some(keyboard);
+        match start_keyboard_update(session, keyboard, Path::new("/usr/bin/setxkbmap")) {
+            Ok(update) => self.keyboard_update = Some(update),
+            Err(error) => tracing::warn!(
+                %error,
+                "Xwayland: could not start coalesced keyboard settings update"
+            ),
+        }
+    }
+}
+
+impl Drop for WorkspaceDisplay {
+    fn drop(&mut self) {
+        self.stop_bridge();
+        if fs::symlink_metadata(&self.socket)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.socket_identity)
+        {
+            let _ = fs::remove_file(&self.socket);
+        }
+        let _ = fs::remove_file(&self.lock);
+        let _ = fs::remove_file(&self.authority);
+    }
+}
+
+/// How the supervisor asks the event loop to wake for a display's socket.
+pub(crate) trait ListenerWatch {
+    type Token;
+    fn watch(&mut self, listener: &UnixListener) -> Result<Self::Token, String>;
+    fn set_watching(&mut self, token: &Self::Token, watching: bool);
+    fn unwatch(&mut self, token: Self::Token);
+}
+
+impl<D: 'static> ListenerWatch for LoopHandle<'static, D> {
+    type Token = RegistrationToken;
+
+    fn watch(&mut self, listener: &UnixListener) -> Result<RegistrationToken, String> {
+        let fd: OwnedFd = listener
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|error| format!("duplicating X11 listener: {error}"))?;
+        // Level-triggered and never accepted here: the wake only makes the
+        // loop tick, and the supervisor disables it while a bridge accepts.
+        self.insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+            Ok(PostAction::Continue)
+        })
+        .map_err(|error| format!("watching X11 listener: {error}"))
+    }
+
+    fn set_watching(&mut self, token: &RegistrationToken, watching: bool) {
+        let result = if watching {
+            self.enable(token)
+        } else {
+            self.disable(token)
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, watching, "could not update X11 listener wake");
+        }
+    }
+
+    fn unwatch(&mut self, token: RegistrationToken) {
+        self.remove(token);
+    }
+}
+
+/// Owns the workspace displays' lifecycle on the compositor thread.
+pub(crate) struct XwaylandSupervisor<W: ListenerWatch> {
+    watch: W,
+    wayland_socket: OsString,
+    /// Registration and current watching state of each display's socket.
+    watched: HashMap<String, (W::Token, bool)>,
+}
+
+impl<W: ListenerWatch> XwaylandSupervisor<W> {
+    /// Make X11 available to host launches. Nothing is bound or spawned
+    /// until a launch asks for a workspace's display.
+    pub(crate) fn start(watch: W, wake: calloop::ping::Ping, wayland_socket: &OsStr) -> Self {
+        match Paths::session() {
+            Ok(paths) => {
+                let satellite = resolve_satellite();
+                if let Err(error) = &satellite {
+                    tracing::warn!(%error, "X11 apps are unavailable");
+                }
+                let mut registry = registry();
+                registry.displays = Some(Displays::new(paths, satellite));
+                registry.wake = Some(wake);
+            }
+            Err(error) => tracing::warn!(%error, "X11 apps are unavailable"),
+        }
+        Self {
+            watch,
+            wayland_socket: wayland_socket.to_os_string(),
+            watched: HashMap::new(),
+        }
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "only a running supervisor's displays have X servers to update"
+    )]
+    pub(crate) fn reload_keyboard_settings(&self) {
+        let keyboard = KeyboardSettings::load();
+        if let Some(displays) = registry().displays.as_mut() {
+            displays.reload_keyboard_settings(&keyboard);
+        }
+    }
+
+    /// Poll from the compositor's frame loop, before launch actions run, so
+    /// a launch in this tick sees the current set of displays.
+    pub(crate) fn poll(&mut self, chrome: &crate::shell::chrome_state::Chrome) {
+        let mut registry = registry();
+        let Some(displays) = registry.displays.as_mut() else {
             return;
         };
-        match start_keyboard_update(bridge, keyboard.clone()) {
-            Ok(update) => self.keyboard_update = Some(update),
-            Err(error) => {
-                self.pending_keyboard = Some(keyboard);
-                tracing::warn!(
-                    %error,
-                    "Xwayland: could not start coalesced keyboard settings update; will retry"
-                );
-            }
-        }
-    }
-
-    /// Launch the potentially five-second readiness probe off the compositor
-    /// thread. `poll` only uses `try_recv`, so input and rendering continue
-    /// while satellite waits for Xwayland to create its socket.
-    fn start_async(&mut self, wayland_socket: &OsStr, phase: &'static str) {
-        debug_assert!(self.bridge.is_none());
-        debug_assert!(self.starting.is_none());
-        let wayland_socket = wayland_socket.to_os_string();
-        let (sender, receiver) = mpsc::channel();
-        let worker_sender = sender.clone();
-        match std::thread::Builder::new()
-            .name("tilo-xwayland-start".into())
-            .spawn(move || {
-                let result = SessionXwayland::start_unpublished(&wayland_socket);
-                // If the supervisor was dropped during startup, `send` gives
-                // the unpublished bridge back in its error and dropping it
-                // kills/reaps the child without touching the launcher slot.
-                let _ = worker_sender.send(result);
-            }) {
-            Ok(_worker) => self.starting = Some(receiver),
-            Err(error) => {
-                tracing::warn!(%error, %phase, "could not start Xwayland recovery worker");
-                let _ = sender.send(Err(format!("starting Xwayland recovery worker: {error}")));
-                self.starting = Some(receiver);
-            }
-        }
-    }
-
-    fn record_failure(&mut self, now: Instant, chrome: &crate::shell::chrome_state::Chrome) {
-        crate::shell::host_apps::set_x11_starting();
-        if self
-            .ready_since
-            .is_some_and(|ready_since| now.saturating_duration_since(ready_since) >= STABLE_UPTIME)
+        if displays.workspaces.is_empty()
+            && displays.unavailable.is_empty()
+            && self.watched.is_empty()
         {
-            // A bridge that stayed up for a normal session interval proved the
-            // prior recovery healthy. Its later exit starts a fresh budget.
-            self.consecutive_failures = 0;
-        }
-        self.ready_since = None;
-        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        if self.consecutive_failures >= MAX_RECOVERY_ATTEMPTS {
-            self.retry_at = None;
-            crate::shell::host_apps::set_x11_unavailable();
-            self.announce_unavailable(chrome);
             return;
         }
-        self.retry_at = now.checked_add(retry_delay(self.consecutive_failures));
+        let live = live_workspaces(chrome);
+        let wayland_socket = self.wayland_socket.clone();
+        let satellite = displays.satellite.clone();
+        let mut spawn = |display: &WorkspaceDisplay| match satellite.as_ref() {
+            Ok(binary) => spawn_satellite(binary, &wayland_socket, display),
+            Err(reason) => Err(reason.clone()),
+        };
+        let exhausted = self.sync(displays, &live, Instant::now(), &mut spawn);
+        drop(registry);
+        for workspace in exhausted {
+            tracing::warn!(%workspace, "X11 compatibility unavailable in workspace");
+            announce_unavailable(chrome);
+        }
     }
 
-    fn announce_unavailable(&mut self, chrome: &crate::shell::chrome_state::Chrome) {
-        if self.unavailable_announced {
-            return;
+    /// Bring displays and loop wakes in line with the open workspaces.
+    fn sync(
+        &mut self,
+        displays: &mut Displays,
+        live: &HashSet<String>,
+        now: Instant,
+        spawn: &mut Spawn<'_>,
+    ) -> Vec<String> {
+        displays.retain_workspaces(live);
+        let exhausted = displays.poll(now, spawn);
+        let gone: Vec<String> = self
+            .watched
+            .keys()
+            .filter(|workspace| !displays.workspaces.contains_key(*workspace))
+            .cloned()
+            .collect();
+        for workspace in gone {
+            if let Some((token, _)) = self.watched.remove(&workspace) {
+                self.watch.unwatch(token);
+            }
         }
-        self.unavailable_announced = true;
-        let mut notification = crate::shell::notification::Notification::new(
-            "X11 compatibility unavailable",
-            "Legacy X11 apps can’t open right now. Tilo could not restart the compatibility service; use a Wayland app or restart the desktop session.",
-        )
-            .with_severity(crate::shell::notification::NotificationSeverity::Error)
-            .with_app_name("System")
-            .with_dismiss_after(crate::shell::notification::PERSISTENT_DISMISS);
-        // A broken compatibility service is machine state, not an app's
-        // social notification. Do Not Disturb must not conceal the only
-        // explanation for why legacy applications no longer launch.
-        notification.bypass_dnd = true;
-        chrome.borrow_mut().push_notification_full(notification);
+        for (workspace, display) in &displays.workspaces {
+            let wanted = display.wants_watch();
+            if let Some((token, watching)) = self.watched.get_mut(workspace) {
+                if *watching != wanted {
+                    self.watch.set_watching(token, wanted);
+                    *watching = wanted;
+                }
+                continue;
+            }
+            match self.watch.watch(&display.listener) {
+                Ok(token) => {
+                    if !wanted {
+                        self.watch.set_watching(&token, false);
+                    }
+                    self.watched.insert(workspace.clone(), (token, wanted));
+                }
+                Err(error) => tracing::warn!(%error, "X11 display cannot wake the compositor"),
+            }
+        }
+        exhausted
     }
 }
 
-fn setxkbmap_args(keyboard: &super::backend::drm::input_config::KeyboardSettings) -> Vec<OsString> {
-    let active = keyboard
-        .active_index
-        .min(keyboard.layouts.split(',').count().saturating_sub(1));
-    let layout = keyboard.layouts.split(',').nth(active).unwrap_or("us");
-    let variant = keyboard.variants.split(',').nth(active).unwrap_or("");
-    let mut args = vec![OsString::from("-layout"), OsString::from(layout)];
-    if !variant.is_empty() {
-        args.extend([OsString::from("-variant"), OsString::from(variant)]);
+impl<W: ListenerWatch> Drop for XwaylandSupervisor<W> {
+    fn drop(&mut self) {
+        for (_, (token, _)) in self.watched.drain() {
+            self.watch.unwatch(token);
+        }
+        let mut registry = registry();
+        registry.displays = None;
+        registry.wake = None;
     }
-    // Clear inherited/server options before applying the exact Tilo set.
-    args.extend([OsString::from("-option"), OsString::new()]);
-    if let Some(options) = keyboard
-        .options
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        args.extend([OsString::from("-option"), OsString::from(options)]);
-    }
-    args
 }
 
-fn start_keyboard_update_with_binary(
-    bridge: &SessionXwayland,
-    keyboard: super::backend::drm::input_config::KeyboardSettings,
+fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<String> {
+    let state = chrome.borrow();
+    let tree = state.tree();
+    tree.desktop
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.room.to_string())
+        .collect()
+}
+
+fn announce_unavailable(chrome: &crate::shell::chrome_state::Chrome) {
+    let mut notification = crate::shell::notification::Notification::new(
+        "X11 compatibility unavailable",
+        "Legacy X11 apps can’t open in this workspace right now. Tilo could not keep the compatibility service running; use a Wayland app or restart the desktop session.",
+    )
+    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+    .with_app_name("System")
+    .with_dismiss_after(crate::shell::notification::PERSISTENT_DISMISS);
+    // A broken compatibility service is machine state, not an app's social
+    // notification. Do Not Disturb must not conceal the only explanation for
+    // why legacy applications no longer launch.
+    notification.bypass_dnd = true;
+    chrome.borrow_mut().push_notification_full(notification);
+}
+
+fn spawn_satellite(
     binary: &Path,
-) -> Result<KeyboardUpdate, String> {
-    let child = Command::new(binary)
-        .args(setxkbmap_args(&keyboard))
-        .env("DISPLAY", &bridge.display)
-        .env("XAUTHORITY", &bridge.authority)
+    wayland_socket: &OsStr,
+    display: &WorkspaceDisplay,
+) -> Result<(Child, KeyboardSettings), String> {
+    let keyboard = KeyboardSettings::load();
+    let runtime_path = satellite_runtime_path(binary, std::env::var_os("PATH").as_deref())?;
+    let listen_fd = display.listener.as_raw_fd();
+    let mut command = Command::new(binary);
+    command
+        .arg(format!(":{}", display.number))
+        .args(["-listenfd", &listen_fd.to_string()])
+        .arg("-auth")
+        .arg(&display.authority)
+        .args(["-nolisten", "tcp"])
+        .env("WAYLAND_DISPLAY", wayland_socket)
+        .env_remove("DISPLAY")
+        .env_remove("XAUTHORITY")
+        // Xwayland compiles its own XKB map before it receives any input.
+        // In a display-manager session there need not be PAM-provided
+        // XKB_DEFAULT_* variables, so inheriting the process environment
+        // silently gives every legacy app US regardless of the Tilo seat
+        // keymap. Keep both sides on the same validated settings.
+        .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
+        .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
+        .env(
+            "XKB_DEFAULT_OPTIONS",
+            keyboard.options.as_deref().unwrap_or(""),
+        )
+        // Satellite deliberately execs a bare `Xwayland`. Resolve the
+        // sibling shipped in the same runtime first so a container/host PATH
+        // mix (or a user-local shadow) cannot pair it with an ABI-
+        // incompatible X server. Development fallbacks remain available
+        // after that first directory.
+        .env("PATH", runtime_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    // SAFETY: the closure runs in the forked child before exec and only
+    // calls the async-signal-safe `fcntl`. Clearing FD_CLOEXEC there hands
+    // the listening socket to satellite without leaking it into any other
+    // process the compositor starts.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(listen_fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| format!("starting {}: {error}", binary.display()))?;
+    Ok((child, keyboard))
+}
+
+/// The installed satellite, if it can take over a socket Tilo bound.
+fn resolve_satellite() -> Result<PathBuf, String> {
+    let binary = satellite_binary().ok_or_else(|| {
+        "xwayland-satellite is not installed; X11-only applications are unavailable".to_string()
+    })?;
+    let supported = Command::new(&binary)
+        .arg("--test-listenfd-support")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("starting setxkbmap: {error}"))?;
-    Ok(KeyboardUpdate {
-        child,
-        requested: keyboard,
-        started: Instant::now(),
-    })
-}
-
-fn start_keyboard_update(
-    bridge: &SessionXwayland,
-    keyboard: super::backend::drm::input_config::KeyboardSettings,
-) -> Result<KeyboardUpdate, String> {
-    start_keyboard_update_with_binary(bridge, keyboard, Path::new("/usr/bin/setxkbmap"))
-}
-
-fn retry_delay(consecutive_failures: u8) -> Duration {
-    // 1s, 2s; the third failure stops and tells the person what to do.
-    Duration::from_secs(1_u64 << u32::from(consecutive_failures.saturating_sub(1).min(1)))
-}
-
-impl SessionXwayland {
-    fn start_unpublished(wayland_socket: &OsStr) -> Result<Self, String> {
-        let binary = satellite_binary().ok_or_else(|| {
-            "xwayland-satellite is not installed; X11-only host applications are unavailable"
-                .to_string()
-        })?;
-        let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
-        let runtime = runtime_root.join("tilo-session/xwayland");
-        fs::create_dir_all(&runtime)
-            .map_err(|error| format!("creating {}: {error}", runtime.display()))?;
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("protecting {}: {error}", runtime.display()))?;
-
-        let (display_number, reservation_file, reservation) = reserve_display(&runtime)?;
-        let authority = runtime.join(format!("Xauthority-{display_number}"));
-        if let Err(error) = write_xauthority(&authority, display_number) {
-            drop(reservation_file);
-            let _ = fs::remove_file(&reservation);
-            return Err(error);
-        }
-        let x_display = format!(":{display_number}");
-        let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
-        let runtime_path = satellite_runtime_path(&binary, std::env::var_os("PATH").as_deref())?;
-
-        let mut command = Command::new(&binary);
-        command
-            .arg(&x_display)
-            .args(["-auth", authority.to_string_lossy().as_ref()])
-            .args(["-nolisten", "tcp"])
-            .env("WAYLAND_DISPLAY", wayland_socket)
-            // Xwayland compiles its own XKB map before it receives any input.
-            // In a display-manager session there need not be PAM-provided
-            // XKB_DEFAULT_* variables, so inheriting the process environment
-            // silently gives every legacy host app US regardless of the Tilo
-            // seat keymap. Keep both sides on the same validated settings.
-            .env("XKB_DEFAULT_LAYOUT", &keyboard.layouts)
-            .env("XKB_DEFAULT_VARIANT", &keyboard.variants)
-            // Satellite deliberately execs a bare `Xwayland`. Resolve the
-            // sibling shipped in the same runtime first so a container/host
-            // PATH mix (or a user-local shadow) cannot pair it with an ABI-
-            // incompatible X server. Development fallbacks remain available
-            // after that first directory.
-            .env("PATH", runtime_path)
-            .env(
-                "XKB_DEFAULT_OPTIONS",
-                keyboard.options.as_deref().unwrap_or(""),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        // Do not use PR_SET_PDEATHSIG here: this child is spawned by the
-        // intentionally short-lived startup worker, not the compositor
-        // thread, so the kernel would terminate every healthy bridge as soon
-        // as startup returned it to the supervisor. SessionXwayland::drop is
-        // the authoritative owner cleanup for normal exit, failed startup,
-        // receiver abandonment, and compositor teardown.
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                let _ = fs::remove_file(&authority);
-                let _ = fs::remove_file(&reservation);
-                return Err(format!("starting {}: {error}", binary.display()));
-            }
-        };
-        drop(reservation_file);
-
-        if let Err(error) = wait_until_ready(&mut child, display_number) {
-            if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-            let _ = fs::remove_file(&authority);
-            let _ = fs::remove_file(&reservation);
-            return Err(error);
-        }
-
-        tracing::info!(display = %x_display, binary = %binary.display(), "rootless Xwayland compatibility bridge starting");
-        Ok(Self {
-            child,
-            runtime,
-            display: x_display,
-            authority,
-            reservation,
-            published: false,
-        })
-    }
-
-    fn publish(&mut self) {
-        debug_assert!(!self.published);
-        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
-            display: self.display.clone(),
-            authority: self.authority.clone(),
-        }));
-        self.published = true;
-    }
-
-    /// Reap an exited bridge and immediately revoke its connection details
-    /// from future host launches. `None` means the child is still alive.
-    fn poll_exit(&mut self) -> Result<Option<String>, String> {
-        match self.child.try_wait() {
-            Ok(Some(status)) => {
-                self.clear_launch_environment();
-                self.remove_runtime_files();
-                Ok(Some(status.to_string()))
-            }
-            Ok(None) => Ok(None),
-            Err(error) => Err(format!("checking xwayland-satellite: {error}")),
-        }
-    }
-
-    fn clear_launch_environment(&self) {
-        if self.published {
-            crate::shell::host_apps::set_x11_session(None);
-        }
-    }
-
-    fn remove_runtime_files(&self) {
-        let _ = fs::remove_file(&self.authority);
-        let _ = fs::remove_file(&self.reservation);
-        let _ = fs::remove_dir(&self.runtime);
-    }
-}
-
-fn wait_until_ready(child: &mut Child, display: u16) -> Result<(), String> {
-    let socket = PathBuf::from(format!("/tmp/.X11-unix/X{display}"));
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "xwayland-satellite exited before opening display :{display} ({status})"
-                ));
-            }
-            Ok(None) => {}
-            Err(error) => return Err(format!("checking xwayland-satellite: {error}")),
-        }
-        if x_socket_ready(&socket) {
-            return Ok(());
-        }
-        if started.elapsed() >= STARTUP_TIMEOUT {
-            return Err(format!(
-                "xwayland-satellite did not open display :{display} within {} seconds",
-                STARTUP_TIMEOUT.as_secs()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Refuse a symlink, regular file, or another user's socket at the globally
-/// shared X11 path. The display number is reserved inside this user's runtime
-/// directory, but `/tmp/.X11-unix` is intentionally shared by every login.
-fn x_socket_ready(path: &Path) -> bool {
-    // SAFETY: `geteuid` is a side-effect-free process credential query.
-    let current_uid = unsafe { libc::geteuid() };
-    fs::symlink_metadata(path)
-        .is_ok_and(|metadata| metadata.file_type().is_socket() && metadata.uid() == current_uid)
-}
-
-impl Drop for SessionXwayland {
-    fn drop(&mut self) {
-        self.clear_launch_environment();
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-        self.remove_runtime_files();
+        .status()
+        .map_err(|error| format!("running {}: {error}", binary.display()))?
+        .success();
+    if supported {
+        Ok(binary)
+    } else {
+        Err(format!(
+            "{} cannot start on demand (no -listenfd support); X11-only applications are unavailable",
+            binary.display()
+        ))
     }
 }
 
 fn satellite_binary() -> Option<PathBuf> {
     // The native binary never accepts an arbitrary satellite from its
-    // environment.  Hosted integration tests, however, need to validate a
+    // environment. Hosted integration tests, however, need to validate a
     // candidate upstream satellite against the same private compositor they
     // start, without replacing the installed host binary.
     #[cfg(feature = "hosted-test-control")]
@@ -596,30 +809,118 @@ fn satellite_runtime_path(satellite: &Path, inherited: Option<&OsStr>) -> Result
         .map_err(|error| format!("constructing xwayland-satellite runtime PATH: {error}"))
 }
 
-fn reserve_display(runtime: &Path) -> Result<(u16, File, PathBuf), String> {
-    let mut random = [0_u8; 2];
-    UnwrapErr(SysRng).fill_bytes(&mut random);
-    let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
-    for offset in 0..DISPLAY_ATTEMPTS {
-        let display = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
-        if Path::new(&format!("/tmp/.X11-unix/X{display}")).exists()
-            || Path::new(&format!("/tmp/.X{display}-lock")).exists()
-        {
-            continue;
-        }
-        let reservation = runtime.join(format!("display-{display}.lock"));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&reservation)
-        {
-            Ok(file) => return Ok((display, file, reservation)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("reserving X display: {error}")),
-        }
+fn setxkbmap_args(keyboard: &KeyboardSettings) -> Vec<OsString> {
+    let active = keyboard
+        .active_index
+        .min(keyboard.layouts.split(',').count().saturating_sub(1));
+    let layout = keyboard.layouts.split(',').nth(active).unwrap_or("us");
+    let variant = keyboard.variants.split(',').nth(active).unwrap_or("");
+    let mut args = vec![OsString::from("-layout"), OsString::from(layout)];
+    if !variant.is_empty() {
+        args.extend([OsString::from("-variant"), OsString::from(variant)]);
     }
-    Err("no unused X display number is available".to_string())
+    // Clear inherited/server options before applying the exact Tilo set.
+    args.extend([OsString::from("-option"), OsString::new()]);
+    if let Some(options) = keyboard
+        .options
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        args.extend([OsString::from("-option"), OsString::from(options)]);
+    }
+    args
+}
+
+fn start_keyboard_update(
+    session: &X11Session,
+    keyboard: KeyboardSettings,
+    binary: &Path,
+) -> Result<KeyboardUpdate, String> {
+    let child = Command::new(binary)
+        .args(setxkbmap_args(&keyboard))
+        .env("DISPLAY", &session.display)
+        .env("XAUTHORITY", &session.authority)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("starting setxkbmap: {error}"))?;
+    Ok(KeyboardUpdate {
+        child,
+        requested: keyboard,
+        started: Instant::now(),
+    })
+}
+
+/// Create the shared socket directory the way the X server would, if no
+/// earlier server or tmpfiles rule has.
+fn ensure_socket_dir(directory: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(format!("{} is not a directory", directory.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(directory)
+            .and_then(|()| fs::set_permissions(directory, fs::Permissions::from_mode(0o1777)))
+            .map_err(|error| format!("creating {}: {error}", directory.display())),
+        Err(error) => Err(format!("inspecting {}: {error}", directory.display())),
+    }
+}
+
+/// Claim a display number with the conventional X server lock file, so
+/// neither another Tilo workspace nor any other X server on the machine picks
+/// the same number. `Ok(false)` means the number is taken.
+fn claim_lock(lock: &Path) -> Result<bool, String> {
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o444)
+        .open(lock)
+    {
+        Ok(mut file) => {
+            // The X convention: the owner's pid, ten columns wide.
+            file.write_all(format!("{:>10}\n", std::process::id()).as_bytes())
+                .map_err(|error| format!("writing {}: {error}", lock.display()))?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(format!("claiming {}: {error}", lock.display())),
+    }
+}
+
+fn has_pending_connection(listener: &UnixListener) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for a descriptor `listener` keeps open, and a
+    // zero timeout never blocks the compositor thread.
+    let ready = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
+    ready > 0 && descriptor.revents & libc::POLLIN != 0
+}
+
+/// Connected X clients of the display bound at `socket`. Each connection the
+/// X server accepted appears in the kernel's socket table under the listening
+/// path, so this counts clients without talking X11. `None` when the table
+/// cannot be read.
+fn connected_clients(socket: &Path) -> Option<usize> {
+    fs::read_to_string("/proc/net/unix")
+        .ok()
+        .map(|table| count_connected(&table, socket))
+}
+
+fn count_connected(table: &str, socket: &Path) -> usize {
+    const SS_CONNECTED: &str = "03";
+    let target = socket.as_os_str().as_bytes();
+    table
+        .lines()
+        .skip(1)
+        .filter(|line| {
+            // Num RefCount Protocol Flags Type St Inode Path
+            let mut fields = line.split_ascii_whitespace();
+            fields.nth(5) == Some(SS_CONNECTED)
+                && fields.nth(1).is_some_and(|path| path.as_bytes() == target)
+        })
+        .count()
 }
 
 fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
@@ -654,400 +955,449 @@ fn push_u16(buffer: &mut Vec<u8>, value: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compositor::backend::drm::input_config::KeyboardSettings;
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::UnixStream;
 
-    #[test]
-    fn compatibility_is_confined_to_add_on_desktop_sessions() {
-        assert!(enabled_for(super::super::InstallMode::HostDesktop));
-        assert!(!enabled_for(super::super::InstallMode::FullSystem));
+    struct Fixture {
+        _root: tempfile::TempDir,
+        displays: Displays,
+    }
+
+    fn fixture() -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            sockets: root.path().join(".X11-unix"),
+            locks: root.path().to_path_buf(),
+            runtime: root.path().join("runtime/tilo-session/xwayland"),
+        };
+        Fixture {
+            displays: Displays::new(paths, Ok(PathBuf::from("/usr/bin/xwayland-satellite"))),
+            _root: root,
+        }
+    }
+
+    fn live(workspaces: &[&str]) -> HashSet<String> {
+        workspaces.iter().map(|w| (*w).to_string()).collect()
+    }
+
+    fn sleeper() -> Result<(Child, KeyboardSettings), String> {
+        let child = Command::new("/usr/bin/sleep")
+            .arg("30")
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        Ok((child, KeyboardSettings::default()))
+    }
+
+    fn connect(session: &X11Session, displays: &Displays) -> UnixStream {
+        let number = session.display.trim_start_matches(':');
+        UnixStream::connect(displays.paths.sockets.join(format!("X{number}"))).unwrap()
+    }
+
+    #[derive(Default)]
+    struct FakeWatch {
+        next: u32,
+        live: HashMap<u32, bool>,
+    }
+
+    impl ListenerWatch for &mut FakeWatch {
+        type Token = u32;
+        fn watch(&mut self, _listener: &UnixListener) -> Result<u32, String> {
+            self.next = self.next.saturating_add(1);
+            self.live.insert(self.next, true);
+            Ok(self.next)
+        }
+        fn set_watching(&mut self, token: &u32, watching: bool) {
+            self.live.insert(*token, watching);
+        }
+        fn unwatch(&mut self, token: u32) {
+            self.live.remove(&token);
+        }
     }
 
     #[test]
-    fn keyboard_settings_retain_layout_variant_and_options_for_xwayland() {
-        let section = serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "keyboard_layouts": ["de:nodeadkeys"],
-            "compose_key": "rwin"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings =
-            crate::compositor::backend::drm::input_config::KeyboardSettings::from_section(&section);
-        assert_eq!(settings.layouts, "de");
-        assert_eq!(settings.variants, "nodeadkeys");
-        assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
-    }
-
-    #[test]
-    fn live_xwayland_update_selects_the_active_layout_and_clears_old_options() {
-        let section = serde_json::json!({
-            "keyboard_layouts": ["us", "de:nodeadkeys"],
-            "keyboard_layout": "de:nodeadkeys",
-            "compose_key": "rwin"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let settings =
-            crate::compositor::backend::drm::input_config::KeyboardSettings::from_section(&section);
-        assert_eq!(
-            setxkbmap_args(&settings),
-            [
-                "-layout",
-                "de",
-                "-variant",
-                "nodeadkeys",
-                "-option",
-                "",
-                "-option",
-                "grp:alt_shift_toggle,compose:rwin",
-            ]
-            .map(OsString::from)
+    fn each_workspace_gets_its_own_display_and_authority() {
+        let mut fixture = fixture();
+        let (first, created) = fixture.displays.session_for("room-a").unwrap();
+        assert!(created);
+        let (again, created) = fixture.displays.session_for("room-a").unwrap();
+        assert!(!created, "a workspace keeps one display");
+        assert_eq!(first, again);
+        let (second, _) = fixture.displays.session_for("room-b").unwrap();
+        assert_ne!(first.display, second.display);
+        assert_ne!(first.authority, second.authority);
+        assert_ne!(
+            fs::read(&first.authority).unwrap(),
+            fs::read(&second.authority).unwrap(),
+            "one workspace's cookie must not open another workspace's server"
         );
-
-        let plain = KeyboardSettings::default();
-        assert_eq!(
-            setxkbmap_args(&plain),
-            ["-layout", "us", "-option", ""].map(OsString::from)
-        );
+        for session in [&first, &second] {
+            let number = session.display.trim_start_matches(':');
+            assert!(
+                fixture
+                    .displays
+                    .paths
+                    .locks
+                    .join(format!(".X{number}-lock"))
+                    .exists(),
+                "the display number is claimed machine-wide"
+            );
+        }
     }
 
     #[test]
-    fn satellite_and_xwayland_are_resolved_from_one_runtime_first() {
-        let path = satellite_runtime_path(
-            Path::new("/usr/bin/xwayland-satellite"),
-            Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
-        )
-        .unwrap();
-        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
-        assert_eq!(
-            entries,
-            vec![
-                PathBuf::from("/usr/bin"),
-                PathBuf::from("/run/host/usr/bin"),
-                PathBuf::from("/opt/tools"),
-            ]
-        );
-    }
-
-    #[test]
-    fn authority_is_private_and_contains_no_text_cookie() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("Xauthority");
-        write_xauthority(&path, 1234).unwrap();
-        let metadata = fs::metadata(&path).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        let bytes = fs::read(path).unwrap();
-        assert!(bytes.windows(4).any(|window| window == b"1234"));
+    fn launch_environment_carries_only_the_owning_workspace_display() {
+        let mut fixture = fixture();
+        let (a, _) = fixture.displays.session_for("room-a").unwrap();
+        let (b, _) = fixture.displays.session_for("room-b").unwrap();
+        let app = crate::shell::host_apps::HostApp {
+            desktop_id: "com.valvesoftware.Steam".into(),
+            name: "Steam".into(),
+            source_label: "System",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            mime_types: Vec::new(),
+            terminal: false,
+            icon: None,
+            window_identities: vec!["steam".into()],
+        };
+        let command = |x11: Option<&X11Session>| {
+            crate::shell::host_apps::build_launch_command(
+                &app,
+                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/run/user/1000/wayland-1"),
+                None,
+                x11,
+                None,
+                None,
+            )
+        };
+        let in_a = command(Some(&a));
         assert!(
-            bytes
-                .windows(b"MIT-MAGIC-COOKIE-1".len())
-                .any(|window| window == b"MIT-MAGIC-COOKIE-1")
+            in_a.args
+                .windows(2)
+                .any(|pair| pair == ["--x11-display", a.display.as_str()])
+        );
+        assert!(!in_a.args.contains(&b.display));
+        assert!(
+            !in_a
+                .args
+                .iter()
+                .any(|arg| *arg == b.authority.display().to_string()),
+            "a launch never learns another workspace's cookie"
+        );
+        assert!(
+            in_a.env
+                .iter()
+                .all(|(key, _)| key != "DISPLAY" && key != "XAUTHORITY"),
+            "the display travels as a launch argument, never ambient environment"
+        );
+        let unattributed = command(None);
+        assert!(
+            !unattributed
+                .args
+                .iter()
+                .any(|arg| arg == "--x11-display" || arg == "--x11-authority")
         );
     }
 
     #[test]
-    fn readiness_requires_an_owned_unix_socket() {
+    fn a_display_starts_its_bridge_only_when_a_client_connects() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let spawned = std::cell::Cell::new(0_u32);
+        let mut spawn = |_: &WorkspaceDisplay| {
+            spawned.set(spawned.get().saturating_add(1));
+            sleeper()
+        };
+        fixture.displays.poll(Instant::now(), &mut spawn);
+        assert!(
+            fixture.displays.workspaces["room-a"].wants_watch(),
+            "no client, no X server"
+        );
+
+        let _client = connect(&session, &fixture.displays);
+        fixture.displays.poll(Instant::now(), &mut spawn);
+        fixture.displays.poll(Instant::now(), &mut spawn);
+        assert_eq!(spawned.get(), 1, "one bridge per display, started once");
+        assert!(!fixture.displays.workspaces["room-a"].wants_watch());
+    }
+
+    #[test]
+    fn closing_a_workspace_stops_its_bridge_and_removes_its_display() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let (kept, _) = fixture.displays.session_for("room-b").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        fixture.displays.poll(Instant::now(), &mut |_| sleeper());
+        let pid = fixture.displays.workspaces["room-a"]
+            .bridge
+            .as_ref()
+            .unwrap()
+            .child
+            .id();
+        let socket = fixture.displays.workspaces["room-a"].socket.clone();
+        let lock = fixture.displays.workspaces["room-a"].lock.clone();
+
+        fixture.displays.retain_workspaces(&live(&["room-b"]));
+        assert!(!fixture.displays.workspaces.contains_key("room-a"));
+        assert!(!socket.exists(), "the socket is unlinked");
+        assert!(!lock.exists(), "the display number is released");
+        assert!(!session.authority.exists(), "the cookie is removed");
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "the bridge process is reaped"
+        );
+        assert!(kept.authority.exists(), "other workspaces are untouched");
+    }
+
+    #[test]
+    fn an_idle_bridge_stops_and_the_next_client_restarts_it() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        let spawned = std::cell::Cell::new(0_u32);
+        let mut spawn = |_: &WorkspaceDisplay| {
+            spawned.set(spawned.get().saturating_add(1));
+            sleeper()
+        };
+        fixture.displays.poll(start, &mut spawn);
+        // The fake bridge never accepts, so the connection stays in the
+        // backlog and the server has no connected client.
+        drop(client);
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        // Drain the backlog the fake bridge left behind.
+        display.listener.set_nonblocking(true).unwrap();
+        while display.listener.accept().is_ok() {}
+        fixture.displays.poll(start, &mut spawn);
+        assert!(!fixture.displays.workspaces["room-a"].wants_watch());
+        fixture.displays.poll(start + IDLE_TIMEOUT, &mut spawn);
+        assert!(
+            fixture.displays.workspaces["room-a"].wants_watch(),
+            "no client for the idle timeout stops the server"
+        );
+        assert_eq!(
+            fixture.displays.workspaces["room-a"].rapid_exits, 0,
+            "an idle stop is not a failure"
+        );
+        assert_eq!(
+            fixture.displays.session_for("room-a").unwrap().0,
+            session,
+            "the display outlives its idle server"
+        );
+
+        let _client = connect(&session, &fixture.displays);
+        fixture.displays.poll(start + IDLE_TIMEOUT, &mut spawn);
+        assert_eq!(spawned.get(), 2);
+    }
+
+    #[test]
+    fn a_crash_looping_bridge_makes_only_its_workspace_unavailable() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        fixture.displays.session_for("room-b").unwrap();
+        let _client = connect(&session, &fixture.displays);
+        let mut exhausted = Vec::new();
+        for _ in 0..MAX_RAPID_EXITS {
+            exhausted = fixture
+                .displays
+                .poll(Instant::now(), &mut |_| Err("exec failed".into()));
+        }
+        assert_eq!(exhausted, ["room-a"]);
+        assert!(fixture.displays.session_for("room-a").is_err());
+        assert!(fixture.displays.session_for("room-b").is_ok());
+
+        fixture.displays.retain_workspaces(&live(&["room-b"]));
+        fixture
+            .displays
+            .retain_workspaces(&live(&["room-a", "room-b"]));
+        assert!(
+            fixture.displays.session_for("room-a").is_ok(),
+            "a reopened workspace tries again"
+        );
+    }
+
+    #[test]
+    fn a_missing_satellite_hands_out_no_display() {
+        let mut fixture = fixture();
+        fixture.displays.satellite = Err("not installed".into());
+        assert!(fixture.displays.session_for("room-a").is_err());
+        assert!(fixture.displays.workspaces.is_empty());
+    }
+
+    #[test]
+    fn the_supervisor_watches_only_displays_without_a_running_bridge() {
+        let mut fixture = fixture();
+        let mut fake = FakeWatch::default();
+        let mut supervisor = XwaylandSupervisor {
+            watch: &mut fake,
+            wayland_socket: OsString::from("wayland-test"),
+            watched: HashMap::new(),
+        };
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let now = Instant::now();
+        supervisor.sync(&mut fixture.displays, &live(&["room-a"]), now, &mut |_| {
+            sleeper()
+        });
+        assert!(supervisor.watched["room-a"].1);
+
+        let _client = connect(&session, &fixture.displays);
+        supervisor.sync(&mut fixture.displays, &live(&["room-a"]), now, &mut |_| {
+            sleeper()
+        });
+        assert!(
+            !supervisor.watched["room-a"].1,
+            "a running bridge accepts its own clients"
+        );
+
+        supervisor.sync(&mut fixture.displays, &live(&[]), now, &mut |_| sleeper());
+        assert!(supervisor.watched.is_empty());
+        drop(supervisor);
+        assert!(
+            fake.live.is_empty(),
+            "closed workspaces leave no wake source"
+        );
+    }
+
+    #[test]
+    fn connected_clients_are_counted_from_the_socket_table() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("X1234");
-        fs::write(&path, b"not a socket").unwrap();
-        assert!(!x_socket_ready(&path));
-        fs::remove_file(&path).unwrap();
-
         let listener = UnixListener::bind(&path).unwrap();
-        assert!(x_socket_ready(&path));
-        drop(listener);
+        assert_eq!(connected_clients(&path), Some(0));
+        let _client = UnixStream::connect(&path).unwrap();
+        let (_accepted, _) = listener.accept().unwrap();
+        assert_eq!(connected_clients(&path), Some(1));
+
+        let table = "Num RefCount Protocol Flags Type St Inode Path\n\
+            0: 00000002 00000000 00010000 0001 01 1 /tmp/.X11-unix/X7\n\
+            0: 00000003 00000000 00000000 0001 03 2 /tmp/.X11-unix/X7\n\
+            0: 00000003 00000000 00000000 0001 03 3 /tmp/.X11-unix/X70\n\
+            0: 00000003 00000000 00000000 0001 03 4\n";
+        assert_eq!(count_connected(table, Path::new("/tmp/.X11-unix/X7")), 1);
     }
 
     #[test]
-    fn pending_startup_never_blocks_the_compositor_poll() {
-        let (_sender, receiver) = mpsc::channel::<Result<SessionXwayland, String>>();
-        let mut supervisor = XwaylandSupervisor {
-            bridge: None,
-            starting: Some(receiver),
-            consecutive_failures: 0,
-            retry_at: None,
-            ready_since: None,
-            unavailable_announced: false,
-            keyboard: KeyboardSettings::default(),
-            keyboard_update: None,
-            pending_keyboard: None,
-        };
-        let chrome = crate::shell::chrome_state::ChromeState::new(
-            crate::shell::state::WorkspaceTree::default(),
-        );
-        let started = Instant::now();
-        supervisor.poll(OsStr::new("wayland-test"), &chrome);
-        assert!(
-            started.elapsed() < Duration::from_millis(50),
-            "poll must only try_recv while the startup worker waits for readiness"
-        );
+    fn xwayland_keyboard_settings_compile_to_setxkbmap_arguments() {
+        // Phase `keyboard_settings_retain_layout_variant_and_options_for_xwayland`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layout": "de:nodeadkeys",
+                "keyboard_layouts": ["de:nodeadkeys"],
+                "compose_key": "rwin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(settings.layouts, "de");
+            assert_eq!(settings.variants, "nodeadkeys");
+            assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+        }
+        // Phase `live_xwayland_update_selects_the_active_layout_and_clears_old_options`.
+        {
+            let section = serde_json::json!({
+                "keyboard_layouts": ["us", "de:nodeadkeys"],
+                "keyboard_layout": "de:nodeadkeys",
+                "compose_key": "rwin"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let settings = KeyboardSettings::from_section(&section);
+            assert_eq!(
+                setxkbmap_args(&settings),
+                [
+                    "-layout",
+                    "de",
+                    "-variant",
+                    "nodeadkeys",
+                    "-option",
+                    "",
+                    "-option",
+                    "grp:alt_shift_toggle,compose:rwin",
+                ]
+                .map(OsString::from)
+            );
+
+            let plain = KeyboardSettings::default();
+            assert_eq!(
+                setxkbmap_args(&plain),
+                ["-layout", "us", "-option", ""].map(OsString::from)
+            );
+        }
     }
 
     #[test]
-    fn startup_child_outlives_the_worker_that_spawned_it() {
-        let child =
-            std::thread::spawn(|| Command::new("/usr/bin/sleep").arg("30").spawn().unwrap())
-                .join()
-                .unwrap();
+    fn xwayland_runtime_path_and_authority_are_private() {
+        // Phase `satellite_and_xwayland_are_resolved_from_one_runtime_first`.
+        {
+            let path = satellite_runtime_path(
+                Path::new("/usr/bin/xwayland-satellite"),
+                Some(OsStr::new("/run/host/usr/bin:/opt/tools:/usr/bin")),
+            )
+            .unwrap();
+            let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+            assert_eq!(
+                entries,
+                vec![
+                    PathBuf::from("/usr/bin"),
+                    PathBuf::from("/run/host/usr/bin"),
+                    PathBuf::from("/opt/tools"),
+                ]
+            );
+        }
+        // Phase `authority_is_private_and_contains_no_text_cookie`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("Xauthority");
+            write_xauthority(&path, 1234).unwrap();
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let bytes = fs::read(path).unwrap();
+            assert!(bytes.windows(4).any(|window| window == b"1234"));
+            assert!(
+                bytes
+                    .windows(b"MIT-MAGIC-COOKIE-1".len())
+                    .any(|window| window == b"MIT-MAGIC-COOKIE-1")
+            );
+        }
+    }
+
+    #[test]
+    fn keyboard_update_waits_for_a_running_server_and_coalesces_to_the_latest() {
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let mut bridge = SessionXwayland {
-            child,
-            runtime: temp.path().to_path_buf(),
-            display: ":999999".into(),
-            authority: temp.path().join("authority"),
-            reservation: temp.path().join("reservation"),
-            published: false,
-        };
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(
-            bridge.child.try_wait().unwrap().is_none(),
-            "the async startup worker ending must not SIGTERM its successful bridge"
-        );
-    }
-
-    #[test]
-    fn completed_keyboard_update_adopts_the_requested_map_without_blocking() {
-        let requested = KeyboardSettings {
+        let slow_setxkbmap = temp.path().join("setxkbmap");
+        fs::write(&slow_setxkbmap, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
+        fs::set_permissions(&slow_setxkbmap, fs::Permissions::from_mode(0o700)).unwrap();
+        let german = KeyboardSettings {
             source_ids: vec!["de:nodeadkeys".into()],
             layouts: "de".into(),
             variants: "nodeadkeys".into(),
             options: None,
             active_index: 0,
         };
-        let child = Command::new("/usr/bin/true").spawn().unwrap();
-        let mut supervisor = XwaylandSupervisor {
-            bridge: None,
-            starting: None,
-            consecutive_failures: 0,
-            retry_at: None,
-            ready_since: None,
-            unavailable_announced: false,
-            keyboard: KeyboardSettings::default(),
-            keyboard_update: Some(KeyboardUpdate {
-                child,
-                requested: requested.clone(),
-                started: Instant::now(),
-            }),
-            pending_keyboard: None,
-        };
-        for _ in 0..100 {
-            supervisor.poll_keyboard_update();
-            if supervisor.keyboard_update.is_none() {
-                break;
-            }
-            // `/usr/bin/true` still needs a scheduler turn to reap on a
-            // busy CI host; yielding alone can repeatedly select this test
-            // thread before the child has reached its terminal state.
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(supervisor.keyboard_update.is_none());
-        assert_eq!(supervisor.keyboard, requested);
-    }
 
-    #[test]
-    fn keyboard_update_coalesces_to_the_latest_request() {
-        let applied = KeyboardSettings {
-            source_ids: vec!["de:nodeadkeys".into()],
-            layouts: "de".into(),
-            variants: "nodeadkeys".into(),
-            options: None,
-            active_index: 0,
-        };
-        // The latest request deliberately returns to the last successfully
-        // applied layout. This is the edge that an early `keyboard ==
-        // self.keyboard` check used to lose while `applied` was in flight.
-        let latest = KeyboardSettings::default();
-        let temp = tempfile::tempdir().unwrap();
-        let fake_setxkbmap = temp.path().join("setxkbmap");
-        std::fs::write(&fake_setxkbmap, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
-        let mut permissions = std::fs::metadata(&fake_setxkbmap).unwrap().permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&fake_setxkbmap, permissions).unwrap();
-        let bridge_child = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
-        let bridge = SessionXwayland {
-            child: bridge_child,
-            runtime: temp.path().to_path_buf(),
-            display: ":999999".into(),
-            authority: temp.path().join("authority"),
-            reservation: temp.path().join("reservation"),
-            published: false,
-        };
-        let mut completed = Command::new("/usr/bin/true").spawn().unwrap();
-        let status = completed.wait().unwrap();
-        assert!(status.success());
-        let mut supervisor = XwaylandSupervisor {
-            bridge: Some(bridge),
-            starting: None,
-            consecutive_failures: 0,
-            retry_at: None,
-            ready_since: None,
-            unavailable_announced: false,
-            keyboard: KeyboardSettings::default(),
-            keyboard_update: Some(KeyboardUpdate {
-                child: completed,
-                requested: applied.clone(),
-                started: Instant::now(),
-            }),
-            pending_keyboard: Some(latest.clone()),
-        };
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        display.request_keyboard(&german, &slow_setxkbmap);
+        assert!(display.bridge.is_none(), "no server, nothing to update");
 
-        for _ in 0..100 {
-            let Some(update) = supervisor.keyboard_update.as_mut() else {
-                break;
-            };
-            if update.child.try_wait().unwrap().is_some() {
-                let update = supervisor.keyboard_update.take().unwrap();
-                supervisor.keyboard = update.requested;
-                let pending = supervisor.pending_keyboard.take().unwrap();
-                supervisor.keyboard_update = Some(
-                    start_keyboard_update_with_binary(
-                        supervisor.bridge.as_ref().unwrap(),
-                        pending,
-                        &fake_setxkbmap,
-                    )
-                    .unwrap(),
-                );
-            }
-            if supervisor
-                .keyboard_update
-                .as_ref()
-                .is_some_and(|update| update.requested == latest)
-            {
-                break;
-            }
-            std::thread::yield_now();
-        }
-
-        assert_eq!(supervisor.keyboard, applied);
-        assert!(supervisor.pending_keyboard.is_none());
+        let _client = connect(&session, &fixture.displays);
+        fixture.displays.poll(Instant::now(), &mut |_| sleeper());
+        let display = fixture.displays.workspaces.get_mut("room-a").unwrap();
+        display.request_keyboard(&german, &slow_setxkbmap);
+        // The latest request returns to the layout the server already has
+        // while the German update is still in flight; it must not be lost.
+        display.request_keyboard(&KeyboardSettings::default(), &slow_setxkbmap);
+        let bridge = display.bridge.as_ref().unwrap();
         assert_eq!(
-            supervisor
+            bridge
                 .keyboard_update
                 .as_ref()
                 .map(|update| &update.requested),
-            Some(&latest),
-            "finishing the older helper must immediately schedule the newest saved layout"
+            Some(&german)
         );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn stable_uptime_resets_the_rapid_failure_budget_but_crash_loops_exhaust_it() {
-        let chrome = crate::shell::chrome_state::ChromeState::new(
-            crate::shell::state::WorkspaceTree::default(),
-        );
-        let now = Instant::now();
-        let mut supervisor = XwaylandSupervisor {
-            bridge: None,
-            starting: None,
-            consecutive_failures: MAX_RECOVERY_ATTEMPTS - 1,
-            retry_at: None,
-            ready_since: now.checked_sub(STABLE_UPTIME),
-            unavailable_announced: false,
-            keyboard: KeyboardSettings::default(),
-            keyboard_update: None,
-            pending_keyboard: None,
-        };
-        supervisor.record_failure(now, &chrome);
-        assert_eq!(supervisor.consecutive_failures, 1);
-        assert_eq!(supervisor.retry_at, now.checked_add(retry_delay(1)));
-
-        supervisor.ready_since = Some(now);
-        supervisor.consecutive_failures = MAX_RECOVERY_ATTEMPTS - 1;
-        supervisor.record_failure(now, &chrome);
-        assert_eq!(supervisor.consecutive_failures, MAX_RECOVERY_ATTEMPTS);
-        assert!(supervisor.retry_at.is_none());
-        assert!(supervisor.unavailable_announced);
-        assert_eq!(
-            crate::shell::host_apps::x11_availability(),
-            crate::shell::host_apps::X11Availability::Unavailable
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn abandoned_startup_result_cannot_clear_a_newer_x11_session() {
-        let temp = tempfile::tempdir().unwrap();
-        let runtime = temp.path().join("xwayland");
-        fs::create_dir(&runtime).unwrap();
-        let newer_authority = temp.path().join("newer-authority");
-        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
-            display: ":5678".into(),
-            authority: newer_authority.clone(),
-        }));
-
-        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
-        let unpublished = SessionXwayland {
-            child,
-            runtime,
-            display: ":1234".into(),
-            authority: temp.path().join("old-authority"),
-            reservation: temp.path().join("old-reservation"),
-            published: false,
-        };
-        let (sender, receiver) = mpsc::channel::<Result<SessionXwayland, String>>();
-        drop(receiver);
-        assert!(
-            sender.send(Ok(unpublished)).is_err(),
-            "dropping a supervisor disconnects its pending startup result"
-        );
-        assert_eq!(
-            crate::shell::host_apps::x11_session(),
-            Some(crate::shell::host_apps::X11Session {
-                display: ":5678".into(),
-                authority: newer_authority,
-            }),
-            "an unpublished result must not revoke a newer live bridge"
-        );
-        crate::shell::host_apps::set_x11_session(None);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn an_exited_ready_bridge_revokes_its_x11_launch_environment() {
-        let temp = tempfile::tempdir().unwrap();
-        let runtime = temp.path().join("xwayland");
-        fs::create_dir(&runtime).unwrap();
-        let authority = runtime.join("Xauthority-1234");
-        let reservation = runtime.join("display-1234.lock");
-        fs::write(&authority, b"test authority").unwrap();
-        fs::write(&reservation, b"reserved").unwrap();
-        crate::shell::host_apps::set_x11_session(Some(crate::shell::host_apps::X11Session {
-            display: ":1234".into(),
-            authority: authority.clone(),
-        }));
-
-        // This child represents a bridge that completed readiness and then
-        // died. Polling is the production liveness path, not a destructor-only
-        // cleanup, so a later launch cannot race stale credentials.
-        let child = Command::new("/bin/sh")
-            .args(["-c", "exit 23"])
-            .spawn()
-            .unwrap();
-        let mut bridge = SessionXwayland {
-            child,
-            runtime,
-            display: ":1234".into(),
-            authority: authority.clone(),
-            reservation: reservation.clone(),
-            published: true,
-        };
-        let status = (0..50)
-            .find_map(|_| {
-                if let Some(status) = bridge.poll_exit().unwrap() {
-                    Some(status)
-                } else {
-                    std::thread::sleep(Duration::from_millis(10));
-                    None
-                }
-            })
-            .expect("the ready bridge child exits");
-        assert!(status.contains("23"));
-        assert!(crate::shell::host_apps::x11_session().is_none());
-        assert!(!authority.exists(), "dead bridge authority is removed");
-        assert!(!reservation.exists(), "dead bridge reservation is removed");
+        assert_eq!(bridge.pending_keyboard, Some(KeyboardSettings::default()));
     }
 }

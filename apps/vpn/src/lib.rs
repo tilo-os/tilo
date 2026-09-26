@@ -45,7 +45,6 @@ pub mod doc;
 pub mod local;
 pub mod model;
 pub mod net;
-pub mod throughput;
 
 pub use app::VpnApp;
 pub use model::{ConnKind, ConnStatus, Connection, Vault};

@@ -40,6 +40,17 @@ pub struct LocalMediaOutputView {
     pub bluetooth_codec: Option<String>,
 }
 
+/// One microphone or other capture device on this machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalMediaInputView {
+    pub node_id: u32,
+    pub label: String,
+    pub is_default: bool,
+    /// The input level (the source's volume) in percent, when known.
+    pub level_percent: Option<u8>,
+    pub muted: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FabricTransferStatus {
     Sending,
@@ -80,8 +91,10 @@ pub struct DeviceFabricView {
     pub local_media: Vec<FabricMediaView>,
     pub media_handoffs: Vec<crate::shell::device_fabric_runtime::MediaHandoffStatusView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
+    pub local_inputs: Vec<LocalMediaInputView>,
     pub transfers: Vec<FabricTransferView>,
     pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
+    pub speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView,
     pub device_health: Vec<crate::shell::spatial_calibration::DeviceHealthView>,
     pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
@@ -109,6 +122,15 @@ pub enum DeviceFabricUiAction {
     },
     RouteLocalAudio {
         node_id: u32,
+    },
+    /// Record from this local input from now on.
+    SelectLocalInput {
+        node_id: u32,
+    },
+    /// Raise or lower this local input's level by one step.
+    StepInputLevel {
+        node_id: u32,
+        raise: bool,
     },
     HandoffBluetooth {
         address: String,
@@ -145,6 +167,26 @@ pub enum DeviceFabricUiAction {
         approved: bool,
     },
     StopRemoteAudio {
+        session_id: [u8; 16],
+    },
+    /// Answer "Join this speaker group?" on this device.
+    ResolveSpeakerGroupConsent {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+        approved: bool,
+    },
+    /// Withdraw this device from a group led by another device.
+    LeaveSpeakerGroup {
+        group: crate::shell::speaker_group::SpeakerGroupId,
+    },
+    StartSpeakerGroupAudio {
+        source_token: u64,
+        group: crate::shell::speaker_group::SpeakerGroupId,
+    },
+    PlayMediaOnSpeakerGroup {
+        session_id: String,
+        group: crate::shell::speaker_group::SpeakerGroupId,
+    },
+    StopSpeakerGroupSession {
         session_id: [u8; 16],
     },
     RequestRemoteCapture {
@@ -231,6 +273,12 @@ pub(super) enum DeviceFabricPaneRow {
     RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
     RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
     RemoteAudioRoute(crate::shell::remote_audio::RemoteAudioRouteView),
+    SpeakerConsent(crate::shell::speaker_group_runtime::SpeakerConsentView),
+    SpeakerSession(crate::shell::speaker_group_runtime::SpeakerSessionView),
+    SpeakerGroup(crate::shell::speaker_group_runtime::SpeakerGroupView),
+    SpeakerMembership(crate::shell::speaker_group_runtime::SpeakerMembershipView),
+    /// Opens Settings → Speakers to make a new set.
+    SpeakerSetup,
     RemoteCaptureConsent(crate::shell::remote_capture::runtime::RemoteCaptureConsentView),
     RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
@@ -247,6 +295,7 @@ pub(super) enum DeviceFabricPaneRow {
     MediaHandoff(crate::shell::device_fabric_runtime::MediaHandoffStatusView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
+    LocalInput(LocalMediaInputView),
     Tethering(crate::shell::personal_tethering_runtime::TetheringStatusView),
     Device(FabricDeviceView),
 }
@@ -277,11 +326,25 @@ pub(super) fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::RemoteAudioConsent),
         )
         .chain(
+            view.speaker_groups
+                .consents
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::SpeakerConsent),
+        )
+        .chain(
             view.remote_audio
                 .routes
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::RemoteAudioRoute),
+        )
+        .chain(
+            view.speaker_groups
+                .sessions
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::SpeakerSession),
         )
         .chain(
             view.remote_audio
@@ -403,10 +466,39 @@ pub(super) fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::LocalOutput),
         )
         .chain(
+            view.local_inputs
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::LocalInput),
+        )
+        .chain(
             view.tethering
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::Tethering),
+        )
+        .chain(
+            view.speaker_groups
+                .groups
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::SpeakerGroup),
+        )
+        .chain(
+            view.speaker_groups
+                .memberships
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::SpeakerMembership),
+        )
+        .chain(
+            (view
+                .devices
+                .iter()
+                .filter(|device| device.online && device.audio_output)
+                .count()
+                >= 2)
+                .then_some(DeviceFabricPaneRow::SpeakerSetup),
         )
         .chain(
             view.devices
@@ -415,6 +507,38 @@ pub(super) fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::Device),
         )
         .collect()
+}
+
+/// "2 of 2 speakers ready" and the like.
+pub(super) fn speaker_group_summary(
+    group: &crate::shell::speaker_group_runtime::SpeakerGroupView,
+) -> String {
+    use std::fmt::Write as _;
+    let total = group.members.len();
+    let ready = group.ready_members();
+    let waiting = group
+        .members
+        .iter()
+        .filter(|member| {
+            member.state == crate::shell::speaker_group::SpeakerMemberState::AwaitingConsent
+        })
+        .count();
+    let mut summary = format!(
+        "{ready} of {total} speaker{} ready",
+        if total == 1 { "" } else { "s" }
+    );
+    if waiting > 0 {
+        let _ = write!(summary, " · {waiting} waiting for approval");
+    }
+    summary
+}
+
+/// "Right speaker" from "right speaker".
+pub(super) fn sentence_case(text: &str) -> String {
+    let mut characters = text.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 pub(super) fn remote_capture_kind_label(

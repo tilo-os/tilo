@@ -13,8 +13,9 @@ SPEC.loader.exec_module(checker)
 
 
 class ChangedRustAllowTests(unittest.TestCase):
-    def test_single_and_multiline_allows_need_reasons(self) -> None:
-        source = """\
+    def test_changed_allows_need_reasons_including_cfg_attr(self):
+        with self.subTest(phase='single and multiline allows need reasons'):
+            source = """\
 #[allow(dead_code)]
 fn old() {}
 
@@ -23,14 +24,13 @@ fn old() {}
 )]
 fn changed() {}
 """
-        violations = checker.unexplained_allows(source)
-        self.assertEqual(
-            [(item.start_line, item.end_line) for item in violations],
-            [(1, 1), (4, 6)],
-        )
-
-    def test_reasoned_allow_passes(self) -> None:
-        source = """\
+            violations = checker.unexplained_allows(source)
+            self.assertEqual(
+                [(item.start_line, item.end_line) for item in violations],
+                [(1, 1), (4, 6)],
+            )
+        with self.subTest(phase='reasoned allow passes'):
+            source = """\
 #[allow(dead_code, reason = "platform callback is linked dynamically")]
 fn old() {}
 
@@ -40,12 +40,11 @@ fn old() {}
 )]
 fn changed() {}
 """
-        self.assertEqual(checker.unexplained_allows(source), [])
-
-    def test_cfg_attr_allow_is_also_an_exception(self) -> None:
-        source = '#[cfg_attr(not(test), allow(dead_code))]\nfn hidden() {}\n'
-        violations = checker.unexplained_allows(source)
-        self.assertEqual(len(violations), 1)
+            self.assertEqual(checker.unexplained_allows(source), [])
+        with self.subTest(phase='cfg attr allow is also an exception'):
+            source = '#[cfg_attr(not(test), allow(dead_code))]\nfn hidden() {}\n'
+            violations = checker.unexplained_allows(source)
+            self.assertEqual(len(violations), 1)
 
 
 if __name__ == "__main__":

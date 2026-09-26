@@ -12,28 +12,6 @@ use crate::frame::FrameBuf;
 use crate::model::ScannedCode;
 use crate::model::{Facing, PhotoFormat};
 
-/// A bounded thumbnail request. `media_id` names verified bytes in the content store; local
-/// paths are admitted only from a portal-selected scan image or the single
-/// recent capture projection.
-pub enum ThumbnailSource {
-    Path(PathBuf),
-    Media(String),
-}
-
-pub struct ThumbnailJob {
-    pub generation: u64,
-    pub id: String,
-    pub source: ThumbnailSource,
-    pub width: u32,
-    pub height: u32,
-}
-
-pub struct ThumbnailResult {
-    pub generation: u64,
-    pub id: String,
-    pub result: Option<(Vec<u8>, u32, u32)>,
-}
-
 /// Decode an existing local or content-store image for the offline scanner.
 /// The decode and detector both run away from the UI thread.
 pub struct ScanJob {
@@ -133,14 +111,12 @@ pub struct CameraWorker {
     rx: Receiver<PhotoResult>,
     video_rx: Receiver<VideoResult>,
     recording: Arc<Mutex<RecordingControl>>,
-    thumb_rx: Receiver<ThumbnailResult>,
     scan_rx: Receiver<ScanResult>,
 }
 
 enum WorkerJob {
     Photo(PhotoJob),
     RecordingWake,
-    Thumbnail(ThumbnailJob),
     Scan(ScanJob),
 }
 
@@ -149,7 +125,6 @@ struct WorkerLoop {
     recorder: Option<crate::video::Recorder>,
     photo_results: SyncSender<PhotoResult>,
     video_results: SyncSender<VideoResult>,
-    thumbnail_results: SyncSender<ThumbnailResult>,
     scan_results: SyncSender<ScanResult>,
     content: ContentStore,
 }
@@ -244,25 +219,6 @@ impl WorkerLoop {
                     .is_ok()
             }
             WorkerJob::RecordingWake => true,
-            WorkerJob::Thumbnail(job) => {
-                let result = match job.source {
-                    ThumbnailSource::Path(path) => {
-                        crate::library::load_thumb(&path, job.width, job.height)
-                    }
-                    ThumbnailSource::Media(id) => {
-                        crate::media::read(&self.content, &id).and_then(|bytes| {
-                            crate::library::load_thumb_bytes(&bytes, job.width, job.height)
-                        })
-                    }
-                };
-                self.thumbnail_results
-                    .send(ThumbnailResult {
-                        generation: job.generation,
-                        id: job.id,
-                        result,
-                    })
-                    .is_ok()
-            }
             WorkerJob::Scan(job) => {
                 let luma = match job.source {
                     ScanSource::Path(path) => crate::library::load_luma(&path, 1024),
@@ -296,7 +252,6 @@ impl CameraWorker {
         let (tx, jobs) = std::sync::mpsc::sync_channel::<WorkerJob>(1);
         let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(1);
         let (video_results, video_rx) = std::sync::mpsc::sync_channel::<VideoResult>(1);
-        let (thumbnail_results, thumb_rx) = std::sync::mpsc::sync_channel::<ThumbnailResult>(1);
         let (scan_results, scan_rx) = std::sync::mpsc::sync_channel::<ScanResult>(1);
         let recording = Arc::new(Mutex::new(RecordingControl {
             start: false,
@@ -312,7 +267,6 @@ impl CameraWorker {
                     recorder: None,
                     photo_results,
                     video_results,
-                    thumbnail_results,
                     scan_results,
                     content,
                 };
@@ -334,7 +288,6 @@ impl CameraWorker {
             rx,
             video_rx,
             recording,
-            thumb_rx,
             scan_rx,
         }
     }
@@ -440,28 +393,6 @@ impl CameraWorker {
     /// # Errors
     ///
     /// Returns a visible error if the bounded queue is full or its worker ended.
-    pub fn submit_thumbnail(&self, job: ThumbnailJob) -> Result<(), String> {
-        match self
-            .tx
-            .as_ref()
-            .ok_or_else(|| "Camera thumbnail worker couldn't start".to_string())?
-            .try_send(WorkerJob::Thumbnail(job))
-        {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err("Thumbnail queue is busy".into()),
-            Err(TrySendError::Disconnected(_)) => {
-                Err("Camera thumbnail worker disconnected".into())
-            }
-        }
-    }
-
-    pub fn try_recv_thumbnail(&self) -> Option<ThumbnailResult> {
-        self.thumb_rx.try_recv().ok()
-    }
-
-    /// # Errors
-    ///
-    /// Returns a visible error if the bounded queue is full or its worker ended.
     pub fn submit_scan(&self, job: ScanJob) -> Result<(), String> {
         match self
             .tx
@@ -485,43 +416,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recorder_ingress_keeps_only_the_newest_frame() {
-        let mut control = RecordingControl {
-            start: false,
-            finish: None,
-            latest: None,
-        };
-        control.replace_latest(crate::frame::viewfinder(1, 32, 24));
-        control.replace_latest(crate::frame::viewfinder(2, 48, 36));
+    fn recorder_control_coalesces_the_newest_frame_and_orders_start_then_finish() {
+        // Phase `recorder_ingress_keeps_only_the_newest_frame`.
+        {
+            let mut control = RecordingControl {
+                start: false,
+                finish: None,
+                latest: None,
+            };
+            control.replace_latest(crate::frame::viewfinder(1, 32, 24));
+            control.replace_latest(crate::frame::viewfinder(2, 48, 36));
 
-        let newest = control.latest.as_ref().expect("latest frame");
-        assert_eq!((newest.w, newest.h), (48, 36));
-        assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
-    }
+            let newest = control.latest.as_ref().expect("latest frame");
+            assert_eq!((newest.w, newest.h), (48, 36));
+            assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
+        }
+        // Phase `recorder_control_orders_start_newest_frame_then_finish`.
+        {
+            let mut control = RecordingControl {
+                start: true,
+                finish: Some(VideoJob {
+                    invocation: None,
+                    generation: 7,
+                    dir: None,
+                    facing: Facing::Back,
+                }),
+                latest: None,
+            };
+            control.replace_latest(crate::frame::viewfinder(1, 32, 24));
+            control.replace_latest(crate::frame::viewfinder(2, 48, 36));
 
-    #[test]
-    fn recorder_control_orders_start_newest_frame_then_finish() {
-        let mut control = RecordingControl {
-            start: true,
-            finish: Some(VideoJob {
-                invocation: None,
-                generation: 7,
-                dir: None,
-                facing: Facing::Back,
-            }),
-            latest: None,
-        };
-        control.replace_latest(crate::frame::viewfinder(1, 32, 24));
-        control.replace_latest(crate::frame::viewfinder(2, 48, 36));
-
-        let (start, frame, finish) = control.take_pending();
-        assert!(start, "worker creates Recorder before consuming frame");
-        assert_eq!(
-            frame.map(|frame| (frame.w, frame.h)),
-            Some((48, 36)),
-            "finish consumes the coalesced newest frame"
-        );
-        assert_eq!(finish.map(|job| job.generation), Some(7));
-        assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
+            let (start, frame, finish) = control.take_pending();
+            assert!(start, "worker creates Recorder before consuming frame");
+            assert_eq!(
+                frame.map(|frame| (frame.w, frame.h)),
+                Some((48, 36)),
+                "finish consumes the coalesced newest frame"
+            );
+            assert_eq!(finish.map(|job| job.generation), Some(7));
+            assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
+        }
     }
 }

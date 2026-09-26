@@ -63,7 +63,6 @@ pub mod audio;
 pub mod call;
 pub mod continuity;
 pub mod doc;
-pub mod emoji;
 pub mod events;
 pub mod geometry;
 pub mod i18n;

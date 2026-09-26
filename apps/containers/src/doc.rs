@@ -335,138 +335,146 @@ impl CreateField {
 mod tests {
     use super::*;
 
+    /// Section, selection, tab, search and create-form state round-trip through the doc and build the run arguments.
     #[test]
-    fn section_round_trips_through_doc() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(ViewDoc::section(&mut doc), Section::Containers, "default");
-        ViewDoc::set_section(&mut doc, Section::Images);
-        assert_eq!(ViewDoc::section(&mut doc), Section::Images);
-        ViewDoc::set_section(&mut doc, Section::Distrobox);
-        assert_eq!(ViewDoc::section(&mut doc), Section::Distrobox);
-    }
-
-    #[test]
-    fn selection_set_and_clear() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(ViewDoc::selected(&mut doc), None);
-        ViewDoc::set_selected(&mut doc, Some("abc123"));
-        assert_eq!(ViewDoc::selected(&mut doc), Some("abc123".into()));
-        ViewDoc::set_selected(&mut doc, None);
-        assert_eq!(ViewDoc::selected(&mut doc), None);
-    }
-
-    #[test]
-    fn tab_round_trips() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(ViewDoc::tab(&mut doc), DetailTab::Logs, "default");
-        ViewDoc::set_tab(&mut doc, DetailTab::Stats);
-        assert_eq!(ViewDoc::tab(&mut doc), DetailTab::Stats);
-    }
-
-    #[test]
-    fn search_text_round_trips() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_search(&mut doc, "nginx");
-        assert_eq!(ViewDoc::search(&mut doc), "nginx");
-        ViewDoc::set_search(&mut doc, "redis");
-        assert_eq!(ViewDoc::search(&mut doc), "redis");
-    }
-
-    #[test]
-    fn create_run_args_requires_image() {
-        let mut doc = AutoCommit::new();
-        assert!(
-            ViewDoc::create_run_args(&mut doc).is_none(),
-            "no image → no args"
-        );
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:alpine");
-        ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
-        ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
-        let args = ViewDoc::create_run_args(&mut doc).unwrap();
-        assert_eq!(args[0], "run");
-        assert!(args.contains(&"--name".to_string()));
-        assert!(args.contains(&"web".to_string()));
-        assert!(args.contains(&"8080:80".to_string()));
-        assert!(args.contains(&"8443:443".to_string()));
-        assert!(args.contains(&"nginx:alpine".to_string()));
-    }
-
-    #[test]
-    fn create_run_args_includes_env_and_volumes() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
-        ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
-        ViewDoc::set_create_field(
-            &mut doc,
-            CreateField::Volumes,
-            "pgdata:/var/lib/postgresql/data",
-        );
-        let args = ViewDoc::create_run_args(&mut doc).unwrap();
-        // -e flags for each env entry, -v for the volume mount.
-        let e_count = args.iter().filter(|a| *a == "-e").count();
-        assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app")
-        );
-        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data")
-        );
-        // The image comes after every flag, before any command.
-        let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
-        let last_flag = args
-            .iter()
-            .rposition(|a| a == "-e" || a == "-v" || a == "-p")
-            .unwrap();
-        assert!(img_pos > last_flag, "image follows all flags: {args:?}");
-    }
-
-    #[test]
-    fn volumes_section_round_trips() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_section(&mut doc, Section::Volumes);
-        assert_eq!(ViewDoc::section(&mut doc), Section::Volumes);
-    }
-
-    #[test]
-    fn clear_create_empties_fields() {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx");
-        ViewDoc::clear_create(&mut doc);
-        assert_eq!(ViewDoc::create_field(&mut doc, CreateField::Image), "");
-    }
-
-    #[test]
-    fn appending_one_char_to_search_is_bounded() {
-        // Anti-churn: growing a long search field by one char must splice only
-        // the new char, not rewrite the whole value.
-        let mut doc = AutoCommit::new();
-        let long = "n".repeat(300);
-        ViewDoc::set_search(&mut doc, &long);
-        let before = doc.save().len();
-        let mut longer = long.clone();
-        longer.push('!');
-        ViewDoc::set_search(&mut doc, &longer);
-        let grew = doc.save().len() - before;
-        assert_eq!(ViewDoc::search(&mut doc), longer, "value round-trips");
-        assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
-    }
-
-    #[test]
-    fn repeated_set_search_keeps_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let long = "r".repeat(300);
-        ViewDoc::set_search(&mut doc, &long);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            ViewDoc::set_search(&mut doc, &long);
+    fn view_and_create_state_round_trip_through_doc() {
+        // --- phase: section_round_trips_through_doc ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(ViewDoc::section(&mut doc), Section::Containers, "default");
+            ViewDoc::set_section(&mut doc, Section::Images);
+            assert_eq!(ViewDoc::section(&mut doc), Section::Images);
+            ViewDoc::set_section(&mut doc, Section::Distrobox);
+            assert_eq!(ViewDoc::section(&mut doc), Section::Distrobox);
         }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-storing the same search grew the document {a} -> {b}"
-        );
+
+        // --- phase: selection_set_and_clear ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(ViewDoc::selected(&mut doc), None);
+            ViewDoc::set_selected(&mut doc, Some("abc123"));
+            assert_eq!(ViewDoc::selected(&mut doc), Some("abc123".into()));
+            ViewDoc::set_selected(&mut doc, None);
+            assert_eq!(ViewDoc::selected(&mut doc), None);
+        }
+
+        // --- phase: tab_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(ViewDoc::tab(&mut doc), DetailTab::Logs, "default");
+            ViewDoc::set_tab(&mut doc, DetailTab::Stats);
+            assert_eq!(ViewDoc::tab(&mut doc), DetailTab::Stats);
+        }
+
+        // --- phase: search_text_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_search(&mut doc, "nginx");
+            assert_eq!(ViewDoc::search(&mut doc), "nginx");
+            ViewDoc::set_search(&mut doc, "redis");
+            assert_eq!(ViewDoc::search(&mut doc), "redis");
+        }
+
+        // --- phase: volumes_section_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_section(&mut doc, Section::Volumes);
+            assert_eq!(ViewDoc::section(&mut doc), Section::Volumes);
+        }
+
+        // --- phase: clear_create_empties_fields ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx");
+            ViewDoc::clear_create(&mut doc);
+            assert_eq!(ViewDoc::create_field(&mut doc, CreateField::Image), "");
+        }
+
+        // --- phase: create_run_args_requires_image ---
+        {
+            let mut doc = AutoCommit::new();
+            assert!(
+                ViewDoc::create_run_args(&mut doc).is_none(),
+                "no image → no args"
+            );
+            ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:alpine");
+            ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
+            ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
+            let args = ViewDoc::create_run_args(&mut doc).unwrap();
+            assert_eq!(args[0], "run");
+            assert!(args.contains(&"--name".to_string()));
+            assert!(args.contains(&"web".to_string()));
+            assert!(args.contains(&"8080:80".to_string()));
+            assert!(args.contains(&"8443:443".to_string()));
+            assert!(args.contains(&"nginx:alpine".to_string()));
+        }
+
+        // --- phase: create_run_args_includes_env_and_volumes ---
+        {
+            let mut doc = AutoCommit::new();
+            ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
+            ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
+            ViewDoc::set_create_field(
+                &mut doc,
+                CreateField::Volumes,
+                "pgdata:/var/lib/postgresql/data",
+            );
+            let args = ViewDoc::create_run_args(&mut doc).unwrap();
+            // -e flags for each env entry, -v for the volume mount.
+            let e_count = args.iter().filter(|a| *a == "-e").count();
+            assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app")
+            );
+            assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
+            assert!(
+                args.windows(2)
+                    .any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data")
+            );
+            // The image comes after every flag, before any command.
+            let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
+            let last_flag = args
+                .iter()
+                .rposition(|a| a == "-e" || a == "-v" || a == "-p")
+                .unwrap();
+            assert!(img_pos > last_flag, "image follows all flags: {args:?}");
+        }
+    }
+
+    /// Appending to or repeatedly setting the search keeps the doc bounded.
+    #[test]
+    fn search_edits_keep_doc_bounded() {
+        // --- phase: appending_one_char_to_search_is_bounded ---
+        {
+            // Anti-churn: growing a long search field by one char must splice only
+            // the new char, not rewrite the whole value.
+            let mut doc = AutoCommit::new();
+            let long = "n".repeat(300);
+            ViewDoc::set_search(&mut doc, &long);
+            let before = doc.save().len();
+            let mut longer = long.clone();
+            longer.push('!');
+            ViewDoc::set_search(&mut doc, &longer);
+            let grew = doc.save().len() - before;
+            assert_eq!(ViewDoc::search(&mut doc), longer, "value round-trips");
+            assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
+        }
+
+        // --- phase: repeated_set_search_keeps_doc_bounded ---
+        {
+            let mut doc = AutoCommit::new();
+            let long = "r".repeat(300);
+            ViewDoc::set_search(&mut doc, &long);
+            let a = doc.save().len();
+            for _ in 0..50 {
+                ViewDoc::set_search(&mut doc, &long);
+            }
+            let b = doc.save().len();
+            assert_eq!(
+                a, b,
+                "re-storing the same search grew the document {a} -> {b}"
+            );
+        }
     }
 }

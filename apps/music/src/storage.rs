@@ -431,74 +431,82 @@ mod tests {
     }
 
     #[test]
-    fn media_cache_is_atomic_content_addressed_and_survives_reload() {
-        let root = std::env::temp_dir().join(format!("tilo-music-media-{}", std::process::id()));
-        let mut cache = MediaCache::default();
-        cache
-            .install_bytes(&root, "track-a", b"real media bytes", 1024)
-            .expect("install");
-        let path = cache.object_path(&root, "track-a").expect("byte object");
-        assert_eq!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("media")
-        );
-        assert_eq!(
-            std::fs::read(&path).expect("read object"),
-            b"real media bytes"
-        );
-        let reloaded = load_media_cache_from(&root);
-        assert_eq!(reloaded.entries, cache.entries);
-        let _ = std::fs::remove_dir_all(root);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn media_cache_is_atomic_bounded_and_rejects_corruption() {
+        // Phase `media_cache_is_atomic_content_addressed_and_survives_reload`.
+        {
+            let root =
+                std::env::temp_dir().join(format!("tilo-music-media-{}", std::process::id()));
+            let mut cache = MediaCache::default();
+            cache
+                .install_bytes(&root, "track-a", b"real media bytes", 1024)
+                .expect("install");
+            let path = cache.object_path(&root, "track-a").expect("byte object");
+            assert_eq!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("media")
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("read object"),
+                b"real media bytes"
+            );
+            let reloaded = load_media_cache_from(&root);
+            assert_eq!(reloaded.entries, cache.entries);
+            let _ = std::fs::remove_dir_all(root);
+        }
 
-    #[test]
-    fn media_cache_evicts_oldest_object_before_publishing_over_quota() {
-        let root =
-            std::env::temp_dir().join(format!("tilo-music-media-evict-{}", std::process::id()));
-        let mut cache = MediaCache::default();
-        cache
-            .install_bytes(&root, "old", b"1234", 6)
-            .expect("first");
-        cache
-            .entries
-            .get_mut("old")
-            .expect("old entry")
-            .last_access_ms = 0;
-        cache
-            .install_bytes(&root, "new", b"5678", 6)
-            .expect("second evicts first");
-        assert!(cache.object_path(&root, "old").is_none());
-        assert!(cache.object_path(&root, "new").is_some());
-        let _ = std::fs::remove_dir_all(root);
-    }
+        // Phase `media_cache_evicts_oldest_object_before_publishing_over_quota`.
+        {
+            let root =
+                std::env::temp_dir().join(format!("tilo-music-media-evict-{}", std::process::id()));
+            let mut cache = MediaCache::default();
+            cache
+                .install_bytes(&root, "old", b"1234", 6)
+                .expect("first");
+            cache
+                .entries
+                .get_mut("old")
+                .expect("old entry")
+                .last_access_ms = 0;
+            cache
+                .install_bytes(&root, "new", b"5678", 6)
+                .expect("second evicts first");
+            assert!(cache.object_path(&root, "old").is_none());
+            assert!(cache.object_path(&root, "new").is_some());
+            let _ = std::fs::remove_dir_all(root);
+        }
 
-    #[test]
-    fn media_cache_rejects_same_size_corruption_before_playback() {
-        let root =
-            std::env::temp_dir().join(format!("tilo-music-media-same-size-{}", std::process::id()));
-        let mut cache = MediaCache::default();
-        cache
-            .install_bytes(&root, "track-a", b"real media bytes", 1024)
-            .expect("install");
-        let path = cache.object_path(&root, "track-a").expect("object");
-        std::fs::write(&path, b"forgededia bytes").expect("same-sized corruption");
-        assert!(cache.object_path(&root, "track-a").is_none());
-        assert!(cache.touch(&root, "track-a").expect("touch").is_none());
-        let _ = std::fs::remove_dir_all(root);
-    }
+        // Phase `media_cache_rejects_same_size_corruption_before_playback`.
+        {
+            let root = std::env::temp_dir()
+                .join(format!("tilo-music-media-same-size-{}", std::process::id()));
+            let mut cache = MediaCache::default();
+            cache
+                .install_bytes(&root, "track-a", b"real media bytes", 1024)
+                .expect("install");
+            let path = cache.object_path(&root, "track-a").expect("object");
+            std::fs::write(&path, b"forgededia bytes").expect("same-sized corruption");
+            assert!(cache.object_path(&root, "track-a").is_none());
+            assert!(cache.touch(&root, "track-a").expect("touch").is_none());
+            let _ = std::fs::remove_dir_all(root);
+        }
 
-    #[test]
-    fn media_cache_rejects_malicious_manifest_content_path() {
-        let root =
-            std::env::temp_dir().join(format!("tilo-music-media-malicious-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("root");
-        let manifest = serde_json::json!({
-            "entries": {
-                "track-a": { "content_id": "../../outside", "bytes": 9, "last_access_ms": 0 }
-            }
-        });
-        std::fs::write(media_manifest_path(&root), manifest.to_string()).expect("manifest");
-        assert!(load_media_cache_from(&root).entries.is_empty());
-        let _ = std::fs::remove_dir_all(root);
+        // Phase `media_cache_rejects_malicious_manifest_content_path`.
+        {
+            let root = std::env::temp_dir()
+                .join(format!("tilo-music-media-malicious-{}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("root");
+            let manifest = serde_json::json!({
+                "entries": {
+                    "track-a": { "content_id": "../../outside", "bytes": 9, "last_access_ms": 0 }
+                }
+            });
+            std::fs::write(media_manifest_path(&root), manifest.to_string()).expect("manifest");
+            assert!(load_media_cache_from(&root).entries.is_empty());
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 }

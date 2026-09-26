@@ -23,7 +23,7 @@ stage=$work/stage
 
 main=$work/tilo-session
 dev=$work/tilo-session-devel
-mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/doc/tilo-session}
+mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/doc/tilo-session}
 install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo-launcher" "$stage/bin/tilo-import-folders" "$main/usr/bin/"
 install -pm 0755 "$stage/libexec/tilo-unlock-helper" "$stage/libexec/tilo-session" \
     "$stage/libexec/tilo-session-runner" "$stage/libexec/tilo-flight-recorder" \
@@ -33,6 +33,7 @@ install -pm 0644 "$stage/pam/tilo-unlock" "$main/etc/pam.d/"
 install -pm 0644 "$stage/wayland-sessions/tilo.desktop" "$main/usr/share/wayland-sessions/"
 install -pm 0644 "$stage/portal/tilo.portal" "$main/usr/share/xdg-desktop-portal/portals/"
 install -pm 0644 "$stage/portal/tilo-portals.conf" "$main/usr/share/xdg-desktop-portal/"
+install -pm 0644 "$stage/pipewire/tilo-echo-cancel.conf" "$main/usr/share/pipewire/"
 install -pm 0644 "$stage/systemd-user/tilo-graphical-session.target" "$main/usr/lib/systemd/user/"
 install -pm 0644 "$stage/license/LICENSE" "$main/usr/share/doc/tilo-session/copyright"
 install -pm 0644 "$stage/applications/tilo-import-folders.desktop" "$main/usr/share/applications/"
@@ -47,7 +48,7 @@ cat > "$work/debian/control" <<'EOF'
 Source: tilo-session
 Section: x11
 Priority: optional
-Maintainer: Tilo contributors <tilo@code.sandbox.example>
+Maintainer: Tilo contributors <tilo@code.tilo.so>
 
 Package: tilo-session
 Architecture: any
@@ -68,7 +69,7 @@ Version: $version-$revision
 Section: x11
 Priority: optional
 Architecture: $arch
-Maintainer: Tilo contributors <tilo@code.sandbox.example>
+Maintainer: Tilo contributors <tilo@code.tilo.so>
 Installed-Size: $(installed_size "$main")
 Depends: $shlib_deps, libpam0g, libvulkan1, libegl1, bubblewrap, systemd, xdg-desktop-portal, xdg-dbus-proxy, python3
 Recommends: mesa-vulkan-drivers, xwayland-satellite, greetd | gdm3 | sddm
@@ -82,7 +83,7 @@ Version: $version-$revision
 Section: x11
 Priority: optional
 Architecture: all
-Maintainer: Tilo contributors <tilo@code.sandbox.example>
+Maintainer: Tilo contributors <tilo@code.tilo.so>
 Installed-Size: $(installed_size "$dev")
 Depends: tilo-session (= $version-$revision), coreutils, grep
 Description: developer session entry for Tilo

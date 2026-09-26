@@ -330,65 +330,70 @@ pub(crate) fn decode_bytes_with_budget(bytes: &[u8], budget: usize) -> ImageStat
 mod tests {
     use super::*;
 
+    /// Frozen/live decode budgets and limits, and failed worker requests never stay loading.
     #[test]
-    fn frozen_decode_refuses_pixels_exceeding_remaining_aggregate_budget() {
-        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        assert!(matches!(
-            decode_bytes_with_budget(bytes.get_ref(), 15),
-            ImageState::Failed
-        ));
-        assert!(matches!(
-            decode_bytes_with_budget(bytes.get_ref(), 16),
-            ImageState::Ready(_)
-        ));
-    }
+    fn image_decoding_is_bounded_and_never_left_loading() {
+        // Case `frozen_decode_refuses_pixels_exceeding_remaining_aggregate_budget`.
+        {
+            let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            assert!(matches!(
+                decode_bytes_with_budget(bytes.get_ref(), 15),
+                ImageState::Failed
+            ));
+            assert!(matches!(
+                decode_bytes_with_budget(bytes.get_ref(), 16),
+                ImageState::Ready(_)
+            ));
+        }
 
-    #[test]
-    fn frozen_decode_keeps_file_dimension_and_corrupt_byte_limits() {
-        assert!(matches!(
-            decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1]),
-            ImageState::Failed
-        ));
-        assert!(matches!(decode_bytes(b"corrupt"), ImageState::Failed));
-        let image =
-            image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-        assert!(matches!(decode_bytes(bytes.get_ref()), ImageState::Failed));
-    }
+        // Case `frozen_decode_keeps_file_dimension_and_corrupt_byte_limits`.
+        {
+            assert!(matches!(
+                decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1]),
+                ImageState::Failed
+            ));
+            assert!(matches!(decode_bytes(b"corrupt"), ImageState::Failed));
+            let image =
+                image::DynamicImage::ImageRgba8(image::RgbaImage::new(1, MAX_IMAGE_DIMENSION + 1));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            assert!(matches!(decode_bytes(bytes.get_ref()), ImageState::Failed));
+        }
 
-    #[test]
-    fn decode_refuses_an_oversized_source_before_image_parsing() {
-        let path =
-            std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
-        std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1]).expect("write oversize source");
-        assert!(matches!(
-            decode(&ContentStore::memory(), path.to_str().expect("utf-8 path")),
-            ImageState::Failed
-        ));
-        let _ = std::fs::remove_file(path);
-    }
+        // Case `decode_refuses_an_oversized_source_before_image_parsing`.
+        {
+            let path =
+                std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
+            std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1])
+                .expect("write oversize source");
+            assert!(matches!(
+                decode(&ContentStore::memory(), path.to_str().expect("utf-8 path")),
+                ImageState::Failed
+            ));
+            let _ = std::fs::remove_file(path);
+        }
 
-    #[test]
-    fn image_store_never_leaves_a_failed_worker_request_loading() {
-        let store = ImageStore {
-            content: ContentStore::memory(),
-            inner: RefCell::new(HashMap::new()),
-            request_tx: None,
-            rx: std::sync::mpsc::channel().1,
-            ready_bytes: Cell::new(0),
-            access: RefCell::new(HashMap::new()),
-            access_clock: Cell::new(0),
-        };
-        assert!(matches!(
-            store.get("/does/not/exist.png"),
-            ImageState::Failed
-        ));
-        assert!(matches!(
-            store.get("/does/not/exist.png"),
-            ImageState::Failed
-        ));
+        // Case `image_store_never_leaves_a_failed_worker_request_loading`.
+        {
+            let store = ImageStore {
+                content: ContentStore::memory(),
+                inner: RefCell::new(HashMap::new()),
+                request_tx: None,
+                rx: std::sync::mpsc::channel().1,
+                ready_bytes: Cell::new(0),
+                access: RefCell::new(HashMap::new()),
+                access_clock: Cell::new(0),
+            };
+            assert!(matches!(
+                store.get("/does/not/exist.png"),
+                ImageState::Failed
+            ));
+            assert!(matches!(
+                store.get("/does/not/exist.png"),
+                ImageState::Failed
+            ));
+        }
     }
 }

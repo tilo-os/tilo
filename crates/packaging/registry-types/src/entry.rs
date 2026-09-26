@@ -474,7 +474,7 @@ mod tests {
             )])),
             supported_languages: vec!["de".into(), "en".into()],
             categories: vec!["Productivity".into(), "Text".into()],
-            source_url: Some("https://code.sandbox.example/qos/editor".into()),
+            source_url: Some("https://code.tilo.so/tilo/editor".into()),
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
@@ -497,143 +497,144 @@ mod tests {
     }
 
     #[test]
-    fn entry_json_roundtrip() {
-        let e = sample_entry();
-        let s = serde_json::to_string(&e).expect("encode");
-        let back: RegistryEntry = serde_json::from_str(&s).expect("decode");
-        assert_eq!(back, e);
-    }
-
-    #[test]
-    fn signing_message_is_independent_of_signature_field() {
-        let mut e = sample_entry();
-        let m1 = e.signing_message();
-        e.signature_hex = "deadbeef".into();
-        let m2 = e.signing_message();
-        assert_eq!(m1, m2, "signature_hex must not affect signing digest");
-    }
-
-    #[test]
-    fn signing_message_changes_when_any_signed_field_changes() {
-        let base = sample_entry();
-        let base_msg = base.signing_message();
-
+    fn entry_signing_message_covers_every_signed_field() {
+        // phase: entry_json_roundtrip
         {
-            let mut alt = sample_entry();
-            alt.package_id = "so.tilo.other".into();
-            assert_ne!(alt.signing_message(), base_msg);
+            let e = sample_entry();
+            let s = serde_json::to_string(&e).expect("encode");
+            let back: RegistryEntry = serde_json::from_str(&s).expect("decode");
+            assert_eq!(back, e);
         }
+        // phase: signing_message_is_independent_of_signature_field
         {
-            let mut alt = sample_entry();
-            alt.versions[0].tapp_root_hash_hex = "ff".repeat(32);
-            assert_ne!(alt.signing_message(), base_msg);
+            let mut e = sample_entry();
+            let m1 = e.signing_message();
+            e.signature_hex = "deadbeef".into();
+            let m2 = e.signing_message();
+            assert_eq!(m1, m2, "signature_hex must not affect signing digest");
         }
+        // phase: signing_message_changes_when_any_signed_field_changes
         {
-            let mut bound = sample_entry();
-            bound.versions[0].tapp_blake3_hex = "ee".repeat(32);
-            bound.versions[0].target = RegistryTarget {
-                platform: TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: Some("tilo-runtime/2026.07".into()),
-            };
-            let bound_msg = bound.signing_message();
-            assert_ne!(bound_msg, base_msg);
-            bound.versions[0].tapp_blake3_hex = "fe".repeat(32);
-            assert_ne!(bound.signing_message(), bound_msg);
+            let base = sample_entry();
+            let base_msg = base.signing_message();
+
+            {
+                let mut alt = sample_entry();
+                alt.package_id = "so.tilo.other".into();
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+            {
+                let mut alt = sample_entry();
+                alt.versions[0].tapp_root_hash_hex = "ff".repeat(32);
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+            {
+                let mut bound = sample_entry();
+                bound.versions[0].tapp_blake3_hex = "ee".repeat(32);
+                bound.versions[0].target = RegistryTarget {
+                    platform: TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: Some("tilo-runtime/2026.07".into()),
+                };
+                let bound_msg = bound.signing_message();
+                assert_ne!(bound_msg, base_msg);
+                bound.versions[0].tapp_blake3_hex = "fe".repeat(32);
+                assert_ne!(bound.signing_message(), bound_msg);
+            }
+            {
+                let mut alt = sample_entry();
+                alt.updated_at_unix += 1;
+                assert_ne!(alt.signing_message(), base_msg);
+            }
+            {
+                let mut alt = sample_entry();
+                alt.categories.push("Extra".into());
+                assert_ne!(alt.signing_message(), base_msg);
+            }
         }
+        // phase: sign_entry_fills_signature_field
         {
-            let mut alt = sample_entry();
-            alt.updated_at_unix += 1;
-            assert_ne!(alt.signing_message(), base_msg);
+            let mut e = sample_entry();
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            sign_entry(&mut e, &key);
+            assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
+            // Idempotent under re-sign with the same key + same payload.
+            let sig1 = e.signature_hex.clone();
+            sign_entry(&mut e, &key);
+            assert_eq!(e.signature_hex, sig1);
         }
+        // phase: index_signing_message_is_domain_separated
         {
-            let mut alt = sample_entry();
-            alt.categories.push("Extra".into());
-            assert_ne!(alt.signing_message(), base_msg);
+            let entry = sample_entry();
+            let entry_msg = entry_signing_message(&entry);
+            // Feeding the same postcard body through the *index*
+            // domain must yield a different digest.
+            let index_msg = index_signing_message(&entry);
+            assert_ne!(entry_msg, index_msg);
         }
     }
 
     #[test]
-    fn sign_entry_fills_signature_field() {
-        let mut e = sample_entry();
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        sign_entry(&mut e, &key);
-        assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
-        // Idempotent under re-sign with the same key + same payload.
-        let sig1 = e.signature_hex.clone();
-        sign_entry(&mut e, &key);
-        assert_eq!(e.signature_hex, sig1);
-    }
+    fn entry_validation_rejects_bad_locales_platforms_and_architectures() {
+        // phase: localized_metadata_requires_canonical_tags_and_english_fallback
+        {
+            let mut entry = sample_entry();
+            assert_eq!(entry.validate(), Ok(()));
 
-    #[test]
-    fn index_signing_message_is_domain_separated() {
-        let entry = sample_entry();
-        let entry_msg = entry_signing_message(&entry);
-        // Feeding the same postcard body through the *index*
-        // domain must yield a different digest.
-        let index_msg = index_signing_message(&entry);
-        assert_ne!(entry_msg, index_msg);
-    }
+            entry.tagline.0 = BTreeMap::from([("de".into(), "Gemeinsam bearbeiten".into())]);
+            assert!(matches!(
+                entry.validate(),
+                Err(EntryValidationError::MissingEnglishFallback { field: "tagline" })
+            ));
 
-    #[test]
-    fn localized_metadata_requires_canonical_tags_and_english_fallback() {
-        let mut entry = sample_entry();
-        assert_eq!(entry.validate(), Ok(()));
+            entry = sample_entry();
+            entry
+                .description
+                .0
+                .insert("en_US".into(), "Invalid tag".into());
+            assert!(matches!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidLanguageTag {
+                    field: "description",
+                    ..
+                })
+            ));
 
-        entry.tagline.0 = BTreeMap::from([("de".into(), "Gemeinsam bearbeiten".into())]);
-        assert!(matches!(
-            entry.validate(),
-            Err(EntryValidationError::MissingEnglishFallback { field: "tagline" })
-        ));
+            entry = sample_entry();
+            entry.name.0.insert("de".into(), String::new());
+            assert!(matches!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidLocalizedValue { field: "name" })
+            ));
 
-        entry = sample_entry();
-        entry
-            .description
-            .0
-            .insert("en_US".into(), "Invalid tag".into());
-        assert!(matches!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidLanguageTag {
-                field: "description",
-                ..
-            })
-        ));
+            entry = sample_entry();
+            entry.images = LocalizedImages::english_icon(
+                "https://cdn.example.invalid/icon.svg",
+                "Third-party icon",
+            );
+            entry.source_url = Some("https://example.invalid/tilo".into());
+            entry.homepage = Some("https://another.example.invalid/product".into());
+            assert_eq!(entry.validate(), Ok(()));
 
-        entry = sample_entry();
-        entry.name.0.insert("de".into(), String::new());
-        assert!(matches!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidLocalizedValue { field: "name" })
-        ));
-
-        entry = sample_entry();
-        entry.images = LocalizedImages::english_icon(
-            "https://cdn.example.invalid/icon.svg",
-            "Third-party icon",
-        );
-        entry.source_url = Some("https://example.invalid/tilo".into());
-        entry.homepage = Some("https://another.example.invalid/product".into());
-        assert_eq!(entry.validate(), Ok(()));
-
-        entry = sample_entry();
-        entry.images = LocalizedImages::default();
-        assert_eq!(entry.validate(), Ok(()));
-    }
-
-    #[test]
-    fn registry_rejects_non_tilo_platforms_and_unsupported_architectures() {
-        let mut entry = sample_entry();
-        entry.versions[0].target.platform = "linux".into();
-        assert_eq!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidVersionTarget)
-        );
-        entry.versions[0].target.platform = TILO_OS_PLATFORM.into();
-        entry.versions[0].target.architecture = "riscv64".into();
-        assert_eq!(
-            entry.validate(),
-            Err(EntryValidationError::InvalidVersionTarget)
-        );
+            entry = sample_entry();
+            entry.images = LocalizedImages::default();
+            assert_eq!(entry.validate(), Ok(()));
+        }
+        // phase: registry_rejects_non_tilo_platforms_and_unsupported_architectures
+        {
+            let mut entry = sample_entry();
+            entry.versions[0].target.platform = "linux".into();
+            assert_eq!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidVersionTarget)
+            );
+            entry.versions[0].target.platform = TILO_OS_PLATFORM.into();
+            entry.versions[0].target.architecture = "riscv64".into();
+            assert_eq!(
+                entry.validate(),
+                Err(EntryValidationError::InvalidVersionTarget)
+            );
+        }
     }
 }

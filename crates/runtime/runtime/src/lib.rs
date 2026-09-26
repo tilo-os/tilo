@@ -68,10 +68,12 @@ pub use runtime_portal::is_tilo_native;
 mod tests {
     use super::*;
 
-    /// Compile-time smoke test: the re-exports resolve. If a
-    /// sub-crate renames a public type this stops compiling.
+    /// End-to-end: with no env vars set, every service reports unavailable
+    /// rather than panicking — the Flatpak-on-stock-Linux path. Also the
+    /// compile-time smoke check that the re-exports resolve: if a sub-crate
+    /// renames a public type this stops compiling.
     #[test]
-    fn re_exports_resolve() {
+    fn re_exported_services_report_unavailable_when_env_is_empty() {
         // Bare `_` (not `_name`): the binding is never read, only its
         // type — the point of each line is that it fails to compile if a
         // sub-crate's signature drifts.
@@ -82,12 +84,7 @@ mod tests {
         let _: fn() -> Result<fs::FsClient, NotAvailable> = fs::try_connect;
 
         let _: fn() -> Result<identity::SigningIdentity, NotAvailable> = identity::load;
-    }
 
-    /// End-to-end: with no env vars set, every service reports unavailable
-    /// rather than panicking — the Flatpak-on-stock-Linux path.
-    #[test]
-    fn every_service_reports_unavailable_when_env_is_empty() {
         let mut env = tilo_test_env::ScopedEnv::new();
         for (key, _) in std::env::vars() {
             if key.starts_with("TILO_") {

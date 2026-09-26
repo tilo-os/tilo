@@ -308,26 +308,27 @@ mod tests {
         )
     }
     #[test]
-    fn handle_close_releases_real_registry_hold() {
-        let registry = InhibitRegistry::new();
-        let backend = InhibitBackend {
-            #[cfg(target_os = "linux")]
-            ctx: context(),
-            registry: registry.clone(),
-            holds: Arc::new(Mutex::new(HashMap::new())),
-            monitors: InhibitMonitorHandle::default(),
-            lifecycle: PortalLifecycle::new(),
-        };
-        backend.holds.lock().unwrap().insert(
-            "/org/freedesktop/portal/desktop/request/x".into(),
-            registry.acquire("test"),
-        );
-        assert!(registry.is_inhibited());
-        assert!(backend.release_handle("/org/freedesktop/portal/desktop/request/x"));
-        assert!(!registry.is_inhibited());
-    }
-    #[test]
-    fn advertises_every_standard_inhibit_scope() {
+    fn inhibit_advertises_standard_scopes_and_close_releases_the_hold() {
+        // Phase `handle_close_releases_real_registry_hold`.
+        {
+            let registry = InhibitRegistry::new();
+            let backend = InhibitBackend {
+                #[cfg(target_os = "linux")]
+                ctx: context(),
+                registry: registry.clone(),
+                holds: Arc::new(Mutex::new(HashMap::new())),
+                monitors: InhibitMonitorHandle::default(),
+                lifecycle: PortalLifecycle::new(),
+            };
+            backend.holds.lock().unwrap().insert(
+                "/org/freedesktop/portal/desktop/request/x".into(),
+                registry.acquire("test"),
+            );
+            assert!(registry.is_inhibited());
+            assert!(backend.release_handle("/org/freedesktop/portal/desktop/request/x"));
+            assert!(!registry.is_inhibited());
+        }
+        // Phase `advertises_every_standard_inhibit_scope`.
         assert_eq!(SUPPORTED, LOGOUT | USER_SWITCH | SUSPEND | IDLE);
     }
 }

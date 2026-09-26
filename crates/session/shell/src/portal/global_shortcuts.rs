@@ -171,24 +171,40 @@ pub struct ShellGlobalShortcutsService {
     dialogs: PortalDialogQueue,
     registry: Arc<Mutex<ShellShortcutRegistry>>,
     events: Arc<Mutex<Option<GlobalShortcutsHandle>>>,
+    /// Grants whose key is down, by physical key, so the release can send
+    /// `Deactivated` to exactly the bindings the press activated.
+    held: Arc<Mutex<HashMap<String, Vec<(String, String)>>>>,
+    /// The effective editable shortcut table. Grants may not take a chord
+    /// the user has assigned to a desktop action.
+    shortcuts: Arc<Mutex<settings_store::hardware::ShortcutConfig>>,
 }
 
 impl ShellGlobalShortcutsService {
     pub fn global() -> Self {
         static SERVICE: std::sync::LazyLock<ShellGlobalShortcutsService> =
-            std::sync::LazyLock::new(|| ShellGlobalShortcutsService {
-                dialogs: PortalDialogQueue::global(),
-                registry: Arc::new(Mutex::new(ShellShortcutRegistry::default())),
-                events: Arc::new(Mutex::new(None)),
+            std::sync::LazyLock::new(|| {
+                ShellGlobalShortcutsService::with_parts(
+                    PortalDialogQueue::global(),
+                    settings_store::hardware::ShortcutConfig::load(),
+                )
             });
         SERVICE.clone()
     }
 
     pub fn with_dialogs(dialogs: PortalDialogQueue) -> Self {
+        Self::with_parts(dialogs, settings_store::hardware::ShortcutConfig::default())
+    }
+
+    fn with_parts(
+        dialogs: PortalDialogQueue,
+        shortcuts: settings_store::hardware::ShortcutConfig,
+    ) -> Self {
         Self {
             dialogs,
             registry: Arc::new(Mutex::new(ShellShortcutRegistry::default())),
             events: Arc::new(Mutex::new(None)),
+            held: Arc::new(Mutex::new(HashMap::new())),
+            shortcuts: Arc::new(Mutex::new(shortcuts)),
         }
     }
 
@@ -200,19 +216,103 @@ impl ShellGlobalShortcutsService {
         }
     }
 
-    /// Called by `ShellOverlayHost` on a pressed physical key.  The physical
-    /// `KeyCode` is canonicalised without consulting the active keyboard
-    /// layout, preventing a layout switch from silently changing a grant.
-    pub fn match_physical_key(&self, physical: &PhysicalKey, modifiers: Modifiers) -> bool {
-        let PhysicalKey::Code(code) = physical else {
+    /// Replace the effective editable shortcut table the reserved check
+    /// consults. The compositor calls this whenever Settings change.
+    pub fn set_shortcut_config(&self, config: settings_store::hardware::ShortcutConfig) {
+        if let Ok(mut slot) = self.shortcuts.lock() {
+            *slot = config;
+        }
+    }
+
+    /// Whether `accelerator` is withheld from apps under the current
+    /// effective shortcut table.
+    pub fn is_reserved(&self, accelerator: &str) -> bool {
+        self.shortcuts
+            .lock()
+            .map(|shortcuts| is_reserved_accelerator(accelerator, &shortcuts))
+            .unwrap_or(true)
+    }
+
+    /// Does an approved grant own this press? The compositor asks before
+    /// offering the key to a focused client, so a granted chord fires over
+    /// whatever app holds focus. The physical `KeyCode` is canonicalised
+    /// without consulting the keyboard layout, so a layout switch cannot
+    /// silently change a grant.
+    pub fn claims(&self, physical: &PhysicalKey, modifiers: Modifiers) -> bool {
+        let Some(code) = physical_code(physical) else {
             return false;
         };
-        let candidate = accelerator_for_code(&format!("{code:?}"), modifiers);
-        let Some(candidate) = candidate else {
+        if self.held.lock().is_ok_and(|held| held.contains_key(&code)) {
+            return true;
+        }
+        !self.matching_bindings(&code, modifiers).is_empty()
+    }
+
+    /// Queue `Activated` for every grant this press matches and remember
+    /// them until the key is released. A press whose key is already held
+    /// (the same event offered twice) is claimed without a second
+    /// activation. Returns whether a grant claimed the press.
+    pub fn press(&self, physical: &PhysicalKey, modifiers: Modifiers) -> bool {
+        let Some(code) = physical_code(physical) else {
             return false;
         };
-        let hits = self
-            .registry
+        let Ok(mut held) = self.held.lock() else {
+            return false;
+        };
+        if held.contains_key(&code) {
+            return true;
+        }
+        let hits = self.matching_bindings(&code, modifiers);
+        if hits.is_empty() {
+            return false;
+        }
+        let events = self.events.lock().ok().and_then(|slot| slot.clone());
+        let timestamp = now_millis();
+        let activated: Vec<_> = hits
+            .into_iter()
+            .filter(|binding| {
+                events
+                    .as_ref()
+                    .is_some_and(|events| events.activate(&binding.session, &binding.id, timestamp))
+            })
+            .map(|binding| (binding.session, binding.id))
+            .collect();
+        // The press is the grant's even if its session could not take the
+        // signal right now; handing it to the focused app instead would
+        // make a granted chord type into whatever has focus.
+        held.insert(code, activated);
+        true
+    }
+
+    /// Queue `Deactivated` for the grants the matching press activated.
+    /// Returns whether the key was held by a grant, in which case its
+    /// release must not reach a client either.
+    pub fn release(&self, physical: &PhysicalKey) -> bool {
+        let Some(code) = physical_code(physical) else {
+            return false;
+        };
+        let Some(activated) = self
+            .held
+            .lock()
+            .ok()
+            .and_then(|mut held| held.remove(&code))
+        else {
+            return false;
+        };
+        if let Some(events) = self.events.lock().ok().and_then(|slot| slot.clone()) {
+            let timestamp = now_millis();
+            for (session, id) in activated {
+                events.deactivate(&session, &id, timestamp);
+            }
+        }
+        true
+    }
+
+    fn matching_bindings(&self, code: &str, modifiers: Modifiers) -> Vec<InstalledShortcut> {
+        let Some(candidate) = accelerator_for_code(code, modifiers) else {
+            return Vec::new();
+        };
+        self.registry
             .lock()
             .map(|registry| {
                 registry
@@ -220,20 +320,9 @@ impl ShellGlobalShortcutsService {
                     .iter()
                     .filter(|binding| binding.accelerator == candidate)
                     .cloned()
-                    .collect::<Vec<_>>()
+                    .collect()
             })
-            .unwrap_or_default();
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-            .unwrap_or_default();
-        let events = self.events.lock().ok().and_then(|slot| slot.clone());
-        let Some(events) = events else {
-            return false;
-        };
-        hits.into_iter()
-            .any(|binding| events.activate(&binding.session, &binding.id, timestamp))
+            .unwrap_or_default()
     }
 
     fn install_approved(&self, request: &GlobalShortcutBindingRequest) -> Vec<String> {
@@ -261,7 +350,7 @@ impl ShellGlobalShortcutsService {
         let mut accepted = Vec::new();
         let mut proposed = HashSet::new();
         for candidate in candidates {
-            if reserved_shell_accelerator(&candidate.accelerator)
+            if self.is_reserved(&candidate.accelerator)
                 || !proposed.insert(candidate.accelerator.clone())
                 || registry
                     .installed
@@ -304,7 +393,7 @@ impl GlobalShortcutsService for ShellGlobalShortcutsService {
                     .as_deref()
                     .and_then(canonical_accelerator);
                 let status = accelerator.as_deref().and_then(|accelerator| {
-                    if is_reserved_accelerator(accelerator) {
+                    if self.is_reserved(accelerator) {
                         Some("Reserved by Tilo. Choose another shortcut.".into())
                     } else if let Some(app_id) = installed.get(accelerator) {
                         Some(format!(
@@ -407,12 +496,24 @@ struct ShortcutState {
     activations: VecDeque<PortalShortcutActivation>,
 }
 
-/// An authenticated activation queued by the compositor for D-Bus delivery.
+/// Which portal signal a queued edge becomes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutEdge {
+    /// The granted chord was pressed (`Activated`).
+    Activated,
+    /// The granted chord was released (`Deactivated`); push-to-talk and
+    /// hold-to-show clients stop on this.
+    Deactivated,
+}
+
+/// An authenticated shortcut edge queued by the compositor for D-Bus
+/// delivery, in the order the keys moved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortalShortcutActivation {
     pub session: String,
     pub shortcut_id: String,
     pub timestamp: u64,
+    pub edge: ShortcutEdge,
 }
 
 /// Cloneable compositor-side event bridge.  It deliberately exposes no way to
@@ -428,6 +529,15 @@ pub struct GlobalShortcutsHandle {
 impl GlobalShortcutsHandle {
     /// Queue a D-Bus `Activated` signal for a live approved binding.
     pub fn activate(&self, session: &str, shortcut_id: &str, timestamp: u64) -> bool {
+        self.queue(session, shortcut_id, timestamp, ShortcutEdge::Activated)
+    }
+
+    /// Queue the matching `Deactivated` signal when the key is released.
+    pub fn deactivate(&self, session: &str, shortcut_id: &str, timestamp: u64) -> bool {
+        self.queue(session, shortcut_id, timestamp, ShortcutEdge::Deactivated)
+    }
+
+    fn queue(&self, session: &str, shortcut_id: &str, timestamp: u64, edge: ShortcutEdge) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -447,6 +557,7 @@ impl GlobalShortcutsHandle {
             session: session.into(),
             shortcut_id: shortcut_id.into(),
             timestamp,
+            edge,
         });
         true
     }
@@ -456,6 +567,41 @@ impl GlobalShortcutsHandle {
             .lock()
             .map(|mut state| state.activations.drain(..).collect())
             .unwrap_or_default()
+    }
+
+    /// A bridge holding one already-bound portal session, standing in for
+    /// the D-Bus `CreateSession`/`BindShortcuts` exchange in headless
+    /// compositor tests. Production handles come only from
+    /// `GlobalShortcutsBackend::handle`.
+    #[doc(hidden)]
+    pub fn with_bound_session_for_tests(
+        session: &str,
+        app_id: &str,
+        shortcut_ids: &[&str],
+    ) -> Self {
+        let mut state = ShortcutState::default();
+        state.sessions.insert(
+            session.into(),
+            Session {
+                owner: String::new(),
+                caller: PortalCaller::new(crate::shell::state::WorkspaceId(1), app_id),
+                shortcuts: shortcut_ids
+                    .iter()
+                    .map(|id| GlobalShortcut {
+                        id: (*id).into(),
+                        description: None,
+                        preferred_trigger: None,
+                    })
+                    .collect(),
+                #[cfg(any(test, target_os = "linux"))]
+                binding: false,
+            },
+        );
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            lifecycle: PortalLifecycle::new(),
+            service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+        }
     }
 
     /// Called by the portal session-close/disconnect bridge. This is a
@@ -970,14 +1116,28 @@ pub fn spawn_signal_emitter(
                 let Ok(session) = ObjectPath::try_from(activation.session.as_str()) else {
                     continue;
                 };
-                let _ = GlobalShortcutsBackend::activated(
-                    &context,
-                    session,
-                    activation.shortcut_id,
-                    activation.timestamp,
-                    HashMap::new(),
-                )
-                .await;
+                let _ = match activation.edge {
+                    ShortcutEdge::Activated => {
+                        GlobalShortcutsBackend::activated(
+                            &context,
+                            session,
+                            activation.shortcut_id,
+                            activation.timestamp,
+                            HashMap::new(),
+                        )
+                        .await
+                    }
+                    ShortcutEdge::Deactivated => {
+                        GlobalShortcutsBackend::deactivated(
+                            &context,
+                            session,
+                            activation.shortcut_id,
+                            activation.timestamp,
+                            HashMap::new(),
+                        )
+                        .await
+                    }
+                };
             }
         }
     })
@@ -1200,26 +1360,166 @@ fn accelerator_for_code(code: &str, modifiers: Modifiers) -> Option<String> {
     Some(format!("{}+{code}", parts.join("+")))
 }
 
+/// Session conventions outside the shell's own chord tables that an app
+/// must still not be granted: the X server kill chord, in-app search and
+/// the menu key some toolkits bind to Alt+Space.
+const SESSION_RESERVED: &[&str] = &["CTRL+ALT+BACKSPACE", "CTRL+KEYK", "ALT+SPACE"];
+
 /// Tilo-owned accelerators always win.  Exposed to the trusted dialog so it
 /// can explain a rejected capture before any registry mutation occurs.
-pub fn is_reserved_accelerator(accelerator: &str) -> bool {
-    matches!(
-        accelerator,
-        "ALT+SPACE"
-            | "SUPER+SPACE"
-            | "SUPER+KEYK"
-            | "SUPER+KEYH"
-            | "CTRL+KEYK"
-            | "CTRL+TAB"
-            | "SUPER+TAB"
-            | "SUPER+ARROWLEFT"
-            | "SUPER+ARROWRIGHT"
-            | "CTRL+ALT+BACKSPACE"
+///
+/// Derived from the shell's fixed-chord table, the chords client routing
+/// withholds from every app, and the effective editable `shortcuts`, so a
+/// grant can never be approved for a chord the compositor would take
+/// before the grant is consulted.
+pub fn is_reserved_accelerator(
+    accelerator: &str,
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> bool {
+    SESSION_RESERVED.contains(&accelerator)
+        || crate::shell::fixed_chords::all_chords()
+            .any(|chord| fixed_chord_accelerator(chord).as_deref() == Some(accelerator))
+        || chord_for_accelerator(accelerator).is_some_and(|(key, mods)| {
+            crate::shell::input_policy::shell_owns_chord(key, mods, false)
+        })
+        || shortcuts
+            .bindings
+            .values()
+            .any(|chord| key_chord_accelerator(chord).as_deref() == Some(accelerator))
+}
+
+/// The client-routing chord a canonical accelerator describes.
+fn chord_for_accelerator(
+    accelerator: &str,
+) -> Option<(
+    crate::shell::input_policy::ChordKey,
+    crate::shell::input_policy::ChordMods,
+)> {
+    use crate::shell::input_policy::{ChordKey, ChordMods};
+    let mut mods = ChordMods::default();
+    let mut key = None;
+    for piece in accelerator.split('+') {
+        match piece {
+            "CTRL" => mods.ctrl = true,
+            "ALT" => mods.alt = true,
+            "SHIFT" => mods.shift = true,
+            "SUPER" => mods.logo = true,
+            other => {
+                let letter = other
+                    .strip_prefix("KEY")
+                    .or_else(|| other.strip_prefix("DIGIT"))
+                    .filter(|rest| rest.len() == 1)
+                    .and_then(|rest| rest.chars().next());
+                key = Some(match (letter, other) {
+                    (Some(c), _) => ChordKey::Char(c.to_ascii_lowercase()),
+                    (None, "SPACE") => ChordKey::Space,
+                    (None, "TAB") => ChordKey::Tab,
+                    (None, "ENTER") => ChordKey::Enter,
+                    (None, "ESCAPE") => ChordKey::Escape,
+                    (None, "DELETE") => ChordKey::Delete,
+                    (None, "NUMLOCK") => ChordKey::NumLock,
+                    (None, "PAGEUP") => ChordKey::PageUp,
+                    (None, "PAGEDOWN") => ChordKey::PageDown,
+                    (None, "ARROWLEFT") => ChordKey::ArrowLeft,
+                    (None, "ARROWRIGHT") => ChordKey::ArrowRight,
+                    (None, "ARROWUP") => ChordKey::ArrowUp,
+                    (None, "ARROWDOWN") => ChordKey::ArrowDown,
+                    (None, function) => function
+                        .strip_prefix('F')
+                        .and_then(|n| n.parse::<u8>().ok())
+                        .map_or(ChordKey::Other, ChordKey::Function),
+                });
+            }
+        }
+    }
+    Some((key?, mods))
+}
+
+/// The canonical accelerator for a fixed shell chord, or `None` for a
+/// chord the portal cannot express (no modifier, or a key without a
+/// canonical physical name such as Print Screen).
+fn fixed_chord_accelerator(chord: crate::shell::fixed_chords::FixedChord) -> Option<String> {
+    use crate::shell::input_policy::ChordKey;
+    let key = match chord.key {
+        ChordKey::Char(c) if c.is_ascii_alphanumeric() => c.to_ascii_uppercase().to_string(),
+        ChordKey::Space => "SPACE".into(),
+        ChordKey::Tab => "TAB".into(),
+        ChordKey::Enter => "ENTER".into(),
+        ChordKey::Escape => "ESCAPE".into(),
+        ChordKey::Delete => "DELETE".into(),
+        ChordKey::NumLock => "NUMLOCK".into(),
+        ChordKey::PageUp => "PAGEUP".into(),
+        ChordKey::PageDown => "PAGEDOWN".into(),
+        ChordKey::ArrowLeft => "ARROWLEFT".into(),
+        ChordKey::ArrowRight => "ARROWRIGHT".into(),
+        ChordKey::ArrowUp => "ARROWUP".into(),
+        ChordKey::ArrowDown => "ARROWDOWN".into(),
+        ChordKey::Function(n) => format!("F{n}"),
+        ChordKey::Char(_) | ChordKey::PrintScreen | ChordKey::Modifier | ChordKey::Other => {
+            return None;
+        }
+    };
+    canonical_parts(
+        chord.mods.ctrl,
+        chord.mods.alt,
+        chord.mods.shift,
+        chord.mods.logo,
+        &key,
     )
 }
 
-fn reserved_shell_accelerator(accelerator: &str) -> bool {
-    is_reserved_accelerator(accelerator)
+/// The canonical accelerator for an editable shortcut binding.
+fn key_chord_accelerator(chord: &settings_store::hardware::KeyChord) -> Option<String> {
+    let key = match chord.key.as_str() {
+        "left" => "ARROWLEFT".to_string(),
+        "right" => "ARROWRIGHT".to_string(),
+        "up" => "ARROWUP".to_string(),
+        "down" => "ARROWDOWN".to_string(),
+        other => other.to_ascii_uppercase(),
+    };
+    canonical_parts(
+        chord.modifiers.contains("Ctrl"),
+        chord.modifiers.contains("Alt"),
+        chord.modifiers.contains("Shift"),
+        chord.modifiers.contains("Super"),
+        &key,
+    )
+}
+
+fn canonical_parts(ctrl: bool, alt: bool, shift: bool, logo: bool, key: &str) -> Option<String> {
+    let key = canonical_key_piece(key)?;
+    let mut parts = Vec::new();
+    for (held, name) in [
+        (ctrl, "CTRL"),
+        (alt, "ALT"),
+        (shift, "SHIFT"),
+        (logo, "SUPER"),
+    ] {
+        if held {
+            parts.push(name);
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.sort_unstable();
+    Some(format!("{}+{key}", parts.join("+")))
+}
+
+/// The physical key's stable name (`KeyK`), independent of layout.
+fn physical_code(physical: &PhysicalKey) -> Option<String> {
+    match physical {
+        PhysicalKey::Code(code) => Some(format!("{code:?}")),
+        PhysicalKey::Unidentified(_) => None,
+    }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1228,101 +1528,216 @@ mod tests {
     use winit::keyboard::{KeyCode, ModifiersState};
 
     #[test]
-    fn shortcut_wire_is_bounded_and_cannot_duplicate_ids() {
-        let good = vec![("toggle".into(), HashMap::new())];
-        assert_eq!(decode_shortcuts(good).unwrap().len(), 1);
-        let duplicate = vec![
-            ("toggle".into(), HashMap::new()),
-            ("toggle".into(), HashMap::new()),
-        ];
-        assert!(decode_shortcuts(duplicate).is_none());
-        assert!(decode_shortcuts(vec![("bad space".into(), HashMap::new())]).is_none());
-    }
-
-    #[test]
-    fn compositor_handle_cannot_activate_unbound_id() {
-        let handle = test_handle();
-        assert!(!handle.activate("/org/freedesktop/portal/desktop/session/x", "unknown", 1));
-    }
-
-    #[test]
-    fn compositor_event_bridge_only_delivers_bound_ids() {
-        let handle = test_handle();
-        let session = "/org/freedesktop/portal/desktop/session/x";
-        handle.state.lock().unwrap().sessions.insert(
-            session.into(),
-            Session {
-                owner: ":1.7".into(),
-                caller: PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.App"),
-                shortcuts: vec![GlobalShortcut {
-                    id: "toggle".into(),
-                    description: None,
-                    preferred_trigger: None,
-                }],
-                binding: false,
-            },
-        );
-        assert!(handle.activate(session, "toggle", 9));
-        assert!(!handle.activate(session, "other", 10));
-        assert_eq!(
-            handle.drain_activations(),
-            vec![PortalShortcutActivation {
-                session: session.into(),
-                shortcut_id: "toggle".into(),
-                timestamp: 9,
-            }]
-        );
-    }
-
-    #[test]
-    fn canonical_accelerators_are_physical_and_shell_reservations_win() {
-        assert_eq!(
-            canonical_accelerator("Shift + Ctrl + k").as_deref(),
-            Some("CTRL+SHIFT+KEYK")
-        );
-        assert!(canonical_accelerator("k").is_none());
-        assert!(reserved_shell_accelerator("SUPER+KEYK"));
-        assert!(!reserved_shell_accelerator("CTRL+SHIFT+KEYK"));
-        let modifiers = Modifiers::default();
-        assert!(accelerator_for_code("KeyK", modifiers).is_none());
-    }
-
-    #[test]
-    fn registry_rejects_conflicts_and_reserved_chords() {
-        let service = ShellGlobalShortcutsService::with_dialogs(PortalDialogQueue::default());
-        let request = GlobalShortcutBindingRequest {
-            handle: "/request/a".into(),
-            session: "/session/a".into(),
-            app_id: "org.example.A".into(),
-            parent_window: String::new(),
-            shortcuts: vec![
-                GlobalShortcut {
-                    id: "shell".into(),
-                    description: None,
-                    preferred_trigger: Some("Super+K".into()),
+    fn shortcut_bindings_are_bounded_and_deliver_only_bound_ids() {
+        // Phase `shortcut_wire_is_bounded_and_cannot_duplicate_ids`.
+        {
+            let good = vec![("toggle".into(), HashMap::new())];
+            assert_eq!(decode_shortcuts(good).unwrap().len(), 1);
+            let duplicate = vec![
+                ("toggle".into(), HashMap::new()),
+                ("toggle".into(), HashMap::new()),
+            ];
+            assert!(decode_shortcuts(duplicate).is_none());
+            assert!(decode_shortcuts(vec![("bad space".into(), HashMap::new())]).is_none());
+        }
+        // Phase `compositor_handle_cannot_activate_unbound_id`.
+        {
+            let handle = test_handle();
+            assert!(!handle.activate("/org/freedesktop/portal/desktop/session/x", "unknown", 1));
+        }
+        // Phase `compositor_event_bridge_only_delivers_bound_ids`.
+        {
+            let handle = test_handle();
+            let session = "/org/freedesktop/portal/desktop/session/x";
+            handle.state.lock().unwrap().sessions.insert(
+                session.into(),
+                Session {
+                    owner: ":1.7".into(),
+                    caller: PortalCaller::new(
+                        crate::shell::state::WorkspaceId(1),
+                        "org.example.App",
+                    ),
+                    shortcuts: vec![GlobalShortcut {
+                        id: "toggle".into(),
+                        description: None,
+                        preferred_trigger: None,
+                    }],
+                    binding: false,
                 },
-                GlobalShortcut {
-                    id: "ok".into(),
+            );
+            assert!(handle.activate(session, "toggle", 9));
+            assert!(!handle.activate(session, "other", 10));
+            assert_eq!(
+                handle.drain_activations(),
+                vec![PortalShortcutActivation {
+                    session: session.into(),
+                    shortcut_id: "toggle".into(),
+                    timestamp: 9,
+                    edge: ShortcutEdge::Activated,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn accelerators_are_canonical_and_reserved_chords_win() {
+        // Phase `canonical_accelerators_are_physical_and_shell_reservations_win`.
+        {
+            assert_eq!(
+                canonical_accelerator("Shift + Ctrl + k").as_deref(),
+                Some("CTRL+SHIFT+KEYK")
+            );
+            assert!(canonical_accelerator("k").is_none());
+            assert!(is_reserved_accelerator("SUPER+KEYK", &defaults()));
+            assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYK", &defaults()));
+            let modifiers = Modifiers::default();
+            assert!(accelerator_for_code("KeyK", modifiers).is_none());
+        }
+        // Phase `registry_rejects_conflicts_and_reserved_chords`.
+        {
+            let service = ShellGlobalShortcutsService::with_dialogs(PortalDialogQueue::default());
+            let request = GlobalShortcutBindingRequest {
+                handle: "/request/a".into(),
+                session: "/session/a".into(),
+                app_id: "org.example.A".into(),
+                parent_window: String::new(),
+                shortcuts: vec![
+                    GlobalShortcut {
+                        id: "shell".into(),
+                        description: None,
+                        preferred_trigger: Some("Super+K".into()),
+                    },
+                    GlobalShortcut {
+                        id: "ok".into(),
+                        description: None,
+                        preferred_trigger: Some("Ctrl+Shift+K".into()),
+                    },
+                ],
+            };
+            assert_eq!(service.install_approved(&request), vec!["ok"]);
+            let competing = GlobalShortcutBindingRequest {
+                handle: "/request/b".into(),
+                session: "/session/b".into(),
+                app_id: "org.example.B".into(),
+                parent_window: String::new(),
+                shortcuts: vec![GlobalShortcut {
+                    id: "conflict".into(),
                     description: None,
                     preferred_trigger: Some("Ctrl+Shift+K".into()),
-                },
-            ],
-        };
-        assert_eq!(service.install_approved(&request), vec!["ok"]);
-        let competing = GlobalShortcutBindingRequest {
-            handle: "/request/b".into(),
-            session: "/session/b".into(),
-            app_id: "org.example.B".into(),
+                }],
+            };
+            assert!(service.install_approved(&competing).is_empty());
+            service.release_session("/session/a");
+            assert_eq!(service.install_approved(&competing), vec!["conflict"]);
+        }
+    }
+
+    fn defaults() -> settings_store::hardware::ShortcutConfig {
+        settings_store::hardware::ShortcutConfig::default()
+    }
+
+    #[test]
+    fn reservations_follow_the_live_shortcut_table_and_client_routing() {
+        use settings_store::hardware::{KeyChord, ShortcutAction};
+        let mut rebound = defaults();
+        rebound
+            .set(
+                ShortcutAction::Search,
+                KeyChord::parse("Alt+G").expect("valid chord"),
+            )
+            .expect("unassigned chord");
+        assert!(is_reserved_accelerator("ALT+KEYG", &rebound));
+        assert!(!is_reserved_accelerator("ALT+KEYG", &defaults()));
+        // Any Super chord is withheld from apps by client routing, so a
+        // grant for it could never fire.
+        assert!(is_reserved_accelerator("SUPER+KEYX", &defaults()));
+    }
+
+    #[test]
+    fn a_held_grant_activates_once_and_deactivates_on_release() {
+        let service = ShellGlobalShortcutsService::with_dialogs(PortalDialogQueue::default());
+        let session = "/session/talk";
+        let handle = GlobalShortcutsHandle::with_bound_session_for_tests(
+            session,
+            "org.example.Talk",
+            &["talk"],
+        );
+        service.attach_event_bridge(handle.clone());
+        let request = GlobalShortcutBindingRequest {
+            handle: "/request/talk".into(),
+            session: session.into(),
+            app_id: "org.example.Talk".into(),
             parent_window: String::new(),
             shortcuts: vec![GlobalShortcut {
-                id: "conflict".into(),
+                id: "talk".into(),
                 description: None,
-                preferred_trigger: Some("Ctrl+Shift+K".into()),
+                preferred_trigger: Some("Ctrl+Shift+T".into()),
             }],
         };
-        assert!(service.install_approved(&competing).is_empty());
-        service.release_session("/session/a");
-        assert_eq!(service.install_approved(&competing), vec!["conflict"]);
+        assert_eq!(service.install_approved(&request), vec!["talk"]);
+        let key = PhysicalKey::Code(KeyCode::KeyT);
+        let chord = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+        assert!(service.claims(&key, chord));
+        assert!(!service.claims(&key, Modifiers::from(ModifiersState::CONTROL)));
+        assert!(service.press(&key, chord));
+        assert!(
+            service.press(&key, chord),
+            "a re-offered press stays claimed"
+        );
+        assert!(service.release(&key));
+        assert!(!service.release(&key), "only one release per press");
+        let edges: Vec<_> = handle
+            .drain_activations()
+            .into_iter()
+            .map(|event| (event.shortcut_id, event.edge))
+            .collect();
+        assert_eq!(
+            edges,
+            vec![
+                ("talk".to_string(), ShortcutEdge::Activated),
+                ("talk".to_string(), ShortcutEdge::Deactivated),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_fixed_shell_chord_and_editable_default_is_reserved() {
+        for accelerator in [
+            "SUPER+KEYL",
+            "SUPER+KEYW",
+            "SUPER+KEYQ",
+            "ALT+F4",
+            "ALT+TAB",
+            "ALT+SHIFT+TAB",
+            "SHIFT+SUPER+KEYS",
+            "SHIFT+SUPER+KEYR",
+            "SUPER+KEYH",
+            "SUPER+ENTER",
+            "SUPER+PAGEUP",
+            "SUPER+ESCAPE",
+            "SUPER+SPACE",
+            "SUPER+KEYK",
+            "CTRL+TAB",
+            "SUPER+TAB",
+            "SUPER+ARROWLEFT",
+            "CTRL+ALT+BACKSPACE",
+        ] {
+            assert!(
+                is_reserved_accelerator(accelerator, &defaults()),
+                "{accelerator} must not be grantable to an app"
+            );
+        }
+        for chord in crate::shell::fixed_chords::all_chords() {
+            if let Some(accelerator) = fixed_chord_accelerator(chord) {
+                assert_eq!(
+                    canonical_accelerator(&accelerator).as_deref(),
+                    Some(accelerator.as_str()),
+                    "the derived form of {} must be canonical to ever match",
+                    chord.display()
+                );
+            }
+        }
+        assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYM", &defaults()));
     }
 
     #[tokio::test]
@@ -1364,11 +1779,11 @@ mod tests {
             }]))
         );
         assert!(
-            service.match_physical_key(
+            service.claims(
                 &PhysicalKey::Code(KeyCode::KeyR),
                 Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT),
-            ) == false,
-            "without an event bridge a matching key is not consumed"
+            ),
+            "the approved grant owns its chord ahead of a focused app"
         );
     }
 
