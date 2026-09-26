@@ -14394,6 +14394,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-font-catalog"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -14464,6 +14476,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-content",
+ "tilo-font-catalog",
  "typst",
  "typst-assets",
  "typst-layout",
@@ -14765,6 +14778,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-desktop-model",
+ "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-rt",
  "tilo-seal",

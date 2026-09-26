@@ -36,6 +36,8 @@ wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # Landlock and seccomp for the helper process.
 sandbox-core = { path = "../../system/sandbox-core" }
+# The pinned fonts appearance text is set in, read from the installed catalog.
+tilo-font-catalog = { path = "../../sdk/font-catalog" }
 # The one engine behind the API, loaded dynamically (never bundled). Only the
 # raw C API is used; the high-level wrapper's image support and global lock
 # are not needed.
