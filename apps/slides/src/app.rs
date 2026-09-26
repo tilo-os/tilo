@@ -6894,7 +6894,7 @@ impl Widget for SlidesApp {
 
     /// Slides paints a single retained canvas, so every visible control and
     /// durable object is represented as a synthetic semantic child. Controls
-    /// use the same [`Hit`] values as pointer input and stable document ids are
+    /// use the same `Hit` values as pointer input and stable document ids are
     /// used for slides/elements, keeping AT activation from drifting after a
     /// reorder or remote edit.
     #[allow(
@@ -7238,7 +7238,7 @@ impl Widget for SlidesApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

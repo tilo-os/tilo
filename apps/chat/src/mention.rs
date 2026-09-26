@@ -109,7 +109,7 @@ const MAX_QUERY_LEN: usize = 40;
 ///
 /// A run starts at an `@` that opens a word (start of text, or preceded by
 /// whitespace) and ends at the caret. It is abandoned once it grows past
-/// [`MAX_QUERY_LEN`] or crosses a newline — at that point the person is writing
+/// `MAX_QUERY_LEN` or crosses a newline — at that point the person is writing
 /// prose that contains an `@`, not picking somebody.
 pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     let caret = caret.min(text.len());

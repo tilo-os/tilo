@@ -16,7 +16,7 @@
 //!
 //! * **The live apply** — pushing the ruleset to the kernel via
 //!   `firewall-cmd`/`nft` (see [`crate::backend`]) is an external side effect
-//!   *driven by* the document state, never part of [`Action::apply`], which only
+//!   *driven by* the document state, never part of `Action::apply`, which only
 //!   mutates the CRDT deterministically. It stays a separate step.
 //! * **Presentation** — which zone tab is selected in the UI, the rule filter,
 //!   the add-rule form's field focus, scroll — never leaves the machine and
@@ -25,7 +25,7 @@
 //! ## Determinism contract
 //!
 //! A rule's id is minted at *authoring* time and carried in the [`Rule`] payload;
-//! [`Action::apply`] never touches the RNG or the wall-clock. It reads the
+//! `Action::apply` never touches the RNG or the wall-clock. It reads the
 //! current config from the document and transforms it, so two replicas at the
 //! same heads land on the byte-identical result. A payload that names a zone or
 //! rule that isn't there is a **no-op** rather than an error, so a bad replay

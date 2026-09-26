@@ -229,6 +229,29 @@ impl SessionManager {
         out
     }
 
+    /// [`Self::tick`], honouring what the inhibitor registry holds. An idle
+    /// inhibitor (a video playing, a presentation, an app's `Inhibit IDLE`)
+    /// means the user is there without touching anything, so the idle episode
+    /// restarts from `now` and nothing blanks, locks or suspends. A
+    /// suspend-only hold leaves blank and lock alone.
+    pub fn tick_inhibited(
+        &mut self,
+        now: Instant,
+        inhibitors: &tilo_power_mgmt::InhibitRegistry,
+    ) -> Vec<SessionTransition> {
+        if inhibitors.is_inhibited_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE) {
+            self.defer_idle(now);
+        }
+        self.tick(now)
+    }
+
+    /// Restart the idle episode at `now` without it being input: a blanked
+    /// display stays blanked and a latched suspend stays latched, but no
+    /// timeout can fire until a full period has passed from here.
+    pub fn defer_idle(&mut self, now: Instant) {
+        self.last_activity = now;
+    }
+
     /// Whether the idle-suspend latch is currently set.
     pub fn is_suspend_pending(&self) -> bool {
         self.suspended
@@ -343,6 +366,72 @@ mod tests {
             lock_timeout: lock.map(Duration::from_secs),
             suspend_timeout: suspend.map(Duration::from_secs),
         }
+    }
+
+    #[test]
+    fn an_idle_inhibitor_keeps_the_screen_from_blanking_and_locking() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), Some(120)), t0);
+        let video = registry.acquire_for("Videos", tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+
+        for minute in 1..=10 {
+            assert!(
+                session
+                    .tick_inhibited(t0 + Duration::from_secs(minute * 60), &registry)
+                    .is_empty(),
+                "minute {minute}: a held idle inhibitor must neither blank nor lock"
+            );
+        }
+
+        drop(video);
+        let released = t0 + Duration::from_secs(600);
+        assert!(
+            session
+                .tick_inhibited(released + Duration::from_secs(59), &registry)
+                .is_empty(),
+            "the idle episode restarts when the inhibitor lets go, not from the last input"
+        );
+        assert_eq!(
+            session.tick_inhibited(released + Duration::from_secs(60), &registry),
+            vec![SessionTransition::Blanked]
+        );
+        assert_eq!(
+            session.tick_inhibited(released + Duration::from_secs(120), &registry),
+            vec![SessionTransition::Locked]
+        );
+    }
+
+    #[test]
+    fn a_suspend_only_hold_still_blanks_and_locks() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), Some(60)), t0);
+        let _download =
+            registry.acquire_for("Downloading", tilo_power_mgmt::inhibit::INHIBIT_SUSPEND);
+        assert_eq!(
+            session.tick_inhibited(t0 + Duration::from_secs(60), &registry),
+            vec![SessionTransition::Blanked, SessionTransition::Locked],
+            "keeping the machine awake is not a reason to leave the screen unlocked"
+        );
+    }
+
+    #[test]
+    fn an_idle_inhibitor_taken_while_blanked_does_not_wake_the_display() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut session = SessionManager::new(cfg(Some(60), None), t0);
+        assert_eq!(
+            session.tick_inhibited(t0 + Duration::from_secs(60), &registry),
+            vec![SessionTransition::Blanked]
+        );
+        let _late = registry.acquire_for("Music", tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+        assert!(
+            session
+                .tick_inhibited(t0 + Duration::from_secs(61), &registry)
+                .is_empty()
+        );
+        assert!(session.is_blanked(), "only input wakes a blanked display");
     }
 
     // IdleConfig::from_env_values

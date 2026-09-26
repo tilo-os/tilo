@@ -15,7 +15,7 @@
 //! ## Real vs. gated
 //! The *transport contract* ([`MediaTransport`]) and a *simulated*
 //! implementation ([`SimulatedTransport`]) are always compiled; the *real* iroh
-//! transport ([`live::IrohTransport`]) is gated behind the `live-media` cargo
+//! transport (`live::IrohTransport`) is gated behind the `live-media` cargo
 //! feature. The live transport binds a genuine iroh endpoint, dials peers by the
 //! ticket they publish into the shared voice map, and streams
 //! length-prefixed [`MediaObject`]s over QUIC — proven by a real two-peer

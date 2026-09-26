@@ -43,7 +43,7 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
 /// docked while a narrow / split-screen placement gets the phone layout. At a
 /// large-text preference the live breakpoint is this times the text scale
-/// (see [`SettingsApp::build_shell`]).
+/// (see `SettingsApp::build_shell`).
 pub const NAV_BREAKPOINT: f64 = ui::widget::DEFAULT_SHELL_BREAKPOINT;
 
 /// Horizontal gutter (logical px) of the page column inside the content

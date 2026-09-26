@@ -52,7 +52,7 @@ impl ImageBox {
         }
     }
 
-    /// Resolve the image lazily from `store` at `url` (looked up in [`sync`]),
+    /// Resolve the image lazily from `store` at `url` (looked up in [`sync`](crate::sync)),
     /// instead of passing a pre-decoded image at build time.
     #[must_use]
     pub fn source(mut self, store: Option<ImageStore>, url: &str) -> Self {

@@ -163,7 +163,7 @@ pub enum CompositedFrame {
 }
 
 /// Compute the composited frame at `playhead`. Pure — no decoding, no I/O.
-/// The `decoded` flag is always `false` here; [`decode_frame`] sets it when
+/// The `decoded` flag is always `false` here; `decode_frame` sets it when
 /// the decode feature resolves real bytes.
 pub fn composite(project: &Project, playhead: f64) -> CompositedFrame {
     let Some(clip) = project.top_video_clip_at(playhead) else {
@@ -530,7 +530,7 @@ pub struct Layer {
     /// Colour key, sampled at this instant. Inactive on a clip that has
     /// never been keyed, which is the overwhelming majority.
     pub key: crate::model::ChromaKey,
-    /// Shape mask, sampled at this instant. [`MaskShape::None`] unless the
+    /// Shape mask, sampled at this instant. `MaskShape::None` unless the
     /// clip carries one.
     pub mask: crate::model::Mask,
     /// Where the picture sits in the frame, sampled at this instant so an

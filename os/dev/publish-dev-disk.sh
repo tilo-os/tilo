@@ -97,6 +97,7 @@ status=$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{
 case "$status" in
   200) note "tilo-vm-disk $DEV_TAG already publishes $ARCH ($package/$manifest_file)"; exit 0 ;;
   404) ;;
+  3??) die "reading $package/$manifest_file was redirected (HTTP $status): the package base moved; update TILO_PACKAGE_PUBLIC_BASE_URL" ;;
   *) die "reading $package/$manifest_file answered HTTP $status" ;;
 esac
 

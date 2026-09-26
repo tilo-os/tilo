@@ -141,7 +141,7 @@ pub struct CallState {
     /// Camera off / audio-only.
     pub audio_only: bool,
     /// This peer is sharing its screen into the call. Set only once the portal
-    /// grants a source (see [`crate::app::ChatApp::request_screen`]); mirrored
+    /// grants a source (see `crate::app::ChatApp::request_screen`); mirrored
     /// into the shared voice membership so remote peers reserve the featured
     /// tile. Never set speculatively — a share the portal declined stays `false`.
     pub sharing: bool,
