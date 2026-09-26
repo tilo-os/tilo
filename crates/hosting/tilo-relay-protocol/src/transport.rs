@@ -304,6 +304,30 @@ pub enum Envelope {
         /// Workspace id of the public room.
         workspace_id: u64,
     },
+
+    /// Ask for one document channel's retained state again: its checkpoint
+    /// and every tail entry, as a subscriber's replay carries them. A device
+    /// sends it when an app attaches to a document after the device's own
+    /// replay went by, so the app learns every retained entry it could name
+    /// as covered. Answered by [`Envelope::ChannelReplay`] to the requester
+    /// only; never stored or fanned out.
+    ReplayChannel {
+        /// Workspace id the requester is subscribed to.
+        workspace_id: u64,
+        /// Digest of the document route, as retention keys it.
+        channel: [u8; 32],
+    },
+
+    /// The answer to [`Envelope::ReplayChannel`]: the channel's retained
+    /// envelopes, checkpoint first, each encoded exactly as it was retained.
+    ChannelReplay {
+        /// Workspace id of the channel.
+        workspace_id: u64,
+        /// Digest of the document route.
+        channel: [u8; 32],
+        /// Encoded retained `Delta` envelopes, in replay order.
+        frames: Vec<serde_bytes::ByteBuf>,
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The

@@ -5135,6 +5135,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         let _ = self
             .state
             .request_document_snapshot(&self.channel_id, self.peer_id);
+        // The app asks once its streams are installed, so a replayed
+        // retained message reaches it: that is what lets its later
+        // snapshots name as covered what the host retained before it came.
+        self.state.publisher().document_replay(&self.route());
         Promise::ok(())
     }
 

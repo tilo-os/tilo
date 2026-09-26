@@ -368,6 +368,13 @@ async fn handle_envelope(
             have_heads,
         } => handle_sync_request(peer, session, workspace_id, have_heads).await,
         Envelope::Ping => Ok(Some(Envelope::Pong)),
+        Envelope::ReplayChannel {
+            workspace_id,
+            channel,
+        } => {
+            replay.extend(handle_replay_channel(session, subscribed, workspace_id, channel).await?);
+            Ok(None)
+        }
         Envelope::Redeem {
             workspace_id,
             invite_id,
@@ -399,7 +406,8 @@ async fn handle_envelope(
         | Envelope::Pong
         | Envelope::SyncResponse { .. }
         | Envelope::RemoteActionUndeliverable { .. }
-        | Envelope::Admitted { .. } => Ok(None),
+        | Envelope::Admitted { .. }
+        | Envelope::ChannelReplay { .. } => Ok(None),
     }
 }
 
@@ -728,6 +736,53 @@ fn load_pending_replay(
         }
     }
     Ok(pending_count)
+}
+
+/// Most bytes of retained frames one [`Envelope::ChannelReplay`] carries, well
+/// under the wire frame limit; a larger channel is answered in several.
+const CHANNEL_REPLAY_BUDGET: usize = 16 * 1024 * 1024;
+
+/// Handle `ReplayChannel`: the channel's retained envelopes, checkpoint
+/// first, for a subscriber of the workspace only. Read-only.
+async fn handle_replay_channel(
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+    channel: [u8; 32],
+) -> Result<Vec<Envelope>, PeerError> {
+    if !subscribed.contains(&workspace_id) {
+        return Err(PeerError::Protocol(
+            "channel replay requested before subscribing to workspace".into(),
+        ));
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return Ok(Vec::new());
+    };
+    let wr = ws.lock_owned().await;
+    let frames = tokio::task::spawn_blocking(move || wr.store.load_retained_channel(&channel))
+        .await
+        .map_err(|_| PeerError::Io(std::io::Error::other("channel replay read panicked")))??;
+    let mut replies = Vec::new();
+    let mut batch = Vec::new();
+    let mut batch_bytes = 0usize;
+    for frame in frames {
+        if !batch.is_empty() && batch_bytes.saturating_add(frame.len()) > CHANNEL_REPLAY_BUDGET {
+            replies.push(Envelope::ChannelReplay {
+                workspace_id,
+                channel,
+                frames: std::mem::take(&mut batch),
+            });
+            batch_bytes = 0;
+        }
+        batch_bytes = batch_bytes.saturating_add(frame.len());
+        batch.push(serde_bytes::ByteBuf::from(frame));
+    }
+    replies.push(Envelope::ChannelReplay {
+        workspace_id,
+        channel,
+        frames: batch,
+    });
+    Ok(replies)
 }
 
 /// Handle `Unsubscribe`: drop the live subscriber (if the workspace

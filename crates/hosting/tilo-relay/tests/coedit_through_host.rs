@@ -75,7 +75,10 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
                 return;
             }
             // Ready / presence carry no document bytes — keep draining.
-            Inbound::Ready { .. } | Inbound::Presence { .. } | Inbound::RemoteAction { .. } => {}
+            Inbound::Ready { .. }
+            | Inbound::Presence { .. }
+            | Inbound::RemoteAction { .. }
+            | Inbound::Replayed { .. } => {}
         }
     }
     panic!("no document delta arrived");
@@ -251,7 +254,9 @@ async fn catch_up_first_connection(
                 assert_eq!(pending, 1, "host reports the one queued co-edit");
                 got_ready = true;
             }
-            other @ (Inbound::Presence { .. } | Inbound::RemoteAction { .. }) => {
+            other @ (Inbound::Presence { .. }
+            | Inbound::RemoteAction { .. }
+            | Inbound::Replayed { .. }) => {
                 panic!("unexpected inbound {other:?}")
             }
         }
@@ -321,4 +326,95 @@ async fn never_both_online_coedit_converges_through_host() {
     );
 
     drop(host2);
+}
+
+/// Connect `device` to workspace `ws` on `addr` and wait for its `Ready`.
+async fn join_ready(
+    user: &TestUser,
+    device: &crate::common::TestDevice,
+    addr: iroh_base::EndpointAddr,
+    ws: u64,
+) -> RelayCoeditSession {
+    let client = RelayClient::connect(
+        client_endpoint().await,
+        addr,
+        user.user_pk,
+        device.cert.clone(),
+        device.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let session = RelayCoeditSession::join(client, ws, device.device_pubkey()).unwrap();
+    loop {
+        let inbound = tokio::time::timeout(Duration::from_secs(5), session.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if matches!(inbound, Inbound::Ready { .. }) {
+            return session;
+        }
+    }
+}
+
+/// A device asks for one document's retained state again — as it does when
+/// an app attaches to that document after the device's own replay went by —
+/// and gets exactly that channel's checkpoint and tail, in order, while
+/// another channel's retained state stays out of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_channel_replay_returns_exactly_that_channel() {
+    const WS: u64 = 23;
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+    let members = [a.device_pubkey(), b.device_pubkey()];
+    let state = tempfile::tempdir().unwrap();
+    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &members).await;
+    let addr = host.node_addr();
+
+    let a_session = join_ready(&user, &a, addr.clone(), WS).await;
+    let (wanted, other) = ([0x31; 32], [0x32; 32]);
+    let entry = |body: &[u8]| *blake3::hash(body).as_bytes();
+    a_session
+        .publish_checkpoint(
+            wanted,
+            entry(b"base"),
+            tilo_relay::Coverage::Entries(Vec::new()),
+            b"base".to_vec(),
+        )
+        .unwrap();
+    for body in [b"one".as_slice(), b"two"] {
+        a_session
+            .publish_retained_delta(wanted, entry(body), body.to_vec())
+            .unwrap();
+    }
+    a_session
+        .publish_retained_delta(other, entry(b"elsewhere"), b"elsewhere".to_vec())
+        .unwrap();
+
+    let b_session = join_ready(&user, &b, addr, WS).await;
+    let replayed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            b_session.request_channel_replay(wanted).unwrap();
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            while let Ok(Some(inbound)) = tokio::time::timeout_at(deadline, b_session.recv()).await
+            {
+                if let Inbound::Replayed { channel, deltas } = inbound
+                    && deltas.len() == 3
+                {
+                    return (channel, deltas);
+                }
+            }
+        }
+    })
+    .await
+    .expect("the channel is replayed once all three are retained");
+    assert_eq!(replayed.0, wanted);
+    let bodies: Vec<Vec<u8>> = replayed.1.into_iter().map(|(_, body)| body).collect();
+    assert_eq!(
+        bodies,
+        vec![b"base".to_vec(), b"one".to_vec(), b"two".to_vec()]
+    );
+    drop(host);
 }

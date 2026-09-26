@@ -189,6 +189,16 @@ pub enum Inbound {
         /// The remote-action frame, as the sender encoded it.
         frame: Vec<u8>,
     },
+    /// One document channel's retained state, answering
+    /// [`RelayCoeditSession::request_channel_replay`]: `(author, body)` per
+    /// retained message, checkpoint first. A large channel arrives in
+    /// several of these, in order.
+    Replayed {
+        /// Digest of the document route.
+        channel: [u8; 32],
+        /// The retained messages, each with its publishing device.
+        deltas: Vec<([u8; 32], Vec<u8>)>,
+    },
     /// The host's reply to the initial subscribe: how many queued
     /// deltas it is about to flush from this device's offline queue.
     Ready {
@@ -287,6 +297,21 @@ impl RelayCoeditSession {
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
+    }
+
+    /// Ask the host for `channel`'s retained state again — its checkpoint
+    /// and tail — delivered as [`Inbound::Replayed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is gone.
+    pub fn request_channel_replay(&self, channel: [u8; 32]) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::ReplayChannel {
+                workspace_id: self.workspace_id,
+                channel,
+            })
+            .map_err(|_| CoeditError::Disconnected)
     }
 
     /// Publish and retain a complete checkpoint for `channel`.
@@ -454,6 +479,32 @@ impl RelayCoeditSession {
                         from: from_device_public_key,
                         frame,
                     });
+                }
+                Envelope::ChannelReplay {
+                    workspace_id,
+                    channel,
+                    frames,
+                } if workspace_id == self.workspace_id => {
+                    let deltas = frames
+                        .iter()
+                        .filter_map(|frame| {
+                            let Envelope::Delta {
+                                author_device_public_key,
+                                delta,
+                                ..
+                            } = crate::frame::decode(frame.get(4..)?).ok()?
+                            else {
+                                return None;
+                            };
+                            match CoeditPayload::decode(&delta)? {
+                                CoeditPayload::Checkpoint { body, .. }
+                                | CoeditPayload::RetainedDelta { body, .. } => {
+                                    Some((author_device_public_key, body))
+                                }
+                            }
+                        })
+                        .collect();
+                    return Some(Inbound::Replayed { channel, deltas });
                 }
                 Envelope::Ready { pending_deltas, .. } => {
                     return Some(Inbound::Ready {

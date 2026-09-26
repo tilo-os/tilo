@@ -53,6 +53,10 @@ pub trait PeerPublishSink: Send + Sync {
     /// A local app joined this route, so peers' documents for it must be
     /// routable here even before this device publishes on it.
     fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
+
+    /// A local app attached to this document route with its streams
+    /// installed: have durable hosts replay the document's retained state.
+    fn document_replay(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
 }
 
 impl PeerPublishSink for ShellNetwork {
@@ -87,6 +91,10 @@ impl PeerPublishSink for ShellNetwork {
 
     fn local_route(&self, app_id: &str, cluster_id: &str, record_id: &str) {
         let _ = self.register_local_record(app_id, cluster_id, record_id);
+    }
+
+    fn document_replay(&self, app_id: &str, cluster_id: &str, record_id: &str) {
+        let _ = self.request_document_replay(app_id, cluster_id, record_id);
     }
 }
 
@@ -152,6 +160,16 @@ impl PeerPublisher {
             && !route.record_id.is_empty()
         {
             sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
+        }
+    }
+
+    /// Have durable hosts replay `route`'s retained document state, now
+    /// that a local app attached to it.
+    pub fn document_replay(&self, route: &CrdtRoute) {
+        if let Some(sink) = self.sink.as_ref()
+            && !route.app_id.is_empty()
+        {
+            sink.document_replay(&route.app_id, &route.cluster_id, &route.record_id);
         }
     }
 

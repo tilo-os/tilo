@@ -2577,17 +2577,31 @@ struct SdkRoute {
 /// carries, so a snapshot can name exactly the ones its saved bytes hold
 /// (the schema's `send` `covers`). A durable host trims the document's
 /// retained history only by those names, never by delivery order.
+///
+/// Bounded to the newest [`Self::MAX_ENTRIES`] ids; one seen again (a host
+/// replay) becomes the newest, so an id a host still retains ages out only
+/// after every id retained after it.
 #[derive(Debug, Default)]
 pub(crate) struct RetainedLog {
-    entries: std::collections::VecDeque<([u8; 32], Vec<automerge::ChangeHash>)>,
-    /// Ids of the segments of a mutation still being reassembled; they are
-    /// held exactly when the whole mutation is.
-    segments: Vec<[u8; 32]>,
+    /// Each logged id's generation and required changes.
+    entries: std::collections::HashMap<[u8; 32], (u64, Vec<automerge::ChangeHash>)>,
+    /// `(id, generation)` oldest first; a pair whose generation no longer
+    /// matches `entries` was refreshed later and is skipped.
+    order: std::collections::VecDeque<([u8; 32], u64)>,
+    next_generation: u64,
+    /// Segment ids of transfers still being reassembled, by author and
+    /// transfer digest; they are held exactly when the whole mutation is.
+    segments: std::collections::HashMap<SegmentTransfer, Vec<[u8; 32]>>,
 }
+
+/// One segmented document transfer: its author and transfer digest.
+pub(crate) type SegmentTransfer = ([u8; 32], [u8; 32]);
 
 impl RetainedLog {
     /// As many as one snapshot may name.
     const MAX_ENTRIES: usize = 65_536;
+    /// Transfers reassembled at once; an abandoned one is forgotten.
+    const MAX_TRANSFERS: usize = 64;
 
     /// Log the ops `entries` (a mutation and any segments it arrived in)
     /// as carrying the Automerge bytes `mutation`. Bytes this cannot read
@@ -2597,40 +2611,92 @@ impl RetainedLog {
             return;
         };
         for entry in entries {
-            if self.entries.len() >= Self::MAX_ENTRIES {
-                self.entries.pop_front();
+            let generation = self.next_generation;
+            self.next_generation = self.next_generation.saturating_add(1);
+            self.entries.insert(*entry, (generation, required.clone()));
+            self.order.push_back((*entry, generation));
+        }
+        while self.entries.len() > Self::MAX_ENTRIES
+            || self.order.len() > Self::MAX_ENTRIES.saturating_mul(2)
+        {
+            let Some((entry, generation)) = self.order.pop_front() else {
+                break;
+            };
+            if self
+                .entries
+                .get(&entry)
+                .is_some_and(|(current, _)| *current == generation)
+            {
+                self.entries.remove(&entry);
             }
-            self.entries.push_back((*entry, required.clone()));
         }
     }
 
-    /// Hold a segment's id until its mutation completes.
-    pub(crate) fn segment(&mut self, entry: [u8; 32]) {
-        self.segments.push(entry);
+    /// Hold a segment's id until its transfer completes.
+    pub(crate) fn segment(&mut self, transfer: SegmentTransfer, entry: [u8; 32]) {
+        if !self.segments.contains_key(&transfer) && self.segments.len() >= Self::MAX_TRANSFERS {
+            self.segments.clear();
+        }
+        self.segments.entry(transfer).or_default().push(entry);
     }
 
-    /// The segment ids gathered for the mutation that just completed, plus
-    /// `last`.
-    pub(crate) fn complete(&mut self, last: [u8; 32]) -> Vec<[u8; 32]> {
-        let mut entries = std::mem::take(&mut self.segments);
+    /// The ids that together carried the mutation `last` completed: the
+    /// held segments of its transfer (if it was one), plus `last`.
+    pub(crate) fn complete(
+        &mut self,
+        transfer: Option<SegmentTransfer>,
+        last: [u8; 32],
+    ) -> Vec<[u8; 32]> {
+        let mut entries = transfer
+            .and_then(|transfer| self.segments.remove(&transfer))
+            .unwrap_or_default();
         entries.push(last);
         entries
     }
 
+    /// Whether `entry` is logged.
+    #[cfg(test)]
+    pub(crate) fn knows(&self, entry: &[u8; 32]) -> bool {
+        self.entries.contains_key(entry)
+    }
+
     /// The logged ops whose every change the saved document `snapshot`
-    /// holds.
+    /// holds, oldest first.
     pub(crate) fn covered_by(&self, snapshot: &[u8]) -> Vec<[u8; 32]> {
         let Ok(doc) = automerge::AutoCommit::load(snapshot) else {
             return Vec::new();
         };
-        let mut covered: Vec<[u8; 32]> = self
+        let mut covered: Vec<(u64, [u8; 32])> = self
             .entries
             .iter()
-            .filter(|(_, required)| tilo_automerge::coverage::holds_all(&doc, required))
-            .map(|(entry, _)| *entry)
+            .filter(|(_, (_, required))| tilo_automerge::coverage::holds_all(&doc, required))
+            .map(|(entry, (generation, _))| (*generation, *entry))
             .collect();
-        covered.dedup();
-        covered
+        covered.sort_unstable();
+        covered.into_iter().map(|(_, entry)| entry).collect()
+    }
+}
+
+/// The segmented transfer a document op belongs to, read from its frame
+/// (endpoint plaintext on MLS routes).
+fn segment_transfer(event: &CollabEvent) -> Option<SegmentTransfer> {
+    let CollabEvent::Document {
+        envelope,
+        decrypted_payload,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    match collab_types::DocumentFrame::decode(
+        decrypted_payload.as_deref().unwrap_or(&envelope.payload),
+    )
+    .ok()?
+    {
+        collab_types::DocumentFrame::Segment(segment) => {
+            Some((*envelope.author.as_bytes(), segment.digest))
+        }
+        collab_types::DocumentFrame::Whole(_) => None,
     }
 }
 
@@ -2729,47 +2795,61 @@ async fn spawn_op_stream(
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(event) = stream.read().await {
-                let entry;
-                let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
-                    Ok(envelope) => {
-                        entry = envelope.retained_entry_id();
-                        match signed_document_event(envelope, event.from_user_id, &encryption) {
-                            Ok(event) => event,
-                            Err(error) => {
-                                tracing::warn!(
-                                    %error,
-                                    "collab: signed op has no typed document payload; dropping"
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            "collab: signed op is not postcard SignedOp ({error}); dropping"
-                        );
-                        continue;
-                    }
-                };
-                let Some(complete) = complete_document_event(translated, &tx.reassembly.live)
-                else {
-                    if let Ok(mut log) = retained.lock() {
-                        log.segment(entry);
-                    }
+                let Some(complete) = inbound_document(
+                    &event.op,
+                    event.from_user_id,
+                    &encryption,
+                    &tx.reassembly.live,
+                    &retained,
+                ) else {
                     continue;
                 };
-                if let (Some(Ok(mutation)), Ok(mut log)) =
-                    (complete.document_mutation(), retained.lock())
-                {
-                    let entries = log.complete(entry);
-                    log.record(&entries, mutation_bytes(&mutation));
-                }
                 if !tx.send_document(complete).await {
                     break;
                 }
             }
         });
     }
+}
+
+/// One op read from a route's stream, as the app receives it: decrypted,
+/// held until its segmented transfer completes, and logged with the changes
+/// it carries under every op id that carried it. `None` when there is
+/// nothing to deliver yet (or the op is unusable).
+fn inbound_document(
+    op: &[u8],
+    from_user_id: String,
+    encryption: &std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    reassembler: &std::sync::Mutex<collab_types::DocumentReassembler>,
+    retained: &std::sync::Mutex<RetainedLog>,
+) -> Option<CollabEvent> {
+    let envelope = match postcard::from_bytes::<SignedOp>(op) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            tracing::warn!("collab: signed op is not postcard SignedOp ({error}); dropping");
+            return None;
+        }
+    };
+    let entry = envelope.retained_entry_id();
+    let translated = match signed_document_event(envelope, from_user_id, encryption) {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::warn!(%error, "collab: signed op has no typed document payload; dropping");
+            return None;
+        }
+    };
+    let transfer = segment_transfer(&translated);
+    let Some(complete) = complete_document_event(translated, reassembler) else {
+        if let (Some(transfer), Ok(mut log)) = (transfer, retained.lock()) {
+            log.segment(transfer, entry);
+        }
+        return None;
+    };
+    if let (Some(Ok(mutation)), Ok(mut log)) = (complete.document_mutation(), retained.lock()) {
+        let entries = log.complete(transfer, entry);
+        log.record(&entries, mutation_bytes(&mutation));
+    }
+    Some(complete)
 }
 
 /// The Automerge bytes a typed document mutation carries.
@@ -6727,10 +6807,11 @@ mod tests {
         let mut log = RetainedLog::default();
         doc.put(automerge::ROOT, "a", 1).unwrap();
         log.record(&[[1; 32]], &doc.save_incremental());
-        log.segment([2; 32]);
+        let transfer = ([9; 32], [8; 32]);
+        log.segment(transfer, [2; 32]);
         doc.put(automerge::ROOT, "b", 2).unwrap();
         let second = doc.save_incremental();
-        let entries = log.complete([3; 32]);
+        let entries = log.complete(Some(transfer), [3; 32]);
         log.record(&entries, &second);
         let saved = doc.save();
         doc.put(automerge::ROOT, "c", 3).unwrap();
@@ -6741,6 +6822,161 @@ mod tests {
         assert_eq!(
             log.covered_by(&doc.save()),
             vec![[1; 32], [2; 32], [3; 32], [4; 32]]
+        );
+    }
+
+    /// An id seen again (a host replay) becomes the newest: the bound ages
+    /// out ids a host no longer retains before the ones it still does.
+    #[test]
+    fn a_replayed_id_is_the_last_to_age_out() {
+        let mut log = RetainedLog::default();
+        let bytes = {
+            use automerge::transaction::Transactable;
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "a", 1).unwrap();
+            doc.save_incremental()
+        };
+        let id = |n: usize| {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(n as u64).to_le_bytes());
+            id
+        };
+        log.record(&[id(0)], &bytes);
+        for n in 1..RetainedLog::MAX_ENTRIES {
+            log.record(&[id(n)], &bytes);
+        }
+        // Replayed: the oldest id is refreshed before the bound is hit.
+        log.record(&[id(0)], &bytes);
+        log.record(&[id(RetainedLog::MAX_ENTRIES)], &bytes);
+        assert!(log.knows(&id(0)), "the replayed id survives");
+        assert!(!log.knows(&id(1)), "the oldest unreplayed id aged out");
+    }
+
+    /// A segmented snapshot whose segments reach the app interleaved with
+    /// other remarks — the order a host replays a checkpoint and a tail it
+    /// only partly covers in — is reassembled and applied: every remark and
+    /// the snapshot's content are held, no change waits for a dependency,
+    /// and each id is logged under the mutation it carried.
+    #[test]
+    fn a_segmented_snapshot_interleaved_with_remarks_reassembles_and_applies() {
+        use automerge::transaction::Transactable;
+        let (app_id, cluster, record) = ("so.tilo.chat", "room", "fb");
+        let artifact = collab_types::document_artifact_id(app_id, cluster, record);
+        let attestation = collab_types::document_attestation_id(app_id, cluster, record);
+        let op = |author: [u8; 32], payload: Vec<u8>, seq: u64| {
+            collab_types::SignedOp::new_unsigned(
+                payload,
+                artifact,
+                collab_types::Ed25519PublicKey::from_bytes(author),
+                attestation,
+                collab_types::OpClass::Splice,
+                std::time::SystemTime::UNIX_EPOCH,
+                seq,
+            )
+        };
+
+        // The snapshot: large enough to travel in several segments.
+        let mut holder = automerge::AutoCommit::new();
+        holder.set_actor(automerge::ActorId::from(b"holder".as_slice()));
+        // Incompressible, so the saved document stays several segments long.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let noise: Vec<u8> = (0..3 * collab_types::DOCUMENT_SEGMENT_BYTES)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect();
+        holder.put(automerge::ROOT, "attachment", noise).unwrap();
+        let snapshot = holder.save();
+        let segments = collab_types::DocumentMutation::Snapshot(snapshot)
+            .encode_frames()
+            .unwrap();
+        assert!(segments.len() >= 3, "the snapshot is segmented");
+
+        // Remarks from another member, each depending on the one before.
+        let mut member = automerge::AutoCommit::new();
+        member.set_actor(automerge::ActorId::from(b"member".as_slice()));
+        let mut remarks = Vec::new();
+        for n in 0..segments.len() {
+            member
+                .put(
+                    automerge::ROOT,
+                    format!("remark-{n}"),
+                    i64::try_from(n).unwrap(),
+                )
+                .unwrap();
+            let frames = collab_types::DocumentMutation::Incremental(member.save_incremental())
+                .encode_frames()
+                .unwrap();
+            remarks.push(op(
+                [2; 32],
+                frames.into_iter().next().unwrap(),
+                100 + n as u64,
+            ));
+        }
+        let segment_ops: Vec<_> = segments
+            .into_iter()
+            .enumerate()
+            .map(|(index, frame)| op([1; 32], frame, 1 + index as u64))
+            .collect();
+
+        let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let reassembler = std::sync::Mutex::new(collab_types::DocumentReassembler::default());
+        let retained = std::sync::Mutex::new(RetainedLog::default());
+        let mut joiner = automerge::AutoCommit::new();
+        let mut delivered = 0;
+        for (segment, remark) in segment_ops.iter().zip(&remarks) {
+            for signed in [segment, remark] {
+                let Some(event) = inbound_document(
+                    &postcard::to_stdvec(signed).unwrap(),
+                    "peer".into(),
+                    &encryption,
+                    &reassembler,
+                    &retained,
+                ) else {
+                    continue;
+                };
+                delivered += 1;
+                let mutation = event.document_mutation().unwrap().unwrap();
+                tilo_automerge::ApplyIncoming::load_incoming(
+                    &mut joiner,
+                    mutation_bytes(&mutation),
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(
+            delivered,
+            remarks.len() + 1,
+            "every remark, then the snapshot once whole"
+        );
+        assert!(
+            joiner.get_missing_deps(&[]).is_empty(),
+            "no change waits for a dependency"
+        );
+        let mut expected = holder.clone();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut expected, &mut member).unwrap();
+        assert_eq!(joiner.get_heads(), expected.get_heads(), "nothing was lost");
+
+        // Every segment id, and every remark id, is held by what it carried.
+        let log = retained.lock().unwrap();
+        let covered = log.covered_by(&expected.save());
+        for signed in segment_ops.iter().chain(&remarks) {
+            assert!(covered.contains(&signed.retained_entry_id()));
+        }
+        let only_snapshot = log.covered_by(&holder.save());
+        assert!(
+            segment_ops
+                .iter()
+                .all(|signed| only_snapshot.contains(&signed.retained_entry_id()))
+        );
+        assert!(
+            remarks
+                .iter()
+                .all(|signed| !only_snapshot.contains(&signed.retained_entry_id())),
+            "a remark is not attributed to the snapshot it interleaved with"
         );
     }
 }

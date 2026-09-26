@@ -870,6 +870,28 @@ impl WorkspaceStore {
         Ok(out)
     }
 
+    /// One channel's retained envelopes in replay order: its checkpoint, then
+    /// its tail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint or a tail file can't be read.
+    pub fn load_retained_channel(&self, channel: &[u8; 32]) -> Result<Vec<Vec<u8>>, StoreError> {
+        let mut out = Vec::new();
+        let checkpoint = self
+            .root
+            .join(RETAINED_DIR)
+            .join("checkpoints")
+            .join(hex::encode(channel));
+        if checkpoint.is_file() {
+            out.push(fs::read(checkpoint)?);
+        }
+        for (path, _) in sorted_deltas(&self.tail_dir(channel))? {
+            out.push(fs::read(path)?);
+        }
+        Ok(out)
+    }
+
     fn pending_dir_for(&self, device_pubkey: &[u8; 32]) -> PathBuf {
         self.root.join("pending").join(hex::encode(device_pubkey))
     }

@@ -2382,6 +2382,29 @@ impl ShellNetwork {
                 .is_ok();
     }
 
+    /// Ask the room's durable hosts to replay one app document's retained
+    /// state to this device. An app attaching to a document after this
+    /// device's own subscribe replay went by would otherwise never see the
+    /// retained messages it could name as covered, so a retained tail no
+    /// live member had seen could never be trimmed. Returns whether it was
+    /// handed to the transport.
+    pub fn request_document_replay(&self, app_id: &str, cluster_id: &str, record_id: &str) -> bool {
+        let Some(ws) = RoomId::parse(cluster_id)
+            .filter(|room| !room.is_nil())
+            .map(room_topic_id)
+        else {
+            return false;
+        };
+        let wire = self.register_local_record(app_id, cluster_id, record_id);
+        let route = format!("app\0{app_id}\0{wire}");
+        let channel = *blake3::hash(route.as_bytes()).as_bytes();
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::ReplayChannel { ws, channel })
+                .is_ok()
+    }
+
     /// Remember that a local app holds `record_id`, so peers' traffic for
     /// its sealed wire name can be routed to it. Returns the wire name.
     pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
@@ -10317,6 +10340,48 @@ mod tests {
             net.peer_identities.get(&origin).is_none(),
             "identity cleanup happens only after departure diagnostics are captured"
         );
+    }
+
+    /// An app attaching to a document asks the room's hosts to replay that
+    /// document's retained state, keyed exactly as the host retains it: the
+    /// app then learns every retained entry it could name as covered.
+    #[test]
+    fn an_attaching_app_asks_the_hosts_to_replay_its_document() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let room_id = tree.read().rooms()[0];
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFE);
+        net.tick();
+        while cmd_rx.try_recv().is_ok() {}
+
+        let room = room_id.to_string();
+        assert!(net.request_document_replay("so.tilo.chat", &room, "feedback"));
+        let wire = net.register_local_record("so.tilo.chat", &room, "feedback");
+        let probe = NeighbourMsg::AppDocument {
+            peer: 0,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: room,
+            record_id: wire,
+            envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Incremental(Vec::new())
+                    .encode_frames()
+                    .unwrap()
+                    .remove(0),
+                collab_types::ArtifactId(uuid::Uuid::nil()),
+                collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+                collab_types::AttestationId(uuid::Uuid::nil()),
+                collab_types::OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                0,
+            )),
+        };
+        let (retained_channel, _) = neighbour_wire::retention(&probe, false).unwrap();
+        let command = std::iter::from_fn(|| cmd_rx.try_recv().ok())
+            .find(|command| matches!(command, NetCmd::ReplayChannel { .. }));
+        let Some(NetCmd::ReplayChannel { ws, channel }) = command else {
+            panic!("the hosts are asked to replay the document");
+        };
+        assert_eq!(ws, room_topic_id(room_id));
+        assert_eq!(channel, retained_channel);
     }
 
     #[test]

@@ -113,8 +113,8 @@ pub use crypto::{
     verify_op,
 };
 pub use document_transfer::{
-    DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
-    MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
+    DOCUMENT_SEGMENT_BYTES, DocumentFrame, DocumentMutationKind, DocumentReassembler,
+    DocumentSegment, MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use file_invite::{

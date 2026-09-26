@@ -220,6 +220,13 @@ pub enum NetCmd {
         covers: Vec<[u8; 32]>,
         shell_checkpoint: bool,
     },
+    /// Ask every workspace host of `ws` to replay one document channel's
+    /// retained state (see `Envelope::ReplayChannel`), delivered as ordinary
+    /// host messages that bypass duplicate suppression.
+    ReplayChannel {
+        ws: WorkspaceId,
+        channel: [u8; 32],
+    },
     /// Publish live workspace-control traffic over the route selected by the
     /// canonical device mesh. Direct input uses the authenticated exact-target
     /// QUIC surface/control plane. Workspace-wide relay publication is refused
@@ -973,6 +980,15 @@ impl ActorState {
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
+            }
+            Some(NetCmd::ReplayChannel { ws, channel }) => {
+                for ((session_ws, _), runtime) in &self.host_sessions {
+                    if *session_ws == ws
+                        && let Err(error) = runtime.session.request_channel_replay(channel)
+                    {
+                        tracing::warn!(ws, %error, "workspace host channel replay request failed");
+                    }
+                }
             }
             Some(NetCmd::PublishCovered {
                 ws,
@@ -2174,9 +2190,11 @@ impl ActorState {
                 fingerprint,
                 msg,
             } => {
-                // A remote-action retry is byte-identical on purpose; the
-                // receiving host deduplicates it by invocation id instead.
-                if !matches!(msg, NeighbourMsg::RemoteAction { .. })
+                // A zero fingerprint is never deduplicated: a remote-action
+                // retry is byte-identical on purpose (the receiving host
+                // deduplicates it by invocation id), and a requested channel
+                // replay repeats messages this device has already seen.
+                if fingerprint != UNDEDUPLICATED
                     && !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
                 {
                     return;
@@ -3292,6 +3310,9 @@ fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
     REMOVALS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// The host-message fingerprint that bypasses duplicate suppression.
+const UNDEDUPLICATED: [u8; 32] = [0; 32];
+
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
@@ -3308,10 +3329,35 @@ fn spawn_host_pump(
                     };
                     HostEvent::Message {
                         author,
-                        // Never deduplicated; see `handle_host_event`.
-                        fingerprint: [0; 32],
+                        fingerprint: UNDEDUPLICATED,
                         msg: NeighbourMsg::RemoteAction { frame },
                     }
+                }
+                HostInbound::Replayed { deltas, .. } => {
+                    for (author, data) in deltas {
+                        let (Ok(author), Ok(msg)) =
+                            (EndpointId::from_bytes(&author), postcard::from_bytes(&data))
+                        else {
+                            continue;
+                        };
+                        let event = HostEvent::Message {
+                            author,
+                            fingerprint: UNDEDUPLICATED,
+                            msg,
+                        };
+                        if tx
+                            .send(InternalEvent::Host {
+                                ws,
+                                peer: host,
+                                event,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    continue;
                 }
                 HostInbound::Delta { author, data }
                 | HostInbound::Presence {
