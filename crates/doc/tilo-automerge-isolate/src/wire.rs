@@ -8,6 +8,9 @@
 //!   cached copy at `from` up to `key` with the caller's newer changes).
 //! - `2 incoming…`: load `incoming` as a document.
 //!
+//! The worker's first frame is [`READY`], sent once it is confined; any other
+//! first frame says why it could not be.
+//!
 //! Replies: `0 changed`, `1` (missing dependencies), `2 count keys…` (no copy
 //! at `key`; the ones the worker holds), `3 message…` (Automerge refused it).
 
@@ -16,7 +19,7 @@ use std::io::{self, Read, Write};
 use crate::engine::Key;
 use crate::{Applied, Dependencies};
 
-/// The first frame a worker sends, before reading anything.
+/// The first frame a worker sends, once confined and before reading anything.
 pub(crate) const READY: &[u8] = b"tilo-automerge-isolate 1";
 /// Replies are a few keys at most; anything larger is not a worker speaking.
 pub(crate) const MAX_REPLY_BYTES: u64 = 16 * 1024 * 1024;
@@ -37,6 +40,19 @@ pub(crate) enum Request<'a> {
     Load {
         incoming: &'a [u8],
     },
+    /// Make a syscall the sandbox must refuse, to show that it does.
+    #[cfg(test)]
+    Escape(Escape),
+}
+
+/// What [`Request::Escape`] tries.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Escape {
+    /// `open` a file that exists and anyone may read.
+    Open,
+    /// Create a Unix socket.
+    Socket,
 }
 
 pub(crate) enum Reply {
@@ -129,6 +145,14 @@ impl Request<'_> {
                 out.push(2);
                 out.extend(*incoming);
             }
+            #[cfg(test)]
+            Self::Escape(escape) => {
+                out.push(0xff);
+                out.push(match escape {
+                    Escape::Open => 0,
+                    Escape::Socket => 1,
+                });
+            }
         }
         out
     }
@@ -159,6 +183,11 @@ impl Request<'_> {
                 })
             }
             2 => Some(Request::Load { incoming: input }),
+            #[cfg(test)]
+            0xff => Some(Request::Escape(match take_byte(&mut input)? {
+                0 => Escape::Open,
+                _ => Escape::Socket,
+            })),
             _ => None,
         }
     }

@@ -10,7 +10,10 @@
 //!    decoding anything.
 //! 2. A worker process runs the same Automerge call on its own copy of the
 //!    document, with its heap capped ([`Limits::memory_bytes`]) and a deadline
-//!    per request ([`Limits::timeout`]). A crash, an allocation failure, an
+//!    per request ([`Limits::timeout`]). It can reach no file, socket or other
+//!    process: Landlock denies every path and TCP port, `openat` is refused,
+//!    and a seccomp allow-list kills it on any other syscall beyond its
+//!    pipes, memory, futexes, clocks and exit. A crash, an allocation failure, a refused syscall, an
 //!    overrun or an Automerge error rejects the input.
 //!
 //! Only then does the caller make the identical call on its own document.
@@ -52,6 +55,8 @@ mod engine;
 #[cfg(target_os = "linux")]
 mod pool;
 pub mod precheck;
+#[cfg(target_os = "linux")]
+mod sandbox;
 #[cfg(target_os = "linux")]
 mod wire;
 #[cfg(target_os = "linux")]
@@ -243,6 +248,10 @@ pub fn check_here(
     engine::apply(&mut doc, incoming, dependencies)
 }
 
+/// Outside Linux there are no workers yet, so none of their bounds apply:
+/// input that passes [`precheck`] is decoded in this process with no heap
+/// ceiling, deadline or sandbox, and a decoder panic or hang is the caller's.
+/// Only the copy-then-replace keeps a refused input from changing `doc`.
 #[cfg(not(target_os = "linux"))]
 mod in_page {
     use super::{Applied, AutoCommit, Dependencies, Rejected, engine};

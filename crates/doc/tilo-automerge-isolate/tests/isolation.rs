@@ -284,6 +284,32 @@ fn a_malformed_tail_refuses_the_whole_input() {
     assert_eq!(doc.save(), before);
 }
 
+/// A document big enough that the worker's allocator frees and shrinks heap
+/// while rebuilding it, which reaches libc paths small inputs never do.
+#[test]
+fn a_large_document_is_admitted_by_a_confined_worker() {
+    let isolate = isolate();
+    let mut doc = AutoCommit::new();
+    let list = doc.put_object(ROOT, "messages", ObjType::List).unwrap();
+    for i in 0..10_000 {
+        let m = doc.insert_object(&list, i, ObjType::Map).unwrap();
+        doc.put(&m, "text", format!("message {i} with some text"))
+            .unwrap();
+        if i % 100 == 99 {
+            doc.commit();
+        }
+    }
+    doc.commit();
+    for round in 0..3 {
+        let change = remote_change(&mut doc, &format!("k{round}"));
+        assert_eq!(
+            isolate.apply(&mut doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+    }
+    assert!(isolate.load(&doc.save()).is_ok());
+}
+
 #[test]
 #[ignore = "timing, run by hand"]
 fn admission_latency() {

@@ -261,6 +261,14 @@ impl Worker {
         };
         match worker.replies.recv_timeout(STARTUP) {
             Ok(Ok(frame)) if frame == wire::READY => Ok(worker),
+            // It started, but could not confine itself and said why.
+            Ok(Ok(frame)) => {
+                worker.kill();
+                Err(Rejected::Unavailable(format!(
+                    "automerge worker {}",
+                    String::from_utf8_lossy(&frame)
+                )))
+            }
             _ => {
                 worker.kill();
                 Err(Rejected::Unavailable(not_serving()))
@@ -424,4 +432,81 @@ fn spawner() -> &'static Spawner {
             });
         Spawner(Mutex::new(jobs))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    use automerge::transaction::Transactable as _;
+
+    use super::*;
+    use crate::wire::Escape;
+
+    fn limits() -> Limits {
+        Limits {
+            workers: 1,
+            ..Limits::default()
+        }
+    }
+
+    fn status_line(pid: u32, field: &str) -> String {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(field))
+            .expect("the field is in /proc/<pid>/status")
+            .trim()
+            .to_owned()
+    }
+
+    #[test]
+    fn a_ready_worker_is_already_confined_and_still_admits() {
+        let worker = Worker::spawn(&limits()).unwrap();
+        let pid = worker.child.id();
+        // 2 = a seccomp filter is installed.
+        assert_eq!(status_line(pid, "Seccomp:"), "2");
+        assert_eq!(status_line(pid, "NoNewPrivs:"), "1");
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "k", "v").unwrap();
+        let saved = doc.save();
+        let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
+        assert!(matches!(reply, Ok(Reply::Applied(Applied::Changed(true)))));
+    }
+
+    #[test]
+    fn a_path_or_socket_syscall_is_refused_or_kills_the_worker() {
+        // The caller itself may do both, so only the sandbox can refuse them.
+        assert!(std::fs::File::open("/proc/self/status").is_ok());
+        assert!(std::os::unix::net::UnixStream::pair().is_ok());
+
+        // `openat` is answered with EPERM and the worker lives on.
+        let worker = Worker::spawn(&limits()).unwrap();
+        let reply = worker.call(Request::Escape(Escape::Open).encode(), STARTUP);
+        let message = match reply {
+            Ok(Reply::Invalid(message)) => message,
+            _ => String::new(),
+        };
+        assert!(
+            message.contains("os error 1"),
+            "open not refused: {message:?}"
+        );
+        let reply = worker.call(Request::Load { incoming: &[] }.encode(), STARTUP);
+        assert!(matches!(reply, Ok(Reply::Applied(_))));
+
+        // Anything else off the list kills it.
+        let mut worker = Worker::spawn(&limits()).unwrap();
+        let reply = worker.call(Request::Escape(Escape::Socket).encode(), STARTUP);
+        assert!(
+            matches!(reply, Err(Rejected::Crashed)),
+            "socket was allowed"
+        );
+        let status = worker.child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGSYS), "{status}");
+
+        let pool = Pool::new(limits());
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "after", 1).unwrap();
+        assert!(pool.load(&doc.save()).is_ok());
+    }
 }

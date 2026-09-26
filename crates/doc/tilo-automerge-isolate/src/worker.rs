@@ -4,7 +4,8 @@
 //! It reads requests from descriptor 3 and writes replies to descriptor 4.
 //! It keeps a few documents it has already built, keyed by their state, so an
 //! incoming change costs only the change and not a reload of the document.
-//! It never outlives its caller's end of the request pipe.
+//! It never outlives its caller's end of the request pipe, and it confines
+//! itself ([`crate::sandbox`]) before it reads a request.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -42,6 +43,10 @@ pub(crate) fn serve(capacity: usize) -> i32 {
         unsafe { (File::from_raw_fd(REQUEST_FD), File::from_raw_fd(REPLY_FD)) };
     let mut requests = BufReader::new(requests);
     let mut replies = BufWriter::new(replies);
+    if let Err(reason) = crate::sandbox::confine() {
+        let _ = wire::write_frame(&mut replies, format!("unconfined: {reason}").as_bytes());
+        return 1;
+    }
     if wire::write_frame(&mut replies, wire::READY).is_err() {
         return 1;
     }
@@ -94,6 +99,8 @@ impl Cache {
 
     fn handle(&mut self, request: Request<'_>) -> Reply {
         match request {
+            #[cfg(test)]
+            Request::Escape(escape) => try_escape(escape),
             Request::Load { incoming } => match engine::load(incoming) {
                 Ok(doc) => {
                     self.keep(doc);
@@ -138,6 +145,28 @@ impl Cache {
             }
         }
     }
+}
+
+/// Reply `Applied` if the escape worked, `Invalid` with the error if the
+/// kernel refused it; a worker the sandbox kills does not reply at all.
+#[cfg(test)]
+fn try_escape(escape: wire::Escape) -> Reply {
+    let fd = match escape {
+        // SAFETY: openat(2) on a NUL-terminated path.
+        wire::Escape::Open => unsafe {
+            libc::openat(
+                libc::AT_FDCWD,
+                c"/proc/self/status".as_ptr(),
+                libc::O_RDONLY,
+            )
+        },
+        // SAFETY: socket(2) with constant arguments.
+        wire::Escape::Socket => unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) },
+    };
+    if fd < 0 {
+        return Reply::Invalid(std::io::Error::last_os_error().to_string());
+    }
+    Reply::Applied(Applied::Changed(true))
 }
 
 fn invalid(error: Rejected) -> Reply {
