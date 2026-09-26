@@ -8046,6 +8046,7 @@ dependencies = [
  "gstreamer-video",
  "hex",
  "libc",
+ "pipewire",
  "rustfft",
  "serde",
  "serde_json",
