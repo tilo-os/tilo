@@ -857,7 +857,8 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
-                    crate::actions::AudioOperation::SetMono { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetMono { .. }
+                    | crate::actions::AudioOperation::SetEchoCancellation { .. } => Ok(()),
                     crate::actions::AudioOperation::SetDeviceProfile {
                         device_id,
                         profile_index,

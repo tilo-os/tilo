@@ -114,6 +114,7 @@ pub const OUTPUT_DEVICE_KEY: &str = "audio.output_device";
 pub const INPUT_DEVICE_KEY: &str = "audio.input_device";
 pub const BALANCE_KEY: &str = "audio.balance";
 pub const MONO_KEY: &str = "audio.mono";
+pub const ECHO_CANCELLATION_KEY: &str = "audio.echo_cancellation";
 pub(crate) const ADVANCED_KEY: &str = "audio.advanced";
 pub(crate) const TEST_LEFT_KEY: &str = "audio.test.left";
 pub(crate) const TEST_RIGHT_KEY: &str = "audio.test.right";
@@ -415,6 +416,7 @@ pub struct AudioPane {
     runtime_caps: RuntimeCapabilities,
     balance: f32,
     mono_enabled: bool,
+    echo_cancellation: bool,
     advanced: bool,
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
@@ -543,6 +545,7 @@ impl AudioPane {
             runtime_caps,
             balance: prefs.balance.clamp(0.0, 1.0),
             mono_enabled: prefs.mono_output,
+            echo_cancellation: prefs.echo_cancellation,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
@@ -604,6 +607,7 @@ impl AudioPane {
             runtime_caps: RuntimeCapabilities::default(),
             balance: 0.5,
             mono_enabled: false,
+            echo_cancellation: AudioPrefs::default().echo_cancellation,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
@@ -716,6 +720,9 @@ impl AudioPane {
             Op::SetMono { enabled } => {
                 let _ = local.put(&root, MONO_KEY, *enabled);
             }
+            Op::SetEchoCancellation { enabled } => {
+                let _ = local.put(&root, ECHO_CANCELLATION_KEY, *enabled);
+            }
             Op::SetDeviceProfile {
                 device_id,
                 profile_index,
@@ -802,6 +809,7 @@ impl AudioPane {
         }
         self.apply_volume_controls(local, &root);
         self.apply_balance_and_mono(local, &root);
+        self.apply_echo_cancellation(local, &root);
         self.apply_diagnostics_requests(local, &root);
         self.apply_device_selection(local, &root);
         self.apply_streams_and_profiles(local, &root);
@@ -1110,6 +1118,21 @@ impl AudioPane {
                     )),
             ));
             input_rows.push(caption("The test reads an eight-second level meter in memory. It never stores audio or routes the microphone to speakers."));
+        }
+        if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
+            input_rows.push(setting_row(
+                "Reduce echo in calls",
+                Box::new(
+                    Toggle::new("settings.audio.echo_cancellation", ECHO_CANCELLATION_KEY)
+                        .with_id("audio.echo_cancellation")
+                        .on_action(
+                            crate::actions::audio_bool_binding("echo-cancellation").expect(
+                                "echo cancellation is part of the static resource contract",
+                            ),
+                        ),
+                ),
+            ));
+            input_rows.push(caption("Calls hear your voice without the sound from your speakers. Recording apps keep the unprocessed microphone."));
         }
         card("Input", rows(input_rows))
     }
@@ -1518,6 +1541,11 @@ impl AudioPane {
             automerge::ScalarValue::F64(f64::from(self.initial_prefs.balance.clamp(0.0, 1.0))),
         );
         let _ = state.put(root, MONO_KEY, self.initial_prefs.mono_output);
+        let _ = state.put(
+            root,
+            ECHO_CANCELLATION_KEY,
+            self.initial_prefs.echo_cancellation,
+        );
         for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
             let _ = state.put(root, key, false);
         }
@@ -1719,6 +1747,41 @@ impl AudioPane {
             });
             self.structure_dirty = true;
         }
+    }
+
+    /// Persist the "Reduce echo in calls" toggle. The compositor session
+    /// starts or stops the echo-cancelled microphone from the saved value.
+    fn apply_echo_cancellation(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(enabled) = read_bool(state, root, ECHO_CANCELLATION_KEY)
+            .filter(|enabled| *enabled != self.echo_cancellation)
+        else {
+            return;
+        };
+        let operation = crate::actions::AudioOperation::SetEchoCancellation { enabled };
+        if !self.operation_is_running(&operation) {
+            let _ = state.put(root, ECHO_CANCELLATION_KEY, self.echo_cancellation);
+            return;
+        }
+        let result = if self.persist_prefs {
+            Self::persist_audio(|prefs| prefs.echo_cancellation = enabled)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result {
+            let _ = state.put(root, ECHO_CANCELLATION_KEY, self.echo_cancellation);
+            self.finish_local_operation(operation, Err(error));
+            return;
+        }
+        self.echo_cancellation = enabled;
+        self.finish_local_operation(
+            operation,
+            Ok(if enabled {
+                "Calls use the echo-cancelled microphone."
+            } else {
+                "Calls use the microphone directly."
+            }
+            .into()),
+        );
     }
 
     /// Handle the advanced-panel toggle and the one-shot speaker/microphone
@@ -2003,6 +2066,7 @@ impl Widget for AudioPane {
         if self.has_pending_operation() {
             self.apply_volume_controls(&mut state, &root);
             self.apply_balance_and_mono(&mut state, &root);
+            self.apply_echo_cancellation(&mut state, &root);
             self.apply_diagnostics_requests(&mut state, &root);
             self.apply_device_selection(&mut state, &root);
             self.apply_streams_and_profiles(&mut state, &root);
@@ -2190,6 +2254,7 @@ mod tests {
                 mono_output: true,
                 channel_test: true,
                 microphone_meter: true,
+                echo_cancellation: true,
             }
         }
         fn set_balance(&self, sink: &str, base: f32, balance: f32) -> Result<(), String> {
@@ -2813,6 +2878,40 @@ Video
         assert!(
             runtime.calls.lock().unwrap().is_empty(),
             "the compositor session, not Settings, actuates persistent transforms"
+        );
+    }
+
+    #[test]
+    fn reduce_echo_in_calls_round_trips_through_the_shared_store() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        assert!(
+            SystemPrefs::load().audio.echo_cancellation,
+            "calls are echo-cancelled until the person turns it off"
+        );
+        let runtime = Arc::new(RecordingRuntime {
+            calls: Mutex::new(Vec::new()),
+            drops: Arc::new(AtomicUsize::new(0)),
+        });
+        let disp = Arc::new(RecordingDispatcher::default());
+        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+            .with_graph(graph_two_sinks_one_stream(), Arc::new(NoopGraphControl))
+            .with_runtime(runtime.clone());
+        pane.persist_prefs = true;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert_eq!(read_bool(&doc, &root, ECHO_CANCELLATION_KEY), Some(true));
+
+        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, false);
+        pane.sync(&mut doc, &root);
+        assert!(!SystemPrefs::load().audio.echo_cancellation);
+
+        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert!(SystemPrefs::load().audio.echo_cancellation);
+        assert!(
+            runtime.calls.lock().unwrap().is_empty(),
+            "the compositor session, not Settings, owns the echo-cancelled microphone"
         );
     }
 }
