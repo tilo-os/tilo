@@ -2808,9 +2808,16 @@ async fn namespace_documents_reach_only_entitled_peers_and_readers_cannot_author
             .create_file(ROOT_INO, "readers-change", None, 0, 2)
             .unwrap();
         assert!(
-            sync_with_peer(&ep_b, ticket.node, &ns_b, &auth_b)
-                .await
-                .is_err(),
+            sync_with_peer(
+                &ep_b,
+                ticket.node.clone(),
+                &ns_b,
+                &auth_b,
+                ticket.workspace_id(),
+                &None
+            )
+            .await
+            .is_err(),
             "the host must close a read-only peer's bidirectional sync"
         );
         assert!(
