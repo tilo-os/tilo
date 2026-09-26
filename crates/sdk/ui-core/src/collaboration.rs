@@ -31,7 +31,9 @@ mod history;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(feature = "broker-transport")]
-pub use broker::{CertifiedEndpointIdentity, HostSessionConnector, wifi_continuity_command};
+pub use broker::{
+    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+};
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -41,6 +43,12 @@ pub use loopback::{LoopbackPeer, LoopbackTransport};
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::{
+    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
+    MAX_SPEAKER_NAME_CHARS, SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo,
+    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply,
+    SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+};
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
@@ -64,6 +72,19 @@ pub fn wifi_continuity_command(
     _command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
     Err("Wi-Fi continuity requires the certified collaboration service".to_string())
+}
+
+/// Ask the shell's speaker-group authority. Without the broker transport
+/// there is no certified collaboration service to carry it.
+///
+/// # Errors
+///
+/// Always returns an unavailable message in this build.
+#[cfg(not(feature = "broker-transport"))]
+pub fn speaker_command(
+    _command: runtime_collab::SpeakerCommand,
+) -> Result<runtime_collab::SpeakerReply, String> {
+    Err("speakers need the certified collaboration service".to_string())
 }
 
 pub use crate::host::ContinuationMetadata;

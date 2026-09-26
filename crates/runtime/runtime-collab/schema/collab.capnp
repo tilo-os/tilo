@@ -304,6 +304,12 @@ interface ChannelHandle {
   # derives the caller from this admitted channel and confines it to the
   # channel's room; nothing in the frame names the caller.
   remoteAction @42 (frame :Data) -> (frame :Data);
+
+  # Settings-only, launcher-authenticated access to the shell's speaker
+  # groups: create, edit, identify, calibrate. Devices and outputs travel as
+  # the opaque ids the shell publishes; PipeWire identities are not
+  # representable.
+  speakerCommand @43 (appId :Text, commandJson :Data) -> (replyJson :Data);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is

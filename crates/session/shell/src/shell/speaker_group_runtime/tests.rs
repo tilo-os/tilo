@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use media::sync_playout::ChannelRole;
@@ -108,6 +109,11 @@ impl Device {
             .handle(fabric, &self.id(), &id(from), &item.action, now, &mut mint)
             .expect("a speaker-group action")
     }
+}
+
+/// The route id shelf's audio travels under within `session`.
+fn shelf_route(session: [u8; 16]) -> [u8; 16] {
+    member_route_id(session, &id("shelf"), output("shelf"))
 }
 
 fn pair_members() -> Vec<MemberSpec> {
@@ -351,14 +357,14 @@ fn any_of_your_devices_can_play_to_a_consented_group() {
     );
     let grant = shelf
         .core
-        .grant(&fabric, &shelf.id(), session, &phone.id())
+        .grant(&fabric, &shelf.id(), shelf_route(session), &phone.id())
         .unwrap();
     assert_eq!(grant.channel, ChannelRole::Right);
     assert_eq!(grant.output, output("shelf"));
     assert!(
         shelf
             .core
-            .grant(&fabric, &shelf.id(), session, &desk.id())
+            .grant(&fabric, &shelf.id(), shelf_route(session), &desk.id())
             .is_none()
     );
 }
@@ -436,7 +442,7 @@ fn admitted_session(
     let decision = shelf.handle(fabric, &offers[0], "desk", now);
     desk.handle(fabric, &decision[0], "shelf", now);
     assert_eq!(desk.core.playback_plans()[0].members.len(), 2);
-    session
+    shelf_route(session)
 }
 
 #[test]
@@ -634,7 +640,7 @@ fn a_member_that_never_answers_is_dropped_from_the_session() {
     assert!(out.contains(&egress(
         &shelf.id(),
         PersonalFabricAction::SpeakerGroupSessionStop {
-            session_id: [2; 16],
+            session_id: shelf_route([2; 16]),
             authorization: None,
         }
     )));
@@ -834,4 +840,114 @@ fn endpoints_are_published_by_selector_without_node_identities() {
     assert_eq!(endpoints[1].label, "alsa_input.usb-mic");
     let wire = postcard::to_allocvec(&endpoints[0]).unwrap();
     assert!(!wire.windows(4).any(|window| window == b"alsa"));
+}
+
+#[test]
+fn admitted_sessions_become_send_local_and_receive_routes() {
+    let now = Instant::now();
+    let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
+    let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    let route = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+    let leader = desk.core.route_specs(&fabric, &desk.id());
+    assert_eq!(leader.len(), 2);
+    assert!(leader.iter().any(|spec| matches!(
+        spec,
+        RouteSpec::Local { channel: ChannelRole::Left, output: out, .. } if *out == output("desk")
+    )));
+    assert!(leader.contains(&RouteSpec::Send {
+        route,
+        target: shelf.id(),
+        authorization: [9; 16],
+        source: GroupAudioSource::PickerToken(1),
+    }));
+    let member = shelf.core.route_specs(&fabric, &shelf.id());
+    assert_eq!(
+        member,
+        vec![RouteSpec::Receive {
+            route,
+            source: desk.id(),
+            authorization: [9; 16],
+            output: output("shelf"),
+            channel: ChannelRole::Right,
+            trim: SpeakerTrim::default(),
+        }]
+    );
+    assert!(shelf.core.admits(route, &desk.id()));
+    assert!(!shelf.core.admits(route, &id("phone")));
+}
+
+#[test]
+fn route_changes_start_new_end_gone_and_restart_changed_routes() {
+    let spec = |route: u8, delay_ns| RouteSpec::Receive {
+        route: [route; 16],
+        source: id("desk"),
+        authorization: [9; 16],
+        output: output("shelf"),
+        channel: ChannelRole::Right,
+        trim: SpeakerTrim {
+            delay_ns,
+            ..SpeakerTrim::default()
+        },
+    };
+    let running = BTreeMap::from([([1; 16], spec(1, 0)), ([2; 16], spec(2, 0))]);
+    let (end, start) = route_changes(&running, &[spec(2, 5_000), spec(3, 0)]);
+    assert_eq!(end, vec![[1; 16], [2; 16]]);
+    assert_eq!(start, vec![spec(2, 5_000), spec(3, 0)]);
+    let (end, start) = route_changes(&running, &[spec(1, 0), spec(2, 0)]);
+    assert!(end.is_empty() && start.is_empty());
+}
+
+#[test]
+fn a_route_the_audio_path_lost_ends_its_member_session() {
+    let now = Instant::now();
+    let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
+    let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    let route = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+    assert_eq!(
+        shelf.core.route_lost(route),
+        vec![egress(
+            &desk.id(),
+            PersonalFabricAction::SpeakerGroupSessionStop {
+                session_id: route,
+                authorization: Some([9; 16]),
+            }
+        )]
+    );
+    assert_eq!(
+        desk.core.route_lost(route),
+        vec![egress(
+            &shelf.id(),
+            PersonalFabricAction::SpeakerGroupSessionStop {
+                session_id: route,
+                authorization: Some([9; 16]),
+            }
+        )]
+    );
+    assert_eq!(desk.core.playback_plans()[0].members.len(), 1);
+}
+
+#[test]
+fn only_the_leader_can_ask_a_consented_member_for_a_sweep() {
+    let now = Instant::now();
+    let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
+    let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    assert_eq!(
+        shelf
+            .core
+            .sweep_output(&fabric, &shelf.id(), &desk.id(), group),
+        Some(output("shelf"))
+    );
+    assert_eq!(
+        shelf
+            .core
+            .sweep_output(&fabric, &shelf.id(), &id("phone"), group),
+        None
+    );
+    shelf.core.leave(group).unwrap();
+    assert_eq!(
+        shelf
+            .core
+            .sweep_output(&fabric, &shelf.id(), &desk.id(), group),
+        None
+    );
 }
