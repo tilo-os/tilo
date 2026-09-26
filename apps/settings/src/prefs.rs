@@ -40,6 +40,8 @@
 //!   "accessibility": { "large_cursor": false, "cursor_size": 24,
 //!                      "screen_reader": false, "on_screen_keyboard": false,
 //!                      "sticky_keys": false, "slow_keys": false,
+//!                      "bounce_keys": false, "bounce_keys_delay_ms": 300,
+//!                      "bounce_keys_alert": false, "mouse_keys": false,
 //!                      "visual_alerts": false }
 //! }
 //! ```
@@ -177,6 +179,12 @@ pub struct InputPrefs {
     /// `adaptive` or `flat`; capability-gated by libinput.
     pub accel_profile: String,
     pub touchpad_gestures: bool,
+    /// Which button a clickpad press means; capability-gated by libinput.
+    pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
+    /// Two-finger or edge scrolling; capability-gated by libinput.
+    pub touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod,
+    /// Scroll-distance multiplier for wheels and touchpads.
+    pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
     pub compose_key: Option<String>,
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
@@ -208,6 +216,9 @@ impl Default for InputPrefs {
             left_handed: false,
             accel_profile: "adaptive".into(),
             touchpad_gestures: true,
+            touchpad_click_method: settings_store::hardware::TouchpadClickMethod::Default,
+            touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
+            scroll_speed: 1.0,
             compose_key: None,
             keyboard_layouts: vec!["us".into()],
             pen_output: None,
@@ -238,6 +249,7 @@ impl InputPrefs {
             .and_then(serde_json::Value::as_bool)
             .or(legacy_natural_scroll)
             .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
+        input.scroll_speed = settings_store::hardware::clamp_scroll_speed(input.scroll_speed);
         Some(input)
     }
 
@@ -268,6 +280,9 @@ impl InputPrefs {
             keyboard_layouts: self.keyboard_layouts.clone(),
             compose_key: self.compose_key.clone(),
             touchpad_gestures: self.touchpad_gestures,
+            touchpad_click_method: self.touchpad_click_method,
+            touchpad_scroll_method: self.touchpad_scroll_method,
+            scroll_speed: self.scroll_speed,
             pen_output: self.pen_output.clone(),
         };
         config.normalise_sources();
@@ -614,6 +629,18 @@ pub struct AccessibilityPrefs {
     /// accidental brushes.
     #[serde(default)]
     pub slow_keys: bool,
+    /// Ignore a second press of the same key soon after its release.
+    #[serde(default)]
+    pub bounce_keys: bool,
+    /// The bounce-keys window in milliseconds.
+    #[serde(default = "default_bounce_keys_delay_ms")]
+    pub bounce_keys_delay_ms: u32,
+    /// Flash the visual alert when bounce keys ignores a press.
+    #[serde(default)]
+    pub bounce_keys_alert: bool,
+    /// Move the pointer with the numeric keypad.
+    #[serde(default)]
+    pub mouse_keys: bool,
     /// Flash the screen instead of (or alongside) an audible alert.
     #[serde(default)]
     pub visual_alerts: bool,
@@ -772,6 +799,10 @@ fn default_cursor_size() -> u32 {
     24
 }
 
+fn default_bounce_keys_delay_ms() -> u32 {
+    settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS
+}
+
 fn default_magnifier_zoom() -> u8 {
     1
 }
@@ -789,6 +820,10 @@ impl Default for AccessibilityPrefs {
             on_screen_keyboard: false,
             sticky_keys: false,
             slow_keys: false,
+            bounce_keys: false,
+            bounce_keys_delay_ms: default_bounce_keys_delay_ms(),
+            bounce_keys_alert: false,
+            mouse_keys: false,
             visual_alerts: false,
             color_filter: ColorFilter::None,
             magnifier_zoom: default_magnifier_zoom(),
@@ -804,6 +839,31 @@ impl Default for AccessibilityPrefs {
 }
 
 impl AccessibilityPrefs {
+    /// The offered bounce-keys windows as `(display label, milliseconds)`.
+    pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
+        ("100 ms", 100),
+        ("200 ms", 200),
+        ("300 ms", 300),
+        ("500 ms", 500),
+        ("800 ms", 800),
+    ];
+
+    /// The offered bounce-keys window closest to `ms`.
+    pub fn bounce_delay_label(ms: u32) -> &'static str {
+        Self::BOUNCE_DELAYS
+            .iter()
+            .min_by_key(|(_, d)| d.abs_diff(ms))
+            .map_or("300 ms", |(l, _)| *l)
+    }
+
+    /// Map a bounce-keys label back to milliseconds, if recognised.
+    pub fn bounce_delay_ms(label: &str) -> Option<u32> {
+        Self::BOUNCE_DELAYS
+            .iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, d)| *d)
+    }
+
     /// The offered pointer sizes as `(display label, size px)`. The compositor
     /// applies [`Self::cursor_size`] as its cursor-theme size when
     /// [`Self::large_cursor`] is set.
@@ -1083,6 +1143,50 @@ mod tests {
         assert_eq!(p.power.lock_minutes, 5);
         assert_eq!(p.updates.channel, "Stable");
         assert_eq!(p.updates.last_checked, "Never");
+    }
+
+    #[test]
+    fn keyboard_filters_and_touchpad_choices_round_trip_through_json() {
+        use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
+        let mut p = SystemPrefs::default();
+        assert_eq!(p.accessibility.bounce_keys_delay_ms, 300);
+        p.accessibility.bounce_keys = true;
+        p.accessibility.bounce_keys_delay_ms = 500;
+        p.accessibility.bounce_keys_alert = true;
+        p.accessibility.mouse_keys = true;
+        p.input.touchpad_click_method = TouchpadClickMethod::Clickfinger;
+        p.input.touchpad_scroll_method = TouchpadScrollMethod::Edge;
+        p.input.scroll_speed = 2.0;
+        let json = p.to_json_merged("");
+        let back = SystemPrefs::from_json(&json);
+        assert_eq!(back.accessibility, p.accessibility);
+        assert_eq!(
+            back.input.touchpad_click_method,
+            TouchpadClickMethod::Clickfinger
+        );
+        assert_eq!(
+            back.input.touchpad_scroll_method,
+            TouchpadScrollMethod::Edge
+        );
+        assert_eq!(back.input.scroll_speed, 2.0);
+
+        // The compositor reads the same document.
+        let root: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let input = root["input"].as_object().unwrap();
+        let rich = settings_store::hardware::RichInputConfig::from_section(input);
+        assert_eq!(rich.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(rich.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert_eq!(rich.scroll_speed, 2.0);
+        assert_eq!(root["accessibility"]["bounce_keys_delay_ms"], 500);
+        assert_eq!(root["accessibility"]["mouse_keys"], true);
+    }
+
+    #[test]
+    fn bounce_delay_labels_map_both_ways() {
+        assert_eq!(AccessibilityPrefs::bounce_delay_label(300), "300 ms");
+        assert_eq!(AccessibilityPrefs::bounce_delay_label(450), "500 ms");
+        assert_eq!(AccessibilityPrefs::bounce_delay_ms("800 ms"), Some(800));
+        assert_eq!(AccessibilityPrefs::bounce_delay_ms("forever"), None);
     }
 
     #[test]

@@ -97,6 +97,7 @@ granted to an app through the GlobalShortcuts portal.
 | Explore workspace history | Super+Shift+H |
 | Keyboard guide | F1 |
 | Stop all remote input | Super+Esc |
+| Toggle mouse keys | Alt+Shift+Num Lock |
 <!-- fixed-shell-chords:end -->
 
 ## Overlay behavior

@@ -10,6 +10,7 @@
 //! gesture routing · [`outputs`] stable `OutputId` allocation · [`runtime`] hardware glue + the
 //! inner calloop loop · [`scanout`] modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA bridge.
 
+pub mod access_keys;
 pub mod devices;
 pub mod gestures;
 pub mod hotplug;
