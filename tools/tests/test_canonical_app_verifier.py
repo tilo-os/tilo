@@ -44,7 +44,7 @@ class CanonicalVerifierTests(unittest.TestCase):
     def output(self, command, **kwargs):
         if command[1] == 'verify':
             self.assertEqual(command[2:4], ['--trusted-key', '1' * 64])
-            return subprocess.CompletedProcess(command, 0, f'ok: {self.package_id} verifies and publisher is trusted\n', '')
+            return subprocess.CompletedProcess(command, 0, f'ok: {self.package_id} verifies and publisher is trusted (full)\n', '')
         self.assertEqual(command[1], 'inspect')
         return subprocess.CompletedProcess(command, 0, f'package-id: {self.package_id}\npublisher-identity: ed25519:{"1" * 64}\nsigned: yes\n\n--- manifest.toml ---\n', '')
 
