@@ -1,7 +1,7 @@
 //! Wire contract of Tilo's browser-facing delivery.
 //!
 //! Every type here is an inert, validated record: delivery v3 commits, cursors,
-//! descriptors, authentication and HTTP proofs, the LIVE_V1, media, onboarding and
+//! descriptors, authentication and HTTP proofs, the `LIVE_V1`, media, onboarding and
 //! private wires; the private action and agent-read vocabularies; the v2 live
 //! envelope; and the workspace join contract. Browsers, the action broker and
 //! both hosts link this crate without linking the relay daemon.

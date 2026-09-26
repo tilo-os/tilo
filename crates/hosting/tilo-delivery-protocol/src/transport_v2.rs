@@ -138,6 +138,12 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
             payload_read: 0,
         }
     }
+    /// The next complete envelope, or `None` at a clean end of stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns `FrameError` when the stream fails or a frame is oversized or
+    /// does not decode.
     pub async fn read_next(&mut self) -> Result<Option<EnvelopeV2>, FrameError> {
         use tokio::io::AsyncReadExt;
         while self.prefix_read < 4 {
