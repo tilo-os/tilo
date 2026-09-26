@@ -1667,6 +1667,57 @@ fn a_touch_tap_on_a_client_activates_it_once() {
     );
 }
 
+/// The desktop help overlay speaks the input language in use. A headless
+/// session starts with no input devices at all; the first touch contact
+/// attaches its panel and switches help to gestures, and typing switches it
+/// back to keyboard shortcuts while the touchscreen stays available.
+#[test]
+fn desktop_help_follows_the_input_device_in_use() {
+    let compositor = Compositor::start();
+    let input = || {
+        let response = compositor.control(&serde_json::json!({"op": "state_dump"}));
+        response
+            .get("state")
+            .and_then(|state| state.get("chrome"))
+            .and_then(|chrome| chrome.get("input"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state_dump carries no chrome input: {response}"))
+    };
+
+    let initial = input();
+    assert_eq!(
+        initial["available"],
+        serde_json::json!([]),
+        "no input device may be assumed before one exists: {initial}"
+    );
+    assert_eq!(initial["help_modality"], "pointer", "{initial}");
+
+    let (w, h) = compositor.size;
+    let (x, y) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    let touched = input();
+    assert_eq!(touched["modality"], "touch", "{touched}");
+    assert_eq!(touched["help_modality"], "touch", "{touched}");
+    assert_eq!(
+        touched["available"],
+        serde_json::json!(["touch"]),
+        "{touched}"
+    );
+
+    compositor.key("F1");
+    let typed = input();
+    assert_eq!(typed["modality"], "keyboard", "{typed}");
+    assert_eq!(typed["help_modality"], "keyboard", "{typed}");
+    assert_eq!(
+        typed["available"],
+        serde_json::json!(["keyboard", "touch"]),
+        "{typed}"
+    );
+}
+
 /// An `OwnedFd` plus a borrow helper, so `receive` can take `&fd`.
 struct Fd(OwnedFd);
 

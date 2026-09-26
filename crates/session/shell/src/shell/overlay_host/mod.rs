@@ -20560,6 +20560,16 @@ impl ShellOverlayHost {
         );
     }
 
+    /// The input devices and last-used modality the chrome adapts to.
+    pub fn interaction_environment(&self) -> ui::InteractionEnvironment {
+        self.interaction
+    }
+
+    /// Input language the help overlay is written in.
+    pub fn shortcut_help_modality(&self) -> ui::InputModality {
+        self.interaction.preferred_hint_modality()
+    }
+
     /// The shortcut-guide affordance is persistent chrome, not modal
     /// content. Keep it behind every temporary shell-owned surface: drawing
     /// it later would let its label overlap a popover at small sizes or large
@@ -20753,10 +20763,8 @@ impl ShellOverlayHost {
         self.shortcut_binding_rects.clear();
         self.shortcut_reset_rects.clear();
 
-        if matches!(
-            self.interaction.preferred_hint_modality(),
-            ui::InputModality::Keyboard | ui::InputModality::Pointer
-        ) {
+        let help_modality = self.shortcut_help_modality();
+        if help_modality != ui::InputModality::Touch {
             let feedback = if let Some(action) = self.shortcut_rebind {
                 Some(self.shortcut_rebind_message.clone().map_or_else(
                     || {
@@ -20782,7 +20790,7 @@ impl ShellOverlayHost {
             }
         }
 
-        match self.interaction.preferred_hint_modality() {
+        match help_modality {
             ui::InputModality::Controller => {
                 InputDeviceGlyph::paint_controller(
                     scene,
