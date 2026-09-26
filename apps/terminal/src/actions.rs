@@ -32,7 +32,7 @@
 //! - `cursor` — the cursor's `x` / `y`;
 //! - `terminal_links` — OSC 8 hyperlink targets the program emitted;
 //! - `terminal_images` — content hashes and cell placements for terminal
-//!   graphics; immutable bytes ride the shared qdoc blob transport;
+//!   graphics; immutable bytes live in the app's content store;
 //! - `terminal_title` — the OSC 0/2 window title the program set;
 //! - `terminal_pane_id` — a shared id that scopes collaboration *presence* (whose
 //!   caret is whose), not user data.
