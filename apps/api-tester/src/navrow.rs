@@ -421,8 +421,22 @@ impl Widget for NavRow {
                 Role::Button
             })
             .with_name(self.accessible_name.clone())
+            .with_action_target(self.id.clone())
             .with_state(state),
         )
+    }
+
+    /// The row publishes its id as its semantic action target, so assistive
+    /// technology and agents reach the same activation and adjustment a
+    /// pointer or keyboard does.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        target == self.id && self.perform_action(action, state, path)
     }
 
     fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
