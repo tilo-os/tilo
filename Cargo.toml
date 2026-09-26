@@ -79,6 +79,7 @@ members = [
     "apps/settings",
     "apps/sheets",
     "apps/slides",
+    "apps/shortcuts",
     "apps/snippets",
     "apps/store",
     "apps/terminal",
