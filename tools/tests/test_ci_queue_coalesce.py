@@ -20,7 +20,7 @@ def run(id=22628, **changes):
 
 
 class Fake:
-    base = "repos/qos/qos/actions/runs"
+    base = "repos/tilo/tilo/actions/runs"
 
     def __init__(self):
         self.runs = [run(1), run(2)]
@@ -91,7 +91,7 @@ class CoalesceTests(unittest.TestCase):
         self.assertEqual(api.posts, [])
 
     def test_pagination_deduplicates_and_exhaustion_fails(self):
-        api = ci.Forgejo("https://example.test/api/v1", "fixture", "qos/qos", 3)
+        api = ci.Forgejo("https://example.test/api/v1", "fixture", "tilo/tilo", 3)
         pages = [[run(i) for i in range(1, 31)], [run(30), run(31)]]
         api.call = lambda endpoint: {"workflow_runs": pages.pop(0)}
         self.assertEqual(len(api.collect(2)), 31)
@@ -100,7 +100,7 @@ class CoalesceTests(unittest.TestCase):
             api.collect(1)
 
     def test_ignored_page_size_fails_closed(self):
-        api = ci.Forgejo("https://example.test/api/v1", "fixture", "qos/qos", 3)
+        api = ci.Forgejo("https://example.test/api/v1", "fixture", "tilo/tilo", 3)
         def response(endpoint):
             self.assertIn("limit=30", endpoint)
             self.assertIn("page=1", endpoint)

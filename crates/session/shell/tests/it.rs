@@ -55,6 +55,8 @@ mod cursor_protocol;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "display_layout_switcher.rs"]
+mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
 mod dmabuf_commit_barrier;
 #[path = "dmabuf_direct_capture_path.rs"]
@@ -119,16 +121,22 @@ mod notification_center;
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
+#[path = "output_management_protocol.rs"]
+mod output_management_protocol;
 #[path = "peer_join_toast_batches.rs"]
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "per_output_scale.rs"]
+mod per_output_scale;
 #[path = "permission_prompt_pump.rs"]
 mod permission_prompt_pump;
 #[path = "permissions_tab_test.rs"]
 mod permissions_tab_test;
 #[path = "persisted_app_placeholders.rs"]
 mod persisted_app_placeholders;
+#[path = "pointer_lock_protocol.rs"]
+mod pointer_lock_protocol;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]
@@ -171,6 +179,8 @@ mod system_monitor_test;
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
+#[path = "transient_sheets.rs"]
+mod transient_sheets;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "wayland_test.rs"]

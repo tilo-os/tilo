@@ -22,13 +22,16 @@ ROOT = Path("/var/lib/tilo-installer/target-oci")
 KEY = Path("/usr/share/tilo/cosign.pub")
 COSIGN = Path("/usr/libexec/tilo-cosign")
 RECEIPT = Path("/run/tilo-installer/offline-target.json")
-REF = re.compile(r"code\.podesta\.ai/qos/tilo@(?P<digest>sha256:[0-9a-f]{64})\Z")
-BOARD_ORIGIN = re.compile(r"code\.podesta\.ai/qos/tilo:lenovo-83ed-[0-9a-f]{40}\Z")
-GENERIC_ORIGIN = re.compile(r"code\.podesta\.ai/qos/tilo:gen([1-9][0-9]*)\Z")
+REF = re.compile(r"(?P<repository>registry\.tilo\.so/tilo/tilo|code\.tilo\.so/tilo/tilo)"
+                 r"@(?P<digest>sha256:[0-9a-f]{64})\Z")
+# Board images carry private firmware and stay on the forge's private registry.
+REPOSITORY = {"generic": "registry.tilo.so/tilo/tilo", "lenovo-83ed": "code.tilo.so/tilo/tilo"}
+BOARD_ORIGIN = re.compile(r"code\.tilo\.so/tilo/tilo:lenovo-83ed-[0-9a-f]{40}\Z")
+GENERIC_ORIGIN = re.compile(r"registry\.tilo\.so/tilo/tilo:gen([1-9][0-9]*)\Z")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 BUILD_TYPE = "https://tilo.sh/buildtypes/bootc-os/v1"
-BUILDER = "https://code.sandbox.example/qos/forgejo/actions/bootc-release-v1"
-SOURCE = re.compile(r"git\+ssh://code\.podesta\.ai/qos/qos@([0-9a-f]{40})\Z")
+BUILDER = "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"
+SOURCE = re.compile(r"git\+ssh://code\.tilo\.so/tilo/tilo@([0-9a-f]{40})\Z")
 
 
 def require(ok, message):
@@ -66,6 +69,7 @@ def read_target(root=ROOT):
             and metadata["target_digest"] == match["digest"]
             and metadata["architecture"] == "aarch64"
             and metadata["hardware_profile"] in {"generic", "lenovo-83ed"}
+            and match["repository"] == REPOSITORY[metadata["hardware_profile"]]
             and ((metadata["hardware_profile"] == "lenovo-83ed"
                   and BOARD_ORIGIN.fullmatch(metadata["update_origin"]))
                  or (metadata["hardware_profile"] == "generic"
@@ -179,14 +183,14 @@ def checked_provenance(output, metadata):
                     or not HEX.fullmatch(external["firmwareManifestSha256"])
                     or "children" in external
                     or metadata["update_origin"] !=
-                    f"code.sandbox.example/qos/tilo:lenovo-83ed-{sources[0]}"
+                    f"code.tilo.so/tilo/tilo:lenovo-83ed-{sources[0]}"
                     or type(firmware) is not str
-                    or not re.fullmatch(r"code\.podesta\.ai/qos/tilo-lenovo-83ed-firmware@sha256:[0-9a-f]{64}", firmware)):
+                    or not re.fullmatch(r"code\.tilo\.so/tilo/tilo-lenovo-83ed-firmware@sha256:[0-9a-f]{64}", firmware)):
                 continue
             firmware_manifest = external["firmwareManifestSha256"]
         else:
             if (metadata["update_origin"] !=
-                    f"code.sandbox.example/qos/tilo:gen{external['generation']}"
+                    f"registry.tilo.so/tilo/tilo:gen{external['generation']}"
                     or any(key in external for key in
                            ("hardwareProfile", "architecture", "firmwareManifestSha256", "children"))):
                 continue
@@ -211,7 +215,7 @@ def verify(root=ROOT):
                 and row["critical"].get("image", {}).get("docker-manifest-digest")
                 == metadata["target_digest"]
                 and row["critical"].get("identity", {}).get("docker-reference")
-                == "code.sandbox.example/qos/tilo" for row in signature),
+                == REPOSITORY[metadata["hardware_profile"]] for row in signature),
             "offline Cosign signature does not bind the selected target")
     provenance = checked_provenance(run(str(COSIGN), "verify-attestation", "--offline",
                                         "--key", str(KEY), "--type", "slsaprovenance1",

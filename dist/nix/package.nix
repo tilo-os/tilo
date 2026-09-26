@@ -73,7 +73,7 @@ rustPlatform.buildRustPackage rec {
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
   # into the compositor or locking the session could never invoke PAM.
   preBuild = ''
-    export QOS_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
+    export TILO_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
     export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
   '';
 
@@ -134,7 +134,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
-    homepage = "https://code.sandbox.example/qos/qos";
+    homepage = "https://code.tilo.so/tilo/tilo";
     license = lib.licenses.agpl3Only;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
     mainProgram = "tilo-shell";

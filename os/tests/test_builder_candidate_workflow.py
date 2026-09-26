@@ -128,29 +128,32 @@ class BuilderCandidates(unittest.TestCase):
             output = Path(directory) / 'outputs'
             result = subprocess.run(
                 ['bash', '-c', step_script(CHECK, 'Resolve the CI builder before starting job containers')],
-                env={**os.environ, 'REQUESTED_BUILDER': requested, 'GITHUB_OUTPUT': str(output), 'REGISTRY_TOKEN': ''},
+                env={**os.environ, 'REQUESTED_BUILDER': requested, 'GITHUB_OUTPUT': str(output)},
                 cwd=ROOT,
                 text=True, capture_output=True,
             )
             return result, output.read_text() if output.exists() else ''
 
     def test_only_immutable_same_repository_override_is_accepted(self):
-        image = 'code.sandbox.example/qos/tilo-builder@sha256:' + 'a' * 64
+        image = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
         result, output = self.resolve(image)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, f'image={image}\n')
         for invalid in [image[:-1], image.replace('tilo-builder', 'other'),
-                        'code.sandbox.example/qos/tilo-builder:latest', image + '\ninjected=value',
+                        'registry.tilo.so/tilo/tilo-builder:latest', image + '\ninjected=value',
                         '$(touch /tmp/should-not-run)']:
             with self.subTest(invalid=invalid):
                 result, output = self.resolve(invalid)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(output, '')
 
-    def test_ordinary_checks_require_authenticated_resolution(self):
-        result, output = self.resolve('')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(output, '')
+    def test_ordinary_checks_resolve_the_builder_anonymously(self):
+        # The builder is public on registry.tilo.so; no credential reaches
+        # the resolver.
+        block = CHECK.split('- name: Resolve the CI builder before starting job containers\n', 1)[1]
+        block = block.split('\n      - ', 1)[0]
+        self.assertIn('run: python3 tools/ci/resolve_builder.py', block)
+        self.assertNotIn('REGISTRY_TOKEN', block)
 
     def publication_tags(self, ref):
         with tempfile.TemporaryDirectory() as directory:
@@ -219,7 +222,7 @@ class BuilderCandidates(unittest.TestCase):
         security_job = CHECK.split('  security:\n', 1)[1].split('\n  native-dependencies:\n', 1)[0]
         select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
         self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
-        self.assertRegex(select_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}\n')
+        self.assertRegex(select_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}\n')
         qualified_image = next(line.strip() for line in
                                (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
                                if line.strip().startswith('image: '))
@@ -248,7 +251,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('tools/ci/clippy-check.sh ${{ matrix.packages }}', clippy_job)
         self.assertNotIn('needs.select.outputs.base', clippy_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
-        self.assertIn('image: code.sandbox.example/qos/ci-control@sha256:', builder_job)
+        self.assertIn('image: registry.tilo.so/tilo/ci-control@sha256:', builder_job)
         self.assertNotIn('needs.builder.outputs.image', builder_job)
         self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
         self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)
@@ -359,7 +362,7 @@ class CanaryIdentity(unittest.TestCase):
         replication = BUILD.split('name: Replicate the promoted builder beside Oregon runners', 1)[1]
         self.assertIn("if: github.ref == 'refs/heads/main'", replication)
         self.assertIn('replicate-builder-index.py', replication)
-        self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
+        self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/tilo/tilo-builder', replication)
         self.assertIn('burst-us-tilo-builder-replication', replication)
 
     def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):

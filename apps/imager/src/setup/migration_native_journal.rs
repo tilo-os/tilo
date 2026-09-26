@@ -4,7 +4,7 @@ use super::migration_journal::{PersistenceBoundary, persistence_result};
 use super::migration_journal_log::{Log, read_record};
 use super::migration_native::{Plan, PlanEntry};
 use super::{migration_durability as durability, nofollow::metadata_nofollow};
-use qos_ntfs_protocol::{Entry, Identity, Issue, NativePath};
+use tilo_ntfs_protocol::{Entry, Identity, Issue, NativePath};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::SystemTime,
 };
-const MAGIC: &[u8; 8] = b"QOSJNL3\n";
+const MAGIC: &[u8; 8] = b"TILOJL3\n";
 
 // Finite history for this bounded inventory: eight conservative recovery
 // envelopes, not renewable session/native budgets. Exhaustion requires review;
@@ -709,7 +709,7 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, Plan, PathBuf, PathBuf) {
         let temp = tempfile::Builder::new()
-            .prefix("qos-native-copy-fix1-")
+            .prefix("tilo-native-copy-fix1-")
             .tempdir()
             .unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
@@ -734,7 +734,7 @@ mod tests {
                     metadata_digest: "a".repeat(64),
                     content_readable: false,
                     enumeration_complete: true,
-                    copy_times: Some(qos_ntfs_protocol::CopyTimes {
+                    copy_times: Some(tilo_ntfs_protocol::CopyTimes {
                         last_access_100ns: 116_444_736_000_000_000,
                         last_data_change_100ns: 116_444_736_000_000_000,
                     }),

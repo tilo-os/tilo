@@ -67,7 +67,7 @@ impl QuickFS {
             .checked_record_frontier(ino)
             .ok_or(Error::Unavailable)?;
         let bytes = serde_json::to_vec(&(
-            "qos.history-read.v1",
+            "tilo.history-read.v1",
             workspace_id,
             self.mount_lifetime,
             record_id,

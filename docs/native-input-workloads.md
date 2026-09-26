@@ -1,7 +1,7 @@
 # Native scheduled input diagnostics
 
-`QOS_NATIVE_SCENARIO=/absolute/path/scenario.json` enables a shared native input
-timeline in `App::run_with_setup`. Enable `QOS_PROFILE_OUT` to retain CPU frames
+`TILO_NATIVE_SCENARIO=/absolute/path/scenario.json` enables a shared native input
+timeline in `App::run_with_setup`. Enable `TILO_PROFILE_OUT` to retain CPU frames
 and `QUICK_UI_PRESENT=1` to retain worker outcomes. The scheduler starts after
 the first primary worker `Presented` outcome, uses absolute deadlines, and
 never moves future deadlines to accommodate a late callback.
@@ -30,14 +30,14 @@ Unknown fields, empty timelines, non-finite input, invalid warmup, over100000
 steps and overflowing deadlines fail before scheduling. Without the environment
 variable, no scheduling thread or native input logging is installed.
 
-`qos-native-input` records input IDs, requested deadlines, event-handler start
+`tilo-native-input` records input IDs, requested deadlines, event-handler start
 times, scheduler-send timestamps, and lateness relative to those deadlines.
 The report separates `scheduler_lateness` (deadline to send) from
 `delivery_to_dispatch` (send to handler entry); their percentiles must not be
 added. Old evidence without send timestamps leaves both fields unavailable;
 partially populated or chronologically invalid timestamps fail validation.
 It records dispatch entry,
-not input-to-photon latency. `qos-native-frame` maps all inputs since the previous
+not input-to-photon latency. `tilo-native-frame` maps all inputs since the previous
 CPU frame to the next committed CPU sample. Several inputs may share one frame;
 they must not be counted as several rendered frames. Inputs that fail to produce
 a frame remain missing in the evidence. Mixed warmup/measured frame batches are
@@ -54,7 +54,7 @@ assert effects. Optional macOS drawable presentation evidence is documented in
 
 Build `cargo build --profile thin-app -p ui --no-default-features --example
 ui-native-input-probe`. The example uses an ordinary button callback to emit
-`qos-native-effect` activation counts. It runs until closed by its test harness
+`tilo-native-effect` activation counts. It runs until closed by its test harness
 or the user. Repeated clicks verify input routing but do not represent sustained
 visual animation or a substantive application workload.
 
@@ -436,7 +436,7 @@ No all-app qualification or shared-layer stall is established.
 
 ### Nonactivating benchmark window and virtualized scrolling (2026-09-16)
 
-`QOS_PROFILE_WINDOW_NO_ACTIVATE=1` opts the macOS event-loop builder out of
+`TILO_PROFILE_WINDOW_NO_ACTIVATE=1` opts the macOS event-loop builder out of
 activating over another application. Normal launches are unchanged. The
 collector uses this option and can select a binary with `WP_BINARY`. A local
 Writer Performance Probe.app wrapper allows CUA inspection of the same binary.
@@ -1242,7 +1242,7 @@ All 47 apps remain unqualified.
 ### Physical pointer isolation for scripted captures
 
 The native collectors accept `--pointer-passthrough --no-activate`. This opts
-into `QOS_PROFILE_POINTER_PASSTHROUGH=1` only for a scripted native scenario.
+into `TILO_PROFILE_POINTER_PASSTHROUGH=1` only for a scripted native scenario.
 The window disables physical cursor hit testing before being shown; scripted
 inputs keep the existing event dispatch route. Unsupported backend errors stop
 the app. The collector requires a literal `pointer_passthrough: true` in the

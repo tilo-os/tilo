@@ -22,9 +22,8 @@ def pixel(x, y):
     color = mix(background, (25, 25, 44), glow * glow * 0.72)
 
     cx, cy = WIDTH / 2, HEIGHT * 0.43
-    # Tilo's three-dot mark matches the public site favicon and avoids carrying
-    # the retired qOS “q” into the first frame of the renamed product. It is
-    # geometric so the UKI build remains independent of fonts and SVG tools.
+    # Tilo's three-dot mark matches the public site favicon. It is geometric
+    # so the UKI build remains independent of fonts and SVG tools.
     for index, dot_x in enumerate((cx - 54, cx, cx + 54)):
         distance = math.hypot(x - dot_x, y - cy) - 16.0
         accent = mix((124, 92, 255), (49, 198, 181), index / 2)

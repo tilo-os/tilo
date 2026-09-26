@@ -257,7 +257,7 @@ class CheckAggregateTests(unittest.TestCase):
         security = section(self.workflow, "security", 2)
         self.assertIn("if: needs.select.outputs.security_required == 'true'", security)
         self.assertIn("needs: [select]", security)
-        self.assertIn("image: code.sandbox.example/qos/ci-fast@sha256:", security)
+        self.assertIn("image: registry.tilo.so/tilo/ci-fast@sha256:", security)
         self.assertIn("gcc kmod clang lld rpm-build python3-pillow systemd", security)
         self.assertIn("fontconfig google-noto-sans-fonts", security)
         self.assertIn("systemd-escape", security)
@@ -301,7 +301,13 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("AFFECTED_RESULT: ${{ steps.aggregate.outcome }}", receipt)
         self.assertIn('tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"\n'
                       '          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin', receipt)
-        self.assertNotIn("continue-on-error:", checks)
+        # The gate itself can never be softened; only recording its evidence
+        # may fail without failing the required check.
+        aggregate = checks.split("      - name: Checkout CI receipt tool\n", 1)[0]
+        self.assertNotIn("continue-on-error:", aggregate)
+        self.assertEqual(checkout.count("        continue-on-error: true\n"), 1)
+        self.assertEqual(receipt.count("        continue-on-error: true\n"), 1)
+        self.assertEqual(checks.count("continue-on-error:"), 2)
 
 
 if __name__ == "__main__":

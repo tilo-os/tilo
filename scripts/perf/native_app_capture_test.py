@@ -34,34 +34,34 @@ class CaptureGateTests(unittest.TestCase):
         def row(prefix, **fields):
             return prefix+' '+json.dumps(fields)
         lines=[row(prefix,cpu_frame_id=1,worker_id=1,worker_frame_ix=0)
-               for prefix in ('qos-native-send','qos-native-worker','qos-native-present-call',
-                              'qos-native-worker-handoff')]
-        lines.append(row('qos-native-worker-handoff',cpu_frame_id=None,worker_id=2,worker_frame_ix=0))
+               for prefix in ('tilo-native-send','tilo-native-worker','tilo-native-present-call',
+                              'tilo-native-worker-handoff')]
+        lines.append(row('tilo-native-worker-handoff',cpu_frame_id=None,worker_id=2,worker_frame_ix=0))
         self.assertFalse(capture.diagnostics_drained(lines,{1}))
-        lines.append(row('qos-native-worker',cpu_frame_id=None,worker_id=2,worker_frame_ix=0))
+        lines.append(row('tilo-native-worker',cpu_frame_id=None,worker_id=2,worker_frame_ix=0))
         self.assertTrue(capture.diagnostics_drained(lines,{1}))
 
     def test_drain_waits_for_post_send_diagnostics_but_supports_legacy(self):
         def row(prefix, cpu):
             return prefix+' '+json.dumps(dict(cpu_frame_id=cpu))
         self.assertTrue(capture.diagnostics_drained([], {1,2}))
-        lines=[row(prefix,cpu) for prefix in ('qos-native-send','qos-native-worker','qos-native-present-call') for cpu in (1,2)]
+        lines=[row(prefix,cpu) for prefix in ('tilo-native-send','tilo-native-worker','tilo-native-present-call') for cpu in (1,2)]
         self.assertTrue(capture.diagnostics_drained(lines,{1,2}))
         self.assertFalse(capture.diagnostics_drained(lines[:-1],{1,2}))
-        lines.append(row('qos-native-main-stages',1))
+        lines.append(row('tilo-native-main-stages',1))
         self.assertFalse(capture.diagnostics_drained(lines,{1,2}))
-        lines.append(row('qos-native-main-stages',2))
+        lines.append(row('tilo-native-main-stages',2))
         self.assertTrue(capture.diagnostics_drained(lines,{1,2}))
-        lines.append(row('qos-native-worker-handoff',1))
+        lines.append(row('tilo-native-worker-handoff',1))
         self.assertFalse(capture.diagnostics_drained(lines,{1,2}))
-        lines.append(row('qos-native-worker-handoff',2))
+        lines.append(row('tilo-native-worker-handoff',2))
         self.assertTrue(capture.diagnostics_drained(lines,{1,2}))
 
     def test_exit_after_last_effect_is_still_a_failure(self):
         source = '''import json
-print('qos-native-effect {}', flush=True)
-print('qos-native-frame '+json.dumps(dict(cpu_frame_id=1,input_ids=[0])), flush=True)
-print('qos-display-frame '+json.dumps(dict(cpu_frame_id=1)), flush=True)
+print('tilo-native-effect {}', flush=True)
+print('tilo-native-frame '+json.dumps(dict(cpu_frame_id=1,input_ids=[0])), flush=True)
+print('tilo-display-frame '+json.dumps(dict(cpu_frame_id=1)), flush=True)
 raise SystemExit(7)
 '''
         failure, metadata = failure_tests.CollectorFailureTests().run_failure(source)
@@ -84,7 +84,7 @@ raise SystemExit(7)
 
     def test_requested_pointer_isolation_requires_actual_window_ack(self):
         window = dict(scale_factor=2,physical_width=1600,physical_height=1200)
-        lines = lambda value: ['qos-native-window '+json.dumps(value)]
+        lines = lambda value: ['tilo-native-window '+json.dumps(value)]
         self.assertEqual(capture.window_metadata(lines(window)),window)
         for marker in [None,False,1,'true']:
             sample=dict(window)

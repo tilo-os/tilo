@@ -5,7 +5,7 @@ native windows, connected to one compositor-free service process. No app code
 is forked or given a special proof mode.
 
 The host calls the same `collab_broker::spawn_native` and `identity_broker::spawn`
-implementations used by qOS. Device certificates, enrollment, workspace
+implementations used by Tilo. Device certificates, enrollment, workspace
 membership, action policy, RPC and signed document validation use their existing
 production paths. It does not use `spawn_native_harness` or mock app endpoints.
 
@@ -21,7 +21,7 @@ python3 scripts/shared-runtime-proof.py
 The runner creates an isolated temporary profile, launches both apps, and
 retains evidence under `target/runtime-proof/<timestamp>`. It stops and reaps the
 apps after verification and removes the temporary profile, including private
-identity material. It never changes the user's normal qOS profile.
+identity material. It never changes the user's normal Tilo profile.
 
 ## What is verified
 
@@ -69,7 +69,7 @@ workspace policy model. Extracting those modules into a smaller crate is future
 dependency cleanup; their implementations are shared now.
 
 The same service composition is now available through the native
-`qos-runtime-mcp` stdio entry point. Its user-supplied manifest launches apps
+`tilo-runtime-mcp` stdio entry point. Its user-supplied manifest launches apps
 through `Session::launch`; ordinary `ui::App` startup publishes each live,
 peer-qualified lazy action directory automatically. The host validates the
 complete manifest and acquires the profile lock before launching any child,

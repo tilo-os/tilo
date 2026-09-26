@@ -224,27 +224,17 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 ///
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
-fn compatible_identity_dir(config: &std::path::Path) -> PathBuf {
-    let current = config.join("tilo").join("identity");
-    let legacy = config.join("qos").join("identity");
-    if !current.exists() && legacy.is_dir() {
-        legacy
-    } else {
-        current
-    }
-}
-
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         let xdg = PathBuf::from(xdg);
         if xdg.is_absolute() {
-            return Ok(compatible_identity_dir(&xdg));
+            return Ok(xdg.join("tilo").join("identity"));
         }
     }
     if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
         let home = PathBuf::from(home);
         if home.is_absolute() {
-            return Ok(compatible_identity_dir(&home.join(".config")));
+            return Ok(home.join(".config").join("tilo").join("identity"));
         }
     }
     Err(io::Error::new(

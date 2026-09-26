@@ -3,9 +3,9 @@
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_library_loader.h"
 #include "host.h"
-@interface QosApplication : NSApplication<CefAppProtocol> { BOOL handling_; }
+@interface TiloApplication : NSApplication<CefAppProtocol> { BOOL handling_; }
 @end
-@implementation QosApplication
+@implementation TiloApplication
 - (BOOL)isHandlingSendEvent { return handling_; }
 - (void)setHandlingSendEvent:(BOOL)value { handling_=value; }
 - (void)sendEvent:(NSEvent*)event { CefScopedSendingEvent scope; [super sendEvent:event]; }
@@ -41,7 +41,7 @@ int main(int argc,char** argv) {
   CefScopedLibraryLoader loader;
   if(!loader.LoadInMain()) return 1;
   @autoreleasepool {
-    [QosApplication sharedApplication];
+    [TiloApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     return RunHost(argc,argv);
   }

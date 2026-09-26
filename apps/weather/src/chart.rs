@@ -13,9 +13,10 @@
 //! caller can shift it for the day/night cue.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::peniko::{BlendMode, Color, Fill};
 
+use ui::charts::{Sparkline, TrendCurve, TrendFill, TrendRange, TrendStyle};
 use ui::color_compat::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -109,8 +110,7 @@ struct StripGeometry {
     band: Rect,
     scroll_x: f64,
     col_w: f64,
-    lo: f64,
-    span: f64,
+    range: TrendRange,
     curve_top: f64,
     curve_bottom: f64,
     value_y: f64,
@@ -134,23 +134,14 @@ impl StripGeometry {
         spacing: &Spacing,
         text_scale: f32,
     ) -> Self {
-        // Temperature range for the curve, with headroom so it never clips.
-        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for p in cols {
-            lo = lo.min(p.temp);
-            hi = hi.max(p.temp);
-        }
-        if (hi - lo).abs() < 0.5 {
-            hi += 1.0;
-            lo -= 1.0;
-        }
+        // Temperature range for the curve; a flat day sits mid-band.
+        let temps: Vec<f64> = cols.iter().map(|p| p.temp).collect();
         let rows = strip_rows(spacing, text_scale);
         Self {
             band,
             scroll_x,
             col_w,
-            lo,
-            span: hi - lo,
+            range: TrendRange::fit(&temps),
             curve_top: band.y0 + rows.curve_top,
             curve_bottom: band.y0 + rows.curve_bottom,
             value_y: band.y0 + rows.value_y,
@@ -168,8 +159,20 @@ impl StripGeometry {
         self.band.x0 - self.scroll_x + i as f64 * self.col_w + self.col_w / 2.0
     }
 
+    /// The curve band, spanning the first to the last column centre — the
+    /// rect the trend spreads its samples evenly across.
+    fn curve_rect(&self, len: usize) -> Rect {
+        Rect::new(
+            self.x_center(0),
+            self.curve_top,
+            self.x_center(len.saturating_sub(1)),
+            self.curve_bottom,
+        )
+    }
+
+    #[cfg(test)]
     fn y_at(&self, temp: f64) -> f64 {
-        self.curve_bottom - ((temp - self.lo) / self.span) * (self.curve_bottom - self.curve_top)
+        self.curve_bottom - self.range.fraction(temp) * (self.curve_bottom - self.curve_top)
     }
 }
 
@@ -208,7 +211,7 @@ pub fn draw_hourly_strip(
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &band);
 
     draw_now_highlight(scene, t, cols, &geo, accent);
-    let pts = draw_trend_curve(scene, t, band, cols, &geo, accent);
+    let pts = draw_trend_curve(scene, t, cols, &geo, accent);
     draw_column_marks(scene, t, cols, &pts, &geo, theme, tr, temp_suffix, accent);
 
     scene.pop_layer();
@@ -244,41 +247,29 @@ fn draw_now_highlight(
     }
 }
 
-/// The smooth trend curve + soft area fill threaded through the columns.
-/// Returns the per-column points the per-column marks draw against.
+/// The smooth trend curve, its soft wash and a dot per hour, threaded
+/// through the column centres. Returns the per-column points the per-column
+/// marks draw against.
 fn draw_trend_curve(
     scene: &mut Scene,
     t: Affine,
-    band: Rect,
     cols: &[HourColumn],
     geo: &StripGeometry,
     accent: Color,
 ) -> Vec<Point> {
-    let pts: Vec<Point> = cols
-        .iter()
-        .enumerate()
-        .map(|(i, col)| Point::new(geo.x_center(i), geo.y_at(col.temp)))
-        .collect();
-    let curve = catmull_rom_path(&pts);
-    let mut area = curve.clone();
-    if let Some(last_pt) = pts.last() {
-        area.line_to(Point::new(last_pt.x, geo.curve_bottom + 2.0));
-    }
-    if let Some(first_pt) = pts.first() {
-        area.line_to(Point::new(first_pt.x, geo.curve_bottom + 2.0));
-    }
-    area.close_path();
-    let gradient = Gradient::new_linear(
-        Point::new(band.x0, geo.curve_top),
-        Point::new(band.x0, geo.curve_bottom + 2.0),
-    )
-    .with_stops([
-        (0.0_f32, accent.with_alpha_factor(0.34)),
-        (1.0_f32, accent.with_alpha_factor(0.02)),
-    ]);
-    scene.fill(Fill::NonZero, t, &Brush::Gradient(gradient), None, &area);
-    scene.stroke(&Stroke::new(2.2), t, accent, None, &curve);
-    pts
+    let temps: Vec<f64> = cols.iter().map(|col| col.temp).collect();
+    let rect = geo.curve_rect(temps.len());
+    let style = TrendStyle::CHART
+        .with_line_width(2.2)
+        .with_curve(TrendCurve::CatmullRom)
+        .with_fill(TrendFill::Gradient {
+            top: 0.34,
+            bottom: 0.02,
+        })
+        .with_baseline_overhang(2.0)
+        .with_markers(2.6);
+    Sparkline::paint(scene, t, rect, &temps, geo.range, accent, &style);
+    Sparkline::points(rect, &temps, geo.range)
 }
 
 /// Per-column temperature value, curve dot, weather glyph, precipitation
@@ -323,7 +314,7 @@ fn draw_column_marks(
             TextWeight::Semibold,
         );
 
-        // Curve dot.
+        // The current hour's curve dot is ringed over the trend's own.
         if p.is_now {
             scene.fill(
                 Fill::NonZero,
@@ -339,8 +330,6 @@ fn draw_column_marks(
                 None,
                 &Circle::new(pt, 1.8),
             );
-        } else {
-            scene.fill(Fill::NonZero, t, accent, None, &Circle::new(pt, 2.6));
         }
 
         // Weather glyph.
@@ -406,9 +395,6 @@ fn draw_column_marks(
     }
 }
 
-/// Convert a polyline into a smooth path using Catmull-Rom → cubic Bézier
-/// conversion (tension 0). Endpoints are duplicated so the curve passes
-/// through the first and last points.
 #[cfg(test)]
 mod strip_row_tests {
     use super::strip_rows;
@@ -446,36 +432,6 @@ mod strip_row_tests {
             previous = rows.height;
         }
     }
-}
-
-fn catmull_rom_path(pts: &[Point]) -> BezPath {
-    let mut path = BezPath::new();
-    let Some(&first) = pts.first() else {
-        return path;
-    };
-    let Some(&last) = pts.last() else {
-        return path;
-    };
-    path.move_to(first);
-    let n = pts.len();
-    for i in 0..n - 1 {
-        let p0 = if i == 0 {
-            first
-        } else {
-            pts.get(i - 1).copied().unwrap_or(first)
-        };
-        let p1 = pts.get(i).copied().unwrap_or(first);
-        let p2 = pts.get(i + 1).copied().unwrap_or(last);
-        let p3 = if i + 2 < n {
-            pts.get(i + 2).copied().unwrap_or(last)
-        } else {
-            last
-        };
-        let c1 = Point::new(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0);
-        let c2 = Point::new(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0);
-        path.curve_to(c1, c2, p2);
-    }
-    path
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development to implement and independently review each task. Complete one reviewable framework change at a time.
 
-**Goal:** Improve automatic layout and manual composition in the QoS framework, demonstrate their effect on the unchanged Store, and notify the user after every completed change for review.
+**Goal:** Improve automatic layout and manual composition in the Tilo framework, demonstrate their effect on the unchanged Store, and notify the user after every completed change for review.
 
 **Architecture:** Repair the shared retained-layout contracts before adding higher-level composition. Keep Taffy, Vello, and existing manual APIs. Add automatic patterns and selective overrides alongside them; do not rewrite Store code to manufacture an improvement.
 
@@ -106,7 +106,7 @@
 
 ## Task 7: Complete manual composition, inspection, examples, and final audit
 
-**Files:** focused shared measurement/placement API and tests, headless inspection, UI examples/docs; `crates/dev/qos-dev` scaffolding only after the new APIs are stable.
+**Files:** focused shared measurement/placement API and tests, headless inspection, UI examples/docs; `crates/dev/tilo-dev` scaffolding only after the new APIs are stable.
 
 **Consumes:** Tasks 1–6 and the existing manual Widget API.
 **Produces:** documented standard-child measurement/placement, mixed automatic/manual layouts, helpful preview inspection, and examples/scaffolds favoring the low-effort path.
@@ -120,4 +120,4 @@
 
 ## Final acceptance
 
-All seven tasks complete through `7bebe26b6`. See the [acceptance evidence matrix](/Users/user/dev/qos-macos-shell/docs/superpowers/audits/framework-layout-verification/final-acceptance-matrix.md), [visual evidence](/Users/user/dev/qos-macos-shell/docs/superpowers/audits/2026-09-15-framework-layout-evidence.md), and [implementation progress](/Users/user/dev/qos-macos-shell/docs/superpowers/audits/2026-09-15-framework-layout-progress.md). Work is committed locally; no push or merge was requested.
+All seven tasks complete through `7bebe26b6`. See the [acceptance evidence matrix](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/framework-layout-verification/final-acceptance-matrix.md), [visual evidence](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/2026-09-15-framework-layout-evidence.md), and [implementation progress](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/2026-09-15-framework-layout-progress.md). Work is committed locally; no push or merge was requested.

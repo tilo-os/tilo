@@ -893,7 +893,7 @@ fn shortcut_reference_covers_every_production_essential() {
         "Lock:Super+L",
         "Quick Settings:Super+Q",
         "Workspace wheel:Super+S",
-        "Wireless display:Super+P",
+        "Display layout:Super+P",
         "Capture screenshot:Super+Shift+S",
         "Picture in picture:Super+Shift+P",
         "Save recent replay:Super+Shift+R",

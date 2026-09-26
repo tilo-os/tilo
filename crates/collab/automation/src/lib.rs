@@ -60,7 +60,7 @@ pub use run::{
 };
 pub use shortcut::{
     AiTransform, Binding, CatchUp, Condition, FocusTransition, Schedule, Selector, Shortcut, Step,
-    StepKind, TimeOfDay, TriggerSpec, Weekday,
+    StepKind, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
 };
 
 /// Application that publishes shortcuts as runnable actions.

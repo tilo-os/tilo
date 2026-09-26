@@ -404,6 +404,15 @@ pub enum DisplayOperation {
         connector: String,
         profile: Option<String>,
     },
+    /// Place an output's top-left corner at an exact point of the shared
+    /// desktop, as dragging it in the arrangement canvas does.
+    MoveOutput {
+        connector: String,
+        x: i32,
+        y: i32,
+    },
+    /// Paint every display's number and name on it for a few seconds.
+    Identify,
     Apply,
     Confirm,
     Revert,
@@ -1121,6 +1130,40 @@ fn local_choice_spec(
         type_id,
         vec![ActionParam::required("choice", ParamType::Text, "Choice").with_choices(choices)],
         move |args| build(args.text("choice").unwrap_or_default().to_string()),
+    )
+    .with_contract(local_operation_contract(tags))
+}
+
+/// Largest desktop coordinate the arrangement accepts; far beyond any real
+/// multi-display desk, small enough that every sum stays in range.
+pub const MAX_DISPLAY_COORDINATE: i32 = 65_536;
+
+fn local_point_spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &'static str,
+    tags: &'static [&'static str],
+    build: impl Fn(i32, i32) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
+    let bound = i64::from(MAX_DISPLAY_COORDINATE);
+    let coordinate = |name: &'static str, description: &'static str| {
+        ActionParam::required(name, ParamType::Integer, description)
+            .with_schema(serde_json::json!({ "minimum": -bound, "maximum": bound }))
+    };
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "A point on the shared desktop, in desktop pixels",
+        OperationKind::Effect,
+        type_id,
+        vec![coordinate("x", "Left edge"), coordinate("y", "Top edge")],
+        move |args| {
+            let axis = |name: &str| {
+                i32::try_from(args.integer(name).unwrap_or(0).clamp(-bound, bound))
+                    .unwrap_or_default()
+            };
+            build(axis("x"), axis("y"))
+        },
     )
     .with_contract(local_operation_contract(tags))
 }
@@ -2471,6 +2514,23 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
                     )
                 },
             ));
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_point_spec(
+                "move",
+                "Move display",
+                DISPLAY_OPERATION_TYPE,
+                &["device-local", "display", "live-output"],
+                move |x, y| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::MoveOutput {
+                            connector: operation_connector.clone(),
+                            x,
+                            y,
+                        },
+                    )
+                },
+            ));
             let mirror_choices: Vec<String> = std::iter::once("Extend workspace".into())
                 .chain(
                     output_labels
@@ -2637,6 +2697,11 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
         ),
         ("confirm", "Keep display changes", DisplayOperation::Confirm),
         ("revert", "Revert display changes", DisplayOperation::Revert),
+        (
+            "identify",
+            "Show each display's number on it",
+            DisplayOperation::Identify,
+        ),
     ] {
         if let Some(action) = local_operation_spec(
             id,
@@ -2772,6 +2837,38 @@ pub fn display_scale_binding() -> Option<tilo_actions::ActionBinding<String>> {
 pub fn display_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
     let resource = displays_section(&AutoCommit::new(), &SystemPrefs::default());
     tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+/// Binding for the arrangement canvas: a drop becomes the output's `move`
+/// action, the same one an agent or script invokes.
+pub fn display_output_move_binding(
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<(i32, i32)>> {
+    let operation_connector = connector.clone();
+    let action = local_point_spec(
+        "move",
+        "Move display",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "live-output"],
+        move |x, y| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::MoveOutput {
+                    connector: operation_connector.clone(),
+                    x,
+                    y,
+                },
+            )
+        },
+    );
+    let resource = display_output_control_resource(&connector, action.clone());
+    tilo_actions::ActionBinding::new(&resource, &action, |(x, y): (i32, i32)| {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("x".into(), serde_json::Value::from(x));
+        arguments.insert("y".into(), serde_json::Value::from(y));
+        arguments
+    })
+    .ok()
 }
 
 fn display_output_control_resource(connector: &str, action: ActionSpec) -> Resource {

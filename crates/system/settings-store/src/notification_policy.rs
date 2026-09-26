@@ -80,6 +80,14 @@ impl Default for FocusSchedule {
 }
 
 impl FocusSchedule {
+    /// The minute after local midnight the current focus period ends, or
+    /// `None` when no bounded period is active (off, or all day).
+    pub fn active_until(self, minute: u16, weekday_from_monday: u8) -> Option<u16> {
+        let end = self.end_minute.min(1439);
+        (self.active_at(minute, weekday_from_monday) && self.start_minute.min(1439) != end)
+            .then_some(end)
+    }
+
     pub fn active_at(self, minute: u16, weekday_from_monday: u8) -> bool {
         if !self.enabled {
             return false;
@@ -170,6 +178,40 @@ pub struct EffectiveNotificationPolicy {
 }
 
 impl NotificationPolicy {
+    /// The one persisted Do Not Disturb switch. The shell's palette action and
+    /// Quick Settings tile write it here; Personal Settings edits the same key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no config directory is available or the settings
+    /// document cannot be written.
+    pub fn save_do_not_disturb(on: bool) -> std::io::Result<()> {
+        crate::update_section("notifications", Self::do_not_disturb_values(on))
+    }
+
+    /// [`Self::save_do_not_disturb`] against an explicit settings document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the document cannot be written.
+    pub fn save_do_not_disturb_at(path: &std::path::Path, on: bool) -> std::io::Result<()> {
+        crate::update_section_at(path, "notifications", Self::do_not_disturb_values(on))
+    }
+
+    fn do_not_disturb_values(on: bool) -> serde_json::Map<String, serde_json::Value> {
+        let mut values = serde_json::Map::new();
+        values.insert("do_not_disturb".into(), serde_json::Value::Bool(on));
+        values
+    }
+
+    pub fn load_at(path: &std::path::Path) -> Self {
+        serde_json::from_value(serde_json::Value::Object(crate::load_section_at(
+            path,
+            "notifications",
+        )))
+        .unwrap_or_default()
+    }
+
     pub fn load() -> Self {
         serde_json::from_value(serde_json::Value::Object(crate::load_section(
             "notifications",
@@ -230,6 +272,40 @@ impl NotificationPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_reports_when_its_period_ends() {
+        let f = FocusSchedule {
+            enabled: true,
+            ..FocusSchedule::default()
+        };
+        assert_eq!(f.active_until(23 * 60, 0), Some(7 * 60));
+        assert_eq!(f.active_until(12 * 60, 0), None);
+        let all_day = FocusSchedule {
+            enabled: true,
+            start_minute: 0,
+            end_minute: 0,
+            ..FocusSchedule::default()
+        };
+        assert_eq!(all_day.active_until(12 * 60, 0), None);
+    }
+
+    #[test]
+    fn do_not_disturb_persists_without_touching_other_notification_keys() {
+        let dir = std::env::temp_dir().join(format!("tilo-dnd-{}-{}", std::process::id(), line!()));
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut values = serde_json::Map::new();
+        values.insert("show_banners".into(), serde_json::Value::Bool(false));
+        crate::update_section_at(&path, "notifications", values).unwrap();
+        NotificationPolicy::save_do_not_disturb_at(&path, true).unwrap();
+        let policy = NotificationPolicy::load_at(&path);
+        assert!(policy.do_not_disturb);
+        assert!(!policy.show_banners);
+        NotificationPolicy::save_do_not_disturb_at(&path, false).unwrap();
+        assert!(!NotificationPolicy::load_at(&path).do_not_disturb);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn overnight_focus_crosses_midnight() {

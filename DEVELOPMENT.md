@@ -57,7 +57,7 @@ merge before it was green, which usually means two PRs that passed separately
 broke each other, the lander reverts that merge on `main` within a minute or two
 and comments on the PR. To reland, branch from `main`, `git revert` the revert
 commit, fix the failure and open a new PR. The lander logs every revert in
-qos/qos#376; see `apps/forgejo/lander` in PodestaAI/infra.
+tilo/tilo#376; see `apps/forgejo/lander` in tilo/infra.
 
 Review is optional and informational for every change. Review requests,
 approvals and change requests never affect whether a PR can merge.
@@ -116,7 +116,7 @@ and submit directly through the scheduler (replace the example package and SHA):
 ```sh
 jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
   '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/qos/qos/actions/workflows/focused-test.yml/dispatches --hostname code.sandbox.example
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/focused-test.yml/dispatches --hostname code.tilo.so
 ```
 
 Use this structured request for lists: the installed `fgj workflow run` does not
@@ -172,14 +172,14 @@ For CI timing, use the repository run number from the Forgejo URL or `fgj action
 run list`, not the Forgejo API's internal database ID:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --run 11408 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo tilo/tilo --run 11408 --output target/ci-timing.json
 ```
 
 For an automatic before/after view of the newest comparable runs, no run IDs or
 manual receipts are needed:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --recent 30 \
+python3 tools/ci/timing_report.py --repo tilo/tilo --recent 30 \
   --workflow check.yml --compare-latest --output target/ci-experience.json
 ```
 
@@ -264,7 +264,7 @@ Windows-hosted checkout in place:
 
 ```bash
 mkdir -p "$HOME/src"
-git clone ssh://git@code.sandbox.example/qos/qos.git "$HOME/src/tilo-linux"
+git clone ssh://git@code.tilo.so/tilo/tilo.git "$HOME/src/tilo-linux"
 cd "$HOME/src/tilo-linux"
 git switch -c codex/my-change
 findmnt -T "$PWD" -o FSTYPE,TARGET
@@ -319,7 +319,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `dbus-1` | `dbus-devel` | portals |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps, and the shell's video (sharing, projection, recording) |
 | `capnp` (binary) | `capnproto` | runtime-collab schema |
-| `autoreconf` `libtoolize` (binaries), `libgcrypt.m4` | `autoconf` `automake` `libtool` `libgcrypt-devel` | `qos-ntfs-helper` bootstraps its pinned NTFS reader |
+| `autoreconf` `libtoolize` (binaries), `libgcrypt.m4` | `autoconf` `automake` `libtool` `libgcrypt-devel` | `tilo-ntfs-helper` bootstraps its pinned NTFS reader |
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |

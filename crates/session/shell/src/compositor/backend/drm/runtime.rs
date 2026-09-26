@@ -59,7 +59,8 @@ use super::scanout::{
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, TouchEvent as TiloTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
+    TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -256,6 +257,9 @@ pub struct DrmDispatchState {
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
+    /// The capability snapshot last published for Settings, kept so
+    /// output-management heads never force-probe connectors themselves.
+    pub display_capabilities: Vec<settings_store::hardware::DisplayOutputSnapshot>,
     /// Current pointer position in scene coordinates (physical pixels of
     /// the combined texture): where the cursor is drawn and what the shell
     /// hit-tests. Always derived from [`Self::logical_pointer`].
@@ -278,6 +282,9 @@ pub struct DrmDispatchState {
     /// What the pointer shows, applied to every scanout (including ones a
     /// hotplug adds later).
     pub pointer_image: crate::compositor::cursor::PointerImage,
+    /// Where local motion may take the pointer while a client locks or
+    /// confines it.
+    pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -515,6 +522,11 @@ pub enum ScanoutCommand {
     },
     SetCursorSize(u32),
     SetPointerImage(crate::compositor::cursor::PointerImage),
+    /// Switch one panel off or back on for an output-power client.
+    SetOutputPower {
+        output: OutputId,
+        on: bool,
+    },
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -849,12 +861,14 @@ impl DrmDispatchState {
             direct_touch: DirectTouchOwnership::default(),
             outputs_changed: false,
             output_meta: HashMap::new(),
+            display_capabilities: Vec::new(),
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
             display_set: settings_store::hardware::DisplaySet::default(),
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
+            pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -917,8 +931,29 @@ impl DrmDispatchState {
     /// Publish the live hardware contract for Settings. Failure is benign in
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
-    fn publish_display_snapshot(&self) {
+    fn publish_display_snapshot(&mut self) {
         let outputs = display_capabilities(&self.cards, &self.color_profiles);
+        let layout = self
+            .live
+            .iter()
+            .map(|entry| {
+                let (width, height) = logical_output_size(entry.size, entry.transform);
+                settings_store::hardware::LiveOutputPlacement {
+                    connector: entry.config_key.clone(),
+                    x: entry.position.0,
+                    y: entry.position.1,
+                    width,
+                    height,
+                }
+            })
+            .collect();
+        if outputs != self.display_capabilities {
+            self.display_capabilities.clone_from(&outputs);
+            // A disabled connector appearing changes the heads external
+            // configuration tools see, even with no modeset to report.
+            self.outputs_changed = true;
+            self.push(BackendEvent::OutputsChanged);
+        }
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
@@ -927,6 +962,7 @@ impl DrmDispatchState {
                 settings_store::hardware::process_start_ticks(std::process::id())
                     .unwrap_or_default(),
             outputs,
+            layout,
         };
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM display: could not publish capability snapshot");
@@ -1169,6 +1205,7 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_unavailable: None,
+                powered_off: false,
                 scanout: build.scanout,
             });
         }
@@ -1370,6 +1407,19 @@ impl DrmDispatchState {
 
     /// Relative pointer motion, in logical pixels. Returns the new scene
     /// position.
+    /// Keep a confined pointer inside its region after it moved from
+    /// `previous`, returning where it ends up (scene coordinates).
+    fn confine_pointer(&mut self, previous: (f64, f64)) -> (f64, f64) {
+        let moved = self.pointer;
+        match self.pointer_constraint.constrain(previous, moved) {
+            Some(confined) if confined != moved => {
+                self.set_pointer_scene(confined);
+                confined
+            }
+            _ => moved,
+        }
+    }
+
     fn move_pointer_by(&mut self, delta: (f64, f64)) -> (f64, f64) {
         let logical = layout::move_pointer(&self.placements(), self.logical_pointer, delta);
         self.set_pointer_logical(logical);
@@ -2140,19 +2190,34 @@ impl DrmDispatchState {
                         .map(|p| p.logical_size)
                         .collect::<Vec<_>>(),
                 );
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
-                let (x, y) = self.pointer;
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
             InputEvent::PointerMotion { event } => {
-                let (x, y) = self.move_pointer_by((event.delta_x(), event.delta_y()));
                 self.push(BackendEvent::RelativePointerMotion {
                     dx: event.delta_x(),
                     dy: event.delta_y(),
+                    dx_unaccel: event.delta_x_unaccel(),
+                    dy_unaccel: event.delta_y_unaccel(),
+                    time_usec: event.time(),
                 });
+                // A locked pointer stays put; a confined one slides along
+                // its region's edge. Relative motion above is reported
+                // either way — that is what a game reads.
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
+                self.move_pointer_by((event.delta_x(), event.delta_y()));
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             InputEvent::PointerButton { event } => {
@@ -2468,6 +2533,9 @@ pub struct ScanoutEntry {
     /// Permanent failure for this output generation. Cleared only when a
     /// lifecycle/topology boundary makes reprobe meaningful.
     pub direct_unavailable: Option<String>,
+    /// An output-power client switched this panel off. It is neither
+    /// painted nor lit by a session wake until switched back on.
+    pub powered_off: bool,
     pub scanout: DrmScanout,
 }
 
@@ -2834,6 +2902,22 @@ impl DrmRuntime {
             .command(ScanoutCommand::SetPointerImage(image));
     }
 
+    pub fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.dispatch.pointer_constraint = constraint;
+    }
+
+    /// Place the pointer at global `(x, y)` (clamped to the outputs) and
+    /// tell the compositor, as if it had moved there.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        let dispatch = &mut self.dispatch;
+        dispatch.set_pointer_scene((x, y));
+        let (x, y) = dispatch.pointer;
+        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
     pub fn cancel_touch(&mut self) {
         self.dispatch.handle_direct_touch_cancel();
     }
@@ -3039,6 +3123,36 @@ impl DrmRuntime {
             | DisplayTransactionState::Reverted
             | DisplayTransactionState::Rejected => {}
         }
+    }
+
+    /// Every attached connector as output-management heads: the cached
+    /// capability snapshot joined with the outputs being driven and the
+    /// effective intent for the ones that are off.
+    pub fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        let live: Vec<crate::compositor::output_heads::LiveHead> = self
+            .dispatch
+            .live
+            .iter()
+            .filter_map(|entry| {
+                let output = self.dispatch.output_meta.get(&entry.id)?;
+                Some(crate::compositor::output_heads::LiveHead {
+                    key: entry.config_key.clone(),
+                    output: output.clone(),
+                    physical_size_mm: entry.physical_mm,
+                })
+            })
+            .collect();
+        crate::compositor::output_heads::heads_from_capabilities(
+            &self.dispatch.display_capabilities,
+            &settings_store::hardware::DisplayConfig::load_effective(&self.dispatch.display_set),
+            &live,
+        )
+    }
+
+    /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_output_power(&self, output: OutputId, on: bool) {
+        self.dispatch
+            .command(ScanoutCommand::SetOutputPower { output, on });
     }
 
     /// Drain pending events from the internal calloop — non-blocking, a zero timeout so the outer compositor loop owns the cadence.

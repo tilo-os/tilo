@@ -19,8 +19,8 @@ class CheckpointFetchTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.request = {'source_revision': 'a' * 40, 'helpers_revision': 'b' * 40,
-            'architecture': 'aarch64', 'new_target': 'code.sandbox.example/qos/tilo-development:next-aarch64',
-            'new_manifest_sha256': 'c' * 64, 'publish_repository': 'code.sandbox.example/qos/tilo-development'}
+            'architecture': 'aarch64', 'new_target': 'registry.tilo.so/tilo/tilo-development:next-aarch64',
+            'new_manifest_sha256': 'c' * 64, 'publish_repository': 'registry.tilo.so/tilo/tilo-development'}
         self.request_raw = fetch.canonical(self.request)
         self.request_path = self.root / 'request.json'
         self.request_path.write_bytes(self.request_raw)
@@ -67,7 +67,7 @@ class CheckpointFetchTests(unittest.TestCase):
         }
         def get(url, token, limit):
             self.assertEqual(token, 'task-token')
-            path = url.removeprefix('https://forge.invalid/api/v1/repos/qos/qos')
+            path = url.removeprefix('https://forge.invalid/api/v1/repos/tilo/tilo')
             raw = archive if path == '/actions/artifacts/73/zip' else json.dumps(values[path]).encode()
             self.assertLessEqual(len(raw), limit)
             return raw
@@ -76,7 +76,7 @@ class CheckpointFetchTests(unittest.TestCase):
     def retrieve(self, getter=None, digest=None, output=None, current='100', stage=None):
         return fetch.retrieve('41', '3', stage or self.stage, digest or self.receipt_sha,
             self.request_path, output or self.root / 'restored', 'https://forge.invalid/api/v1',
-            'qos/qos', 'task-token', current, getter or self.getter())
+            'tilo/tilo', 'task-token', current, getter or self.getter())
 
     def test_fetches_exact_failed_attempt_and_materializes_only_receipts_01_to_05(self):
         result = self.retrieve()

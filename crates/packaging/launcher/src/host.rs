@@ -50,7 +50,7 @@
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, ExitStatus};
 
-use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id};
+use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id, plan_file};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -96,6 +96,15 @@ pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostErr
 /// installed `.desktop` entry.
 pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
     Ok(plan_by_id(desktop_id, env)?)
+}
+
+/// [`plan_host`] for a desktop file named by path, such as an XDG autostart entry.
+///
+/// # Errors
+///
+/// Returns [`HostError::Plan`] if the file is unreadable or not a runnable entry.
+pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
+    Ok(plan_file(path, env)?)
 }
 
 /// Run an already-planned launch. Split out so a caller that built the

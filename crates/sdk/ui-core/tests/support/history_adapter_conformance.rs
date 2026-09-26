@@ -225,7 +225,7 @@ fn malformed_content_is_rejected_without_writes() {
 #[test]
 fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
     let def = definition();
-    if let Ok(stage) = std::env::var("QOS_SLICE4_STAGE") {
+    if let Ok(stage) = std::env::var("TILO_SLICE4_STAGE") {
         let (mut state, mut saver) = ui::persist::try_open(def.app_id).unwrap();
         if stage == "write" {
             let (mut doc, selected, _) = fixture();
@@ -284,10 +284,10 @@ fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
         return;
     }
     let dir =
-        std::env::temp_dir().join(format!("qos-slice4-{}-{}", def.app_id, std::process::id()));
+        std::env::temp_dir().join(format!("tilo-slice4-{}-{}", def.app_id, std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
-        let result=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_autosave_fresh_reopen_retains_graph_and_restored_content","--nocapture"]).env("QOS_SLICE4_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("QOS_PACKAGE_ID",def.app_id).output().unwrap();
+        let result=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_autosave_fresh_reopen_retains_graph_and_restored_content","--nocapture"]).env("TILO_SLICE4_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID",def.app_id).output().unwrap();
         assert!(
             result.status.success(),
             "{stage}: {} {}",

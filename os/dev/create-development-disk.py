@@ -352,7 +352,7 @@ def _create_verified_disk(args):
             disk = disks.enter_context(PrivateDiskImage(args.output, args.size_bytes))
             disk.validate()
             source_match = re.fullmatch(
-                r'code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})', args.source)
+                r'registry\.tilo\.so/tilo/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})', args.source)
             if source_match is None:
                 raise ValueError('bootc warmup requires the expected immutable registry source')
             wrapper = Path(__file__).with_name('bootc-registry-wrapper.py')

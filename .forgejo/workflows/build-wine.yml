@@ -26,7 +26,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 60
     outputs:
-      runtime: code.sandbox.example/qos/wine-tools@${{ steps.tools.outputs.digest }}
+      runtime: registry.tilo.so/tilo/wine-tools@${{ steps.tools.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -47,9 +47,9 @@ jobs:
       - name: Log in to candidate artifact registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up native image builder
         uses: ./.forgejo/actions/setup-buildx
@@ -62,7 +62,7 @@ jobs:
           file: os/Containerfile.wine-tools
           platforms: linux/amd64
           push: true
-          tags: code.sandbox.example/qos/wine-tools:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: registry.tilo.so/tilo/wine-tools:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: BASE_REF=${{ env.BASE_REF }}
           provenance: false
 
@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p wine-input-evidence
-          ref="code.sandbox.example/qos/wine-tools@$TOOLS_DIGEST"
+          ref="registry.tilo.so/tilo/wine-tools@$TOOLS_DIGEST"
           printf '%s\n' "$ref" > wine-input-evidence/runtime-image.txt
           docker pull "$ref"
           container=$(docker create --entrypoint python3 "$ref" /tilo/fetch-wine-source.py /wine-inputs/source)
@@ -120,9 +120,9 @@ jobs:
       - name: Log in to candidate artifact registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve and build full traditional Wine offline
         env:
@@ -155,12 +155,13 @@ jobs:
           name: wine-i686-${{ github.sha }}
           path: inputs/i686
 
+
       - name: Log in to candidate artifact registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate both artifacts and merge equivalent noarch packages
         env:
@@ -179,7 +180,7 @@ jobs:
           docker start "$merger" >/dev/null
           for arch in x86_64 i686; do
             ref=$(cat "inputs/$arch/wine-rpms-image.txt")
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/wine-rpms@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^registry\.tilo\.so/tilo/wine-rpms@sha256:[0-9a-f]{64}$ ]]
             docker pull "$ref"
             input=$(docker create "$ref" /unused)
             containers+=("$input")
@@ -192,7 +193,7 @@ jobs:
           docker exec "$merger" python3 /tilo/merge-wine-rpms.py \
             --x64 /tmp/x86_64 --x86 /tmp/i686 --x64-ref "$x64" --x86-ref "$x86" \
             --pin /tilo/wine-source.json --output /wine-paired
-          tag="code.sandbox.example/qos/wine-paired:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          tag="registry.tilo.so/tilo/wine-paired:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker exec "$merger" tar -C / -cf - wine-paired | docker import --platform linux/amd64 - "$tag"
           docker push "$tag"
           mkdir -p paired-evidence

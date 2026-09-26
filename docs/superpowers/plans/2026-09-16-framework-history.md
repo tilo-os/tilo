@@ -6,7 +6,7 @@
 
 **Architecture:** A window-independent history controller projects the existing CRDT graph. The shared App, FrameHarness and TileHost presentation owner presents one surface and owns a separate preview renderer; authorized restoration enters the canonical record action frame.
 
-**Tech Stack:** Rust, Automerge, existing ui/Vello/Taffy widgets and qos_actions.
+**Tech Stack:** Rust, Automerge, existing ui/Vello/Taffy widgets and tilo_actions.
 
 **Spec:** docs/superpowers/specs/2026-09-16-framework-history-design.md
 
@@ -17,7 +17,7 @@
 - No history preview may acquire live mutation, publication, persistence or invocation authority.
 - Restore requires current authorization and exact reviewed record identity/frontier.
 - Both embedded and standalone hosts and every managed persistent app are in scope.
-- Isolated worktree already exists at /Users/user/dev/qos-macos-shell on codex/macos-shell. Do not create another or switch branches.
+- Isolated worktree already exists at /Users/user/dev/tilo-macos-shell on codex/macos-shell. Do not create another or switch branches.
 - Capture task-specific diffs before and after because the worktree has unrelated edits; do not stage another owner's changes.
 - Run focused red/green tests and record exact evidence. Do not disturb the coordinated native proof source freeze.
 

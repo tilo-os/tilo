@@ -84,7 +84,7 @@ def build(manifest, base):
         require(release["architecture"] in ("aarch64", "x86_64"), "Unsupported architecture")
         require(release["package_format"] in ("rpm", "deb", "arch", "nix_closure"), "Unsupported package format")
         url = urlsplit(release["url"])
-        require(url.scheme == "https" and url.hostname == "code.sandbox.example" and url.port in (None, 443)
+        require(url.scheme == "https" and url.hostname == "code.tilo.so" and url.port in (None, 443)
                 and url.username is None and url.password is None and not url.fragment, "Untrusted release URL")
         selector = (release["distro_id"], release["distro_version"], release["architecture"])
         require(selector not in selectors and release["id"] not in ids, "Duplicate release id/platform selector")

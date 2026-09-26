@@ -10,11 +10,11 @@ class MainStagesTests(unittest.TestCase):
         for i,p in enumerate(POINTS):
             row[p+'_host_lo_s']=99.98+i*.001
             row[p+'_host_hi_s']=99.98+i*.001
-        return lines+['qos-native-main-stages '+json.dumps(row)],ids
+        return lines+['tilo-native-main-stages '+json.dumps(row)],ids
 
     def mutate(self,lines,**changes):
         row=json.loads(lines[-1].split(' ',1)[1]);row.update(changes)
-        return lines[:-1]+['qos-native-main-stages '+json.dumps(row)]
+        return lines[:-1]+['tilo-native-main-stages '+json.dumps(row)]
 
     def test_reports_each_stage_and_total_without_certifying(self):
         r=summarize_main_stages(*self.fixture())
@@ -37,7 +37,7 @@ class MainStagesTests(unittest.TestCase):
 
     def test_missing_positive_feedback_and_send_rejected(self):
         lines,ids=self.fixture()
-        for prefix in ('qos-display-frame ','qos-native-send '):
+        for prefix in ('tilo-display-frame ','tilo-native-send '):
             with self.assertRaises(ValueError):summarize_main_stages([l for l in lines if not l.startswith(prefix)],ids)
 
     def test_null_auxiliary_validated_without_aliasing(self):

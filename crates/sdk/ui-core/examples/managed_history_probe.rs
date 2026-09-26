@@ -28,7 +28,7 @@ use vello::{
     kurbo::{Affine, Point, Rect},
 };
 use winit::event::WindowEvent;
-const APP: &str = "dev.qos.managed-history-probe";
+const APP: &str = "dev.tilo.managed-history-probe";
 static SCHEMA: restore::HistoryRestoreSchema = restore::HistoryRestoreSchema {
     id: "native-history-note",
     version: 1,

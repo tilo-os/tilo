@@ -10,7 +10,7 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY = "code.sandbox.example/qos/tilo-builder"
+REPOSITORY = "registry.tilo.so/tilo/tilo-builder"
 RESOLVER_SPEC = importlib.util.spec_from_file_location("builder_resolver", Path(__file__).with_name("resolve_builder.py"))
 resolver = importlib.util.module_from_spec(RESOLVER_SPEC)
 RESOLVER_SPEC.loader.exec_module(resolver)
@@ -23,8 +23,8 @@ def command(*args):
     return subprocess.check_output(args)
 
 
-def resolve(token, run=command, fetch=resolver.fetch_files):
-    index = resolver.resolve("", token, fetch)
+def resolve(run=command, fetch=resolver.fetch_manifest):
+    index = resolver.resolve("", fetch)
     if not re.fullmatch(re.escape(REPOSITORY) + r"@sha256:[0-9a-f]{64}", index):
         raise ValueError("promoted builder is not immutable")
     run("cosign", "verify", "--key", "keys/cosign.pub", index)
@@ -53,7 +53,7 @@ def resolve(token, run=command, fetch=resolver.fetch_files):
 
 
 def main():
-    matrix = resolve(os.environ.get("REGISTRY_TOKEN", ""))
+    matrix = resolve()
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
     print("Resolved signed promoted builder children")

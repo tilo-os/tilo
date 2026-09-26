@@ -361,7 +361,7 @@ grep -Fq 'tilo-imager-linux-aarch64.tar.gz' \
 
 grep -Fq 'tilo-os/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   && [ "$(grep -Fc 'brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git' "$workflow")" -eq 2 ] \
-  && ! grep -Fq 'code.sandbox.example/tilo/homebrew-tilo.git' "$workflow" \
+  && ! grep -Fq 'code.tilo.so/tilo/homebrew-tilo.git' "$workflow" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
@@ -406,7 +406,7 @@ grep -Fq 'uses: ./.forgejo/actions/cache-github-assets' "$workflow" \
   && grep -Fq 'run: ./os/dev/cache-github-assets.sh $ASSETS' \
     "$repo/.forgejo/actions/cache-github-assets/action.yml" \
   && grep -Fq 'podman login \' "$workflow" \
-  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.sandbox.example' "$workflow" \
+  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.tilo.so' "$workflow" \
   && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
@@ -416,7 +416,7 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'published_os_image' "$workflow" \
    && grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' "$workflow" \
    && ! grep -Fq './os/dev/build-image.sh' "$workflow" \
-   && grep -Fq 'code.sandbox.example/qos/tilo@sha256:' "$published_image" \
+   && grep -Fq 'registry.tilo.so/tilo/tilo@sha256:' "$published_image" \
    && grep -Fq 'cosign verify --key "$verify_key" "$image"' "$published_image" \
    && grep -Fq 'cosign verify-attestation --key "$verify_key"' "$published_image" \
    && grep -Fq 'externalParameters.generation' "$published_image" \
@@ -425,7 +425,7 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'trap cleanup_auth EXIT' "$published_image" \
    && grep -Fq 'podman manifest inspect "${manifest_args[@]}" "$image"' "$published_image" \
    && grep -Fq 'externalParameters.children | sort_by(.architecture)' "$published_image" \
-   && grep -Fq 'generation_image="code.sandbox.example/qos/tilo:gen$generation"' "$published_image" \
+   && grep -Fq 'generation_image="registry.tilo.so/tilo/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
    && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}" "$workflow" \

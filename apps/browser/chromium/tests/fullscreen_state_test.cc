@@ -2,7 +2,7 @@
 #include <cassert>
 
 int main() {
-  qos::FullscreenState state;
+  tilo::FullscreenState state;
   assert(!state.active());
   assert(state.Set(true));
   assert(state.active());

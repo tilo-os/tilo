@@ -275,7 +275,7 @@ fn history_nested_creation_pins_final_setup_and_cancels_changed_tickets() {
                         state.tree_mut().native_document_tabs.insert(
                             tab,
                             crate::shell::state::NativeDocumentReference {
-                                provider_id: "dev.qos.notes".into(),
+                                provider_id: "dev.tilo.notes".into(),
                                 path: "/untouched/original.txt".into(),
                             },
                         );

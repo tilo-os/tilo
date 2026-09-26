@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 
-HOST = "code.sandbox.example"
+HOST = "code.tilo.so"
 REPO = "tilo/tilo"
 BRANCH = "main"
 INTEGRATOR = "tilo-integrator"

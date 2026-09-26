@@ -192,6 +192,20 @@ pub struct DisplayHardwareSnapshot {
     /// stale runtime file cannot become trusted after PID reuse.
     pub publisher_start_ticks: u64,
     pub outputs: Vec<DisplayOutputSnapshot>,
+    /// Where each enabled output sits in the compositor's combined desktop
+    /// coordinates right now, after arrangement, mirroring and rotation.
+    pub layout: Vec<LiveOutputPlacement>,
+}
+
+/// One enabled output's live rectangle in combined desktop coordinates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveOutputPlacement {
+    /// Collision-free output key, as in [`OutputDescriptor::connector`].
+    pub connector: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl DisplayHardwareSnapshot {
@@ -903,11 +917,13 @@ pub enum QuickSettingsControl {
     NightLight,
     AirplaneMode,
     MobileData,
+    DoNotDisturb,
 }
 
 impl QuickSettingsControl {
-    /// A small, useful surface for a typical laptop.  Airplane mode is an
-    /// available extra, not an always-visible destination.
+    /// A small, useful surface for a typical laptop.  Airplane mode and Do
+    /// Not Disturb are available extras, not always-visible destinations:
+    /// the compact root must still fit a small display with a VPN present.
     pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
@@ -1259,6 +1275,28 @@ impl KeyChord {
 #[serde(default)]
 pub struct ShortcutConfig {
     pub bindings: BTreeMap<ShortcutAction, KeyChord>,
+    /// Chords bound to published actions: anything the action door offers,
+    /// a saved shortcut's `run` included.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionChord>,
+}
+
+/// A published action, addressed the way the action door addresses it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ActionChordTarget {
+    /// The provider token (`workspace:<room>` for a workspace's own actions).
+    pub provider: String,
+    pub resource: String,
+    pub action: String,
+}
+
+/// One chord bound to one published action.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionChord {
+    pub chord: KeyChord,
+    pub target: ActionChordTarget,
+    /// What the guide and Settings call it, e.g. "Run Publish a draft".
+    pub label: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1266,6 +1304,70 @@ pub enum ShortcutConfigError {
     ReservedSystemKey,
     InvalidChord,
     Conflict(ShortcutAction),
+    /// The chord is one of the shell's own fixed chords, named here.
+    Fixed(&'static str),
+    /// The chord already runs another published action.
+    TakenByAction,
+}
+
+impl std::fmt::Display for ShortcutConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReservedSystemKey => {
+                f.write_str("F1 and Print Screen are reserved by the desktop")
+            }
+            Self::InvalidChord => f.write_str("that chord is not supported"),
+            Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
+            Self::Fixed(label) => write!(f, "the chord is the desktop's own “{label}”"),
+            Self::TakenByAction => f.write_str("the chord already runs another action"),
+        }
+    }
+}
+
+impl std::error::Error for ShortcutConfigError {}
+
+/// The shell's own chords that no setting can rebind, with what they do.
+/// Configurable [`ShortcutAction`] chords are not listed: they move when
+/// rebound.
+#[must_use]
+pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
+    fn chord(modifiers: &[&str], key: &str) -> KeyChord {
+        KeyChord {
+            modifiers: modifiers.iter().map(|m| (*m).to_string()).collect(),
+            key: key.to_string(),
+        }
+    }
+    let mut fixed = vec![
+        ("Switch windows", chord(&["Alt"], "tab")),
+        ("Switch windows", chord(&["Alt", "Shift"], "tab")),
+        ("Close tab", chord(&["Alt"], "f4")),
+        ("Close tab", chord(&["Super"], "w")),
+        ("Previous workspace", chord(&["Super"], "pageup")),
+        ("Next workspace", chord(&["Super"], "pagedown")),
+        ("Lock", chord(&["Super"], "l")),
+        ("Global search", chord(&["Super"], "space")),
+        ("New window", chord(&["Super"], "n")),
+        ("Add tab here", chord(&["Super"], "t")),
+        ("Duplicate tab", chord(&["Super"], "d")),
+        ("Workspace wheel", chord(&["Super"], "s")),
+        ("Workspace activity", chord(&["Super"], "h")),
+        ("Workspace activity", chord(&["Super", "Shift"], "h")),
+        ("Wireless display", chord(&["Super"], "p")),
+        ("Picture in picture", chord(&["Super", "Shift"], "p")),
+        ("Save recent replay", chord(&["Super", "Shift"], "r")),
+        ("Capture screenshot", chord(&["Super", "Shift"], "s")),
+        ("Open terminal", chord(&["Super"], "enter")),
+        ("Desktop help", chord(&[], "f1")),
+        ("Screenshot", chord(&[], "printscreen")),
+        ("Dismiss", chord(&[], "escape")),
+    ];
+    for key in ["h", "j", "k", "l"] {
+        fixed.push(("Vim navigation", chord(&["Super", "Ctrl"], key)));
+    }
+    for key in ["h", "l"] {
+        fixed.push(("Vim navigation", chord(&["Super", "Ctrl", "Shift"], key)));
+    }
+    fixed
 }
 
 impl Default for ShortcutConfig {
@@ -1332,7 +1434,10 @@ impl Default for ShortcutConfig {
         ]
         .into_iter()
         .collect();
-        Self { bindings }
+        Self {
+            bindings,
+            actions: Vec::new(),
+        }
     }
 }
 
@@ -1363,7 +1468,90 @@ impl ShortcutConfig {
                 return Err(ShortcutConfigError::Conflict(other));
             }
         }
+        for (index, bound) in self.actions.iter().enumerate() {
+            self.check_action_chord(&bound.chord, Some(&bound.target))?;
+            if self
+                .actions
+                .iter()
+                .skip(index.saturating_add(1))
+                .any(|other| other.target == bound.target)
+            {
+                return Err(ShortcutConfigError::TakenByAction);
+            }
+        }
         Ok(())
+    }
+
+    /// Whether `chord` may run the published action `target`: a valid,
+    /// unreserved chord that is neither one of the shell's fixed chords, nor
+    /// bound to a configurable desktop action, nor running another action.
+    ///
+    /// # Errors
+    ///
+    /// Why the chord cannot be bound.
+    pub fn check_action_chord(
+        &self,
+        chord: &KeyChord,
+        target: Option<&ActionChordTarget>,
+    ) -> Result<(), ShortcutConfigError> {
+        if chord.is_reserved_system_key() {
+            return Err(ShortcutConfigError::ReservedSystemKey);
+        }
+        if !chord.is_valid_configurable() {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
+        if let Some((label, _)) = fixed_shell_chords()
+            .into_iter()
+            .find(|(_, fixed)| fixed == chord)
+        {
+            return Err(ShortcutConfigError::Fixed(label));
+        }
+        if let Some((action, _)) = self.bindings.iter().find(|(_, bound)| *bound == chord) {
+            return Err(ShortcutConfigError::Conflict(*action));
+        }
+        if self
+            .actions
+            .iter()
+            .any(|bound| bound.chord == *chord && Some(&bound.target) != target)
+        {
+            return Err(ShortcutConfigError::TakenByAction);
+        }
+        Ok(())
+    }
+
+    /// Bind `chord` to the published action `target`, replacing the chord
+    /// it had.
+    ///
+    /// # Errors
+    ///
+    /// Why the chord cannot be bound; the table is then unchanged.
+    pub fn set_action(
+        &mut self,
+        chord: KeyChord,
+        target: ActionChordTarget,
+        label: impl Into<String>,
+    ) -> Result<(), ShortcutConfigError> {
+        self.check_action_chord(&chord, Some(&target))?;
+        self.actions.retain(|bound| bound.target != target);
+        self.actions.push(ActionChord {
+            chord,
+            target,
+            label: label.into(),
+        });
+        Ok(())
+    }
+
+    /// Unbind whatever chord runs `target`. `false` when none did.
+    pub fn remove_action(&mut self, target: &ActionChordTarget) -> bool {
+        let before = self.actions.len();
+        self.actions.retain(|bound| bound.target != *target);
+        self.actions.len() != before
+    }
+
+    /// The action `chord` runs, when it runs one.
+    #[must_use]
+    pub fn action_for(&self, chord: &KeyChord) -> Option<&ActionChord> {
+        self.actions.iter().find(|bound| bound.chord == *chord)
     }
 
     /// # Errors
@@ -1393,6 +1581,9 @@ impl ShortcutConfig {
             .find(|(a, c)| **a != action && **c == chord)
         {
             return Err(ShortcutConfigError::Conflict(*other));
+        }
+        if self.actions.iter().any(|bound| bound.chord == chord) {
+            return Err(ShortcutConfigError::TakenByAction);
         }
         self.bindings.insert(action, chord);
         Ok(())
@@ -1439,6 +1630,17 @@ impl ShortcutConfig {
                 continue;
             }
             effective.bindings.insert(action, chord);
+        }
+        for bound in loaded.actions {
+            // The same rule as a live edit: an action chord never takes a
+            // desktop chord, and the first binding of a chord or target wins.
+            if effective
+                .actions
+                .iter()
+                .all(|other| other.target != bound.target)
+            {
+                let _ = effective.set_action(bound.chord, bound.target, bound.label);
+            }
         }
         effective
     }
@@ -1673,7 +1875,7 @@ mod tests {
             backend: "test".into(),
             publisher_pid: std::process::id(),
             publisher_start_ticks: current.saturating_add(1),
-            outputs: Vec::new(),
+            ..DisplayHardwareSnapshot::default()
         };
         assert_ne!(
             process_start_ticks(stale.publisher_pid),
@@ -1824,6 +2026,57 @@ mod tests {
 
         assert_eq!(reloaded, saved);
         assert!(reloaded.validate().is_ok());
+    }
+
+    #[test]
+    fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tilo/settings.json");
+        let target = |resource: &str| ActionChordTarget {
+            provider: "workspace:room".into(),
+            resource: resource.into(),
+            action: "run".into(),
+        };
+        let mut cfg = ShortcutConfig::default();
+        let chord = KeyChord::parse("Super+Shift+N").unwrap();
+        cfg.set_action(chord.clone(), target("shortcuts.shortcut:a"), "Run A")
+            .unwrap();
+        assert_eq!(
+            cfg.action_for(&chord).map(|bound| bound.label.as_str()),
+            Some("Run A")
+        );
+        assert_eq!(
+            cfg.set_action(chord.clone(), target("shortcuts.shortcut:b"), "Run B"),
+            Err(ShortcutConfigError::TakenByAction),
+            "one chord runs one action"
+        );
+        assert_eq!(
+            cfg.set_action(
+                KeyChord::parse("Alt+Tab").unwrap(),
+                target("shortcuts.shortcut:b"),
+                "Run B"
+            ),
+            Err(ShortcutConfigError::Fixed("Switch windows"))
+        );
+        assert_eq!(
+            cfg.set_action(
+                KeyChord::parse("Super+K").unwrap(),
+                target("shortcuts.shortcut:b"),
+                "Run B"
+            ),
+            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
+        );
+        assert_eq!(
+            cfg.set(ShortcutAction::Search, chord.clone()),
+            Err(ShortcutConfigError::TakenByAction),
+            "a desktop action cannot take an action's chord either"
+        );
+        cfg.save_at(&path).unwrap();
+        let reloaded = ShortcutConfig::load_at(&path);
+        assert_eq!(reloaded, cfg);
+        assert!(reloaded.validate().is_ok());
+        assert!(cfg.remove_action(&target("shortcuts.shortcut:a")));
+        assert!(cfg.action_for(&chord).is_none());
     }
 
     #[test]

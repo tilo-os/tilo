@@ -352,6 +352,25 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     env
 }
 
+/// Plan a launch for the desktop file at `path` — an autostart entry, which need not sit in
+/// any `applications` directory. Its id is the file name without `.desktop`.
+///
+/// # Errors
+///
+/// Returns [`HostLaunchError::NotFound`] if the file cannot be read or is not a desktop entry,
+/// or any error [`plan`] can return.
+pub fn plan_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
+    let id = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let entry = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| crate::entry::parse(&text, &id, path, &crate::locale::locale_candidates()))
+        .ok_or_else(|| HostLaunchError::NotFound(path.display().to_string()))?;
+    plan(&entry, env)
+}
+
 /// Find the entry with this desktop-file id on the current system and plan a launch for it.
 ///
 /// # Errors

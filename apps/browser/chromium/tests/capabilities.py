@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from native_regressions import Host
 
-PAYLOAD = b'qOS download fixture\n'
+PAYLOAD = b'Tilo download fixture\n'
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -36,7 +36,7 @@ class Capabilities(unittest.TestCase):
     def setUp(self):
         self.h=Host(args=['--use-fake-device-for-media-stream'] if self._testMethodName=='test_fake_camera_microphone_policy_grant_revoke_and_new_request' else []);self.addCleanup(self.h.close);self.addCleanup(self.save_evidence)
     def save_evidence(self):
-        if directory:=os.environ.get('QOS_SITE_EVIDENCE_DIR'):
+        if directory:=os.environ.get('TILO_SITE_EVIDENCE_DIR'):
             path=Path(directory);path.mkdir(parents=True,exist_ok=True)
             (path/(self._testMethodName+'.json')).write_text(json.dumps({'events':self.h.seen[-2000:]},indent=2))
     def status(self,origin,request=1):
@@ -67,7 +67,7 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(self.query("localStorage.getItem('fixture')"),'synthetic')
     def test_untrusted_tls_remains_blocked(self):
         import ssl,subprocess,tempfile
-        with tempfile.TemporaryDirectory(prefix='qos-site-tls-') as directory:
+        with tempfile.TemporaryDirectory(prefix='tilo-site-tls-') as directory:
             key=Path(directory)/'key.pem';certificate=Path(directory)/'cert.pem'
             subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(certificate),'-days','1','-subj','/CN=localhost'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)

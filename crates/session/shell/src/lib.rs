@@ -28,6 +28,7 @@ pub mod network;
 pub mod notifications;
 pub mod onboarding;
 pub mod onboarding_view;
+pub mod polkit_agent;
 pub mod portal;
 pub mod priority_contacts;
 #[cfg(test)]

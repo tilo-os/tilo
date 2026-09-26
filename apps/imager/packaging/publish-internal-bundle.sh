@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 # Publish one architecture's internal installer bundle to the Forgejo generic
-# package registry on code.sandbox.example, then prove it is publicly served there.
+# package registry on code.tilo.so, then prove it is publicly served there.
 #
 #   CREDENTIAL_BROKER=/abs/broker GITHUB_REF_NAME=imager-vX.Y.Z \
 #     apps/imager/packaging/publish-internal-bundle.sh BUNDLE_DIR
 #
 # The write:package token comes from the OIDC credential broker
 # (acquire-release-token.sh internal-bundle), lives in RUNNER_TEMP only for
-# this run, and is sent to code.sandbox.example only. FORGEJO_TOKEN may be given
+# this run, and is sent to code.tilo.so only. FORGEJO_TOKEN may be given
 # instead for a manual run.
 #
 # BUNDLE_DIR is os/dev/export-internal-bundle.sh's OUTDIR/bundle: exactly one
 # manifest and its two component images. They land next to each other at
 #
-#   https://code.sandbox.example/api/packages/OWNER/generic/tilo-internal-installer/TAG/NAME
+#   https://code.tilo.so/api/packages/OWNER/generic/tilo-internal-installer/TAG/NAME
 #
 # because the Imager fetches each component by replacing the manifest URL's
 # last segment. Why a generic package and not a release attachment: the two
 # architectures publish independently from their own native lanes (no shared
 # draft to race), the root image exceeds the default attachment limit, and
 # the bytes never travel through workflow artifacts or reach the GitHub
-# release. Why code.sandbox.example: the Imager accepts internal manifests from that
+# release. Why code.tilo.so: the Imager accepts internal manifests from that
 # origin only (trusted_catalog_url in apps/imager/src/release.rs), and follows
 # no cross-origin redirect, so Forgejo must serve package blobs directly.
 #
@@ -30,8 +30,8 @@
 set -euo pipefail
 
 : "${GITHUB_REF_NAME:?missing release tag}"
-server="https://code.sandbox.example"
-owner="${TILO_INTERNAL_BUNDLE_OWNER:-qos}"
+server="https://code.tilo.so"
+owner="${TILO_INTERNAL_BUNDLE_OWNER:-tilo}"
 package=tilo-internal-installer
 bundle="${1:?usage: $0 BUNDLE_DIR}"
 [[ "$GITHUB_REF_NAME" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \

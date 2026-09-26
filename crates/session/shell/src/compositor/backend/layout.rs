@@ -206,6 +206,60 @@ pub fn scene_to_logical(placements: &[Placement], p: (f64, f64)) -> (f64, f64) {
     )
 }
 
+/// Whether the scene is the logical layout unchanged: every output presents
+/// at scale 1 where it sits logically.
+pub fn is_identity(placements: &[Placement]) -> bool {
+    placements
+        .iter()
+        .all(|o| o.scene_position == o.logical_position && o.scene_size == o.logical_size)
+}
+
+/// Carry a backend input event from the scene, where backends report
+/// positions, into the logical desktop, where the shell hit-tests and
+/// clients receive coordinates. Events without a position pass through.
+#[must_use]
+pub fn event_to_logical(
+    placements: &[Placement],
+    event: super::BackendEvent,
+) -> super::BackendEvent {
+    use super::{BackendEvent, TouchEvent};
+    use winit::event::WindowEvent;
+    if is_identity(placements) {
+        return event;
+    }
+    let map = |x: f64, y: f64| scene_to_logical(placements, (x, y));
+    match event {
+        BackendEvent::Input(WindowEvent::CursorMoved {
+            device_id,
+            position,
+        }) => {
+            let (x, y) = map(position.x, position.y);
+            BackendEvent::Input(WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            })
+        }
+        BackendEvent::Input(WindowEvent::Touch(mut touch)) => {
+            let (x, y) = map(touch.location.x, touch.location.y);
+            touch.location = winit::dpi::PhysicalPosition::new(x, y);
+            BackendEvent::Input(WindowEvent::Touch(touch))
+        }
+        BackendEvent::Touch(TouchEvent::Down { slot, x, y }) => {
+            let (x, y) = map(x, y);
+            BackendEvent::Touch(TouchEvent::Down { slot, x, y })
+        }
+        BackendEvent::Touch(TouchEvent::Motion { slot, x, y }) => {
+            let (x, y) = map(x, y);
+            BackendEvent::Touch(TouchEvent::Motion { slot, x, y })
+        }
+        BackendEvent::TouchTap { x, y } => {
+            let (x, y) = map(x, y);
+            BackendEvent::TouchTap { x, y }
+        }
+        other => other,
+    }
+}
+
 fn nearest(
     placements: &[Placement],
     point: (f64, f64),

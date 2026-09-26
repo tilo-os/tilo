@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       builder_image:
-        description: 'Optional immutable tested builder index (code.sandbox.example/qos/tilo-builder@sha256:...)'
+        description: 'Optional immutable tested builder index (registry.tilo.so/tilo/tilo-builder@sha256:...)'
         required: false
         type: string
 
@@ -62,10 +62,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -77,7 +74,6 @@ jobs:
         id: resolve
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 tools/ci/resolve_builder.py
       - name: Verify named public-trust contexts with Docker BuildKit
         env:
@@ -90,10 +86,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
@@ -211,10 +204,7 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -245,10 +235,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -291,9 +278,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -345,7 +329,7 @@ jobs:
           # package shard: those process-wide variables alter unrelated apps'
           # persistence and git fixtures. Only the imager's native syscall
           # tests consume this dedicated location.
-          printf 'QOS_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+          printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
       # app-cli's registry integration tests execute the installer;
       # it is deliberately not a Rust dependency, so an affected-only Cargo
@@ -366,7 +350,7 @@ jobs:
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
-          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p qos-ntfs-helper') && '1' || '0' }}
+          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p tilo-ntfs-helper') && '1' || '0' }}
           # The builder image carries the encoders and muxers the footage
           # tests need, so their absence here is a failure, not a skip.
           TILO_REQUIRE_MEDIA: "1"
@@ -438,9 +422,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -512,9 +493,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -603,12 +581,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Log in to code.sandbox.example
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.sandbox.example
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install verification tools
         run: |
           ./os/dev/install-cached-cosign.sh
@@ -634,10 +606,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
@@ -717,12 +686,17 @@ jobs:
 
       # Reuse this runner for the main-branch receipt, including failed gates.
       # PRs finish after aggregation without another checkout or note write.
+      # The aggregate above is the gate; the receipt is evidence of it. A forge
+      # outage while recording must not turn a passed gate red (the lander
+      # reverts red merges), and a missing receipt already fails closed in
+      # `receipt.sh verify`, so both receipt steps may fail without the job.
       - name: Checkout CI receipt tool
         id: receipt-checkout
         if: >-
           always() &&
           (github.ref == 'refs/heads/main' ||
            github.ref == 'refs/heads/codex/package-desktop-release')
+        continue-on-error: true
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
@@ -730,6 +704,7 @@ jobs:
           filter: blob:none
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
+        continue-on-error: true
         env:
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}

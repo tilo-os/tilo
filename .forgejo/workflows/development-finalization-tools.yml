@@ -14,9 +14,9 @@ jobs:
           persist-credentials: false
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.sandbox.example
+          registry: registry.tilo.so
           username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and test the native crypto helper
         shell: bash
         run: |
@@ -30,7 +30,7 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          repository=code.sandbox.example/qos/tilo-development-finalization-tools-aarch64
+          repository=registry.tilo.so/tilo/tilo-development-finalization-tools-aarch64
           tag="$repository:crypto-${GITHUB_SHA:0:12}"
           binary_sha256=$(sha256sum target/release/tilo-crypto | awk '{print $1}')
           context=$(mktemp -d)
@@ -38,7 +38,7 @@ jobs:
           trap cleanup EXIT
           install -m 0755 target/release/tilo-crypto "$context/tilo-crypto"
           cat >"$context/Containerfile" <<EOF
-          FROM code.sandbox.example/qos/tilo-development-finalization-tools-aarch64@sha256:b8f09490cb08b93ca137a9aca5a7c87b97a218ae33453f6b24b315fb0469903f
+          FROM registry.tilo.so/tilo/tilo-development-finalization-tools-aarch64@sha256:b8f09490cb08b93ca137a9aca5a7c87b97a218ae33453f6b24b315fb0469903f
           COPY --chown=0:0 --chmod=0755 tilo-crypto /usr/local/bin/tilo-crypto
           LABEL ai.podesta.tilo.finalization.crypto.sha256="$binary_sha256"
           LABEL org.opencontainers.image.revision="$GITHUB_SHA"

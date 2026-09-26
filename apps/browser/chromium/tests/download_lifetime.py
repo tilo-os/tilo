@@ -177,7 +177,7 @@ class Lifetime(unittest.TestCase):
         self.assertEqual(runtime["detached"], 0)
 
     def test_destination_failure_settles_without_detached_owner(self):
-        host = self.host(("--downloads=/dev/null/qos-downloads",))
+        host = self.host(("--downloads=/dev/null/tilo-downloads",))
         host.send(op="navigate", tab=1, url=self.url + "?case=destination-failure")
         prompt = host.until(lambda event: event["event"] == "download_prompt")
         host.send(op="download_decision", tab=1, id=prompt["id"], allow=True)

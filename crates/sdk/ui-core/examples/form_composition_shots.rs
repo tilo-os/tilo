@@ -196,11 +196,11 @@ fn primitive(width: u32, scale: f32) -> Element {
             .with_child(scroll),
     )
 }
-/// `QOS_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
+/// `TILO_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
 /// renders every capture on that preset; PNGs are composited on the theme's
 /// own `bg_app`.
 fn shot_theme() -> Theme {
-    std::env::var("QOS_SHOTS_THEME")
+    std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)

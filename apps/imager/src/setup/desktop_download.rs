@@ -211,7 +211,7 @@ mod unix {
 
     fn client(origin: reqwest::Url) -> Result<reqwest::blocking::Client, String> {
         tilo_net::http::blocking_client()
-            .user_agent("qOS-Desktop-Setup/1")
+            .user_agent("Tilo-Desktop-Setup/1")
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {

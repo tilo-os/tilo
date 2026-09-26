@@ -722,7 +722,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         use std::time::{Duration, Instant};
 
-        const CHILD_FIFO: &str = "QOS_IMAGER_TEST_INSPECTION_FIFO";
+        const CHILD_FIFO: &str = "TILO_IMAGER_TEST_INSPECTION_FIFO";
         if let Some(path) = std::env::var_os(CHILD_FIFO) {
             assert!(inspect_source(Path::new(&path)).is_none());
             return;
