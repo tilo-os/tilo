@@ -115,6 +115,10 @@ pub struct DisplayPrefs {
     /// whole-output Night Light transform.
     #[serde(default = "default_night_light_temperature")]
     pub night_light_temperature: u32,
+    /// Follow the Appearance day/night schedule instead of the manual switch:
+    /// on from sunset, off from sunrise.
+    #[serde(default)]
+    pub night_light_schedule: bool,
     /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
@@ -138,6 +142,7 @@ impl Default for DisplayPrefs {
         Self {
             auto_brightness: false,
             night_light: false,
+            night_light_schedule: false,
             night_light_temperature: default_night_light_temperature(),
             scale: 1.0,
         }
@@ -448,6 +453,49 @@ pub struct AppearancePrefs {
     /// (serde `default`), so older configs keep their look.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f64,
+    /// When the day ends, for the "Automatic" theme and a scheduled night
+    /// light: `"sun"` follows sunrise and sunset at the time zone's location,
+    /// `"custom"` uses [`Self::sunrise`] and [`Self::sunset`]
+    /// (`settings_store::day_schedule`).
+    #[serde(default = "default_schedule")]
+    pub schedule: String,
+    /// Custom sunrise, `HH:MM`; also the fallback when the sun cannot be followed.
+    #[serde(default = "default_sunrise")]
+    pub sunrise: String,
+    /// Custom sunset, `HH:MM`; also the fallback when the sun cannot be followed.
+    #[serde(default = "default_sunset")]
+    pub sunset: String,
+    /// Whether a newly chosen wallpaper covers `"workspace"` (the one Settings
+    /// runs in) or `"all"` workspaces. The compositor reads it when applying.
+    #[serde(default = "default_wallpaper_scope")]
+    pub wallpaper_scope: String,
+    /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
+    #[serde(default = "default_wallpaper_target")]
+    pub wallpaper_target: String,
+}
+
+fn default_schedule() -> String {
+    "sun".to_string()
+}
+
+fn default_sunrise() -> String {
+    settings_store::day_schedule::format_hhmm(
+        settings_store::day_schedule::DaySchedule::FIXED.sunrise,
+    )
+}
+
+fn default_sunset() -> String {
+    settings_store::day_schedule::format_hhmm(
+        settings_store::day_schedule::DaySchedule::FIXED.sunset,
+    )
+}
+
+fn default_wallpaper_scope() -> String {
+    "workspace".to_string()
+}
+
+fn default_wallpaper_target() -> String {
+    "background".to_string()
 }
 
 /// Serde default for [`AppearancePrefs::ui_scale`] so a config written before
@@ -465,6 +513,11 @@ impl Default for AppearancePrefs {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            schedule: default_schedule(),
+            sunrise: default_sunrise(),
+            sunset: default_sunset(),
+            wallpaper_scope: default_wallpaper_scope(),
+            wallpaper_target: default_wallpaper_target(),
         }
     }
 }
@@ -473,6 +526,7 @@ impl AppearancePrefs {
     /// The named theme presets the Appearance pane offers, in display order.
     /// Each maps to a real constructor on [`ui::Theme`] via [`theme_by_name`].
     pub const THEMES: &'static [&'static str] = &[
+        settings_store::day_schedule::AUTOMATIC_THEME,
         "Dark",
         "Light",
         "Tilo Blue",
@@ -496,7 +550,7 @@ impl AppearancePrefs {
         let base = if self.high_contrast {
             ui::Theme::high_contrast()
         } else {
-            theme_by_name(&self.theme)
+            self.base_theme()
         };
         // UI scale grows the whole system first; text scale then layers extra
         // type growth on top. Both fold into the same theme the compositor and
@@ -504,6 +558,35 @@ impl AppearancePrefs {
         base.with_ui_scale(self.ui_scale as f32)
             .with_text_scale(self.text_scale as f32)
             .with_reduce_motion(self.reduce_motion)
+    }
+}
+
+impl AppearancePrefs {
+    /// The day/night schedule these preferences describe, at the system time
+    /// zone's location.
+    pub fn schedule(&self) -> settings_store::day_schedule::Scheduled {
+        let mut section = serde_json::Map::new();
+        section.insert("schedule".into(), self.schedule.clone().into());
+        section.insert("sunrise".into(), self.sunrise.clone().into());
+        section.insert("sunset".into(), self.sunset.clone().into());
+        settings_store::day_schedule::Scheduled {
+            config: settings_store::day_schedule::ScheduleConfig::from_section(&section),
+            location: settings_store::day_schedule::timezone_location(),
+        }
+    }
+
+    /// The chosen theme before the accessibility comforts: "Automatic" is
+    /// the light theme by day and the dark theme by night.
+    pub fn base_theme(&self) -> ui::Theme {
+        if settings_store::day_schedule::is_automatic(&self.theme) {
+            if self.schedule().is_night(ui::theme::local_moment()) {
+                ui::Theme::dark()
+            } else {
+                ui::Theme::light()
+            }
+        } else {
+            theme_by_name(&self.theme)
+        }
     }
 }
 
@@ -1204,6 +1287,7 @@ mod tests {
             reduce_motion: false,
             text_scale: 1.2,
             ui_scale: 1.25,
+            ..AppearancePrefs::default()
         };
         let theme = p.resolve_theme();
         assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
@@ -1248,6 +1332,7 @@ mod tests {
             reduce_motion: true,
             text_scale: 1.5,
             ui_scale: 1.0,
+            ..AppearancePrefs::default()
         };
         let theme = p.resolve_theme();
         assert_eq!(theme.name, "Nord", "the named preset is applied");
@@ -1263,6 +1348,7 @@ mod tests {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            ..AppearancePrefs::default()
         };
         // high_contrast wins over the named preset.
         assert_eq!(p.resolve_theme().name, "High Contrast");
@@ -1272,7 +1358,10 @@ mod tests {
     fn appearance_unknown_theme_name_degrades_to_dark() {
         assert_eq!(theme_by_name("not-a-theme").name, "Dark");
         // Every advertised preset maps to a distinct real constructor.
-        for name in AppearancePrefs::THEMES {
+        for name in AppearancePrefs::THEMES
+            .iter()
+            .filter(|name| !settings_store::day_schedule::is_automatic(name))
+        {
             let t = theme_by_name(name);
             assert_eq!(&t.name, name, "{name} must resolve to its own theme");
         }
