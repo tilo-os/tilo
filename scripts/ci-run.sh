@@ -18,11 +18,21 @@ shift
 [ "$#" -gt 0 ] || { echo "ci-run.sh: no command given" >&2; exit 2; }
 
 log="$(mktemp -t "ci-${label//[^A-Za-z0-9_-]/_}-XXXXXX.log")"
+heartbeat_dir="$(mktemp -d -t ci-heartbeat-XXXXXX)"
 heartbeat_pid=""
+heartbeat_stop=""
 
+# The heartbeat waits on a FIFO whose only writer is this script: closing the
+# write end wakes it with end-of-file, so it stops at once and needs no signal.
+# A signal is not reliable here: bash can lose a TERM that arrives while the
+# heartbeat subshell is still starting, and the heartbeat then held the output
+# pipe open for up to a minute after the command had finished.
 stop_heartbeat() {
+    if [ -n "$heartbeat_stop" ]; then
+        exec {heartbeat_stop}>&-
+        heartbeat_stop=""
+    fi
     if [ -n "$heartbeat_pid" ]; then
-        kill "$heartbeat_pid" 2>/dev/null || true
         wait "$heartbeat_pid" 2>/dev/null || true
         heartbeat_pid=""
     fi
@@ -31,6 +41,7 @@ stop_heartbeat() {
 cleanup() {
     stop_heartbeat
     rm -f "$log" "$log.memory-before" "/tmp/ci-run-distilled.$$"
+    rm -rf "$heartbeat_dir"
 }
 trap cleanup EXIT
 
@@ -43,36 +54,29 @@ python3 "$memory_script" > "$log.memory-before" 2>/dev/null || true
 # Forgejo's runner terminates a step after 15 minutes without output. Cargo can
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.
+mkfifo "$heartbeat_dir/stop"
+# Opened read-write so opening does not wait for a reader; this descriptor is
+# the writer the heartbeat's read end sees until stop_heartbeat closes it.
+exec {heartbeat_stop}<>"$heartbeat_dir/stop"
 (
-    # A foreground sleep survives killing this subshell and keeps the runner's
-    # output pipe open for the rest of the minute. Wait on an owned child so a
-    # signal interrupts the wait, then terminate and reap that child on exit.
-    heartbeat_child=""
-    # Query this subshell's own jobs: TERM can arrive after launching a child
-    # but before assigning its PID below. Never signal unrelated descendants.
-    trap 'for child in $(jobs -pr); do
-        kill "$child" 2>/dev/null || true
-    done
-    wait 2>/dev/null || true' EXIT
-    trap 'exit 0' TERM INT
+    exec {wake}<"$heartbeat_dir/stop" {heartbeat_stop}>&-
     while true; do
-        sleep 60 &
-        heartbeat_child=$!
-        wait "$heartbeat_child" || exit 0
-        heartbeat_child=""
+        # A timeout (status above 128) is the next minute; end-of-file is stop.
+        read -r -t 60 -u "$wake" _
+        [ "$?" -gt 128 ] || exit 0
         echo "==> ${label}: still running ($(( $(date +%s) - start ))s)"
         # A wrapper heartbeat alone cannot distinguish work from a stuck child.
         # Numeric descendant CPU/RSS/I/O counters let successive receipts show
         # progress without exposing process arguments or environment secrets.
-        timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null &
-        heartbeat_child=$!
-        wait "$heartbeat_child" || echo 'CI_PROCESS_PROGRESS=unavailable'
-        heartbeat_child=""
+        timeout 5s python3 "$progress_script" --root-pid "$$" {wake}<&- 2>/dev/null \
+            || echo 'CI_PROCESS_PROGRESS=unavailable'
     done
 ) &
 heartbeat_pid=$!
-# Stream and capture. PIPESTATUS[0] is the command's status, not tee's.
-"$@" 2>&1 | tee "$log"
+# Stream and capture. PIPESTATUS[0] is the command's status, not tee's. Neither
+# holds the heartbeat's write end, so a process the command leaves behind
+# cannot keep the heartbeat running.
+"$@" {heartbeat_stop}>&- 2>&1 | tee "$log" {heartbeat_stop}>&-
 rc="${PIPESTATUS[0]}"
 stop_heartbeat
 elapsed=$(( $(date +%s) - start ))
