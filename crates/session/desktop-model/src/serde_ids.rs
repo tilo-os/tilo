@@ -6,7 +6,7 @@
 //! `#[serde(flatten)]`ed struct it is buffered first and the key arrives as
 //! a plain string. These helpers accept both spellings.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -81,6 +81,20 @@ where
         }
     }
     deserializer.deserialize_map(MapVisitor(PhantomData))
+}
+
+/// As [`deserialize_id_map`], into an ordered map.
+///
+/// # Errors
+///
+/// As [`deserialize_id_map`].
+pub fn deserialize_id_btree_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    K: From<u64> + Eq + Hash + Ord,
+    V: Deserialize<'de>,
+{
+    deserialize_id_map::<D, K, V>(deserializer).map(|map| map.into_iter().collect())
 }
 
 #[cfg(test)]

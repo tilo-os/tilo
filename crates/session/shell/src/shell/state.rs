@@ -37,7 +37,9 @@ pub use tilo_desktop_model::{
     WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
     compose_id, counter_of, peer_salt_of, role_label,
 };
-pub use tilo_desktop_model::{DesktopTree, DropTarget, STATE_SCHEMA_VERSION, TabMove};
+pub use tilo_desktop_model::{
+    DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
+};
 
 /// Fold this device's schedule claims into those a merged room document
 /// carries. A claim the merge lost to an older concurrent one is kept (the
@@ -4190,6 +4192,67 @@ impl WorkspaceTree {
     /// changes elsewhere in the workspace tree.
     fn doc_rewrite_strip_groups(&mut self, strip_id: StripId, groups: &[WindowGroup]) {
         tilo_desktop_model::desktop_doc::rewrite_strip_groups(&mut self.doc, strip_id, groups);
+    }
+
+    /// Bring this device's display partition in line with the displays
+    /// now connected, primary first (see [`OutputPartition::reconcile`]).
+    /// A partition is kept once a second display has been seen; a device
+    /// that only ever had one display carries none. Returns whether the
+    /// partition or any strip order changed.
+    pub fn reconcile_displays(&mut self, displays: &[Display]) -> bool {
+        if displays.len() < 2 && self.desktop.outputs.is_empty() {
+            return false;
+        }
+        let before = self.desktop.outputs.clone();
+        let desktop = &mut self.desktop;
+        let reordered = desktop.outputs.reconcile(&mut desktop.workspaces, displays);
+        desktop.outputs.place_unhomed(&desktop.workspaces);
+        self.mirror_partition_reorder(&reordered);
+        let changed = !reordered.is_empty() || self.desktop.outputs != before;
+        if changed {
+            self.flush_to_disk();
+        }
+        changed
+    }
+
+    /// Show `group_id` on display `display` from now on (see
+    /// [`OutputPartition::move_group`]). `false` when there is no such
+    /// display or the group is already there.
+    pub fn move_group_to_display(&mut self, group_id: GroupId, display: u32) -> bool {
+        if self.desktop.outputs.display_of(group_id) == Some(display)
+            || !self
+                .desktop
+                .outputs
+                .displays
+                .iter()
+                .any(|d| d.id == display)
+        {
+            return false;
+        }
+        let desktop = &mut self.desktop;
+        let reordered = desktop
+            .outputs
+            .move_group(&mut desktop.workspaces, group_id, display);
+        self.mirror_partition_reorder(reordered.as_slice());
+        self.flush_to_disk();
+        true
+    }
+
+    /// Mirror strips a partition change reordered into the collaboration
+    /// document, the same as any other group reorder.
+    fn mirror_partition_reorder(&mut self, strips: &[StripId]) {
+        for &strip_id in strips {
+            let groups = self
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.strips)
+                .find(|s| s.id == strip_id)
+                .map(|s| s.window_groups.clone());
+            if let Some(groups) = groups {
+                self.doc_rewrite_strip_groups(strip_id, &groups);
+            }
+        }
     }
 
     /// Reorder the window group `group_id` within `strip_id`; the whole

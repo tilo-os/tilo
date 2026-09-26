@@ -1128,6 +1128,12 @@ pub enum ShortcutAction {
     AttachTabRight,
     MoveGroupLeft,
     MoveGroupRight,
+    /// Move the focused window group onto the display to the left of its
+    /// own (the previous one in reading order).
+    MoveGroupToPreviousDisplay,
+    /// Move the focused window group onto the display to the right of its
+    /// own (the next one in reading order).
+    MoveGroupToNextDisplay,
     ResizeNarrower,
     ResizeWider,
     /// Bring back the most recently closed tab in the current workspace.
@@ -1663,6 +1669,10 @@ pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
 }
 
 impl Default for ShortcutConfig {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the default table is one line per shortcut action"
+    )]
     fn default() -> Self {
         // Built directly rather than through the fallible `KeyChord::parse`: every
         // chord here is a literal we already know is well-formed.
@@ -1675,6 +1685,16 @@ impl Default for ShortcutConfig {
         fn super_shift_chord(key: &str) -> KeyChord {
             KeyChord {
                 modifiers: BTreeSet::from(["Shift".to_string(), "Super".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn super_ctrl_shift_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from([
+                    "Ctrl".to_string(),
+                    "Shift".to_string(),
+                    "Super".to_string(),
+                ]),
                 key: key.to_string(),
             }
         }
@@ -1730,6 +1750,16 @@ impl Default for ShortcutConfig {
             (ShortcutAction::AttachTabRight, super_chord("]")),
             (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
+            // Super+Shift+arrows already reorder within a display; Ctrl
+            // widens the same gesture to the neighbouring display.
+            (
+                ShortcutAction::MoveGroupToPreviousDisplay,
+                super_ctrl_shift_chord("left"),
+            ),
+            (
+                ShortcutAction::MoveGroupToNextDisplay,
+                super_ctrl_shift_chord("right"),
+            ),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
             // Browsers' reopen-closed-tab chord, on the desktop's own
@@ -2446,7 +2476,7 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 40);
+        assert_eq!(cfg.bindings.len(), 42);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(
@@ -2462,6 +2492,12 @@ mod tests {
             "Ctrl+Shift+Tab"
         );
         assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
+        // Reordering within a display keeps Super+Shift+arrows; moving to
+        // the neighbouring display adds Ctrl to the same gesture.
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::MoveGroupToNextDisplay].display(),
+            "Super+Ctrl+Shift+Right"
+        );
     }
 
     #[test]

@@ -222,6 +222,7 @@ pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::Ou
         .map(|o| {
             let logical = o.logical_rect();
             crate::shell::overlay_host::OutputGeometry {
+                id: o.id.0,
                 x: logical.x0,
                 y: logical.y0,
                 width: logical.width(),

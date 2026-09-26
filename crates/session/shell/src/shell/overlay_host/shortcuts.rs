@@ -172,6 +172,8 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
         ShortcutAction::AttachTabRight => "move the tab into the group on the right",
         ShortcutAction::MoveGroupLeft => "move the group left",
         ShortcutAction::MoveGroupRight => "move the group right",
+        ShortcutAction::MoveGroupToPreviousDisplay => "move the group to the display on the left",
+        ShortcutAction::MoveGroupToNextDisplay => "move the group to the display on the right",
         ShortcutAction::ResizeNarrower => "make the window narrower",
         ShortcutAction::ResizeWider => "make the window wider",
         ShortcutAction::ReopenClosedTab => "reopen the tab you closed last",

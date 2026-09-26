@@ -52,6 +52,7 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod display_bars;
 pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
@@ -181,6 +182,8 @@ pub(crate) struct WorkspaceSceneParts {
     pub topbar: *mut topbar_chrome::TopBarChrome,
     pub workspace: *mut dyn Widget,
     pub work_area: *mut Column,
+    /// Compact top bars of the displays other than the primary.
+    pub display_bars: *mut display_bars::DisplayBars,
 }
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
@@ -1547,7 +1550,12 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         .with_gap(0.0)
         .push(topbar)
         .push(workspace);
-    let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
+    let mut display_bars = Box::new(display_bars::DisplayBars::new(chrome.clone()));
+    let display_bars_ptr = &raw mut *display_bars;
+    let stack = Stack::new()
+        .push(backdrop)
+        .push(Box::new(foreground_col))
+        .push(display_bars);
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()
@@ -1563,6 +1571,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             topbar: topbar_ptr,
             workspace: workspace_ptr,
             work_area: work_area_ptr,
+            display_bars: display_bars_ptr,
         },
     )
 }
