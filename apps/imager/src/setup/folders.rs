@@ -427,112 +427,120 @@ mod tests {
 
     use super::*;
 
+    /// Enumeration, errors, cancellation and estimates.
     #[test]
-    fn nested_files_and_empty_directories_are_enumerated() {
-        let root = tempfile::tempdir().unwrap();
-        let nested = root.path().join("nested");
-        let empty = root.path().join("empty");
-        fs::create_dir(&nested).unwrap();
-        fs::create_dir(&empty).unwrap();
-        fs::write(root.path().join("one"), b"abc").unwrap();
-        fs::write(nested.join("two"), b"12345").unwrap();
+    fn folder_scan_enumerates_estimates_and_rejects_bad_roots() {
+        // Phase `nested_files_and_empty_directories_are_enumerated`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let nested = root.path().join("nested");
+            let empty = root.path().join("empty");
+            fs::create_dir(&nested).unwrap();
+            fs::create_dir(&empty).unwrap();
+            fs::write(root.path().join("one"), b"abc").unwrap();
+            fs::write(nested.join("two"), b"12345").unwrap();
 
-        let scan = scan_folder(root.path()).unwrap();
+            let scan = scan_folder(root.path()).unwrap();
 
-        assert_eq!(scan.file_count, 2);
-        assert_eq!(scan.bytes, 8);
-        assert_eq!(scan.empty_directories, vec![empty]);
-        assert!(scan.skipped.is_empty());
-    }
-
-    #[test]
-    fn missing_and_non_directory_roots_are_errors() {
-        let root = tempfile::tempdir().unwrap();
-        let missing = root.path().join("missing");
-        assert!(scan_folder(&missing).is_err());
-
-        let file = root.path().join("ordinary-file");
-        fs::write(&file, b"data").unwrap();
-        assert!(scan_folder(&file).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symbolic_links_are_skipped_and_never_traversed() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("secret"), b"not counted").unwrap();
-        let link = root.path().join("outside-link");
-        symlink(outside.path(), &link).unwrap();
-
-        let scan = scan_folder(root.path()).unwrap();
-
-        assert_eq!(scan.file_count, 0);
-        assert_eq!(scan.bytes, 0);
-        assert_eq!(scan.skipped.len(), 1);
-        assert_eq!(scan.skipped[0].path, link);
-        assert_eq!(scan.skipped[0].reason, SkipReason::SymbolicLink);
-    }
-
-    #[test]
-    fn cancelled_scan_stops_before_enumeration() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("one"), b"abc").unwrap();
-        let cancelled = AtomicBool::new(true);
-
-        assert_eq!(
-            scan_folder_cancellable(root.path(), &cancelled).unwrap_err(),
-            "folder scan was cancelled"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn skipped_entry_details_are_bounded_but_the_total_is_exact() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().unwrap();
-        for index in 0..(MAX_DIAGNOSTIC_SAMPLES + 7) {
-            symlink("missing", root.path().join(format!("link-{index:03}"))).unwrap();
+            assert_eq!(scan.file_count, 2);
+            assert_eq!(scan.bytes, 8);
+            assert_eq!(scan.empty_directories, vec![empty]);
+            assert!(scan.skipped.is_empty());
         }
 
-        let scan = scan_folder(root.path()).unwrap();
-        assert_eq!(scan.skipped_count, (MAX_DIAGNOSTIC_SAMPLES + 7) as u64);
-        assert_eq!(scan.skipped.len(), MAX_DIAGNOSTIC_SAMPLES);
+        // Phase `missing_and_non_directory_roots_are_errors`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let missing = root.path().join("missing");
+            assert!(scan_folder(&missing).is_err());
+
+            let file = root.path().join("ordinary-file");
+            fs::write(&file, b"data").unwrap();
+            assert!(scan_folder(&file).is_err());
+        }
+
+        // Phase `cancelled_scan_stops_before_enumeration`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("one"), b"abc").unwrap();
+            let cancelled = AtomicBool::new(true);
+
+            assert_eq!(
+                scan_folder_cancellable(root.path(), &cancelled).unwrap_err(),
+                "folder scan was cancelled"
+            );
+        }
+
+        // Phase `a_scan_is_only_a_point_in_time_estimate`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let file = root.path().join("changing");
+            fs::write(&file, b"old").unwrap();
+            let scan = scan_folder(root.path()).unwrap();
+
+            fs::write(&file, b"a different length").unwrap();
+
+            assert_eq!(scan.bytes, 3);
+            assert_eq!(fs::metadata(file).unwrap().len(), 18);
+        }
     }
 
+    /// Symlink handling and skip details.
     #[test]
-    fn a_scan_is_only_a_point_in_time_estimate() {
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("changing");
-        fs::write(&file, b"old").unwrap();
-        let scan = scan_folder(root.path()).unwrap();
-
-        fs::write(&file, b"a different length").unwrap();
-
-        assert_eq!(scan.bytes, 3);
-        assert_eq!(fs::metadata(file).unwrap().len(), 18);
-    }
-
     #[cfg(unix)]
-    #[test]
-    fn nofollow_open_rejects_a_directory_replaced_by_a_symlink() {
-        use std::os::unix::fs::symlink;
+    fn folder_scan_never_follows_symlinks_and_bounds_skip_details() {
+        // Phase `symbolic_links_are_skipped_and_never_traversed`.
+        {
+            use std::os::unix::fs::symlink;
 
-        let parent = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let selected = parent.path().join("selected");
-        fs::create_dir(&selected).unwrap();
-        fs::write(outside.path().join("secret"), b"outside").unwrap();
-        let parent_handle = fs::File::open(parent.path()).unwrap();
-        let expected = metadata_nofollow(&parent_handle, Path::new("selected")).unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(outside.path().join("secret"), b"not counted").unwrap();
+            let link = root.path().join("outside-link");
+            symlink(outside.path(), &link).unwrap();
 
-        fs::remove_dir(&selected).unwrap();
-        symlink(outside.path(), &selected).unwrap();
+            let scan = scan_folder(root.path()).unwrap();
 
-        assert!(open_directory_nofollow(&parent_handle, Path::new("selected"), &expected).is_err());
+            assert_eq!(scan.file_count, 0);
+            assert_eq!(scan.bytes, 0);
+            assert_eq!(scan.skipped.len(), 1);
+            assert_eq!(scan.skipped[0].path, link);
+            assert_eq!(scan.skipped[0].reason, SkipReason::SymbolicLink);
+        }
+
+        // Phase `skipped_entry_details_are_bounded_but_the_total_is_exact`.
+        {
+            use std::os::unix::fs::symlink;
+
+            let root = tempfile::tempdir().unwrap();
+            for index in 0..(MAX_DIAGNOSTIC_SAMPLES + 7) {
+                symlink("missing", root.path().join(format!("link-{index:03}"))).unwrap();
+            }
+
+            let scan = scan_folder(root.path()).unwrap();
+            assert_eq!(scan.skipped_count, (MAX_DIAGNOSTIC_SAMPLES + 7) as u64);
+            assert_eq!(scan.skipped.len(), MAX_DIAGNOSTIC_SAMPLES);
+        }
+
+        // Phase `nofollow_open_rejects_a_directory_replaced_by_a_symlink`.
+        {
+            use std::os::unix::fs::symlink;
+
+            let parent = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let selected = parent.path().join("selected");
+            fs::create_dir(&selected).unwrap();
+            fs::write(outside.path().join("secret"), b"outside").unwrap();
+            let parent_handle = fs::File::open(parent.path()).unwrap();
+            let expected = metadata_nofollow(&parent_handle, Path::new("selected")).unwrap();
+
+            fs::remove_dir(&selected).unwrap();
+            symlink(outside.path(), &selected).unwrap();
+
+            assert!(
+                open_directory_nofollow(&parent_handle, Path::new("selected"), &expected).is_err()
+            );
+        }
     }
 
     #[cfg(not(target_os = "linux"))]

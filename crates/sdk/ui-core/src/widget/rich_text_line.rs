@@ -1610,542 +1610,566 @@ mod tests {
     }
 
     #[test]
-    fn large_text_shapes_once_not_geometry_scale_squared() {
-        let normal = rendered_advance_at_scale(1.0);
-        let doubled = rendered_advance_at_scale(2.0);
-        assert!(
-            (doubled - normal * 2.0).abs() < 0.5,
-            "2× text must have 2× advance, not 4×: {normal} -> {doubled}"
-        );
-    }
-
-    #[test]
-    fn rich_marks_utf8_replacement_keeps_complete_boundaries() {
-        assert_eq!(diff_splice("éx", "êx"), (0, 2, 2));
-        assert_eq!(diff_splice("xé", "xê"), (1, 2, 2));
-    }
-
-    #[test]
-    fn rich_marks_paint_each_glyph_once() {
-        let mut line = RichTextLine::new().with_text("aBz");
-        line.set_marks(vec![MarkSpan::new(1..2, Mark::Bold)]);
-        let scene = layout_and_draw(&mut line, &Theme::dark(), 320.0);
-        assert_eq!(scene.encoding().resources.glyphs.len(), 3);
-    }
-
-    #[test]
-    fn rich_marks_style_only_changes_refresh_authoritative_geometry() {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut line = RichTextLine::new().with_text("WWW end");
-            layout_and_draw(&mut line, &theme, 400.0);
-            let plain = line.pixel_x_for_byte(&theme, 3);
-            line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
-            layout_and_draw(&mut line, &theme, 400.0);
-            let bold = line.pixel_x_for_byte(&theme, 3);
+    fn rich_line_shapes_once_at_every_scale() {
+        // Case `large_text_shapes_once_not_geometry_scale_squared`.
+        {
+            let normal = rendered_advance_at_scale(1.0);
+            let doubled = rendered_advance_at_scale(2.0);
             assert!(
-                (bold - plain).abs() > 0.1,
-                "bold must change the authoritative advances"
-            );
-            assert!((line.caret_rect(&theme, 3).x0 - bold).abs() < 0.01);
-            assert!((line.selection_rect(&theme, 0, 3).x1 - bold).abs() < 0.01);
-            assert_eq!(line.byte_for_pixel_x(&theme, bold), 3);
-            line.set_marks(vec![]);
-            layout_and_draw(&mut line, &theme, 400.0);
-            assert!((line.pixel_x_for_byte(&theme, 3) - plain).abs() < 0.01);
-        }
-    }
-
-    #[test]
-    fn rich_marks_scrolled_selection_and_pointer_share_the_painted_end() {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut line = RichTextLine::new().with_text("prefix WWW tail");
-            line.set_marks(vec![MarkSpan::new(7..10, Mark::Bold)]);
-            line.set_focus(true);
-            line.inner_mut().set_selection(7, 10);
-            layout_and_draw(&mut line, &theme, 80.0);
-            assert!(line.inner().scroll_x() > 0.0);
-            let x = line.pixel_x_for_byte(&theme, 10);
-            assert!(x <= line.get_rect().x1);
-            assert!((line.caret_rect(&theme, 10).x0 - x).abs() < 0.01);
-            assert!((line.selection_rect(&theme, 7, 10).x1 - x).abs() < 0.01);
-            assert_eq!(line.byte_for_pixel_x(&theme, x), 10);
-        }
-    }
-
-    #[test]
-    fn base_font_override_scales_once_across_relayout_caret_selection_and_pointer() {
-        let mut line = RichTextLine::new().with_text("alpha beta").with_size(16.0);
-        line.set_marks(vec![MarkSpan::new(0..5, Mark::Code)]);
-        line.inner_mut().set_selection(0, 5);
-
-        let normal = Theme::dark();
-        layout_and_draw(&mut line, &normal, 320.0);
-        assert_eq!(line.inner().shaped_font_size_for_test(), Some(16.0));
-        assert!((line.caret_rect(&normal, 5).height() - 20.0).abs() < 0.1);
-        assert!((line.selection_rect(&normal, 0, 5).height() - 20.0).abs() < 0.1);
-
-        let large = Theme::dark().with_text_scale(2.0);
-        layout_and_draw(&mut line, &large, 320.0);
-        assert_eq!(line.inner().shaped_font_size_for_test(), Some(32.0));
-        let caret = line.caret_rect(&large, 5);
-        assert!(
-            (caret.height() - 40.0).abs() < 0.1,
-            "scaled caret height was {}",
-            caret.height()
-        );
-        let selection = line.selection_rect(&large, 0, 5);
-        assert!(
-            (selection.height() - 40.0).abs() < 0.1,
-            "scaled selection height was {}",
-            selection.height()
-        );
-
-        let target = 6;
-        let x = line.pixel_x_for_byte(&large, target);
-        assert_eq!(
-            line.byte_for_pixel_x(&large, x),
-            target,
-            "pointer inverse lands on the scaled shaped caret stop"
-        );
-    }
-
-    #[test]
-    fn bound_line_reads_text_from_doc() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-        let mut doc = automerge::AutoCommit::new();
-        let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
-        doc.splice_text(&tid, 0, 0, "hello").unwrap();
-
-        let mut line = RichTextLine::new();
-        line.bind_text(tid.clone());
-        // The root arg is unused once a Text is bound.
-        line.sync(&mut doc, &ROOT);
-        assert_eq!(line.value(), "hello");
-    }
-
-    #[test]
-    fn editing_bound_line_splices_into_doc() {
-        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-        let mut doc = automerge::AutoCommit::new();
-        let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
-
-        let mut line = RichTextLine::new();
-        line.bind_text(tid.clone());
-        line.set_focus(true);
-
-        // Type against OUR doc, not the throwaway one `dispatch` would make.
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        for c in ["h", "i"] {
-            let ev = char_press(c);
-            let mut handled = false;
-            let mut focus_target = None;
-            line.handle_event(
-                &ev,
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                &taffy,
+                (doubled - normal * 2.0).abs() < 0.5,
+                "2× text must have 2× advance, not 4×: {normal} -> {doubled}"
             );
         }
 
-        assert_eq!(line.value(), "hi");
-        assert_eq!(
-            doc.text(&tid).unwrap(),
-            "hi",
-            "edits must splice into the bound Text"
-        );
-    }
+        // Case `base_font_override_scales_once_across_relayout_caret_selection_and_pointer`.
+        {
+            let mut line = RichTextLine::new().with_text("alpha beta").with_size(16.0);
+            line.set_marks(vec![MarkSpan::new(0..5, Mark::Code)]);
+            line.inner_mut().set_selection(0, 5);
 
-    #[test]
-    fn authored_edit_stamps_mark_caches_run_and_survives_round_trip() {
-        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-        let mut doc = automerge::AutoCommit::new();
-        let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+            let normal = Theme::dark();
+            layout_and_draw(&mut line, &normal, 320.0);
+            assert_eq!(line.inner().shaped_font_size_for_test(), Some(16.0));
+            assert!((line.caret_rect(&normal, 5).height() - 20.0).abs() < 0.1);
+            assert!((line.selection_rect(&normal, 0, 5).height() - 20.0).abs() < 0.1);
 
-        let mut line = RichTextLine::new();
-        line.bind_text(tid.clone());
-        line.set_local_author(Some("alice".to_string()));
-        line.set_focus(true);
+            let large = Theme::dark().with_text_scale(2.0);
+            layout_and_draw(&mut line, &large, 320.0);
+            assert_eq!(line.inner().shaped_font_size_for_test(), Some(32.0));
+            let caret = line.caret_rect(&large, 5);
+            assert!(
+                (caret.height() - 40.0).abs() < 0.1,
+                "scaled caret height was {}",
+                caret.height()
+            );
+            let selection = line.selection_rect(&large, 0, 5);
+            assert!(
+                (selection.height() - 40.0).abs() < 0.1,
+                "scaled selection height was {}",
+                selection.height()
+            );
 
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        for c in ["h", "i"] {
-            let ev = char_press(c);
-            let mut handled = false;
-            let mut focus_target = None;
-            line.handle_event(
-                &ev,
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                &taffy,
+            let target = 6;
+            let x = line.pixel_x_for_byte(&large, target);
+            assert_eq!(
+                line.byte_for_pixel_x(&large, x),
+                target,
+                "pointer inverse lands on the scaled shaped caret stop"
             );
         }
-        assert_eq!(doc.text(&tid).unwrap(), "hi");
 
-        let marks = doc.marks(&tid).unwrap();
-        assert!(
-            marks.iter().any(|m| m.name.as_str() == "author"),
-            "expected an author mark, got {marks:?}"
-        );
-
-        line.sync(&mut doc, &ROOT);
-        assert!(
-            line.author_runs().iter().any(|(_, _, a)| a == "alice"),
-            "expected an alice author run, got {:?}",
-            line.author_runs()
-        );
-
-        // Survives a save/load round-trip, which is how authorship reaches a peer.
-        let reloaded = automerge::AutoCommit::load(&doc.save()).unwrap();
-        let marks2 = reloaded.marks(&tid).unwrap();
-        assert!(
-            marks2.iter().any(|m| m.name.as_str() == "author"),
-            "author mark must survive save/load (CRDT sync)"
-        );
-    }
-
-    #[test]
-    fn new_starts_empty_unfocused() {
-        let l = RichTextLine::new();
-        assert_eq!(l.value(), "");
-        assert!(!l.is_focused());
-        assert!(l.cursor_at_start());
-        assert!(l.cursor_at_end());
-    }
-
-    #[test]
-    fn with_text_seeds_value_and_parks_cursor_at_end() {
-        let l = RichTextLine::new().with_text("hello");
-        assert_eq!(l.value(), "hello");
-        assert!(l.cursor_at_end());
-        assert!(!l.cursor_at_start());
-    }
-
-    #[test]
-    fn accessibility_reports_single_line_text_input_with_value() {
-        use crate::a11y::Role;
-        let l = RichTextLine::new().with_text("hello world");
-        let node = Widget::accessibility(&l).expect("editable line is a text input");
-        assert_eq!(node.role, Role::TextInput);
-        assert_eq!(node.value.as_deref(), Some("hello world"));
-        assert!(!node.state.multiline, "a single line is not multiline");
-        assert!(node.state.focusable);
-        assert!(!node.state.focused, "fresh line is not focused");
-        assert!(!node.state.protected, "block text is never a secret field");
-    }
-
-    #[test]
-    fn accessibility_focus_tracks_inner_input() {
-        let mut l = RichTextLine::new().with_text("x");
-        Widget::set_focus(&mut l, true);
-        let node = Widget::accessibility(&l).unwrap();
-        assert!(node.state.focused);
-    }
-
-    #[test]
-    fn set_text_does_not_mark_dirty() {
-        let mut l = RichTextLine::new();
-        l.set_text("seeded");
-        assert!(
-            l.take_dirty().is_none(),
-            "programmatic set_text is not dirty"
-        );
-        assert_eq!(l.value(), "seeded");
-        assert!(l.cursor_at_end());
-    }
-
-    #[test]
-    fn cursor_at_start_after_set_cursor_pos_zero() {
-        let mut l = RichTextLine::new().with_text("abc");
-        l.set_cursor_pos(0);
-        assert!(l.cursor_at_start());
-        assert!(!l.cursor_at_end());
-        l.set_cursor_pos(3);
-        assert!(l.cursor_at_end());
-    }
-
-    #[test]
-    fn enter_key_yields_signal_with_cursor_byte() {
-        let mut l = RichTextLine::new().with_text("abcdef");
-        l.set_focus(true);
-        l.set_cursor_pos(3);
-        dispatch(&mut l, &key_press(NamedKey::Enter));
-        match l.take_signal() {
-            Some(LineSignal::Enter { split_at: 3 }) => {}
-            other => panic!("expected Enter@3, got {other:?}"),
-        }
-        assert_eq!(l.value(), "abcdef");
-    }
-
-    #[test]
-    fn enter_at_end_yields_signal_with_full_length() {
-        let mut l = RichTextLine::new().with_text("hi");
-        l.set_focus(true);
-        dispatch(&mut l, &key_press(NamedKey::Enter));
-        match l.take_signal() {
-            Some(LineSignal::Enter { split_at }) => assert_eq!(split_at, 2),
-            other => panic!("expected Enter@2, got {other:?}"),
+        // Case `chip_mono_width_uses_monospace_face_not_sans`.
+        {
+            // Also checks the mono advance differs from sans — without that, a
+            // face mismatch couldn't be detected at all.
+            let mut tr = crate::text_render::TextRenderer::new();
+            let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
+            let (sans_w, _) =
+                tr.measure_styled("inline code", 16.0, None, TextWeight::Regular, false, false);
+            assert!(
+                mono > 0.0,
+                "mono width must be non-zero for non-empty input"
+            );
+            assert!(
+                (mono - f64::from(sans_w)).abs() > 0.5,
+                "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
+             otherwise the chip-width-mismatch bug is undetectable",
+            );
         }
     }
 
     #[test]
-    fn backspace_at_byte_zero_yields_signal() {
-        let mut l = RichTextLine::new().with_text("abc");
-        l.set_focus(true);
-        l.set_cursor_pos(0);
-        dispatch(&mut l, &key_press(NamedKey::Backspace));
-        assert_eq!(l.take_signal(), Some(LineSignal::BackspaceAtStart));
-        assert_eq!(l.value(), "abc");
-    }
+    fn rich_mark_geometry_is_authoritative_for_paint_selection_and_pointer() {
+        // Case `rich_marks_utf8_replacement_keeps_complete_boundaries`.
+        {
+            assert_eq!(diff_splice("éx", "êx"), (0, 2, 2));
+            assert_eq!(diff_splice("xé", "xê"), (1, 2, 2));
+        }
 
-    #[test]
-    fn backspace_after_byte_zero_falls_through_to_inner() {
-        let mut l = RichTextLine::new().with_text("abc");
-        l.set_focus(true);
-        l.set_cursor_pos(3);
-        dispatch(&mut l, &key_press(NamedKey::Backspace));
-        assert!(l.take_signal().is_none());
-        assert_eq!(l.value(), "ab");
-        assert!(l.take_dirty().is_some());
-    }
+        // Case `rich_marks_paint_each_glyph_once`.
+        {
+            let mut line = RichTextLine::new().with_text("aBz");
+            line.set_marks(vec![MarkSpan::new(1..2, Mark::Bold)]);
+            let scene = layout_and_draw(&mut line, &Theme::dark(), 320.0);
+            assert_eq!(scene.encoding().resources.glyphs.len(), 3);
+        }
 
-    #[test]
-    fn arrow_up_down_emit_signals() {
-        let mut l = RichTextLine::new().with_text("x");
-        l.set_focus(true);
-        dispatch(&mut l, &key_press(NamedKey::ArrowUp));
-        assert_eq!(l.take_signal(), Some(LineSignal::ArrowUp));
-        dispatch(&mut l, &key_press(NamedKey::ArrowDown));
-        assert_eq!(l.take_signal(), Some(LineSignal::ArrowDown));
-    }
+        // Case `rich_marks_style_only_changes_refresh_authoritative_geometry`.
+        {
+            for scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut line = RichTextLine::new().with_text("WWW end");
+                layout_and_draw(&mut line, &theme, 400.0);
+                let plain = line.pixel_x_for_byte(&theme, 3);
+                line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
+                layout_and_draw(&mut line, &theme, 400.0);
+                let bold = line.pixel_x_for_byte(&theme, 3);
+                assert!(
+                    (bold - plain).abs() > 0.1,
+                    "bold must change the authoritative advances"
+                );
+                assert!((line.caret_rect(&theme, 3).x0 - bold).abs() < 0.01);
+                assert!((line.selection_rect(&theme, 0, 3).x1 - bold).abs() < 0.01);
+                assert_eq!(line.byte_for_pixel_x(&theme, bold), 3);
+                line.set_marks(vec![]);
+                layout_and_draw(&mut line, &theme, 400.0);
+                assert!((line.pixel_x_for_byte(&theme, 3) - plain).abs() < 0.01);
+            }
+        }
 
-    #[test]
-    fn typing_marks_dirty_and_appends() {
-        let mut l = RichTextLine::new();
-        l.set_focus(true);
-        dispatch(&mut l, &char_press("h"));
-        dispatch(&mut l, &char_press("i"));
-        assert_eq!(l.value(), "hi");
-        let dirty = l.take_dirty();
-        assert_eq!(dirty.as_deref(), Some("hi"));
-        assert!(l.take_dirty().is_none());
-    }
-
-    #[test]
-    fn unfocused_line_ignores_keys() {
-        let mut l = RichTextLine::new().with_text("abc");
-        dispatch(&mut l, &key_press(NamedKey::Enter));
-        assert!(l.take_signal().is_none(), "unfocused line must not emit");
-        dispatch(&mut l, &char_press("z"));
-        assert_eq!(l.value(), "abc");
-    }
-
-    #[test]
-    fn user_rich_mark_edit_emits_one_dirty_edge_but_projection_and_pending_marks_do_not() {
-        let mut line = RichTextLine::new().with_text("text");
-        let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action(
-            line.inner_mut(),
-            &crate::a11y::Action::SetSelection {
-                anchor: 0,
-                focus: 4
-            },
-            &mut doc,
-            &automerge::ROOT
-        ));
-        let _ = line.take_dirty(); // Selection has its own presentation edge.
-        line.toggle_mark(Mark::Bold);
-        assert_eq!(line.take_dirty().as_deref(), Some("text"));
-        assert!(line.take_dirty().is_none());
-        line.set_marks(Vec::new());
-        assert!(line.take_dirty().is_none());
-        assert!(Widget::perform_action(
-            line.inner_mut(),
-            &crate::a11y::Action::SetSelection {
-                anchor: 4,
-                focus: 4
-            },
-            &mut doc,
-            &automerge::ROOT
-        ));
-        let _ = line.take_dirty(); // Selection has its own presentation edge.
-        line.toggle_mark(Mark::Bold);
-        assert!(
-            line.take_dirty().is_none(),
-            "pending typing style changes no content yet"
-        );
-    }
-
-    #[test]
-    fn toggle_mark_on_selection_wraps_it() {
-        let mut l = RichTextLine::new().with_text("hello");
-        l.set_focus(true);
-        l.inner_mut().set_cursor_pos(0);
-        // TextInput doesn't expose a public select_all, so this asserts
-        // pending-mark behaviour; select-and-toggle is covered below.
-        l.toggle_mark(Mark::Bold);
-        assert_eq!(l.pending_marks(), &[Mark::Bold]);
-        l.toggle_mark(Mark::Bold);
-        assert!(l.pending_marks().is_empty());
-    }
-
-    #[test]
-    fn selected_formatting_reports_one_edit_without_changing_text() {
-        let mut line = RichTextLine::new().with_text("hello");
-        line.inner_mut().set_selection(0, 5);
-        line.toggle_mark(Mark::Bold);
-        assert_eq!(line.take_dirty().as_deref(), Some("hello"));
-        assert!(line.take_dirty().is_none());
-        assert_eq!(line.marks(), &[MarkSpan::new(0..5, Mark::Bold)]);
-        line.toggle_mark(Mark::Italic);
-        line.set_text("replacement");
-        assert!(
-            line.take_dirty().is_none(),
-            "programmatic replacement discards the old edit"
-        );
-    }
-
-    #[test]
-    fn literal_code_rejects_formatting_shortcuts_and_restores_prose_behavior() {
-        for modifier in [ModifiersState::CONTROL, ModifiersState::SUPER] {
-            for shortcut in ["b", "i", "e", "u"] {
-                let mut line = RichTextLine::new().with_text("source").with_mono();
+        // Case `rich_marks_scrolled_selection_and_pointer_share_the_painted_end`.
+        {
+            for scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut line = RichTextLine::new().with_text("prefix WWW tail");
+                line.set_marks(vec![MarkSpan::new(7..10, Mark::Bold)]);
                 line.set_focus(true);
-                line.inner_mut().set_selection(0, 6);
-                line.set_inline_formatting(false);
-                dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
-                assert_eq!(line.value(), "source");
-                assert!(line.marks().is_empty());
-                assert!(line.pending_marks().is_empty());
-                assert!(line.take_dirty().is_none());
-
-                line.set_inline_formatting(true);
-                dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
-                assert_eq!(line.marks().len(), 1, "prose shortcut {shortcut} restored");
+                line.inner_mut().set_selection(7, 10);
+                layout_and_draw(&mut line, &theme, 80.0);
+                assert!(line.inner().scroll_x() > 0.0);
+                let x = line.pixel_x_for_byte(&theme, 10);
+                assert!(x <= line.get_rect().x1);
+                assert!((line.caret_rect(&theme, 10).x0 - x).abs() < 0.01);
+                assert!((line.selection_rect(&theme, 7, 10).x1 - x).abs() < 0.01);
+                assert_eq!(line.byte_for_pixel_x(&theme, x), 10);
             }
         }
     }
 
     #[test]
-    fn literal_code_brackets_do_not_open_note_links_or_inherit_pending_marks() {
-        let mut line = RichTextLine::new();
-        line.set_focus(true);
-        dispatch_with_mods(
-            &mut line,
-            &char_press("b"),
-            Modifiers::from(ModifiersState::CONTROL),
-        );
-        assert_eq!(line.pending_marks(), &[Mark::Bold]);
-        line.set_inline_formatting(false);
-        dispatch(&mut line, &char_press("["));
-        dispatch(&mut line, &char_press("["));
-        assert_eq!(line.value(), "[[");
-        assert!(line.take_signal().is_none());
-        assert!(line.marks().is_empty());
-        line.set_inline_formatting(true);
-        dispatch(&mut line, &char_press("["));
-        assert!(matches!(
-            line.take_signal(),
-            Some(LineSignal::LinkOpen { .. })
-        ));
-    }
+    fn bound_line_reads_and_splices_the_document() {
+        // Case `bound_line_reads_text_from_doc`.
+        {
+            use automerge::{ObjType, ROOT, transaction::Transactable};
+            let mut doc = automerge::AutoCommit::new();
+            let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+            doc.splice_text(&tid, 0, 0, "hello").unwrap();
 
-    #[test]
-    fn pending_mark_applies_to_next_typed_char() {
-        let mut l = RichTextLine::new();
-        l.set_focus(true);
-        l.toggle_mark(Mark::Bold);
-        assert_eq!(l.pending_marks().len(), 1);
-        dispatch(&mut l, &char_press("x"));
-        assert_eq!(l.value(), "x");
-        // Pending was drained onto the inserted byte.
-        assert!(l.pending_marks().is_empty());
-        assert_eq!(l.marks().len(), 1);
-        assert_eq!(l.marks()[0].range, 0..1);
-        assert_eq!(l.marks()[0].mark, Mark::Bold);
-    }
-
-    #[test]
-    fn marks_shift_on_insert_before() {
-        let mut l = RichTextLine::new().with_text("hello");
-        l.set_marks(vec![MarkSpan::new(2..4, Mark::Bold)]);
-        l.set_focus(true);
-        l.set_cursor_pos(0);
-        dispatch(&mut l, &char_press("X"));
-        assert_eq!(l.value(), "Xhello");
-        assert_eq!(l.marks()[0].range, 3..5);
-    }
-
-    #[test]
-    fn marks_shift_on_delete_before() {
-        let mut l = RichTextLine::new().with_text("Xhello");
-        l.set_marks(vec![MarkSpan::new(3..5, Mark::Bold)]);
-        l.set_focus(true);
-        l.set_cursor_pos(1);
-        dispatch(&mut l, &key_press(NamedKey::Backspace));
-        assert_eq!(l.value(), "hello");
-        assert_eq!(l.marks()[0].range, 2..4);
-    }
-
-    #[test]
-    fn diff_splice_detects_simple_insertion() {
-        assert_eq!(diff_splice("abc", "abXc"), (2, 1, 0));
-        assert_eq!(diff_splice("abc", "abc"), (3, 0, 0));
-        assert_eq!(diff_splice("abc", "ab"), (2, 0, 1));
-        assert_eq!(diff_splice("", "hi"), (0, 2, 0));
-    }
-
-    #[test]
-    fn link_at_byte_finds_mark() {
-        let id = uuid::Uuid::from_u128(7);
-        let marks = vec![MarkSpan::new(2..6, Mark::Link(id))];
-        assert_eq!(link_at_byte(&marks, 3), Some(id));
-        assert_eq!(link_at_byte(&marks, 1), None);
-        assert_eq!(link_at_byte(&marks, 6), None);
-    }
-
-    #[test]
-    fn typing_double_bracket_emits_link_open_signal() {
-        let mut l = RichTextLine::new();
-        l.set_focus(true);
-        dispatch(&mut l, &char_press("["));
-        // First `[` shouldn't emit.
-        assert!(l.take_signal().is_none());
-        dispatch(&mut l, &char_press("["));
-        match l.take_signal() {
-            Some(LineSignal::LinkOpen { open_at: 0 }) => {}
-            other => panic!("expected LinkOpen{{open_at:0}}, got {other:?}"),
+            let mut line = RichTextLine::new();
+            line.bind_text(tid.clone());
+            // The root arg is unused once a Text is bound.
+            line.sync(&mut doc, &ROOT);
+            assert_eq!(line.value(), "hello");
         }
-        assert_eq!(l.value(), "[[");
+
+        // Case `editing_bound_line_splices_into_doc`.
+        {
+            use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+            let mut doc = automerge::AutoCommit::new();
+            let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+
+            let mut line = RichTextLine::new();
+            line.bind_text(tid.clone());
+            line.set_focus(true);
+
+            // Type against OUR doc, not the throwaway one `dispatch` would make.
+            let taffy: TaffyTree<()> = TaffyTree::new();
+            for c in ["h", "i"] {
+                let ev = char_press(c);
+                let mut handled = false;
+                let mut focus_target = None;
+                line.handle_event(
+                    &ev,
+                    1.0,
+                    &Modifiers::default(),
+                    &mut doc,
+                    &ROOT,
+                    &mut handled,
+                    &mut focus_target,
+                    NodeId::new(0),
+                    &taffy,
+                );
+            }
+
+            assert_eq!(line.value(), "hi");
+            assert_eq!(
+                doc.text(&tid).unwrap(),
+                "hi",
+                "edits must splice into the bound Text"
+            );
+        }
+
+        // Case `authored_edit_stamps_mark_caches_run_and_survives_round_trip`.
+        {
+            use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+            let mut doc = automerge::AutoCommit::new();
+            let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+
+            let mut line = RichTextLine::new();
+            line.bind_text(tid.clone());
+            line.set_local_author(Some("alice".to_string()));
+            line.set_focus(true);
+
+            let taffy: TaffyTree<()> = TaffyTree::new();
+            for c in ["h", "i"] {
+                let ev = char_press(c);
+                let mut handled = false;
+                let mut focus_target = None;
+                line.handle_event(
+                    &ev,
+                    1.0,
+                    &Modifiers::default(),
+                    &mut doc,
+                    &ROOT,
+                    &mut handled,
+                    &mut focus_target,
+                    NodeId::new(0),
+                    &taffy,
+                );
+            }
+            assert_eq!(doc.text(&tid).unwrap(), "hi");
+
+            let marks = doc.marks(&tid).unwrap();
+            assert!(
+                marks.iter().any(|m| m.name.as_str() == "author"),
+                "expected an author mark, got {marks:?}"
+            );
+
+            line.sync(&mut doc, &ROOT);
+            assert!(
+                line.author_runs().iter().any(|(_, _, a)| a == "alice"),
+                "expected an alice author run, got {:?}",
+                line.author_runs()
+            );
+
+            // Survives a save/load round-trip, which is how authorship reaches a peer.
+            let reloaded = automerge::AutoCommit::load(&doc.save()).unwrap();
+            let marks2 = reloaded.marks(&tid).unwrap();
+            assert!(
+                marks2.iter().any(|m| m.name.as_str() == "author"),
+                "author mark must survive save/load (CRDT sync)"
+            );
+        }
+
+        // Case `diff_splice_detects_simple_insertion`.
+        {
+            assert_eq!(diff_splice("abc", "abXc"), (2, 1, 0));
+            assert_eq!(diff_splice("abc", "abc"), (3, 0, 0));
+            assert_eq!(diff_splice("abc", "ab"), (2, 0, 1));
+            assert_eq!(diff_splice("", "hi"), (0, 2, 0));
+        }
     }
 
     #[test]
-    fn chip_mono_width_uses_monospace_face_not_sans() {
-        // Also checks the mono advance differs from sans — without that, a
-        // face mismatch couldn't be detected at all.
-        let mut tr = crate::text_render::TextRenderer::new();
-        let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
-        let (sans_w, _) =
-            tr.measure_styled("inline code", 16.0, None, TextWeight::Regular, false, false);
-        assert!(
-            mono > 0.0,
-            "mono width must be non-zero for non-empty input"
-        );
-        assert!(
-            (mono - f64::from(sans_w)).abs() > 0.5,
-            "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
-             otherwise the chip-width-mismatch bug is undetectable",
-        );
+    fn construction_and_programmatic_state_do_not_count_as_edits() {
+        // Case `new_starts_empty_unfocused`.
+        {
+            let l = RichTextLine::new();
+            assert_eq!(l.value(), "");
+            assert!(!l.is_focused());
+            assert!(l.cursor_at_start());
+            assert!(l.cursor_at_end());
+        }
+
+        // Case `with_text_seeds_value_and_parks_cursor_at_end`.
+        {
+            let l = RichTextLine::new().with_text("hello");
+            assert_eq!(l.value(), "hello");
+            assert!(l.cursor_at_end());
+            assert!(!l.cursor_at_start());
+        }
+
+        // Case `set_text_does_not_mark_dirty`.
+        {
+            let mut l = RichTextLine::new();
+            l.set_text("seeded");
+            assert!(
+                l.take_dirty().is_none(),
+                "programmatic set_text is not dirty"
+            );
+            assert_eq!(l.value(), "seeded");
+            assert!(l.cursor_at_end());
+        }
+
+        // Case `cursor_at_start_after_set_cursor_pos_zero`.
+        {
+            let mut l = RichTextLine::new().with_text("abc");
+            l.set_cursor_pos(0);
+            assert!(l.cursor_at_start());
+            assert!(!l.cursor_at_end());
+            l.set_cursor_pos(3);
+            assert!(l.cursor_at_end());
+        }
+
+        // Case `accessibility_reports_single_line_text_input_with_value`.
+        {
+            use crate::a11y::Role;
+            let l = RichTextLine::new().with_text("hello world");
+            let node = Widget::accessibility(&l).expect("editable line is a text input");
+            assert_eq!(node.role, Role::TextInput);
+            assert_eq!(node.value.as_deref(), Some("hello world"));
+            assert!(!node.state.multiline, "a single line is not multiline");
+            assert!(node.state.focusable);
+            assert!(!node.state.focused, "fresh line is not focused");
+            assert!(!node.state.protected, "block text is never a secret field");
+        }
+
+        // Case `accessibility_focus_tracks_inner_input`.
+        {
+            let mut l = RichTextLine::new().with_text("x");
+            Widget::set_focus(&mut l, true);
+            let node = Widget::accessibility(&l).unwrap();
+            assert!(node.state.focused);
+        }
+    }
+
+    #[test]
+    fn boundary_keys_yield_block_signals() {
+        // Case `enter_key_yields_signal_with_cursor_byte`.
+        {
+            let mut l = RichTextLine::new().with_text("abcdef");
+            l.set_focus(true);
+            l.set_cursor_pos(3);
+            dispatch(&mut l, &key_press(NamedKey::Enter));
+            match l.take_signal() {
+                Some(LineSignal::Enter { split_at: 3 }) => {}
+                other => panic!("expected Enter@3, got {other:?}"),
+            }
+            assert_eq!(l.value(), "abcdef");
+        }
+
+        // Case `enter_at_end_yields_signal_with_full_length`.
+        {
+            let mut l = RichTextLine::new().with_text("hi");
+            l.set_focus(true);
+            dispatch(&mut l, &key_press(NamedKey::Enter));
+            match l.take_signal() {
+                Some(LineSignal::Enter { split_at }) => assert_eq!(split_at, 2),
+                other => panic!("expected Enter@2, got {other:?}"),
+            }
+        }
+
+        // Case `backspace_at_byte_zero_yields_signal`.
+        {
+            let mut l = RichTextLine::new().with_text("abc");
+            l.set_focus(true);
+            l.set_cursor_pos(0);
+            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            assert_eq!(l.take_signal(), Some(LineSignal::BackspaceAtStart));
+            assert_eq!(l.value(), "abc");
+        }
+
+        // Case `backspace_after_byte_zero_falls_through_to_inner`.
+        {
+            let mut l = RichTextLine::new().with_text("abc");
+            l.set_focus(true);
+            l.set_cursor_pos(3);
+            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            assert!(l.take_signal().is_none());
+            assert_eq!(l.value(), "ab");
+            assert!(l.take_dirty().is_some());
+        }
+
+        // Case `arrow_up_down_emit_signals`.
+        {
+            let mut l = RichTextLine::new().with_text("x");
+            l.set_focus(true);
+            dispatch(&mut l, &key_press(NamedKey::ArrowUp));
+            assert_eq!(l.take_signal(), Some(LineSignal::ArrowUp));
+            dispatch(&mut l, &key_press(NamedKey::ArrowDown));
+            assert_eq!(l.take_signal(), Some(LineSignal::ArrowDown));
+        }
+
+        // Case `typing_double_bracket_emits_link_open_signal`.
+        {
+            let mut l = RichTextLine::new();
+            l.set_focus(true);
+            dispatch(&mut l, &char_press("["));
+            // First `[` shouldn't emit.
+            assert!(l.take_signal().is_none());
+            dispatch(&mut l, &char_press("["));
+            match l.take_signal() {
+                Some(LineSignal::LinkOpen { open_at: 0 }) => {}
+                other => panic!("expected LinkOpen{{open_at:0}}, got {other:?}"),
+            }
+            assert_eq!(l.value(), "[[");
+        }
+    }
+
+    #[test]
+    fn typing_edits_only_when_focused_and_reports_one_dirty_edge() {
+        // Case `typing_marks_dirty_and_appends`.
+        {
+            let mut l = RichTextLine::new();
+            l.set_focus(true);
+            dispatch(&mut l, &char_press("h"));
+            dispatch(&mut l, &char_press("i"));
+            assert_eq!(l.value(), "hi");
+            let dirty = l.take_dirty();
+            assert_eq!(dirty.as_deref(), Some("hi"));
+            assert!(l.take_dirty().is_none());
+        }
+
+        // Case `unfocused_line_ignores_keys`.
+        {
+            let mut l = RichTextLine::new().with_text("abc");
+            dispatch(&mut l, &key_press(NamedKey::Enter));
+            assert!(l.take_signal().is_none(), "unfocused line must not emit");
+            dispatch(&mut l, &char_press("z"));
+            assert_eq!(l.value(), "abc");
+        }
+
+        // Case `user_rich_mark_edit_emits_one_dirty_edge_but_projection_and_pending_marks_do_not`.
+        {
+            let mut line = RichTextLine::new().with_text("text");
+            let mut doc = AutoCommit::new();
+            assert!(Widget::perform_action(
+                line.inner_mut(),
+                &crate::a11y::Action::SetSelection {
+                    anchor: 0,
+                    focus: 4
+                },
+                &mut doc,
+                &automerge::ROOT
+            ));
+            let _ = line.take_dirty(); // Selection has its own presentation edge.
+            line.toggle_mark(Mark::Bold);
+            assert_eq!(line.take_dirty().as_deref(), Some("text"));
+            assert!(line.take_dirty().is_none());
+            line.set_marks(Vec::new());
+            assert!(line.take_dirty().is_none());
+            assert!(Widget::perform_action(
+                line.inner_mut(),
+                &crate::a11y::Action::SetSelection {
+                    anchor: 4,
+                    focus: 4
+                },
+                &mut doc,
+                &automerge::ROOT
+            ));
+            let _ = line.take_dirty(); // Selection has its own presentation edge.
+            line.toggle_mark(Mark::Bold);
+            assert!(
+                line.take_dirty().is_none(),
+                "pending typing style changes no content yet"
+            );
+        }
+    }
+
+    #[test]
+    fn marks_toggle_apply_pending_and_shift_with_edits() {
+        // Case `toggle_mark_on_selection_wraps_it`.
+        {
+            let mut l = RichTextLine::new().with_text("hello");
+            l.set_focus(true);
+            l.inner_mut().set_cursor_pos(0);
+            // TextInput doesn't expose a public select_all, so this asserts
+            // pending-mark behaviour; select-and-toggle is covered below.
+            l.toggle_mark(Mark::Bold);
+            assert_eq!(l.pending_marks(), &[Mark::Bold]);
+            l.toggle_mark(Mark::Bold);
+            assert!(l.pending_marks().is_empty());
+        }
+
+        // Case `selected_formatting_reports_one_edit_without_changing_text`.
+        {
+            let mut line = RichTextLine::new().with_text("hello");
+            line.inner_mut().set_selection(0, 5);
+            line.toggle_mark(Mark::Bold);
+            assert_eq!(line.take_dirty().as_deref(), Some("hello"));
+            assert!(line.take_dirty().is_none());
+            assert_eq!(line.marks(), &[MarkSpan::new(0..5, Mark::Bold)]);
+            line.toggle_mark(Mark::Italic);
+            line.set_text("replacement");
+            assert!(
+                line.take_dirty().is_none(),
+                "programmatic replacement discards the old edit"
+            );
+        }
+
+        // Case `pending_mark_applies_to_next_typed_char`.
+        {
+            let mut l = RichTextLine::new();
+            l.set_focus(true);
+            l.toggle_mark(Mark::Bold);
+            assert_eq!(l.pending_marks().len(), 1);
+            dispatch(&mut l, &char_press("x"));
+            assert_eq!(l.value(), "x");
+            // Pending was drained onto the inserted byte.
+            assert!(l.pending_marks().is_empty());
+            assert_eq!(l.marks().len(), 1);
+            assert_eq!(l.marks()[0].range, 0..1);
+            assert_eq!(l.marks()[0].mark, Mark::Bold);
+        }
+
+        // Case `marks_shift_on_insert_before`.
+        {
+            let mut l = RichTextLine::new().with_text("hello");
+            l.set_marks(vec![MarkSpan::new(2..4, Mark::Bold)]);
+            l.set_focus(true);
+            l.set_cursor_pos(0);
+            dispatch(&mut l, &char_press("X"));
+            assert_eq!(l.value(), "Xhello");
+            assert_eq!(l.marks()[0].range, 3..5);
+        }
+
+        // Case `marks_shift_on_delete_before`.
+        {
+            let mut l = RichTextLine::new().with_text("Xhello");
+            l.set_marks(vec![MarkSpan::new(3..5, Mark::Bold)]);
+            l.set_focus(true);
+            l.set_cursor_pos(1);
+            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            assert_eq!(l.value(), "hello");
+            assert_eq!(l.marks()[0].range, 2..4);
+        }
+
+        // Case `link_at_byte_finds_mark`.
+        {
+            let id = uuid::Uuid::from_u128(7);
+            let marks = vec![MarkSpan::new(2..6, Mark::Link(id))];
+            assert_eq!(link_at_byte(&marks, 3), Some(id));
+            assert_eq!(link_at_byte(&marks, 1), None);
+            assert_eq!(link_at_byte(&marks, 6), None);
+        }
+    }
+
+    #[test]
+    fn literal_code_is_immune_to_formatting_and_note_links() {
+        // Case `literal_code_rejects_formatting_shortcuts_and_restores_prose_behavior`.
+        {
+            for modifier in [ModifiersState::CONTROL, ModifiersState::SUPER] {
+                for shortcut in ["b", "i", "e", "u"] {
+                    let mut line = RichTextLine::new().with_text("source").with_mono();
+                    line.set_focus(true);
+                    line.inner_mut().set_selection(0, 6);
+                    line.set_inline_formatting(false);
+                    dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                    assert_eq!(line.value(), "source");
+                    assert!(line.marks().is_empty());
+                    assert!(line.pending_marks().is_empty());
+                    assert!(line.take_dirty().is_none());
+
+                    line.set_inline_formatting(true);
+                    dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                    assert_eq!(line.marks().len(), 1, "prose shortcut {shortcut} restored");
+                }
+            }
+        }
+
+        // Case `literal_code_brackets_do_not_open_note_links_or_inherit_pending_marks`.
+        {
+            let mut line = RichTextLine::new();
+            line.set_focus(true);
+            dispatch_with_mods(
+                &mut line,
+                &char_press("b"),
+                Modifiers::from(ModifiersState::CONTROL),
+            );
+            assert_eq!(line.pending_marks(), &[Mark::Bold]);
+            line.set_inline_formatting(false);
+            dispatch(&mut line, &char_press("["));
+            dispatch(&mut line, &char_press("["));
+            assert_eq!(line.value(), "[[");
+            assert!(line.take_signal().is_none());
+            assert!(line.marks().is_empty());
+            line.set_inline_formatting(true);
+            dispatch(&mut line, &char_press("["));
+            assert!(matches!(
+                line.take_signal(),
+                Some(LineSignal::LinkOpen { .. })
+            ));
+        }
     }
 
     /// `ModifiersState` is fully `pub(crate)` in winit 0.30, so a Ctrl-down

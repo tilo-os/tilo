@@ -21,19 +21,31 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(result.stderr, b'')
         return result.stdout, json.loads(result.stdout)
 
-    def test_exception_exposes_only_fixed_locations_not_values_or_artifact_output(self):
-        raw, result = self.invoke("import sys\nsys.stdout.buffer.write(b'ARTIFACT')\nraise ValueError('SENSITIVE ERROR VALUE')")
-        self.assertFalse(result['validated'])
-        self.assertEqual(result['exception_type'], 'ValueError')
-        self.assertEqual(result['locations'][-1], {'file': '<checkpoint-export>', 'line': 3, 'function': '<module>'})
-        self.assertNotIn(b'ARTIFACT', raw)
-        self.assertNotIn(b'SENSITIVE', raw)
+    def test_diagnostics_expose_only_public_identity(self):
+        with self.subTest(phase="exception_exposes_only_fixed_locations_not_values_or_artifact_output"):
+            raw, result = self.invoke("import sys\nsys.stdout.buffer.write(b'ARTIFACT')\nraise ValueError('SENSITIVE ERROR VALUE')")
+            self.assertFalse(result['validated'])
+            self.assertEqual(result['exception_type'], 'ValueError')
+            self.assertEqual(result['locations'][-1], {'file': '<checkpoint-export>', 'line': 3, 'function': '<module>'})
+            self.assertNotIn(b'ARTIFACT', raw)
+            self.assertNotIn(b'SENSITIVE', raw)
+        with self.subTest(phase="success_discards_frame_and_reports_only_public_input_identity"):
+            raw, result = self.invoke("import sys\npurpose='target-uki'\nresult={'input_sha256':'a'*64,'input_bytes':256}\nsys.stdout.buffer.write(b'PRIVATE-LARGE-PAYLOAD')\nsys.stdout.buffer.flush()")
+            self.assertEqual(result, {'validated': True, 'purpose': 'target-uki', 'input_sha256': 'a' * 64, 'input_bytes': 256,
+                                     'checkpoint_metadata': {'input_sha256': 'a' * 64, 'input_bytes': 256}})
+            self.assertNotIn(b'PAYLOAD', raw)
 
-    def test_success_discards_frame_and_reports_only_public_input_identity(self):
-        raw, result = self.invoke("import sys\npurpose='target-uki'\nresult={'input_sha256':'a'*64,'input_bytes':256}\nsys.stdout.buffer.write(b'PRIVATE-LARGE-PAYLOAD')\nsys.stdout.buffer.flush()")
-        self.assertEqual(result, {'validated': True, 'purpose': 'target-uki', 'input_sha256': 'a' * 64, 'input_bytes': 256,
-                                 'checkpoint_metadata': {'input_sha256': 'a' * 64, 'input_bytes': 256}})
-        self.assertNotIn(b'PAYLOAD', raw)
+
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
 
 
 class CheckpointPersistenceTests(unittest.TestCase):
@@ -91,30 +103,67 @@ class CheckpointPersistenceTests(unittest.TestCase):
             'manifest_sha256': '3' * 64, 'target': 'lenovo-83ed',
         }
 
-    def test_export_publishes_only_authenticated_metadata(self):
-        metadata = {'input_sha256': '4' * 64, 'input_bytes': 257}
-        binding = {'context_sha256': '5' * 64}
-        inspected = ({'validated': True, 'local_metadata_validated': True},
-                     metadata, self.spool, binding)
+    def test_export_and_materialize_admitted_checkpoints(self):
+        with self.subTest(phase="export_publishes_only_authenticated_metadata"):
+            metadata = {'input_sha256': '4' * 64, 'input_bytes': 257}
+            binding = {'context_sha256': '5' * 64}
+            inspected = ({'validated': True, 'local_metadata_validated': True},
+                         metadata, self.spool, binding)
 
-        with mock.patch.object(diagnostics, '_inspect', return_value=inspected):
-            result = diagnostics.export_metadata(
-                self.operation, self.run, 'live-uki', self.spool)
+            with mock.patch.object(diagnostics, '_inspect', return_value=inspected):
+                result = diagnostics.export_metadata(
+                    self.operation, self.run, 'live-uki', self.spool)
 
-        destination = self.checkpoints / 'live-uki'
-        self.assertEqual(set(path.name for path in destination.iterdir()), {'receipt.json'})
-        self.assertEqual(self.spool.document(destination / 'receipt.json'), {
-            'input_sha256': '4' * 64, 'input_bytes': 257,
-            'transport_context_sha256': '5' * 64,
-        })
-        self.assertEqual(result['directory'], str(destination))
-        self.assertTrue(result['metadata_only'])
-        self.assertFalse(result['signing_authorized'])
-        self.assertFalse((self.checkpoints / '.live-uki.ready').exists())
+            destination = self.checkpoints / 'live-uki'
+            self.assertEqual(set(path.name for path in destination.iterdir()), {'receipt.json'})
+            self.assertEqual(self.spool.document(destination / 'receipt.json'), {
+                'input_sha256': '4' * 64, 'input_bytes': 257,
+                'transport_context_sha256': '5' * 64,
+            })
+            self.assertEqual(result['directory'], str(destination))
+            self.assertTrue(result['metadata_only'])
+            self.assertFalse(result['signing_authorized'])
+            self.assertFalse((self.checkpoints / '.live-uki.ready').exists())
 
-        with mock.patch.object(diagnostics, '_inspect', return_value=inspected):
-            with self.assertRaisesRegex(ValueError, 'fresh checkpoint output required'):
-                diagnostics.export_metadata(self.operation, self.run, 'live-uki', self.spool)
+            with mock.patch.object(diagnostics, '_inspect', return_value=inspected):
+                with self.assertRaisesRegex(ValueError, 'fresh checkpoint output required'):
+                    diagnostics.export_metadata(self.operation, self.run, 'live-uki', self.spool)
+        restart_fixture(self)
+        with self.subTest(phase="materialize_copies_exact_admitted_request_and_records_identity"):
+            checkpoint, request, request_metadata = self.prepare_materialization()
+
+            result = diagnostics.materialize(
+                self.operation, self.run, 'target-uki', request, self.spool)
+
+            self.assertEqual((checkpoint / 'input.efi').read_bytes(), b'exact unsigned UKI')
+            record = self.spool.document(checkpoint / 'materialization.json')
+            self.assertEqual(record, {
+                'schema': 1, 'purpose': 'target-uki', 'request_id': 'a' * 32,
+                'context_sha256': request_metadata['context_sha256'],
+                'input_sha256': request_metadata['input_sha256'],
+                'input_bytes': request_metadata['input_bytes'],
+                'signing_authorized': False,
+            })
+            self.assertTrue(result['materialized'])
+            self.assertFalse(result['signing_authorized'])
+        restart_fixture(self)
+        with self.subTest(phase="materialize_accepts_loader_checkpoint_with_the_same_guards"):
+            checkpoint, request, request_metadata = self.prepare_materialization()
+            loader = checkpoint.with_name('loader')
+            checkpoint.rename(loader)
+            receipt = self.spool.document(loader / 'receipt.json')
+            receipt['purpose'] = 'loader'
+            (loader / 'receipt.json').unlink()
+            self.write(loader / 'receipt.json', receipt)
+
+            result = diagnostics.materialize(
+                self.operation, self.run, 'loader', request, self.spool)
+
+            self.assertEqual((loader / 'input.efi').read_bytes(), b'exact unsigned UKI')
+            self.assertEqual(result['purpose'], 'loader')
+            self.assertEqual(
+                self.spool.document(loader / 'materialization.json')['request_id'],
+                request_metadata['request_id'])
 
     def prepare_materialization(self, payload=b'exact unsigned UKI'):
         context = self.context()
@@ -139,88 +188,53 @@ class CheckpointPersistenceTests(unittest.TestCase):
         self.write(request / 'input', payload)
         return checkpoint, request, request_metadata
 
-    def test_materialize_copies_exact_admitted_request_and_records_identity(self):
-        checkpoint, request, request_metadata = self.prepare_materialization()
+    def test_materialize_rejects_mismatched_requests(self):
+        with self.subTest(phase="materialize_rejects_request_that_differs_from_checkpoint"):
+            checkpoint, request, request_metadata = self.prepare_materialization()
+            request_metadata['input_sha256'] = '9' * 64
+            (request / 'request.json').unlink()
+            self.write(request / 'request.json', request_metadata)
 
-        result = diagnostics.materialize(
-            self.operation, self.run, 'target-uki', request, self.spool)
+            with self.assertRaisesRegex(ValueError, 'fetched request differs'):
+                diagnostics.materialize(
+                    self.operation, self.run, 'target-uki', request, self.spool)
 
-        self.assertEqual((checkpoint / 'input.efi').read_bytes(), b'exact unsigned UKI')
-        record = self.spool.document(checkpoint / 'materialization.json')
-        self.assertEqual(record, {
-            'schema': 1, 'purpose': 'target-uki', 'request_id': 'a' * 32,
-            'context_sha256': request_metadata['context_sha256'],
-            'input_sha256': request_metadata['input_sha256'],
-            'input_bytes': request_metadata['input_bytes'],
-            'signing_authorized': False,
-        })
-        self.assertTrue(result['materialized'])
-        self.assertFalse(result['signing_authorized'])
+            self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
+        restart_fixture(self)
+        with self.subTest(phase="materialize_rejects_receipt_from_another_transport_context"):
+            checkpoint, request, _ = self.prepare_materialization()
+            receipt = self.spool.document(checkpoint / 'receipt.json')
+            receipt['transport_context_sha256'] = '8' * 64
+            (checkpoint / 'receipt.json').unlink()
+            self.write(checkpoint / 'receipt.json', receipt)
 
-    def test_materialize_accepts_loader_checkpoint_with_the_same_guards(self):
-        checkpoint, request, request_metadata = self.prepare_materialization()
-        loader = checkpoint.with_name('loader')
-        checkpoint.rename(loader)
-        receipt = self.spool.document(loader / 'receipt.json')
-        receipt['purpose'] = 'loader'
-        (loader / 'receipt.json').unlink()
-        self.write(loader / 'receipt.json', receipt)
+            with self.assertRaisesRegex(ValueError, 'fetched request differs'):
+                diagnostics.materialize(
+                    self.operation, self.run, 'target-uki', request, self.spool)
 
-        result = diagnostics.materialize(
-            self.operation, self.run, 'loader', request, self.spool)
+            self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
+        restart_fixture(self)
+        with self.subTest(phase="materialize_rejects_request_id_that_differs_from_directory"):
+            checkpoint, request, request_metadata = self.prepare_materialization()
+            request_metadata['request_id'] = 'b' * 32
+            (request / 'request.json').unlink()
+            self.write(request / 'request.json', request_metadata)
 
-        self.assertEqual((loader / 'input.efi').read_bytes(), b'exact unsigned UKI')
-        self.assertEqual(result['purpose'], 'loader')
-        self.assertEqual(
-            self.spool.document(loader / 'materialization.json')['request_id'],
-            request_metadata['request_id'])
+            with self.assertRaisesRegex(ValueError, 'fetched request differs'):
+                diagnostics.materialize(
+                    self.operation, self.run, 'target-uki', request, self.spool)
 
-    def test_materialize_rejects_request_that_differs_from_checkpoint(self):
-        checkpoint, request, request_metadata = self.prepare_materialization()
-        request_metadata['input_sha256'] = '9' * 64
-        (request / 'request.json').unlink()
-        self.write(request / 'request.json', request_metadata)
+            self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
+        restart_fixture(self)
+        with self.subTest(phase="materialize_rejects_request_directory_outside_receive_storage"):
+            checkpoint, request, _ = self.prepare_materialization()
+            outside = self.directory(self.run / ('c' * 32))
 
-        with self.assertRaisesRegex(ValueError, 'fetched request differs'):
-            diagnostics.materialize(
-                self.operation, self.run, 'target-uki', request, self.spool)
+            with self.assertRaisesRegex(ValueError, 'outside admitted receive storage'):
+                diagnostics.materialize(
+                    self.operation, self.run, 'target-uki', outside, self.spool)
 
-        self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
-
-    def test_materialize_rejects_receipt_from_another_transport_context(self):
-        checkpoint, request, _ = self.prepare_materialization()
-        receipt = self.spool.document(checkpoint / 'receipt.json')
-        receipt['transport_context_sha256'] = '8' * 64
-        (checkpoint / 'receipt.json').unlink()
-        self.write(checkpoint / 'receipt.json', receipt)
-
-        with self.assertRaisesRegex(ValueError, 'fetched request differs'):
-            diagnostics.materialize(
-                self.operation, self.run, 'target-uki', request, self.spool)
-
-        self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
-
-    def test_materialize_rejects_request_id_that_differs_from_directory(self):
-        checkpoint, request, request_metadata = self.prepare_materialization()
-        request_metadata['request_id'] = 'b' * 32
-        (request / 'request.json').unlink()
-        self.write(request / 'request.json', request_metadata)
-
-        with self.assertRaisesRegex(ValueError, 'fetched request differs'):
-            diagnostics.materialize(
-                self.operation, self.run, 'target-uki', request, self.spool)
-
-        self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
-
-    def test_materialize_rejects_request_directory_outside_receive_storage(self):
-        checkpoint, request, _ = self.prepare_materialization()
-        outside = self.directory(self.run / ('c' * 32))
-
-        with self.assertRaisesRegex(ValueError, 'outside admitted receive storage'):
-            diagnostics.materialize(
-                self.operation, self.run, 'target-uki', outside, self.spool)
-
-        self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
+            self.assertEqual(set(path.name for path in checkpoint.iterdir()), {'receipt.json'})
 
     def prepare_recompute(self):
         context = self.context()
@@ -260,48 +274,49 @@ class CheckpointPersistenceTests(unittest.TestCase):
                 value if value['purpose'] == purpose else (_ for _ in ()).throw(ValueError()))
         return values, exporter, {'context_sha256': context_sha256}
 
-    def test_recompute_admits_materialized_live_and_metadata_only_target(self):
-        values, exporter, binding = self.prepare_recompute()
-        live, target = diagnostics.admit_composefs_recompute(
-            self.run, {}, binding, '7' * 64, exporter, self.spool)
-        self.assertEqual(live, values['live-uki'][2])
-        self.assertEqual(target, values['target-uki'][2])
-
-    def test_recompute_rejects_unmaterialized_live(self):
-        values, exporter, binding = self.prepare_recompute()
-        (values['live-uki'][0] / 'input.efi').unlink()
-        with self.assertRaises((OSError, ValueError)):
-            diagnostics.admit_composefs_recompute(
+    def test_recompute_admission(self):
+        with self.subTest(phase="recompute_admits_materialized_live_and_metadata_only_target"):
+            values, exporter, binding = self.prepare_recompute()
+            live, target = diagnostics.admit_composefs_recompute(
                 self.run, {}, binding, '7' * 64, exporter, self.spool)
-
-    def test_recompute_rejects_materialized_target_before_sequential_request(self):
-        values, exporter, binding = self.prepare_recompute()
-        self.write(values['target-uki'][0] / 'input.efi', values['target-uki'][1])
-        with self.assertRaisesRegex(ValueError, 'metadata-only'):
-            diagnostics.admit_composefs_recompute(
-                self.run, {}, binding, '7' * 64, exporter, self.spool)
-
-    def test_recompute_rejects_receive_context_mismatch(self):
-        values, exporter, binding = self.prepare_recompute()
-        request = self.run / 'received' / ('a' * 32) / 'request.json'
-        value = self.spool.document(request)
-        value['context_sha256'] = '8' * 64
-        request.unlink()
-        self.write(request, value)
-        with self.assertRaisesRegex(ValueError, 'receive metadata differs'):
-            diagnostics.admit_composefs_recompute(
-                self.run, {}, binding, '7' * 64, exporter, self.spool)
-
-    def test_recompute_admits_explicit_legacy_checkpoint_layout(self):
-        values, exporter, binding = self.prepare_recompute()
-        for purpose in ('live-uki', 'target-uki'):
-            source = self.checkpoints / purpose
-            source.rename(self.run / ('checkpoint-' + purpose))
-        self.checkpoints.rmdir()
-        live, target = diagnostics.admit_composefs_recompute(
-            self.run, {}, binding, '7' * 64, exporter, self.spool, legacy=True)
-        self.assertEqual(live, values['live-uki'][2])
-        self.assertEqual(target, values['target-uki'][2])
+            self.assertEqual(live, values['live-uki'][2])
+            self.assertEqual(target, values['target-uki'][2])
+        restart_fixture(self)
+        with self.subTest(phase="recompute_rejects_unmaterialized_live"):
+            values, exporter, binding = self.prepare_recompute()
+            (values['live-uki'][0] / 'input.efi').unlink()
+            with self.assertRaises((OSError, ValueError)):
+                diagnostics.admit_composefs_recompute(
+                    self.run, {}, binding, '7' * 64, exporter, self.spool)
+        restart_fixture(self)
+        with self.subTest(phase="recompute_rejects_materialized_target_before_sequential_request"):
+            values, exporter, binding = self.prepare_recompute()
+            self.write(values['target-uki'][0] / 'input.efi', values['target-uki'][1])
+            with self.assertRaisesRegex(ValueError, 'metadata-only'):
+                diagnostics.admit_composefs_recompute(
+                    self.run, {}, binding, '7' * 64, exporter, self.spool)
+        restart_fixture(self)
+        with self.subTest(phase="recompute_rejects_receive_context_mismatch"):
+            values, exporter, binding = self.prepare_recompute()
+            request = self.run / 'received' / ('a' * 32) / 'request.json'
+            value = self.spool.document(request)
+            value['context_sha256'] = '8' * 64
+            request.unlink()
+            self.write(request, value)
+            with self.assertRaisesRegex(ValueError, 'receive metadata differs'):
+                diagnostics.admit_composefs_recompute(
+                    self.run, {}, binding, '7' * 64, exporter, self.spool)
+        restart_fixture(self)
+        with self.subTest(phase="recompute_admits_explicit_legacy_checkpoint_layout"):
+            values, exporter, binding = self.prepare_recompute()
+            for purpose in ('live-uki', 'target-uki'):
+                source = self.checkpoints / purpose
+                source.rename(self.run / ('checkpoint-' + purpose))
+            self.checkpoints.rmdir()
+            live, target = diagnostics.admit_composefs_recompute(
+                self.run, {}, binding, '7' * 64, exporter, self.spool, legacy=True)
+            self.assertEqual(live, values['live-uki'][2])
+            self.assertEqual(target, values['target-uki'][2])
 
 
 if __name__ == '__main__':

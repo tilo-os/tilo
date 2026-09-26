@@ -169,74 +169,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_exact_id_matches_only_itself() {
-        let list = "so.tilo.browser\n";
-        assert!(policy_matches(list, "so.tilo.browser"));
-        assert!(!policy_matches(list, "so.tilo.browserish"));
-        assert!(!policy_matches(list, "so.tilo.calculator"));
+    fn hardening_policy_entries_match_ids_and_families() {
+        // Phase `an_exact_id_matches_only_itself`.
+        {
+            let list = "so.tilo.browser\n";
+            assert!(policy_matches(list, "so.tilo.browser"));
+            assert!(!policy_matches(list, "so.tilo.browserish"));
+            assert!(!policy_matches(list, "so.tilo.calculator"));
+        }
+        // Phase `comments_and_blank_lines_are_not_entries`.
+        {
+            let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
+            assert!(policy_matches(list, "so.tilo.tube"));
+            assert!(
+                !policy_matches(list, "so.tilo.calculator"),
+                "a commented-out id must not match"
+            );
+        }
+        // Phase `a_trailing_star_matches_a_family`.
+        {
+            let list = "so.tilo.media.*\n";
+            assert!(policy_matches(list, "so.tilo.media.player"));
+            assert!(!policy_matches(list, "so.tilo.notes"));
+        }
+        // Phase `an_empty_policy_hardens_nothing`.
+        {
+            assert!(!policy_matches("", "so.tilo.browser"));
+            assert!(!policy_matches(
+                "# everything commented\n",
+                "so.tilo.browser"
+            ));
+        }
     }
 
     #[test]
-    fn comments_and_blank_lines_are_not_entries() {
-        let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
-        assert!(policy_matches(list, "so.tilo.tube"));
-        assert!(
-            !policy_matches(list, "so.tilo.calculator"),
-            "a commented-out id must not match"
-        );
-    }
+    fn hardening_policy_file_replaces_the_builtin_list() {
+        // Phase `a_policy_file_replaces_the_builtin_list`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("untrusted-parsers.conf");
+            std::fs::write(&file, "so.tilo.notes\n").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(POLICY_PATH_ENV, &file);
 
-    #[test]
-    fn a_trailing_star_matches_a_family() {
-        let list = "so.tilo.media.*\n";
-        assert!(policy_matches(list, "so.tilo.media.player"));
-        assert!(!policy_matches(list, "so.tilo.notes"));
-    }
+            let notes = for_package("so.tilo.notes");
+            let browser = for_package("so.tilo.browser");
+            drop(env);
 
-    #[test]
-    fn an_empty_policy_hardens_nothing() {
-        assert!(!policy_matches("", "so.tilo.browser"));
-        assert!(!policy_matches(
-            "# everything commented\n",
-            "so.tilo.browser"
-        ));
-    }
+            assert!(
+                notes.shadow_stack,
+                "the package named by the policy file must be hardened"
+            );
+            assert!(
+                !browser.is_active(),
+                "a package the policy file omits must not be hardened just because \
+                 it is in the compiled-in fallback"
+            );
+        }
+        // Phase `with_no_policy_file_the_builtin_set_still_applies`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("does-not-exist.conf");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(POLICY_PATH_ENV, &missing);
 
-    #[test]
-    fn a_policy_file_replaces_the_builtin_list() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("untrusted-parsers.conf");
-        std::fs::write(&file, "so.tilo.notes\n").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(POLICY_PATH_ENV, &file);
+            let browser = for_package("so.tilo.browser");
+            let calculator = for_package("so.tilo.calculator");
+            drop(env);
 
-        let notes = for_package("so.tilo.notes");
-        let browser = for_package("so.tilo.browser");
-        drop(env);
-
-        assert!(
-            notes.shadow_stack,
-            "the package named by the policy file must be hardened"
-        );
-        assert!(
-            !browser.is_active(),
-            "a package the policy file omits must not be hardened just because \
-             it is in the compiled-in fallback"
-        );
-    }
-
-    #[test]
-    fn with_no_policy_file_the_builtin_set_still_applies() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("does-not-exist.conf");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(POLICY_PATH_ENV, &missing);
-
-        let browser = for_package("so.tilo.browser");
-        let calculator = for_package("so.tilo.calculator");
-        drop(env);
-
-        assert!(browser.shadow_stack, "fallback list lost the browser");
-        assert!(!calculator.is_active(), "a plain app must stay unhardened");
+            assert!(browser.shadow_stack, "fallback list lost the browser");
+            assert!(!calculator.is_active(), "a plain app must stay unhardened");
+        }
     }
 }

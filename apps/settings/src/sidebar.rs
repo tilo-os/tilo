@@ -719,46 +719,39 @@ mod tests {
         n
     }
 
+    /// The sidebar lists exactly the categories matching its query, and each
+    /// row is addressable by its category label.
     #[test]
-    fn empty_query_lists_every_category() {
-        let sb = build(Category::Network, "", &ui::LocalState::new(None));
-        assert_eq!(
-            count_rows(sb.as_ref()),
-            Category::ALL.len(),
-            "the unfiltered sidebar lists all categories"
-        );
-    }
-
-    #[test]
-    fn query_filters_the_sidebar_to_matching_categories() {
-        // "night" is a Displays-only keyword, so exactly one row survives.
-        let sb = build(Category::Displays, "night", &ui::LocalState::new(None));
-        let expected = Category::ALL.iter().filter(|c| c.matches("night")).count();
-        assert_eq!(count_rows(sb.as_ref()), expected);
+    fn sidebar_query_filters_rows_and_rows_are_addressable() {
+        let night = Category::ALL.iter().filter(|c| c.matches("night")).count();
         assert!(
-            expected >= 1 && expected < Category::ALL.len(),
+            night >= 1 && night < Category::ALL.len(),
             "genuinely filtered"
         );
-    }
+        // (case, selected, query, rows)
+        for (case, selected, query, rows) in [
+            (
+                "unfiltered lists all categories",
+                Category::Network,
+                "",
+                Category::ALL.len(),
+            ),
+            // "night" is a Displays-only keyword.
+            ("keyword filters", Category::Displays, "night", night),
+            ("no match lists no rows", Category::Network, "zzzznope", 0),
+        ] {
+            let sb = build(selected, query, &ui::LocalState::new(None));
+            assert_eq!(count_rows(sb.as_ref()), rows, "case {case}");
+        }
 
-    #[test]
-    fn no_match_query_shows_no_rows() {
-        let sb = build(Category::Network, "zzzznope", &ui::LocalState::new(None));
-        assert_eq!(
-            count_rows(sb.as_ref()),
-            0,
-            "an empty result set lists no rows"
-        );
-    }
-
-    #[test]
-    fn row_is_addressable_by_category_label() {
         let row = SidebarRow::new(Category::MouseKeyboard, false);
         assert_eq!(Widget::test_id(&row), Some("Mouse & Keyboard"));
     }
 
+    /// Row geometry: the pill inset, centred icon column, glyph-independent
+    /// label start, centred line box, and the shared shell field edge.
     #[test]
-    fn row_geometry_aligns_icon_and_label_inside_the_pill() {
+    fn row_geometry_aligns_icon_label_and_pill_to_shared_edges() {
         let sp = spacing();
         // A representative row rect (full sidebar width, one ROW_HEIGHT tall).
         let rect = Rect::new(0.0, 100.0, SIDEBAR_WIDTH, 100.0 + f64::from(ROW_HEIGHT));
@@ -810,13 +803,9 @@ mod tests {
             (top_slack - bottom_slack).abs() < 0.001,
             "text line box must be vertically centred (top={top_slack}, bottom={bottom_slack})"
         );
-    }
 
-    #[test]
-    fn row_geometry_label_start_is_glyph_width_independent() {
         // Two rows whose icon glyphs measure differently must still align their
         // labels to the same x — the point of the fixed icon column.
-        let sp = spacing();
         let rect = Rect::new(0.0, 0.0, SIDEBAR_WIDTH, f64::from(ROW_HEIGHT));
         let narrow = RowGeometry::compute(rect, 8.0, 17.5, &sp);
         let wide = RowGeometry::compute(rect, 18.0, 17.5, &sp);
@@ -824,14 +813,10 @@ mod tests {
             (narrow.label_x - wide.label_x).abs() < f64::EPSILON,
             "labels must start at the same x regardless of glyph advance width"
         );
-    }
 
-    #[test]
-    fn pill_shares_the_shell_search_fields_left_edge() {
         // The row margin plus the pill inset must land on the shell's field
         // inset, so the selection highlight and the search field read as one
         // column edge instead of two.
-        let sp = spacing();
         let row = Rect::new(
             f64::from(row_margin_x()),
             0.0,
@@ -893,73 +878,78 @@ mod tests {
         }
     }
 
+    /// Rows request local selection on release and cover keyboard/assistive activation, never touching the document.
     #[test]
-    fn row_requests_local_selection_on_release_without_mutating_the_document() {
-        let request = ui::LocalState::new(None);
-        let mut row = SidebarRow::with_selection_request(Category::About, false, request.clone());
-        // Seat a rect and pretend the cursor is inside it.
-        row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
-        row.is_hovered = true;
+    fn sidebar_rows_select_locally_and_expose_semantics() {
+        // Case `row_requests_local_selection_on_release_without_mutating_the_document`.
+        {
+            let request = ui::LocalState::new(None);
+            let mut row =
+                SidebarRow::with_selection_request(Category::About, false, request.clone());
+            // Seat a rect and pretend the cursor is inside it.
+            row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+            row.is_hovered = true;
 
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
 
-        let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let release = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
-        for ev in [&press, &release] {
-            let mut handled = false;
-            let mut focus = None;
-            row.handle_event(
-                ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+            let press = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            };
+            let release = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            };
+            for ev in [&press, &release] {
+                let mut handled = false;
+                let mut focus = None;
+                row.handle_event(
+                    ev,
+                    1.0,
+                    &mods,
+                    &mut doc,
+                    &root,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    &taffy,
+                );
+            }
+
+            assert_eq!(request.with(|selection| *selection), Some(Category::About));
+            assert!(
+                doc.get_heads().is_empty(),
+                "navigation must not create a replicated click-flag change"
             );
         }
 
-        assert_eq!(request.with(|selection| *selection), Some(Category::About));
-        assert!(
-            doc.get_heads().is_empty(),
-            "navigation must not create a replicated click-flag change"
-        );
-    }
+        // Case `row_activation_and_semantics_cover_keyboard_and_assistive_technology`.
+        {
+            let request = ui::LocalState::new(None);
+            let mut row =
+                SidebarRow::with_selection_request(Category::Accessibility, false, request.clone());
+            row.set_focus(true);
+            let node = row.accessibility().expect("sidebar row has semantics");
+            assert_eq!(node.role, ui::a11y::Role::RadioButton);
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
+            assert_eq!(node.state.checked, Some(false));
 
-    #[test]
-    fn row_activation_and_semantics_cover_keyboard_and_assistive_technology() {
-        let request = ui::LocalState::new(None);
-        let mut row =
-            SidebarRow::with_selection_request(Category::Accessibility, false, request.clone());
-        row.set_focus(true);
-        let node = row.accessibility().expect("sidebar row has semantics");
-        assert_eq!(node.role, ui::a11y::Role::RadioButton);
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-        assert_eq!(node.state.checked, Some(false));
-
-        let mut doc = AutoCommit::new();
-        assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
-        assert_eq!(
-            request.with(|selection| *selection),
-            Some(Category::Accessibility),
-            "the semantic activation uses the same local navigation request as a pointer click"
-        );
-        assert!(doc.get_heads().is_empty());
+            let mut doc = AutoCommit::new();
+            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
+            assert_eq!(
+                request.with(|selection| *selection),
+                Some(Category::Accessibility),
+                "the semantic activation uses the same local navigation request as a pointer click"
+            );
+            assert!(doc.get_heads().is_empty());
+        }
     }
 }
 

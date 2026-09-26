@@ -3385,22 +3385,180 @@ mod tests {
         r
     }
 
+    /// The view catalogue exposes zoom reset as a typed operation; the resource catalogue exposes the
+    /// structural document contract; file operations are typed background jobs; resource results and
+    /// revisions are bounded and precisely addressable.
     #[test]
-    fn view_catalogue_exposes_zoom_reset_as_a_typed_operation() {
-        let mut root = document_resource();
-        add_view_operations(&mut root);
-        let spec = root
-            .actions
-            .iter()
-            .find(|spec| spec.id == "zoom-reset")
-            .expect("the visible zoom reset has a resource action");
-        let encoded = spec_encoding(spec, None);
-        assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(WordProcessorOperation::ZoomReset),
-            "the resource action decodes to the one canonical reset operation"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn the_resource_catalogue_exposes_typed_bounded_document_operations() {
+        // Phase: view_catalogue_exposes_zoom_reset_as_a_typed_operation.
+        {
+            let mut root = document_resource();
+            add_view_operations(&mut root);
+            let spec = root
+                .actions
+                .iter()
+                .find(|spec| spec.id == "zoom-reset")
+                .expect("the visible zoom reset has a resource action");
+            let encoded = spec_encoding(spec, None);
+            assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(WordProcessorOperation::ZoomReset),
+                "the resource action decodes to the one canonical reset operation"
+            );
+        }
+
+        // Phase: resource_catalogue_exposes_structural_document_contract.
+        // The catalogue publishes each structural document object as a stable,
+        // directly actionable resource.
+        {
+            let (mut state, ids) = seeded("# Section\n\nBody\n");
+            let para = ids[1].clone();
+            dispatch(
+                &mut state.doc,
+                &insert_image_action(&para, 0, test_image(Some(20), Some(10))),
+            );
+            let after_img = qdoc::model::blocks_in_order(
+                &state.doc,
+                &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap(),
+            );
+            let last = after_img.last().cloned().unwrap();
+            dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
+
+            let ctx = WpResourceCtx {
+                caret_block: para.clone(),
+                caret_offset: 0,
+                target_blocks: vec![para],
+                format_spans: Vec::new(),
+                selection: None,
+                region: RegionKind::Body,
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
+            };
+            let resources = provide_resources(&ctx, &state.doc);
+            assert_eq!(resources.len(), 1, "one document root");
+            let root = &resources[0];
+            let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
+            assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
+            assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
+            let table = root
+                .children
+                .iter()
+                .find(|resource| resource.kind == "word_processor.table")
+                .unwrap();
+            assert_eq!(table.children.len(), 4, "every stable cell is navigable");
+            assert!(table.children.iter().all(|cell| {
+                cell.kind == "word_processor.table-cell"
+                    && cell.actions.iter().any(|action| action.id == "go-to")
+                    && cell.actions.iter().any(|action| action.id == "delete-row")
+                    && cell
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "delete-column")
+            }));
+            assert!(
+                ids_of("word_processor.section") >= 1,
+                "a heading section resource"
+            );
+            let image = root
+                .children
+                .iter()
+                .find(|resource| resource.kind == "word_processor.image")
+                .unwrap();
+            assert!(image.actions.iter().any(|action| action.id == "delete"));
+            assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
+            assert!(table.actions.iter().any(|action| action.id == "delete"));
+            assert!(table.actions.iter().any(|action| action.id == "append-row"));
+        }
+
+        // Phase: file_operations_are_typed_background_jobs.
+        {
+            let (state, ids) = seeded("Intro\n");
+            let ctx = WpResourceCtx {
+                caret_block: ids[0].clone(),
+                caret_offset: 0,
+                target_blocks: vec![ids[0].clone()],
+                format_spans: Vec::new(),
+                selection: None,
+                region: RegionKind::Body,
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
+            };
+            let resources = provide_resources(&ctx, &state.doc);
+            for id in ["open", "save", "save-as"] {
+                let action = resources[0]
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .expect("file action");
+                assert_eq!(action.contract.result, ResultSpec::Job);
+                assert!(matches!(
+                    action.contract.execution,
+                    ExecutionMode::Background { .. }
+                ));
+                assert!(action.contract.validate_declaration().is_empty());
+            }
+        }
+
+        // Phase: resource_results_and_revisions_are_bounded_and_precisely_addressable.
+        {
+            let (state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
+            let block = ids[0].clone();
+            let ctx = WpResourceCtx {
+                caret_block: block.clone(),
+                caret_offset: 0,
+                target_blocks: vec![block.clone()],
+                format_spans: Vec::new(),
+                selection: Some(SelectionTarget {
+                    start_block: block.clone(),
+                    start: 0,
+                    end_block: block.clone(),
+                    end: 4,
+                }),
+                region: RegionKind::Body,
+                search_hits: (0..MAX_RESOURCE_SEARCH_HITS + 8)
+                    .map(|start| SearchTarget {
+                        block: block.clone(),
+                        start,
+                        end: start + 1,
+                    })
+                    .collect(),
+                content: tilo_content::ContentStore::memory(),
+            };
+            let resources = provide_resources(&ctx, &state.doc);
+            let root = &resources[0];
+            assert!(
+                root.children
+                    .iter()
+                    .any(|resource| resource.kind == "word_processor.selection")
+            );
+            let results = root
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "word-processor.search-results")
+                .expect("bounded search result group");
+            assert_eq!(results.children.len(), MAX_RESOURCE_SEARCH_HITS);
+            assert!(results.children.iter().all(|hit| {
+                hit.actions.iter().any(|action| action.id == "go-to")
+                    && hit.id.as_str().contains(&block)
+            }));
+            let revisions = root
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "word-processor.revisions")
+                .expect("history resource group");
+            assert!(revisions.children.len() <= MAX_RESOURCE_REVISIONS);
+            assert!(
+                revisions
+                    .children
+                    .iter()
+                    .all(|revision| revision.actions.iter().any(|action| action.id == "show"))
+            );
+        }
     }
 
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
@@ -3436,156 +3594,203 @@ mod tests {
         tilo_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
     }
 
-    #[test]
+    /// Splice validation matches the snapshot without scanning regions; a stale multi-target action is an
+    /// atomic no-op; hostile table dimensions are rejected before any write; an unbound document is refused
+    /// without a write.
     #[expect(
         clippy::too_many_lines,
         reason = "end-to-end validation scenario that seeds every region shape and checks each against the snapshot in order"
     )]
-    fn splice_validation_matches_snapshot_without_scanning_regions() {
-        use automerge::{ObjType, ScalarValue};
-        use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
-        let (mut state, ids) = seeded("Aé🦀e\u{301}\n");
-        let c = qdoc::model::open(&state.doc, &state.root).unwrap();
-        for region in [RegionKind::Header, RegionKind::Footer] {
-            let action = WordProcessorAction::SpliceText {
-                region,
-                block: ids[0].clone(),
-                at: 0,
-                del: 0,
-                ins: "x".into(),
-            };
-            assert!(!action_is_valid(&action, &state.doc, &c), "absent region");
-        }
-        // Keep c from before lazy header/footer creation to exercise fallback lookup.
-        let header = state
-            .doc
-            .put_object(&c.root, KEY_HEADER, ObjType::Map)
-            .unwrap();
-        let footer = state
-            .doc
-            .put_object(&c.root, KEY_FOOTER, ObjType::Map)
-            .unwrap();
-        for container in [&c.blocks, &header, &footer] {
-            for id in [
-                "valid",
-                "missing_text",
-                "scalar_text",
-                "object_text",
-                "missing_order",
-                "bad_order",
-            ] {
-                let obj = state.doc.put_object(container, id, ObjType::Map).unwrap();
-                if id != "missing_order" {
-                    if id == "bad_order" {
-                        state.doc.put(&obj, BLOCK_ORDER, "invalid").unwrap();
-                    } else {
+    #[test]
+    fn invalid_or_stale_actions_are_refused_before_any_write() {
+        // Phase: splice_validation_matches_snapshot_without_scanning_regions.
+        {
+            use automerge::{ObjType, ScalarValue};
+            use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+            let (mut state, ids) = seeded("Aé🦀e\u{301}\n");
+            let c = qdoc::model::open(&state.doc, &state.root).unwrap();
+            for region in [RegionKind::Header, RegionKind::Footer] {
+                let action = WordProcessorAction::SpliceText {
+                    region,
+                    block: ids[0].clone(),
+                    at: 0,
+                    del: 0,
+                    ins: "x".into(),
+                };
+                assert!(!action_is_valid(&action, &state.doc, &c), "absent region");
+            }
+            // Keep c from before lazy header/footer creation to exercise fallback lookup.
+            let header = state
+                .doc
+                .put_object(&c.root, KEY_HEADER, ObjType::Map)
+                .unwrap();
+            let footer = state
+                .doc
+                .put_object(&c.root, KEY_FOOTER, ObjType::Map)
+                .unwrap();
+            for container in [&c.blocks, &header, &footer] {
+                for id in [
+                    "valid",
+                    "missing_text",
+                    "scalar_text",
+                    "object_text",
+                    "missing_order",
+                    "bad_order",
+                ] {
+                    let obj = state.doc.put_object(container, id, ObjType::Map).unwrap();
+                    if id != "missing_order" {
+                        if id == "bad_order" {
+                            state.doc.put(&obj, BLOCK_ORDER, "invalid").unwrap();
+                        } else {
+                            state
+                                .doc
+                                .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(vec![]))
+                                .unwrap();
+                        }
+                    }
+                    if id == "scalar_text" {
                         state
                             .doc
-                            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(vec![]))
+                            .put(&obj, BLOCK_TEXT, "not a text object")
                             .unwrap();
+                    } else if id == "object_text" {
+                        state
+                            .doc
+                            .put_object(&obj, BLOCK_TEXT, ObjType::Map)
+                            .unwrap();
+                    } else if id != "missing_text" {
+                        let text = state
+                            .doc
+                            .put_object(&obj, BLOCK_TEXT, ObjType::Text)
+                            .unwrap();
+                        state.doc.splice_text(&text, 0, 0, "Aé🦀e\u{301}").unwrap();
                     }
                 }
-                if id == "scalar_text" {
-                    state
-                        .doc
-                        .put(&obj, BLOCK_TEXT, "not a text object")
-                        .unwrap();
-                } else if id == "object_text" {
-                    state
-                        .doc
-                        .put_object(&obj, BLOCK_TEXT, ObjType::Map)
-                        .unwrap();
-                } else if id != "missing_text" {
-                    let text = state
-                        .doc
-                        .put_object(&obj, BLOCK_TEXT, ObjType::Text)
-                        .unwrap();
-                    state.doc.splice_text(&text, 0, 0, "Aé🦀e\u{301}").unwrap();
+                state
+                    .doc
+                    .put(container, "scalar_block", "not a block")
+                    .unwrap();
+                state
+                    .doc
+                    .put_object(container, "deleted", ObjType::Map)
+                    .unwrap();
+                state.doc.delete(container, "deleted").unwrap();
+            }
+            let snap = qdoc::model::materialize(&state.doc, &c);
+            for region in [RegionKind::Body, RegionKind::Header, RegionKind::Footer] {
+                let blocks = match region {
+                    RegionKind::Body => &snap.blocks,
+                    RegionKind::Header => &snap.header,
+                    RegionKind::Footer => &snap.footer,
+                };
+                for id in [
+                    ids[0].as_str(),
+                    "valid",
+                    "missing_text",
+                    "scalar_text",
+                    "object_text",
+                    "missing_order",
+                    "bad_order",
+                    "scalar_block",
+                    "deleted",
+                ] {
+                    for at in [0, 1, 5, 6, usize::MAX] {
+                        for del in [0, 1, 5, usize::MAX] {
+                            let action = WordProcessorAction::SpliceText {
+                                region,
+                                block: id.into(),
+                                at,
+                                del,
+                                ins: "🦀".into(),
+                            };
+                            let expected = blocks.iter().find(|b| b.id == id).is_some_and(|b| {
+                                let len = b.text.chars().count();
+                                at <= len && del <= len.saturating_sub(at)
+                            });
+                            let before = qdoc::model::ordered_keys_scan_count();
+                            assert_eq!(
+                                action_is_valid(&action, &state.doc, &c),
+                                expected,
+                                "{action:?}"
+                            );
+                            assert_eq!(
+                                qdoc::model::ordered_keys_scan_count(),
+                                before,
+                                "single-block validation must not scan regions"
+                            );
+                        }
+                    }
                 }
             }
-            state
-                .doc
-                .put(container, "scalar_block", "not a block")
-                .unwrap();
-            state
-                .doc
-                .put_object(container, "deleted", ObjType::Map)
-                .unwrap();
-            state.doc.delete(container, "deleted").unwrap();
-        }
-        let snap = qdoc::model::materialize(&state.doc, &c);
-        for region in [RegionKind::Body, RegionKind::Header, RegionKind::Footer] {
-            let blocks = match region {
-                RegionKind::Body => &snap.blocks,
-                RegionKind::Header => &snap.header,
-                RegionKind::Footer => &snap.footer,
-            };
-            for id in [
-                ids[0].as_str(),
-                "valid",
-                "missing_text",
-                "scalar_text",
-                "object_text",
-                "missing_order",
-                "bad_order",
-                "scalar_block",
-                "deleted",
+            for (count, expected) in [
+                (MAX_ACTION_TEXT_CHARS, true),
+                (MAX_ACTION_TEXT_CHARS + 1, false),
             ] {
-                for at in [0, 1, 5, 6, usize::MAX] {
-                    for del in [0, 1, 5, usize::MAX] {
-                        let action = WordProcessorAction::SpliceText {
-                            region,
-                            block: id.into(),
-                            at,
-                            del,
-                            ins: "🦀".into(),
-                        };
-                        let expected = blocks.iter().find(|b| b.id == id).is_some_and(|b| {
-                            let len = b.text.chars().count();
-                            at <= len && del <= len.saturating_sub(at)
-                        });
-                        let before = qdoc::model::ordered_keys_scan_count();
-                        assert_eq!(
-                            action_is_valid(&action, &state.doc, &c),
-                            expected,
-                            "{action:?}"
-                        );
-                        assert_eq!(
-                            qdoc::model::ordered_keys_scan_count(),
-                            before,
-                            "single-block validation must not scan regions"
-                        );
-                    }
-                }
+                let action = WordProcessorAction::SpliceText {
+                    region: RegionKind::Body,
+                    block: ids[0].clone(),
+                    at: 0,
+                    del: 0,
+                    ins: "é".repeat(count),
+                };
+                assert_eq!(action_is_valid(&action, &state.doc, &c), expected);
             }
-        }
-        for (count, expected) in [
-            (MAX_ACTION_TEXT_CHARS, true),
-            (MAX_ACTION_TEXT_CHARS + 1, false),
-        ] {
+            state.doc.commit();
+            let before = state.save();
             let action = WordProcessorAction::SpliceText {
                 region: RegionKind::Body,
                 block: ids[0].clone(),
-                at: 0,
-                del: 0,
-                ins: "é".repeat(count),
+                at: usize::MAX,
+                del: 1,
+                ins: "x".into(),
             };
-            assert_eq!(action_is_valid(&action, &state.doc, &c), expected);
+            assert!(matches!(
+                action.apply(&mut state.doc),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(state.save(), before, "invalid splice must make no writes");
         }
-        state.doc.commit();
-        let before = state.save();
-        let action = WordProcessorAction::SpliceText {
-            region: RegionKind::Body,
-            block: ids[0].clone(),
-            at: usize::MAX,
-            del: 1,
-            ins: "x".into(),
-        };
-        assert!(matches!(
-            action.apply(&mut state.doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(state.save(), before, "invalid splice must make no writes");
+
+        // Phase: stale_multi_target_action_is_an_atomic_noop.
+        {
+            let (mut state, ids) = seeded("first\nsecond\n");
+            let before = state.doc.save();
+            let action = set_block_attr_action(
+                RegionKind::Body,
+                vec![ids[0].clone(), "deleted-by-a-peer".to_string()],
+                "align",
+                AttrVal::Str("center".to_string()),
+            );
+            let result = action.apply(&mut state.doc);
+            assert!(matches!(result, Err(ActionError::Refused(_))));
+            assert_eq!(
+                state.doc.save(),
+                before,
+                "one stale target must not leave the valid target partly changed"
+            );
+        }
+
+        // Phase: hostile_table_dimensions_are_rejected_before_any_write.
+        {
+            let (mut state, ids) = seeded("anchor\n");
+            let before = state.doc.save();
+            let result =
+                insert_table_action(&ids[0], MAX_TABLE_DIMENSION + 1, 1).apply(&mut state.doc);
+            assert!(matches!(result, Err(ActionError::Refused(_))));
+            assert_eq!(state.doc.save(), before);
+        }
+
+        // Phase: unbound_document_is_refused_without_a_write.
+        {
+            let mut doc = AutoCommit::new();
+            let before = doc.save();
+            let result = WordProcessorAction::ReplaceBody {
+                markdown: "# should not initialize an arbitrary document".to_string(),
+            }
+            .apply(&mut doc);
+            assert!(matches!(result, Err(ActionError::Refused(_))));
+            assert_eq!(doc.save(), before);
+        }
     }
 
     /// A heading, two paragraphs, a comment and a tracked insertion, built
@@ -3740,803 +3945,653 @@ mod tests {
         ],
     }
 
+    /// Selected text exposes a typed hyperlink action that replays; targets are limited to safe authored
+    /// schemes; validation is enforced by both resource and executor.
     #[test]
-    fn selected_text_exposes_a_typed_hyperlink_action_that_replays() {
-        let (mut state, ids) = seeded("Read this\n");
-        let block = ids[0].clone();
-        let ctx = WpResourceCtx {
-            format_spans: vec![Span {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn hyperlinks_are_typed_safe_and_validated_on_both_sides() {
+        // Phase: selected_text_exposes_a_typed_hyperlink_action_that_replays.
+        {
+            let (mut state, ids) = seeded("Read this\n");
+            let block = ids[0].clone();
+            let ctx = WpResourceCtx {
+                format_spans: vec![Span {
+                    block: block.clone(),
+                    start: 0,
+                    end: 4,
+                }],
+                selection: Some(SelectionTarget {
+                    start_block: block.clone(),
+                    start: 0,
+                    end_block: block.clone(),
+                    end: 4,
+                }),
+                region: RegionKind::Body,
+                caret_block: block.clone(),
+                caret_offset: 4,
+                target_blocks: vec![block.clone()],
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
+            };
+            let root = provide_resources(&ctx, &state.doc).pop().unwrap();
+            let replace = root
+                .actions
+                .iter()
+                .find(|action| action.id == "replace-selection")
+                .expect("selected text exposes canonical replacement");
+            let replacement = replace
+                .build_args([(
+                    "text".to_string(),
+                    tilo_actions::ArgValue::Text("guide".into()),
+                )])
+                .unwrap();
+            assert_eq!(
+                replacement,
+                encode(&replace_selection_action(
+                    RegionKind::Body,
+                    &block,
+                    0,
+                    &block,
+                    4,
+                    "guide",
+                )),
+                "palette binding is byte-identical to the canonical selection action"
+            );
+            let link = root
+                .actions
+                .iter()
+                .find(|action| action.id == "set-hyperlink")
+                .expect("selected text exposes link authoring");
+            assert_eq!(link.params().len(), 1);
+            assert_eq!(link.params()[0].name, "target");
+            let encoded = link
+                .build_args([(
+                    "target".to_string(),
+                    tilo_actions::ArgValue::Text("https://example.com/guide".into()),
+                )])
+                .unwrap();
+            let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+            action.apply(&mut state.doc).unwrap();
+            assert!(body_blocks(&state.doc)[0].marks.iter().any(|mark| {
+                mark.name == "link"
+                    && mark.start == 0
+                    && mark.end == 4
+                    && mark.value.as_str() == Some("https://example.com/guide")
+            }));
+        }
+
+        // Phase: hyperlink_targets_are_limited_to_safe_authored_schemes.
+        {
+            for target in [
+                "https://example.com/guide?q=writer#links",
+                "mailto:writer@example.com",
+                "#introduction",
+                "#_heading_actor-42",
+            ] {
+                assert!(valid_hyperlink_target(target), "expected valid: {target}");
+            }
+            for target in [
+                "",
+                " https://example.com",
+                "http://example.com",
+                "javascript:alert(1)",
+                "file:///etc/passwd",
+                "https://user:secret@example.com",
+                "mailto:not-an-address",
+                "#",
+                "#two words",
+            ] {
+                assert!(
+                    !valid_hyperlink_target(target),
+                    "expected refusal: {target}"
+                );
+            }
+        }
+
+        // Phase: hyperlink_validation_is_enforced_by_both_resource_and_executor.
+        {
+            let (mut state, ids) = seeded("Read this\n");
+            let block = ids[0].clone();
+            let span = Span {
                 block: block.clone(),
                 start: 0,
                 end: 4,
-            }],
-            selection: Some(SelectionTarget {
-                start_block: block.clone(),
-                start: 0,
-                end_block: block.clone(),
-                end: 4,
-            }),
-            region: RegionKind::Body,
-            caret_block: block.clone(),
-            caret_offset: 4,
-            target_blocks: vec![block.clone()],
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let root = provide_resources(&ctx, &state.doc).pop().unwrap();
-        let replace = root
-            .actions
-            .iter()
-            .find(|action| action.id == "replace-selection")
-            .expect("selected text exposes canonical replacement");
-        let replacement = replace
-            .build_args([(
-                "text".to_string(),
-                tilo_actions::ArgValue::Text("guide".into()),
-            )])
-            .unwrap();
-        assert_eq!(
-            replacement,
-            encode(&replace_selection_action(
-                RegionKind::Body,
-                &block,
-                0,
-                &block,
-                4,
-                "guide",
-            )),
-            "palette binding is byte-identical to the canonical selection action"
-        );
-        let link = root
-            .actions
-            .iter()
-            .find(|action| action.id == "set-hyperlink")
-            .expect("selected text exposes link authoring");
-        assert_eq!(link.params().len(), 1);
-        assert_eq!(link.params()[0].name, "target");
-        let encoded = link
-            .build_args([(
-                "target".to_string(),
-                tilo_actions::ArgValue::Text("https://example.com/guide".into()),
-            )])
-            .unwrap();
-        let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
-        action.apply(&mut state.doc).unwrap();
-        assert!(body_blocks(&state.doc)[0].marks.iter().any(|mark| {
-            mark.name == "link"
-                && mark.start == 0
-                && mark.end == 4
-                && mark.value.as_str() == Some("https://example.com/guide")
-        }));
-    }
+            };
+            let ctx = WpResourceCtx {
+                format_spans: vec![span.clone()],
+                selection: None,
+                region: RegionKind::Body,
+                caret_block: block,
+                caret_offset: 4,
+                target_blocks: vec![ids[0].clone()],
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
+            };
+            let root = provide_resources(&ctx, &state.doc).pop().unwrap();
+            let link = root
+                .actions
+                .iter()
+                .find(|action| action.id == "set-hyperlink")
+                .expect("selected text exposes link authoring");
+            let encoded = link
+                .build_args([(
+                    "target".to_string(),
+                    tilo_actions::ArgValue::Text("javascript:alert(1)".into()),
+                )])
+                .unwrap();
+            assert_eq!(
+                encoded.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                "the prompt reports invalid input before dispatch"
+            );
 
-    #[test]
-    fn hyperlink_targets_are_limited_to_safe_authored_schemes() {
-        for target in [
-            "https://example.com/guide?q=writer#links",
-            "mailto:writer@example.com",
-            "#introduction",
-            "#_heading_actor-42",
-        ] {
-            assert!(valid_hyperlink_target(target), "expected valid: {target}");
-        }
-        for target in [
-            "",
-            " https://example.com",
-            "http://example.com",
-            "javascript:alert(1)",
-            "file:///etc/passwd",
-            "https://user:secret@example.com",
-            "mailto:not-an-address",
-            "#",
-            "#two words",
-        ] {
+            let action = set_hyperlink_action(RegionKind::Body, vec![span], "javascript:alert(1)");
+            assert!(matches!(
+                action.apply(&mut state.doc),
+                Err(ActionError::Refused(_))
+            ));
             assert!(
-                !valid_hyperlink_target(target),
-                "expected refusal: {target}"
+                body_blocks(&state.doc)[0]
+                    .marks
+                    .iter()
+                    .all(|mark| mark.name != "link"),
+                "a refused target leaves the document untouched"
             );
         }
     }
 
+    /// Place-image consumes a published content hash; image object actions are atomic, replayable and
+    /// refuse stale targets; review entities are resources whose decisions replay identically; comment
+    /// replies replay and resolve cleans the thread, whose tombstone wins over a divergent reply.
     #[test]
-    fn hyperlink_validation_is_enforced_by_both_resource_and_executor() {
-        let (mut state, ids) = seeded("Read this\n");
-        let block = ids[0].clone();
-        let span = Span {
-            block: block.clone(),
-            start: 0,
-            end: 4,
-        };
-        let ctx = WpResourceCtx {
-            format_spans: vec![span.clone()],
-            selection: None,
-            region: RegionKind::Body,
-            caret_block: block,
-            caret_offset: 4,
-            target_blocks: vec![ids[0].clone()],
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let root = provide_resources(&ctx, &state.doc).pop().unwrap();
-        let link = root
-            .actions
-            .iter()
-            .find(|action| action.id == "set-hyperlink")
-            .expect("selected text exposes link authoring");
-        let encoded = link
-            .build_args([(
-                "target".to_string(),
-                tilo_actions::ArgValue::Text("javascript:alert(1)".into()),
-            )])
-            .unwrap();
-        assert_eq!(
-            encoded.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-            "the prompt reports invalid input before dispatch"
-        );
-
-        let action = set_hyperlink_action(RegionKind::Body, vec![span], "javascript:alert(1)");
-        assert!(matches!(
-            action.apply(&mut state.doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert!(
-            body_blocks(&state.doc)[0]
-                .marks
-                .iter()
-                .all(|mark| mark.name != "link"),
-            "a refused target leaves the document untouched"
-        );
-    }
-
-    #[test]
-    fn file_operations_are_typed_background_jobs() {
-        let (state, ids) = seeded("Intro\n");
-        let ctx = WpResourceCtx {
-            caret_block: ids[0].clone(),
-            caret_offset: 0,
-            target_blocks: vec![ids[0].clone()],
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Body,
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let resources = provide_resources(&ctx, &state.doc);
-        for id in ["open", "save", "save-as"] {
-            let action = resources[0]
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .expect("file action");
-            assert_eq!(action.contract.result, ResultSpec::Job);
-            assert!(matches!(
-                action.contract.execution,
-                ExecutionMode::Background { .. }
-            ));
-            assert!(action.contract.validate_declaration().is_empty());
-        }
-    }
-
-    /// The hand-off operation consumes bytes an earlier action actually put
-    /// in the content store. The model supplies neither the hash nor image
-    /// metadata; the app resolves both while building its own document action.
-    #[test]
-    fn place_image_consumes_a_published_content_hash() {
-        let (mut state, ids) = seeded("Intro\n");
-        let block = ids[0].clone();
-        let ctx = WpResourceCtx {
-            caret_block: block,
-            caret_offset: 0,
-            target_blocks: Vec::new(),
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Body,
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let bytes = b"content supplied by a preceding action";
-        let hash = ctx.content.put(bytes).expect("test fixture fits the store");
-        let resources = provide_resources(&ctx, &state.doc);
-        let descriptor = tilo_actions::door::survey(&resources)
-            .into_iter()
-            .find(|descriptor| descriptor.address.action == "place-image")
-            .expect("the document publishes its content hand-off action");
-        assert!(descriptor.input.wants_content());
-
-        let arguments = serde_json::Map::from_iter([(
-            tilo_actions::PROMPTED_PARAM.to_string(),
-            serde_json::Value::String(hash.clone()),
-        )]);
-        tilo_actions::door::invoke_json(
-            &mut state.doc,
-            &resources,
-            &descriptor.address,
-            &arguments,
-            b"agent",
-            &registry(),
-            &mut LocalTransport::new(),
-        )
-        .expect("the app resolves and places available content");
-
-        assert!(body_blocks(&state.doc).iter().any(|block| {
-            block.kind == "image"
-                && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.clone()))
-        }));
-    }
-
-    /// The catalogue publishes each structural document object as a stable,
-    /// directly actionable resource.
-    #[test]
-    fn resource_catalogue_exposes_structural_document_contract() {
-        let (mut state, ids) = seeded("# Section\n\nBody\n");
-        let para = ids[1].clone();
-        dispatch(
-            &mut state.doc,
-            &insert_image_action(&para, 0, test_image(Some(20), Some(10))),
-        );
-        let after_img = qdoc::model::blocks_in_order(
-            &state.doc,
-            &qdoc::model::open(&state.doc, &automerge::ROOT).unwrap(),
-        );
-        let last = after_img.last().cloned().unwrap();
-        dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
-
-        let ctx = WpResourceCtx {
-            caret_block: para.clone(),
-            caret_offset: 0,
-            target_blocks: vec![para],
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Body,
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let resources = provide_resources(&ctx, &state.doc);
-        assert_eq!(resources.len(), 1, "one document root");
-        let root = &resources[0];
-        let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
-        assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
-        assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
-        let table = root
-            .children
-            .iter()
-            .find(|resource| resource.kind == "word_processor.table")
-            .unwrap();
-        assert_eq!(table.children.len(), 4, "every stable cell is navigable");
-        assert!(table.children.iter().all(|cell| {
-            cell.kind == "word_processor.table-cell"
-                && cell.actions.iter().any(|action| action.id == "go-to")
-                && cell.actions.iter().any(|action| action.id == "delete-row")
-                && cell
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "delete-column")
-        }));
-        assert!(
-            ids_of("word_processor.section") >= 1,
-            "a heading section resource"
-        );
-        let image = root
-            .children
-            .iter()
-            .find(|resource| resource.kind == "word_processor.image")
-            .unwrap();
-        assert!(image.actions.iter().any(|action| action.id == "delete"));
-        assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
-        assert!(table.actions.iter().any(|action| action.id == "delete"));
-        assert!(table.actions.iter().any(|action| action.id == "append-row"));
-    }
-
-    #[test]
-    fn image_object_actions_are_atomic_replayable_and_refuse_stale_targets() {
-        let (mut a, ids) = seeded("Object\n");
-        let block = ids[0].clone();
-        dispatch(
-            &mut a.doc,
-            &insert_image_action(&block, 0, test_image(Some(40), Some(30))),
-        );
-        let image = body_blocks(&a.doc)
-            .into_iter()
-            .find(|view| view.kind == "image")
-            .expect("inserted image")
-            .id;
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).expect("fork document");
-        let actions = [
-            set_image_size_action(&image, 120, 90),
-            set_image_crop_action(&image, 500, 250, 500, 250),
-            set_image_placement_action(&image, "page", "none", 24, 36, 0),
-        ];
-        for action in &actions {
-            let envelope = tilo_actions::apply_local(&mut a.doc, action, encode(action))
-                .expect("apply object action");
-            tilo_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
-        }
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "object actions replay byte-identically"
-        );
-        let image_view = body_blocks(&a.doc)
-            .into_iter()
-            .find(|view| view.id == image)
-            .expect("image remains");
-        assert_eq!(
-            image_view.attrs.get("crop_left"),
-            Some(&qdoc::AttrVal::Int(500))
-        );
-        assert_eq!(
-            image_view.attrs.get("offset_x"),
-            Some(&qdoc::AttrVal::Int(24))
-        );
-
-        let before = a.save();
-        let stale = set_image_crop_action("already-removed", 0, 0, 0, 0);
-        assert!(matches!(
-            stale.apply(&mut a.doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(a.save(), before, "refusal has no partial mutation");
-    }
-
-    #[test]
-    fn review_entities_are_resources_and_decisions_replay_identically() {
-        let (mut a, ids) = seeded("Review this sentence\n");
-        let block = ids[0].clone();
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        let mut id_gen = qdoc::IdGen::new(a.doc.get_actor().to_hex_string());
-        let (comment, change) = {
-            let mut dm = qdoc::DocMut {
-                doc: &mut a.doc,
-                c: &c,
-                ids: &mut id_gen,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn image_and_review_actions_replay_atomically() {
+        // Phase: place_image_consumes_a_published_content_hash.
+        // The hand-off operation consumes bytes an earlier action actually put
+        // in the content store. The model supplies neither the hash nor image
+        // metadata; the app resolves both while building its own document action.
+        {
+            let (mut state, ids) = seeded("Intro\n");
+            let block = ids[0].clone();
+            let ctx = WpResourceCtx {
+                caret_block: block,
+                caret_offset: 0,
+                target_blocks: Vec::new(),
+                format_spans: Vec::new(),
+                selection: None,
+                region: RegionKind::Body,
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
             };
-            (
-                dm.add_comment(&block, 0, 6, "Maya", "Please clarify this."),
-                dm.track_insert(&block, 20, " now", "Jonas", "2026-09-05"),
+            let bytes = b"content supplied by a preceding action";
+            let hash = ctx.content.put(bytes).expect("test fixture fits the store");
+            let resources = provide_resources(&ctx, &state.doc);
+            let descriptor = tilo_actions::door::survey(&resources)
+                .into_iter()
+                .find(|descriptor| descriptor.address.action == "place-image")
+                .expect("the document publishes its content hand-off action");
+            assert!(descriptor.input.wants_content());
+
+            let arguments = serde_json::Map::from_iter([(
+                tilo_actions::PROMPTED_PARAM.to_string(),
+                serde_json::Value::String(hash.clone()),
+            )]);
+            tilo_actions::door::invoke_json(
+                &mut state.doc,
+                &resources,
+                &descriptor.address,
+                &arguments,
+                b"agent",
+                &registry(),
+                &mut LocalTransport::new(),
             )
-        };
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
+            .expect("the app resolves and places available content");
 
-        let ctx = WpResourceCtx {
-            caret_block: block,
-            caret_offset: 0,
-            target_blocks: Vec::new(),
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Body,
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let resources = provide_resources(&ctx, &a.doc);
-        let review = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "word-processor.review")
-            .expect("review group is navigable");
-        let comment_resource_id = format!("word-processor.comment:{comment}");
-        let comment_resource = review
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == comment_resource_id.as_str())
-            .expect("comment is a resource");
-        assert!(
-            comment_resource
-                .actions
-                .iter()
-                .any(|action| action.id == "resolve")
-        );
-        let change_resource_id = format!("word-processor.change:{change}");
-        let change_resource = review
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == change_resource_id.as_str())
-            .expect("tracked change is a resource");
-        let accept = spec_encoding(
-            change_resource
-                .actions
-                .iter()
-                .find(|action| action.id == "accept")
-                .unwrap(),
-            None,
-        );
-        let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
-        let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
-        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-        let snap = qdoc::model::materialize(
-            &a.doc,
-            &qdoc::model::open(&a.doc, &automerge::ROOT).unwrap(),
-        );
-        assert!(snap.changes.is_empty(), "accepted change left review state");
-        assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
-    }
+            assert!(body_blocks(&state.doc).iter().any(|block| {
+                block.kind == "image"
+                    && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.clone()))
+            }));
+        }
 
-    #[test]
-    fn durable_comment_reply_action_replays_and_resolve_cleans_the_thread() {
-        let (mut a, ids) = seeded("Review this paragraph\n");
-        let block = ids[0].clone();
-        let containers = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        let comment = {
-            let mut ids = qdoc::model::seeded_id_gen(&a.doc, &containers);
-            let mut dm = DocMut {
-                doc: &mut a.doc,
-                c: &containers,
-                ids: &mut ids,
+        // Phase: image_object_actions_are_atomic_replayable_and_refuse_stale_targets.
+        {
+            let (mut a, ids) = seeded("Object\n");
+            let block = ids[0].clone();
+            dispatch(
+                &mut a.doc,
+                &insert_image_action(&block, 0, test_image(Some(40), Some(30))),
+            );
+            let image = body_blocks(&a.doc)
+                .into_iter()
+                .find(|view| view.kind == "image")
+                .expect("inserted image")
+                .id;
+            let bytes = a.save();
+            let mut b = ui::State::load(&bytes).expect("fork document");
+            let actions = [
+                set_image_size_action(&image, 120, 90),
+                set_image_crop_action(&image, 500, 250, 500, 250),
+                set_image_placement_action(&image, "page", "none", 24, 36, 0),
+            ];
+            for action in &actions {
+                let envelope = tilo_actions::apply_local(&mut a.doc, action, encode(action))
+                    .expect("apply object action");
+                tilo_actions::replay(&mut b.doc, &envelope, &registry())
+                    .expect("replay object action");
+            }
+            assert_eq!(
+                a.doc.get_heads(),
+                b.doc.get_heads(),
+                "object actions replay byte-identically"
+            );
+            let image_view = body_blocks(&a.doc)
+                .into_iter()
+                .find(|view| view.id == image)
+                .expect("image remains");
+            assert_eq!(
+                image_view.attrs.get("crop_left"),
+                Some(&qdoc::AttrVal::Int(500))
+            );
+            assert_eq!(
+                image_view.attrs.get("offset_x"),
+                Some(&qdoc::AttrVal::Int(24))
+            );
+
+            let before = a.save();
+            let stale = set_image_crop_action("already-removed", 0, 0, 0, 0);
+            assert!(matches!(
+                stale.apply(&mut a.doc),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(a.save(), before, "refusal has no partial mutation");
+        }
+
+        // Phase: review_entities_are_resources_and_decisions_replay_identically.
+        {
+            let (mut a, ids) = seeded("Review this sentence\n");
+            let block = ids[0].clone();
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let mut id_gen = qdoc::IdGen::new(a.doc.get_actor().to_hex_string());
+            let (comment, change) = {
+                let mut dm = qdoc::DocMut {
+                    doc: &mut a.doc,
+                    c: &c,
+                    ids: &mut id_gen,
+                };
+                (
+                    dm.add_comment(&block, 0, 6, "Maya", "Please clarify this."),
+                    dm.track_insert(&block, 20, " now", "Jonas", "2026-09-05"),
+                )
             };
-            dm.add_comment(&block, 0, 6, "Maya", "Please clarify")
-        };
-        a.doc.commit();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
+            a.doc.commit();
+            let bytes = a.save();
+            let mut b = ui::State::load(&bytes).unwrap();
 
-        let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
-        let envelope = tilo_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
-        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "reply replays exactly"
-        );
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        let comments = qdoc::model::materialize_comments(&a.doc, &c);
-        assert_eq!(comments[0].replies.len(), 1);
-        assert_eq!(comments[0].replies[0].author, "Jonas");
-        assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
-
-        let resolve = WordProcessorAction::ResolveComment { id: comment };
-        let envelope = tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
-        assert_eq!(
-            a.doc.get_heads(),
-            b.doc.get_heads(),
-            "resolution replays exactly"
-        );
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        assert!(qdoc::model::materialize_comments(&a.doc, &c).is_empty());
-    }
-
-    #[test]
-    fn resolved_comment_tombstone_wins_over_divergent_reply() {
-        let (mut a, ids) = seeded("Review this paragraph\n");
-        let block = ids[0].clone();
-        let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
-        dispatch(&mut a.doc, &add);
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        let comment = qdoc::model::comment_ids(&a.doc, &c)
-            .into_iter()
-            .next()
-            .unwrap();
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-        b.doc.set_actor(automerge::ActorId::random());
-
-        let resolve = WordProcessorAction::ResolveComment {
-            id: comment.clone(),
-        };
-        let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
-        tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-        tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
-        a.doc.merge_incoming(&mut b.doc).unwrap();
-
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
-        assert!(
-            qdoc::model::materialize_comments(&a.doc, &c).is_empty(),
-            "a reply from a divergent replica cannot resurrect a resolved thread"
-        );
-    }
-
-    #[test]
-    fn resource_results_and_revisions_are_bounded_and_precisely_addressable() {
-        let (state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
-        let block = ids[0].clone();
-        let ctx = WpResourceCtx {
-            caret_block: block.clone(),
-            caret_offset: 0,
-            target_blocks: vec![block.clone()],
-            format_spans: Vec::new(),
-            selection: Some(SelectionTarget {
-                start_block: block.clone(),
-                start: 0,
-                end_block: block.clone(),
-                end: 4,
-            }),
-            region: RegionKind::Body,
-            search_hits: (0..MAX_RESOURCE_SEARCH_HITS + 8)
-                .map(|start| SearchTarget {
-                    block: block.clone(),
-                    start,
-                    end: start + 1,
-                })
-                .collect(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let resources = provide_resources(&ctx, &state.doc);
-        let root = &resources[0];
-        assert!(
-            root.children
-                .iter()
-                .any(|resource| resource.kind == "word_processor.selection")
-        );
-        let results = root
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "word-processor.search-results")
-            .expect("bounded search result group");
-        assert_eq!(results.children.len(), MAX_RESOURCE_SEARCH_HITS);
-        assert!(results.children.iter().all(|hit| {
-            hit.actions.iter().any(|action| action.id == "go-to")
-                && hit.id.as_str().contains(&block)
-        }));
-        let revisions = root
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "word-processor.revisions")
-            .expect("history resource group");
-        assert!(revisions.children.len() <= MAX_RESOURCE_REVISIONS);
-        assert!(
-            revisions
+            let ctx = WpResourceCtx {
+                caret_block: block,
+                caret_offset: 0,
+                target_blocks: Vec::new(),
+                format_spans: Vec::new(),
+                selection: None,
+                region: RegionKind::Body,
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
+            };
+            let resources = provide_resources(&ctx, &a.doc);
+            let review = resources[0]
                 .children
                 .iter()
-                .all(|revision| revision.actions.iter().any(|action| action.id == "show"))
-        );
-    }
-
-    #[test]
-    fn stale_multi_target_action_is_an_atomic_noop() {
-        let (mut state, ids) = seeded("first\nsecond\n");
-        let before = state.doc.save();
-        let action = set_block_attr_action(
-            RegionKind::Body,
-            vec![ids[0].clone(), "deleted-by-a-peer".to_string()],
-            "align",
-            AttrVal::Str("center".to_string()),
-        );
-        let result = action.apply(&mut state.doc);
-        assert!(matches!(result, Err(ActionError::Refused(_))));
-        assert_eq!(
-            state.doc.save(),
-            before,
-            "one stale target must not leave the valid target partly changed"
-        );
-    }
-
-    #[test]
-    fn hostile_table_dimensions_are_rejected_before_any_write() {
-        let (mut state, ids) = seeded("anchor\n");
-        let before = state.doc.save();
-        let result = insert_table_action(&ids[0], MAX_TABLE_DIMENSION + 1, 1).apply(&mut state.doc);
-        assert!(matches!(result, Err(ActionError::Refused(_))));
-        assert_eq!(state.doc.save(), before);
-    }
-
-    #[test]
-    fn unbound_document_is_refused_without_a_write() {
-        let mut doc = AutoCommit::new();
-        let before = doc.save();
-        let result = WordProcessorAction::ReplaceBody {
-            markdown: "# should not initialize an arbitrary document".to_string(),
+                .find(|resource| resource.id.as_str() == "word-processor.review")
+                .expect("review group is navigable");
+            let comment_resource_id = format!("word-processor.comment:{comment}");
+            let comment_resource = review
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == comment_resource_id.as_str())
+                .expect("comment is a resource");
+            assert!(
+                comment_resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "resolve")
+            );
+            let change_resource_id = format!("word-processor.change:{change}");
+            let change_resource = review
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == change_resource_id.as_str())
+                .expect("tracked change is a resource");
+            let accept = spec_encoding(
+                change_resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "accept")
+                    .unwrap(),
+                None,
+            );
+            let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
+            let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+            assert_eq!(a.doc.get_heads(), b.doc.get_heads());
+            let snap = qdoc::model::materialize(
+                &a.doc,
+                &qdoc::model::open(&a.doc, &automerge::ROOT).unwrap(),
+            );
+            assert!(snap.changes.is_empty(), "accepted change left review state");
+            assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
         }
-        .apply(&mut doc);
-        assert!(matches!(result, Err(ActionError::Refused(_))));
-        assert_eq!(doc.save(), before);
+
+        // Phase: durable_comment_reply_action_replays_and_resolve_cleans_the_thread.
+        {
+            let (mut a, ids) = seeded("Review this paragraph\n");
+            let block = ids[0].clone();
+            let containers = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comment = {
+                let mut ids = qdoc::model::seeded_id_gen(&a.doc, &containers);
+                let mut dm = DocMut {
+                    doc: &mut a.doc,
+                    c: &containers,
+                    ids: &mut ids,
+                };
+                dm.add_comment(&block, 0, 6, "Maya", "Please clarify")
+            };
+            a.doc.commit();
+            let bytes = a.save();
+            let mut b = ui::State::load(&bytes).unwrap();
+
+            let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
+            let envelope = tilo_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+            assert_eq!(
+                a.doc.get_heads(),
+                b.doc.get_heads(),
+                "reply replays exactly"
+            );
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comments = qdoc::model::materialize_comments(&a.doc, &c);
+            assert_eq!(comments[0].replies.len(), 1);
+            assert_eq!(comments[0].replies[0].author, "Jonas");
+            assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
+
+            let resolve = WordProcessorAction::ResolveComment { id: comment };
+            let envelope =
+                tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+            assert_eq!(
+                a.doc.get_heads(),
+                b.doc.get_heads(),
+                "resolution replays exactly"
+            );
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            assert!(qdoc::model::materialize_comments(&a.doc, &c).is_empty());
+        }
+
+        // Phase: resolved_comment_tombstone_wins_over_divergent_reply.
+        {
+            let (mut a, ids) = seeded("Review this paragraph\n");
+            let block = ids[0].clone();
+            let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
+            dispatch(&mut a.doc, &add);
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let comment = qdoc::model::comment_ids(&a.doc, &c)
+                .into_iter()
+                .next()
+                .unwrap();
+            let bytes = a.save();
+            let mut b = ui::State::load(&bytes).unwrap();
+            b.doc.set_actor(automerge::ActorId::random());
+
+            let resolve = WordProcessorAction::ResolveComment {
+                id: comment.clone(),
+            };
+            let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
+            tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+            tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
+            a.doc.merge_incoming(&mut b.doc).unwrap();
+
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
+            assert!(
+                qdoc::model::materialize_comments(&a.doc, &c).is_empty(),
+                "a reply from a divergent replica cannot resurrect a resolved thread"
+            );
+        }
     }
 
+    /// Cross-block selection replacement is one replayable action; an encoded split and concurrent splice
+    /// converge; style fields merge granularly with the tombstone winning; TOC fields, rich paste and table
+    /// edits replay identically; a table tombstone wins over a divergent cell edit.
     #[test]
-    fn cross_block_selection_replacement_is_one_replayable_action() {
-        let (mut a, ids) = seeded("alpha\n\nbeta\n\ngamma\n");
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-        let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
-        assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].text, "alXma");
-    }
-
-    #[test]
-    fn encoded_split_and_concurrent_splice_converge_on_divergent_replicas() {
-        let (mut a, ids) = seeded("alpha beta\n");
-        let bytes = a.save();
-        let mut b = ui::State::load(&bytes).unwrap();
-        b.doc.set_actor(automerge::ActorId::random());
-        let block = ids[0].clone();
-
-        let split = split_block_action(RegionKind::Body, &block, 5, "paragraph", None);
-        let encoded_split = encode(&split);
-        let decoded_split: WordProcessorAction =
-            serde_json::from_slice(&encoded_split.payload).unwrap();
-        tilo_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
-
-        let splice = splice_text_action(RegionKind::Body, &block, 0, 0, "Shared ");
-        let encoded_splice = encode(&splice);
-        let decoded_splice: WordProcessorAction =
-            serde_json::from_slice(&encoded_splice.payload).unwrap();
-        tilo_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
-
-        let mut merged_a = a.doc.clone();
-        let mut b_for_a = b.doc.clone();
-        merged_a.merge_incoming(&mut b_for_a).unwrap();
-        let mut merged_b = b.doc.clone();
-        let mut a_for_b = a.doc.clone();
-        merged_b.merge_incoming(&mut a_for_b).unwrap();
-        assert_eq!(
-            body_blocks(&merged_a),
-            body_blocks(&merged_b),
-            "encoded actions converge regardless of merge direction"
-        );
-    }
-
-    #[test]
-    fn style_fields_merge_granularly_and_style_tombstone_wins() {
-        let (mut base, ids) = seeded("Styled paragraph\n");
-        let create = set_style_property_action(
-            "custom1",
-            qdoc::schema::STYLE_NAME,
-            AttrVal::Str("Callout".into()),
-        );
-        dispatch(&mut base.doc, &create);
-        dispatch(
-            &mut base.doc,
-            &set_block_attr_action(
-                RegionKind::Body,
-                vec![ids[0].clone()],
-                "style",
-                AttrVal::Str("custom1".into()),
-            ),
-        );
-        let bytes = base.save();
-        let mut a = ui::State::load(&bytes).unwrap();
-        let mut b = ui::State::load(&bytes).unwrap();
-        b.doc.set_actor(automerge::ActorId::random());
-
-        let bold =
-            set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
-        let size =
-            set_style_property_action("custom1", qdoc::schema::STYLE_SIZE, AttrVal::Float(28.0));
-        tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
-        tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
-        a.doc.merge_incoming(&mut b.doc).unwrap();
-        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
-        let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
-        assert_eq!(
-            properties.get(qdoc::schema::STYLE_BOLD),
-            Some(&qdoc::AttrVal::Bool(true))
-        );
-        assert_eq!(
-            properties.get(qdoc::schema::STYLE_SIZE),
-            Some(&qdoc::AttrVal::Float(28.0))
-        );
-
-        let bytes = a.save();
-        let mut deleted = ui::State::load(&bytes).unwrap();
-        let mut divergent = ui::State::load(&bytes).unwrap();
-        divergent.doc.set_actor(automerge::ActorId::random());
-        let remove = delete_style_action("custom1", vec![ids[0].clone()]);
-        let rename = set_style_property_action(
-            "custom1",
-            qdoc::schema::STYLE_NAME,
-            AttrVal::Str("Late rename".into()),
-        );
-        tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
-        tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
-        deleted.doc.merge_incoming(&mut divergent.doc).unwrap();
-        let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
-        assert!(qdoc::model::style_is_tombstoned(
-            &deleted.doc,
-            &c,
-            "custom1"
-        ));
-        assert!(!qdoc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
-    }
-
-    #[test]
-    fn toc_field_rich_paste_and_table_edits_encode_and_replay_identically() {
-        let (mut origin, ids) = seeded("# Heading\n\nBody\n");
-        let bytes = origin.save();
-        let mut replay = ui::State::load(&bytes).unwrap();
-        let heading = ids[0].clone();
-        let body = ids[1].clone();
-        let fragment = crate::word_processor::ClipBlock {
-            kind: "heading".into(),
-            text: "Pasted title".into(),
-            marks: vec![qdoc::document::MarkSpan {
-                name: "strong".into(),
-                start: 0,
-                end: 6,
-                value: qdoc::document::MarkValue::Bool(true),
-            }],
-            level: Some(2),
-            ordered: None,
-            align: Some("center".into()),
-        };
-        let actions = [
-            generate_toc_action(vec![TocTarget {
-                heading,
-                level: 1,
-                text: "Heading".into(),
-                page: Some(1),
-            }]),
-            insert_page_number_action(RegionKind::Body, &body, 0),
-            paste_fragment_action(
-                RegionKind::Body,
-                SelectionTarget {
-                    start_block: body.clone(),
-                    start: 1,
-                    end_block: body.clone(),
-                    end: 1,
-                },
-                vec![fragment],
-                false,
-            ),
-            insert_table_action(&body, 2, 2),
-        ];
-        for action in actions {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn edits_encode_replay_and_converge_on_divergent_replicas() {
+        // Phase: cross_block_selection_replacement_is_one_replayable_action.
+        {
+            let (mut a, ids) = seeded("alpha\n\nbeta\n\ngamma\n");
+            let bytes = a.save();
+            let mut b = ui::State::load(&bytes).unwrap();
+            let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
             let encoded = encode(&action);
-            let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
-            let envelope = tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
-            tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+            assert_eq!(a.doc.get_heads(), b.doc.get_heads());
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].text, "alXma");
         }
-        let table = body_blocks(&origin.doc)
-            .iter()
-            .find_map(|block| match block.attrs.get("table") {
-                Some(qdoc::AttrVal::Str(id)) => Some(id.clone()),
-                _ => None,
-            })
-            .unwrap();
-        for edit in [
-            TableEdit::InsertRow { at: 1 },
-            TableEdit::InsertColumn { at: 1 },
-            TableEdit::DeleteRow { row: 0 },
-            TableEdit::DeleteColumn { column: 0 },
-        ] {
-            let action = edit_table_action(&table, edit);
-            let encoded = encode(&action);
-            let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
-            let envelope = tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
-            tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+
+        // Phase: encoded_split_and_concurrent_splice_converge_on_divergent_replicas.
+        {
+            let (mut a, ids) = seeded("alpha beta\n");
+            let bytes = a.save();
+            let mut b = ui::State::load(&bytes).unwrap();
+            b.doc.set_actor(automerge::ActorId::random());
+            let block = ids[0].clone();
+
+            let split = split_block_action(RegionKind::Body, &block, 5, "paragraph", None);
+            let encoded_split = encode(&split);
+            let decoded_split: WordProcessorAction =
+                serde_json::from_slice(&encoded_split.payload).unwrap();
+            tilo_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
+
+            let splice = splice_text_action(RegionKind::Body, &block, 0, 0, "Shared ");
+            let encoded_splice = encode(&splice);
+            let decoded_splice: WordProcessorAction =
+                serde_json::from_slice(&encoded_splice.payload).unwrap();
+            tilo_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
+
+            let mut merged_a = a.doc.clone();
+            let mut b_for_a = b.doc.clone();
+            merged_a.merge_incoming(&mut b_for_a).unwrap();
+            let mut merged_b = b.doc.clone();
+            let mut a_for_b = a.doc.clone();
+            merged_b.merge_incoming(&mut a_for_b).unwrap();
+            assert_eq!(
+                body_blocks(&merged_a),
+                body_blocks(&merged_b),
+                "encoded actions converge regardless of merge direction"
+            );
         }
-        assert_eq!(origin.doc.get_heads(), replay.doc.get_heads());
-        assert_eq!(body_blocks(&origin.doc), body_blocks(&replay.doc));
-    }
 
-    #[test]
-    fn table_tombstone_wins_over_a_divergent_cell_edit() {
-        let (mut base, ids) = seeded("Anchor\n");
-        dispatch(&mut base.doc, &insert_table_action(&ids[0], 2, 2));
-        let blocks = body_blocks(&base.doc);
-        let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
-        let table = match cell.attrs.get("table") {
-            Some(qdoc::AttrVal::Str(id)) => id.clone(),
-            other => panic!("cell has stable table id: {other:?}"),
-        };
-        let bytes = base.save();
-        let mut deleted = ui::State::load(&bytes).unwrap();
-        let mut divergent = ui::State::load(&bytes).unwrap();
-        divergent.doc.set_actor(automerge::ActorId::random());
+        // Phase: style_fields_merge_granularly_and_style_tombstone_wins.
+        {
+            let (mut base, ids) = seeded("Styled paragraph\n");
+            let create = set_style_property_action(
+                "custom1",
+                qdoc::schema::STYLE_NAME,
+                AttrVal::Str("Callout".into()),
+            );
+            dispatch(&mut base.doc, &create);
+            dispatch(
+                &mut base.doc,
+                &set_block_attr_action(
+                    RegionKind::Body,
+                    vec![ids[0].clone()],
+                    "style",
+                    AttrVal::Str("custom1".into()),
+                ),
+            );
+            let bytes = base.save();
+            let mut a = ui::State::load(&bytes).unwrap();
+            let mut b = ui::State::load(&bytes).unwrap();
+            b.doc.set_actor(automerge::ActorId::random());
 
-        let remove = edit_table_action(&table, TableEdit::Delete);
-        let late_edit = splice_text_action(RegionKind::Body, &cell.id, 0, 0, "late");
-        tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
-        tilo_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
+            let bold =
+                set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
+            let size = set_style_property_action(
+                "custom1",
+                qdoc::schema::STYLE_SIZE,
+                AttrVal::Float(28.0),
+            );
+            tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
+            tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
+            a.doc.merge_incoming(&mut b.doc).unwrap();
+            let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
+            assert_eq!(
+                properties.get(qdoc::schema::STYLE_BOLD),
+                Some(&qdoc::AttrVal::Bool(true))
+            );
+            assert_eq!(
+                properties.get(qdoc::schema::STYLE_SIZE),
+                Some(&qdoc::AttrVal::Float(28.0))
+            );
 
-        let mut merged_a = deleted.doc.clone();
-        let mut divergent_for_a = divergent.doc.clone();
-        merged_a.merge_incoming(&mut divergent_for_a).unwrap();
-        let mut merged_b = divergent.doc.clone();
-        let mut deleted_for_b = deleted.doc.clone();
-        merged_b.merge_incoming(&mut deleted_for_b).unwrap();
-        assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
-        assert!(body_blocks(&merged_a)
-            .iter()
-            .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
+            let bytes = a.save();
+            let mut deleted = ui::State::load(&bytes).unwrap();
+            let mut divergent = ui::State::load(&bytes).unwrap();
+            divergent.doc.set_actor(automerge::ActorId::random());
+            let remove = delete_style_action("custom1", vec![ids[0].clone()]);
+            let rename = set_style_property_action(
+                "custom1",
+                qdoc::schema::STYLE_NAME,
+                AttrVal::Str("Late rename".into()),
+            );
+            tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+            tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
+            deleted.doc.merge_incoming(&mut divergent.doc).unwrap();
+            let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
+            assert!(qdoc::model::style_is_tombstoned(
+                &deleted.doc,
+                &c,
+                "custom1"
+            ));
+            assert!(!qdoc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
+        }
+
+        // Phase: toc_field_rich_paste_and_table_edits_encode_and_replay_identically.
+        {
+            let (mut origin, ids) = seeded("# Heading\n\nBody\n");
+            let bytes = origin.save();
+            let mut replay = ui::State::load(&bytes).unwrap();
+            let heading = ids[0].clone();
+            let body = ids[1].clone();
+            let fragment = crate::word_processor::ClipBlock {
+                kind: "heading".into(),
+                text: "Pasted title".into(),
+                marks: vec![qdoc::document::MarkSpan {
+                    name: "strong".into(),
+                    start: 0,
+                    end: 6,
+                    value: qdoc::document::MarkValue::Bool(true),
+                }],
+                level: Some(2),
+                ordered: None,
+                align: Some("center".into()),
+            };
+            let actions = [
+                generate_toc_action(vec![TocTarget {
+                    heading,
+                    level: 1,
+                    text: "Heading".into(),
+                    page: Some(1),
+                }]),
+                insert_page_number_action(RegionKind::Body, &body, 0),
+                paste_fragment_action(
+                    RegionKind::Body,
+                    SelectionTarget {
+                        start_block: body.clone(),
+                        start: 1,
+                        end_block: body.clone(),
+                        end: 1,
+                    },
+                    vec![fragment],
+                    false,
+                ),
+                insert_table_action(&body, 2, 2),
+            ];
+            for action in actions {
+                let encoded = encode(&action);
+                let decoded: WordProcessorAction =
+                    serde_json::from_slice(&encoded.payload).unwrap();
+                let envelope =
+                    tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+                tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+            }
+            let table = body_blocks(&origin.doc)
+                .iter()
+                .find_map(|block| match block.attrs.get("table") {
+                    Some(qdoc::AttrVal::Str(id)) => Some(id.clone()),
+                    _ => None,
+                })
+                .unwrap();
+            for edit in [
+                TableEdit::InsertRow { at: 1 },
+                TableEdit::InsertColumn { at: 1 },
+                TableEdit::DeleteRow { row: 0 },
+                TableEdit::DeleteColumn { column: 0 },
+            ] {
+                let action = edit_table_action(&table, edit);
+                let encoded = encode(&action);
+                let decoded: WordProcessorAction =
+                    serde_json::from_slice(&encoded.payload).unwrap();
+                let envelope =
+                    tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+                tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+            }
+            assert_eq!(origin.doc.get_heads(), replay.doc.get_heads());
+            assert_eq!(body_blocks(&origin.doc), body_blocks(&replay.doc));
+        }
+
+        // Phase: table_tombstone_wins_over_a_divergent_cell_edit.
+        {
+            let (mut base, ids) = seeded("Anchor\n");
+            dispatch(&mut base.doc, &insert_table_action(&ids[0], 2, 2));
+            let blocks = body_blocks(&base.doc);
+            let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
+            let table = match cell.attrs.get("table") {
+                Some(qdoc::AttrVal::Str(id)) => id.clone(),
+                other => panic!("cell has stable table id: {other:?}"),
+            };
+            let bytes = base.save();
+            let mut deleted = ui::State::load(&bytes).unwrap();
+            let mut divergent = ui::State::load(&bytes).unwrap();
+            divergent.doc.set_actor(automerge::ActorId::random());
+
+            let remove = edit_table_action(&table, TableEdit::Delete);
+            let late_edit = splice_text_action(RegionKind::Body, &cell.id, 0, 0, "late");
+            tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+            tilo_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
+
+            let mut merged_a = deleted.doc.clone();
+            let mut divergent_for_a = divergent.doc.clone();
+            merged_a.merge_incoming(&mut divergent_for_a).unwrap();
+            let mut merged_b = divergent.doc.clone();
+            let mut deleted_for_b = deleted.doc.clone();
+            merged_b.merge_incoming(&mut deleted_for_b).unwrap();
+            assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
+            assert!(body_blocks(&merged_a)
+                .iter()
+                .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
+        }
     }
 }

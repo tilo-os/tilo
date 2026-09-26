@@ -271,82 +271,88 @@ mod tests {
         root
     }
 
+    /// Private storage roots allocation and cleanup.
     #[test]
-    fn private_roots_are_unique_owned_and_never_reuse_normal_overrides() {
-        let normal = tempfile::tempdir().unwrap();
-        let first = allocate_private_root().unwrap();
-        let second = allocate_private_root().unwrap();
-        assert!(first.is_absolute());
-        assert_ne!(first, second);
-        assert_ne!(first, normal.path());
-        assert!(is_owned_private_root(&first));
-        assert!(is_owned_private_root(&second));
-        assert!(!is_owned_private_root(normal.path()));
-        std::fs::remove_dir_all(first).unwrap();
-        std::fs::remove_dir_all(second).unwrap();
-    }
+    fn private_roots_are_owned_unique_and_swept_within_budget() {
+        // Phase `private_roots_are_unique_owned_and_never_reuse_normal_overrides`.
+        {
+            let normal = tempfile::tempdir().unwrap();
+            let first = allocate_private_root().unwrap();
+            let second = allocate_private_root().unwrap();
+            assert!(first.is_absolute());
+            assert_ne!(first, second);
+            assert_ne!(first, normal.path());
+            assert!(is_owned_private_root(&first));
+            assert!(is_owned_private_root(&second));
+            assert!(!is_owned_private_root(normal.path()));
+            std::fs::remove_dir_all(first).unwrap();
+            std::fs::remove_dir_all(second).unwrap();
+        }
 
-    #[test]
-    #[cfg(unix)]
-    fn allocation_sweeps_only_owned_roots_with_dead_processes() {
-        let parent = tempfile::tempdir().unwrap();
-        let dead = root(parent.path(), i32::MAX as u32, Some(i32::MAX as u32));
-        let live_owner = root(parent.path(), std::process::id(), None);
-        let live_helper = root(parent.path(), i32::MAX as u32, Some(std::process::id()));
-        sweep_orphaned_private_roots_in(parent.path());
-        assert!(!dead.exists());
-        assert!(live_owner.exists());
-        assert!(live_helper.exists());
-        std::fs::remove_dir_all(live_owner).unwrap();
-        std::fs::remove_dir_all(live_helper).unwrap();
-    }
-    #[test]
-    #[cfg(unix)]
-    fn unrelated_temporary_entries_do_not_starve_private_cleanup() {
-        let parent = tempfile::tempdir().unwrap();
-        let unrelated = (0..300)
-            .map(|index| {
-                let path = parent.path().join(format!("unrelated-{index}"));
-                std::fs::create_dir(&path).unwrap();
-                path
-            })
-            .collect::<Vec<_>>();
-        let orphan = parent.path().join(format!("{PRIVATE_ROOT_PREFIX}orphan"));
-        std::fs::create_dir(&orphan).unwrap();
-        std::fs::write(
-            orphan.join(PRIVATE_ROOT_MARKER),
-            PRIVATE_ROOT_MARKER_CONTENT,
-        )
-        .unwrap();
-        std::fs::write(orphan.join(PRIVATE_ROOT_OWNER), i32::MAX.to_string()).unwrap();
-        sweep_orphaned_private_entries(
-            unrelated
-                .iter()
-                .cloned()
-                .chain(std::iter::once(orphan.clone())),
-        );
-        assert!(
-            !orphan.exists(),
-            "unrelated temporary entries must not consume the cleanup budget"
-        );
-        assert!(unrelated.iter().all(|path| path.is_dir()));
-    }
-    #[test]
-    #[cfg(unix)]
-    fn cleanup_budget_counts_orphans_and_preserves_live_roots() {
-        let parent = tempfile::tempdir().unwrap();
-        let live = root(parent.path(), std::process::id(), None);
-        let orphans = (0..257)
-            .map(|_| root(parent.path(), i32::MAX as u32, None))
-            .collect::<Vec<_>>();
-        sweep_orphaned_private_entries(
-            std::iter::once(live.clone()).chain(orphans.iter().cloned()),
-        );
-        assert!(live.is_dir());
-        assert!(orphans.iter().take(256).all(|path| !path.exists()));
-        assert!(
-            orphans.last().unwrap().is_dir(),
-            "one pass must attempt at most 256 removals"
-        );
+        // Phase `allocation_sweeps_only_owned_roots_with_dead_processes`.
+        #[cfg(unix)]
+        {
+            let parent = tempfile::tempdir().unwrap();
+            let dead = root(parent.path(), i32::MAX as u32, Some(i32::MAX as u32));
+            let live_owner = root(parent.path(), std::process::id(), None);
+            let live_helper = root(parent.path(), i32::MAX as u32, Some(std::process::id()));
+            sweep_orphaned_private_roots_in(parent.path());
+            assert!(!dead.exists());
+            assert!(live_owner.exists());
+            assert!(live_helper.exists());
+            std::fs::remove_dir_all(live_owner).unwrap();
+            std::fs::remove_dir_all(live_helper).unwrap();
+        }
+
+        // Phase `unrelated_temporary_entries_do_not_starve_private_cleanup`.
+        #[cfg(unix)]
+        {
+            let parent = tempfile::tempdir().unwrap();
+            let unrelated = (0..300)
+                .map(|index| {
+                    let path = parent.path().join(format!("unrelated-{index}"));
+                    std::fs::create_dir(&path).unwrap();
+                    path
+                })
+                .collect::<Vec<_>>();
+            let orphan = parent.path().join(format!("{PRIVATE_ROOT_PREFIX}orphan"));
+            std::fs::create_dir(&orphan).unwrap();
+            std::fs::write(
+                orphan.join(PRIVATE_ROOT_MARKER),
+                PRIVATE_ROOT_MARKER_CONTENT,
+            )
+            .unwrap();
+            std::fs::write(orphan.join(PRIVATE_ROOT_OWNER), i32::MAX.to_string()).unwrap();
+            sweep_orphaned_private_entries(
+                unrelated
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(orphan.clone())),
+            );
+            assert!(
+                !orphan.exists(),
+                "unrelated temporary entries must not consume the cleanup budget"
+            );
+            assert!(unrelated.iter().all(|path| path.is_dir()));
+        }
+
+        // Phase `cleanup_budget_counts_orphans_and_preserves_live_roots`.
+        #[cfg(unix)]
+        {
+            let parent = tempfile::tempdir().unwrap();
+            let live = root(parent.path(), std::process::id(), None);
+            let orphans = (0..257)
+                .map(|_| root(parent.path(), i32::MAX as u32, None))
+                .collect::<Vec<_>>();
+            sweep_orphaned_private_entries(
+                std::iter::once(live.clone()).chain(orphans.iter().cloned()),
+            );
+            assert!(live.is_dir());
+            assert!(orphans.iter().take(256).all(|path| !path.exists()));
+            assert!(
+                orphans.last().unwrap().is_dir(),
+                "one pass must attempt at most 256 removals"
+            );
+        }
     }
 }

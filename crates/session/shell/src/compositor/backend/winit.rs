@@ -643,30 +643,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scale_factor_change_updates_output_without_a_pixel_resize() {
-        let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
+    fn scale_factor_change_reaches_the_output_once_and_rejects_invalid_values() {
+        // Phase `scale_factor_change_updates_output_without_a_pixel_resize`.
+        {
+            let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
 
-        let event = apply_scale_factor_changed(&mut output, 1.5)
-            .expect("a real DPI change must reach the compositor");
+            let event = apply_scale_factor_changed(&mut output, 1.5)
+                .expect("a real DPI change must reach the compositor");
 
-        assert_eq!(output.scale, 1.5);
-        assert!(matches!(
-            event,
-            BackendEvent::OutputResized {
-                id: OutputId(7),
-                size: (1920, 1080),
-                scale: 1.5,
-            }
-        ));
-    }
-
-    #[test]
-    fn duplicate_or_invalid_scale_changes_are_ignored() {
-        let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
-        assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());
-        assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
-        assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
-        assert_eq!(output.scale, 1.25);
+            assert_eq!(output.scale, 1.5);
+            assert!(matches!(
+                event,
+                BackendEvent::OutputResized {
+                    id: OutputId(7),
+                    size: (1920, 1080),
+                    scale: 1.5,
+                }
+            ));
+        }
+        // Phase `duplicate_or_invalid_scale_changes_are_ignored`.
+        {
+            let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
+            assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());
+            assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
+            assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
+            assert_eq!(output.scale, 1.25);
+        }
     }
 
     #[test]

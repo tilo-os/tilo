@@ -153,23 +153,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_normal_uri_and_normalizes_scheme() {
-        let resource = resource_for_uri("HTTPS://example.test/a?b=c").unwrap();
-        assert_eq!(resource.as_str(), "scheme:https");
-    }
+    fn uri_open_normalizes_schemes_and_rejects_reserved_or_argument_values() {
+        // Phase `accepts_normal_uri_and_normalizes_scheme`.
+        {
+            let resource = resource_for_uri("HTTPS://example.test/a?b=c").unwrap();
+            assert_eq!(resource.as_str(), "scheme:https");
+        }
 
-    #[test]
-    fn rejects_reserved_or_argument_shaped_values() {
-        for uri in [
-            "file:///etc/passwd",
-            "data:text/plain,payload",
-            "javascript:alert(1)",
-            " https://example.test",
-            "https://example.test\n--evil",
-            "https:",
-            "--flag",
-        ] {
-            assert_eq!(resource_for_uri(uri), Err(UriOpenError::InvalidUri));
+        // Phase `rejects_reserved_or_argument_shaped_values`.
+        {
+            for uri in [
+                "file:///etc/passwd",
+                "data:text/plain,payload",
+                "javascript:alert(1)",
+                " https://example.test",
+                "https://example.test\n--evil",
+                "https:",
+                "--flag",
+            ] {
+                assert_eq!(resource_for_uri(uri), Err(UriOpenError::InvalidUri));
+            }
         }
     }
 }

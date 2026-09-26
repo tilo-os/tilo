@@ -115,13 +115,15 @@ mod tests {
     }
 
     #[test]
-    fn string_keys_survive_flattening() {
-        let outer: Outer = serde_json::from_str(r#"{"map":{"7":9}}"#).unwrap();
-        assert_eq!(outer.inner.map[&WorkspaceId(7)], StripId(9));
-    }
-
-    #[test]
-    fn non_numeric_keys_are_refused() {
-        assert!(serde_json::from_str::<Outer>(r#"{"map":{"seven":9}}"#).is_err());
+    fn id_keyed_maps_flatten_to_numeric_string_keys_only() {
+        // Phase `string_keys_survive_flattening`.
+        {
+            let outer: Outer = serde_json::from_str(r#"{"map":{"7":9}}"#).unwrap();
+            assert_eq!(outer.inner.map[&WorkspaceId(7)], StripId(9));
+        }
+        // Phase `non_numeric_keys_are_refused`.
+        {
+            assert!(serde_json::from_str::<Outer>(r#"{"map":{"seven":9}}"#).is_err());
+        }
     }
 }

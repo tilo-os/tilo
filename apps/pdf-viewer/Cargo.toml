@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "pdf-viewer"
 version = "0.1.0"
 edition = "2024"
@@ -45,6 +46,10 @@ tempfile.workspace = true
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

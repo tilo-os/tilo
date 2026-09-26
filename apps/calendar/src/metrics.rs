@@ -37,29 +37,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn line_height_scales_with_text_scale() {
+    fn line_height_scales_matches_the_renderer_and_rejects_invalid_scale() {
+        // Scales linearly with the text scale.
         let one = line_h(12.0, 1.0);
         let two = line_h(12.0, 2.0);
         assert!((two - 2.0 * one).abs() < 1e-6);
         assert!(one > 12.0, "a line is taller than its glyph size");
-    }
 
-    #[test]
-    fn line_height_matches_the_renderer_measurement() {
+        // Matches what the renderer measures at that scale.
         let mut tr = ui::text_render::TextRenderer::new();
         tr.set_text_scale(2.0);
         let (_, measured) = tr.measure("Mon", 12.0, None);
         assert!((line_h(12.0, 2.0) - f64::from(measured)).abs() < 0.01);
+
+        // An invalid scale falls back to one.
+        assert_eq!(line_h(10.0, f32::NAN), line_h(10.0, 1.0));
     }
 
     #[test]
-    fn at_least_keeps_the_authored_minimum() {
+    fn at_least_keeps_the_authored_minimum_and_whole_snaps_a_grown_row() {
         assert_eq!(at_least(28.0, 20.0), 28.0);
         assert_eq!(at_least(28.0, 42.0), 42.0);
-    }
 
-    #[test]
-    fn at_least_whole_snaps_a_grown_row_up_to_a_pixel() {
         // Inside the authored minimum: the design wins, whole as authored.
         assert_eq!(at_least_whole(16.0, 13.75), 16.0);
         // Past it: the measured line plus its pad, rounded up, never a
@@ -67,10 +66,5 @@ mod tests {
         assert_eq!(at_least_whole(16.0, 17.75), 18.0);
         assert_eq!(at_least_whole(30.0, 44.5), 45.0);
         assert!(at_least_whole(30.0, 44.5) >= 44.5);
-    }
-
-    #[test]
-    fn invalid_scale_falls_back_to_one() {
-        assert_eq!(line_h(10.0, f32::NAN), line_h(10.0, 1.0));
     }
 }

@@ -1312,135 +1312,137 @@ mod tests {
     }
 
     #[test]
-    fn ligature_glyph_copies_as_its_letters_and_splits_its_box() {
-        let raw = vec![
-            glyph('\u{FB01}', 0, 0.0, 0.0, 10.0),
-            glyph('n', 1, 10.0, 0.0, 5.0),
-            glyph('d', 2, 15.0, 0.0, 5.0),
-        ];
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        assert_eq!(layer.text(), "find");
-        assert_eq!(layer.chars()[0].rect.x1, 5.0);
-        assert_eq!(layer.chars()[1].rect.x0, 5.0);
-        // Selecting only the first half of the ligature copies "f".
-        let sel = layer.select_between(Point::new(0.5, 5.0), Point::new(4.0, 5.0));
-        assert_eq!(layer.text_for(&sel), "f");
-        assert_eq!(layer.search("fi", SearchOptions::default()).len(), 1);
+    fn copied_text_expands_ligatures_and_presentation_forms_and_drops_soft_hyphens() {
+        // Phase `ligature_glyph_copies_as_its_letters_and_splits_its_box`.
+        {
+            let raw = vec![
+                glyph('\u{FB01}', 0, 0.0, 0.0, 10.0),
+                glyph('n', 1, 10.0, 0.0, 5.0),
+                glyph('d', 2, 15.0, 0.0, 5.0),
+            ];
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            assert_eq!(layer.text(), "find");
+            assert_eq!(layer.chars()[0].rect.x1, 5.0);
+            assert_eq!(layer.chars()[1].rect.x0, 5.0);
+            // Selecting only the first half of the ligature copies "f".
+            let sel = layer.select_between(Point::new(0.5, 5.0), Point::new(4.0, 5.0));
+            assert_eq!(layer.text_for(&sel), "f");
+            assert_eq!(layer.search("fi", SearchOptions::default()).len(), 1);
+        }
+        // Phase `soft_hyphen_at_line_end_is_dropped_on_copy_and_search`.
+        {
+            let mut raw = run("exam", 0, 0.0, 0.0);
+            let mut hyphen = glyph('-', 4, 24.0, 0.0, 4.0);
+            hyphen.flags = raw_flags::HYPHEN;
+            raw.push(hyphen);
+            raw.extend(run("ple text", 5, 0.0, 14.0));
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            let all = layer.select_range(0..layer.len());
+            assert_eq!(layer.text_for(&all), "example text");
+            assert_eq!(layer.search("example", SearchOptions::default()).len(), 1);
+            let hit = &layer.search("example", SearchOptions::default())[0];
+            assert_eq!(hit.rects.len(), 2, "hit spans two lines");
+        }
+        // Phase `arabic_presentation_forms_copy_as_base_letters`.
+        {
+            // U+FEDF U+FEE0 are initial/medial LAM presentation forms.
+            assert_eq!(copy_expansion('\u{FEDF}'), vec!['\u{0644}']);
+            assert_eq!(copy_expansion('\u{FB00}'), vec!['f', 'f']);
+            assert_eq!(copy_expansion('²'), vec!['²'], "superscripts are kept");
+        }
     }
 
     #[test]
-    fn two_columns_read_column_by_column() {
-        let mut raw = Vec::new();
-        // Engine order interleaves the columns row by row, as some producers do.
-        raw.extend(run("left one", 0, 0.0, 0.0));
-        raw.extend(run("right one", 100, 200.0, 0.0));
-        raw.extend(run("left two", 200, 0.0, 14.0));
-        raw.extend(run("right two", 300, 200.0, 14.0));
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        assert_eq!(layer.text(), "left one\nleft two\nright one\nright two");
-        assert_eq!(layer.blocks().len(), 2);
-        // A drag within the left column selects only left-column text.
-        let sel = layer.select_between(Point::new(0.5, 5.0), Point::new(47.0, 19.0));
-        assert_eq!(layer.text_for(&sel), "left one\nleft two");
+    fn text_layers_restore_reading_order_across_columns_and_scripts() {
+        // Phase `two_columns_read_column_by_column`.
+        {
+            let mut raw = Vec::new();
+            // Engine order interleaves the columns row by row, as some producers do.
+            raw.extend(run("left one", 0, 0.0, 0.0));
+            raw.extend(run("right one", 100, 200.0, 0.0));
+            raw.extend(run("left two", 200, 0.0, 14.0));
+            raw.extend(run("right two", 300, 200.0, 14.0));
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            assert_eq!(layer.text(), "left one\nleft two\nright one\nright two");
+            assert_eq!(layer.blocks().len(), 2);
+            // A drag within the left column selects only left-column text.
+            let sel = layer.select_between(Point::new(0.5, 5.0), Point::new(47.0, 19.0));
+            assert_eq!(layer.text_for(&sel), "left one\nleft two");
+        }
+        // Phase `title_above_columns_reads_first`.
+        {
+            let mut raw = Vec::new();
+            raw.extend(run("Title spanning both", 0, 0.0, 0.0));
+            raw.extend(run("a1", 50, 0.0, 30.0));
+            raw.extend(run("a2", 60, 0.0, 44.0));
+            raw.extend(run("b1", 70, 200.0, 30.0));
+            raw.extend(run("b2", 80, 200.0, 44.0));
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            assert_eq!(layer.text(), "Title spanning both\na1\na2\nb1\nb2");
+        }
+        // Phase `visual_order_rtl_line_is_restored_to_logical_order`.
+        {
+            // "سلام" drawn right-to-left but reported left-to-right (visual).
+            let logical: Vec<char> = "سلام".chars().collect();
+            let raw: Vec<RawChar> = logical
+                .iter()
+                .rev()
+                .enumerate()
+                .map(|(i, ch)| glyph(*ch, i as u32, i as f32 * 6.0, 0.0, 6.0))
+                .collect();
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            assert_eq!(layer.text(), "سلام");
+            assert!(layer.lines()[0].rtl);
+        }
+        // Phase `logical_order_rtl_line_is_kept`.
+        {
+            let raw: Vec<RawChar> = "שלום"
+                .chars()
+                .enumerate()
+                .map(|(i, ch)| glyph(ch, i as u32, 100.0 - i as f32 * 6.0, 0.0, 6.0))
+                .collect();
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            assert_eq!(layer.text(), "שלום");
+            // In a right-to-left line the caret right of the first glyph is 0.
+            assert_eq!(layer.caret_at(Point::new(105.5, 5.0)), 0);
+        }
     }
 
     #[test]
-    fn title_above_columns_reads_first() {
-        let mut raw = Vec::new();
-        raw.extend(run("Title spanning both", 0, 0.0, 0.0));
-        raw.extend(run("a1", 50, 0.0, 30.0));
-        raw.extend(run("a2", 60, 0.0, 44.0));
-        raw.extend(run("b1", 70, 200.0, 30.0));
-        raw.extend(run("b2", 80, 200.0, 44.0));
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        assert_eq!(layer.text(), "Title spanning both\na1\na2\nb1\nb2");
-    }
-
-    #[test]
-    fn visual_order_rtl_line_is_restored_to_logical_order() {
-        // "سلام" drawn right-to-left but reported left-to-right (visual).
-        let logical: Vec<char> = "سلام".chars().collect();
-        let raw: Vec<RawChar> = logical
-            .iter()
-            .rev()
-            .enumerate()
-            .map(|(i, ch)| glyph(*ch, i as u32, i as f32 * 6.0, 0.0, 6.0))
-            .collect();
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        assert_eq!(layer.text(), "سلام");
-        assert!(layer.lines()[0].rtl);
-    }
-
-    #[test]
-    fn logical_order_rtl_line_is_kept() {
-        let raw: Vec<RawChar> = "שלום"
-            .chars()
-            .enumerate()
-            .map(|(i, ch)| glyph(ch, i as u32, 100.0 - i as f32 * 6.0, 0.0, 6.0))
-            .collect();
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        assert_eq!(layer.text(), "שלום");
-        // In a right-to-left line the caret right of the first glyph is 0.
-        assert_eq!(layer.caret_at(Point::new(105.5, 5.0)), 0);
-    }
-
-    #[test]
-    fn soft_hyphen_at_line_end_is_dropped_on_copy_and_search() {
-        let mut raw = run("exam", 0, 0.0, 0.0);
-        let mut hyphen = glyph('-', 4, 24.0, 0.0, 4.0);
-        hyphen.flags = raw_flags::HYPHEN;
-        raw.push(hyphen);
-        raw.extend(run("ple text", 5, 0.0, 14.0));
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        let all = layer.select_range(0..layer.len());
-        assert_eq!(layer.text_for(&all), "example text");
-        assert_eq!(layer.search("example", SearchOptions::default()).len(), 1);
-        let hit = &layer.search("example", SearchOptions::default())[0];
-        assert_eq!(hit.rects.len(), 2, "hit spans two lines");
-    }
-
-    #[test]
-    fn box_selection_picks_glyphs_inside() {
-        let mut raw = run("abc def", 0, 0.0, 0.0);
-        raw.extend(run("ghi jkl", 10, 0.0, 14.0));
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        // Box around "abc" and "ghi" only (x 0..18).
-        let sel = layer.select_rect(Rect::from_xywh(0.0, 0.0, 18.0, 24.0));
-        assert_eq!(layer.text_for(&sel), "abc\nghi");
-    }
-
-    #[test]
-    fn search_is_case_and_optionally_diacritic_insensitive() {
-        let raw = run("Café CAFE", 0, 0.0, 0.0);
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        assert_eq!(layer.search("cafe", SearchOptions::default()).len(), 1);
-        let opts = SearchOptions {
-            ignore_diacritics: true,
-            ..SearchOptions::default()
-        };
-        assert_eq!(layer.search("cafe", opts).len(), 2);
-        let ww = SearchOptions {
-            whole_word: true,
-            ..SearchOptions::default()
-        };
-        assert_eq!(layer.search("caf", ww).len(), 0);
-    }
-
-    #[test]
-    fn word_and_line_ranges() {
-        let raw = run("hello world", 0, 0.0, 0.0);
-        let layer = TextLayer::from_raw(&raw).unwrap();
-        let w = layer.word_range(7);
-        assert_eq!(layer.text_for(&layer.select_range(w)), "world");
-        let l = layer.line_range(0);
-        assert_eq!(layer.text_for(&layer.select_range(l)), "hello world");
-    }
-
-    #[test]
-    fn arabic_presentation_forms_copy_as_base_letters() {
-        // U+FEDF U+FEE0 are initial/medial LAM presentation forms.
-        assert_eq!(copy_expansion('\u{FEDF}'), vec!['\u{0644}']);
-        assert_eq!(copy_expansion('\u{FB00}'), vec!['f', 'f']);
-        assert_eq!(copy_expansion('²'), vec!['²'], "superscripts are kept");
+    fn selection_and_search_pick_boxes_words_lines_and_folded_matches() {
+        // Phase `box_selection_picks_glyphs_inside`.
+        {
+            let mut raw = run("abc def", 0, 0.0, 0.0);
+            raw.extend(run("ghi jkl", 10, 0.0, 14.0));
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            // Box around "abc" and "ghi" only (x 0..18).
+            let sel = layer.select_rect(Rect::from_xywh(0.0, 0.0, 18.0, 24.0));
+            assert_eq!(layer.text_for(&sel), "abc\nghi");
+        }
+        // Phase `search_is_case_and_optionally_diacritic_insensitive`.
+        {
+            let raw = run("Café CAFE", 0, 0.0, 0.0);
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            assert_eq!(layer.search("cafe", SearchOptions::default()).len(), 1);
+            let opts = SearchOptions {
+                ignore_diacritics: true,
+                ..SearchOptions::default()
+            };
+            assert_eq!(layer.search("cafe", opts).len(), 2);
+            let ww = SearchOptions {
+                whole_word: true,
+                ..SearchOptions::default()
+            };
+            assert_eq!(layer.search("caf", ww).len(), 0);
+        }
+        // Phase `word_and_line_ranges`.
+        {
+            let raw = run("hello world", 0, 0.0, 0.0);
+            let layer = TextLayer::from_raw(&raw).unwrap();
+            let w = layer.word_range(7);
+            assert_eq!(layer.text_for(&layer.select_range(w)), "world");
+            let l = layer.line_range(0);
+            assert_eq!(layer.text_for(&layer.select_range(l)), "hello world");
+        }
     }
 }

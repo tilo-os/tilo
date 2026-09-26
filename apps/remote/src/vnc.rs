@@ -429,71 +429,74 @@ mod tests {
     }
 
     #[test]
-    fn real_vnc_round_trip_reads_framebuffer() {
-        // 4x2 checkerboard of primaries.
-        let pixels = vec![
-            [255, 0, 0, 255],
-            [0, 255, 0, 255],
-            [0, 0, 255, 255],
-            [255, 255, 255, 255],
-            [10, 20, 30, 255],
-            [40, 50, 60, 255],
-            [70, 80, 90, 255],
-            [100, 110, 120, 255],
-        ];
-        let port = spawn_loopback_server(pixels.clone());
+    fn vnc_client_reads_real_framebuffer_and_reports_refusal_honestly() {
+        eprintln!("phase real_vnc_round_trip_reads_framebuffer");
+        {
+            // 4x2 checkerboard of primaries.
+            let pixels = vec![
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+                [0, 0, 255, 255],
+                [255, 255, 255, 255],
+                [10, 20, 30, 255],
+                [40, 50, 60, 255],
+                [70, 80, 90, 255],
+                [100, 110, 120, 255],
+            ];
+            let port = spawn_loopback_server(pixels.clone());
 
-        let mut vnc = VncSession::connect(VncConfig {
-            host: "127.0.0.1".into(),
-            port,
-            password: None,
-        })
-        .unwrap();
+            let mut vnc = VncSession::connect(VncConfig {
+                host: "127.0.0.1".into(),
+                port,
+                password: None,
+            })
+            .unwrap();
 
-        let mut got: Option<Framebuffer> = None;
-        for _ in 0..200 {
-            if let SessionStatus::Failed(e) = vnc.status() {
-                panic!("vnc connect failed: {e}")
+            let mut got: Option<Framebuffer> = None;
+            for _ in 0..200 {
+                if let SessionStatus::Failed(e) = vnc.status() {
+                    panic!("vnc connect failed: {e}")
+                }
+                if let Some(fb) = vnc.take_frame()
+                    && fb.data.iter().any(|&b| b != 0)
+                {
+                    got = Some(fb);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-            if let Some(fb) = vnc.take_frame()
-                && fb.data.iter().any(|&b| b != 0)
-            {
-                got = Some(fb);
-                break;
+
+            let fb = got.expect("never received a framebuffer");
+            assert_eq!((fb.width, fb.height), (4, 2));
+            // Verify the exact pixels landed where they should.
+            for (i, expected) in pixels.iter().enumerate() {
+                let got_px = &fb.data[i * 4..i * 4 + 4];
+                assert_eq!(got_px, &expected[..], "pixel {i} mismatch");
             }
-            std::thread::sleep(Duration::from_millis(20));
         }
 
-        let fb = got.expect("never received a framebuffer");
-        assert_eq!((fb.width, fb.height), (4, 2));
-        // Verify the exact pixels landed where they should.
-        for (i, expected) in pixels.iter().enumerate() {
-            let got_px = &fb.data[i * 4..i * 4 + 4];
-            assert_eq!(got_px, &expected[..], "pixel {i} mismatch");
-        }
-    }
+        eprintln!("phase refused_connection_is_honest_failure");
+        {
+            // Nothing is listening on this port → an honest Failed, not a frame.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener); // free the port
 
-    #[test]
-    fn refused_connection_is_honest_failure() {
-        // Nothing is listening on this port → an honest Failed, not a frame.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener); // free the port
-
-        let vnc = VncSession::connect(VncConfig {
-            host: "127.0.0.1".into(),
-            port,
-            password: None,
-        })
-        .unwrap();
-        let mut failed = false;
-        for _ in 0..100 {
-            if let SessionStatus::Failed(_) = vnc.status() {
-                failed = true;
-                break;
+            let vnc = VncSession::connect(VncConfig {
+                host: "127.0.0.1".into(),
+                port,
+                password: None,
+            })
+            .unwrap();
+            let mut failed = false;
+            for _ in 0..100 {
+                if let SessionStatus::Failed(_) = vnc.status() {
+                    failed = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
             }
-            std::thread::sleep(Duration::from_millis(20));
+            assert!(failed, "a refused connection must surface as Failed");
         }
-        assert!(failed, "a refused connection must surface as Failed");
     }
 }

@@ -153,36 +153,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn swipe_and_menu_primary_action_match() {
-        // The parity invariant: swipe-left and the menu's first item are the
-        // same action. If someone reorders the menu, this guards the drift.
-        assert_eq!(EntryAction::swipe_left(), EntryAction::menu_for_entry()[0]);
-        assert_eq!(EntryAction::swipe_left(), EntryAction::Delete);
-    }
+    fn gesture_classification_and_primary_actions_agree() {
+        // Case `swipe_and_menu_primary_action_match`.
+        {
+            // The parity invariant: swipe-left and the menu's first item are the
+            // same action. If someone reorders the menu, this guards the drift.
+            assert_eq!(EntryAction::swipe_left(), EntryAction::menu_for_entry()[0]);
+            assert_eq!(EntryAction::swipe_left(), EntryAction::Delete);
+        }
+        // Case `press_classifies_vertical_vs_horizontal`.
+        {
+            let mut p = PointerPress::new(0, Point::new(100.0, 100.0));
+            assert!(!p.moved);
+            // Mostly-horizontal drag → swipe.
+            p.update(Point::new(80.0, 102.0));
+            assert!(p.is_swipe());
+            assert!(!p.is_reorder());
 
-    #[test]
-    fn press_classifies_vertical_vs_horizontal() {
-        let mut p = PointerPress::new(0, Point::new(100.0, 100.0));
-        assert!(!p.moved);
-        // Mostly-horizontal drag → swipe.
-        p.update(Point::new(80.0, 102.0));
-        assert!(p.is_swipe());
-        assert!(!p.is_reorder());
-
-        let mut q = PointerPress::new(1, Point::new(100.0, 100.0));
-        // Mostly-vertical drag → reorder.
-        q.update(Point::new(101.0, 130.0));
-        assert!(q.is_reorder());
-        assert!(!q.is_swipe());
-    }
-
-    #[test]
-    fn swipe_dx_is_leftward_only() {
-        let mut p = PointerPress::new(0, Point::new(100.0, 50.0));
-        p.update(Point::new(40.0, 50.0)); // dragged left 60px
-        assert!((p.swipe_dx() - 60.0).abs() < 1e-6);
-        let mut q = PointerPress::new(0, Point::new(100.0, 50.0));
-        q.update(Point::new(140.0, 50.0)); // dragged right → no swipe distance
-        assert_eq!(q.swipe_dx(), 0.0);
+            let mut q = PointerPress::new(1, Point::new(100.0, 100.0));
+            // Mostly-vertical drag → reorder.
+            q.update(Point::new(101.0, 130.0));
+            assert!(q.is_reorder());
+            assert!(!q.is_swipe());
+        }
+        // Case `swipe_dx_is_leftward_only`.
+        {
+            let mut p = PointerPress::new(0, Point::new(100.0, 50.0));
+            p.update(Point::new(40.0, 50.0)); // dragged left 60px
+            assert!((p.swipe_dx() - 60.0).abs() < 1e-6);
+            let mut q = PointerPress::new(0, Point::new(100.0, 50.0));
+            q.update(Point::new(140.0, 50.0)); // dragged right → no swipe distance
+            assert_eq!(q.swipe_dx(), 0.0);
+        }
     }
 }

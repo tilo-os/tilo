@@ -3541,67 +3541,109 @@ mod tests {
         }
     }
 
+    /// Facets and every view filter narrow the entries locally — including
+    /// one invoked by an agent — without touching the shared document.
     #[test]
-    fn facets_collect_units_and_two_boots() {
+    fn view_filters_narrow_entries_without_touching_the_shared_document() {
+        // Facets collect units and two boots.
         let app = LogsApp::new(sample_entries(), false);
         assert!(app.units.contains(&"shell.service".to_string()));
         assert_eq!(app.boots.len(), 2);
-    }
 
-    #[test]
-    fn priority_threshold_filters_entries() {
-        let (mut app, _doc) = synced_app();
-        let total = app.filtered.len();
-        app.apply_view_operation(LogsOperation::SetPriority {
-            value: Priority::Err.level(),
-        });
-        let errs = app.filtered.len();
-        assert!(errs < total, "errors-only must show fewer than all");
-        assert!(errs > 0);
-        for &i in &app.filtered {
-            assert!(app.entries[i].priority.level() <= 3);
+        // The priority threshold filters entries.
+        {
+            let (mut app, _doc) = synced_app();
+            let total = app.filtered.len();
+            app.apply_view_operation(LogsOperation::SetPriority {
+                value: Priority::Err.level(),
+            });
+            let errs = app.filtered.len();
+            assert!(errs < total, "errors-only must show fewer than all");
+            assert!(errs > 0);
+            for &i in &app.filtered {
+                assert!(app.entries[i].priority.level() <= 3);
+            }
+        }
+        // Search narrows results.
+        {
+            let (mut app, _doc) = synced_app();
+            app.apply_view_operation(LogsOperation::SetSearch {
+                value: "iroh".to_string(),
+            });
+            assert_eq!(app.search_input.value(), "iroh");
+            assert!(!app.filtered.is_empty());
+            for &i in &app.filtered {
+                let e = &app.entries[i];
+                let hit = e.message.to_lowercase().contains("iroh")
+                    || e.unit.to_lowercase().contains("iroh");
+                assert!(hit);
+            }
+        }
+        // The unit filter restricts to one unit.
+        {
+            let (mut app, _doc) = synced_app();
+            app.apply_view_operation(LogsOperation::SetUnit {
+                value: "kernel".to_string(),
+            });
+            assert!(
+                app.filtered
+                    .iter()
+                    .all(|&i| app.entries[i].unit == "kernel")
+            );
+        }
+        // The boot filter is local.
+        {
+            let (mut app, _doc) = synced_app();
+            let boot = app.boots[1].0.clone();
+            app.apply_view_operation(LogsOperation::SetBoot {
+                value: boot.clone(),
+            });
+            assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
+        }
+        // An agent filter view operation never changes the shared document.
+        {
+            let (mut app, doc) = synced_app();
+            let encoded = tilo_actions::EncodedAction::encode_operation(
+                actions::LOGS_OPERATION_TYPE,
+                &LogsOperation::SetUnit {
+                    value: "kernel".to_string(),
+                },
+            )
+            .unwrap();
+
+            assert!(
+                app.invoke_resource_operation(
+                    OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &doc,
+                    &ROOT,
+                )
+                .unwrap()
+            );
+            assert_eq!(app.filter.unit, "kernel");
+            assert!(
+                app.filtered
+                    .iter()
+                    .all(|&index| app.entries[index].unit == "kernel")
+            );
+            assert!(
+                doc.keys(&ROOT).next().is_none(),
+                "agent view actions must not write shared state"
+            );
         }
     }
 
+    /// Selection auto-lands on an error or worse and arrow keys move only the
+    /// local selection.
     #[test]
-    fn search_narrows_results() {
-        let (mut app, _doc) = synced_app();
-        app.apply_view_operation(LogsOperation::SetSearch {
-            value: "iroh".to_string(),
-        });
-        assert_eq!(app.search_input.value(), "iroh");
-        assert!(!app.filtered.is_empty());
-        for &i in &app.filtered {
-            let e = &app.entries[i];
-            let hit =
-                e.message.to_lowercase().contains("iroh") || e.unit.to_lowercase().contains("iroh");
-            assert!(hit);
-        }
-    }
-
-    #[test]
-    fn unit_filter_restricts_to_one_unit() {
-        let (mut app, _doc) = synced_app();
-        app.apply_view_operation(LogsOperation::SetUnit {
-            value: "kernel".to_string(),
-        });
-        assert!(
-            app.filtered
-                .iter()
-                .all(|&i| app.entries[i].unit == "kernel")
-        );
-    }
-
-    #[test]
-    fn auto_selection_lands_on_error_or_worse() {
-        let (app, _doc) = synced_app();
+    fn selection_auto_lands_on_errors_and_moves_locally() {
+        let (mut app, doc) = synced_app();
+        // Auto-selection lands on an error or worse.
         let sel = app.effective_selected().expect("an entry is auto-selected");
         assert!(app.entries[sel].priority.level() <= Priority::Err.level());
-    }
 
-    #[test]
-    fn arrow_navigation_moves_only_local_selection() {
-        let (mut app, doc) = synced_app();
+        // Arrow navigation moves only the local selection.
         let before = app.effective_selected().unwrap();
         app.move_selection(1);
         let after = app.effective_selected().unwrap();
@@ -3619,261 +3661,228 @@ mod tests {
         );
     }
 
+    /// Region geometry adapts from desktop to medium to phone widths.
     #[test]
-    fn boot_filter_is_local() {
-        let (mut app, _doc) = synced_app();
-        let boot = app.boots[1].0.clone();
-        app.apply_view_operation(LogsOperation::SetBoot {
-            value: boot.clone(),
-        });
-        assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
-    }
+    fn regions_adapt_from_desktop_to_medium_to_phone_width() {
+        // Content spans to the window bottom.
+        {
+            // With the bottom legend strip gone, the list/detail content must
+            // reach the window's bottom edge (minus the usual content padding),
+            // not stop short to reserve a legend band.
+            let (app, _doc) = synced_app();
+            let reg = app.regions();
+            assert!(
+                reg.list_body.y1 >= app.rect.y1 - PAD - 1.0,
+                "list body {} should reach near the window bottom {}",
+                reg.list_body.y1,
+                app.rect.y1
+            );
+            assert!(reg.detail.y1 >= app.rect.y1 - PAD - 1.0);
+        }
+        // Medium-width filter controls wrap without clipping.
+        {
+            let (mut app, _doc) = synced_app();
+            app.rect = Rect::new(0.0, 0.0, 1024.0, 720.0);
+            let reg = app.regions();
 
-    #[test]
-    fn agent_filter_view_operation_never_changes_the_shared_document() {
-        let (mut app, doc) = synced_app();
-        let encoded = tilo_actions::EncodedAction::encode_operation(
-            actions::LOGS_OPERATION_TYPE,
-            &LogsOperation::SetUnit {
-                value: "kernel".to_string(),
-            },
-        )
-        .unwrap();
-
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &ROOT,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.filter.unit, "kernel");
-        assert!(
-            app.filtered
-                .iter()
-                .all(|&index| app.entries[index].unit == "kernel")
-        );
-        assert!(
-            doc.keys(&ROOT).next().is_none(),
-            "agent view actions must not write shared state"
-        );
-    }
-
-    #[test]
-    fn content_spans_to_window_bottom() {
-        // With the bottom legend strip gone, the list/detail content must
-        // reach the window's bottom edge (minus the usual content padding),
-        // not stop short to reserve a legend band.
-        let (app, _doc) = synced_app();
-        let reg = app.regions();
-        assert!(
-            reg.list_body.y1 >= app.rect.y1 - PAD - 1.0,
-            "list body {} should reach near the window bottom {}",
-            reg.list_body.y1,
-            app.rect.y1
-        );
-        assert!(reg.detail.y1 >= app.rect.y1 - PAD - 1.0);
-    }
-
-    #[test]
-    fn medium_width_filter_controls_wrap_without_clipping() {
-        let (mut app, _doc) = synced_app();
-        app.rect = Rect::new(0.0, 0.0, 1024.0, 720.0);
-        let reg = app.regions();
-
-        assert!(
-            (reg.filter.height() - 128.0).abs() < f64::EPSILON,
-            "medium-width filters should use the compact three-row height"
-        );
-        assert_eq!(reg.chips.len(), 8);
-        assert!(
-            reg.chips.iter().all(|chip| chip.x1 <= app.rect.x1 - PAD),
-            "every severity choice must stay inside the viewport"
-        );
-        assert!(
-            reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
-            "severity choices belong on their own compact row"
-        );
-    }
-
-    #[test]
-    fn phone_rows_prioritize_time_level_and_message() {
-        let row = Rect::new(0.0, 0.0, 358.0, ROW_H);
-        let cols = column_x(row, 1.0);
-        assert!(cols.compact, "phone rows use compact column geometry");
-        assert!(
-            cols.unit_w.abs() < f64::EPSILON,
-            "unit yields space to the message"
-        );
-        assert!(cols.msg_w >= 200.0, "message remains meaningfully readable");
-        assert!(cols.msg_x < row.x1);
-    }
-
-    #[test]
-    fn refresh_control_queues_the_exported_root_operation() {
-        let mut app = LogsApp::new(sample_entries(), true);
-        app.request_journal_operation("refresh");
-        let invocation = app
-            .take_control_invocation()
-            .expect("refresh queues an inert control invocation");
-        assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
-        assert_eq!(invocation.address.action, "refresh");
-        assert!(app.source_loading);
-    }
-
-    #[test]
-    fn phone_actions_menu_exposes_refresh_follow_and_export() {
-        let (mut app, _doc) = synced_app();
-        app.allow_live = true;
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        app.shots_show_actions();
-        let reg = app.regions();
-        assert!(reg.overflow_trigger.width() > 0.0);
-        assert_eq!(reg.dropdown.len(), 3);
-        let tree = app.accessibility_tree();
-        assert!(
-            tree.children
-                .iter()
-                .any(|node| node.name.as_deref() == Some("Journal actions"))
-        );
-        let filters = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Journal filters"))
-            .unwrap();
-        assert!(filters.children.iter().any(|node| {
-            node.action_target.as_deref() == Some("logs.action-choice:export-filtered-jsonl")
-        }));
-    }
-
-    #[test]
-    fn portal_export_writes_the_snapshot_selected_before_the_picker() {
-        let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
-        let path = std::env::temp_dir().join(format!(
-            "tilo-logs-portal-export-{}-{}.jsonl",
-            std::process::id(),
-            app.entries[0].realtime_us
-        ));
-        let _ = std::fs::remove_file(&path);
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        ui::host::scoped(&services, || {
-            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
-        });
-        assert_eq!(
-            recorder.pick_requests()[0].suggested_name(),
-            Some("journal-filtered.jsonl")
-        );
-        // Entries arriving after the picker opened are not part of the export.
-        app.entries.extend(sample_entries().into_iter().skip(2));
-        app.drain_export_portal();
-        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
-        assert_eq!(
-            app.export_status.as_deref(),
-            Some("Exported 2 log entries.")
-        );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn portal_export_write_failure_is_announced_without_path_details() {
-        let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
-        ui::host::scoped(&services, || {
-            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
-        });
-        app.drain_export_portal();
-        assert_eq!(app.export_status.as_deref(), Some("Export failed."));
-        let tree = app.accessibility_tree();
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Export failed.") && node.live == Some(Politeness::Polite)
-        }));
-    }
-
-    #[test]
-    fn clear_filters_control_lives_in_header_and_resets() {
-        let (mut app, mut doc) = synced_app();
-        // A clear filter set means no Clear-filters control is laid out.
-        assert!(app.filter.is_clear());
-        assert_eq!(app.regions().clear_btn, Rect::ZERO);
-
-        // Activate a filter (errors-or-worse threshold).
-        app.apply_view_operation(LogsOperation::SetPriority {
-            value: Priority::Err.level(),
-        });
-        assert!(!app.filter.is_clear());
-
-        // The Clear-filters control now sits in the header, just left of the
-        // live-tail pill — not in any bottom strip.
-        let reg = app.regions();
-        assert!(reg.clear_btn.width() > 0.0, "clear button must be laid out");
-        assert!(
-            reg.header.contains(reg.clear_btn.center()),
-            "clear button center {:?} must be inside the header {:?}",
-            reg.clear_btn.center(),
-            reg.header
-        );
-        assert!(reg.clear_btn.x1 <= reg.live_pill.x0);
-
-        // Clicking it clears the filter through the production on_click path.
-        let mut handled = false;
-        app.on_click(reg.clear_btn.center(), &mut handled);
-        assert!(
-            handled,
-            "the header Clear-filters button must be hit-tested"
-        );
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            app.filter.is_clear(),
-            "clicking Clear filters must reset the filter"
-        );
-    }
-
-    #[test]
-    fn accessibility_exposes_hand_painted_controls_and_rejects_unknown_targets() {
-        let (mut app, mut doc) = synced_app();
-        let tree = app.accessibility_tree();
-        assert!(tree.children.iter().any(|node| node.role == Role::Switch));
-        let filters = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Journal filters"))
-            .expect("filter group is exposed");
-        assert!(
-            filters
+            assert!(
+                (reg.filter.height() - 128.0).abs() < f64::EPSILON,
+                "medium-width filters should use the compact three-row height"
+            );
+            assert_eq!(reg.chips.len(), 8);
+            assert!(
+                reg.chips.iter().all(|chip| chip.x1 <= app.rect.x1 - PAD),
+                "every severity choice must stay inside the viewport"
+            );
+            assert!(
+                reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
+                "severity choices belong on their own compact row"
+            );
+        }
+        // Phone rows prioritize time, level and message.
+        {
+            let row = Rect::new(0.0, 0.0, 358.0, ROW_H);
+            let cols = column_x(row, 1.0);
+            assert!(cols.compact, "phone rows use compact column geometry");
+            assert!(
+                cols.unit_w.abs() < f64::EPSILON,
+                "unit yields space to the message"
+            );
+            assert!(cols.msg_w >= 200.0, "message remains meaningfully readable");
+            assert!(cols.msg_x < row.x1);
+        }
+        // The phone actions menu exposes refresh, follow and export.
+        {
+            let (mut app, _doc) = synced_app();
+            app.allow_live = true;
+            app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+            app.shots_show_actions();
+            let reg = app.regions();
+            assert!(reg.overflow_trigger.width() > 0.0);
+            assert_eq!(reg.dropdown.len(), 3);
+            let tree = app.accessibility_tree();
+            assert!(
+                tree.children
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some("Journal actions"))
+            );
+            let filters = tree
                 .children
                 .iter()
-                .any(|node| node.role == Role::ToggleButton)
-        );
-        let list = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::List)
-            .expect("entry list is exposed");
-        assert!(list.children.iter().all(|node| node.state.focusable));
-        assert!(
-            !Widget::perform_semantic_action(
-                &mut app,
-                "logs.unknown",
-                &AccessAction::Focus,
-                &mut doc,
-                &ROOT,
-            ),
-            "unknown targets must not claim an accessibility action"
-        );
-        assert!(
-            !Widget::perform_semantic_action(
-                &mut app,
-                "logs.live-tail",
-                &AccessAction::Activate,
-                &mut doc,
-                &ROOT,
-            ),
-            "unavailable local journal access must reject live-tail activation"
-        );
+                .find(|node| node.name.as_deref() == Some("Journal filters"))
+                .unwrap();
+            assert!(filters.children.iter().any(|node| {
+                node.action_target.as_deref() == Some("logs.action-choice:export-filtered-jsonl")
+            }));
+        }
+    }
+
+    /// Portal export writes the snapshot chosen before the picker opened and
+    /// announces a write failure without path details.
+    #[test]
+    fn portal_export_writes_the_frozen_snapshot_or_announces_failure() {
+        // Success: the snapshot selected before the picker is written.
+        {
+            let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
+            let path = std::env::temp_dir().join(format!(
+                "tilo-logs-portal-export-{}-{}.jsonl",
+                std::process::id(),
+                app.entries[0].realtime_us
+            ));
+            let _ = std::fs::remove_file(&path);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+            ui::host::scoped(&services, || {
+                app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+            });
+            assert_eq!(
+                recorder.pick_requests()[0].suggested_name(),
+                Some("journal-filtered.jsonl")
+            );
+            // Entries arriving after the picker opened are not part of the export.
+            app.entries.extend(sample_entries().into_iter().skip(2));
+            app.drain_export_portal();
+            assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+            assert_eq!(
+                app.export_status.as_deref(),
+                Some("Exported 2 log entries.")
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+        // Failure: announced without path details.
+        {
+            let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
+            ui::host::scoped(&services, || {
+                app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+            });
+            app.drain_export_portal();
+            assert_eq!(app.export_status.as_deref(), Some("Export failed."));
+            let tree = app.accessibility_tree();
+            assert!(tree.children.iter().any(|node| {
+                node.name.as_deref() == Some("Export failed.")
+                    && node.live == Some(Politeness::Polite)
+            }));
+        }
+    }
+
+    /// Hand-painted header controls do real work and are exposed to
+    /// accessibility: refresh queues the root operation, Clear filters resets,
+    /// and unknown targets are rejected.
+    #[test]
+    fn header_controls_act_through_production_paths_and_accessibility() {
+        // Refresh queues the exported root operation.
+        {
+            let mut app = LogsApp::new(sample_entries(), true);
+            app.request_journal_operation("refresh");
+            let invocation = app
+                .take_control_invocation()
+                .expect("refresh queues an inert control invocation");
+            assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
+            assert_eq!(invocation.address.action, "refresh");
+            assert!(app.source_loading);
+        }
+        // Clear filters lives in the header and resets.
+        {
+            let (mut app, mut doc) = synced_app();
+            // A clear filter set means no Clear-filters control is laid out.
+            assert!(app.filter.is_clear());
+            assert_eq!(app.regions().clear_btn, Rect::ZERO);
+
+            // Activate a filter (errors-or-worse threshold).
+            app.apply_view_operation(LogsOperation::SetPriority {
+                value: Priority::Err.level(),
+            });
+            assert!(!app.filter.is_clear());
+
+            // The Clear-filters control now sits in the header, just left of the
+            // live-tail pill — not in any bottom strip.
+            let reg = app.regions();
+            assert!(reg.clear_btn.width() > 0.0, "clear button must be laid out");
+            assert!(
+                reg.header.contains(reg.clear_btn.center()),
+                "clear button center {:?} must be inside the header {:?}",
+                reg.clear_btn.center(),
+                reg.header
+            );
+            assert!(reg.clear_btn.x1 <= reg.live_pill.x0);
+
+            // Clicking it clears the filter through the production on_click path.
+            let mut handled = false;
+            app.on_click(reg.clear_btn.center(), &mut handled);
+            assert!(
+                handled,
+                "the header Clear-filters button must be hit-tested"
+            );
+            app.sync(&mut doc, &ROOT);
+            assert!(
+                app.filter.is_clear(),
+                "clicking Clear filters must reset the filter"
+            );
+        }
+        // Accessibility exposes hand-painted controls and rejects unknown targets.
+        {
+            let (mut app, mut doc) = synced_app();
+            let tree = app.accessibility_tree();
+            assert!(tree.children.iter().any(|node| node.role == Role::Switch));
+            let filters = tree
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Journal filters"))
+                .expect("filter group is exposed");
+            assert!(
+                filters
+                    .children
+                    .iter()
+                    .any(|node| node.role == Role::ToggleButton)
+            );
+            let list = tree
+                .children
+                .iter()
+                .find(|node| node.role == Role::List)
+                .expect("entry list is exposed");
+            assert!(list.children.iter().all(|node| node.state.focusable));
+            assert!(
+                !Widget::perform_semantic_action(
+                    &mut app,
+                    "logs.unknown",
+                    &AccessAction::Focus,
+                    &mut doc,
+                    &ROOT,
+                ),
+                "unknown targets must not claim an accessibility action"
+            );
+            assert!(
+                !Widget::perform_semantic_action(
+                    &mut app,
+                    "logs.live-tail",
+                    &AccessAction::Activate,
+                    &mut doc,
+                    &ROOT,
+                ),
+                "unavailable local journal access must reject live-tail activation"
+            );
+        }
     }
 }

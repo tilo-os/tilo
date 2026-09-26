@@ -292,75 +292,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encodes_short_payload() {
-        let w = QrWidget::new(b"hello".to_vec());
-        assert!(w.error().is_none());
-        assert!(w.matrix_size >= 21, "version-1 matrix is 21 modules");
+    fn qr_matrix_encodes_payloads_with_a_quiet_zone() {
+        // Case `encodes_short_payload`.
+        {
+            let w = QrWidget::new(b"hello".to_vec());
+            assert!(w.error().is_none());
+            assert!(w.matrix_size >= 21, "version-1 matrix is 21 modules");
+        }
+
+        // Case `encodes_pairing_payload_size`.
+        {
+            // The pairing-channel payload is JSON ~500-700 bytes.
+            let blob = vec![b'A'; 600];
+            let w = QrWidget::new(blob);
+            assert!(
+                w.error().is_none(),
+                "600-byte payload must fit at default EC level: {:?}",
+                w.error()
+            );
+        }
+
+        // Case `set_payload_recomputes_matrix`.
+        {
+            let mut w = QrWidget::new(b"first".to_vec());
+            let first_size = w.matrix_size;
+            w.set_payload(vec![b'X'; 200]);
+            assert!(
+                w.matrix_size >= first_size,
+                "longer payload should not shrink the QR"
+            );
+        }
+
+        // Case `total_modules_includes_quiet_zone`.
+        {
+            let w = QrWidget::new(b"x".to_vec());
+            assert_eq!(w.total_modules(), w.matrix_size + 2 * DEFAULT_QUIET_MODULES);
+        }
+
+        // Case `module_oob_returns_false`.
+        {
+            let w = QrWidget::new(b"x".to_vec());
+            assert!(!w.module(usize::MAX, 0));
+            assert!(!w.module(0, usize::MAX));
+        }
     }
 
     #[test]
-    fn encodes_pairing_payload_size() {
-        // The pairing-channel payload is JSON ~500-700 bytes.
-        let blob = vec![b'A'; 600];
-        let w = QrWidget::new(blob);
-        assert!(
-            w.error().is_none(),
-            "600-byte payload must fit at default EC level: {:?}",
-            w.error()
-        );
-    }
+    fn qr_image_semantics_stay_stable_through_encoding_failure() {
+        // Case `generated_code_has_stable_named_image_semantics`.
+        {
+            use crate::a11y::Role;
 
-    #[test]
-    fn set_payload_recomputes_matrix() {
-        let mut w = QrWidget::new(b"first".to_vec());
-        let first_size = w.matrix_size;
-        w.set_payload(vec![b'X'; 200]);
-        assert!(
-            w.matrix_size >= first_size,
-            "longer payload should not shrink the QR"
-        );
-    }
+            let w = QrWidget::new(b"https://example.com".to_vec())
+                .with_id("share-code")
+                .with_alt("Share link for Project Atlas");
+            assert_eq!(Widget::test_id(&w), Some("share-code"));
+            assert_eq!(w.alt(), "Share link for Project Atlas");
+            let node = Widget::accessibility(&w).expect("QR code is semantic content");
+            assert_eq!(node.role, Role::Image);
+            assert_eq!(node.name.as_deref(), Some("Share link for Project Atlas"));
+        }
 
-    #[test]
-    fn total_modules_includes_quiet_zone() {
-        let w = QrWidget::new(b"x".to_vec());
-        assert_eq!(w.total_modules(), w.matrix_size + 2 * DEFAULT_QUIET_MODULES);
-    }
+        // Case `encoding_failure_is_exposed_without_replacing_the_image_identity`.
+        {
+            use crate::a11y::Role;
 
-    #[test]
-    fn module_oob_returns_false() {
-        let w = QrWidget::new(b"x".to_vec());
-        assert!(!w.module(usize::MAX, 0));
-        assert!(!w.module(0, usize::MAX));
-    }
-
-    #[test]
-    fn generated_code_has_stable_named_image_semantics() {
-        use crate::a11y::Role;
-
-        let w = QrWidget::new(b"https://example.com".to_vec())
-            .with_id("share-code")
-            .with_alt("Share link for Project Atlas");
-        assert_eq!(Widget::test_id(&w), Some("share-code"));
-        assert_eq!(w.alt(), "Share link for Project Atlas");
-        let node = Widget::accessibility(&w).expect("QR code is semantic content");
-        assert_eq!(node.role, Role::Image);
-        assert_eq!(node.name.as_deref(), Some("Share link for Project Atlas"));
-    }
-
-    #[test]
-    fn encoding_failure_is_exposed_without_replacing_the_image_identity() {
-        use crate::a11y::Role;
-
-        let w = QrWidget::new(vec![b'x'; 10_000]).with_id("oversized-code");
-        assert!(w.error().is_some());
-        let node = Widget::accessibility(&w).expect("failed output remains inspectable");
-        assert_eq!(node.role, Role::Image);
-        assert_eq!(node.name.as_deref(), Some("QR code"));
-        assert!(
-            node.description
-                .as_deref()
-                .is_some_and(|description| description.starts_with("QR encoding failed:"))
-        );
+            let w = QrWidget::new(vec![b'x'; 10_000]).with_id("oversized-code");
+            assert!(w.error().is_some());
+            let node = Widget::accessibility(&w).expect("failed output remains inspectable");
+            assert_eq!(node.role, Role::Image);
+            assert_eq!(node.name.as_deref(), Some("QR code"));
+            assert!(
+                node.description
+                    .as_deref()
+                    .is_some_and(|description| description.starts_with("QR encoding failed:"))
+            );
+        }
     }
 }

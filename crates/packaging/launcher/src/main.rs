@@ -907,11 +907,37 @@ mod admit_share_tests {
     }
 
     #[test]
-    fn registration_descriptor_releases_process_entry_exactly_once() {
-        let (mut release, wait) = UnixStream::pair().unwrap();
-        let writer = std::thread::spawn(move || release.write_all(&[1]));
-        wait_for_registration_fd(wait.into_raw_fd()).unwrap();
-        writer.join().unwrap().unwrap();
+    fn share_admission_and_registration_hand_over_only_what_is_owed() {
+        // Phase `registration_descriptor_releases_process_entry_exactly_once`.
+        {
+            let (mut release, wait) = UnixStream::pair().unwrap();
+            let writer = std::thread::spawn(move || release.write_all(&[1]));
+            wait_for_registration_fd(wait.into_raw_fd()).unwrap();
+            writer.join().unwrap().unwrap();
+        }
+        // Phase `admission_sends_the_bearer_only_in_the_service_frame`.
+        {
+            let uri = "tilo-file://v2/payload#bearer-secret".to_string();
+            let mut stream = response("/home/alice/Shared/record");
+            let mount = request_received_mount(uri.clone(), &mut stream).unwrap();
+            assert_eq!(mount, PathBuf::from("/home/alice/Shared/record"));
+            // One frame: a big-endian `u32` length, then the canonical request.
+            let body_len = u32::try_from(stream.written.len() - 4).unwrap();
+            assert_eq!(stream.written[..4], body_len.to_be_bytes());
+            let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
+            let request: collab_types::RecipientControlRequestV1 =
+                collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length])
+                    .unwrap();
+            assert!(matches!(
+                request.operation,
+                collab_types::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
+            ));
+        }
+        // Phase `admission_refuses_a_relative_mount_from_the_service`.
+        {
+            let mut stream = response("relative/path");
+            assert!(request_received_mount("redacted".into(), &mut stream).is_err());
+        }
     }
 
     impl Read for ScriptedStream {
@@ -960,30 +986,6 @@ mod admit_share_tests {
             written: Vec::new(),
             response: Cursor::new(framed),
         }
-    }
-
-    #[test]
-    fn admission_sends_the_bearer_only_in_the_service_frame() {
-        let uri = "tilo-file://v2/payload#bearer-secret".to_string();
-        let mut stream = response("/home/alice/Shared/record");
-        let mount = request_received_mount(uri.clone(), &mut stream).unwrap();
-        assert_eq!(mount, PathBuf::from("/home/alice/Shared/record"));
-        // One frame: a big-endian `u32` length, then the canonical request.
-        let body_len = u32::try_from(stream.written.len() - 4).unwrap();
-        assert_eq!(stream.written[..4], body_len.to_be_bytes());
-        let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
-        let request: collab_types::RecipientControlRequestV1 =
-            collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length]).unwrap();
-        assert!(matches!(
-            request.operation,
-            collab_types::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
-        ));
-    }
-
-    #[test]
-    fn admission_refuses_a_relative_mount_from_the_service() {
-        let mut stream = response("relative/path");
-        assert!(request_received_mount("redacted".into(), &mut stream).is_err());
     }
 
     #[test]

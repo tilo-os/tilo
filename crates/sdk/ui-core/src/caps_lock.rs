@@ -65,44 +65,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_off() {
+    fn estimate_follows_letter_case_against_shift_and_ignores_non_letters() {
         assert!(!CapsLockEstimate::new().on());
         assert!(!CapsLockEstimate::default().on());
-    }
 
-    #[test]
-    fn uppercase_without_shift_means_on() {
-        let mut c = CapsLockEstimate::new();
-        assert!(c.observe('A', false));
-        assert!(c.on());
-    }
+        // (case, a key that first turns the estimate on, then the probe key,
+        // its shift state and the estimate it must yield)
+        for (case, prime, key, shift, want) in [
+            ("uppercase without shift means on", false, 'A', false, true),
+            ("uppercase with shift means off", true, 'B', true, false),
+            ("lowercase with shift means on", false, 'a', true, true),
+            ("lowercase without shift means off", true, 'b', false, false),
+        ] {
+            let mut c = CapsLockEstimate::new();
+            if prime {
+                c.observe('A', false);
+                assert!(c.on(), "case {case}: precondition on");
+            }
+            assert_eq!(c.observe(key, shift), want, "case {case}: returned");
+            assert_eq!(c.on(), want, "case {case}: stored");
+        }
 
-    #[test]
-    fn uppercase_with_shift_means_off() {
-        let mut c = CapsLockEstimate::new();
-        c.observe('A', false);
-        assert!(c.on());
-        assert!(!c.observe('B', true));
-        assert!(!c.on());
-    }
-
-    #[test]
-    fn lowercase_with_shift_means_on() {
-        let mut c = CapsLockEstimate::new();
-        assert!(c.observe('a', true));
-        assert!(c.on());
-    }
-
-    #[test]
-    fn lowercase_without_shift_means_off() {
-        let mut c = CapsLockEstimate::new();
-        c.observe('A', false);
-        assert!(!c.observe('b', false));
-        assert!(!c.on());
-    }
-
-    #[test]
-    fn non_alpha_leaves_estimate_unchanged() {
         let mut c = CapsLockEstimate::new();
         c.observe('A', false);
         assert!(c.on(), "precondition: on");
@@ -110,10 +93,8 @@ mod tests {
             assert!(c.observe(ch, false), "non-alpha must not flip {ch:?}");
         }
         assert!(c.on(), "still on after non-alpha input");
-    }
 
-    #[test]
-    fn observe_text_folds_a_run() {
+        // `observe_text` folds a run.
         let mut c = CapsLockEstimate::new();
         c.observe_text("HELLO", false);
         assert!(c.on());

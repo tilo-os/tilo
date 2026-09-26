@@ -451,42 +451,84 @@ fn assert_populated_control_targets(fixture: &PopulatedShellFixture) {
 }
 
 #[test]
-fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
-    let guard = DenyAmbientStarts::new();
-    let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
-    let initial_scene = fixture.paint();
-    assert!(!initial_scene.encoding().is_empty());
-    assert_populated_tree_inventory(&fixture);
-    assert_owned_files_fixture(&fixture);
-    assert_populated_control_targets(&fixture);
+fn retained_damage_policy_bounds_changes_and_keeps_semantic_inventory() {
+    fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
+        let guard = DenyAmbientStarts::new();
+        let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+        let initial_scene = fixture.paint();
+        assert!(!initial_scene.encoding().is_empty());
+        assert_populated_tree_inventory(&fixture);
+        assert_owned_files_fixture(&fixture);
+        assert_populated_control_targets(&fixture);
 
-    let mut document = AutoCommit::new();
-    let mut focus = None;
-    let open_qs = dispatch_populated_fixture_click(
-        &mut fixture,
-        "topbar_tray_pill",
-        &mut document,
-        &mut focus,
-    );
-    assert!(!open_qs.encoding().is_empty());
-    assert!(fixture.chrome().overlays.quick_settings);
-    let close_qs = dispatch_populated_fixture_click(
-        &mut fixture,
-        "topbar_tray_pill",
-        &mut document,
-        &mut focus,
-    );
-    assert!(!close_qs.encoding().is_empty());
-    assert!(!fixture.chrome().overlays.quick_settings);
-    let open_overview = dispatch_populated_fixture_click(
-        &mut fixture,
-        "topbar_overview_button",
-        &mut document,
-        &mut focus,
-    );
-    assert!(!open_overview.encoding().is_empty());
-    assert!(fixture.chrome().overlays.overview);
-    assert_eq!(guard.attempts(), 0);
+        let mut document = AutoCommit::new();
+        let mut focus = None;
+        let open_qs = dispatch_populated_fixture_click(
+            &mut fixture,
+            "topbar_tray_pill",
+            &mut document,
+            &mut focus,
+        );
+        assert!(!open_qs.encoding().is_empty());
+        assert!(fixture.chrome().overlays.quick_settings);
+        let close_qs = dispatch_populated_fixture_click(
+            &mut fixture,
+            "topbar_tray_pill",
+            &mut document,
+            &mut focus,
+        );
+        assert!(!close_qs.encoding().is_empty());
+        assert!(!fixture.chrome().overlays.quick_settings);
+        let open_overview = dispatch_populated_fixture_click(
+            &mut fixture,
+            "topbar_overview_button",
+            &mut document,
+            &mut focus,
+        );
+        assert!(!open_overview.encoding().is_empty());
+        assert!(fixture.chrome().overlays.overview);
+        assert_eq!(guard.attempts(), 0);
+    }
+
+    fn damage_policy_allows_only_a_bounded_quick_settings_change() {
+        let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        let candidate = sections(rect_scene(), Scene::new());
+        assert!(
+            frame.damage_from_sections(&candidate, false).is_some(),
+            "matching opaque sections and bounded Quick Settings change must establish a sparse baseline"
+        );
+
+        frame.last_produced_sections = Some(previous_sections(true, Scene::new(), Scene::new()));
+        let candidate = sections(rect_scene(), Scene::new());
+        assert!(
+            frame.damage_from_sections(&candidate, false).is_none(),
+            "a prior whole-frame filter is an explicit retained boundary"
+        );
+    }
+
+    fn damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline() {
+        let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        assert!(
+            frame
+                .damage_from_sections(&sections(rect_scene(), Scene::new()), false)
+                .is_some(),
+            "the baseline must prove the Quick Settings candidate itself is otherwise eligible"
+        );
+
+        frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
+        assert!(
+            frame
+                .damage_from_sections(&sections(rect_scene(), rect_scene()), false)
+                .is_none(),
+            "a workspace recording change is opaque and must force a dense frame"
+        );
+    }
+
+    explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions();
+    damage_policy_allows_only_a_bounded_quick_settings_change();
+    damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline();
 }
 
 fn rect_scene() -> Scene {
@@ -535,42 +577,4 @@ fn previous_sections(
         global_filter,
         revision: 1,
     }
-}
-
-#[test]
-fn damage_policy_allows_only_a_bounded_quick_settings_change() {
-    let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
-    frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
-    let candidate = sections(rect_scene(), Scene::new());
-    assert!(
-        frame.damage_from_sections(&candidate, false).is_some(),
-        "matching opaque sections and bounded Quick Settings change must establish a sparse baseline"
-    );
-
-    frame.last_produced_sections = Some(previous_sections(true, Scene::new(), Scene::new()));
-    let candidate = sections(rect_scene(), Scene::new());
-    assert!(
-        frame.damage_from_sections(&candidate, false).is_none(),
-        "a prior whole-frame filter is an explicit retained boundary"
-    );
-}
-
-#[test]
-fn damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline() {
-    let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
-    frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
-    assert!(
-        frame
-            .damage_from_sections(&sections(rect_scene(), Scene::new()), false)
-            .is_some(),
-        "the baseline must prove the Quick Settings candidate itself is otherwise eligible"
-    );
-
-    frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
-    assert!(
-        frame
-            .damage_from_sections(&sections(rect_scene(), rect_scene()), false)
-            .is_none(),
-        "a workspace recording change is opaque and must force a dense frame"
-    );
 }

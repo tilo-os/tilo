@@ -817,46 +817,77 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
-    /// Segment labels are centred on their measured line inside the 28 px
-    /// strip; centring on the 12 px font size alone dropped them 1.5 px.
     #[test]
-    fn tri_state_labels_centre_their_measured_line() {
-        let labels = ["Yes", "Maybe", "No"];
-        let mut control = TriStateControl::new(
-            labels,
-            [
-                SegmentTone::Positive,
-                SegmentTone::Neutral,
-                SegmentTone::Negative,
-            ],
-        );
-        lay_out(&mut control);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        control.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let rect = control.rect;
-        assert!(rect.height() > 0.0);
-        assert_eq!(scene.encoding().resources.glyph_runs.len(), labels.len());
-
-        let size = theme.tokens.typography.scale.sm;
-        for (index, label) in labels.into_iter().enumerate() {
-            crate::widget::text::assert_glyph_run_centred_in_band(
-                &scene,
-                index,
-                label,
-                size,
-                rect.y0,
-                rect.height(),
-                &mut tr,
-                theme.text_primary,
+    fn tri_state_segments_centre_labels_select_and_toggle_neutral() {
+        // Case `tri_state_labels_centre_their_measured_line`.
+        // Segment labels are centred on their measured line inside the 28 px
+        // strip; centring on the 12 px font size alone dropped them 1.5 px.
+        {
+            let labels = ["Yes", "Maybe", "No"];
+            let mut control = TriStateControl::new(
+                labels,
+                [
+                    SegmentTone::Positive,
+                    SegmentTone::Neutral,
+                    SegmentTone::Negative,
+                ],
             );
+            lay_out(&mut control);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            control.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let rect = control.rect;
+            assert!(rect.height() > 0.0);
+            assert_eq!(scene.encoding().resources.glyph_runs.len(), labels.len());
+
+            let size = theme.tokens.typography.scale.sm;
+            for (index, label) in labels.into_iter().enumerate() {
+                crate::widget::text::assert_glyph_run_centred_in_band(
+                    &scene,
+                    index,
+                    label,
+                    size,
+                    rect.y0,
+                    rect.height(),
+                    &mut tr,
+                    theme.text_primary,
+                );
+            }
+        }
+
+        // Case `tri_state_click_selects_segment`.
+        {
+            let mut t = TriStateControl::allow_inherit_deny(); // starts on middle
+            lay_out(&mut t);
+            assert_eq!(t.synthetic_accessibility_rect(&[0]), Some(t.seg_rects[0]));
+            let p = t.seg_rects[0].center();
+            dispatch(&mut t, &cursor_at(p));
+            assert!(dispatch(&mut t, &left_press()), "segment click consumed");
+            assert_eq!(t.selected(), 0);
+            assert_eq!(t.take_choice(), Some(0));
+            assert_eq!(t.take_choice(), None, "choice drains once");
+        }
+
+        // Case `tri_state_reclick_active_toggles_to_neutral`.
+        {
+            let mut t = TriStateControl::allow_inherit_deny().with_selected(2); // Deny
+            lay_out(&mut t);
+            let p = t.seg_rects[2].center();
+            dispatch(&mut t, &cursor_at(p));
+            dispatch(&mut t, &left_press());
+            assert_eq!(
+                t.selected(),
+                1,
+                "re-clicking the active segment falls to neutral"
+            );
+            assert_eq!(t.take_choice(), Some(1));
         }
     }
     fn cursor_at(p: Point) -> WindowEvent {
@@ -910,127 +941,102 @@ mod tests {
     }
 
     #[test]
-    fn tri_state_click_selects_segment() {
-        let mut t = TriStateControl::allow_inherit_deny(); // starts on middle
-        lay_out(&mut t);
-        assert_eq!(t.synthetic_accessibility_rect(&[0]), Some(t.seg_rects[0]));
-        let p = t.seg_rects[0].center();
-        dispatch(&mut t, &cursor_at(p));
-        assert!(dispatch(&mut t, &left_press()), "segment click consumed");
-        assert_eq!(t.selected(), 0);
-        assert_eq!(t.take_choice(), Some(0));
-        assert_eq!(t.take_choice(), None, "choice drains once");
-    }
+    fn swatch_picker_choices_match_across_pointer_keyboard_and_semantics() {
+        // Case `synthetic_segment_and_swatch_actions_use_the_pointer_choice_paths`.
+        {
+            let mut tri = TriStateControl::allow_inherit_deny().with_selected(2);
+            assert!(Widget::perform_semantic_action(
+                &mut tri,
+                "segment:0",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(tri.selected(), 0);
+            assert_eq!(tri.take_choice(), Some(0));
 
-    #[test]
-    fn tri_state_reclick_active_toggles_to_neutral() {
-        let mut t = TriStateControl::allow_inherit_deny().with_selected(2); // Deny
-        lay_out(&mut t);
-        let p = t.seg_rects[2].center();
-        dispatch(&mut t, &cursor_at(p));
-        dispatch(&mut t, &left_press());
-        assert_eq!(
-            t.selected(),
-            1,
-            "re-clicking the active segment falls to neutral"
-        );
-        assert_eq!(t.take_choice(), Some(1));
-    }
+            let mut picker = ColorSwatchPicker::new();
+            assert!(Widget::perform_semantic_action(
+                &mut picker,
+                "swatch:5",
+                &crate::a11y::Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert_eq!(picker.take_choice(), Some(5));
+            assert!(
+                Widget::accessibility(&picker).unwrap().children[5]
+                    .state
+                    .selected
+            );
+        }
 
-    #[test]
-    fn synthetic_segment_and_swatch_actions_use_the_pointer_choice_paths() {
-        let mut tri = TriStateControl::allow_inherit_deny().with_selected(2);
-        assert!(Widget::perform_semantic_action(
-            &mut tri,
-            "segment:0",
-            &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(tri.selected(), 0);
-        assert_eq!(tri.take_choice(), Some(0));
+        // Case `swatch_picker_records_clicked_index`.
+        {
+            let mut p = ColorSwatchPicker::new();
+            lay_out(&mut p);
+            assert_eq!(
+                p.synthetic_accessibility_rect(&[5]),
+                Some(p.swatch_rects[5])
+            );
+            let c = p.swatch_rects[5].center();
+            dispatch(&mut p, &cursor_at(c));
+            assert!(dispatch(&mut p, &left_press()), "swatch click consumed");
+            assert_eq!(p.take_choice(), Some(5));
+            assert_eq!(p.color_at(5), Some(DEFAULT_PALETTE[5]));
+        }
 
-        let mut picker = ColorSwatchPicker::new();
-        assert!(Widget::perform_semantic_action(
-            &mut picker,
-            "swatch:5",
-            &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert_eq!(picker.take_choice(), Some(5));
-        assert!(
-            Widget::accessibility(&picker).unwrap().children[5]
-                .state
-                .selected
-        );
-    }
+        // Case `swatch_picker_keyboard_navigation_and_activation_match_pointer_choice`.
+        {
+            let mut picker =
+                ColorSwatchPicker::with_palette(vec![0x11_22_33, 0x44_55_66, 0x77_88_99], 2);
+            lay_out(&mut picker);
+            Widget::set_focus(&mut picker, true);
+            assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowRight)));
+            assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowDown)));
+            assert!(dispatch(&mut picker, &named_press(NamedKey::Space)));
+            assert_eq!(picker.take_choice(), Some(2));
+            let tree = Widget::accessibility(&picker).expect("picker semantics");
+            assert!(tree.children[2].state.selected);
+            assert!(tree.children[2].state.focusable);
+            assert_eq!(tree.children[2].bounds, Some(picker.swatch_rects[2].into()));
+            assert!(Widget::perform_semantic_action(
+                &mut picker,
+                "swatch:1",
+                &crate::a11y::Action::Focus,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(
+                Widget::accessibility(&picker)
+                    .expect("focused picker")
+                    .children[1]
+                    .state
+                    .focused
+            );
+        }
 
-    #[test]
-    fn swatch_picker_records_clicked_index() {
-        let mut p = ColorSwatchPicker::new();
-        lay_out(&mut p);
-        assert_eq!(
-            p.synthetic_accessibility_rect(&[5]),
-            Some(p.swatch_rects[5])
-        );
-        let c = p.swatch_rects[5].center();
-        dispatch(&mut p, &cursor_at(c));
-        assert!(dispatch(&mut p, &left_press()), "swatch click consumed");
-        assert_eq!(p.take_choice(), Some(5));
-        assert_eq!(p.color_at(5), Some(DEFAULT_PALETTE[5]));
-    }
+        // Case `swatch_picker_grid_has_all_swatches`.
+        {
+            let mut p = ColorSwatchPicker::new();
+            lay_out(&mut p);
+            assert_eq!(p.swatch_rects.len(), 12, "all 12 palette swatches laid out");
+            // 4 columns → 3 rows; row 1 swatch sits below row 0.
+            assert!(p.swatch_rects[4].y0 > p.swatch_rects[0].y0);
+        }
 
-    #[test]
-    fn swatch_picker_keyboard_navigation_and_activation_match_pointer_choice() {
-        let mut picker =
-            ColorSwatchPicker::with_palette(vec![0x11_22_33, 0x44_55_66, 0x77_88_99], 2);
-        lay_out(&mut picker);
-        Widget::set_focus(&mut picker, true);
-        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowRight)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowDown)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Space)));
-        assert_eq!(picker.take_choice(), Some(2));
-        let tree = Widget::accessibility(&picker).expect("picker semantics");
-        assert!(tree.children[2].state.selected);
-        assert!(tree.children[2].state.focusable);
-        assert_eq!(tree.children[2].bounds, Some(picker.swatch_rects[2].into()));
-        assert!(Widget::perform_semantic_action(
-            &mut picker,
-            "swatch:1",
-            &crate::a11y::Action::Focus,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(
-            Widget::accessibility(&picker)
-                .expect("focused picker")
-                .children[1]
-                .state
-                .focused
-        );
-    }
+        // Case `swatch_picker_uses_supplied_accessible_labels_and_keeps_hex_fallback`.
+        {
+            let named = ColorSwatchPicker::with_palette(vec![0x11_22_33, 0x44_55_66], 2)
+                .with_accessible_labels(vec!["blue text".into(), "green text".into()]);
+            let named_tree = Widget::accessibility(&named).expect("picker semantics");
+            assert_eq!(named_tree.children[0].name.as_deref(), Some("blue text"));
+            assert_eq!(named_tree.children[1].name.as_deref(), Some("green text"));
 
-    #[test]
-    fn swatch_picker_grid_has_all_swatches() {
-        let mut p = ColorSwatchPicker::new();
-        lay_out(&mut p);
-        assert_eq!(p.swatch_rects.len(), 12, "all 12 palette swatches laid out");
-        // 4 columns → 3 rows; row 1 swatch sits below row 0.
-        assert!(p.swatch_rects[4].y0 > p.swatch_rects[0].y0);
-    }
-
-    #[test]
-    fn swatch_picker_uses_supplied_accessible_labels_and_keeps_hex_fallback() {
-        let named = ColorSwatchPicker::with_palette(vec![0x11_22_33, 0x44_55_66], 2)
-            .with_accessible_labels(vec!["blue text".into(), "green text".into()]);
-        let named_tree = Widget::accessibility(&named).expect("picker semantics");
-        assert_eq!(named_tree.children[0].name.as_deref(), Some("blue text"));
-        assert_eq!(named_tree.children[1].name.as_deref(), Some("green text"));
-
-        let fallback = ColorSwatchPicker::with_palette(vec![0x11_22_33], 1)
-            .with_accessible_labels(vec!["wrong length".into(), "ignored".into()]);
-        let fallback_tree = Widget::accessibility(&fallback).expect("picker semantics");
-        assert_eq!(fallback_tree.children[0].name.as_deref(), Some("#112233"));
+            let fallback = ColorSwatchPicker::with_palette(vec![0x11_22_33], 1)
+                .with_accessible_labels(vec!["wrong length".into(), "ignored".into()]);
+            let fallback_tree = Widget::accessibility(&fallback).expect("picker semantics");
+            assert_eq!(fallback_tree.children[0].name.as_deref(), Some("#112233"));
+        }
     }
 }

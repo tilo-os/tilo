@@ -783,174 +783,173 @@ mod tests {
     use StreamCodec::{Av1, H264, HevcMain10, Vp9};
 
     #[test]
-    fn av1_wins_only_when_every_end_has_it_in_hardware() {
-        let sender = caps(&[Av1, Vp9, H264], &[Av1, Vp9, H264], &[H264]);
-        let rx_hw = caps(&[], &[Av1, Vp9, H264], &[H264]);
-        let got = negotiate(&sender, &[rx_hw.clone(), rx_hw.clone()]).unwrap();
-        assert_eq!(got.codec, Av1);
-        assert!(got.hardware_both_ends);
+    fn realtime_codec_negotiation_respects_every_end() {
+        // Phase `av1_wins_only_when_every_end_has_it_in_hardware`.
+        {
+            let sender = caps(&[Av1, Vp9, H264], &[Av1, Vp9, H264], &[H264]);
+            let rx_hw = caps(&[], &[Av1, Vp9, H264], &[H264]);
+            let got = negotiate(&sender, &[rx_hw.clone(), rx_hw.clone()]).unwrap();
+            assert_eq!(got.codec, Av1);
+            assert!(got.hardware_both_ends);
 
-        // One receiver decodes AV1 only in software: AV1 is off the table.
-        let rx_sw_av1 = caps(&[], &[Vp9, H264], &[Av1, H264]);
-        let got = negotiate(&sender, &[rx_hw, rx_sw_av1]).unwrap();
-        assert_eq!(got.codec, Vp9, "VP9 is hardware at every end");
-    }
-
-    #[test]
-    fn a_legacy_receiver_pins_h264() {
-        let sender = caps(&[Av1, Vp9], &[Av1, Vp9], &[H264]);
-        let got = negotiate(&sender, &[CodecCapabilities::legacy_peer()]).unwrap();
-        assert_eq!(got.codec, H264);
-        assert!(!got.hardware_both_ends);
-    }
-
-    #[test]
-    fn without_any_h264_encoder_a_royalty_free_codec_is_used() {
-        // Stock image, no Cisco openh264, AMD with AV1 encode.
-        let sender = CodecCapabilities {
-            hardware_encode: [Av1].into(),
-            hardware_decode: [Av1, Vp9].into(),
-            software_encode: [Vp9, Av1].into(),
-            software_decode: [Vp9, Av1].into(),
-        };
-        let receiver = CodecCapabilities {
-            software_decode: [Vp9, Av1].into(),
-            ..CodecCapabilities::default()
-        };
-        assert_eq!(negotiate(&sender, &[receiver]).unwrap().codec, Vp9);
-        assert_eq!(
-            negotiate(&sender, &[CodecCapabilities::legacy_peer()]),
-            None,
-            "nothing a legacy peer can decode"
-        );
-    }
-
-    #[test]
-    fn no_receivers_means_the_senders_own_best() {
-        let sender = caps(&[Vp9], &[], &[H264]);
-        assert_eq!(negotiate(&sender, &[]).unwrap().codec, Vp9);
-    }
-
-    #[test]
-    fn hdr_needs_a_hardware_10_bit_encoder() {
-        let sender = caps(&[HevcMain10], &[HevcMain10], &[]);
-        let rx = caps(&[], &[], &[HevcMain10]);
-        assert_eq!(
-            negotiate_hdr(&sender, std::slice::from_ref(&rx))
-                .unwrap()
-                .codec,
-            HevcMain10
-        );
-        assert_eq!(negotiate_hdr(&caps(&[], &[], &[Av1]), &[rx]), None);
-    }
-
-    #[test]
-    fn labels_skip_codecs_this_build_does_not_know() {
-        let parsed = CodecCapabilities::parse_labels(&["av1", "h266", "h264"]);
-        assert_eq!(parsed, BTreeSet::from([Av1, H264]));
-        assert_eq!(CodecCapabilities::labels(&parsed), ["h264", "av1"]);
-    }
-
-    #[test]
-    fn keyframe_probes_read_each_codecs_own_header() {
-        assert!(is_keyframe(H264, &[0, 0, 0, 1, 0x67, 0, 0, 1, 0x65]));
-        assert!(!is_keyframe(H264, &[0, 0, 1, 0x41]));
-        assert!(!is_keyframe(H264, &[0xAA]));
-        // HEVC IDR_W_RADL (19) → header byte 19 << 1 = 0x26.
-        assert!(is_keyframe(HevcMain10, &[0, 0, 0, 1, 0x26, 0x01]));
-        // TRAIL_R (1) → 0x02.
-        assert!(!is_keyframe(HevcMain10, &[0, 0, 0, 1, 0x02, 0x01]));
-        // VP9 profile 0 key frame: 10 0 0 0 0 .. = 0x80 (show_existing 0,
-        // frame_type 0); inter frame sets frame_type: 0x84.
-        assert!(is_keyframe(Vp9, &[0x82, 0x49, 0x83, 0x42]));
-        assert!(!is_keyframe(Vp9, &[0x86, 0x00]));
-        // AV1: temporal delimiter (type 2, size 0) then sequence header
-        // (type 1, size 1).
-        assert!(is_keyframe(Av1, &[0x12, 0x00, 0x0a, 0x01, 0x00]));
-        // Temporal delimiter then a frame OBU (type 6).
-        assert!(!is_keyframe(Av1, &[0x12, 0x00, 0x32, 0x01, 0x00]));
-        assert!(!is_keyframe(Av1, &[0x12, 0x85]), "truncated size");
-    }
-
-    #[test]
-    fn config_rejects_what_no_420_encoder_can_take() {
-        let mut c = EncoderConfig::new(H264, 1280, 720, 30);
-        assert!(c.validate().is_ok());
-        c.width = 1281;
-        assert!(matches!(c.validate(), Err(RealtimeError::InvalidConfig(_))));
-        c.width = 0;
-        assert!(c.validate().is_err());
-        let mut c = EncoderConfig::new(H264, 64, 64, 30);
-        c.input = InputFormat::P010;
-        assert!(c.validate().is_err(), "H.264 is 8-bit only here");
-    }
-
-    #[test]
-    fn cropping_removes_encoder_padding_from_packed_and_planar_pictures() {
-        use crate::frame::{FramePayload, PlanarFormat, PlanarImage, PlaneData};
-        use std::sync::Arc;
-        // 4x3 RGBA whose last column and row are padding.
-        let mut rgba = Vec::new();
-        for y in 0..3u8 {
-            for x in 0..4u8 {
-                rgba.extend_from_slice(&[x, y, 0, 255]);
-            }
+            // One receiver decodes AV1 only in software: AV1 is off the table.
+            let rx_sw_av1 = caps(&[], &[Vp9, H264], &[Av1, H264]);
+            let got = negotiate(&sender, &[rx_hw, rx_sw_av1]).unwrap();
+            assert_eq!(got.codec, Vp9, "VP9 is hardware at every end");
         }
-        let frame = crate::Frame {
-            width: 4,
-            height: 3,
-            pts_ms: 7,
-            payload: FramePayload::Rgba(Arc::new(rgba)),
-        };
-        let cropped = crop_frame(frame, 3, 2);
-        assert_eq!((cropped.width, cropped.height, cropped.pts_ms), (3, 2, 7));
-        let FramePayload::Rgba(bytes) = &cropped.payload else {
-            panic!("still RGBA")
-        };
-        assert_eq!(
-            bytes.as_slice(),
-            &[
-                0, 0, 0, 255, 1, 0, 0, 255, 2, 0, 0, 255, 0, 1, 0, 255, 1, 1, 0, 255, 2, 1, 0, 255
-            ]
-        );
-
-        let plane = |w, h| PlaneData {
-            bytes: Arc::new(vec![0; 64]),
-            stride: 8,
-            width: w,
-            height: h,
-        };
-        let planar = crate::Frame {
-            width: 8,
-            height: 6,
-            pts_ms: 0,
-            payload: FramePayload::Planar(Arc::new(PlanarImage {
-                format: PlanarFormat::Nv12,
-                planes: vec![plane(8, 6), plane(4, 3)],
-                colorimetry: crate::dmabuf::Colorimetry::BT709_LIMITED,
-            })),
-        };
-        let cropped = crop_frame(planar, 6, 4);
-        let p = cropped.planar().expect("planar");
-        assert_eq!((p.planes[0].width, p.planes[0].height), (6, 4));
-        assert_eq!((p.planes[1].width, p.planes[1].height), (3, 2));
-        assert_eq!(p.planes[0].stride, 8, "a crop keeps the stride");
-
-        // Within bounds: untouched.
-        let small = crate::Frame {
-            width: 2,
-            height: 2,
-            pts_ms: 0,
-            payload: FramePayload::Rgba(Arc::new(vec![1; 16])),
-        };
-        assert_eq!(crop_frame(small, 8, 8).width, 2);
+        // Phase `a_legacy_receiver_pins_h264`.
+        {
+            let sender = caps(&[Av1, Vp9], &[Av1, Vp9], &[H264]);
+            let got = negotiate(&sender, &[CodecCapabilities::legacy_peer()]).unwrap();
+            assert_eq!(got.codec, H264);
+            assert!(!got.hardware_both_ends);
+        }
+        // Phase `without_any_h264_encoder_a_royalty_free_codec_is_used`.
+        {
+            // Stock image, no Cisco openh264, AMD with AV1 encode.
+            let sender = CodecCapabilities {
+                hardware_encode: [Av1].into(),
+                hardware_decode: [Av1, Vp9].into(),
+                software_encode: [Vp9, Av1].into(),
+                software_decode: [Vp9, Av1].into(),
+            };
+            let receiver = CodecCapabilities {
+                software_decode: [Vp9, Av1].into(),
+                ..CodecCapabilities::default()
+            };
+            assert_eq!(negotiate(&sender, &[receiver]).unwrap().codec, Vp9);
+            assert_eq!(
+                negotiate(&sender, &[CodecCapabilities::legacy_peer()]),
+                None,
+                "nothing a legacy peer can decode"
+            );
+        }
+        // Phase `no_receivers_means_the_senders_own_best`.
+        {
+            let sender = caps(&[Vp9], &[], &[H264]);
+            assert_eq!(negotiate(&sender, &[]).unwrap().codec, Vp9);
+        }
+        // Phase `hdr_needs_a_hardware_10_bit_encoder`.
+        {
+            let sender = caps(&[HevcMain10], &[HevcMain10], &[]);
+            let rx = caps(&[], &[], &[HevcMain10]);
+            assert_eq!(
+                negotiate_hdr(&sender, std::slice::from_ref(&rx))
+                    .unwrap()
+                    .codec,
+                HevcMain10
+            );
+            assert_eq!(negotiate_hdr(&caps(&[], &[], &[Av1]), &[rx]), None);
+        }
+        // Phase `labels_skip_codecs_this_build_does_not_know`.
+        {
+            let parsed = CodecCapabilities::parse_labels(&["av1", "h266", "h264"]);
+            assert_eq!(parsed, BTreeSet::from([Av1, H264]));
+            assert_eq!(CodecCapabilities::labels(&parsed), ["h264", "av1"]);
+        }
     }
 
     #[test]
-    fn frame_lengths_match_each_layout() {
-        assert_eq!(InputFormat::Rgba.frame_len(4, 2), Some(32));
-        assert_eq!(InputFormat::Nv12.frame_len(4, 2), Some(12));
-        assert_eq!(InputFormat::P010.frame_len(4, 2), Some(24));
-        assert_eq!(InputFormat::Rgba.frame_len(u32::MAX, u32::MAX), None);
+    fn realtime_bitstreams_and_frame_layouts_are_read_exactly() {
+        // Phase `keyframe_probes_read_each_codecs_own_header`.
+        {
+            assert!(is_keyframe(H264, &[0, 0, 0, 1, 0x67, 0, 0, 1, 0x65]));
+            assert!(!is_keyframe(H264, &[0, 0, 1, 0x41]));
+            assert!(!is_keyframe(H264, &[0xAA]));
+            // HEVC IDR_W_RADL (19) → header byte 19 << 1 = 0x26.
+            assert!(is_keyframe(HevcMain10, &[0, 0, 0, 1, 0x26, 0x01]));
+            // TRAIL_R (1) → 0x02.
+            assert!(!is_keyframe(HevcMain10, &[0, 0, 0, 1, 0x02, 0x01]));
+            // VP9 profile 0 key frame: 10 0 0 0 0 .. = 0x80 (show_existing 0,
+            // frame_type 0); inter frame sets frame_type: 0x84.
+            assert!(is_keyframe(Vp9, &[0x82, 0x49, 0x83, 0x42]));
+            assert!(!is_keyframe(Vp9, &[0x86, 0x00]));
+            // AV1: temporal delimiter (type 2, size 0) then sequence header
+            // (type 1, size 1).
+            assert!(is_keyframe(Av1, &[0x12, 0x00, 0x0a, 0x01, 0x00]));
+            // Temporal delimiter then a frame OBU (type 6).
+            assert!(!is_keyframe(Av1, &[0x12, 0x00, 0x32, 0x01, 0x00]));
+            assert!(!is_keyframe(Av1, &[0x12, 0x85]), "truncated size");
+        }
+        // Phase `config_rejects_what_no_420_encoder_can_take`.
+        {
+            let mut c = EncoderConfig::new(H264, 1280, 720, 30);
+            assert!(c.validate().is_ok());
+            c.width = 1281;
+            assert!(matches!(c.validate(), Err(RealtimeError::InvalidConfig(_))));
+            c.width = 0;
+            assert!(c.validate().is_err());
+            let mut c = EncoderConfig::new(H264, 64, 64, 30);
+            c.input = InputFormat::P010;
+            assert!(c.validate().is_err(), "H.264 is 8-bit only here");
+        }
+        // Phase `cropping_removes_encoder_padding_from_packed_and_planar_pictures`.
+        {
+            use crate::frame::{FramePayload, PlanarFormat, PlanarImage, PlaneData};
+            use std::sync::Arc;
+            // 4x3 RGBA whose last column and row are padding.
+            let mut rgba = Vec::new();
+            for y in 0..3u8 {
+                for x in 0..4u8 {
+                    rgba.extend_from_slice(&[x, y, 0, 255]);
+                }
+            }
+            let frame = crate::Frame {
+                width: 4,
+                height: 3,
+                pts_ms: 7,
+                payload: FramePayload::Rgba(Arc::new(rgba)),
+            };
+            let cropped = crop_frame(frame, 3, 2);
+            assert_eq!((cropped.width, cropped.height, cropped.pts_ms), (3, 2, 7));
+            let FramePayload::Rgba(bytes) = &cropped.payload else {
+                panic!("still RGBA")
+            };
+            assert_eq!(
+                bytes.as_slice(),
+                &[
+                    0, 0, 0, 255, 1, 0, 0, 255, 2, 0, 0, 255, 0, 1, 0, 255, 1, 1, 0, 255, 2, 1, 0,
+                    255
+                ]
+            );
+
+            let plane = |w, h| PlaneData {
+                bytes: Arc::new(vec![0; 64]),
+                stride: 8,
+                width: w,
+                height: h,
+            };
+            let planar = crate::Frame {
+                width: 8,
+                height: 6,
+                pts_ms: 0,
+                payload: FramePayload::Planar(Arc::new(PlanarImage {
+                    format: PlanarFormat::Nv12,
+                    planes: vec![plane(8, 6), plane(4, 3)],
+                    colorimetry: crate::dmabuf::Colorimetry::BT709_LIMITED,
+                })),
+            };
+            let cropped = crop_frame(planar, 6, 4);
+            let p = cropped.planar().expect("planar");
+            assert_eq!((p.planes[0].width, p.planes[0].height), (6, 4));
+            assert_eq!((p.planes[1].width, p.planes[1].height), (3, 2));
+            assert_eq!(p.planes[0].stride, 8, "a crop keeps the stride");
+
+            // Within bounds: untouched.
+            let small = crate::Frame {
+                width: 2,
+                height: 2,
+                pts_ms: 0,
+                payload: FramePayload::Rgba(Arc::new(vec![1; 16])),
+            };
+            assert_eq!(crop_frame(small, 8, 8).width, 2);
+        }
+        // Phase `frame_lengths_match_each_layout`.
+        {
+            assert_eq!(InputFormat::Rgba.frame_len(4, 2), Some(32));
+            assert_eq!(InputFormat::Nv12.frame_len(4, 2), Some(12));
+            assert_eq!(InputFormat::P010.frame_len(4, 2), Some(24));
+            assert_eq!(InputFormat::Rgba.frame_len(u32::MAX, u32::MAX), None);
+        }
     }
 }

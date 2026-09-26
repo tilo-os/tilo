@@ -318,240 +318,240 @@ mod tests {
     }
 
     #[test]
-    fn a_name_round_trips_through_the_document() {
-        let mut doc = AutoCommit::new();
-        doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
-        let rec = name_range(&mut doc, &id(1), Some(&id(9)), "  Intro rewrite  ");
-        doc.commit();
+    fn named_ranges_round_trip_as_bounded_marker_changes() {
+        // phase: a_name_round_trips_through_the_document
+        {
+            let mut doc = AutoCommit::new();
+            doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            let rec = name_range(&mut doc, &id(1), Some(&id(9)), "  Intro rewrite  ");
+            doc.commit();
 
-        let dir = AuthorDirectory::new();
-        let ranges = read_named_ranges(&doc, &dir);
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].id, rec);
-        assert_eq!(ranges[0].label, "Intro rewrite", "the label is trimmed");
-        assert_eq!(ranges[0].start, id(1));
-        assert_eq!(ranges[0].end, Some(id(9)));
-        assert!(ranges[0].named_by.is_some(), "the writer is recorded");
+            let dir = AuthorDirectory::new();
+            let ranges = read_named_ranges(&doc, &dir);
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].id, rec);
+            assert_eq!(ranges[0].label, "Intro rewrite", "the label is trimmed");
+            assert_eq!(ranges[0].start, id(1));
+            assert_eq!(ranges[0].end, Some(id(9)));
+            assert!(ranges[0].named_by.is_some(), "the writer is recorded");
+        }
+        // phase: an_open_range_has_no_end_until_it_is_closed
+        {
+            let mut doc = AutoCommit::new();
+            let rec = name_range(&mut doc, &id(1), None, "Working");
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges[0].end, None, "an open range is open");
+
+            assert!(close_range(&mut doc, &rec, &id(4)));
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges[0].end, Some(id(4)));
+        }
+        // phase: clearing_a_name_removes_the_band_and_nothing_else
+        {
+            let mut doc = AutoCommit::new();
+            let a = name_range(&mut doc, &id(1), Some(&id(2)), "One");
+            let b = name_range(&mut doc, &id(3), Some(&id(4)), "Two");
+            doc.commit();
+            assert!(clear_name(&mut doc, &a));
+            assert!(!clear_name(&mut doc, "not-a-record"));
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].id, b);
+        }
+        // phase: naming_a_version_is_recognisable_as_a_marker_change
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "content", "hello").unwrap();
+            doc.commit();
+            let before = doc.get_heads();
+            name_range(&mut doc, &id(1), Some(&id(2)), "A version");
+            doc.commit();
+            let after = doc.get_heads();
+            let patches = doc.diff(&before, &after);
+            assert!(!patches.is_empty());
+            assert!(is_group_marker(&patches), "got {patches:?}");
+
+            // An edit is not a marker, even a small one.
+            let before = doc.get_heads();
+            doc.put(automerge::ROOT, "content", "hello there").unwrap();
+            doc.commit();
+            let after = doc.get_heads();
+            let patches = doc.diff(&before, &after);
+            assert!(!is_group_marker(&patches));
+        }
+        // phase: a_very_long_name_is_capped_rather_than_stored_whole
+        {
+            let mut doc = AutoCommit::new();
+            name_range(&mut doc, &id(1), None, &"x".repeat(1000));
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges[0].label.chars().count(), MAX_LABEL_LEN);
+        }
+        // phase: a_record_under_a_key_that_is_not_a_change_id_is_skipped
+        {
+            let mut doc = AutoCommit::new();
+            let rec = doc
+                .put_object(automerge::ROOT, format!("{GROUPS_KEY}junk"), ObjType::Map)
+                .unwrap();
+            doc.put(&rec, "label", "nowhere").unwrap();
+            doc.commit();
+            assert!(read_named_ranges(&doc, &AuthorDirectory::new()).is_empty());
+        }
     }
 
     #[test]
-    fn an_open_range_has_no_end_until_it_is_closed() {
-        let mut doc = AutoCommit::new();
-        let rec = name_range(&mut doc, &id(1), None, "Working");
-        doc.commit();
-        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(ranges[0].end, None, "an open range is open");
+    fn group_edits_rewrite_bands_atomically_and_refuse_stale_input() {
+        // phase: split_merge_and_boundary_move_rewrite_named_bands_atomically
+        {
+            let mut doc = AutoCommit::new();
+            let original = name_range(&mut doc, &id(1), Some(&id(8)), "Whole task");
+            doc.commit();
 
-        assert!(close_range(&mut doc, &rec, &id(4)));
-        doc.commit();
-        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(ranges[0].end, Some(id(4)));
-    }
+            let (left, right) =
+                split_named_range(&mut doc, &original, &id(4), &id(5), "Research", "Write")
+                    .expect("existing band splits");
+            doc.commit();
+            let split = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(split.len(), 2);
+            assert!(split.iter().any(|range| range.label == "Research"));
+            assert!(split.iter().any(|range| range.label == "Write"));
 
-    #[test]
-    fn clearing_a_name_removes_the_band_and_nothing_else() {
-        let mut doc = AutoCommit::new();
-        let a = name_range(&mut doc, &id(1), Some(&id(2)), "One");
-        let b = name_range(&mut doc, &id(3), Some(&id(4)), "Two");
-        doc.commit();
-        assert!(clear_name(&mut doc, &a));
-        assert!(!clear_name(&mut doc, "not-a-record"));
-        doc.commit();
-        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].id, b);
-    }
-
-    #[test]
-    fn split_merge_and_boundary_move_rewrite_named_bands_atomically() {
-        let mut doc = AutoCommit::new();
-        let original = name_range(&mut doc, &id(1), Some(&id(8)), "Whole task");
-        doc.commit();
-
-        let (left, right) =
-            split_named_range(&mut doc, &original, &id(4), &id(5), "Research", "Write")
-                .expect("existing band splits");
-        doc.commit();
-        let split = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(split.len(), 2);
-        assert!(split.iter().any(|range| range.label == "Research"));
-        assert!(split.iter().any(|range| range.label == "Write"));
-
-        let (left, right) = move_named_boundary(&mut doc, &left, &right, &id(3), &id(4))
-            .expect("adjacent bands move");
-        doc.commit();
-        let moved = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert!(
-            moved.iter().any(|range| {
+            let (left, right) = move_named_boundary(&mut doc, &left, &right, &id(3), &id(4))
+                .expect("adjacent bands move");
+            doc.commit();
+            let moved = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert!(moved.iter().any(|range| {
                 range.id == left && range.start == id(1) && range.end == Some(id(3))
-            })
-        );
-        assert!(moved.iter().any(|range| {
-            range.id == right && range.start == id(4) && range.end == Some(id(8))
-        }));
+            }));
+            assert!(moved.iter().any(|range| {
+                range.id == right && range.start == id(4) && range.end == Some(id(8))
+            }));
 
-        let merged = merge_named_ranges(
-            &mut doc,
-            &[left, right],
-            &id(1),
-            Some(&id(8)),
-            "Finished task",
-        )
-        .expect("two current bands merge");
-        doc.commit();
-        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].id, merged);
-        assert_eq!(ranges[0].label, "Finished task");
-    }
-
-    #[test]
-    fn correcting_an_automatic_seam_materializes_both_sessions_then_moves_it() {
-        let mut doc = AutoCommit::new();
-        let (left, right) = materialize_and_move_boundary(
-            &mut doc,
-            None,
-            &id(1),
-            &id(2),
-            "Write Q3 financial report",
-            None,
-            &id(3),
-            &id(4),
-            "Onboard Sarah",
-            &id(1),
-            &id(2),
-        )
-        .expect("automatic sessions become correctable shared ranges");
-        doc.commit();
-
-        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 2);
-        assert!(ranges.iter().any(|range| {
-            range.id == left
-                && range.label == "Write Q3 financial report"
-                && range.start == id(1)
-                && range.end == Some(id(1))
-        }));
-        assert!(ranges.iter().any(|range| {
-            range.id == right
-                && range.label == "Onboard Sarah"
-                && range.start == id(2)
-                && range.end == Some(id(4))
-        }));
-    }
-
-    #[test]
-    fn stale_group_edits_write_nothing() {
-        let mut doc = AutoCommit::new();
-        let before = doc.get_heads();
-        assert!(
-            split_named_range(&mut doc, "tilo:group:missing", &id(1), &id(2), "A", "B").is_none()
-        );
-        assert!(
-            merge_named_ranges(
+            let merged = merge_named_ranges(
                 &mut doc,
-                &["missing-a".into(), "missing-b".into()],
+                &[left, right],
                 &id(1),
-                Some(&id(2)),
-                "Nope"
+                Some(&id(8)),
+                "Finished task",
             )
-            .is_none()
-        );
-        assert_eq!(doc.get_heads(), before);
+            .expect("two current bands merge");
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].id, merged);
+            assert_eq!(ranges[0].label, "Finished task");
+        }
+        // phase: correcting_an_automatic_seam_materializes_both_sessions_then_moves_it
+        {
+            let mut doc = AutoCommit::new();
+            let (left, right) = materialize_and_move_boundary(
+                &mut doc,
+                None,
+                &id(1),
+                &id(2),
+                "Write Q3 financial report",
+                None,
+                &id(3),
+                &id(4),
+                "Onboard Sarah",
+                &id(1),
+                &id(2),
+            )
+            .expect("automatic sessions become correctable shared ranges");
+            doc.commit();
+
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges.len(), 2);
+            assert!(ranges.iter().any(|range| {
+                range.id == left
+                    && range.label == "Write Q3 financial report"
+                    && range.start == id(1)
+                    && range.end == Some(id(1))
+            }));
+            assert!(ranges.iter().any(|range| {
+                range.id == right
+                    && range.label == "Onboard Sarah"
+                    && range.start == id(2)
+                    && range.end == Some(id(4))
+            }));
+        }
+        // phase: stale_group_edits_write_nothing
+        {
+            let mut doc = AutoCommit::new();
+            let before = doc.get_heads();
+            assert!(
+                split_named_range(&mut doc, "tilo:group:missing", &id(1), &id(2), "A", "B")
+                    .is_none()
+            );
+            assert!(
+                merge_named_ranges(
+                    &mut doc,
+                    &["missing-a".into(), "missing-b".into()],
+                    &id(1),
+                    Some(&id(2)),
+                    "Nope"
+                )
+                .is_none()
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
     }
 
     #[test]
-    fn two_peers_naming_the_same_range_converge_on_one_name() {
-        // Same key = map conflict, resolved identically on both sides.
-        let mut alice = AutoCommit::new();
-        alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
-        alice.put(automerge::ROOT, "seed", "x").unwrap();
-        alice.commit();
-        let mut bob = alice.fork();
-        bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+    fn peers_naming_ranges_converge() {
+        // phase: two_peers_naming_the_same_range_converge_on_one_name
+        {
+            // Same key = map conflict, resolved identically on both sides.
+            let mut alice = AutoCommit::new();
+            alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            alice.put(automerge::ROOT, "seed", "x").unwrap();
+            alice.commit();
+            let mut bob = alice.fork();
+            bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
 
-        name_range(&mut alice, &id(1), Some(&id(5)), "Intro rewrite");
-        alice.commit();
-        name_range(&mut bob, &id(1), Some(&id(5)), "First draft");
-        bob.commit();
+            name_range(&mut alice, &id(1), Some(&id(5)), "Intro rewrite");
+            alice.commit();
+            name_range(&mut bob, &id(1), Some(&id(5)), "First draft");
+            bob.commit();
 
-        let mut alice_merged = alice.fork();
-        alice_merged.merge(&mut bob.clone()).unwrap();
-        let mut bob_merged = bob.fork();
-        bob_merged.merge(&mut alice.clone()).unwrap();
+            let mut alice_merged = alice.fork();
+            alice_merged.merge(&mut bob.clone()).unwrap();
+            let mut bob_merged = bob.fork();
+            bob_merged.merge(&mut alice.clone()).unwrap();
 
-        let a = read_named_ranges(&alice_merged, &AuthorDirectory::new());
-        let b = read_named_ranges(&bob_merged, &AuthorDirectory::new());
-        assert_eq!(a.len(), 1, "one range, one band");
-        assert_eq!(b.len(), 1);
-        assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
-        assert!(
-            a[0].label == "Intro rewrite" || a[0].label == "First draft",
-            "the winner is one of the two names actually written: {:?}",
-            a[0].label
-        );
-    }
+            let a = read_named_ranges(&alice_merged, &AuthorDirectory::new());
+            let b = read_named_ranges(&bob_merged, &AuthorDirectory::new());
+            assert_eq!(a.len(), 1, "one range, one band");
+            assert_eq!(b.len(), 1);
+            assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
+            assert!(
+                a[0].label == "Intro rewrite" || a[0].label == "First draft",
+                "the winner is one of the two names actually written: {:?}",
+                a[0].label
+            );
+        }
+        // phase: two_peers_naming_different_ranges_both_survive
+        {
+            let mut alice = AutoCommit::new();
+            alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            alice.put(automerge::ROOT, "seed", "x").unwrap();
+            alice.commit();
+            let mut bob = alice.fork();
+            bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
 
-    #[test]
-    fn two_peers_naming_different_ranges_both_survive() {
-        let mut alice = AutoCommit::new();
-        alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
-        alice.put(automerge::ROOT, "seed", "x").unwrap();
-        alice.commit();
-        let mut bob = alice.fork();
-        bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+            name_range(&mut alice, &id(1), Some(&id(3)), "Intro");
+            alice.commit();
+            name_range(&mut bob, &id(4), Some(&id(6)), "Body");
+            bob.commit();
+            alice.merge(&mut bob).unwrap();
 
-        name_range(&mut alice, &id(1), Some(&id(3)), "Intro");
-        alice.commit();
-        name_range(&mut bob, &id(4), Some(&id(6)), "Body");
-        bob.commit();
-        alice.merge(&mut bob).unwrap();
-
-        let ranges = read_named_ranges(&alice, &AuthorDirectory::new());
-        let labels: Vec<&str> = ranges.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels.len(), 2, "got {labels:?}");
-        assert!(labels.contains(&"Intro") && labels.contains(&"Body"));
-    }
-
-    #[test]
-    fn naming_a_version_is_recognisable_as_a_marker_change() {
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "content", "hello").unwrap();
-        doc.commit();
-        let before = doc.get_heads();
-        name_range(&mut doc, &id(1), Some(&id(2)), "A version");
-        doc.commit();
-        let after = doc.get_heads();
-        let patches = doc.diff(&before, &after);
-        assert!(!patches.is_empty());
-        assert!(is_group_marker(&patches), "got {patches:?}");
-
-        // An edit is not a marker, even a small one.
-        let before = doc.get_heads();
-        doc.put(automerge::ROOT, "content", "hello there").unwrap();
-        doc.commit();
-        let after = doc.get_heads();
-        let patches = doc.diff(&before, &after);
-        assert!(!is_group_marker(&patches));
-    }
-
-    #[test]
-    fn a_very_long_name_is_capped_rather_than_stored_whole() {
-        let mut doc = AutoCommit::new();
-        name_range(&mut doc, &id(1), None, &"x".repeat(1000));
-        doc.commit();
-        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
-        assert_eq!(ranges[0].label.chars().count(), MAX_LABEL_LEN);
-    }
-
-    #[test]
-    fn a_record_under_a_key_that_is_not_a_change_id_is_skipped() {
-        let mut doc = AutoCommit::new();
-        let rec = doc
-            .put_object(automerge::ROOT, format!("{GROUPS_KEY}junk"), ObjType::Map)
-            .unwrap();
-        doc.put(&rec, "label", "nowhere").unwrap();
-        doc.commit();
-        assert!(read_named_ranges(&doc, &AuthorDirectory::new()).is_empty());
+            let ranges = read_named_ranges(&alice, &AuthorDirectory::new());
+            let labels: Vec<&str> = ranges.iter().map(|r| r.label.as_str()).collect();
+            assert_eq!(labels.len(), 2, "got {labels:?}");
+            assert!(labels.contains(&"Intro") && labels.contains(&"Body"));
+        }
     }
 }

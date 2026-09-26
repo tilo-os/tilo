@@ -221,64 +221,54 @@ pub(crate) fn weighted_edit_cost(a: &str, b: &str, max: usize) -> f64 {
 mod tests {
     use super::*;
 
-    fn d(a: &str, b: &str) -> Option<usize> {
-        damerau_levenshtein_within(a, b, 10)
-    }
-
     #[test]
-    fn identical_is_zero() {
-        assert_eq!(d("kitten", "kitten"), Some(0));
-    }
-
-    #[test]
-    fn classic_levenshtein() {
-        assert_eq!(d("kitten", "sitting"), Some(3));
-        assert_eq!(d("flaw", "lawn"), Some(2));
-    }
-
-    #[test]
-    fn transposition_is_distance_one() {
-        // Without the Damerau rule this would be 2 (two substitutions).
-        assert_eq!(d("teh", "the"), Some(1));
-        assert_eq!(d("ab", "ba"), Some(1));
-        assert_eq!(d("recieve", "receive"), Some(1));
-    }
-
-    #[test]
-    fn insertion_and_deletion() {
-        assert_eq!(d("cat", "cats"), Some(1));
-        assert_eq!(d("cats", "cat"), Some(1));
-    }
-
-    #[test]
-    fn unicode_counts_in_chars_not_bytes() {
-        assert_eq!(d("café", "cafe"), Some(1));
-    }
-
-    #[test]
-    fn bound_returns_none_when_exceeded() {
-        // Distance is 7; bound of 2 must reject.
-        assert_eq!(damerau_levenshtein_within("kitten", "monstrous", 2), None);
-    }
-
-    #[test]
-    fn length_difference_short_circuit() {
-        assert_eq!(damerau_levenshtein_within("a", "abcdef", 2), None);
-    }
-
-    #[test]
-    fn empty_strings() {
-        assert_eq!(damerau_levenshtein_within("", "", 2), Some(0));
-        assert_eq!(damerau_levenshtein_within("", "ab", 2), Some(2));
-        assert_eq!(damerau_levenshtein_within("ab", "", 2), Some(2));
-        assert_eq!(damerau_levenshtein_within("", "abc", 2), None);
-    }
-
-    #[test]
-    fn bound_inclusive() {
-        // Distance exactly equal to the bound is accepted.
-        assert_eq!(damerau_levenshtein_within("abc", "abd", 1), Some(1));
-        assert_eq!(damerau_levenshtein_within("abc", "xyz", 3), Some(3));
-        assert_eq!(damerau_levenshtein_within("abc", "xyz", 2), None);
+    fn damerau_levenshtein_distance_is_exact_within_an_inclusive_bound() {
+        for (case, a, b, bound, want) in [
+            ("identical_is_zero", "kitten", "kitten", 10, Some(0)),
+            ("classic_levenshtein", "kitten", "sitting", 10, Some(3)),
+            ("classic_levenshtein", "flaw", "lawn", 10, Some(2)),
+            // Without the Damerau rule this would be 2 (two substitutions).
+            ("transposition_is_distance_one", "teh", "the", 10, Some(1)),
+            ("transposition_is_distance_one", "ab", "ba", 10, Some(1)),
+            (
+                "transposition_is_distance_one",
+                "recieve",
+                "receive",
+                10,
+                Some(1),
+            ),
+            ("insertion_and_deletion", "cat", "cats", 10, Some(1)),
+            ("insertion_and_deletion", "cats", "cat", 10, Some(1)),
+            (
+                "unicode_counts_in_chars_not_bytes",
+                "café",
+                "cafe",
+                10,
+                Some(1),
+            ),
+            // Distance is 7; bound of 2 must reject.
+            (
+                "bound_returns_none_when_exceeded",
+                "kitten",
+                "monstrous",
+                2,
+                None,
+            ),
+            ("length_difference_short_circuit", "a", "abcdef", 2, None),
+            ("empty_strings", "", "", 2, Some(0)),
+            ("empty_strings", "", "ab", 2, Some(2)),
+            ("empty_strings", "ab", "", 2, Some(2)),
+            ("empty_strings", "", "abc", 2, None),
+            // Distance exactly equal to the bound is accepted.
+            ("bound_inclusive", "abc", "abd", 1, Some(1)),
+            ("bound_inclusive", "abc", "xyz", 3, Some(3)),
+            ("bound_inclusive", "abc", "xyz", 2, None),
+        ] {
+            assert_eq!(
+                damerau_levenshtein_within(a, b, bound),
+                want,
+                "case {case}: {a:?} vs {b:?} within {bound}"
+            );
+        }
     }
 }

@@ -88,35 +88,38 @@ impl Widget for FsRoot {
 }
 
 #[test]
-fn decision_truth_table() {
-    assert_eq!(fullscreen_request_decision(false, None), None);
-    assert_eq!(fullscreen_request_decision(true, None), None);
-    assert_eq!(fullscreen_request_decision(false, Some(false)), None);
-    assert_eq!(fullscreen_request_decision(true, Some(true)), None);
-    assert_eq!(fullscreen_request_decision(false, Some(true)), Some(true));
-    assert_eq!(fullscreen_request_decision(true, Some(false)), Some(false));
-}
+fn fullscreen_decisions_and_transitions_notify_and_relayout() {
+    // Case `decision_truth_table`.
+    {
+        assert_eq!(fullscreen_request_decision(false, None), None);
+        assert_eq!(fullscreen_request_decision(true, None), None);
+        assert_eq!(fullscreen_request_decision(false, Some(false)), None);
+        assert_eq!(fullscreen_request_decision(true, Some(true)), None);
+        assert_eq!(fullscreen_request_decision(false, Some(true)), Some(true));
+        assert_eq!(fullscreen_request_decision(true, Some(false)), Some(false));
+    }
 
-#[test]
-fn actual_state_transitions_notify_root_once_per_edge() {
-    let (root, changes) = FsRoot::new(None);
-    let mut app = App::new(State::new(), Box::new(root));
+    // Case `actual_state_transitions_notify_root_once_per_edge`.
+    {
+        let (root, changes) = FsRoot::new(None);
+        let mut app = App::new(State::new(), Box::new(root));
 
-    assert!(app.note_actual_fullscreen(true));
-    assert!(!app.note_actual_fullscreen(true));
-    assert!(app.note_actual_fullscreen(false));
+        assert!(app.note_actual_fullscreen(true));
+        assert!(!app.note_actual_fullscreen(true));
+        assert!(app.note_actual_fullscreen(false));
 
-    assert_eq!(*changes.borrow(), vec![true, false]);
-    assert!(!app.window.fullscreen_active);
-}
+        assert_eq!(*changes.borrow(), vec![true, false]);
+        assert!(!app.window.fullscreen_active);
+    }
 
-#[test]
-fn entering_fullscreen_marks_resync_and_relayout() {
-    let (root, _changes) = FsRoot::new(Some(true));
-    let mut app = App::new(State::new(), Box::new(root));
-    app.needs_sync = false;
-    app.layout.layout_dirty = false;
-    assert!(app.note_actual_fullscreen(true));
-    assert!(app.needs_sync);
-    assert!(app.layout.layout_dirty);
+    // Case `entering_fullscreen_marks_resync_and_relayout`.
+    {
+        let (root, _changes) = FsRoot::new(Some(true));
+        let mut app = App::new(State::new(), Box::new(root));
+        app.needs_sync = false;
+        app.layout.layout_dirty = false;
+        assert!(app.note_actual_fullscreen(true));
+        assert!(app.needs_sync);
+        assert!(app.layout.layout_dirty);
+    }
 }

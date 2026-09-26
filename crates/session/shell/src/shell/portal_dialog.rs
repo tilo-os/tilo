@@ -2001,105 +2001,137 @@ mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, ModifiersState};
     #[test]
-    fn action_buttons_share_the_choice_rows_gutter() {
-        let q = PortalDialogQueue::default();
-        let service = ShellAppChooserService::with_queue(q.clone());
-        let (tx, _rx) = oneshot::channel();
-        assert!(matches!(
-            service.enqueue(
-                ApplicationChoiceRequest {
-                    handle: "/r/layout".into(),
-                    app_id: "org.example.Reader".into(),
-                    choices: vec!["one".into(), "two".into()],
-                    last_choice: None,
-                    content_type: None,
-                    uri: None,
-                    filename: None,
-                    activation_token: None
-                },
-                tx
-            ),
-            PortalResult::Success(())
-        ));
-        let mut c = PortalDialogController::new(q);
-        assert!(c.pump());
-        let layout = c
-            .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
-            .expect("an active sheet");
-        let row = layout.choices[0];
-        // Confirm's right edge is the rows' right edge; the row above used
-        // to end 4 px short of the buttons below it.
-        assert_eq!(layout.confirm.x1, row.x1);
-        assert_eq!(layout.confirm.x1, layout.sheet.x1 - 24.0);
-        assert_eq!(
-            layout.cancel.x1 + 12.0,
-            layout.confirm.x0,
-            "buttons keep their 12 px gap"
-        );
-        assert_eq!(layout.cancel.width(), 92.0);
-        assert_eq!(layout.confirm.width(), 84.0);
-        assert!(layout.cancel.height() >= 32.0 && layout.confirm.height() >= 32.0);
-        assert_eq!(layout.cancel.y0, layout.confirm.y0);
-        assert_eq!(layout.cancel.y1, layout.confirm.y1);
-    }
-    #[test]
-    fn choice_updates_reach_the_live_controller() {
-        let q = PortalDialogQueue::default();
-        let service = ShellAppChooserService::with_queue(q.clone());
-        let (tx, rx) = oneshot::channel();
-        assert!(matches!(
-            service.enqueue(
-                ApplicationChoiceRequest {
-                    handle: "/r/1".into(),
-                    app_id: "org.example.Reader".into(),
-                    choices: vec!["one".into()],
-                    last_choice: None,
-                    content_type: None,
-                    uri: None,
-                    filename: None,
-                    activation_token: None
-                },
-                tx
-            ),
-            PortalResult::Success(())
-        ));
-        let mut c = PortalDialogController::new(q.clone());
-        assert!(c.pump());
-        assert!(matches!(
-            service.update_choices("/r/1", &["two".into()]),
-            PortalResult::Success(())
-        ));
-        assert_eq!(c.view().unwrap().choices(), ["two"]);
-        assert!(c.confirm());
-        assert!(matches!(
-            rx.blocking_recv(),
-            Ok(PortalResult::Success(ApplicationChoice { choice, .. })) if choice == "two"
-        ));
-    }
-    #[test]
-    fn cancel_completes_the_async_request() {
-        let q = PortalDialogQueue::default();
-        let (tx, rx) = oneshot::channel();
-        assert!(matches!(
-            q.enqueue_choice(
-                ApplicationChoiceRequest {
-                    handle: "/r/2".into(),
-                    app_id: "x".into(),
-                    choices: vec!["one".into()],
-                    last_choice: None,
-                    content_type: None,
-                    uri: None,
-                    filename: None,
-                    activation_token: None
-                },
-                tx
-            ),
-            PortalResult::Success(())
-        ));
-        let mut c = PortalDialogController::new(q);
-        c.pump();
-        assert!(c.cancel());
-        assert!(matches!(rx.blocking_recv(), Ok(PortalResult::Cancelled)));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn portal_choice_dialog_updates_the_controller_and_completes_on_cancel_or_review() {
+        fn action_buttons_share_the_choice_rows_gutter() {
+            let q = PortalDialogQueue::default();
+            let service = ShellAppChooserService::with_queue(q.clone());
+            let (tx, _rx) = oneshot::channel();
+            assert!(matches!(
+                service.enqueue(
+                    ApplicationChoiceRequest {
+                        handle: "/r/layout".into(),
+                        app_id: "org.example.Reader".into(),
+                        choices: vec!["one".into(), "two".into()],
+                        last_choice: None,
+                        content_type: None,
+                        uri: None,
+                        filename: None,
+                        activation_token: None
+                    },
+                    tx
+                ),
+                PortalResult::Success(())
+            ));
+            let mut c = PortalDialogController::new(q);
+            assert!(c.pump());
+            let layout = c
+                .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
+                .expect("an active sheet");
+            let row = layout.choices[0];
+            // Confirm's right edge is the rows' right edge; the row above used
+            // to end 4 px short of the buttons below it.
+            assert_eq!(layout.confirm.x1, row.x1);
+            assert_eq!(layout.confirm.x1, layout.sheet.x1 - 24.0);
+            assert_eq!(
+                layout.cancel.x1 + 12.0,
+                layout.confirm.x0,
+                "buttons keep their 12 px gap"
+            );
+            assert_eq!(layout.cancel.width(), 92.0);
+            assert_eq!(layout.confirm.width(), 84.0);
+            assert!(layout.cancel.height() >= 32.0 && layout.confirm.height() >= 32.0);
+            assert_eq!(layout.cancel.y0, layout.confirm.y0);
+            assert_eq!(layout.cancel.y1, layout.confirm.y1);
+        }
+
+        fn choice_updates_reach_the_live_controller() {
+            let q = PortalDialogQueue::default();
+            let service = ShellAppChooserService::with_queue(q.clone());
+            let (tx, rx) = oneshot::channel();
+            assert!(matches!(
+                service.enqueue(
+                    ApplicationChoiceRequest {
+                        handle: "/r/1".into(),
+                        app_id: "org.example.Reader".into(),
+                        choices: vec!["one".into()],
+                        last_choice: None,
+                        content_type: None,
+                        uri: None,
+                        filename: None,
+                        activation_token: None
+                    },
+                    tx
+                ),
+                PortalResult::Success(())
+            ));
+            let mut c = PortalDialogController::new(q.clone());
+            assert!(c.pump());
+            assert!(matches!(
+                service.update_choices("/r/1", &["two".into()]),
+                PortalResult::Success(())
+            ));
+            assert_eq!(c.view().unwrap().choices(), ["two"]);
+            assert!(c.confirm());
+            assert!(matches!(
+                rx.blocking_recv(),
+                Ok(PortalResult::Success(ApplicationChoice { choice, .. })) if choice == "two"
+            ));
+        }
+
+        fn cancel_completes_the_async_request() {
+            let q = PortalDialogQueue::default();
+            let (tx, rx) = oneshot::channel();
+            assert!(matches!(
+                q.enqueue_choice(
+                    ApplicationChoiceRequest {
+                        handle: "/r/2".into(),
+                        app_id: "x".into(),
+                        choices: vec!["one".into()],
+                        last_choice: None,
+                        content_type: None,
+                        uri: None,
+                        filename: None,
+                        activation_token: None
+                    },
+                    tx
+                ),
+                PortalResult::Success(())
+            ));
+            let mut c = PortalDialogController::new(q);
+            c.pump();
+            assert!(c.cancel());
+            assert!(matches!(rx.blocking_recv(), Ok(PortalResult::Cancelled)));
+        }
+
+        fn review_keeps_the_exact_reason_and_needs_confirmation() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_review(ReviewRequest {
+                    handle: "/r/review".into(),
+                    app_id: "org.example.Backup".into(),
+                    title: "Share backup".into(),
+                    reason: "Send an encrypted archive to your provider.".into(),
+                    resource: "backup-2026.zip".into(),
+                    confirm_label: "Share".into(),
+                })
+                .expect("a unique request queues");
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            let view = controller.view().expect("visible review");
+            assert!(view.detail().contains("encrypted archive"));
+            assert!(view.detail().contains("backup-2026.zip"));
+            assert!(controller.confirm());
+            assert_eq!(receiver.blocking_recv(), Ok(ReviewDecision::Confirmed));
+        }
+
+        action_buttons_share_the_choice_rows_gutter();
+        choice_updates_reach_the_live_controller();
+        cancel_completes_the_async_request();
+        review_keeps_the_exact_reason_and_needs_confirmation();
     }
 
     fn authentication_request(identities: &[&str]) -> AuthenticationRequest {
@@ -2199,242 +2231,232 @@ mod tests {
     }
 
     #[test]
-    fn review_keeps_the_exact_reason_and_needs_confirmation() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_review(ReviewRequest {
-                handle: "/r/review".into(),
-                app_id: "org.example.Backup".into(),
-                title: "Share backup".into(),
-                reason: "Send an encrypted archive to your provider.".into(),
-                resource: "backup-2026.zip".into(),
-                confirm_label: "Share".into(),
-            })
-            .expect("a unique request queues");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        let view = controller.view().expect("visible review");
-        assert!(view.detail().contains("encrypted archive"));
-        assert!(view.detail().contains("backup-2026.zip"));
-        assert!(controller.confirm());
-        assert_eq!(receiver.blocking_recv(), Ok(ReviewDecision::Confirmed));
-    }
-
-    #[test]
-    fn usb_sheet_returns_only_the_individually_selected_subset() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_usb_devices(UsbDeviceRequest {
-                review: ReviewRequest {
-                    handle: "/r/usb".into(),
-                    app_id: "org.example.Camera".into(),
-                    title: "Choose USB devices".into(),
-                    reason: "Review each device.".into(),
-                    resource: "Access is temporary.".into(),
-                    confirm_label: "Allow selected".into(),
-                },
-                devices: vec![
-                    UsbDeviceRow {
-                        id: "camera".into(),
-                        label: "Conference camera".into(),
-                        writable: false,
+    fn usb_sheet_returns_only_individually_selected_devices_on_every_page() {
+        fn usb_sheet_returns_only_the_individually_selected_subset() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_usb_devices(UsbDeviceRequest {
+                    review: ReviewRequest {
+                        handle: "/r/usb".into(),
+                        app_id: "org.example.Camera".into(),
+                        title: "Choose USB devices".into(),
+                        reason: "Review each device.".into(),
+                        resource: "Access is temporary.".into(),
+                        confirm_label: "Allow selected".into(),
                     },
-                    UsbDeviceRow {
-                        id: "flash".into(),
-                        label: "Firmware drive".into(),
-                        writable: true,
-                    },
-                ],
-            })
-            .unwrap();
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        let view = controller.view().unwrap();
-        assert_eq!(view.usb_devices().len(), 2);
-        assert!(view.usb_devices()[0].selected);
-        assert!(view.usb_devices()[1].writable);
-        assert!(controller.select_next(false));
-        assert!(controller.toggle_selected_usb_device());
-        assert!(controller.confirm());
-        assert_eq!(
-            receiver.blocking_recv(),
-            Ok(UsbDeviceDecision {
-                decision: ReviewDecision::Confirmed,
-                approved: vec!["camera".into()],
-            })
-        );
-    }
-
-    #[test]
-    fn usb_rows_after_the_first_page_remain_selectable() {
-        let queue = PortalDialogQueue::default();
-        let devices = (0..7)
-            .map(|index| UsbDeviceRow {
-                id: format!("device-{index}"),
-                label: format!("Device {index}"),
-                writable: false,
-            })
-            .collect();
-        let receiver = queue
-            .enqueue_usb_devices(UsbDeviceRequest {
-                review: ReviewRequest {
-                    handle: "/r/usb-pages".into(),
-                    app_id: "org.example.Usb".into(),
-                    title: "Choose USB devices".into(),
-                    reason: String::new(),
-                    resource: String::new(),
-                    confirm_label: "Allow selected".into(),
-                },
-                devices,
-            })
-            .unwrap();
-        let mut controller = PortalDialogController::new(queue);
-        controller.pump();
-        for _ in 0..6 {
+                    devices: vec![
+                        UsbDeviceRow {
+                            id: "camera".into(),
+                            label: "Conference camera".into(),
+                            writable: false,
+                        },
+                        UsbDeviceRow {
+                            id: "flash".into(),
+                            label: "Firmware drive".into(),
+                            writable: true,
+                        },
+                    ],
+                })
+                .unwrap();
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            let view = controller.view().unwrap();
+            assert_eq!(view.usb_devices().len(), 2);
+            assert!(view.usb_devices()[0].selected);
+            assert!(view.usb_devices()[1].writable);
             assert!(controller.select_next(false));
+            assert!(controller.toggle_selected_usb_device());
+            assert!(controller.confirm());
+            assert_eq!(
+                receiver.blocking_recv(),
+                Ok(UsbDeviceDecision {
+                    decision: ReviewDecision::Confirmed,
+                    approved: vec!["camera".into()],
+                })
+            );
         }
-        assert_eq!(controller.visible_selection_start(), 6);
-        assert!(controller.toggle_selected_usb_device());
-        assert!(controller.confirm());
-        let decision = receiver.blocking_recv().unwrap();
-        assert_eq!(decision.approved.len(), 6);
-        assert!(!decision.approved.contains(&"device-6".into()));
+
+        fn usb_rows_after_the_first_page_remain_selectable() {
+            let queue = PortalDialogQueue::default();
+            let devices = (0..7)
+                .map(|index| UsbDeviceRow {
+                    id: format!("device-{index}"),
+                    label: format!("Device {index}"),
+                    writable: false,
+                })
+                .collect();
+            let receiver = queue
+                .enqueue_usb_devices(UsbDeviceRequest {
+                    review: ReviewRequest {
+                        handle: "/r/usb-pages".into(),
+                        app_id: "org.example.Usb".into(),
+                        title: "Choose USB devices".into(),
+                        reason: String::new(),
+                        resource: String::new(),
+                        confirm_label: "Allow selected".into(),
+                    },
+                    devices,
+                })
+                .unwrap();
+            let mut controller = PortalDialogController::new(queue);
+            controller.pump();
+            for _ in 0..6 {
+                assert!(controller.select_next(false));
+            }
+            assert_eq!(controller.visible_selection_start(), 6);
+            assert!(controller.toggle_selected_usb_device());
+            assert!(controller.confirm());
+            let decision = receiver.blocking_recv().unwrap();
+            assert_eq!(decision.approved.len(), 6);
+            assert!(!decision.approved.contains(&"device-6".into()));
+        }
+
+        usb_sheet_returns_only_the_individually_selected_subset();
+        usb_rows_after_the_first_page_remain_selectable();
     }
 
     #[test]
-    fn launcher_editor_returns_only_the_shell_reviewed_name_and_icon_choice() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_launcher_review(LauncherReviewRequest {
-                review: ReviewRequest {
-                    handle: "/r/launcher".into(),
-                    app_id: "org.example.Web".into(),
-                    title: "Install this web app?".into(),
-                    reason: "Reviewed by Tilo.".into(),
-                    resource: "https://example.test".into(),
-                    confirm_label: "Add launcher".into(),
-                },
-                name: "Example".into(),
-                editable_name: true,
-                editable_icon: true,
-                icon_choices: vec!["supplied".into(), "monogram".into()],
-            })
-            .expect("a unique launcher request queues");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        assert!(controller.edit_launcher_name(&winit::keyboard::Key::Character("!".into())));
-        assert!(controller.select_next(false));
-        assert_eq!(controller.launcher_icon(), Some(1));
-        assert!(controller.confirm());
-        assert_eq!(
-            receiver.blocking_recv(),
-            Ok(LauncherReviewDecision {
-                decision: ReviewDecision::Confirmed,
-                name: "Example!".into(),
-                icon_choice: 1,
-            })
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn launcher_and_shortcut_editors_return_only_reviewed_choices() {
+        fn launcher_editor_returns_only_the_shell_reviewed_name_and_icon_choice() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_launcher_review(LauncherReviewRequest {
+                    review: ReviewRequest {
+                        handle: "/r/launcher".into(),
+                        app_id: "org.example.Web".into(),
+                        title: "Install this web app?".into(),
+                        reason: "Reviewed by Tilo.".into(),
+                        resource: "https://example.test".into(),
+                        confirm_label: "Add launcher".into(),
+                    },
+                    name: "Example".into(),
+                    editable_name: true,
+                    editable_icon: true,
+                    icon_choices: vec!["supplied".into(), "monogram".into()],
+                })
+                .expect("a unique launcher request queues");
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            assert!(controller.edit_launcher_name(&winit::keyboard::Key::Character("!".into())));
+            assert!(controller.select_next(false));
+            assert_eq!(controller.launcher_icon(), Some(1));
+            assert!(controller.confirm());
+            assert_eq!(
+                receiver.blocking_recv(),
+                Ok(LauncherReviewDecision {
+                    decision: ReviewDecision::Confirmed,
+                    name: "Example!".into(),
+                    icon_choice: 1,
+                })
+            );
+        }
 
-    #[test]
-    fn launcher_close_cancels_and_never_leaves_a_waiter() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_launcher_review(LauncherReviewRequest {
-                review: ReviewRequest {
-                    handle: "/r/launcher-close".into(),
-                    app_id: "org.example.Web".into(),
-                    title: "Add launcher?".into(),
-                    reason: String::new(),
-                    resource: "Example".into(),
-                    confirm_label: "Add".into(),
-                },
-                name: "Example".into(),
-                editable_name: false,
-                editable_icon: false,
-                icon_choices: vec!["supplied".into()],
-            })
-            .expect("a unique launcher request queues");
-        assert!(queue.cancel("/r/launcher-close"));
-        assert_eq!(
-            receiver.blocking_recv(),
-            Ok(LauncherReviewDecision {
-                decision: ReviewDecision::Cancelled,
-                name: "Example".into(),
-                icon_choice: 0,
-            })
-        );
-    }
+        fn launcher_close_cancels_and_never_leaves_a_waiter() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_launcher_review(LauncherReviewRequest {
+                    review: ReviewRequest {
+                        handle: "/r/launcher-close".into(),
+                        app_id: "org.example.Web".into(),
+                        title: "Add launcher?".into(),
+                        reason: String::new(),
+                        resource: "Example".into(),
+                        confirm_label: "Add".into(),
+                    },
+                    name: "Example".into(),
+                    editable_name: false,
+                    editable_icon: false,
+                    icon_choices: vec!["supplied".into()],
+                })
+                .expect("a unique launcher request queues");
+            assert!(queue.cancel("/r/launcher-close"));
+            assert_eq!(
+                receiver.blocking_recv(),
+                Ok(LauncherReviewDecision {
+                    decision: ReviewDecision::Cancelled,
+                    name: "Example".into(),
+                    icon_choice: 0,
+                })
+            );
+        }
 
-    #[test]
-    fn shortcut_editor_records_a_physical_chord_and_can_clear_it() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_shortcut_bindings(ShortcutBindingRequest {
-                handle: "/r/shortcuts".into(),
-                app_id: "org.example.Recorder".into(),
-                rows: vec![ShortcutBindingRow {
-                    id: "toggle".into(),
-                    description: "Toggle recording".into(),
-                    accelerator: None,
-                    status: None,
-                }],
-            })
-            .expect("a unique request queues");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        assert!(controller.key(
-            &PhysicalKey::Code(KeyCode::KeyK),
-            Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT),
-        ));
-        assert_eq!(
-            controller.view().unwrap().shortcut_rows()[0]
-                .accelerator
-                .as_deref(),
-            Some("CTRL+SHIFT+KEYK")
-        );
-        assert!(controller.clear_selected_shortcut());
-        assert!(controller.confirm());
-        assert_eq!(
-            receiver.blocking_recv().unwrap().rows[0].accelerator,
-            None,
-            "clearing a row means it is not globally registered"
-        );
-    }
+        fn shortcut_editor_records_a_physical_chord_and_can_clear_it() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_shortcut_bindings(ShortcutBindingRequest {
+                    handle: "/r/shortcuts".into(),
+                    app_id: "org.example.Recorder".into(),
+                    rows: vec![ShortcutBindingRow {
+                        id: "toggle".into(),
+                        description: "Toggle recording".into(),
+                        accelerator: None,
+                        status: None,
+                    }],
+                })
+                .expect("a unique request queues");
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            assert!(controller.key(
+                &PhysicalKey::Code(KeyCode::KeyK),
+                Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT),
+            ));
+            assert_eq!(
+                controller.view().unwrap().shortcut_rows()[0]
+                    .accelerator
+                    .as_deref(),
+                Some("CTRL+SHIFT+KEYK")
+            );
+            assert!(controller.clear_selected_shortcut());
+            assert!(controller.confirm());
+            assert_eq!(
+                receiver.blocking_recv().unwrap().rows[0].accelerator,
+                None,
+                "clearing a row means it is not globally registered"
+            );
+        }
 
-    #[test]
-    fn shortcut_editor_explains_reserved_chords_without_accepting_them() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_shortcut_bindings(ShortcutBindingRequest {
-                handle: "/r/reserved".into(),
-                app_id: "org.example.Recorder".into(),
-                rows: vec![ShortcutBindingRow {
-                    id: "toggle".into(),
-                    description: String::new(),
-                    accelerator: None,
-                    status: None,
-                }],
-            })
-            .unwrap();
-        let mut controller = PortalDialogController::new(queue);
-        controller.pump();
-        assert!(controller.key(
-            &PhysicalKey::Code(KeyCode::KeyK),
-            Modifiers::from(ModifiersState::SUPER),
-        ));
-        let view = controller.view().unwrap();
-        let row = &view.shortcut_rows()[0];
-        assert!(row.accelerator.is_none());
-        assert!(
-            row.status
-                .as_deref()
-                .is_some_and(|text| text.contains("Reserved"))
-        );
-        assert!(controller.cancel());
-        assert!(
-            receiver.blocking_recv().is_err(),
-            "cancel drops the binding reply"
-        );
+        fn shortcut_editor_explains_reserved_chords_without_accepting_them() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_shortcut_bindings(ShortcutBindingRequest {
+                    handle: "/r/reserved".into(),
+                    app_id: "org.example.Recorder".into(),
+                    rows: vec![ShortcutBindingRow {
+                        id: "toggle".into(),
+                        description: String::new(),
+                        accelerator: None,
+                        status: None,
+                    }],
+                })
+                .unwrap();
+            let mut controller = PortalDialogController::new(queue);
+            controller.pump();
+            assert!(controller.key(
+                &PhysicalKey::Code(KeyCode::KeyK),
+                Modifiers::from(ModifiersState::SUPER),
+            ));
+            let view = controller.view().unwrap();
+            let row = &view.shortcut_rows()[0];
+            assert!(row.accelerator.is_none());
+            assert!(
+                row.status
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Reserved"))
+            );
+            assert!(controller.cancel());
+            assert!(
+                receiver.blocking_recv().is_err(),
+                "cancel drops the binding reply"
+            );
+        }
+
+        launcher_editor_returns_only_the_shell_reviewed_name_and_icon_choice();
+        launcher_close_cancels_and_never_leaves_a_waiter();
+        shortcut_editor_records_a_physical_chord_and_can_clear_it();
+        shortcut_editor_explains_reserved_chords_without_accepting_them();
     }
 }

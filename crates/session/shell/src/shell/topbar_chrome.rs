@@ -87,76 +87,79 @@ mod clock_overlay_geometry_tests {
     use super::*;
 
     #[test]
-    fn overlay_clamps_to_narrow_viewport_and_below_bar() {
-        let p = clamp_clock_overlay(
-            Point::new(900.0, -20.0),
-            (252.0, CLOCK_OVERLAY_HEIGHT),
-            (360.0, 640.0),
-            40.0,
-        );
-        assert_eq!(p, Point::new(100.0, 48.0));
-    }
-
-    #[test]
-    fn overlay_preserves_an_in_bounds_drag_position() {
-        let p = clamp_clock_overlay(
-            Point::new(120.0, 180.0),
-            (252.0, CLOCK_OVERLAY_HEIGHT),
-            (900.0, 640.0),
-            40.0,
-        );
-        assert_eq!(p, Point::new(120.0, 180.0));
-    }
-
-    #[test]
-    fn overlay_cannot_be_dragged_below_the_visible_desktop() {
-        let p = clamp_clock_overlay(
-            Point::new(120.0, 900.0),
-            (252.0, CLOCK_OVERLAY_HEIGHT),
-            (900.0, 640.0),
-            40.0,
-        );
-        assert_eq!(p.y, 482.0);
-    }
-
-    #[test]
-    fn overlay_and_controls_fit_a_phone_width() {
-        let width = clock_overlay_width(220.0);
-        assert_eq!(width, 204.0);
-        let controls = clock_overlay_controls(Rect::new(
-            8.0,
-            48.0,
-            8.0 + width,
-            48.0 + CLOCK_OVERLAY_HEIGHT,
-        ));
-        for control in controls {
-            assert!(control.x0 >= 8.0);
-            assert!(control.x1 <= 212.0);
-            assert!(control.width() >= 44.0);
-            assert!(control.height() >= 44.0);
+    fn clock_overlay_stays_on_the_visible_desktop_and_commits_on_matching_release() {
+        // Phase `overlay_clamps_to_narrow_viewport_and_below_bar`.
+        {
+            let p = clamp_clock_overlay(
+                Point::new(900.0, -20.0),
+                (252.0, CLOCK_OVERLAY_HEIGHT),
+                (360.0, 640.0),
+                40.0,
+            );
+            assert_eq!(p, Point::new(100.0, 48.0));
         }
-    }
 
-    #[test]
-    fn touch_control_commits_only_on_matching_release() {
-        let pending = Some((17, 1));
-        assert_eq!(
-            released_clock_touch_control(pending, 17, true, Some(1)),
-            Some(1)
-        );
-        assert_eq!(released_clock_touch_control(pending, 17, true, None), None);
-        assert_eq!(
-            released_clock_touch_control(pending, 17, true, Some(0)),
-            None
-        );
-        assert_eq!(
-            released_clock_touch_control(pending, 17, false, Some(1)),
-            None
-        );
-        assert_eq!(
-            released_clock_touch_control(pending, 99, true, Some(1)),
-            None
-        );
+        // Phase `overlay_preserves_an_in_bounds_drag_position`.
+        {
+            let p = clamp_clock_overlay(
+                Point::new(120.0, 180.0),
+                (252.0, CLOCK_OVERLAY_HEIGHT),
+                (900.0, 640.0),
+                40.0,
+            );
+            assert_eq!(p, Point::new(120.0, 180.0));
+        }
+
+        // Phase `overlay_cannot_be_dragged_below_the_visible_desktop`.
+        {
+            let p = clamp_clock_overlay(
+                Point::new(120.0, 900.0),
+                (252.0, CLOCK_OVERLAY_HEIGHT),
+                (900.0, 640.0),
+                40.0,
+            );
+            assert_eq!(p.y, 482.0);
+        }
+
+        // Phase `overlay_and_controls_fit_a_phone_width`.
+        {
+            let width = clock_overlay_width(220.0);
+            assert_eq!(width, 204.0);
+            let controls = clock_overlay_controls(Rect::new(
+                8.0,
+                48.0,
+                8.0 + width,
+                48.0 + CLOCK_OVERLAY_HEIGHT,
+            ));
+            for control in controls {
+                assert!(control.x0 >= 8.0);
+                assert!(control.x1 <= 212.0);
+                assert!(control.width() >= 44.0);
+                assert!(control.height() >= 44.0);
+            }
+        }
+
+        // Phase `touch_control_commits_only_on_matching_release`.
+        {
+            let pending = Some((17, 1));
+            assert_eq!(
+                released_clock_touch_control(pending, 17, true, Some(1)),
+                Some(1)
+            );
+            assert_eq!(released_clock_touch_control(pending, 17, true, None), None);
+            assert_eq!(
+                released_clock_touch_control(pending, 17, true, Some(0)),
+                None
+            );
+            assert_eq!(
+                released_clock_touch_control(pending, 17, false, Some(1)),
+                None
+            );
+            assert_eq!(
+                released_clock_touch_control(pending, 99, true, Some(1)),
+                None
+            );
+        }
     }
 }
 
@@ -5394,28 +5397,31 @@ mod calendar_strip_tests {
     use super::*;
     use chrono::TimeZone;
 
-    /// The strip reports the day it is actually run on.
     #[test]
-    fn the_strip_reads_the_clock() {
-        let day = Local.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
-        let (weekday, date, _) = calendar_strip_parts(day);
-        assert_eq!(weekday, "Mon");
-        assert_eq!(date, "9 March");
+    fn the_calendar_strip_reads_the_clock_and_invents_no_meeting() {
+        // Phase `the_strip_reads_the_clock`.
+        // The strip reports the day it is actually run on.
+        {
+            let day = Local.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
+            let (weekday, date, _) = calendar_strip_parts(day);
+            assert_eq!(weekday, "Mon");
+            assert_eq!(date, "9 March");
 
-        let other = Local.with_ymd_and_hms(2025, 12, 25, 11, 0, 0).unwrap();
-        let (weekday, date, _) = calendar_strip_parts(other);
-        assert_eq!(weekday, "Thu");
-        assert_eq!(date, "25 December");
-    }
+            let other = Local.with_ymd_and_hms(2025, 12, 25, 11, 0, 0).unwrap();
+            let (weekday, date, _) = calendar_strip_parts(other);
+            assert_eq!(weekday, "Thu");
+            assert_eq!(date, "25 December");
+        }
 
-    #[test]
-    fn the_event_slot_names_no_meeting() {
-        let (_, _, note) = calendar_strip_parts(Local::now());
-        assert_eq!(note, "No calendar connected");
-        assert!(
-            !note.contains("Design Sync"),
-            "the slot must not carry an invented appointment"
-        );
+        // Phase `the_event_slot_names_no_meeting`.
+        {
+            let (_, _, note) = calendar_strip_parts(Local::now());
+            assert_eq!(note, "No calendar connected");
+            assert!(
+                !note.contains("Design Sync"),
+                "the slot must not carry an invented appointment"
+            );
+        }
     }
 }
 
@@ -5429,56 +5435,272 @@ mod tests {
     };
 
     #[test]
-    fn compact_workspace_identity_outranks_redundant_position() {
-        let mut bar = sample_chrome();
-        bar.workspace_name = "Home".into();
-        bar.workspace_total = 1;
-        bar.workspace_index = 0;
-        let mut tr = TextRenderer::new();
-        let label = bar.workspace_label(&mut tr, 28.0, 112.0);
-        assert!(label.contains("Home"), "{label}");
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn topbar_controls_share_scaled_metrics_and_give_workspace_identity_room() {
+        // Phase `bar_controls_use_scaled_tokens_one_height_and_coherent_targets`.
+        {
+            // Phase `desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text`.
+            {
+                let theme = Theme::dark().with_text_scale(2.0);
+                let mut bar = sample_chrome();
+                bar.workspace_name = "Home".into();
+                bar.rect = Rect::new(0.0, 0.0, 960.0, 48.0);
+                let mut renderer = TextRenderer::new();
+                renderer.set_text_scale(2.0);
+                let mut scene = Scene::new();
+                bar.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut renderer,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                let runs = &scene.encoding().resources.glyph_runs;
+                assert!(!runs.is_empty());
+                assert!(
+                    runs.iter()
+                        .all(|run| run.font_size <= theme.tokens.typography.scale.lg)
+                );
+                assert_eq!(renderer.text_scale(), 2.0);
+                renderer.set_text_scale(1.0);
+                let (_, height) = renderer.measure_weighted(
+                    "Home  1/1",
+                    theme.tokens.typography.scale.sm,
+                    None,
+                    TextWeight::Semibold,
+                );
+                assert!(f64::from(height) <= bar.ws_pill_rect.height());
+                assert!(
+                    bar.ws_pill_rect.x1
+                        <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0
+                );
+            }
 
-    #[test]
-    fn workspace_settings_affordance_is_distinct_from_global_controls() {
-        assert_ne!(
-            TopBarChrome::WORKSPACE_SETTINGS_ICON,
-            ui::icons::Icon::Settings2
-        );
-    }
+            // Phase `persistent_topbar_controls_have_coherent_targets`.
+            {
+                let mut bar = sample_chrome();
+                lay_out_and_draw(&mut bar, 1280.0);
+                assert!(bar.overview_btn_rect.width() >= 32.0);
+                assert!(bar.overview_btn_rect.height() >= 32.0);
+                assert!(bar.up_btn_rect.height() >= 32.0);
+                assert!(bar.up_btn_rect.width() >= 32.0);
+                assert!(bar.down_btn_rect.height() >= 32.0);
+                assert!(bar.down_btn_rect.width() >= 32.0);
+                assert!(bar.ws_pill_rect.height() >= 32.0);
+                assert!(bar.tray_pill_rect.height() >= 32.0);
+                assert!(bar.center_rect.height() >= 32.0);
+            }
 
-    #[test]
-    fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut bar = sample_chrome();
-        bar.workspace_name = "Home".into();
-        bar.rect = Rect::new(0.0, 0.0, 960.0, 48.0);
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut renderer,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        let runs = &scene.encoding().resources.glyph_runs;
-        assert!(!runs.is_empty());
-        assert!(
-            runs.iter()
-                .all(|run| run.font_size <= theme.tokens.typography.scale.lg)
-        );
-        assert_eq!(renderer.text_scale(), 2.0);
-        renderer.set_text_scale(1.0);
-        let (_, height) = renderer.measure_weighted(
-            "Home  1/1",
-            theme.tokens.typography.scale.sm,
-            None,
-            TextWeight::Semibold,
-        );
-        assert!(f64::from(height) <= bar.ws_pill_rect.height());
-        assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
+            // Phase `bar_controls_share_one_height_and_centre_line`.
+            // HIG §9.6: every pressable thing in the bar shares one height, so
+            // the pills and buttons sit on one top edge and one bottom edge,
+            // centred on the bar; and each dot of the centre selector owns a
+            // 32×32 target that never overlaps its neighbour.
+            {
+                let mut bar = sample_chrome();
+                lay_out_and_draw(&mut bar, 1280.0);
+                let reference = bar.overview_btn_rect;
+                let controls = [
+                    ("overview", bar.overview_btn_rect),
+                    ("workspace up", bar.up_btn_rect),
+                    ("workspace down", bar.down_btn_rect),
+                    ("workspace pill", bar.ws_pill_rect),
+                    ("centre band", bar.center_rect),
+                    ("tray pill", bar.tray_pill_rect),
+                ];
+                for (name, r) in controls {
+                    assert!(
+                        (r.height() - BAR_CONTROL_PX).abs() < 0.01,
+                        "{name} is {} px tall, not the shared {BAR_CONTROL_PX}",
+                        r.height()
+                    );
+                    assert!(
+                        (r.y0 - reference.y0).abs() < 0.01 && (r.y1 - reference.y1).abs() < 0.01,
+                        "{name} {r:?} does not share the nav cluster's edges {reference:?}"
+                    );
+                }
+                let bar_centre = f64::midpoint(bar.rect.y0, bar.rect.y1);
+                assert!(
+                    (reference.center().y - bar_centre).abs() < 0.01,
+                    "controls centre at {} in a bar centred on {bar_centre}",
+                    reference.center().y
+                );
+                for (i, dot) in bar.center_dot_rects.iter().enumerate() {
+                    assert!(
+                        dot.width() >= 32.0 && dot.height() >= 32.0,
+                        "dot {i} target {dot:?} is under the 32×32 pointer floor"
+                    );
+                    assert!(
+                        dot.x0 >= bar.center_rect.x0 - 0.01 && dot.x1 <= bar.center_rect.x1 + 0.01,
+                        "dot {i} target {dot:?} leaves the band {:?}",
+                        bar.center_rect
+                    );
+                    if let Some(next) = bar.center_dot_rects.get(i.saturating_add(1)) {
+                        assert!(
+                            next.x0 >= dot.x1 - 0.01,
+                            "dot targets {dot:?} and {next:?} overlap"
+                        );
+                    }
+                }
+            }
+
+            // Phase `bar_density_sits_on_the_spacing_scale`.
+            // The bar's density constants are the spacing scale under other
+            // names; this pins them so they cannot drift off it unnoticed.
+            {
+                let tokens = Theme::default().tokens;
+                let spacing = tokens.spacing;
+                assert_eq!(BAR_CONTROL_PX, f64::from(spacing.s8));
+                assert_eq!(CENTER_DOT_PITCH_PX, f64::from(spacing.s8));
+                assert_eq!(TOPBAR_HEIGHT_PX, spacing.s12);
+                // The bar's density is the §9.6 pointer floor plus `s2` of air each
+                // side — derived from `tokens.metrics`, not restated. A bar of
+                // `metrics.bar_height` (40) would hold `bar_control_height` (28)
+                // controls, which the shell's bar deliberately does not: its
+                // controls are pointer targets. Recorded 2026-09-17 (S1 round two).
+                assert_eq!(BAR_CONTROL_PX, f64::from(tokens.metrics.min_pointer_target));
+                assert_eq!(
+                    TOPBAR_HEIGHT_PX,
+                    tokens.metrics.min_pointer_target + 2.0 * spacing.s2
+                );
+                assert!(
+                    TOPBAR_HEIGHT_PX > tokens.metrics.bar_height,
+                    "a 32 px control cannot sit in a {} px bar with any air",
+                    tokens.metrics.bar_height
+                );
+            }
+        }
+
+        // Phase `workspace_identity_gets_its_space_and_a_distinct_symmetric_pill`.
+        {
+            // Phase `compact_workspace_identity_outranks_redundant_position`.
+            {
+                let mut bar = sample_chrome();
+                bar.workspace_name = "Home".into();
+                bar.workspace_total = 1;
+                bar.workspace_index = 0;
+                let mut tr = TextRenderer::new();
+                let label = bar.workspace_label(&mut tr, 28.0, 112.0);
+                assert!(label.contains("Home"), "{label}");
+            }
+
+            // Phase `workspace_settings_affordance_is_distinct_from_global_controls`.
+            {
+                assert_ne!(
+                    TopBarChrome::WORKSPACE_SETTINGS_ICON,
+                    ui::icons::Icon::Settings2
+                );
+            }
+
+            // Phase `workspace_pill_pads_its_label_and_gear_symmetrically`.
+            // The workspace capsule pads its label on the left exactly as much
+            // as it pads the gear on the right, and the gear sits on the pill's
+            // centre line — so the pill reads centred on its contents.
+            {
+                let mut bar = sample_chrome();
+                let theme = Theme::default();
+                lay_out_and_draw_with_theme(&mut bar, 1280.0, &theme);
+                let pad = f64::from(theme.tokens.spacing.s2);
+                // `draw_workspace_nav` hands the pill an x one `s3` past the
+                // down switch; the label starts there, one `s2` inside the pill,
+                // which leaves an `s1` gutter between the cluster and the capsule.
+                let text_x = bar.down_btn_rect.x1 + f64::from(theme.tokens.spacing.s3);
+                assert!(
+                    (text_x - bar.ws_pill_rect.x0 - pad).abs() < 0.01,
+                    "leading pad is {} not {pad}",
+                    text_x - bar.ws_pill_rect.x0
+                );
+                let gutter = f64::from(theme.tokens.spacing.s1);
+                assert!(
+                    (bar.ws_pill_rect.x0 - bar.down_btn_rect.x1 - gutter).abs() < 0.01,
+                    "the gutter between the nav cluster and the pill is {} not {gutter}",
+                    bar.ws_pill_rect.x0 - bar.down_btn_rect.x1
+                );
+                assert!(
+                    (bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1 - pad).abs() < 0.01,
+                    "trailing pad is {} not {pad}",
+                    bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1
+                );
+                assert!(
+                    (bar.ws_gear_rect.center().y - bar.ws_pill_rect.center().y).abs() < 0.01,
+                    "gear {:?} is off the pill's centre line {:?}",
+                    bar.ws_gear_rect,
+                    bar.ws_pill_rect
+                );
+            }
+
+            // Phase `long_workspace_name_yields_to_the_center_lane`.
+            {
+                for width in [800.0, 1280.0, 1600.0] {
+                    let mut bar = sample_chrome();
+                    bar.workspace_name =
+                        "Überaus ausführlicher Arbeitsbereich für lokalisierte Forschungsunterlagen"
+                            .to_string();
+                    lay_out_and_draw(&mut bar, width);
+                    assert!(
+                        bar.ws_pill_rect.x1 + 12.0 <= bar.center_rect.x0,
+                        "workspace pill {:?} must not collide with centre {:?} at {width}px",
+                        bar.ws_pill_rect,
+                        bar.center_rect,
+                    );
+                }
+            }
+
+            // Phase `narrow_topbar_releases_center_width_for_workspace_identity`.
+            {
+                let mut short = sample_chrome();
+                lay_out_and_draw(&mut short, 800.0);
+                assert_eq!(short.center_rect.width(), 220.0);
+
+                let mut long = sample_chrome();
+                long.workspace_name =
+                    "Überaus ausführlicher Arbeitsbereich für lokalisierte Forschungsunterlagen"
+                        .to_string();
+                lay_out_and_draw(&mut long, 800.0);
+                assert!(
+                    long.ws_pill_rect.width() > short.ws_pill_rect.width(),
+                    "narrow workspace identity should retain more than the position suffix: short={:?}, long={:?}",
+                    short.ws_pill_rect,
+                    long.ws_pill_rect,
+                );
+                assert!(
+                    long.ws_pill_rect.x1 + 12.0 <= long.center_rect.x0,
+                    "workspace pill {:?} must keep its breathing room from centre {:?}",
+                    long.ws_pill_rect,
+                    long.center_rect,
+                );
+            }
+
+            // Phase `narrow_large_text_keeps_workspace_and_right_clusters_separate`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                tree.desktop.workspaces[0]
+                    .collaborators
+                    .push(crate::shell::state::Collaborator::new("alice", "Alice"));
+                let mut bar = TopBarChrome::from_tree(&tree);
+                let theme = Theme::default().with_text_scale(1.5);
+                lay_out_and_draw_with_theme(&mut bar, 800.0, &theme);
+
+                assert!(bar.center_rect.width() < 360.0);
+                assert!(bar.ws_pill_rect.x1 + 12.0 <= bar.center_rect.x0);
+                assert!(bar.center_rect.x1 + 12.0 <= bar.avatar_stack_rect.x0);
+                assert!(bar.avatar_stack_rect.x1 + 8.0 <= bar.tray_pill_rect.x0);
+            }
+        }
     }
 
     fn sample_chrome() -> TopBarChrome {
@@ -5531,41 +5753,118 @@ mod tests {
     }
 
     #[test]
-    fn floating_clock_cursor_exposes_buttons_and_drag_state() {
-        let mut bar = floating_clock();
-        assert_eq!(
-            bar.cursor_shape(bar.clock_pause_rect.center()),
-            Some(winit::window::CursorIcon::Pointer)
-        );
-        let header = Point::new(
-            bar.clock_overlay_rect.x0 + 20.0,
-            bar.clock_overlay_rect.y0 + 20.0,
-        );
-        assert_eq!(
-            bar.cursor_shape(header),
-            Some(winit::window::CursorIcon::Grab)
-        );
-        assert!(bar.begin_clock_drag_at(header));
-        assert_eq!(
-            bar.cursor_shape(Point::new(900.0, 700.0)),
-            Some(winit::window::CursorIcon::Grabbing)
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn floating_clock_exposes_its_controls_and_keeps_the_corner_target() {
+        // Phase `floating_clock_cursor_exposes_buttons_and_drag_state`.
+        {
+            let mut bar = floating_clock();
+            assert_eq!(
+                bar.cursor_shape(bar.clock_pause_rect.center()),
+                Some(winit::window::CursorIcon::Pointer)
+            );
+            let header = Point::new(
+                bar.clock_overlay_rect.x0 + 20.0,
+                bar.clock_overlay_rect.y0 + 20.0,
+            );
+            assert_eq!(
+                bar.cursor_shape(header),
+                Some(winit::window::CursorIcon::Grab)
+            );
+            assert!(bar.begin_clock_drag_at(header));
+            assert_eq!(
+                bar.cursor_shape(Point::new(900.0, 700.0)),
+                Some(winit::window::CursorIcon::Grabbing)
+            );
+        }
 
-    #[test]
-    fn floating_clock_accessibility_announces_time_and_focus() {
-        let mut bar = floating_clock();
-        bar.clock_control_focus = Some(1);
-        let node = bar.clock_accessibility_node().expect("visible timer node");
-        assert_eq!(node.name.as_deref(), Some("Floating timer"));
-        assert!(
-            node.description
-                .as_deref()
-                .is_some_and(|text| text.contains("Alt"))
-        );
-        assert_eq!(node.children[0].name.as_deref(), Some("Tea"));
-        assert_eq!(node.children[0].value.as_deref(), Some("02:05"));
-        assert!(node.children[2].state.focused);
+        // Phase `floating_clock_accessibility_announces_time_and_focus`.
+        {
+            let mut bar = floating_clock();
+            bar.clock_control_focus = Some(1);
+            let node = bar.clock_accessibility_node().expect("visible timer node");
+            assert_eq!(node.name.as_deref(), Some("Floating timer"));
+            assert!(
+                node.description
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Alt"))
+            );
+            assert_eq!(node.children[0].name.as_deref(), Some("Tea"));
+            assert_eq!(node.children[0].value.as_deref(), Some("02:05"));
+            assert!(node.children[2].state.focused);
+        }
+
+        // Phase `compact_topbar_aligns_floating_controls_and_keeps_the_corner_target`.
+        {
+            let mut tree = WorkspaceTree {
+                desktop: crate::shell::state::DesktopTree {
+                    workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                    active: WorkspaceId::from(0),
+                    active_strip: HashMap::default(),
+                    active_group: HashMap::default(),
+                    collaborators: Vec::new(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            tree.desktop.active = tree.desktop.workspaces[0].id;
+
+            let mut bar = TopBarChrome::from_tree(&tree);
+            let theme = Theme::default();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+            let vp = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(800.0),
+                            height: Dimension::length(TOPBAR_HEIGHT_PX),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout_with_measure(
+                    vp,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .unwrap();
+            bar.apply_layout(&taffy, node, Point::ORIGIN);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+            let bar_bottom = bar.rect.y1;
+            assert!(
+                (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
+                "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
+            );
+            assert_eq!(TOPBAR_HEIGHT_PX, 48.0);
+            for (label, rect) in [
+                ("overview", bar.overview_btn_rect),
+                ("workspace", bar.ws_pill_rect),
+                ("center", bar.center_rect),
+                ("tray", bar.tray_pill_rect),
+            ] {
+                assert_eq!(rect.y0 - bar.rect.y0, 8.0, "{label} top inset");
+                assert_eq!(bar.rect.y1 - rect.y1, 8.0, "{label} bottom inset");
+            }
+            assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
+            assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
+            assert_eq!(bar.tray_hit_rect.x1, bar.rect.x1);
+            assert!(bar.tray_hit_rect.contains(Point::new(799.0, 1.0)));
+            assert!(!bar.tray_pill_rect.contains(Point::new(799.0, 1.0)));
+        }
     }
 
     fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
@@ -5609,257 +5908,423 @@ mod tests {
     }
 
     #[test]
-    fn persistent_topbar_controls_have_coherent_targets() {
-        let mut bar = sample_chrome();
-        lay_out_and_draw(&mut bar, 1280.0);
-        assert!(bar.overview_btn_rect.width() >= 32.0);
-        assert!(bar.overview_btn_rect.height() >= 32.0);
-        assert!(bar.up_btn_rect.height() >= 32.0);
-        assert!(bar.up_btn_rect.width() >= 32.0);
-        assert!(bar.down_btn_rect.height() >= 32.0);
-        assert!(bar.down_btn_rect.width() >= 32.0);
-        assert!(bar.ws_pill_rect.height() >= 32.0);
-        assert!(bar.tray_pill_rect.height() >= 32.0);
-        assert!(bar.center_rect.height() >= 32.0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn system_monitor_columns_labels_and_sparkline_are_distinct_and_themed() {
+        // Phase `monitor_columns_drop_pairs_from_the_inside_out_in_a_narrow_lane`.
+        // In a narrow lane the monitor's pairs drop from the inside out
+        // rather than painting over the CPU readout: RAM goes first, then
+        // TMP; whatever remains keeps `s3` clear of its neighbour.
+        {
+            let widths = MetricWidths {
+                cpu_label: 20.0,
+                cpu_value: 24.0,
+                ram_label: 22.0,
+                ram_value: 24.0,
+                tmp_label: 22.0,
+                tmp_value: 20.0,
+            };
+            let (s1, s3) = (4.0, 12.0);
+            let cpu_end = 20.0 + s1 + 24.0;
 
-    /// HIG §9.6: every pressable thing in the bar shares one height, so
-    /// the pills and buttons sit on one top edge and one bottom edge,
-    /// centred on the bar; and each dot of the centre selector owns a
-    /// 32×32 target that never overlaps its neighbour.
-    #[test]
-    fn bar_controls_share_one_height_and_centre_line() {
-        let mut bar = sample_chrome();
-        lay_out_and_draw(&mut bar, 1280.0);
-        let reference = bar.overview_btn_rect;
-        let controls = [
-            ("overview", bar.overview_btn_rect),
-            ("workspace up", bar.up_btn_rect),
-            ("workspace down", bar.down_btn_rect),
-            ("workspace pill", bar.ws_pill_rect),
-            ("centre band", bar.center_rect),
-            ("tray pill", bar.tray_pill_rect),
-        ];
-        for (name, r) in controls {
+            let wide = monitor_columns((0.0, 400.0), &widths, s1, s3);
+            let (ram_label_x, _) = wide.ram.expect("a 400 px lane holds every pair");
+            let (tmp_label_x, tmp_value_x) = wide.tmp.expect("a 400 px lane holds every pair");
             assert!(
-                (r.height() - BAR_CONTROL_PX).abs() < 0.01,
-                "{name} is {} px tall, not the shared {BAR_CONTROL_PX}",
-                r.height()
+                ram_label_x >= cpu_end + s3,
+                "RAM keeps s3 clear of the CPU value"
             );
             assert!(
-                (r.y0 - reference.y0).abs() < 0.01 && (r.y1 - reference.y1).abs() < 0.01,
-                "{name} {r:?} does not share the nav cluster's edges {reference:?}"
+                (tmp_value_x + 20.0 - 400.0).abs() < 1e-9,
+                "TMP's value ends on the lane's edge"
+            );
+            assert!(tmp_label_x > ram_label_x);
+            assert!(wide.spark.0 >= cpu_end + s3 && wide.spark.1 <= ram_label_x - s3);
+
+            // 112 px is the lane a 220 px band leaves at an 800 px viewport.
+            let compact = monitor_columns((0.0, 112.0), &widths, s1, s3);
+            assert!(compact.ram.is_none(), "RAM is the first pair to yield");
+            let (tmp_label_x, _) = compact.tmp.expect("TMP still fits a 112 px lane");
+            assert!(
+                tmp_label_x >= cpu_end + s3,
+                "TMP {tmp_label_x} keeps s3 clear of the CPU value ending at {cpu_end}"
+            );
+            assert!(compact.spark.1 <= tmp_label_x - s3);
+
+            let tiny = monitor_columns((0.0, 70.0), &widths, s1, s3);
+            assert!(
+                tiny.ram.is_none() && tiny.tmp.is_none(),
+                "nothing overlaps the CPU pair"
+            );
+            assert_eq!(tiny.cpu_label_x, 0.0);
+            assert_eq!(tiny.cpu_value_x, 20.0 + s1);
+        }
+
+        // Phase `system_monitor_metric_labels_are_distinct_and_theme_driven`.
+        // Asserts the colours differ AND move with the theme, which a
+        // hardcoded hex could never catch.
+        {
+            let chrome = sample_chrome();
+            let kinds = [MetricKind::Cpu, MetricKind::Ram, MetricKind::Tmp];
+
+            for (name, theme) in [
+                ("dark", Theme::dark()),
+                ("light", Theme::light()),
+                ("high_contrast", Theme::high_contrast()),
+            ] {
+                let c: Vec<Color> = kinds
+                    .iter()
+                    .map(|k| chrome.metric_label_color(&theme, *k))
+                    .collect();
+                for i in 0..c.len() {
+                    for j in (i + 1)..c.len() {
+                        assert_ne!(
+                            c[i].to_rgba8().to_u32(),
+                            c[j].to_rgba8().to_u32(),
+                            "{name}: {:?} and {:?} render in the same colour, collapsing the cue",
+                            kinds[i],
+                            kinds[j]
+                        );
+                    }
+                }
+                // The accent means live state, not "this is a CPU reading".
+                let accent = theme.tokens.colors.accent[5];
+                for (k, col) in kinds.iter().zip(&c) {
+                    assert_ne!(
+                        col.to_rgba8().to_u32(),
+                        accent.to_rgba8().to_u32(),
+                        "{name}: {k:?} label reuses the accent"
+                    );
+                }
+                let sem = &theme.tokens.colors.semantic;
+                assert_eq!(
+                    c[0].to_rgba8().to_u32(),
+                    sem.success.to_rgba8().to_u32(),
+                    "{name}: CPU"
+                );
+                assert_eq!(
+                    c[1].to_rgba8().to_u32(),
+                    sem.info.to_rgba8().to_u32(),
+                    "{name}: RAM"
+                );
+                assert_eq!(
+                    c[2].to_rgba8().to_u32(),
+                    sem.warning.to_rgba8().to_u32(),
+                    "{name}: TMP"
+                );
+            }
+
+            // A hard-coded palette passes every assertion above and fails this one.
+            let dark = chrome.metric_label_color(&Theme::dark(), MetricKind::Cpu);
+            let hc = chrome.metric_label_color(&Theme::high_contrast(), MetricKind::Cpu);
+            assert_ne!(
+                dark.to_rgba8().to_u32(),
+                hc.to_rgba8().to_u32(),
+                "the CPU label paints the same pixel on dark and high-contrast"
             );
         }
-        let bar_centre = f64::midpoint(bar.rect.y0, bar.rect.y1);
-        assert!(
-            (reference.center().y - bar_centre).abs() < 0.01,
-            "controls centre at {} in a bar centred on {bar_centre}",
-            reference.center().y
-        );
-        for (i, dot) in bar.center_dot_rects.iter().enumerate() {
-            assert!(
-                dot.width() >= 32.0 && dot.height() >= 32.0,
-                "dot {i} target {dot:?} is under the 32×32 pointer floor"
-            );
-            assert!(
-                dot.x0 >= bar.center_rect.x0 - 0.01 && dot.x1 <= bar.center_rect.x1 + 0.01,
-                "dot {i} target {dot:?} leaves the band {:?}",
-                bar.center_rect
-            );
-            if let Some(next) = bar.center_dot_rects.get(i.saturating_add(1)) {
+
+        // Phase `sparkline_shares_the_cpu_colour_at_a_backdrop_weight`.
+        {
+            let chrome = sample_chrome();
+            for (name, theme) in [
+                ("dark", Theme::dark()),
+                ("light", Theme::light()),
+                ("high_contrast", Theme::high_contrast()),
+            ] {
+                let cpu = chrome.metric_label_color(&theme, MetricKind::Cpu);
+                let fill = chrome.sparkline_fill(&theme, MetricKind::Cpu);
+                let rgb = |c: Color| {
+                    let p = c.to_rgba8();
+                    (p.r, p.g, p.b)
+                };
+                assert_eq!(
+                    rgb(fill),
+                    rgb(cpu),
+                    "{name}: sparkline hue drifted off the CPU label"
+                );
                 assert!(
-                    next.x0 >= dot.x1 - 0.01,
-                    "dot targets {dot:?} and {next:?} overlap"
+                    fill.components[3] < cpu.components[3],
+                    "{name}: the sparkline must sit behind the numbers, not compete with them"
+                );
+                assert_ne!(
+                    fill.to_rgba8().to_u32(),
+                    theme.tokens.colors.accent[5].to_rgba8().to_u32(),
+                    "{name}: sparkline reuses the accent"
                 );
             }
         }
     }
 
-    /// The workspace capsule pads its label on the left exactly as much
-    /// as it pads the gear on the right, and the gear sits on the pill's
-    /// centre line — so the pill reads centred on its contents.
     #[test]
-    fn workspace_pill_pads_its_label_and_gear_symmetrically() {
-        let mut bar = sample_chrome();
-        let theme = Theme::default();
-        lay_out_and_draw_with_theme(&mut bar, 1280.0, &theme);
-        let pad = f64::from(theme.tokens.spacing.s2);
-        // `draw_workspace_nav` hands the pill an x one `s3` past the
-        // down switch; the label starts there, one `s2` inside the pill,
-        // which leaves an `s1` gutter between the cluster and the capsule.
-        let text_x = bar.down_btn_rect.x1 + f64::from(theme.tokens.spacing.s3);
-        assert!(
-            (text_x - bar.ws_pill_rect.x0 - pad).abs() < 0.01,
-            "leading pad is {} not {pad}",
-            text_x - bar.ws_pill_rect.x0
-        );
-        let gutter = f64::from(theme.tokens.spacing.s1);
-        assert!(
-            (bar.ws_pill_rect.x0 - bar.down_btn_rect.x1 - gutter).abs() < 0.01,
-            "the gutter between the nav cluster and the pill is {} not {gutter}",
-            bar.ws_pill_rect.x0 - bar.down_btn_rect.x1
-        );
-        assert!(
-            (bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1 - pad).abs() < 0.01,
-            "trailing pad is {} not {pad}",
-            bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1
-        );
-        assert!(
-            (bar.ws_gear_rect.center().y - bar.ws_pill_rect.center().y).abs() < 0.01,
-            "gear {:?} is off the pill's centre line {:?}",
-            bar.ws_gear_rect,
-            bar.ws_pill_rect
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn center_lane_activity_and_dots_follow_the_chosen_carousel() {
+        // Phase `center_activity_lane_keeps_the_full_sentence_and_the_chosen_widget`.
+        {
+            // Phase `large_text_activity_stays_single_line_inside_center_content_lane`.
+            {
+                let mut bar = sample_chrome();
+                bar.center_rect = Rect::new(460.0, 7.0, 820.0, 41.0);
+                bar.activity_headline =
+                    Some("Recorded 3 workspaces: Home, Research and Design".into());
+                bar.activity_unread = 3;
+                let mut renderer = TextRenderer::new();
+                let theme = Theme::default().with_text_scale(1.5);
+                let size = theme.tokens.typography.scale.sm;
+                let max_width = bar.activity_content_width(&theme);
+                let label = bar.activity_display_label(&mut renderer, size, max_width);
+                let (_, height) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
+                let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
+                assert!(
+                    !label.contains('\n'),
+                    "activity headline must never wrap in the fixed topbar pill: {label:?}"
+                );
+                assert!(
+                    width <= max_width + 0.5,
+                    "activity headline width {width} exceeds reserved center lane {max_width}"
+                );
+                assert!(
+                    height <= TOPBAR_HEIGHT_PX - 4.0,
+                    "activity headline height {height} must fit in the 48px topbar"
+                );
+            }
 
-    /// In a narrow lane the monitor's pairs drop from the inside out
-    /// rather than painting over the CPU readout: RAM goes first, then
-    /// TMP; whatever remains keeps `s3` clear of its neighbour.
-    #[test]
-    fn monitor_columns_drop_pairs_from_the_inside_out_in_a_narrow_lane() {
-        let widths = MetricWidths {
-            cpu_label: 20.0,
-            cpu_value: 24.0,
-            ram_label: 22.0,
-            ram_value: 24.0,
-            tmp_label: 22.0,
-            tmp_value: 20.0,
-        };
-        let (s1, s3) = (4.0, 12.0);
-        let cpu_end = 20.0 + s1 + 24.0;
+            // Phase `compact_large_text_preserves_the_full_activity_sentence_and_detail_route`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+                // The 960px chrome reserves a 360px centre selector; after its dots
+                // and breathing room, this is the usable activity lane.
+                bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
+                bar.activity_headline = Some("ada · 2 permission changes".into());
+                bar.activity_unread = 4;
+                let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../sdk/ui-core/assets/fonts"),
+                    "en-US",
+                );
+                let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+                let theme = Theme::default().with_text_scale(1.3);
+                let size = theme.tokens.typography.scale.sm;
+                let max_width = bar.activity_content_width(&theme);
+                let label = bar.activity_display_label(&mut renderer, size, max_width);
+                let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
+                assert_eq!(label, "ada · 2 permission changes  ›");
+                assert!(width <= max_width + 0.5);
 
-        let wide = monitor_columns((0.0, 400.0), &widths, s1, s3);
-        let (ram_label_x, _) = wide.ram.expect("a 400 px lane holds every pair");
-        let (tmp_label_x, tmp_value_x) = wide.tmp.expect("a 400 px lane holds every pair");
-        assert!(
-            ram_label_x >= cpu_end + s3,
-            "RAM keeps s3 clear of the CPU value"
-        );
-        assert!(
-            (tmp_value_x + 20.0 - 400.0).abs() < 1e-9,
-            "TMP's value ends on the lane's edge"
-        );
-        assert!(tmp_label_x > ram_label_x);
-        assert!(wide.spark.0 >= cpu_end + s3 && wide.spark.1 <= ram_label_x - s3);
+                bar.activity_started = Some(Instant::now());
+                bar.last_cursor = Some(bar.center_rect.center());
+                let mut handled = false;
+                bar.handle_left_click(&mut handled);
+                assert!(handled);
+                assert!(
+                    crate::shell::tab_binding::active_workspace_activity_tab(
+                        &chrome.borrow().tree()
+                    )
+                    .is_some(),
+                    "the explicit chevron label points to the activity detail route"
+                );
+                assert!(!chrome.borrow().overlays.room_activity);
+            }
 
-        // 112 px is the lane a 220 px band leaves at an 800 px viewport.
-        let compact = monitor_columns((0.0, 112.0), &widths, s1, s3);
-        assert!(compact.ram.is_none(), "RAM is the first pair to yield");
-        let (tmp_label_x, _) = compact.tmp.expect("TMP still fits a 112 px lane");
-        assert!(
-            tmp_label_x >= cpu_end + s3,
-            "TMP {tmp_label_x} keeps s3 clear of the CPU value ending at {cpu_end}"
-        );
-        assert!(compact.spark.1 <= tmp_label_x - s3);
+            // Phase `center_editor_opens_by_secondary_click_and_dismisses_conventionally`.
+            {
+                let mut bar = sample_chrome();
+                lay_out_and_draw(&mut bar, 1280.0);
+                bar.last_cursor = Some(bar.center_rect.center());
+                let secondary = WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Right,
+                };
+                assert!(dispatch_topbar_event(&mut bar, &secondary));
+                assert!(bar.widget_editing);
+                lay_out_and_draw(&mut bar, 1280.0);
+                assert!(
+                    bar.test_rects()
+                        .iter()
+                        .any(|(name, rect)| name == "topbar_editor_remove_clock"
+                            && rect.area() > 0.0)
+                );
+                assert!(bar.accessibility().is_some_and(|node| {
+                    node.children.iter().any(|child| {
+                        child.action_target.as_deref() == Some(TopBarChrome::CONTROL_REMOVE_CLOCK)
+                    })
+                }));
 
-        let tiny = monitor_columns((0.0, 70.0), &widths, s1, s3);
-        assert!(
-            tiny.ram.is_none() && tiny.tmp.is_none(),
-            "nothing overlaps the CPU pair"
-        );
-        assert_eq!(tiny.cpu_label_x, 0.0);
-        assert_eq!(tiny.cpu_value_x, 20.0 + s1);
-    }
+                let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+                key_event.logical_key =
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+                key_event.state = winit::event::ElementState::Pressed;
+                let escape = WindowEvent::KeyboardInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    event: key_event,
+                    is_synthetic: false,
+                };
+                assert!(dispatch_topbar_event(&mut bar, &escape));
+                assert!(!bar.widget_editing);
 
-    /// The bar's density constants are the spacing scale under other
-    /// names; this pins them so they cannot drift off it unnoticed.
-    #[test]
-    fn bar_density_sits_on_the_spacing_scale() {
-        let tokens = Theme::default().tokens;
-        let spacing = tokens.spacing;
-        assert_eq!(BAR_CONTROL_PX, f64::from(spacing.s8));
-        assert_eq!(CENTER_DOT_PITCH_PX, f64::from(spacing.s8));
-        assert_eq!(TOPBAR_HEIGHT_PX, spacing.s12);
-        // The bar's density is the §9.6 pointer floor plus `s2` of air each
-        // side — derived from `tokens.metrics`, not restated. A bar of
-        // `metrics.bar_height` (40) would hold `bar_control_height` (28)
-        // controls, which the shell's bar deliberately does not: its
-        // controls are pointer targets. Recorded 2026-09-17 (S1 round two).
-        assert_eq!(BAR_CONTROL_PX, f64::from(tokens.metrics.min_pointer_target));
-        assert_eq!(
-            TOPBAR_HEIGHT_PX,
-            tokens.metrics.min_pointer_target + 2.0 * spacing.s2
-        );
-        assert!(
-            TOPBAR_HEIGHT_PX > tokens.metrics.bar_height,
-            "a 32 px control cannot sit in a {} px bar with any air",
-            tokens.metrics.bar_height
-        );
-    }
+                bar.last_cursor = Some(bar.center_rect.center());
+                assert!(dispatch_topbar_event(&mut bar, &secondary));
+                lay_out_and_draw(&mut bar, 1280.0);
+                bar.last_cursor = Some(Point::new(2.0, 2.0));
+                let outside = WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                };
+                assert!(dispatch_topbar_event(&mut bar, &outside));
+                assert!(!bar.widget_editing);
+            }
 
-    #[test]
-    fn large_text_activity_stays_single_line_inside_center_content_lane() {
-        let mut bar = sample_chrome();
-        bar.center_rect = Rect::new(460.0, 7.0, 820.0, 41.0);
-        bar.activity_headline = Some("Recorded 3 workspaces: Home, Research and Design".into());
-        bar.activity_unread = 3;
-        let mut renderer = TextRenderer::new();
-        let theme = Theme::default().with_text_scale(1.5);
-        let size = theme.tokens.typography.scale.sm;
-        let max_width = bar.activity_content_width(&theme);
-        let label = bar.activity_display_label(&mut renderer, size, max_width);
-        let (_, height) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
-        let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
-        assert!(
-            !label.contains('\n'),
-            "activity headline must never wrap in the fixed topbar pill: {label:?}"
-        );
-        assert!(
-            width <= max_width + 0.5,
-            "activity headline width {width} exceeds reserved center lane {max_width}"
-        );
-        assert!(
-            height <= TOPBAR_HEIGHT_PX - 4.0,
-            "activity headline height {height} must fit in the 48px topbar"
-        );
-    }
+            // Phase `new_activity_temporarily_overrides_but_does_not_replace_the_chosen_widget`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+                bar.center_widget = CenterWidget::Calendar;
 
-    #[test]
-    fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        // The 960px chrome reserves a 360px centre selector; after its dots
-        // and breathing room, this is the usable activity lane.
-        bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
-        bar.activity_headline = Some("ada · 2 permission changes".into());
-        bar.activity_unread = 4;
-        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
-            "en-US",
-        );
-        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
-        let theme = Theme::default().with_text_scale(1.3);
-        let size = theme.tokens.typography.scale.sm;
-        let max_width = bar.activity_content_width(&theme);
-        let label = bar.activity_display_label(&mut renderer, size, max_width);
-        let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
-        assert_eq!(label, "ada · 2 permission changes  ›");
-        assert!(width <= max_width + 0.5);
+                chrome.borrow_mut().publish_activity_glance(
+                    Some("Ada · Prepared launch brief".to_string()),
+                    3,
+                    42,
+                    Some(crate::shell::chrome_state::ActivityFocus {
+                        author: Some("Ada".into()),
+                        group_id: Some("issue:42".into()),
+                        entry_id: None,
+                        resource_id: None,
+                        resource_version: None,
+                    }),
+                );
+                bar.refresh_status_and_media_state();
+                assert!(bar.activity_is_visible());
+                assert_eq!(bar.center_widget(), CenterWidget::Calendar);
 
-        bar.activity_started = Some(Instant::now());
-        bar.last_cursor = Some(bar.center_rect.center());
-        let mut handled = false;
-        bar.handle_left_click(&mut handled);
-        assert!(handled);
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
-                .is_some(),
-            "the explicit chevron label points to the activity detail route"
-        );
-        assert!(!chrome.borrow().overlays.room_activity);
+                chrome.borrow_mut().publish_activity_glance(
+                    Some("Ada · Prepared launch brief".to_string()),
+                    0,
+                    42,
+                    None,
+                );
+                bar.refresh_status_and_media_state();
+                assert!(!bar.activity_is_visible());
+                assert_eq!(bar.center_widget(), CenterWidget::Calendar);
+            }
+        }
+
+        // Phase `center_dots_follow_the_configured_carousel_without_overlap`.
+        {
+            // Phase `active_center_dot_radius_is_strictly_larger_than_inactive`.
+            {
+                let chrome = sample_chrome();
+                assert!(
+                    chrome.active_dot_radius() > chrome.inactive_dot_radius(),
+                    "active dot radius {} must be strictly larger than inactive {}",
+                    chrome.active_dot_radius(),
+                    chrome.inactive_dot_radius(),
+                );
+                // Guards the specific 1.6× ratio against a silent regression.
+                assert!(
+                    (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs()
+                        < f64::EPSILON,
+                    "active dot radius should be 1.6× the base size",
+                );
+            }
+
+            // Phase `center_dots_restore_vertical_non_overlapping_layout`.
+            {
+                let bar = Rect::new(0.0, 0.0, 1600.0, f64::from(TOPBAR_HEIGHT_PX));
+                let band = Rect::new(620.0, 3.0, 980.0, 37.0);
+                for active in 0..3 {
+                    let dots = TopBarChrome::center_dot_layout(band, bar, active, 3);
+                    assert_eq!(dots[0].center.x, dots[1].center.x);
+                    assert_eq!(dots[1].center.x, dots[2].center.x);
+                    for pair in dots.windows(2) {
+                        assert!(
+                            pair[0].center.y + pair[0].radius < pair[1].center.y - pair[1].radius,
+                            "vertical dot ink must not overlap"
+                        );
+                        assert!(pair[0].slot.y1 <= pair[1].slot.y0);
+                    }
+                    for dot in dots {
+                        assert!(dot.slot.contains(dot.center));
+                        assert!(dot.center.y - dot.radius >= band.y0);
+                        assert!(dot.center.y + dot.radius <= band.y1);
+                    }
+                }
+            }
+
+            // Phase `configured_carousel_order_drives_wheel_dots_and_semantics`.
+            {
+                let mut bar = sample_chrome();
+                bar.widget_config = TopBarWidgetsConfig {
+                    widgets: vec![TopBarWidget::Calendar, TopBarWidget::Clock],
+                };
+                bar.center_widget = CenterWidget::Calendar;
+                lay_out_and_draw(&mut bar, 1280.0);
+
+                bar.cycle_center_widget(true);
+                assert_eq!(bar.center_widget, CenterWidget::Clock);
+                bar.cycle_center_widget(true);
+                assert_eq!(bar.center_widget, CenterWidget::Calendar);
+                bar.cycle_center_widget(false);
+                assert_eq!(bar.center_widget, CenterWidget::Clock);
+
+                bar.last_cursor = Some(bar.center_dot_rects[0].center());
+                let mut handled = false;
+                bar.handle_left_click(&mut handled);
+                assert!(handled);
+                assert_eq!(bar.center_widget, CenterWidget::Calendar);
+
+                let targets = bar.control_targets();
+                let calendar = targets
+                    .iter()
+                    .position(|target| *target == TopBarChrome::CONTROL_CENTER_CALENDAR)
+                    .expect("configured calendar target");
+                let clock = targets
+                    .iter()
+                    .position(|target| *target == TopBarChrome::CONTROL_CENTER_CLOCK)
+                    .expect("configured clock target");
+                assert!(calendar < clock, "semantic order follows configured order");
+                assert!(!targets.contains(&TopBarChrome::CONTROL_CENTER_MONITOR));
+                assert_eq!(
+                    bar.control_rect(TopBarChrome::CONTROL_CENTER_CALENDAR),
+                    bar.center_dot_rects[0]
+                );
+                assert_eq!(
+                    bar.control_rect(TopBarChrome::CONTROL_CENTER_CLOCK),
+                    bar.center_dot_rects[1]
+                );
+            }
+        }
     }
 
     fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
@@ -5902,54 +6367,6 @@ mod tests {
         handled
     }
 
-    #[test]
-    fn center_editor_opens_by_secondary_click_and_dismisses_conventionally() {
-        let mut bar = sample_chrome();
-        lay_out_and_draw(&mut bar, 1280.0);
-        bar.last_cursor = Some(bar.center_rect.center());
-        let secondary = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Right,
-        };
-        assert!(dispatch_topbar_event(&mut bar, &secondary));
-        assert!(bar.widget_editing);
-        lay_out_and_draw(&mut bar, 1280.0);
-        assert!(
-            bar.test_rects()
-                .iter()
-                .any(|(name, rect)| name == "topbar_editor_remove_clock" && rect.area() > 0.0)
-        );
-        assert!(bar.accessibility().is_some_and(|node| {
-            node.children.iter().any(|child| {
-                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_REMOVE_CLOCK)
-            })
-        }));
-
-        let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
-        key_event.state = winit::event::ElementState::Pressed;
-        let escape = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key_event,
-            is_synthetic: false,
-        };
-        assert!(dispatch_topbar_event(&mut bar, &escape));
-        assert!(!bar.widget_editing);
-
-        bar.last_cursor = Some(bar.center_rect.center());
-        assert!(dispatch_topbar_event(&mut bar, &secondary));
-        lay_out_and_draw(&mut bar, 1280.0);
-        bar.last_cursor = Some(Point::new(2.0, 2.0));
-        let outside = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
-        assert!(dispatch_topbar_event(&mut bar, &outside));
-        assert!(!bar.widget_editing);
-    }
-
     fn two_workspace_tree() -> WorkspaceTree {
         let first = Workspace::new(WorkspaceId::new(), "A");
         let second = Workspace::new(WorkspaceId::new(), "B");
@@ -5968,944 +6385,606 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
-        let mut bar = sample_chrome();
-        bar.collaborator_initials.push('A');
-        bar.media_indicator_rect = Rect::new(1120.0, 8.0, 1152.0, 40.0);
-        bar.set_focus(true);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn topbar_keyboard_and_accessibility_match_the_pointer() {
+        // Phase `keyboard_navigation_is_one_focus_stop_with_optional_controls`.
+        {
+            let mut bar = sample_chrome();
+            bar.collaborator_initials.push('A');
+            bar.media_indicator_rect = Rect::new(1120.0, 8.0, 1152.0, 40.0);
+            bar.set_focus(true);
 
-        assert!(bar.is_focusable());
-        assert!(bar.is_focused());
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_OVERVIEW)
-        );
+            assert!(bar.is_focusable());
+            assert!(bar.is_focused());
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_OVERVIEW)
+            );
 
-        assert!(press_named_key(
-            &mut bar,
-            winit::keyboard::NamedKey::ArrowRight
-        ));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_WORKSPACE_UP)
-        );
-        assert!(press_named_key(
-            &mut bar,
-            winit::keyboard::NamedKey::ArrowLeft
-        ));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_OVERVIEW)
-        );
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_MEDIA)
-        );
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Home));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_OVERVIEW)
-        );
+            assert!(press_named_key(
+                &mut bar,
+                winit::keyboard::NamedKey::ArrowRight
+            ));
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_WORKSPACE_UP)
+            );
+            assert!(press_named_key(
+                &mut bar,
+                winit::keyboard::NamedKey::ArrowLeft
+            ));
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_OVERVIEW)
+            );
+            assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_MEDIA)
+            );
+            assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Home));
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_OVERVIEW)
+            );
 
-        // Removing an optional target leaves the focus stop intact and End
-        // resolves against the newly published control set.
-        bar.media_indicator_rect = Rect::ZERO;
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_COLLABORATORS)
-        );
-    }
+            // Removing an optional target leaves the focus stop intact and End
+            // resolves against the newly published control set.
+            bar.media_indicator_rect = Rect::ZERO;
+            assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_COLLABORATORS)
+            );
+        }
 
-    #[test]
-    fn keyboard_activation_matches_pointer_actions_and_respects_disabled_workspaces() {
-        let tree = two_workspace_tree();
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        bar.set_focus(true);
+        // Phase `keyboard_activation_matches_pointer_actions_and_respects_disabled_workspaces`.
+        {
+            let tree = two_workspace_tree();
+            let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+            bar.set_focus(true);
 
-        bar.focused_control = Some(TopBarChrome::CONTROL_CENTER_MONITOR.to_string());
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        assert_eq!(bar.center_widget, CenterWidget::SystemMonitor);
+            bar.focused_control = Some(TopBarChrome::CONTROL_CENTER_MONITOR.to_string());
+            assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+            assert_eq!(bar.center_widget, CenterWidget::SystemMonitor);
 
-        bar.focused_control = Some(TopBarChrome::CONTROL_OVERVIEW.to_string());
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Space));
-        assert!(chrome.borrow().overlays.overview);
+            bar.focused_control = Some(TopBarChrome::CONTROL_OVERVIEW.to_string());
+            assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Space));
+            assert!(chrome.borrow().overlays.overview);
 
-        // The first workspace cannot move upward: keyboard activation must
-        // report unhandled just like a disabled pointer target.
-        bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_UP.to_string());
-        assert!(!press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let first_id = tree.desktop.workspaces.first().expect("first workspace").id;
-        assert_eq!(chrome.borrow().tree().desktop.active, first_id);
+            // The first workspace cannot move upward: keyboard activation must
+            // report unhandled just like a disabled pointer target.
+            bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_UP.to_string());
+            assert!(!press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+            let first_id = tree.desktop.workspaces.first().expect("first workspace").id;
+            assert_eq!(chrome.borrow().tree().desktop.active, first_id);
 
-        bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_DOWN.to_string());
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let second_id = tree.desktop.workspaces.get(1).expect("second workspace").id;
-        assert_eq!(chrome.borrow().tree().desktop.active, second_id);
-    }
+            bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_DOWN.to_string());
+            assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+            let second_id = tree.desktop.workspaces.get(1).expect("second workspace").id;
+            assert_eq!(chrome.borrow().tree().desktop.active, second_id);
+        }
 
-    #[test]
-    fn accessibility_children_have_stable_semantics_and_synthetic_parity() {
-        let tree = two_workspace_tree();
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        lay_out_and_draw(&mut bar, 1280.0);
-        bar.set_focus(true);
-        bar.focused_control = Some(TopBarChrome::CONTROL_CENTER_MONITOR.to_string());
+        // Phase `accessibility_children_have_stable_semantics_and_synthetic_parity`.
+        {
+            let tree = two_workspace_tree();
+            let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+            lay_out_and_draw(&mut bar, 1280.0);
+            bar.set_focus(true);
+            bar.focused_control = Some(TopBarChrome::CONTROL_CENTER_MONITOR.to_string());
 
-        let node = bar.accessibility().expect("topbar semantics");
-        assert_eq!(node.role, ui::a11y::Role::Toolbar);
-        assert_eq!(node.semantic_key.as_deref(), Some("topbar"));
-        assert_eq!(node.name.as_deref(), Some("Desktop navigation"));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
+            let node = bar.accessibility().expect("topbar semantics");
+            assert_eq!(node.role, ui::a11y::Role::Toolbar);
+            assert_eq!(node.semantic_key.as_deref(), Some("topbar"));
+            assert_eq!(node.name.as_deref(), Some("Desktop navigation"));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
 
-        for target in bar.control_targets() {
-            let child = node
+            for target in bar.control_targets() {
+                let child = node
+                    .children
+                    .iter()
+                    .find(|child| child.action_target.as_deref() == Some(target))
+                    .unwrap_or_else(|| panic!("missing semantic child {target}"));
+                let expected_name = bar.control_name(target);
+                assert_eq!(child.name.as_deref(), Some(expected_name.as_str()));
+                assert!(child.state.focusable);
+                assert!(child.bounds.is_some(), "{target} needs a hit target");
+                let bounds = child.bounds.expect("checked above").to_rect();
+                assert!(
+                    bounds.width() > 0.0 && bounds.height() > 0.0,
+                    "{target}: {bounds:?}"
+                );
+                assert_eq!(child.semantic_key.as_deref(), Some(target));
+            }
+
+            let up = node
                 .children
                 .iter()
-                .find(|child| child.action_target.as_deref() == Some(target))
-                .unwrap_or_else(|| panic!("missing semantic child {target}"));
-            let expected_name = bar.control_name(target);
-            assert_eq!(child.name.as_deref(), Some(expected_name.as_str()));
-            assert!(child.state.focusable);
-            assert!(child.bounds.is_some(), "{target} needs a hit target");
-            let bounds = child.bounds.expect("checked above").to_rect();
-            assert!(
-                bounds.width() > 0.0 && bounds.height() > 0.0,
-                "{target}: {bounds:?}"
-            );
-            assert_eq!(child.semantic_key.as_deref(), Some(target));
-        }
-
-        let up = node
-            .children
-            .iter()
-            .find(|child| {
-                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_WORKSPACE_UP)
-            })
-            .expect("workspace up semantics");
-        assert_eq!(up.role, ui::a11y::Role::Button);
-        assert!(up.state.disabled);
-        assert_eq!(up.description.as_deref(), Some("Workspace 1 of 2"));
-
-        let monitor = node
-            .children
-            .iter()
-            .find(|child| {
-                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_CENTER_MONITOR)
-            })
-            .expect("monitor semantics");
-        assert_eq!(monitor.role, ui::a11y::Role::ToggleButton);
-        assert_eq!(monitor.state.checked, Some(false));
-        assert!(monitor.state.focused);
-
-        let monitor_index = node
-            .children
-            .iter()
-            .position(|child| {
-                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_CENTER_MONITOR)
-            })
-            .expect("monitor child index");
-        assert_eq!(
-            bar.synthetic_accessibility_rect(&[monitor_index]),
-            monitor.bounds.map(ui::a11y::AccessBounds::to_rect)
-        );
-        assert!(bar.focus_synthetic_accessibility(&[monitor_index]));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_CENTER_MONITOR)
-        );
-
-        let mut doc = AutoCommit::new();
-        assert!(bar.perform_semantic_action(
-            TopBarChrome::CONTROL_CENTER_CALENDAR,
-            &ui::a11y::Action::ToggleCheck,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(bar.center_widget, CenterWidget::Calendar);
-    }
-
-    #[test]
-    fn long_workspace_name_yields_to_the_center_lane() {
-        for width in [800.0, 1280.0, 1600.0] {
-            let mut bar = sample_chrome();
-            bar.workspace_name =
-                "Überaus ausführlicher Arbeitsbereich für lokalisierte Forschungsunterlagen"
-                    .to_string();
-            lay_out_and_draw(&mut bar, width);
-            assert!(
-                bar.ws_pill_rect.x1 + 12.0 <= bar.center_rect.x0,
-                "workspace pill {:?} must not collide with centre {:?} at {width}px",
-                bar.ws_pill_rect,
-                bar.center_rect,
-            );
-        }
-    }
-
-    #[test]
-    fn narrow_topbar_releases_center_width_for_workspace_identity() {
-        let mut short = sample_chrome();
-        lay_out_and_draw(&mut short, 800.0);
-        assert_eq!(short.center_rect.width(), 220.0);
-
-        let mut long = sample_chrome();
-        long.workspace_name =
-            "Überaus ausführlicher Arbeitsbereich für lokalisierte Forschungsunterlagen"
-                .to_string();
-        lay_out_and_draw(&mut long, 800.0);
-        assert!(
-            long.ws_pill_rect.width() > short.ws_pill_rect.width(),
-            "narrow workspace identity should retain more than the position suffix: short={:?}, long={:?}",
-            short.ws_pill_rect,
-            long.ws_pill_rect,
-        );
-        assert!(
-            long.ws_pill_rect.x1 + 12.0 <= long.center_rect.x0,
-            "workspace pill {:?} must keep its breathing room from centre {:?}",
-            long.ws_pill_rect,
-            long.center_rect,
-        );
-    }
-
-    #[test]
-    fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        tree.desktop.workspaces[0]
-            .collaborators
-            .push(crate::shell::state::Collaborator::new("alice", "Alice"));
-        let mut bar = TopBarChrome::from_tree(&tree);
-        let theme = Theme::default().with_text_scale(1.5);
-        lay_out_and_draw_with_theme(&mut bar, 800.0, &theme);
-
-        assert!(bar.center_rect.width() < 360.0);
-        assert!(bar.ws_pill_rect.x1 + 12.0 <= bar.center_rect.x0);
-        assert!(bar.center_rect.x1 + 12.0 <= bar.avatar_stack_rect.x0);
-        assert!(bar.avatar_stack_rect.x1 + 8.0 <= bar.tray_pill_rect.x0);
-    }
-
-    #[test]
-    fn active_center_dot_radius_is_strictly_larger_than_inactive() {
-        let chrome = sample_chrome();
-        assert!(
-            chrome.active_dot_radius() > chrome.inactive_dot_radius(),
-            "active dot radius {} must be strictly larger than inactive {}",
-            chrome.active_dot_radius(),
-            chrome.inactive_dot_radius(),
-        );
-        // Guards the specific 1.6× ratio against a silent regression.
-        assert!(
-            (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
-            "active dot radius should be 1.6× the base size",
-        );
-    }
-
-    #[test]
-    fn center_dots_restore_vertical_non_overlapping_layout() {
-        let bar = Rect::new(0.0, 0.0, 1600.0, f64::from(TOPBAR_HEIGHT_PX));
-        let band = Rect::new(620.0, 3.0, 980.0, 37.0);
-        for active in 0..3 {
-            let dots = TopBarChrome::center_dot_layout(band, bar, active, 3);
-            assert_eq!(dots[0].center.x, dots[1].center.x);
-            assert_eq!(dots[1].center.x, dots[2].center.x);
-            for pair in dots.windows(2) {
-                assert!(
-                    pair[0].center.y + pair[0].radius < pair[1].center.y - pair[1].radius,
-                    "vertical dot ink must not overlap"
-                );
-                assert!(pair[0].slot.y1 <= pair[1].slot.y0);
-            }
-            for dot in dots {
-                assert!(dot.slot.contains(dot.center));
-                assert!(dot.center.y - dot.radius >= band.y0);
-                assert!(dot.center.y + dot.radius <= band.y1);
-            }
-        }
-    }
-
-    #[test]
-    fn configured_carousel_order_drives_wheel_dots_and_semantics() {
-        let mut bar = sample_chrome();
-        bar.widget_config = TopBarWidgetsConfig {
-            widgets: vec![TopBarWidget::Calendar, TopBarWidget::Clock],
-        };
-        bar.center_widget = CenterWidget::Calendar;
-        lay_out_and_draw(&mut bar, 1280.0);
-
-        bar.cycle_center_widget(true);
-        assert_eq!(bar.center_widget, CenterWidget::Clock);
-        bar.cycle_center_widget(true);
-        assert_eq!(bar.center_widget, CenterWidget::Calendar);
-        bar.cycle_center_widget(false);
-        assert_eq!(bar.center_widget, CenterWidget::Clock);
-
-        bar.last_cursor = Some(bar.center_dot_rects[0].center());
-        let mut handled = false;
-        bar.handle_left_click(&mut handled);
-        assert!(handled);
-        assert_eq!(bar.center_widget, CenterWidget::Calendar);
-
-        let targets = bar.control_targets();
-        let calendar = targets
-            .iter()
-            .position(|target| *target == TopBarChrome::CONTROL_CENTER_CALENDAR)
-            .expect("configured calendar target");
-        let clock = targets
-            .iter()
-            .position(|target| *target == TopBarChrome::CONTROL_CENTER_CLOCK)
-            .expect("configured clock target");
-        assert!(calendar < clock, "semantic order follows configured order");
-        assert!(!targets.contains(&TopBarChrome::CONTROL_CENTER_MONITOR));
-        assert_eq!(
-            bar.control_rect(TopBarChrome::CONTROL_CENTER_CALENDAR),
-            bar.center_dot_rects[0]
-        );
-        assert_eq!(
-            bar.control_rect(TopBarChrome::CONTROL_CENTER_CLOCK),
-            bar.center_dot_rects[1]
-        );
-    }
-
-    #[test]
-    fn new_activity_temporarily_overrides_but_does_not_replace_the_chosen_widget() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        bar.center_widget = CenterWidget::Calendar;
-
-        chrome.borrow_mut().publish_activity_glance(
-            Some("Ada · Prepared launch brief".to_string()),
-            3,
-            42,
-            Some(crate::shell::chrome_state::ActivityFocus {
-                author: Some("Ada".into()),
-                group_id: Some("issue:42".into()),
-                entry_id: None,
-                resource_id: None,
-                resource_version: None,
-            }),
-        );
-        bar.refresh_status_and_media_state();
-        assert!(bar.activity_is_visible());
-        assert_eq!(bar.center_widget(), CenterWidget::Calendar);
-
-        chrome.borrow_mut().publish_activity_glance(
-            Some("Ada · Prepared launch brief".to_string()),
-            0,
-            42,
-            None,
-        );
-        bar.refresh_status_and_media_state();
-        assert!(!bar.activity_is_visible());
-        assert_eq!(bar.center_widget(), CenterWidget::Calendar);
-    }
-
-    #[test]
-    fn clicking_a_person_opens_people_not_history() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
-        bar.avatar_stack_rect = chip;
-        bar.last_cursor = Some(chip.center());
-
-        let mut handled = false;
-        bar.handle_left_click(&mut handled);
-        assert!(handled);
-        assert!(chrome.borrow().overlays.collaborators);
-        assert!(
-            !chrome.borrow().overlays.room_activity,
-            "a presence face represents People; activity has its own explicit route"
-        );
-    }
-
-    #[test]
-    fn live_share_is_persistent_visible_named_and_accessible() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        tree.desktop.workspaces[0]
-            .collaborators
-            .push(crate::shell::state::Collaborator::new("ada", "Ada").with_session(7));
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        chrome.borrow_mut().set_active_exposures(vec![
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 7,
-                surface: 42,
-                can_control: true,
-            },
-        ]);
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        lay_out_and_draw(&mut bar, 1600.0);
-
-        assert!(
-            !bar.sharing_indicator_rect.is_zero_area(),
-            "an active exposure must paint trusted chrome"
-        );
-        let node = bar.accessibility().expect("topbar semantics");
-        assert!(node.children.iter().any(|child| {
-            child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
-                && child.name.as_deref().is_some_and(|name| {
-                    name.contains("visible to Ada (person): can control surface 42")
+                .find(|child| {
+                    child.action_target.as_deref() == Some(TopBarChrome::CONTROL_WORKSPACE_UP)
                 })
-        }));
-    }
+                .expect("workspace up semantics");
+            assert_eq!(up.role, ui::a11y::Role::Button);
+            assert!(up.state.disabled);
+            assert_eq!(up.description.as_deref(), Some("Workspace 1 of 2"));
 
-    #[test]
-    fn disclosure_attributes_each_surface_to_its_actual_viewer() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        tree.desktop.workspaces[0].collaborators.extend([
-            crate::shell::state::Collaborator::new("ada", "Ada").with_session(7),
-            crate::shell::state::Collaborator::new("lin", "Lin").with_session(9),
-        ]);
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        chrome.borrow_mut().set_active_exposures(vec![
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 7,
-                surface: 42,
-                can_control: false,
-            },
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 9,
-                surface: 43,
-                can_control: true,
-            },
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 7,
-                surface: 44,
-                can_control: true,
-            },
-        ]);
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        let disclosure = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
-        assert!(
-            disclosure.contains("Ada (person): can control surface 44; view only surface 42"),
-            "{disclosure}"
-        );
-        assert!(
-            disclosure.contains("Lin (person): can control surface 43"),
-            "{disclosure}"
-        );
-        assert!(!disclosure.contains("Ada (person): can control surface 43"));
-        assert!(!disclosure.contains("Lin (person): can control surface 42"));
-    }
-
-    #[test]
-    fn agent_viewer_is_never_described_as_a_person() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        let workspace = &mut tree.desktop.workspaces[0];
-        workspace.owner = Some("owner".to_string());
-        let room = workspace.id.raw().to_string();
-        workspace
-            .grant_as(
-                &"owner".to_string(),
-                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-            )
-            .expect("owner admits agent");
-        workspace.collaborators.push(
-            crate::shell::state::Collaborator::new("scribe", "Release Notes Agent").with_session(9),
-        );
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        chrome.borrow_mut().set_active_exposures(vec![
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 9,
-                surface: 42,
-                can_control: false,
-            },
-        ]);
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-
-        let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
-        assert!(
-            name.contains("Release Notes Agent (agent): view only surface 42"),
-            "{name}"
-        );
-        assert!(!name.contains("Release Notes Agent (person"), "{name}");
-        assert_eq!(
-            bar.sharing_label().as_deref(),
-            Some("AGENT VIEWING · Release Notes Agent"),
-            "critical privacy state must precede the elidable display name"
-        );
-    }
-
-    #[test]
-    fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
-        let mut tree = two_workspace_tree();
-        let shared = &mut tree.desktop.workspaces[1];
-        shared.name = "Private".into();
-        shared.owner = Some("owner".into());
-        let room = shared.id.raw().to_string();
-        shared
-            .grant_as(
-                &"owner".to_string(),
-                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-            )
-            .unwrap();
-        shared
-            .collaborators
-            .push(crate::shell::state::Collaborator::new("scribe", "scribe").with_session(9));
-        let mut strip = Strip::new(crate::shell::state::StripId::new(), "Main");
-        let tab_id = crate::shell::state::next_id();
-        strip.window_groups.push(WindowGroup {
-            id: crate::shell::state::next_id(),
-            tabs: vec![Tab {
-                id: tab_id,
-                title: "Draft".into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.editor".into(),
-                    surface_id: 42,
-                },
-            }],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-        });
-        shared.strips.push(strip);
-
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
-        chrome.borrow_mut().set_active_exposures(vec![
-            crate::shell::chrome_state::ActiveExposure {
-                peer: 9,
-                surface: 42,
-                can_control: true,
-            },
-        ]);
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
-        assert!(
-            name.contains("scribe (agent): can control Private › Draft"),
-            "{name}"
-        );
-        assert!(!name.contains("unidentified session"), "{name}");
-    }
-
-    /// Asserts the colours differ AND move with the theme, which a
-    /// hardcoded hex could never catch.
-    #[test]
-    fn system_monitor_metric_labels_are_distinct_and_theme_driven() {
-        let chrome = sample_chrome();
-        let kinds = [MetricKind::Cpu, MetricKind::Ram, MetricKind::Tmp];
-
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high_contrast", Theme::high_contrast()),
-        ] {
-            let c: Vec<Color> = kinds
+            let monitor = node
+                .children
                 .iter()
-                .map(|k| chrome.metric_label_color(&theme, *k))
-                .collect();
-            for i in 0..c.len() {
-                for j in (i + 1)..c.len() {
-                    assert_ne!(
-                        c[i].to_rgba8().to_u32(),
-                        c[j].to_rgba8().to_u32(),
-                        "{name}: {:?} and {:?} render in the same colour, collapsing the cue",
-                        kinds[i],
-                        kinds[j]
-                    );
-                }
+                .find(|child| {
+                    child.action_target.as_deref() == Some(TopBarChrome::CONTROL_CENTER_MONITOR)
+                })
+                .expect("monitor semantics");
+            assert_eq!(monitor.role, ui::a11y::Role::ToggleButton);
+            assert_eq!(monitor.state.checked, Some(false));
+            assert!(monitor.state.focused);
+
+            let monitor_index = node
+                .children
+                .iter()
+                .position(|child| {
+                    child.action_target.as_deref() == Some(TopBarChrome::CONTROL_CENTER_MONITOR)
+                })
+                .expect("monitor child index");
+            assert_eq!(
+                bar.synthetic_accessibility_rect(&[monitor_index]),
+                monitor.bounds.map(ui::a11y::AccessBounds::to_rect)
+            );
+            assert!(bar.focus_synthetic_accessibility(&[monitor_index]));
+            assert_eq!(
+                bar.focused_control.as_deref(),
+                Some(TopBarChrome::CONTROL_CENTER_MONITOR)
+            );
+
+            let mut doc = AutoCommit::new();
+            assert!(bar.perform_semantic_action(
+                TopBarChrome::CONTROL_CENTER_CALENDAR,
+                &ui::a11y::Action::ToggleCheck,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(bar.center_widget, CenterWidget::Calendar);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn people_avatars_and_live_share_disclosure_name_the_actual_viewers() {
+        // Phase `live_share_disclosure_names_each_actual_viewer`.
+        {
+            // Phase `live_share_is_persistent_visible_named_and_accessible`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                tree.desktop.workspaces[0]
+                    .collaborators
+                    .push(crate::shell::state::Collaborator::new("ada", "Ada").with_session(7));
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                chrome.borrow_mut().set_active_exposures(vec![
+                    crate::shell::chrome_state::ActiveExposure {
+                        peer: 7,
+                        surface: 42,
+                        can_control: true,
+                    },
+                ]);
+                let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+                lay_out_and_draw(&mut bar, 1600.0);
+
+                assert!(
+                    !bar.sharing_indicator_rect.is_zero_area(),
+                    "an active exposure must paint trusted chrome"
+                );
+                let node = bar.accessibility().expect("topbar semantics");
+                assert!(node.children.iter().any(|child| {
+                    child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
+                        && child.name.as_deref().is_some_and(|name| {
+                            name.contains("visible to Ada (person): can control surface 42")
+                        })
+                }));
             }
-            // The accent means live state, not "this is a CPU reading".
-            let accent = theme.tokens.colors.accent[5];
-            for (k, col) in kinds.iter().zip(&c) {
-                assert_ne!(
-                    col.to_rgba8().to_u32(),
-                    accent.to_rgba8().to_u32(),
-                    "{name}: {k:?} label reuses the accent"
+
+            // Phase `disclosure_attributes_each_surface_to_its_actual_viewer`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                tree.desktop.workspaces[0].collaborators.extend([
+                    crate::shell::state::Collaborator::new("ada", "Ada").with_session(7),
+                    crate::shell::state::Collaborator::new("lin", "Lin").with_session(9),
+                ]);
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                chrome.borrow_mut().set_active_exposures(vec![
+                    crate::shell::chrome_state::ActiveExposure {
+                        peer: 7,
+                        surface: 42,
+                        can_control: false,
+                    },
+                    crate::shell::chrome_state::ActiveExposure {
+                        peer: 9,
+                        surface: 43,
+                        can_control: true,
+                    },
+                    crate::shell::chrome_state::ActiveExposure {
+                        peer: 7,
+                        surface: 44,
+                        can_control: true,
+                    },
+                ]);
+                let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+                let disclosure = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+                assert!(
+                    disclosure
+                        .contains("Ada (person): can control surface 44; view only surface 42"),
+                    "{disclosure}"
+                );
+                assert!(
+                    disclosure.contains("Lin (person): can control surface 43"),
+                    "{disclosure}"
+                );
+                assert!(!disclosure.contains("Ada (person): can control surface 43"));
+                assert!(!disclosure.contains("Lin (person): can control surface 42"));
+            }
+
+            // Phase `agent_viewer_is_never_described_as_a_person`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                let workspace = &mut tree.desktop.workspaces[0];
+                workspace.owner = Some("owner".to_string());
+                let room = workspace.id.raw().to_string();
+                workspace
+                    .grant_as(
+                        &"owner".to_string(),
+                        CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+                    )
+                    .expect("owner admits agent");
+                workspace.collaborators.push(
+                    crate::shell::state::Collaborator::new("scribe", "Release Notes Agent")
+                        .with_session(9),
+                );
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                chrome.borrow_mut().set_active_exposures(vec![
+                    crate::shell::chrome_state::ActiveExposure {
+                        peer: 9,
+                        surface: 42,
+                        can_control: false,
+                    },
+                ]);
+                let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+
+                let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+                assert!(
+                    name.contains("Release Notes Agent (agent): view only surface 42"),
+                    "{name}"
+                );
+                assert!(!name.contains("Release Notes Agent (person"), "{name}");
+                assert_eq!(
+                    bar.sharing_label().as_deref(),
+                    Some("AGENT VIEWING · Release Notes Agent"),
+                    "critical privacy state must precede the elidable display name"
                 );
             }
-            let sem = &theme.tokens.colors.semantic;
-            assert_eq!(
-                c[0].to_rgba8().to_u32(),
-                sem.success.to_rgba8().to_u32(),
-                "{name}: CPU"
-            );
-            assert_eq!(
-                c[1].to_rgba8().to_u32(),
-                sem.info.to_rgba8().to_u32(),
-                "{name}: RAM"
-            );
-            assert_eq!(
-                c[2].to_rgba8().to_u32(),
-                sem.warning.to_rgba8().to_u32(),
-                "{name}: TMP"
-            );
+
+            // Phase `disclosure_keeps_identity_and_target_when_user_switches_workspaces`.
+            {
+                let mut tree = two_workspace_tree();
+                let shared = &mut tree.desktop.workspaces[1];
+                shared.name = "Private".into();
+                shared.owner = Some("owner".into());
+                let room = shared.id.raw().to_string();
+                shared
+                    .grant_as(
+                        &"owner".to_string(),
+                        CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+                    )
+                    .unwrap();
+                shared.collaborators.push(
+                    crate::shell::state::Collaborator::new("scribe", "scribe").with_session(9),
+                );
+                let mut strip = Strip::new(crate::shell::state::StripId::new(), "Main");
+                let tab_id = crate::shell::state::next_id();
+                strip.window_groups.push(WindowGroup {
+                    id: crate::shell::state::next_id(),
+                    tabs: vec![Tab {
+                        id: tab_id,
+                        title: "Draft".into(),
+                        tile: TileContent::Foreign {
+                            app_id: "so.tilo.editor".into(),
+                            surface_id: 42,
+                        },
+                    }],
+                    active_tab: tab_id,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+                shared.strips.push(strip);
+
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                chrome.borrow_mut().set_active_exposures(vec![
+                    crate::shell::chrome_state::ActiveExposure {
+                        peer: 9,
+                        surface: 42,
+                        can_control: true,
+                    },
+                ]);
+                let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+                let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
+                assert!(
+                    name.contains("scribe (agent): can control Private › Draft"),
+                    "{name}"
+                );
+                assert!(!name.contains("unidentified session"), "{name}");
+            }
         }
 
-        // A hard-coded palette passes every assertion above and fails this one.
-        let dark = chrome.metric_label_color(&Theme::dark(), MetricKind::Cpu);
-        let hc = chrome.metric_label_color(&Theme::high_contrast(), MetricKind::Cpu);
-        assert_ne!(
-            dark.to_rgba8().to_u32(),
-            hc.to_rgba8().to_u32(),
-            "the CPU label paints the same pixel on dark and high-contrast"
-        );
-    }
+        // Phase `people_avatars_and_the_invite_affordance_follow_the_roster`.
+        {
+            // Phase `clicking_a_person_opens_people_not_history`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+                let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+                let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
+                bar.avatar_stack_rect = chip;
+                bar.last_cursor = Some(chip.center());
 
-    #[test]
-    fn sparkline_shares_the_cpu_colour_at_a_backdrop_weight() {
-        let chrome = sample_chrome();
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high_contrast", Theme::high_contrast()),
-        ] {
-            let cpu = chrome.metric_label_color(&theme, MetricKind::Cpu);
-            let fill = chrome.sparkline_fill(&theme, MetricKind::Cpu);
-            let rgb = |c: Color| {
-                let p = c.to_rgba8();
-                (p.r, p.g, p.b)
-            };
-            assert_eq!(
-                rgb(fill),
-                rgb(cpu),
-                "{name}: sparkline hue drifted off the CPU label"
-            );
-            assert!(
-                fill.components[3] < cpu.components[3],
-                "{name}: the sparkline must sit behind the numbers, not compete with them"
-            );
-            assert_ne!(
-                fill.to_rgba8().to_u32(),
-                theme.tokens.colors.accent[5].to_rgba8().to_u32(),
-                "{name}: sparkline reuses the accent"
-            );
+                let mut handled = false;
+                bar.handle_left_click(&mut handled);
+                assert!(handled);
+                assert!(chrome.borrow().overlays.collaborators);
+                assert!(
+                    !chrome.borrow().overlays.room_activity,
+                    "a presence face represents People; activity has its own explicit route"
+                );
+            }
+
+            // Phase `avatar_stack_has_breathing_room_to_tray_pill`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+                tree.desktop.workspaces[0]
+                    .collaborators
+                    .push(crate::shell::state::Collaborator::new("alice", "Alice"));
+
+                let mut bar = TopBarChrome::from_tree(&tree);
+                let theme = Theme::default();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+                let vp = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(1600.0),
+                                height: Dimension::length(TOPBAR_HEIGHT_PX),
+                            },
+                            ..Default::default()
+                        },
+                        &[node],
+                    )
+                    .unwrap();
+                taffy
+                    .compute_layout_with_measure(
+                        vp,
+                        Size {
+                            width: taffy::AvailableSpace::Definite(1600.0),
+                            height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                        },
+                        |_, _, _, _, _| taffy::Size::ZERO,
+                    )
+                    .unwrap();
+                bar.apply_layout(&taffy, node, Point::ORIGIN);
+                let mut scene = Scene::new();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+                let avatar = bar.avatar_stack_rect;
+                let tray = bar.tray_pill_rect();
+                assert!(
+                    avatar.width() > 0.0,
+                    "test seeded one collaborator but avatar_stack_rect is empty",
+                );
+                let gap = tray.x0 - avatar.x1;
+                assert!(
+                    gap >= 8.0,
+                    "avatar→tray gap must be ≥ 8 px (got {gap:.2}); avatar.x1={}, tray.x0={}",
+                    avatar.x1,
+                    tray.x0,
+                );
+            }
+
+            // Phase `empty_roster_restores_the_clickable_invite_affordance`.
+            {
+                let mut tree = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                tree.desktop.active = tree.desktop.workspaces[0].id;
+
+                let mut bar = TopBarChrome::from_tree(&tree);
+                let chrome = crate::shell::chrome_state::ChromeState::new(tree);
+                bar = bar.with_chrome(chrome.clone());
+
+                let theme = Theme::default();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+                let vp = taffy
+                    .new_with_children(
+                        Style {
+                            size: Size {
+                                width: Dimension::length(1600.0),
+                                height: Dimension::length(40.0),
+                            },
+                            ..Default::default()
+                        },
+                        &[node],
+                    )
+                    .unwrap();
+                taffy
+                    .compute_layout_with_measure(
+                        vp,
+                        Size {
+                            width: taffy::AvailableSpace::Definite(1600.0),
+                            height: taffy::AvailableSpace::Definite(40.0),
+                        },
+                        |_, _, _, _, _| taffy::Size::ZERO,
+                    )
+                    .unwrap();
+                bar.apply_layout(&taffy, node, Point::ORIGIN);
+                let mut scene = Scene::new();
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+                assert!(
+                    bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
+                    "this test is about the empty case and the roster is not empty",
+                );
+                assert!(
+                    bar.avatar_stack_rect.area() > 0.0,
+                    "an empty room still needs a People entry point for the first invite",
+                );
+                assert!(!chrome.borrow().overlays.collaborators);
+
+                bar.last_cursor = Some(bar.avatar_stack_rect.center());
+                let mut handled = false;
+                bar.handle_left_click(&mut handled);
+                assert!(handled);
+                assert!(chrome.borrow().overlays.collaborators);
+            }
+
+            // Phase `a_present_collaborator_in_this_workspace_gets_an_avatar`.
+            // Both states asserted together, since a stack that's empty (or
+            // full) in both cases would pass only half.
+            {
+                let empty = WorkspaceTree {
+                    desktop: crate::shell::state::DesktopTree {
+                        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+                        active: WorkspaceId::from(0),
+                        active_strip: HashMap::default(),
+                        active_group: HashMap::default(),
+                        collaborators: Vec::new(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let mut empty = empty;
+                empty.desktop.active = empty.desktop.workspaces[0].id;
+                let bar = TopBarChrome::from_tree(&empty);
+                assert!(
+                    bar.collaborator_initials().is_empty(),
+                    "a workspace nobody else is in has nobody to show",
+                );
+
+                let mut elsewhere = empty.clone();
+                elsewhere.desktop.collaborators =
+                    vec![crate::shell::state::Collaborator::new("alice", "Alice")];
+                let bar = TopBarChrome::from_tree(&elsewhere);
+                assert!(
+                    bar.collaborator_initials().is_empty(),
+                    "session-wide presence must not leak somebody from another workspace into this bar",
+                );
+
+                let mut joined = empty.clone();
+                joined.desktop.workspaces[0].collaborators =
+                    vec![crate::shell::state::Collaborator::new(
+                        "peer@11895642303397647149",
+                        "bob",
+                    )];
+                let bar = TopBarChrome::from_tree(&joined);
+                assert_eq!(
+                    bar.collaborator_initials(),
+                    &['X'],
+                    "the bar must show somebody present in this workspace",
+                );
+                assert_eq!(
+                    bar.collaborator_overflow(),
+                    0,
+                    "one peer is not an overflow",
+                );
+
+                // Invited but not redeemed: an avatar here would falsely claim
+                // he's in the workspace.
+                let mut asked = empty;
+                asked.desktop.workspaces[0].collaborators = vec![
+                    crate::shell::state::Collaborator::new("peer@11895642303397647149", "bob")
+                        .as_invited(),
+                ];
+                let bar = TopBarChrome::from_tree(&asked);
+                assert!(
+                    bar.collaborator_initials().is_empty(),
+                    "somebody invited and not yet arrived is not an avatar in the \
+                     cluster: {:?}",
+                    bar.collaborator_initials(),
+                );
+                assert_eq!(
+                    bar.collaborator_overflow(),
+                    0,
+                    "and does not show up in the +N chip either",
+                );
+            }
         }
-    }
-
-    #[test]
-    fn avatar_stack_has_breathing_room_to_tray_pill() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-        tree.desktop.workspaces[0]
-            .collaborators
-            .push(crate::shell::state::Collaborator::new("alice", "Alice"));
-
-        let mut bar = TopBarChrome::from_tree(&tree);
-        let theme = Theme::default();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-        let vp = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(TOPBAR_HEIGHT_PX),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        taffy
-            .compute_layout_with_measure(
-                vp,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1600.0),
-                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
-                },
-                |_, _, _, _, _| taffy::Size::ZERO,
-            )
-            .unwrap();
-        bar.apply_layout(&taffy, node, Point::ORIGIN);
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let avatar = bar.avatar_stack_rect;
-        let tray = bar.tray_pill_rect();
-        assert!(
-            avatar.width() > 0.0,
-            "test seeded one collaborator but avatar_stack_rect is empty",
-        );
-        let gap = tray.x0 - avatar.x1;
-        assert!(
-            gap >= 8.0,
-            "avatar→tray gap must be ≥ 8 px (got {gap:.2}); avatar.x1={}, tray.x0={}",
-            avatar.x1,
-            tray.x0,
-        );
-    }
-
-    #[test]
-    fn empty_roster_restores_the_clickable_invite_affordance() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-
-        let mut bar = TopBarChrome::from_tree(&tree);
-        let chrome = crate::shell::chrome_state::ChromeState::new(tree);
-        bar = bar.with_chrome(chrome.clone());
-
-        let theme = Theme::default();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-        let vp = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(40.0),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        taffy
-            .compute_layout_with_measure(
-                vp,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1600.0),
-                    height: taffy::AvailableSpace::Definite(40.0),
-                },
-                |_, _, _, _, _| taffy::Size::ZERO,
-            )
-            .unwrap();
-        bar.apply_layout(&taffy, node, Point::ORIGIN);
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        assert!(
-            bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
-            "this test is about the empty case and the roster is not empty",
-        );
-        assert!(
-            bar.avatar_stack_rect.area() > 0.0,
-            "an empty room still needs a People entry point for the first invite",
-        );
-        assert!(!chrome.borrow().overlays.collaborators);
-
-        bar.last_cursor = Some(bar.avatar_stack_rect.center());
-        let mut handled = false;
-        bar.handle_left_click(&mut handled);
-        assert!(handled);
-        assert!(chrome.borrow().overlays.collaborators);
-    }
-
-    #[test]
-    fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
-        let mut tree = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        tree.desktop.active = tree.desktop.workspaces[0].id;
-
-        let mut bar = TopBarChrome::from_tree(&tree);
-        let theme = Theme::default();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-        let vp = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(800.0),
-                        height: Dimension::length(TOPBAR_HEIGHT_PX),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        taffy
-            .compute_layout_with_measure(
-                vp,
-                Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
-                },
-                |_, _, _, _, _| taffy::Size::ZERO,
-            )
-            .unwrap();
-        bar.apply_layout(&taffy, node, Point::ORIGIN);
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let bar_bottom = bar.rect.y1;
-        assert!(
-            (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
-            "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
-        );
-        assert_eq!(TOPBAR_HEIGHT_PX, 48.0);
-        for (label, rect) in [
-            ("overview", bar.overview_btn_rect),
-            ("workspace", bar.ws_pill_rect),
-            ("center", bar.center_rect),
-            ("tray", bar.tray_pill_rect),
-        ] {
-            assert_eq!(rect.y0 - bar.rect.y0, 8.0, "{label} top inset");
-            assert_eq!(bar.rect.y1 - rect.y1, 8.0, "{label} bottom inset");
-        }
-        assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
-        assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
-        assert_eq!(bar.tray_hit_rect.x1, bar.rect.x1);
-        assert!(bar.tray_hit_rect.contains(Point::new(799.0, 1.0)));
-        assert!(!bar.tray_pill_rect.contains(Point::new(799.0, 1.0)));
-    }
-
-    /// Both states asserted together, since a stack that's empty (or
-    /// full) in both cases would pass only half.
-    #[test]
-    fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
-        let empty = WorkspaceTree {
-            desktop: crate::shell::state::DesktopTree {
-                workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: Vec::new(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut empty = empty;
-        empty.desktop.active = empty.desktop.workspaces[0].id;
-        let bar = TopBarChrome::from_tree(&empty);
-        assert!(
-            bar.collaborator_initials().is_empty(),
-            "a workspace nobody else is in has nobody to show",
-        );
-
-        let mut elsewhere = empty.clone();
-        elsewhere.desktop.collaborators =
-            vec![crate::shell::state::Collaborator::new("alice", "Alice")];
-        let bar = TopBarChrome::from_tree(&elsewhere);
-        assert!(
-            bar.collaborator_initials().is_empty(),
-            "session-wide presence must not leak somebody from another workspace into this bar",
-        );
-
-        let mut joined = empty.clone();
-        joined.desktop.workspaces[0].collaborators = vec![crate::shell::state::Collaborator::new(
-            "peer@11895642303397647149",
-            "bob",
-        )];
-        let bar = TopBarChrome::from_tree(&joined);
-        assert_eq!(
-            bar.collaborator_initials(),
-            &['X'],
-            "the bar must show somebody present in this workspace",
-        );
-        assert_eq!(
-            bar.collaborator_overflow(),
-            0,
-            "one peer is not an overflow",
-        );
-
-        // Invited but not redeemed: an avatar here would falsely claim
-        // he's in the workspace.
-        let mut asked = empty;
-        asked.desktop.workspaces[0].collaborators = vec![
-            crate::shell::state::Collaborator::new("peer@11895642303397647149", "bob")
-                .as_invited(),
-        ];
-        let bar = TopBarChrome::from_tree(&asked);
-        assert!(
-            bar.collaborator_initials().is_empty(),
-            "somebody invited and not yet arrived is not an avatar in the \
-             cluster: {:?}",
-            bar.collaborator_initials(),
-        );
-        assert_eq!(
-            bar.collaborator_overflow(),
-            0,
-            "and does not show up in the +N chip either",
-        );
     }
 }

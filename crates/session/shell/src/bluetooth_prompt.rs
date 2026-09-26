@@ -332,7 +332,7 @@ impl Widget for PairingPromptView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "mirrors the Widget event inputs")]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -418,124 +418,122 @@ mod tests {
     }
 
     #[test]
-    fn the_headline_names_the_device() {
-        let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        assert!(
-            v.title().contains("Studio Headphones"),
-            "a prompt the user cannot check is not a prompt: {}",
-            v.title()
-        );
-    }
-
-    #[test]
-    fn accepting_a_comparison_answers_accept() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Accept));
-    }
-
-    #[test]
-    fn declining_answers_reject() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_REJECT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Reject));
-    }
-
-    /// Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
-    #[test]
-    fn reject_wins_over_a_simultaneous_accept() {
-        let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
-        let mut doc = AutoCommit::new();
-        press(&mut doc, KEY_ACCEPT);
-        press(&mut doc, KEY_REJECT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Reject));
-    }
-
-    #[test]
-    fn a_typed_passkey_is_parsed_and_returned() {
-        let mut v = view(PairingPrompt::RequestPasskey);
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(
-            &automerge::ROOT,
-            KEY_ENTRY,
-            ScalarValue::Str("654321".into()),
-        );
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
-    }
-
-    /// A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
-    #[test]
-    fn an_unparseable_passkey_refuses_rather_than_sending_zero() {
-        for entry in ["", "   ", "abcdef"] {
-            let mut v = view(PairingPrompt::RequestPasskey);
-            let mut doc = AutoCommit::new();
-            let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
-            press(&mut doc, KEY_ACCEPT);
-            v.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                v.take_answer(),
-                Some(PairingReply::Reject),
-                "entry {entry:?}"
+    fn every_prompt_kind_builds_a_layout_with_honest_copy() {
+        // Phase `the_headline_names_the_device`.
+        {
+            let v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            assert!(
+                v.title().contains("Studio Headphones"),
+                "a prompt the user cannot check is not a prompt: {}",
+                v.title()
             );
+        }
+        // Phase `six_digits_are_split_for_comparison`.
+        {
+            assert_eq!(spaced("424242"), "424 242");
+            assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
+        }
+        // Phase `the_just_works_prompt_admits_it_cannot_be_verified`.
+        // The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
+        {
+            let v = view(PairingPrompt::ConfirmPairing);
+            assert!(
+                v.explanation().contains("nothing to check"),
+                "{}",
+                v.explanation()
+            );
+        }
+        // Phase `every_prompt_builds_a_layout`.
+        {
+            let prompts = [
+                PairingPrompt::ConfirmPasskey { passkey: 424_242 },
+                PairingPrompt::DisplayPasskey {
+                    passkey: 1,
+                    entered: 3,
+                },
+                PairingPrompt::DisplayPinCode { pin: "0000".into() },
+                PairingPrompt::RequestPasskey,
+                PairingPrompt::RequestPinCode,
+                PairingPrompt::ConfirmPairing,
+                PairingPrompt::AuthorizeService {
+                    uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
+                },
+            ];
+            for p in prompts {
+                let mut v = view(p);
+                let theme = Theme::dark();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
+            }
         }
     }
 
     #[test]
-    fn a_typed_pin_is_returned_verbatim() {
-        let mut v = view(PairingPrompt::RequestPinCode);
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("0000".into()));
-        press(&mut doc, KEY_ACCEPT);
-        v.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(v.take_answer(), Some(PairingReply::PinCode("0000".into())));
-    }
-
-    #[test]
-    fn six_digits_are_split_for_comparison() {
-        assert_eq!(spaced("424242"), "424 242");
-        assert_eq!(spaced("0000"), "0000", "a legacy PIN is left alone");
-    }
-
-    /// The just-works prompt must say out loud that there's nothing to check, because it's the weakest flow and looks identical otherwise.
-    #[test]
-    fn the_just_works_prompt_admits_it_cannot_be_verified() {
-        let v = view(PairingPrompt::ConfirmPairing);
-        assert!(
-            v.explanation().contains("nothing to check"),
-            "{}",
-            v.explanation()
-        );
-    }
-
-    #[test]
-    fn every_prompt_builds_a_layout() {
-        let prompts = [
-            PairingPrompt::ConfirmPasskey { passkey: 424_242 },
-            PairingPrompt::DisplayPasskey {
-                passkey: 1,
-                entered: 3,
-            },
-            PairingPrompt::DisplayPinCode { pin: "0000".into() },
-            PairingPrompt::RequestPasskey,
-            PairingPrompt::RequestPinCode,
-            PairingPrompt::ConfirmPairing,
-            PairingPrompt::AuthorizeService {
-                uuid: "0000110b-0000-1000-8000-00805f9b34fb".into(),
-            },
-        ];
-        for p in prompts {
-            let mut v = view(p);
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
+    fn prompt_answers_are_exact_and_refuse_rather_than_guess() {
+        // Phase `accepting_a_comparison_answers_accept`.
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 424_242 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Accept));
+        }
+        // Phase `declining_answers_reject`.
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_REJECT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Reject));
+        }
+        // Phase `reject_wins_over_a_simultaneous_accept`.
+        // Reject must win over accept when both keys are somehow set — the safe reading of an ambiguous state is "no".
+        {
+            let mut v = view(PairingPrompt::ConfirmPasskey { passkey: 1 });
+            let mut doc = AutoCommit::new();
+            press(&mut doc, KEY_ACCEPT);
+            press(&mut doc, KEY_REJECT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Reject));
+        }
+        // Phase `a_typed_passkey_is_parsed_and_returned`.
+        {
+            let mut v = view(PairingPrompt::RequestPasskey);
+            let mut doc = AutoCommit::new();
+            let _ = doc.put(
+                &automerge::ROOT,
+                KEY_ENTRY,
+                ScalarValue::Str("654321".into()),
+            );
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::Passkey(654_321)));
+        }
+        // Phase `an_unparseable_passkey_refuses_rather_than_sending_zero`.
+        // A blank or nonsense entry refuses rather than sending a zero, which the device rejects anyway and reads as an unexplained failure.
+        {
+            for entry in ["", "   ", "abcdef"] {
+                let mut v = view(PairingPrompt::RequestPasskey);
+                let mut doc = AutoCommit::new();
+                let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str(entry.into()));
+                press(&mut doc, KEY_ACCEPT);
+                v.sync(&mut doc, &automerge::ROOT);
+                assert_eq!(
+                    v.take_answer(),
+                    Some(PairingReply::Reject),
+                    "entry {entry:?}"
+                );
+            }
+        }
+        // Phase `a_typed_pin_is_returned_verbatim`.
+        {
+            let mut v = view(PairingPrompt::RequestPinCode);
+            let mut doc = AutoCommit::new();
+            let _ = doc.put(&automerge::ROOT, KEY_ENTRY, ScalarValue::Str("0000".into()));
+            press(&mut doc, KEY_ACCEPT);
+            v.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(v.take_answer(), Some(PairingReply::PinCode("0000".into())));
         }
     }
 }

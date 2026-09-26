@@ -537,88 +537,96 @@ mod tests {
         }
     }
 
+    /// Ascending sort puts nulls first then numerics, and sorting toggles direction.
     #[test]
-    fn sort_ascending_puts_null_first_then_numeric() {
-        let r = result();
-        let mut g = GridView::new();
-        g.sort_by(0, &r);
-        // order maps display->source; first display row should be the NULL.
-        assert!(r.rows[g.order[0]][0].is_null());
-        assert_eq!(r.rows[g.order[1]][0], Cell::Integer(1));
-        assert_eq!(r.rows[g.order[2]][0], Cell::Integer(3));
+    fn grid_sort_orders_nulls_first_and_toggles() {
+        // --- phase: sort_ascending_puts_null_first_then_numeric ---
+        {
+            let r = result();
+            let mut g = GridView::new();
+            g.sort_by(0, &r);
+            // order maps display->source; first display row should be the NULL.
+            assert!(r.rows[g.order[0]][0].is_null());
+            assert_eq!(r.rows[g.order[1]][0], Cell::Integer(1));
+            assert_eq!(r.rows[g.order[2]][0], Cell::Integer(3));
+        }
+
+        // --- phase: sort_toggles_direction ---
+        {
+            let r = result();
+            let mut g = GridView::new();
+            g.sort_by(0, &r);
+            assert!(g.sort_asc);
+            g.sort_by(0, &r);
+            assert!(!g.sort_asc);
+        }
     }
 
-    /// The header band is `[y0, y0 + HEADER_H)`: its bottom edge is the first
-    /// body row, and a point under the last painted row hits nothing.
+    /// Header and body hits split where the paint does and bands match the constants at 1x with hits following the scaled pitch.
     #[test]
-    fn header_and_body_hits_split_exactly_where_the_paint_does() {
-        let mut tr = TextRenderer::new();
-        let result = result();
-        let mut grid = GridView::new();
-        // Header + exactly two full rows + a partial strip.
-        grid.set_rect(Rect::new(
-            0.0,
-            0.0,
-            400.0,
-            HEADER_H + 2.0 * ROW_H + ROW_H / 2.0,
-        ));
-        grid.bind(&result, &mut tr);
-        let edge = Point::new(20.0, HEADER_H);
-        assert_eq!(
-            grid.header_hit(edge),
-            None,
-            "the header's bottom edge is body"
-        );
-        assert_eq!(grid.row_hit(edge), Some(0));
-        assert_eq!(grid.header_hit(Point::new(20.0, HEADER_H - 0.5)), Some(0));
-        assert_eq!(
-            grid.row_hit(Point::new(20.0, HEADER_H + ROW_H + 1.0)),
-            Some(1)
-        );
-        assert_eq!(
-            grid.row_hit(Point::new(20.0, HEADER_H + 2.0 * ROW_H + 1.0)),
-            None,
-            "the unpainted partial strip under the last full row is not a row"
-        );
-        assert_eq!(grid.row_hit(Point::new(-1.0, HEADER_H + 1.0)), None);
-    }
+    fn grid_hits_follow_the_painted_scaled_bands() {
+        // --- phase: header_and_body_hits_split_exactly_where_the_paint_does ---
+        // The header band is `[y0, y0 + HEADER_H)`: its bottom edge is the first
+        // body row, and a point under the last painted row hits nothing.
+        {
+            let mut tr = TextRenderer::new();
+            let result = result();
+            let mut grid = GridView::new();
+            // Header + exactly two full rows + a partial strip.
+            grid.set_rect(Rect::new(
+                0.0,
+                0.0,
+                400.0,
+                HEADER_H + 2.0 * ROW_H + ROW_H / 2.0,
+            ));
+            grid.bind(&result, &mut tr);
+            let edge = Point::new(20.0, HEADER_H);
+            assert_eq!(
+                grid.header_hit(edge),
+                None,
+                "the header's bottom edge is body"
+            );
+            assert_eq!(grid.row_hit(edge), Some(0));
+            assert_eq!(grid.header_hit(Point::new(20.0, HEADER_H - 0.5)), Some(0));
+            assert_eq!(
+                grid.row_hit(Point::new(20.0, HEADER_H + ROW_H + 1.0)),
+                Some(1)
+            );
+            assert_eq!(
+                grid.row_hit(Point::new(20.0, HEADER_H + 2.0 * ROW_H + 1.0)),
+                None,
+                "the unpainted partial strip under the last full row is not a row"
+            );
+            assert_eq!(grid.row_hit(Point::new(-1.0, HEADER_H + 1.0)), None);
+        }
 
-    /// At 1× the measured bands are the historical constants; at 2× they grow
-    /// to hold the 13 px line, and the hit-test rows move with the painted
-    /// pitch rather than staying at the 26 px the glyphs have outgrown.
-    #[test]
-    fn bands_match_the_constants_at_1x_and_hits_follow_the_scaled_pitch() {
-        let result = result();
-        let mut tr = TextRenderer::new();
-        let mut grid = GridView::new();
-        grid.bind(&result, &mut tr);
-        assert_eq!((grid.header_height(), grid.row_height()), (HEADER_H, ROW_H));
+        // --- phase: bands_match_the_constants_at_1x_and_hits_follow_the_scaled_pitch ---
+        // At 1× the measured bands are the historical constants; at 2× they grow
+        // to hold the 13 px line, and the hit-test rows move with the painted
+        // pitch rather than staying at the 26 px the glyphs have outgrown.
+        {
+            let result = result();
+            let mut tr = TextRenderer::new();
+            let mut grid = GridView::new();
+            grid.bind(&result, &mut tr);
+            assert_eq!((grid.header_height(), grid.row_height()), (HEADER_H, ROW_H));
 
-        tr.set_text_scale(2.0);
-        grid.bind(&result, &mut tr);
-        let (_, lh) = tr.measure("Ag", 13.0, None);
-        let (hh, rh) = (grid.header_height(), grid.row_height());
-        assert!(rh >= f64::from(lh) + 2.0 * 4.0 && rh > ROW_H);
-        assert!(hh >= f64::from(lh) + 2.0 * 6.0 && hh > HEADER_H);
-        grid.set_rect(Rect::new(0.0, 0.0, 400.0, hh + 2.0 * rh + rh / 2.0));
-        assert_eq!(grid.visible_rows(), 2);
-        assert_eq!(grid.header_hit(Point::new(20.0, hh - 0.5)), Some(0));
-        assert_eq!(grid.row_hit(Point::new(20.0, hh)), Some(0));
-        assert_eq!(grid.row_hit(Point::new(20.0, hh + rh + 1.0)), Some(1));
-        assert_eq!(
-            grid.row_hit(Point::new(20.0, HEADER_H + ROW_H + 1.0)),
-            Some(0),
-            "the old 1× second-row y is still inside the taller first row"
-        );
-    }
-
-    #[test]
-    fn sort_toggles_direction() {
-        let r = result();
-        let mut g = GridView::new();
-        g.sort_by(0, &r);
-        assert!(g.sort_asc);
-        g.sort_by(0, &r);
-        assert!(!g.sort_asc);
+            tr.set_text_scale(2.0);
+            grid.bind(&result, &mut tr);
+            let (_, lh) = tr.measure("Ag", 13.0, None);
+            let (hh, rh) = (grid.header_height(), grid.row_height());
+            assert!(rh >= f64::from(lh) + 2.0 * 4.0 && rh > ROW_H);
+            assert!(hh >= f64::from(lh) + 2.0 * 6.0 && hh > HEADER_H);
+            grid.set_rect(Rect::new(0.0, 0.0, 400.0, hh + 2.0 * rh + rh / 2.0));
+            assert_eq!(grid.visible_rows(), 2);
+            assert_eq!(grid.header_hit(Point::new(20.0, hh - 0.5)), Some(0));
+            assert_eq!(grid.row_hit(Point::new(20.0, hh)), Some(0));
+            assert_eq!(grid.row_hit(Point::new(20.0, hh + rh + 1.0)), Some(1));
+            assert_eq!(
+                grid.row_hit(Point::new(20.0, HEADER_H + ROW_H + 1.0)),
+                Some(0),
+                "the old 1× second-row y is still inside the taller first row"
+            );
+        }
     }
 }

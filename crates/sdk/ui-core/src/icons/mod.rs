@@ -900,491 +900,463 @@ mod tests {
     }
 
     #[test]
-    fn icon_layout_grid_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::LayoutGrid);
-        assert_eq!(sub.len(), 4, "layout-grid has 4 rect subpaths");
-        for p in &sub {
-            assert!(element_count(p) > 0, "subpath must emit path elements");
-        }
-    }
-
-    #[test]
-    fn icon_settings2_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::Settings2);
-        assert_eq!(sub.len(), 4, "settings-2 has 2 paths + 2 circles");
-        for p in &sub {
-            assert!(element_count(p) > 0);
-        }
-    }
-
-    #[test]
-    fn icon_shield_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::Shield);
-        assert_eq!(sub.len(), 1);
-        assert!(element_count(&sub[0]) >= 6, "shield path is multi-segment");
-    }
-
-    #[test]
-    fn icon_wifi_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::Wifi);
-        assert_eq!(sub.len(), 4, "wifi = 3 arcs + 1 dot path");
-        for p in &sub {
-            assert!(element_count(p) > 0);
-        }
-    }
-
-    #[test]
-    fn icon_chevron_up_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::ChevronUp);
-        assert_eq!(sub.len(), 1);
-        assert!(element_count(&sub[0]) >= 3, "chevron is M,L,L");
-    }
-
-    #[test]
-    fn icon_plus_has_two_strokes() {
-        let sub = icon_subpaths(Icon::Plus);
-        assert_eq!(sub.len(), 2, "plus = horizontal + vertical stroke");
-    }
-
-    /// Wi-Fi's subpaths are addressed *by index* to show signal strength
-    /// (see [`draw_icon_layered`]) — a reordering upstream would silently
-    /// light the wrong bars rather than fail to compile.
-    #[test]
-    fn status_tray_icons_have_their_expected_subpaths() {
-        assert_eq!(
-            icon_subpaths(Icon::Wifi).len(),
-            4,
-            "wifi = base dot + 3 arcs, outermost first — the tray indexes these"
-        );
-        assert_eq!(icon_subpaths(Icon::WifiOff).len(), 7);
-        assert_eq!(
-            icon_subpaths(Icon::VolumeX).len(),
-            3,
-            "cone + 2 cross lines"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::EthernetPort).len(),
-            5,
-            "socket outline + 4 pin nubs"
-        );
-        assert_eq!(icon_subpaths(Icon::MicOff).len(), 6);
-        assert_eq!(icon_subpaths(Icon::SkipForward).len(), 2, "triangle + bar");
-        assert_eq!(icon_subpaths(Icon::SkipBack).len(), 2, "triangle + bar");
-    }
-
-    /// The two skip glyphs are mirror images, so a swap produces two icons
-    /// that each look fine alone and both point the wrong way. Pin the
-    /// direction geometrically: the bar sits on the side the triangle points at.
-    #[test]
-    fn the_skip_glyphs_point_the_way_they_are_named() {
-        let bar_x = |icon: Icon| {
-            let bar = &icon_subpaths(icon)[1];
-            let mut xs: Vec<f64> = Vec::new();
-            for el in bar.elements() {
-                if let vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) = el {
-                    xs.push(p.x);
+    fn individual_icons_parse_to_their_expected_non_empty_subpaths() {
+        // (icon, subpath count, minimum path elements per subpath, why)
+        let cases = [
+            (
+                Icon::LayoutGrid,
+                4,
+                Some(1),
+                "layout-grid has 4 rect subpaths",
+            ),
+            (
+                Icon::Settings2,
+                4,
+                Some(1),
+                "settings-2 has 2 paths + 2 circles",
+            ),
+            (Icon::Shield, 1, Some(6), "shield path is multi-segment"),
+            (Icon::Wifi, 4, Some(1), "wifi = 3 arcs + 1 dot path"),
+            (Icon::ChevronUp, 1, Some(3), "chevron is M,L,L"),
+            (Icon::Plus, 2, None, "plus = horizontal + vertical stroke"),
+            (Icon::Search, 2, Some(1), "search = circle + handle line"),
+            (Icon::Camera, 2, Some(1), "camera = body path + lens circle"),
+            (Icon::Power, 2, Some(1), "power = stem + arc"),
+        ];
+        for (icon, count, min_elements, why) in cases {
+            let sub = icon_subpaths(icon);
+            assert_eq!(sub.len(), count, "{icon:?}: {why}");
+            if let Some(min) = min_elements {
+                for p in &sub {
+                    assert!(
+                        element_count(p) >= min,
+                        "{icon:?}: subpath must emit at least {min} path elements ({why})"
+                    );
                 }
             }
-            xs.into_iter().fold(f64::MIN, f64::max)
-        };
-        assert!(
-            bar_x(Icon::SkipForward) > 12.0,
-            "skip-forward's bar is on the right, the side it points at"
-        );
-        assert!(
-            bar_x(Icon::SkipBack) < 12.0,
-            "skip-back's bar is on the left"
-        );
-        for icon in [
-            Icon::WifiOff,
-            Icon::VolumeX,
-            Icon::EthernetPort,
-            Icon::MicOff,
-            Icon::SkipForward,
-            Icon::SkipBack,
-        ] {
-            for p in icon_subpaths(icon) {
-                assert!(element_count(&p) > 0, "{icon:?} subpath must emit elements");
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn icon_families_have_their_lucide_subpath_counts() {
+        // phase: status_tray_icons_have_their_expected_subpaths
+        // Wi-Fi's subpaths are addressed *by index* to show signal strength
+        // (see [`draw_icon_layered`]) — a reordering upstream would silently
+        // light the wrong bars rather than fail to compile.
+        {
+            assert_eq!(
+                icon_subpaths(Icon::Wifi).len(),
+                4,
+                "wifi = base dot + 3 arcs, outermost first — the tray indexes these"
+            );
+            assert_eq!(icon_subpaths(Icon::WifiOff).len(), 7);
+            assert_eq!(
+                icon_subpaths(Icon::VolumeX).len(),
+                3,
+                "cone + 2 cross lines"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::EthernetPort).len(),
+                5,
+                "socket outline + 4 pin nubs"
+            );
+            assert_eq!(icon_subpaths(Icon::MicOff).len(), 6);
+            assert_eq!(icon_subpaths(Icon::SkipForward).len(), 2, "triangle + bar");
+            assert_eq!(icon_subpaths(Icon::SkipBack).len(), 2, "triangle + bar");
+        }
+        // phase: extended_icon_subpath_counts
+        {
+            assert_eq!(icon_subpaths(Icon::Star).len(), 1, "star = 1 outline");
+            assert_eq!(icon_subpaths(Icon::Bell).len(), 2, "bell = dome + clapper");
+            assert_eq!(icon_subpaths(Icon::Play).len(), 1, "play = 1 triangle path");
+            assert_eq!(icon_subpaths(Icon::Pause).len(), 2, "pause = 2 bars");
+            assert_eq!(icon_subpaths(Icon::Check).len(), 1, "check = 1 tick");
+            assert_eq!(
+                icon_subpaths(Icon::Refresh).len(),
+                4,
+                "refresh = 2 arcs + 2 heads"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::ExternalLink).len(),
+                3,
+                "external-link = box + arrow + diag"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Trash).len(),
+                4,
+                "trash = lid + body + 2 streaks"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Copy).len(),
+                2,
+                "copy = fg rect + bg corner"
+            );
+            assert_eq!(icon_subpaths(Icon::Folder).len(), 1, "folder = 1 outline");
+            assert_eq!(
+                icon_subpaths(Icon::ChevronRight).len(),
+                1,
+                "chevron-right = 1 path"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::MoreHorizontal).len(),
+                3,
+                "more = 3 dots"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::ArrowBigUp).len(),
+                1,
+                "arrow-big-up = 1 closed arrow"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Delete).len(),
+                3,
+                "delete = tag body + 2 ✕ strokes"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::CornerDownLeft).len(),
+                2,
+                "corner-down-left = hook + head"
+            );
+        }
+        // phase: workspace_icon_subpath_counts
+        {
+            assert_eq!(
+                icon_subpaths(Icon::PenTool).len(),
+                4,
+                "pen-tool = 3 paths + 1 circle"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Code).len(),
+                2,
+                "code = 2 angle-bracket paths"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::FileText).len(),
+                5,
+                "file-text = page + corner + 3 lines"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::BarChart).len(),
+                3,
+                "bar-chart = 3 column paths"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Layers).len(),
+                3,
+                "layers = 3 stacked plate paths"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Settings).len(),
+                2,
+                "settings = gear path + dot"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Home).len(),
+                2,
+                "home = roof + doorway paths"
+            );
+            for icon in [
+                Icon::PenTool,
+                Icon::Code,
+                Icon::FileText,
+                Icon::BarChart,
+                Icon::Layers,
+                Icon::Settings,
+                Icon::Home,
+            ] {
+                for p in icon_subpaths(icon) {
+                    assert!(element_count(&p) > 0, "{icon:?} subpath empty");
+                }
             }
         }
-    }
-
-    #[test]
-    fn draw_icon_layered_paints_every_subpath() {
-        let mut scene = Scene::new();
-        let mut seen = Vec::new();
-        draw_icon_layered(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 16.0, 16.0),
-            Icon::Wifi,
-            1.5,
-            |i| {
-                seen.push(i);
-                Color::WHITE
-            },
-        );
-        assert_eq!(seen, vec![0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn icon_search_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::Search);
-        assert_eq!(sub.len(), 2, "search = circle + handle line");
-        for p in &sub {
-            assert!(element_count(p) > 0, "search subpath must emit elements");
-        }
-    }
-
-    #[test]
-    fn draw_icon_does_not_panic_on_zero_rect() {
-        let mut scene = Scene::new();
-        draw_icon(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-            Icon::LayoutGrid,
-            Color::WHITE,
-            LUCIDE_DEFAULT_STROKE_PX,
-        );
-    }
-
-    #[test]
-    fn all_icons_produce_non_empty_subpaths() {
-        for icon in [
-            Icon::LayoutGrid,
-            Icon::Settings2,
-            Icon::Mouse,
-            Icon::Keyboard,
-            Icon::Users,
-            Icon::Printer,
-            Icon::Globe,
-            Icon::Wifi,
-            Icon::Bluetooth,
-            Icon::Monitor,
-            Icon::Battery,
-            Icon::Shield,
-            Icon::Maximize2,
-            Icon::Minimize2,
-            Icon::X,
-            Icon::ChevronUp,
-            Icon::ChevronDown,
-            Icon::ChevronLeft,
-            Icon::Plus,
-            Icon::Search,
-            Icon::PenTool,
-            Icon::Code,
-            Icon::Terminal,
-            Icon::FileText,
-            Icon::BarChart,
-            Icon::Layers,
-            Icon::Settings,
-            Icon::Home,
-            Icon::Camera,
-            Icon::Power,
-            Icon::Star,
-            Icon::Bell,
-            Icon::Play,
-            Icon::Pause,
-            Icon::PictureInPicture2,
-            Icon::Check,
-            Icon::Refresh,
-            Icon::ExternalLink,
-            Icon::Trash,
-            Icon::Copy,
-            Icon::Folder,
-            Icon::ChevronRight,
-            Icon::MoreHorizontal,
-            Icon::ArrowBigUp,
-            Icon::Delete,
-            Icon::CornerDownLeft,
-            Icon::Undo2,
-            Icon::Redo2,
-        ] {
-            let sub = icon_subpaths(icon);
-            assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
-            for p in &sub {
-                assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+        // phase: video_navigation_icons_match_lucide_subpath_counts
+        {
+            for (icon, expected) in [
+                (Icon::Flame, 1),
+                (Icon::GalleryVerticalEnd, 3),
+                (Icon::History, 3),
+                (Icon::ThumbsUp, 2),
+                (Icon::ThumbsDown, 2),
+                (Icon::ListVideo, 4),
+                (Icon::Sparkles, 4),
+                (Icon::Eye, 2),
+                (Icon::Menu, 3),
+            ] {
+                let subpaths = icon_subpaths(icon);
+                assert_eq!(subpaths.len(), expected, "{icon:?} subpath count");
+                assert!(
+                    subpaths.iter().all(|path| element_count(path) > 0),
+                    "{icon:?} emitted an empty subpath"
+                );
             }
         }
-    }
-
-    #[test]
-    fn icon_draw_method_emits_strokes() {
-        use vello_encoding::DrawTag;
-        let mut scene = Scene::new();
-        Icon::Check.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 24.0, 24.0),
-            Color::WHITE,
-        );
-        // A stroked glyph emits at least one COLOR draw tag for its path.
-        let color_tags = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(
-            color_tags >= 1,
-            "Icon::draw must stroke at least one subpath"
-        );
-    }
-
-    #[test]
-    fn extended_icon_subpath_counts() {
-        assert_eq!(icon_subpaths(Icon::Star).len(), 1, "star = 1 outline");
-        assert_eq!(icon_subpaths(Icon::Bell).len(), 2, "bell = dome + clapper");
-        assert_eq!(icon_subpaths(Icon::Play).len(), 1, "play = 1 triangle path");
-        assert_eq!(icon_subpaths(Icon::Pause).len(), 2, "pause = 2 bars");
-        assert_eq!(icon_subpaths(Icon::Check).len(), 1, "check = 1 tick");
-        assert_eq!(
-            icon_subpaths(Icon::Refresh).len(),
-            4,
-            "refresh = 2 arcs + 2 heads"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::ExternalLink).len(),
-            3,
-            "external-link = box + arrow + diag"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Trash).len(),
-            4,
-            "trash = lid + body + 2 streaks"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Copy).len(),
-            2,
-            "copy = fg rect + bg corner"
-        );
-        assert_eq!(icon_subpaths(Icon::Folder).len(), 1, "folder = 1 outline");
-        assert_eq!(
-            icon_subpaths(Icon::ChevronRight).len(),
-            1,
-            "chevron-right = 1 path"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::MoreHorizontal).len(),
-            3,
-            "more = 3 dots"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::ArrowBigUp).len(),
-            1,
-            "arrow-big-up = 1 closed arrow"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Delete).len(),
-            3,
-            "delete = tag body + 2 ✕ strokes"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::CornerDownLeft).len(),
-            2,
-            "corner-down-left = hook + head"
-        );
-    }
-
-    #[test]
-    fn mail_icons_produce_non_empty_subpaths() {
-        for icon in [
-            Icon::Inbox,
-            Icon::Send,
-            Icon::Reply,
-            Icon::Mail,
-            Icon::Paperclip,
-            Icon::Calendar,
-            Icon::Ban,
-            Icon::Download,
-        ] {
-            let sub = icon_subpaths(icon);
-            assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
-            for p in &sub {
-                assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
-            }
-        }
-        assert_eq!(icon_subpaths(Icon::Inbox).len(), 2, "inbox = tray + body");
-        assert_eq!(icon_subpaths(Icon::Reply).len(), 2, "reply = arm + arrow");
-        assert_eq!(icon_subpaths(Icon::Mail).len(), 2, "mail = body + flap");
-        assert_eq!(
-            icon_subpaths(Icon::Calendar).len(),
-            4,
-            "calendar = 2 ticks + body + rule"
-        );
-        assert_eq!(icon_subpaths(Icon::Ban).len(), 2, "ban = ring + bar");
-        assert_eq!(
-            icon_subpaths(Icon::Download).len(),
-            3,
-            "download = stem + head + tray"
-        );
-    }
-
-    #[test]
-    fn icon_camera_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::Camera);
-        assert_eq!(sub.len(), 2, "camera = body path + lens circle");
-        for p in &sub {
-            assert!(element_count(p) > 0, "camera subpath must emit elements");
-        }
-    }
-
-    #[test]
-    fn icon_power_parses_to_non_empty_bezpath() {
-        let sub = icon_subpaths(Icon::Power);
-        assert_eq!(sub.len(), 2, "power = stem + arc");
-        for p in &sub {
-            assert!(element_count(p) > 0, "power subpath must emit elements");
-        }
-    }
-
-    #[test]
-    fn workspace_icon_subpath_counts() {
-        assert_eq!(
-            icon_subpaths(Icon::PenTool).len(),
-            4,
-            "pen-tool = 3 paths + 1 circle"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Code).len(),
-            2,
-            "code = 2 angle-bracket paths"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::FileText).len(),
-            5,
-            "file-text = page + corner + 3 lines"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::BarChart).len(),
-            3,
-            "bar-chart = 3 column paths"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Layers).len(),
-            3,
-            "layers = 3 stacked plate paths"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Settings).len(),
-            2,
-            "settings = gear path + dot"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Home).len(),
-            2,
-            "home = roof + doorway paths"
-        );
-        for icon in [
-            Icon::PenTool,
-            Icon::Code,
-            Icon::FileText,
-            Icon::BarChart,
-            Icon::Layers,
-            Icon::Settings,
-            Icon::Home,
-        ] {
-            for p in icon_subpaths(icon) {
-                assert!(element_count(&p) > 0, "{icon:?} subpath empty");
-            }
-        }
-    }
-
-    #[test]
-    fn video_navigation_icons_match_lucide_subpath_counts() {
-        for (icon, expected) in [
-            (Icon::Flame, 1),
-            (Icon::GalleryVerticalEnd, 3),
-            (Icon::History, 3),
-            (Icon::ThumbsUp, 2),
-            (Icon::ThumbsDown, 2),
-            (Icon::ListVideo, 4),
-            (Icon::Sparkles, 4),
-            (Icon::Eye, 2),
-            (Icon::Menu, 3),
-        ] {
-            let subpaths = icon_subpaths(icon);
-            assert_eq!(subpaths.len(), expected, "{icon:?} subpath count");
-            assert!(
-                subpaths.iter().all(|path| element_count(path) > 0),
-                "{icon:?} emitted an empty subpath"
+        // phase: file_manager_icon_subpath_counts
+        {
+            assert_eq!(icon_subpaths(Icon::Folder).len(), 1);
+            assert_eq!(icon_subpaths(Icon::File).len(), 2, "file = page + corner");
+            assert_eq!(
+                icon_subpaths(Icon::Image).len(),
+                3,
+                "image = frame + lens + ridge"
+            );
+            assert_eq!(icon_subpaths(Icon::Film).len(), 8, "film = frame + 7 rails");
+            assert_eq!(
+                icon_subpaths(Icon::Scissors).len(),
+                5,
+                "scissors = 2 rings + 3 strokes"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::Trash2).len(),
+                5,
+                "trash = 2 tines + body + lid + handle"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::HardDrive).len(),
+                4,
+                "hard-drive = divider + body + 2 dots"
+            );
+            assert_eq!(
+                icon_subpaths(Icon::List).len(),
+                6,
+                "list = 3 bullets + 3 rules"
             );
         }
     }
 
     #[test]
-    fn file_manager_icons_produce_non_empty_subpaths() {
-        for icon in [
-            Icon::Folder,
-            Icon::FolderOpen,
-            Icon::File,
-            Icon::Image,
-            Icon::Music,
-            Icon::Film,
-            Icon::Archive,
-            Icon::FileCode,
-            Icon::ArrowLeft,
-            Icon::ArrowRight,
-            Icon::ArrowUp,
-            Icon::ChevronRight,
-            Icon::RotateCcw,
-            Icon::RotateCw,
-            Icon::Copy,
-            Icon::Scissors,
-            Icon::ClipboardPaste,
-            Icon::Trash2,
-            Icon::Pencil,
-            Icon::Square,
-            Icon::FolderPlus,
-            Icon::FilePlus,
-            Icon::List,
-            Icon::Star,
-            Icon::Pin,
-            Icon::HardDrive,
-            Icon::Check,
-            Icon::Info,
-            Icon::CloudDownload,
-            Icon::ArrowUpDown,
-        ] {
-            let sub = icon_subpaths(icon);
-            assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
-            for p in &sub {
-                assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+    fn icons_draw_every_subpath_as_strokes_pointing_the_named_way() {
+        // phase: draw_icon_layered_paints_every_subpath
+        {
+            let mut scene = Scene::new();
+            let mut seen = Vec::new();
+            draw_icon_layered(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 16.0, 16.0),
+                Icon::Wifi,
+                1.5,
+                |i| {
+                    seen.push(i);
+                    Color::WHITE
+                },
+            );
+            assert_eq!(seen, vec![0, 1, 2, 3]);
+        }
+        // phase: draw_icon_does_not_panic_on_zero_rect
+        {
+            let mut scene = Scene::new();
+            draw_icon(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                Icon::LayoutGrid,
+                Color::WHITE,
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
+        // phase: icon_draw_method_emits_strokes
+        {
+            use vello_encoding::DrawTag;
+            let mut scene = Scene::new();
+            Icon::Check.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 24.0, 24.0),
+                Color::WHITE,
+            );
+            // A stroked glyph emits at least one COLOR draw tag for its path.
+            let color_tags = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(
+                color_tags >= 1,
+                "Icon::draw must stroke at least one subpath"
+            );
+        }
+        // phase: the_skip_glyphs_point_the_way_they_are_named
+        // The two skip glyphs are mirror images, so a swap produces two icons
+        // that each look fine alone and both point the wrong way. Pin the
+        // direction geometrically: the bar sits on the side the triangle points at.
+        {
+            let bar_x = |icon: Icon| {
+                let bar = &icon_subpaths(icon)[1];
+                let mut xs: Vec<f64> = Vec::new();
+                for el in bar.elements() {
+                    if let vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) = el {
+                        xs.push(p.x);
+                    }
+                }
+                xs.into_iter().fold(f64::MIN, f64::max)
+            };
+            assert!(
+                bar_x(Icon::SkipForward) > 12.0,
+                "skip-forward's bar is on the right, the side it points at"
+            );
+            assert!(
+                bar_x(Icon::SkipBack) < 12.0,
+                "skip-back's bar is on the left"
+            );
+            for icon in [
+                Icon::WifiOff,
+                Icon::VolumeX,
+                Icon::EthernetPort,
+                Icon::MicOff,
+                Icon::SkipForward,
+                Icon::SkipBack,
+            ] {
+                for p in icon_subpaths(icon) {
+                    assert!(element_count(&p) > 0, "{icon:?} subpath must emit elements");
+                }
             }
         }
     }
 
     #[test]
-    fn file_manager_icon_subpath_counts() {
-        assert_eq!(icon_subpaths(Icon::Folder).len(), 1);
-        assert_eq!(icon_subpaths(Icon::File).len(), 2, "file = page + corner");
-        assert_eq!(
-            icon_subpaths(Icon::Image).len(),
-            3,
-            "image = frame + lens + ridge"
-        );
-        assert_eq!(icon_subpaths(Icon::Film).len(), 8, "film = frame + 7 rails");
-        assert_eq!(
-            icon_subpaths(Icon::Scissors).len(),
-            5,
-            "scissors = 2 rings + 3 strokes"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::Trash2).len(),
-            5,
-            "trash = 2 tines + body + lid + handle"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::HardDrive).len(),
-            4,
-            "hard-drive = divider + body + 2 dots"
-        );
-        assert_eq!(
-            icon_subpaths(Icon::List).len(),
-            6,
-            "list = 3 bullets + 3 rules"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn every_icon_family_produces_non_empty_subpaths() {
+        // phase: all_icons_produce_non_empty_subpaths
+        {
+            for icon in [
+                Icon::LayoutGrid,
+                Icon::Settings2,
+                Icon::Mouse,
+                Icon::Keyboard,
+                Icon::Users,
+                Icon::Printer,
+                Icon::Globe,
+                Icon::Wifi,
+                Icon::Bluetooth,
+                Icon::Monitor,
+                Icon::Battery,
+                Icon::Shield,
+                Icon::Maximize2,
+                Icon::Minimize2,
+                Icon::X,
+                Icon::ChevronUp,
+                Icon::ChevronDown,
+                Icon::ChevronLeft,
+                Icon::Plus,
+                Icon::Search,
+                Icon::PenTool,
+                Icon::Code,
+                Icon::Terminal,
+                Icon::FileText,
+                Icon::BarChart,
+                Icon::Layers,
+                Icon::Settings,
+                Icon::Home,
+                Icon::Camera,
+                Icon::Power,
+                Icon::Star,
+                Icon::Bell,
+                Icon::Play,
+                Icon::Pause,
+                Icon::PictureInPicture2,
+                Icon::Check,
+                Icon::Refresh,
+                Icon::ExternalLink,
+                Icon::Trash,
+                Icon::Copy,
+                Icon::Folder,
+                Icon::ChevronRight,
+                Icon::MoreHorizontal,
+                Icon::ArrowBigUp,
+                Icon::Delete,
+                Icon::CornerDownLeft,
+                Icon::Undo2,
+                Icon::Redo2,
+            ] {
+                let sub = icon_subpaths(icon);
+                assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
+                for p in &sub {
+                    assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+                }
+            }
+        }
+        // phase: mail_icons_produce_non_empty_subpaths
+        {
+            for icon in [
+                Icon::Inbox,
+                Icon::Send,
+                Icon::Reply,
+                Icon::Mail,
+                Icon::Paperclip,
+                Icon::Calendar,
+                Icon::Ban,
+                Icon::Download,
+            ] {
+                let sub = icon_subpaths(icon);
+                assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
+                for p in &sub {
+                    assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+                }
+            }
+            assert_eq!(icon_subpaths(Icon::Inbox).len(), 2, "inbox = tray + body");
+            assert_eq!(icon_subpaths(Icon::Reply).len(), 2, "reply = arm + arrow");
+            assert_eq!(icon_subpaths(Icon::Mail).len(), 2, "mail = body + flap");
+            assert_eq!(
+                icon_subpaths(Icon::Calendar).len(),
+                4,
+                "calendar = 2 ticks + body + rule"
+            );
+            assert_eq!(icon_subpaths(Icon::Ban).len(), 2, "ban = ring + bar");
+            assert_eq!(
+                icon_subpaths(Icon::Download).len(),
+                3,
+                "download = stem + head + tray"
+            );
+        }
+        // phase: file_manager_icons_produce_non_empty_subpaths
+        {
+            for icon in [
+                Icon::Folder,
+                Icon::FolderOpen,
+                Icon::File,
+                Icon::Image,
+                Icon::Music,
+                Icon::Film,
+                Icon::Archive,
+                Icon::FileCode,
+                Icon::ArrowLeft,
+                Icon::ArrowRight,
+                Icon::ArrowUp,
+                Icon::ChevronRight,
+                Icon::RotateCcw,
+                Icon::RotateCw,
+                Icon::Copy,
+                Icon::Scissors,
+                Icon::ClipboardPaste,
+                Icon::Trash2,
+                Icon::Pencil,
+                Icon::Square,
+                Icon::FolderPlus,
+                Icon::FilePlus,
+                Icon::List,
+                Icon::Star,
+                Icon::Pin,
+                Icon::HardDrive,
+                Icon::Check,
+                Icon::Info,
+                Icon::CloudDownload,
+                Icon::ArrowUpDown,
+            ] {
+                let sub = icon_subpaths(icon);
+                assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
+                for p in &sub {
+                    assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+                }
+            }
+        }
     }
 
     #[test]

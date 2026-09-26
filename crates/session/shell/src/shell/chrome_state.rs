@@ -2841,45 +2841,49 @@ mod panel_exclusion_tests {
     use super::*;
 
     #[test]
-    fn workspace_and_device_settings_never_stack() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let mut state = chrome.borrow_mut();
+    fn workspace_and_device_panels_are_exclusive_and_deep_links_reset_history() {
+        fn workspace_and_device_settings_never_stack() {
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+            let mut state = chrome.borrow_mut();
 
-        state.open_quick_settings();
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+            state.open_quick_settings();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
 
-        state.open_workspace_settings(WsTab::Members);
-        assert!(state.overlays.ws_settings);
-        assert!(!state.overlays.quick_settings);
-        assert_eq!(state.ws_settings_tab, WsTab::Members);
+            state.open_workspace_settings(WsTab::Members);
+            assert!(state.overlays.ws_settings);
+            assert!(!state.overlays.quick_settings);
+            assert_eq!(state.ws_settings_tab, WsTab::Members);
 
-        state.toggle_quick_settings();
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+            state.toggle_quick_settings();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
 
-        state.toggle_workspace_settings();
-        assert!(state.overlays.ws_settings);
-        assert!(!state.overlays.quick_settings);
-    }
+            state.toggle_workspace_settings();
+            assert!(state.overlays.ws_settings);
+            assert!(!state.overlays.quick_settings);
+        }
 
-    #[test]
-    fn quick_settings_deep_link_replaces_stale_navigation_history() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let mut state = chrome.borrow_mut();
-        state.quick_settings.push_level(QsLevel::Wifi);
-        state
-            .quick_settings
-            .push_level(QsLevel::WifiDetails("Cafe".into()));
+        fn quick_settings_deep_link_replaces_stale_navigation_history() {
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.push_level(QsLevel::Wifi);
+            state
+                .quick_settings
+                .push_level(QsLevel::WifiDetails("Cafe".into()));
 
-        state.open_quick_settings_level(QsLevel::Devices);
+            state.open_quick_settings_level(QsLevel::Devices);
 
-        assert_eq!(
-            state.quick_settings.nav_stack,
-            vec![QsLevel::Root, QsLevel::Devices]
-        );
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+            assert_eq!(
+                state.quick_settings.nav_stack,
+                vec![QsLevel::Root, QsLevel::Devices]
+            );
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
+        }
+
+        workspace_and_device_settings_never_stack();
+        quick_settings_deep_link_replaces_stale_navigation_history();
     }
 }
 
@@ -2907,56 +2911,64 @@ mod notification_history_clear_tests {
     use crate::shell::notification::Notification;
 
     #[test]
-    fn clear_undo_restores_exact_order_before_new_arrivals() {
-        let chrome = ChromeState::new(WorkspaceTree::default());
-        let now = std::time::Instant::now();
-        let mut state = chrome.borrow_mut();
-        state.record_history(Notification::new("first", "one"));
-        state.record_history(Notification::new("second", "two"));
-        state.clear_notification_history_at(now);
-        state.record_history(Notification::new("new", "three"));
+    fn notification_history_clear_is_one_recoverable_expiring_snapshot() {
+        fn clear_undo_restores_exact_order_before_new_arrivals() {
+            let chrome = ChromeState::new(WorkspaceTree::default());
+            let now = std::time::Instant::now();
+            let mut state = chrome.borrow_mut();
+            state.record_history(Notification::new("first", "one"));
+            state.record_history(Notification::new("second", "two"));
+            state.clear_notification_history_at(now);
+            state.record_history(Notification::new("new", "three"));
 
-        assert!(state.undo_notification_history_clear());
-        let titles: Vec<_> = state
-            .notification_history()
-            .iter()
-            .map(|notification| notification.title.as_str())
-            .collect();
-        assert_eq!(titles, ["first", "second", "new"]);
-        assert!(!state.undo_notification_history_clear());
-    }
+            assert!(state.undo_notification_history_clear());
+            let titles: Vec<_> = state
+                .notification_history()
+                .iter()
+                .map(|notification| notification.title.as_str())
+                .collect();
+            assert_eq!(titles, ["first", "second", "new"]);
+            assert!(!state.undo_notification_history_clear());
+        }
 
-    #[test]
-    fn clear_snapshot_expires_at_eight_seconds() {
-        let chrome = ChromeState::new(WorkspaceTree::default());
-        let now = std::time::Instant::now();
-        let mut state = chrome.borrow_mut();
-        state.record_history(Notification::new("one", "body"));
-        state.clear_notification_history_at(now);
+        fn clear_snapshot_expires_at_eight_seconds() {
+            let chrome = ChromeState::new(WorkspaceTree::default());
+            let now = std::time::Instant::now();
+            let mut state = chrome.borrow_mut();
+            state.record_history(Notification::new("one", "body"));
+            state.clear_notification_history_at(now);
 
-        assert!(!state.expire_notification_history_clear(now + std::time::Duration::from_secs(7)));
-        assert!(state.can_undo_notification_history_clear());
-        assert!(state.expire_notification_history_clear(now + std::time::Duration::from_secs(8)));
-        assert!(!state.can_undo_notification_history_clear());
-        assert!(!state.undo_notification_history_clear());
-    }
+            assert!(
+                !state.expire_notification_history_clear(now + std::time::Duration::from_secs(7))
+            );
+            assert!(state.can_undo_notification_history_clear());
+            assert!(
+                state.expire_notification_history_clear(now + std::time::Duration::from_secs(8))
+            );
+            assert!(!state.can_undo_notification_history_clear());
+            assert!(!state.undo_notification_history_clear());
+        }
 
-    #[test]
-    fn second_clear_extends_one_recoverable_snapshot() {
-        let chrome = ChromeState::new(WorkspaceTree::default());
-        let now = std::time::Instant::now();
-        let mut state = chrome.borrow_mut();
-        state.record_history(Notification::new("before", "body"));
-        state.clear_notification_history_at(now);
-        state.record_history(Notification::new("during", "body"));
-        state.clear_notification_history_at(now + std::time::Duration::from_secs(4));
-        assert!(state.undo_notification_history_clear());
-        let titles: Vec<_> = state
-            .notification_history()
-            .iter()
-            .map(|notification| notification.title.as_str())
-            .collect();
-        assert_eq!(titles, ["before", "during"]);
+        fn second_clear_extends_one_recoverable_snapshot() {
+            let chrome = ChromeState::new(WorkspaceTree::default());
+            let now = std::time::Instant::now();
+            let mut state = chrome.borrow_mut();
+            state.record_history(Notification::new("before", "body"));
+            state.clear_notification_history_at(now);
+            state.record_history(Notification::new("during", "body"));
+            state.clear_notification_history_at(now + std::time::Duration::from_secs(4));
+            assert!(state.undo_notification_history_clear());
+            let titles: Vec<_> = state
+                .notification_history()
+                .iter()
+                .map(|notification| notification.title.as_str())
+                .collect();
+            assert_eq!(titles, ["before", "during"]);
+        }
+
+        clear_undo_restores_exact_order_before_new_arrivals();
+        clear_snapshot_expires_at_eight_seconds();
+        second_clear_extends_one_recoverable_snapshot();
     }
 }
 
@@ -3025,149 +3037,231 @@ mod active_tab_tests {
     }
 
     #[test]
-    fn active_app_title_follows_group_active_tab() {
-        let handle = Arc::new(RwLock::new(tree_with(200)));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_app_title().as_deref(), Some("Second"));
-    }
-
-    #[test]
-    fn active_tab_id_matches_the_active_tab_pointer() {
-        let handle = Arc::new(RwLock::new(tree_with(100)));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), Some(100));
-    }
-
-    #[test]
-    fn focus_tab_and_strip_focus_survive_restart() {
-        let dir = tempfile::tempdir().expect("state dir");
-        let path = dir.path().join("workspace.json");
-        let mut tree = tree_with(100);
-        let workspace = tree.desktop.active;
-        let first_strip = tree.desktop.workspaces[0].strips[0].id;
-        let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let second_strip = StripId::new();
-        let second_group = 81;
-        tree.desktop.workspaces[0].strips.push(Strip {
-            id: second_strip,
-            name: "Other".into(),
-            window_groups: vec![StateGroup {
-                id: second_group,
-                tabs: vec![Tab {
-                    id: 300,
-                    title: "Third".into(),
-                    tile: TileContent::Stub {
-                        kind: AppKind::Other("Notes".into()),
-                        label: "third".into(),
-                    },
-                }],
-                active_tab: 300,
-                width: StateWidth::Normal,
-                maximized: false,
-            }],
-        });
-        tree.persist_path = Some(path.clone());
-        tree.flush_to_disk();
-        let chrome = ChromeState::new(tree);
-
-        chrome
-            .borrow_mut()
-            .focus_tab(workspace, first_strip, first_group, 200);
-        let restarted = crate::shell::persist::load_tree_from(&path).expect("focus state");
-        assert_eq!(
-            restarted.desktop.active_group_for(first_strip),
-            Some(first_group)
-        );
-        assert_eq!(
-            restarted.desktop.workspaces[0].strips[0].window_groups[0].active_tab,
-            200
-        );
-
-        assert!(chrome.borrow_mut().focus_strip_index(1));
-        let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
-        assert_eq!(
-            restarted.desktop.active_strip.get(&workspace),
-            Some(&second_strip)
-        );
-    }
-
-    #[test]
-    fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
-        let dir = tempfile::tempdir().expect("state dir");
-        let path = dir.path().join("workspace.json");
-        let mut tree = tree_with(100);
-        let room = tree.desktop.workspaces[0].room;
-        tree.persist_path = Some(path.clone());
-        tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
-        tree.flush_to_disk();
-
-        // Establish a real shared-room lineage before the rename. Merely
-        // assigning the same RoomId to two independently-seeded documents
-        // creates concurrent `name` values; that is not how a peer joins and
-        // cannot prove which later edit should win.
-        let mut replica = tree_with(100);
-        let replica_workspace = replica.desktop.active;
-        assert!(replica.set_room(replica_workspace, room));
-        let baseline = tree
-            .export_room_changes_since(room, &[])
-            .expect("host room baseline");
-        replica
-            .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
-            .expect("guest joins host room");
-        assert_eq!(replica.desktop.active_workspace().unwrap().name, "Home");
-        let replica_heads = replica.room_heads(room);
-
-        let chrome = ChromeState::new_with_fixture_handle(
-            tree.shared(),
-            crate::shell::hosted_inputs::HostedTileInputs::fixture()
-                .expect("hosted fixture inputs"),
-        );
-        {
-            let mut state = chrome.borrow_mut();
-            assert!(state.can_rename_active_workspace());
-            state.editing_workspace_name = Some("  Project Aurora  ".into());
-            state.commit_workspace_name();
+    fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
+        fn active_app_title_follows_group_active_tab() {
+            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
-        let restarted = crate::shell::persist::load_tree_from(&path).expect("renamed state");
-        assert_eq!(
-            restarted.desktop.active_workspace().unwrap().name,
-            "Project Aurora"
-        );
-        let changes = chrome
-            .borrow()
-            .tree_mut()
-            .export_room_changes_since(room, &replica_heads)
-            .expect("room rename delta");
-        assert!(
-            !changes.is_empty(),
-            "the rename must enter the room document"
-        );
-        replica
-            .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
-            .expect("room merge");
-        assert_eq!(replica.desktop.workspaces[0].name, "Project Aurora");
+        fn active_tab_id_matches_the_active_tab_pointer() {
+            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_tab_id(), Some(100));
+        }
+
+        fn no_active_returns_none_instead_of_first_group() {
+            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_tab_id(), None);
+            assert!(st.active_app_title().is_none());
+        }
+
+        fn without_active_strip_returns_none_not_first_strip() {
+            let mut tree = tree_with(100);
+            tree.desktop.active_strip.clear();
+            let handle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
+            assert_eq!(st.active_tab_id(), None);
+        }
+
+        fn switching_strips_moves_focus_and_clamps_at_the_ends() {
+            let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let mut st = cell.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                let base = ws.strips.len();
+                for n in 0..3u64 {
+                    let id = StripId(9000 + n);
+                    ws.strips.push(Strip::new(id, format!("Extra {n}")));
+                }
+                drop(tree);
+                assert!(base + 3 >= 4, "fixture needs at least four strips");
+            }
+            st.bump();
+
+            let (count, focused) = st.strip_focus();
+            assert!(
+                count >= 4,
+                "fixture should hold at least four strips, saw {count}"
+            );
+            assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
+
+            assert!(
+                st.switch_strip(1),
+                "moving down a strip should change focus"
+            );
+            assert_eq!(st.strip_focus().1, 1);
+
+            assert!(st.switch_strip(1));
+            assert_eq!(st.strip_focus().1, 2);
+
+            assert!(st.switch_strip(-1));
+            assert_eq!(st.strip_focus().1, 1);
+
+            // Clamps rather than wrapping, matching workspace switching.
+            while st.switch_strip(-1) {}
+            assert_eq!(st.strip_focus().1, 0);
+            assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
+
+            while st.switch_strip(1) {}
+            assert_eq!(st.strip_focus().1, count - 1);
+            assert!(!st.switch_strip(1), "focus wrapped past the last strip");
+        }
+
+        fn focusing_a_strip_by_index_selects_that_strip() {
+            let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let mut st = cell.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                for n in 0..3u64 {
+                    ws.strips
+                        .push(Strip::new(StripId(9100 + n), format!("S{n}")));
+                }
+                drop(tree);
+            }
+            let (count, _) = st.strip_focus();
+            for i in 0..count {
+                st.focus_strip_index(i);
+                assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
+            }
+            // Out of range is a no-op, not a panic and not a silent clamp.
+            let before = st.strip_focus().1;
+            assert!(!st.focus_strip_index(count + 5));
+            assert_eq!(st.strip_focus().1, before);
+        }
+
+        active_app_title_follows_group_active_tab();
+        active_tab_id_matches_the_active_tab_pointer();
+        no_active_returns_none_instead_of_first_group();
+        without_active_strip_returns_none_not_first_strip();
+        switching_strips_moves_focus_and_clamps_at_the_ends();
+        focusing_a_strip_by_index_selects_that_strip();
     }
 
     #[test]
-    fn no_active_returns_none_instead_of_first_group() {
-        let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), None);
-        assert!(st.active_app_title().is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn focus_and_workspace_names_survive_restart_and_replicate() {
+        fn focus_tab_and_strip_focus_survive_restart() {
+            let dir = tempfile::tempdir().expect("state dir");
+            let path = dir.path().join("workspace.json");
+            let mut tree = tree_with(100);
+            let workspace = tree.desktop.active;
+            let first_strip = tree.desktop.workspaces[0].strips[0].id;
+            let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+            let second_strip = StripId::new();
+            let second_group = 81;
+            tree.desktop.workspaces[0].strips.push(Strip {
+                id: second_strip,
+                name: "Other".into(),
+                window_groups: vec![StateGroup {
+                    id: second_group,
+                    tabs: vec![Tab {
+                        id: 300,
+                        title: "Third".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".into()),
+                            label: "third".into(),
+                        },
+                    }],
+                    active_tab: 300,
+                    width: StateWidth::Normal,
+                    maximized: false,
+                }],
+            });
+            tree.persist_path = Some(path.clone());
+            tree.flush_to_disk();
+            let chrome = ChromeState::new(tree);
 
-    #[test]
-    fn without_active_strip_returns_none_not_first_strip() {
-        let mut tree = tree_with(100);
-        tree.desktop.active_strip.clear();
-        let handle = Arc::new(RwLock::new(tree));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), None);
+            chrome
+                .borrow_mut()
+                .focus_tab(workspace, first_strip, first_group, 200);
+            let restarted = crate::shell::persist::load_tree_from(&path).expect("focus state");
+            assert_eq!(
+                restarted.desktop.active_group_for(first_strip),
+                Some(first_group)
+            );
+            assert_eq!(
+                restarted.desktop.workspaces[0].strips[0].window_groups[0].active_tab,
+                200
+            );
+
+            assert!(chrome.borrow_mut().focus_strip_index(1));
+            let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
+            assert_eq!(
+                restarted.desktop.active_strip.get(&workspace),
+                Some(&second_strip)
+            );
+        }
+
+        fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
+            let dir = tempfile::tempdir().expect("state dir");
+            let path = dir.path().join("workspace.json");
+            let mut tree = tree_with(100);
+            let room = tree.desktop.workspaces[0].room;
+            tree.persist_path = Some(path.clone());
+            tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+            tree.flush_to_disk();
+
+            // Establish a real shared-room lineage before the rename. Merely
+            // assigning the same RoomId to two independently-seeded documents
+            // creates concurrent `name` values; that is not how a peer joins and
+            // cannot prove which later edit should win.
+            let mut replica = tree_with(100);
+            let replica_workspace = replica.desktop.active;
+            assert!(replica.set_room(replica_workspace, room));
+            let baseline = tree
+                .export_room_changes_since(room, &[])
+                .expect("host room baseline");
+            replica
+                .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
+                .expect("guest joins host room");
+            assert_eq!(replica.desktop.active_workspace().unwrap().name, "Home");
+            let replica_heads = replica.room_heads(room);
+
+            let chrome = ChromeState::new_with_fixture_handle(
+                tree.shared(),
+                crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                    .expect("hosted fixture inputs"),
+            );
+            {
+                let mut state = chrome.borrow_mut();
+                assert!(state.can_rename_active_workspace());
+                state.editing_workspace_name = Some("  Project Aurora  ".into());
+                state.commit_workspace_name();
+            }
+
+            let restarted = crate::shell::persist::load_tree_from(&path).expect("renamed state");
+            assert_eq!(
+                restarted.desktop.active_workspace().unwrap().name,
+                "Project Aurora"
+            );
+            let changes = chrome
+                .borrow()
+                .tree_mut()
+                .export_room_changes_since(room, &replica_heads)
+                .expect("room rename delta");
+            assert!(
+                !changes.is_empty(),
+                "the rename must enter the room document"
+            );
+            replica
+                .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
+                .expect("room merge");
+            assert_eq!(replica.desktop.workspaces[0].name, "Project Aurora");
+        }
+
+        focus_tab_and_strip_focus_survive_restart();
+        committed_workspace_name_survives_restart_and_replicates_to_a_room_peer();
     }
 
     /// A tree with one strip/group holding `tile`, plus the ids to
@@ -3212,226 +3306,169 @@ mod active_tab_tests {
     }
 
     #[test]
-    fn history_file_drop_creates_only_the_new_tabs_record() {
-        let (tree, strip, group, existing) = tree_with_single_tab(TileContent::AppPlaceholder {
-            kind: AppKind::Other("Notes".into()),
-            label: "Existing".into(),
-        });
-        let chrome = ChromeState::new(tree);
-        let mut state = chrome.borrow_mut();
-        let first = state
-            .handle_file_drop(std::path::Path::new("/missing/example.txt"))
-            .unwrap();
-        let second = state
-            .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
-            .unwrap();
-        for id in [first, second] {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn dropped_files_create_only_new_records_and_grant_the_real_app_id() {
+        fn history_file_drop_creates_only_the_new_tabs_record() {
+            let (tree, strip, group, existing) =
+                tree_with_single_tab(TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Notes".into()),
+                    label: "Existing".into(),
+                });
+            let chrome = ChromeState::new(tree);
+            let mut state = chrome.borrow_mut();
+            let first = state
+                .handle_file_drop(std::path::Path::new("/missing/example.txt"))
+                .unwrap();
+            let second = state
+                .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
+                .unwrap();
+            for id in [first, second] {
+                assert!(
+                    state
+                        .records()
+                        .read(&ui::RecordId::for_tab(id), |_| ())
+                        .is_some(),
+                    "a successful drop owns its newly minted scratch record"
+                );
+            }
             assert!(
                 state
                     .records()
-                    .read(&ui::RecordId::for_tab(id), |_| ())
-                    .is_some(),
-                "a successful drop owns its newly minted scratch record"
+                    .read(&ui::RecordId::for_tab(existing), |_| ())
+                    .is_none(),
+                "a drop never authorizes repairing a missing persisted sibling"
             );
         }
-        assert!(
-            state
-                .records()
-                .read(&ui::RecordId::for_tab(existing), |_| ())
-                .is_none(),
-            "a drop never authorizes repairing a missing persisted sibling"
-        );
-    }
 
-    /// Gap-2 proof: when the drop target is a real adopted Wayland client,
-    /// the recorded grant is keyed by that client's actual
-    /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
-    #[test]
-    fn dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id() {
-        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
-            app_id: "org.gimp.GIMP".into(),
-            surface_id: 77,
-        });
-        let ws_id = tree.desktop.active;
-        let handle = Arc::new(RwLock::new(tree));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-
-        let path = std::path::Path::new("/drop/photo.xcf");
-        st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
-
-        let guard = st.tree();
-        let ws = guard
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws_id)
-            .unwrap();
-        let grants = ws.app_grants_snapshot();
-        drop(guard);
-        let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
-            panic!(
-                "grant must be keyed by the foreign client's real app-id; \
-                 grants = {grants:?}"
-            )
-        });
-        assert!(
-            caps.iter().any(|c| matches!(
-                c,
-                Capability::Filesystem { path: p, .. } if p == path
-            )),
-            "the dropped path must be recorded as a Filesystem grant: {caps:?}"
-        );
-        assert!(
-            !grants.contains_key("Foreign"),
-            "grant must not be keyed by a display label: {grants:?}"
-        );
-    }
-
-    /// A built-in app (no `set_app_id`) is keyed by its canonical
-    /// reverse-DNS app-id, not the display label.
-    #[test]
-    fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
-        let (tree, strip_id, group_id, tab_id) =
-            tree_with_single_tab(TileContent::AppPlaceholder {
-                kind: AppKind::Other("Editor".into()),
-                label: "notes.ts".into(),
+        /// Gap-2 proof: when the drop target is a real adopted Wayland client,
+        /// the recorded grant is keyed by that client's actual
+        /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
+        fn dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id() {
+            let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 77,
             });
-        let ws_id = tree.desktop.active;
-        let handle = Arc::new(RwLock::new(tree));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
+            let ws_id = tree.desktop.active;
+            let handle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
 
-        let path = std::path::Path::new("/drop/notes.ts");
-        st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
+            let path = std::path::Path::new("/drop/photo.xcf");
+            st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
 
-        let guard = st.tree();
-        let ws = guard
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.id == ws_id)
-            .unwrap();
-        let grants = ws.app_grants_snapshot();
-        drop(guard);
-        assert!(
-            grants.contains_key("org.tilo.Editor"),
-            "built-in Editor must be keyed by its canonical app-id; \
-             grants = {grants:?}"
-        );
-        assert!(
-            !grants.contains_key("Editor"),
-            "the display label 'Editor' must no longer be a grant key: {grants:?}"
-        );
-    }
-
-    #[test]
-    fn switching_strips_moves_focus_and_clamps_at_the_ends() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
-            let base = ws.strips.len();
-            for n in 0..3u64 {
-                let id = StripId(9000 + n);
-                ws.strips.push(Strip::new(id, format!("Extra {n}")));
-            }
-            drop(tree);
-            assert!(base + 3 >= 4, "fixture needs at least four strips");
+            let guard = st.tree();
+            let ws = guard
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .unwrap();
+            let grants = ws.app_grants_snapshot();
+            drop(guard);
+            let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
+                panic!(
+                    "grant must be keyed by the foreign client's real app-id; \
+                     grants = {grants:?}"
+                )
+            });
+            assert!(
+                caps.iter().any(|c| matches!(
+                    c,
+                    Capability::Filesystem { path: p, .. } if p == path
+                )),
+                "the dropped path must be recorded as a Filesystem grant: {caps:?}"
+            );
+            assert!(
+                !grants.contains_key("Foreign"),
+                "grant must not be keyed by a display label: {grants:?}"
+            );
         }
-        st.bump();
 
-        let (count, focused) = st.strip_focus();
-        assert!(
-            count >= 4,
-            "fixture should hold at least four strips, saw {count}"
-        );
-        assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
+        /// A built-in app (no `set_app_id`) is keyed by its canonical
+        /// reverse-DNS app-id, not the display label.
+        fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
+            let (tree, strip_id, group_id, tab_id) =
+                tree_with_single_tab(TileContent::AppPlaceholder {
+                    kind: AppKind::Other("Editor".into()),
+                    label: "notes.ts".into(),
+                });
+            let ws_id = tree.desktop.active;
+            let handle = Arc::new(RwLock::new(tree));
+            let chrome = ChromeState::new_with_handle(handle);
+            let st = chrome.borrow();
 
-        assert!(
-            st.switch_strip(1),
-            "moving down a strip should change focus"
-        );
-        assert_eq!(st.strip_focus().1, 1);
+            let path = std::path::Path::new("/drop/notes.ts");
+            st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
 
-        assert!(st.switch_strip(1));
-        assert_eq!(st.strip_focus().1, 2);
-
-        assert!(st.switch_strip(-1));
-        assert_eq!(st.strip_focus().1, 1);
-
-        // Clamps rather than wrapping, matching workspace switching.
-        while st.switch_strip(-1) {}
-        assert_eq!(st.strip_focus().1, 0);
-        assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
-
-        while st.switch_strip(1) {}
-        assert_eq!(st.strip_focus().1, count - 1);
-        assert!(!st.switch_strip(1), "focus wrapped past the last strip");
-    }
-
-    #[test]
-    fn focusing_a_strip_by_index_selects_that_strip() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
-            for n in 0..3u64 {
-                ws.strips
-                    .push(Strip::new(StripId(9100 + n), format!("S{n}")));
-            }
-            drop(tree);
+            let guard = st.tree();
+            let ws = guard
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .unwrap();
+            let grants = ws.app_grants_snapshot();
+            drop(guard);
+            assert!(
+                grants.contains_key("org.tilo.Editor"),
+                "built-in Editor must be keyed by its canonical app-id; \
+                 grants = {grants:?}"
+            );
+            assert!(
+                !grants.contains_key("Editor"),
+                "the display label 'Editor' must no longer be a grant key: {grants:?}"
+            );
         }
-        let (count, _) = st.strip_focus();
-        for i in 0..count {
-            st.focus_strip_index(i);
-            assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
+
+        history_file_drop_creates_only_the_new_tabs_record();
+        dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id();
+        dropped_file_grant_keyed_by_builtin_canonical_app_id();
+    }
+
+    #[test]
+    fn chrome_invalidation_and_exposure_snapshots_are_edge_triggered() {
+        fn broker_tree_epoch_invalidates_chrome_exactly_once() {
+            let cell = ChromeState::new(WorkspaceTree::default());
+            let mut state = cell.borrow_mut();
+            let initial = state.revision;
+            assert!(!state.sync_external_tree_revision());
+            state.tree_mut().desktop.external_revision = 1;
+            assert!(state.sync_external_tree_revision());
+            assert_eq!(state.revision, initial.wrapping_add(1));
+            assert!(!state.sync_external_tree_revision());
+            assert_eq!(state.revision, initial.wrapping_add(1));
         }
-        // Out of range is a no-op, not a panic and not a silent clamp.
-        let before = st.strip_focus().1;
-        assert!(!st.focus_strip_index(count + 5));
-        assert_eq!(st.strip_focus().1, before);
-    }
 
-    #[test]
-    fn broker_tree_epoch_invalidates_chrome_exactly_once() {
-        let cell = ChromeState::new(WorkspaceTree::default());
-        let mut state = cell.borrow_mut();
-        let initial = state.revision;
-        assert!(!state.sync_external_tree_revision());
-        state.tree_mut().desktop.external_revision = 1;
-        assert!(state.sync_external_tree_revision());
-        assert_eq!(state.revision, initial.wrapping_add(1));
-        assert!(!state.sync_external_tree_revision());
-        assert_eq!(state.revision, initial.wrapping_add(1));
-    }
+        fn active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered() {
+            let cell = ChromeState::new(WorkspaceTree::default());
+            let mut state = cell.borrow_mut();
+            let initial = state.revision;
+            let a = ActiveExposure {
+                peer: 9,
+                surface: 42,
+                can_control: true,
+            };
+            let b = ActiveExposure {
+                peer: 3,
+                surface: 77,
+                can_control: false,
+            };
+            state.set_active_exposures(vec![a, b, a]);
+            assert_eq!(state.active_exposures(), &[b, a]);
+            assert_eq!(state.revision, initial.wrapping_add(1));
 
-    #[test]
-    fn active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered() {
-        let cell = ChromeState::new(WorkspaceTree::default());
-        let mut state = cell.borrow_mut();
-        let initial = state.revision;
-        let a = ActiveExposure {
-            peer: 9,
-            surface: 42,
-            can_control: true,
-        };
-        let b = ActiveExposure {
-            peer: 3,
-            surface: 77,
-            can_control: false,
-        };
-        state.set_active_exposures(vec![a, b, a]);
-        assert_eq!(state.active_exposures(), &[b, a]);
-        assert_eq!(state.revision, initial.wrapping_add(1));
+            state.set_active_exposures(vec![a, b]);
+            assert_eq!(
+                state.revision,
+                initial.wrapping_add(1),
+                "an unchanged authority snapshot must not force a frame"
+            );
+        }
 
-        state.set_active_exposures(vec![a, b]);
-        assert_eq!(
-            state.revision,
-            initial.wrapping_add(1),
-            "an unchanged authority snapshot must not force a frame"
-        );
+        broker_tree_epoch_invalidates_chrome_exactly_once();
+        active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered();
     }
 }

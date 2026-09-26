@@ -1,4 +1,14 @@
+/// The native input observer across fixture reload, wheel + selection,
+/// logical-cursor tracking and the not-ready states — each phase on its own
+/// temp directory and harness.
 #[test]
+fn native_observer_tracks_fixture_reload_wheel_selection_and_pointer() {
+    native_fixture_reloads_real_files_and_refuses_existing_directory();
+    native_observer_follows_actual_wheel_and_selection();
+    native_pointer_observer_tracks_logical_cursor_and_survives_rebuild();
+    native_observer_is_not_ready_before_layout_or_on_load_error();
+}
+
 fn native_fixture_reloads_real_files_and_refuses_existing_directory() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("fixture");
@@ -56,7 +66,6 @@ fn native_fixture_reloads_real_files_and_refuses_existing_directory() {
     assert_ne!(changed["order_hash"], snapshot["order_hash"]);
 }
 
-#[test]
 fn native_observer_follows_actual_wheel_and_selection() {
     let temp = tempfile::tempdir().unwrap();
     for index in 0..1200 {
@@ -124,7 +133,6 @@ fn native_observer_follows_actual_wheel_and_selection() {
     );
 }
 
-#[test]
 fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
     let temp = tempfile::tempdir().unwrap();
     for index in 0..100 {
@@ -175,7 +183,6 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
     assert_eq!(outside["offset_y"], moved["offset_y"]);
 }
 
-#[test]
 fn native_observer_is_not_ready_before_layout_or_on_load_error() {
     let mut widget = FileExplorerWidget::with_persistence(None, None);
     let doc = automerge::AutoCommit::new();
@@ -194,7 +201,14 @@ fn native_observer_is_not_ready_before_layout_or_on_load_error() {
     assert_eq!(snapshot["has_error"], true);
 }
 
+/// Each phase builds its own harness; `ACCESSIBILITY_BUILDS` is reset by the
+/// phase that counts it.
 #[test]
+fn control_presence_matches_inventory_without_materializing_files() {
+    control_presence_real_files_scroll_skips_file_accessibility_but_inventory_keeps_it();
+    control_presence_files_collaboration_panel_matches_inventory();
+}
+
 fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_keeps_it() {
     use crate::views::file_view::ACCESSIBILITY_BUILDS;
     let temp = tempfile::tempdir().unwrap();
@@ -265,7 +279,6 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
     );
 }
 
-#[test]
 fn control_presence_files_collaboration_panel_matches_inventory() {
     let mut h = H::new(None, 1200.0, 720.0);
     for modal in [false, true, false] {

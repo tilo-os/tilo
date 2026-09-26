@@ -2548,55 +2548,91 @@ mod tests {
         }
     }
 
+    /// Volume, mute and input sliders dispatch; replicated latches are inert.
     #[test]
-    fn volume_slider_invokes_set_volume_on_drag() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, VOLUME_KEY, automerge::ScalarValue::F64(0.30));
-        pane.sync(&mut doc, &root);
-        let calls = rec.calls();
-        assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
-        assert!(calls[0].starts_with("set_volume("));
-        assert!(calls[0].contains("30."), "expected 30 in {:?}", calls[0]);
-    }
+    fn audio_device_controls_dispatch_only_local_intent() {
+        // Case `volume_slider_invokes_set_volume_on_drag`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, VOLUME_KEY, automerge::ScalarValue::F64(0.30));
+            pane.sync(&mut doc, &root);
+            let calls = rec.calls();
+            assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
+            assert!(calls[0].starts_with("set_volume("));
+            assert!(calls[0].contains("30."), "expected 30 in {:?}", calls[0]);
+        }
 
-    #[test]
-    fn mute_toggle_sets_the_requested_state() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, MUTED_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        let calls = rec.calls();
-        assert_eq!(calls, vec!["set_mute(true)"]);
-    }
+        // Case `mute_toggle_sets_the_requested_state`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, MUTED_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            let calls = rec.calls();
+            assert_eq!(calls, vec!["set_mute(true)"]);
+        }
 
-    #[test]
-    fn replicated_audio_latches_are_inert_without_a_local_token() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-        let commands = ui::LocalState::new(None);
-        let mut pane =
-            AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                .with_command_state(&commands)
-                .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let initial_heads = doc.get_heads();
-        pane.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), initial_heads);
-        let _ = doc.put(&root, VOLUME_KEY, 0.9);
-        let _ = doc.put(&root, MUTED_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(rec.calls().is_empty());
-        assert!(!pane.last_muted);
+        // Case `replicated_audio_latches_are_inert_without_a_local_token`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+            let commands = ui::LocalState::new(None);
+            let mut pane =
+                AudioPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                    .with_command_state(&commands)
+                    .with_operation_status(&status);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let initial_heads = doc.get_heads();
+            pane.sync(&mut doc, &root);
+            assert_eq!(doc.get_heads(), initial_heads);
+            let _ = doc.put(&root, VOLUME_KEY, 0.9);
+            let _ = doc.put(&root, MUTED_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert!(rec.calls().is_empty());
+            assert!(!pane.last_muted);
+        }
+
+        // Case `input_slider_invokes_input_control_on_drag`.
+        // The input-level slider forwards the new gain to the microphone
+        // `InputControl` exactly once per change, and not while it rests.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let input = Arc::new(RecordingInput::default());
+            let mut pane = AudioPane::with_controls(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                input.clone(),
+                0.5,
+                0.75,
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(
+                input.calls.lock().unwrap().is_empty(),
+                "seed must not dispatch"
+            );
+            // User drags the input slider to 40%.
+            let _ = doc.put(&root, INPUT_VOLUME_KEY, automerge::ScalarValue::F64(0.40));
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent while at rest
+            let calls = input.calls.lock().unwrap().clone();
+            assert_eq!(calls.len(), 1, "one input dispatch per change: {calls:?}");
+            assert!(
+                (calls[0] - 40.0).abs() < 0.5,
+                "expected ~40%, got {}",
+                calls[0]
+            );
+        }
     }
 
     /// Records the device ids a `set_default` call switches to, so the picker
@@ -2638,104 +2674,147 @@ Video
 "
     }
 
+    /// wpctl parsing, default sink/source switching, profiles and the persisted default.
     #[test]
-    fn parse_wpctl_status_extracts_sinks_sources_and_default() {
-        let d = parse_wpctl_status(sample_status());
-        assert_eq!(d.sinks.len(), 2, "sinks: {:?}", d.sinks);
-        assert_eq!(d.sources.len(), 2, "sources: {:?}", d.sources);
-        assert_eq!(d.sinks[0].id, 51);
-        assert_eq!(d.sinks[0].name, "Built-in Audio Analog Stereo");
-        assert!(d.sinks[0].default, "the * marks the default sink");
-        assert_eq!(d.sinks[1].name, "HDMI / DisplayPort");
-        assert!(!d.sinks[1].default);
-        assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
-        // The camera in the Video section must not leak into audio devices.
-        assert!(!d.sources.iter().any(|s| s.name.contains("Camera")));
-        assert_eq!(d.sources[1].id, 54);
-        assert_eq!(d.sources[1].name, "USB Microphone");
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn audio_devices_parse_and_default_selection_switches_once() {
+        // Case `parse_wpctl_status_extracts_sinks_sources_and_default`.
+        {
+            let d = parse_wpctl_status(sample_status());
+            assert_eq!(d.sinks.len(), 2, "sinks: {:?}", d.sinks);
+            assert_eq!(d.sources.len(), 2, "sources: {:?}", d.sources);
+            assert_eq!(d.sinks[0].id, 51);
+            assert_eq!(d.sinks[0].name, "Built-in Audio Analog Stereo");
+            assert!(d.sinks[0].default, "the * marks the default sink");
+            assert_eq!(d.sinks[1].name, "HDMI / DisplayPort");
+            assert!(!d.sinks[1].default);
+            assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
+            // The camera in the Video section must not leak into audio devices.
+            assert!(!d.sources.iter().any(|s| s.name.contains("Camera")));
+            assert_eq!(d.sources[1].id, 54);
+            assert_eq!(d.sources[1].name, "USB Microphone");
+        }
 
-    #[test]
-    fn parse_wpctl_status_empty_when_no_audio() {
-        assert_eq!(parse_wpctl_status(""), AudioDevices::default());
-    }
+        // Case `parse_wpctl_status_empty_when_no_audio`.
+        {
+            assert_eq!(parse_wpctl_status(""), AudioDevices::default());
+        }
 
-    /// Choosing a different output device runs `set-default` with that sink's
-    /// node id exactly once, and not again while it rests.
-    #[test]
-    fn selecting_output_device_switches_default_once() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let dev = Arc::new(RecordingDevice::default());
-        let devices = parse_wpctl_status(sample_status());
-        let mut pane = AudioPane::with_controls(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            Arc::new(RealInput),
-            0.5,
-            0.75,
-        )
-        .with_devices(devices, dev.clone() as Arc<dyn DeviceControl>);
-        assert_eq!(pane.devices().sinks.len(), 2, "picker has both sinks");
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(dev.calls.lock().unwrap().is_empty(), "seed must not switch");
-        // Pick the HDMI sink (node 52).
-        let _ = doc.put(&root, OUTPUT_DEVICE_KEY, "HDMI / DisplayPort");
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent at rest
-        assert_eq!(dev.calls.lock().unwrap().as_slice(), [52]);
-    }
+        // Case `selecting_output_device_switches_default_once`.
+        // Choosing a different output device runs `set-default` with that sink's
+        // node id exactly once, and not again while it rests.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let dev = Arc::new(RecordingDevice::default());
+            let devices = parse_wpctl_status(sample_status());
+            let mut pane = AudioPane::with_controls(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                Arc::new(RealInput),
+                0.5,
+                0.75,
+            )
+            .with_devices(devices, dev.clone() as Arc<dyn DeviceControl>);
+            assert_eq!(pane.devices().sinks.len(), 2, "picker has both sinks");
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(dev.calls.lock().unwrap().is_empty(), "seed must not switch");
+            // Pick the HDMI sink (node 52).
+            let _ = doc.put(&root, OUTPUT_DEVICE_KEY, "HDMI / DisplayPort");
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent at rest
+            assert_eq!(dev.calls.lock().unwrap().as_slice(), [52]);
+        }
 
-    #[test]
-    fn selecting_input_device_switches_source_default() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let dev = Arc::new(RecordingDevice::default());
-        let devices = parse_wpctl_status(sample_status());
-        let mut pane = AudioPane::with_controls(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            Arc::new(RealInput),
-            0.5,
-            0.75,
-        )
-        .with_devices(devices, dev.clone() as Arc<dyn DeviceControl>);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, INPUT_DEVICE_KEY, "USB Microphone");
-        pane.sync(&mut doc, &root);
-        assert_eq!(dev.calls.lock().unwrap().as_slice(), [54]);
-    }
+        // Case `selecting_input_device_switches_source_default`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let dev = Arc::new(RecordingDevice::default());
+            let devices = parse_wpctl_status(sample_status());
+            let mut pane = AudioPane::with_controls(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                Arc::new(RealInput),
+                0.5,
+                0.75,
+            )
+            .with_devices(devices, dev.clone() as Arc<dyn DeviceControl>);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, INPUT_DEVICE_KEY, "USB Microphone");
+            pane.sync(&mut doc, &root);
+            assert_eq!(dev.calls.lock().unwrap().as_slice(), [54]);
+        }
 
-    /// The input-level slider forwards the new gain to the microphone
-    /// `InputControl` exactly once per change, and not while it rests.
-    #[test]
-    fn input_slider_invokes_input_control_on_drag() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let input = Arc::new(RecordingInput::default());
-        let mut pane = AudioPane::with_controls(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            input.clone(),
-            0.5,
-            0.75,
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(
-            input.calls.lock().unwrap().is_empty(),
-            "seed must not dispatch"
-        );
-        // User drags the input slider to 40%.
-        let _ = doc.put(&root, INPUT_VOLUME_KEY, automerge::ScalarValue::F64(0.40));
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent while at rest
-        let calls = input.calls.lock().unwrap().clone();
-        assert_eq!(calls.len(), 1, "one input dispatch per change: {calls:?}");
-        assert!(
-            (calls[0] - 40.0).abs() < 0.5,
-            "expected ~40%, got {}",
-            calls[0]
-        );
+        // Case `selecting_reported_profile_dispatches_real_pipewire_index`.
+        {
+            let rec = Arc::new(RecordingGraph::default());
+            let mut graph = graph_two_sinks_one_stream();
+            graph.hardware.push(AudioHardwareDevice {
+                id: 7,
+                description: "Headset".into(),
+                active_profile: Some(1),
+                profiles: vec![
+                    DeviceProfile {
+                        index: 1,
+                        name: "a2dp".into(),
+                        description: "High Fidelity".into(),
+                        available: true,
+                    },
+                    DeviceProfile {
+                        index: 2,
+                        name: "hfp".into(),
+                        description: "Headset microphone".into(),
+                        available: true,
+                    },
+                ],
+            });
+            let disp = Arc::new(RecordingDispatcher::default());
+            let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+                .with_graph(graph, rec.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, device_profile_key(7), "Headset microphone");
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert_eq!(rec.calls(), vec!["profile(7,2)"]);
+        }
+
+        // Case `choosing_a_default_sink_persists_the_preference`.
+        {
+            // Redirect the config dir so this never touches the real settings.json.
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let dev = Arc::new(RecordingDevice::default());
+            let devices = parse_wpctl_status(sample_status());
+            let mut pane = AudioPane::with_controls(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                Arc::new(RealInput),
+                0.5,
+                0.75,
+            )
+            .with_devices(devices, dev as Arc<dyn DeviceControl>);
+            // Enable the real persist path for this test (the test constructors
+            // disable it so the suite never writes real prefs).
+            pane.persist_prefs = true;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Choose the HDMI output as the default sink.
+            let _ = doc.put(&root, OUTPUT_DEVICE_KEY, "HDMI / DisplayPort");
+            pane.sync(&mut doc, &root);
+            // The choice survives to the shared prefs store.
+            let saved = SystemPrefs::load().audio.output_device;
+            assert_eq!(
+                saved.as_deref(),
+                Some("HDMI / DisplayPort"),
+                "default sink preference persisted"
+            );
+        }
     }
 
     // --- Per-application routing -------------------------------------------
@@ -2845,156 +2924,212 @@ Video
         .with_graph(graph_two_sinks_one_stream(), gctl)
     }
 
+    /// Bounded diagnostics, hotplugged sinks, and balance/mono persistence without owning the transform.
     #[test]
-    fn diagnostics_are_bounded_while_persistent_transforms_have_no_pane_owner() {
-        let drops = Arc::new(AtomicUsize::new(0));
-        let runtime = Arc::new(RecordingRuntime {
-            calls: Mutex::new(vec![]),
-            drops: drops.clone(),
-        });
-        let mut graph = graph_two_sinks_one_stream();
-        graph.sources.push(media::audio::AudioDevice {
-            id: 52,
-            serial: 52,
-            name: "alsa_input.mic".into(),
-            description: "Microphone".into(),
-            is_default: true,
-            volume: Some(0.7),
-            muted: Some(false),
-            channels: 1,
-            codec: None,
-        });
-        let disp = Arc::new(RecordingDispatcher::default());
-        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-            .with_graph(graph, Arc::new(NoopGraphControl))
-            .with_runtime(runtime.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, BALANCE_KEY, 0.75);
-        let _ = doc.put(&root, MONO_KEY, true);
-        let _ = doc.put(&root, TEST_LEFT_KEY, true);
-        let _ = doc.put(&root, MIC_TEST_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            runtime.calls.lock().unwrap().as_slice(),
-            ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
-        );
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
-        drop(pane);
-        assert_eq!(
-            drops.load(Ordering::SeqCst),
-            2,
-            "only bounded tone and mic diagnostics belong to this pane"
-        );
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn audio_diagnostics_hotplug_and_transforms_stay_bounded() {
+        // Case `diagnostics_are_bounded_while_persistent_transforms_have_no_pane_owner`.
+        {
+            let drops = Arc::new(AtomicUsize::new(0));
+            let runtime = Arc::new(RecordingRuntime {
+                calls: Mutex::new(vec![]),
+                drops: drops.clone(),
+            });
+            let mut graph = graph_two_sinks_one_stream();
+            graph.sources.push(media::audio::AudioDevice {
+                id: 52,
+                serial: 52,
+                name: "alsa_input.mic".into(),
+                description: "Microphone".into(),
+                is_default: true,
+                volume: Some(0.7),
+                muted: Some(false),
+                channels: 1,
+                codec: None,
+            });
+            let disp = Arc::new(RecordingDispatcher::default());
+            let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+                .with_graph(graph, Arc::new(NoopGraphControl))
+                .with_runtime(runtime.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, BALANCE_KEY, 0.75);
+            let _ = doc.put(&root, MONO_KEY, true);
+            let _ = doc.put(&root, TEST_LEFT_KEY, true);
+            let _ = doc.put(&root, MIC_TEST_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                runtime.calls.lock().unwrap().as_slice(),
+                ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
+            );
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            drop(pane);
+            assert_eq!(
+                drops.load(Ordering::SeqCst),
+                2,
+                "only bounded tone and mic diagnostics belong to this pane"
+            );
+        }
+
+        // Case `hotplug_adds_a_newly_plugged_sink`.
+        {
+            // Start with only the Speakers sink; the graph the enumerator returns
+            // has gained a Headphones sink (a headset was plugged in).
+            let mut before = graph_two_sinks_one_stream();
+            before.sinks.retain(|d| d.description == "Speakers");
+            before.playback_streams.clear();
+            let after = {
+                let mut g = graph_two_sinks_one_stream();
+                g.playback_streams.clear();
+                g
+            };
+            let rec = Arc::new(RecordingGraph::default());
+            let disp = Arc::new(RecordingDispatcher::default());
+            let mut pane = AudioPane::with_controls(
+                disp as Arc<dyn Dispatcher + Send + Sync>,
+                Arc::new(RealInput),
+                0.5,
+                0.75,
+            )
+            .with_graph(before, rec)
+            .with_hotplug(Arc::new(Scripted {
+                seq: vec![after],
+                idx: Mutex::new(0),
+            }));
+            assert_eq!(pane.graph().sinks.len(), 1, "starts with one sink");
+
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root); // re-enumerates → adopts the plugged-in sink
+
+            assert_eq!(
+                pane.graph().sinks.len(),
+                2,
+                "the headset appeared in the graph"
+            );
+            assert!(
+                pane.graph()
+                    .sinks
+                    .iter()
+                    .any(|d| d.description == "Headphones")
+            );
+            // …and it is selectable in the output-device picker (device view).
+            assert_eq!(
+                pane.devices().sinks.len(),
+                2,
+                "the picker gained the headset"
+            );
+            assert!(pane.devices().sinks.iter().any(|d| d.name == "Headphones"));
+        }
+
+        // Case `balance_and_mono_persist_without_settings_owning_the_transform`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let runtime = Arc::new(RecordingRuntime {
+                calls: Mutex::new(Vec::new()),
+                drops: Arc::new(AtomicUsize::new(0)),
+            });
+            let disp = Arc::new(RecordingDispatcher::default());
+            let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+                .with_graph(graph_two_sinks_one_stream(), Arc::new(NoopGraphControl))
+                .with_runtime(runtime.clone());
+            pane.persist_prefs = true;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, BALANCE_KEY, 0.8);
+            let _ = doc.put(&root, MONO_KEY, true);
+            pane.sync(&mut doc, &root);
+
+            let saved = SystemPrefs::load().audio;
+            assert!((saved.balance - 0.8).abs() < 0.001);
+            assert!(saved.mono_output);
+            assert!(
+                runtime.calls.lock().unwrap().is_empty(),
+                "the compositor session, not Settings, actuates persistent transforms"
+            );
+        }
     }
 
+    /// Stream seeding rests; routing, unrouting, per-app volume and mute dispatch once.
     #[test]
-    fn selecting_reported_profile_dispatches_real_pipewire_index() {
-        let rec = Arc::new(RecordingGraph::default());
-        let mut graph = graph_two_sinks_one_stream();
-        graph.hardware.push(AudioHardwareDevice {
-            id: 7,
-            description: "Headset".into(),
-            active_profile: Some(1),
-            profiles: vec![
-                DeviceProfile {
-                    index: 1,
-                    name: "a2dp".into(),
-                    description: "High Fidelity".into(),
-                    available: true,
-                },
-                DeviceProfile {
-                    index: 2,
-                    name: "hfp".into(),
-                    description: "Headset microphone".into(),
-                    available: true,
-                },
-            ],
-        });
-        let disp = Arc::new(RecordingDispatcher::default());
-        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-            .with_graph(graph, rec.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, device_profile_key(7), "Headset microphone");
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert_eq!(rec.calls(), vec!["profile(7,2)"]);
-    }
+    fn per_app_streams_route_and_mix_once_each() {
+        // Case `stream_seed_rests_without_dispatch`.
+        {
+            let rec = Arc::new(RecordingGraph::default());
+            let mut pane = routing_pane(rec.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert!(
+                rec.calls().is_empty(),
+                "seeding a stream must dispatch nothing: {:?}",
+                rec.calls()
+            );
+            // The stream on the default sink seeds its picker to "Default".
+            assert_eq!(
+                read_str_or_text(&doc, &root, stream_sink_key(84)).as_deref(),
+                Some(FOLLOW_DEFAULT)
+            );
+        }
 
-    #[test]
-    fn stream_seed_rests_without_dispatch() {
-        let rec = Arc::new(RecordingGraph::default());
-        let mut pane = routing_pane(rec.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert!(
-            rec.calls().is_empty(),
-            "seeding a stream must dispatch nothing: {:?}",
-            rec.calls()
-        );
-        // The stream on the default sink seeds its picker to "Default".
-        assert_eq!(
-            read_str_or_text(&doc, &root, stream_sink_key(84)).as_deref(),
-            Some(FOLLOW_DEFAULT)
-        );
-    }
+        // Case `routing_one_app_to_a_sink_moves_only_that_stream_once`.
+        {
+            let rec = Arc::new(RecordingGraph::default());
+            let mut pane = routing_pane(rec.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Route just the music app to the Headphones sink.
+            let _ = doc.put(&root, stream_sink_key(84).as_str(), "Headphones");
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent at rest
+            // Headphones' object.serial is 269 — the routing handle, not its node id.
+            assert_eq!(rec.calls(), vec!["route(84,269)"]);
+        }
 
-    #[test]
-    fn routing_one_app_to_a_sink_moves_only_that_stream_once() {
-        let rec = Arc::new(RecordingGraph::default());
-        let mut pane = routing_pane(rec.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Route just the music app to the Headphones sink.
-        let _ = doc.put(&root, stream_sink_key(84).as_str(), "Headphones");
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent at rest
-        // Headphones' object.serial is 269 — the routing handle, not its node id.
-        assert_eq!(rec.calls(), vec!["route(84,269)"]);
-    }
+        // Case `routing_an_app_back_to_default_unroutes_it`.
+        {
+            let rec = Arc::new(RecordingGraph::default());
+            let mut pane = routing_pane(rec.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Move it off default…
+            let _ = doc.put(&root, stream_sink_key(84).as_str(), "Headphones");
+            pane.sync(&mut doc, &root);
+            // …then back to Default clears the explicit target.
+            let _ = doc.put(&root, stream_sink_key(84).as_str(), FOLLOW_DEFAULT);
+            pane.sync(&mut doc, &root);
+            assert_eq!(rec.calls(), vec!["route(84,269)", "unroute(84)"]);
+        }
 
-    #[test]
-    fn routing_an_app_back_to_default_unroutes_it() {
-        let rec = Arc::new(RecordingGraph::default());
-        let mut pane = routing_pane(rec.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Move it off default…
-        let _ = doc.put(&root, stream_sink_key(84).as_str(), "Headphones");
-        pane.sync(&mut doc, &root);
-        // …then back to Default clears the explicit target.
-        let _ = doc.put(&root, stream_sink_key(84).as_str(), FOLLOW_DEFAULT);
-        pane.sync(&mut doc, &root);
-        assert_eq!(rec.calls(), vec!["route(84,269)", "unroute(84)"]);
-    }
-
-    #[test]
-    fn per_app_volume_and_mute_dispatch_once_each() {
-        let rec = Arc::new(RecordingGraph::default());
-        let mut pane = routing_pane(rec.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            stream_volume_key(84).as_str(),
-            automerge::ScalarValue::F64(0.30),
-        );
-        let _ = doc.put(
-            &root,
-            stream_muted_key(84).as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root); // idempotent at rest
-        assert_eq!(rec.calls(), vec!["volume(84,0.30)", "mute(84,true)"]);
+        // Case `per_app_volume_and_mute_dispatch_once_each`.
+        {
+            let rec = Arc::new(RecordingGraph::default());
+            let mut pane = routing_pane(rec.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                stream_volume_key(84).as_str(),
+                automerge::ScalarValue::F64(0.30),
+            );
+            let _ = doc.put(
+                &root,
+                stream_muted_key(84).as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root); // idempotent at rest
+            assert_eq!(rec.calls(), vec!["volume(84,0.30)", "mute(84,true)"]);
+        }
     }
 
     /// A scripted enumerator: each `enumerate()` yields the next graph in the
@@ -3016,91 +3151,12 @@ Video
     }
 
     #[test]
-    fn hotplug_adds_a_newly_plugged_sink() {
-        // Start with only the Speakers sink; the graph the enumerator returns
-        // has gained a Headphones sink (a headset was plugged in).
-        let mut before = graph_two_sinks_one_stream();
-        before.sinks.retain(|d| d.description == "Speakers");
-        before.playback_streams.clear();
-        let after = {
-            let mut g = graph_two_sinks_one_stream();
-            g.playback_streams.clear();
-            g
-        };
-        let rec = Arc::new(RecordingGraph::default());
-        let disp = Arc::new(RecordingDispatcher::default());
-        let mut pane = AudioPane::with_controls(
-            disp as Arc<dyn Dispatcher + Send + Sync>,
-            Arc::new(RealInput),
-            0.5,
-            0.75,
-        )
-        .with_graph(before, rec)
-        .with_hotplug(Arc::new(Scripted {
-            seq: vec![after],
-            idx: Mutex::new(0),
-        }));
-        assert_eq!(pane.graph().sinks.len(), 1, "starts with one sink");
-
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // re-enumerates → adopts the plugged-in sink
-
-        assert_eq!(
-            pane.graph().sinks.len(),
-            2,
-            "the headset appeared in the graph"
-        );
+    fn reduce_echo_in_calls_round_trips_through_the_shared_store() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         assert!(
-            pane.graph()
-                .sinks
-                .iter()
-                .any(|d| d.description == "Headphones")
+            SystemPrefs::load().audio.echo_cancellation,
+            "calls are echo-cancelled until the person turns it off"
         );
-        // …and it is selectable in the output-device picker (device view).
-        assert_eq!(
-            pane.devices().sinks.len(),
-            2,
-            "the picker gained the headset"
-        );
-        assert!(pane.devices().sinks.iter().any(|d| d.name == "Headphones"));
-    }
-
-    #[test]
-    fn choosing_a_default_sink_persists_the_preference() {
-        // Redirect the config dir so this never touches the real settings.json.
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let rec = Arc::new(RecordingDispatcher::default());
-        let dev = Arc::new(RecordingDevice::default());
-        let devices = parse_wpctl_status(sample_status());
-        let mut pane = AudioPane::with_controls(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            Arc::new(RealInput),
-            0.5,
-            0.75,
-        )
-        .with_devices(devices, dev as Arc<dyn DeviceControl>);
-        // Enable the real persist path for this test (the test constructors
-        // disable it so the suite never writes real prefs).
-        pane.persist_prefs = true;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Choose the HDMI output as the default sink.
-        let _ = doc.put(&root, OUTPUT_DEVICE_KEY, "HDMI / DisplayPort");
-        pane.sync(&mut doc, &root);
-        // The choice survives to the shared prefs store.
-        let saved = SystemPrefs::load().audio.output_device;
-        assert_eq!(
-            saved.as_deref(),
-            Some("HDMI / DisplayPort"),
-            "default sink preference persisted"
-        );
-    }
-
-    #[test]
-    fn balance_and_mono_persist_without_settings_owning_the_transform() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let runtime = Arc::new(RecordingRuntime {
             calls: Mutex::new(Vec::new()),
             drops: Arc::new(AtomicUsize::new(0)),
@@ -3113,16 +3169,18 @@ Video
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, BALANCE_KEY, 0.8);
-        let _ = doc.put(&root, MONO_KEY, true);
-        pane.sync(&mut doc, &root);
+        assert_eq!(read_bool(&doc, &root, ECHO_CANCELLATION_KEY), Some(true));
 
-        let saved = SystemPrefs::load().audio;
-        assert!((saved.balance - 0.8).abs() < 0.001);
-        assert!(saved.mono_output);
+        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, false);
+        pane.sync(&mut doc, &root);
+        assert!(!SystemPrefs::load().audio.echo_cancellation);
+
+        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert!(SystemPrefs::load().audio.echo_cancellation);
         assert!(
             runtime.calls.lock().unwrap().is_empty(),
-            "the compositor session, not Settings, actuates persistent transforms"
+            "the compositor session, not Settings, owns the echo-cancelled microphone"
         );
     }
 
@@ -3184,39 +3242,5 @@ Video
         let _ = doc.put(&root, SOUND_THEME_KEY, "Not installed");
         pane.sync(&mut doc, &root);
         assert_eq!(SystemPrefs::load().audio.system_sounds, saved);
-    }
-
-    #[test]
-    fn reduce_echo_in_calls_round_trips_through_the_shared_store() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        assert!(
-            SystemPrefs::load().audio.echo_cancellation,
-            "calls are echo-cancelled until the person turns it off"
-        );
-        let runtime = Arc::new(RecordingRuntime {
-            calls: Mutex::new(Vec::new()),
-            drops: Arc::new(AtomicUsize::new(0)),
-        });
-        let disp = Arc::new(RecordingDispatcher::default());
-        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
-            .with_graph(graph_two_sinks_one_stream(), Arc::new(NoopGraphControl))
-            .with_runtime(runtime.clone());
-        pane.persist_prefs = true;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(read_bool(&doc, &root, ECHO_CANCELLATION_KEY), Some(true));
-
-        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, false);
-        pane.sync(&mut doc, &root);
-        assert!(!SystemPrefs::load().audio.echo_cancellation);
-
-        let _ = doc.put(&root, ECHO_CANCELLATION_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(SystemPrefs::load().audio.echo_cancellation);
-        assert!(
-            runtime.calls.lock().unwrap().is_empty(),
-            "the compositor session, not Settings, owns the echo-cancelled microphone"
-        );
     }
 }

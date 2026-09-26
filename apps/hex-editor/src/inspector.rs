@@ -271,89 +271,115 @@ fn printable_char(b: u8) -> String {
 mod tests {
     use super::*;
 
+    /// (case, bytes, endian, row label, expected value, expected width)
+    type InspectCase<'a> = (
+        &'a str,
+        &'a [u8],
+        Endian,
+        &'a str,
+        Option<&'a str>,
+        Option<usize>,
+    );
+
     #[test]
-    fn u16_respects_endianness() {
-        let bytes = [0x34, 0x12];
-        let le = inspect(&bytes, 0, Endian::Little);
-        let be = inspect(&bytes, 0, Endian::Big);
-        let le_u16 = le.iter().find(|r| r.label == "u16").unwrap();
-        let be_u16 = be.iter().find(|r| r.label == "u16").unwrap();
-        assert_eq!(le_u16.value, "4660"); // 0x1234
-        assert_eq!(be_u16.value, "13330"); // 0x3412
+    fn inspect_rows_decode_values_and_consumed_width() {
+        let one_le = 1.0f32.to_le_bytes();
+        let cases: &[InspectCase<'_>] = &[
+            // u16 respects endianness.
+            (
+                "u16 little",
+                &[0x34, 0x12],
+                Endian::Little,
+                "u16",
+                Some("4660"),
+                None,
+            ), // 0x1234
+            (
+                "u16 big",
+                &[0x34, 0x12],
+                Endian::Big,
+                "u16",
+                Some("13330"),
+                None,
+            ), // 0x3412
+            // i8 sign-extends while u8 does not.
+            (
+                "i8 of 0xFF",
+                &[0xFF],
+                Endian::Little,
+                "i8",
+                Some("-1"),
+                None,
+            ),
+            (
+                "u8 of 0xFF",
+                &[0xFF],
+                Endian::Little,
+                "u8",
+                Some("255"),
+                None,
+            ),
+            // Binary and octal of one byte.
+            (
+                "bin",
+                &[0b1010_0101],
+                Endian::Little,
+                "bin",
+                Some("10100101"),
+                None,
+            ),
+            (
+                "oct",
+                &[0b1010_0101],
+                Endian::Little,
+                "oct",
+                Some("0o245"),
+                None,
+            ),
+            // f32 round-trips 1.0.
+            ("f32 one", &one_le, Endian::Little, "f32", Some("1"), None),
+            // A short buffer yields dashes for wide types; u8 is still fine.
+            (
+                "short u32",
+                &[0x01],
+                Endian::Little,
+                "u32",
+                Some("—"),
+                Some(0),
+            ),
+            ("short u8", &[0x01], Endian::Little, "u8", Some("1"), None),
+            // The width marks consumed bytes.
+            ("u64 width", &[0; 8], Endian::Little, "u64", None, Some(8)),
+            ("u16 width", &[0; 8], Endian::Little, "u16", None, Some(2)),
+        ];
+        for (name, bytes, endian, label, value, width) in cases {
+            let rows = inspect(bytes, 0, *endian);
+            let row = rows
+                .iter()
+                .find(|r| r.label == *label)
+                .unwrap_or_else(|| panic!("case {name}: no {label} row"));
+            if let Some(value) = value {
+                assert_eq!(row.value, *value, "case {name}");
+            }
+            if let Some(width) = width {
+                assert_eq!(row.width, *width, "case {name}");
+            }
+        }
     }
 
     #[test]
-    fn i8_sign_extends() {
-        let bytes = [0xFF];
-        let rows = inspect(&bytes, 0, Endian::Little);
-        let i8 = rows.iter().find(|r| r.label == "i8").unwrap();
-        let u8 = rows.iter().find(|r| r.label == "u8").unwrap();
-        assert_eq!(i8.value, "-1");
-        assert_eq!(u8.value, "255");
-    }
-
-    #[test]
-    fn binary_and_octal_of_byte() {
-        let bytes = [0b1010_0101];
-        let rows = inspect(&bytes, 0, Endian::Little);
-        assert_eq!(
-            rows.iter().find(|r| r.label == "bin").unwrap().value,
-            "10100101"
-        );
-        assert_eq!(
-            rows.iter().find(|r| r.label == "oct").unwrap().value,
-            "0o245"
-        );
-    }
-
-    #[test]
-    fn f32_roundtrips_one() {
-        let bytes = 1.0f32.to_le_bytes();
-        let rows = inspect(&bytes, 0, Endian::Little);
-        assert_eq!(rows.iter().find(|r| r.label == "f32").unwrap().value, "1");
-    }
-
-    #[test]
-    fn short_buffer_yields_dashes_for_wide_types() {
-        let bytes = [0x01]; // only one byte
-        let rows = inspect(&bytes, 0, Endian::Little);
-        let u32 = rows.iter().find(|r| r.label == "u32").unwrap();
-        assert_eq!(u32.value, "—");
-        assert_eq!(u32.width, 0);
-        // u8 is still fine.
-        assert_eq!(rows.iter().find(|r| r.label == "u8").unwrap().value, "1");
-    }
-
-    #[test]
-    fn uleb128_multi_byte() {
+    fn leb128_decodes_multi_byte_and_negative_and_rejects_truncation() {
         // 624485 = 0xE5 0x8E 0x26 in ULEB128.
-        let bytes = [0xE5, 0x8E, 0x26];
-        let (v, n) = decode_uleb128(&bytes, 0).unwrap();
+        let (v, n) = decode_uleb128(&[0xE5, 0x8E, 0x26], 0).unwrap();
         assert_eq!(v, 624_485);
         assert_eq!(n, 3);
-    }
 
-    #[test]
-    fn sleb128_negative() {
         // -123456 encodes as 0xC0 0xBB 0x78.
-        let bytes = [0xC0, 0xBB, 0x78];
-        let (v, n) = decode_sleb128(&bytes, 0).unwrap();
+        let (v, n) = decode_sleb128(&[0xC0, 0xBB, 0x78], 0).unwrap();
         assert_eq!(v, -123_456);
         assert_eq!(n, 3);
-    }
 
-    #[test]
-    fn uleb128_truncated_is_none() {
         // Continuation bit set with no following byte.
-        let bytes = [0x80];
-        assert!(decode_uleb128(&bytes, 0).is_none());
-    }
-
-    #[test]
-    fn inspector_width_marks_consumed_bytes() {
-        let bytes = [0, 0, 0, 0, 0, 0, 0, 0];
-        let rows = inspect(&bytes, 0, Endian::Little);
-        assert_eq!(rows.iter().find(|r| r.label == "u64").unwrap().width, 8);
-        assert_eq!(rows.iter().find(|r| r.label == "u16").unwrap().width, 2);
+        assert!(decode_uleb128(&[0x80], 0).is_none());
     }
 }
