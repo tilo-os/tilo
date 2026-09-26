@@ -192,7 +192,7 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if the store cannot be prepared, or if building or
-    /// running a guest fails (see [`Session::run_once`]).
+    /// running a guest fails (see `Session::run_once`).
     pub fn run(&mut self) -> anyhow::Result<i32> {
         self.store.ensure()?;
         let code;

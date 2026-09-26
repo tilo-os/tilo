@@ -36,7 +36,7 @@
 //! This SDK exposes no grant API. CLI access is enforced outside the app by
 //! the launcher's sandbox and the capability model in `collab-types::caps`.
 //!
-//! [`output`] builds a terminal-aware writer that emits ANSI OSC 8
+//! [`output()`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.
 
 #![cfg_attr(
