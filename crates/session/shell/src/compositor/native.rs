@@ -1495,6 +1495,15 @@ impl ControlState for FrameBuilderControlState<'_> {
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
+                        // Dialogs shown on this tile, bottom to top, where they are drawn.
+                        "sheets": store.sheet_rects(tab.surface_id).into_iter().map(|(link, r)| {
+                            serde_json::json!({
+                                "surface_id": link.surface,
+                                "parent": link.parent,
+                                "modal": link.modal,
+                                "rect": { "x": r.x0, "y": r.y0, "w": r.width(), "h": r.height() },
+                            })
+                        }).collect::<Vec<_>>(),
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
                         "rect": placement,
@@ -7195,6 +7204,7 @@ pub fn run() {
                 {
                     toplevel.send_close();
                 }
+                state.close_sheets_over(surface_id);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so

@@ -63,6 +63,7 @@ use smithay::wayland::session_lock::{
 };
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -81,7 +82,7 @@ use smithay::{
     delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_activation, delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -412,6 +413,9 @@ pub struct State {
     /// after [`XdgActivationHandler::token_created`] proves they came from a
     /// recent serial on this seat and a focused source surface.
     pub xdg_activation_state: XdgActivationState,
+    /// `xdg_wm_dialog_v1` — the modal hint on transient toplevels, which
+    /// decides whether a sheet blocks its parent.
+    pub xdg_dialog_state: XdgDialogState,
     /// Metadata for compositor-created activation tokens passed to one host
     /// launch. Kept separate from client token data: host app-ids need not
     /// match their desktop-file id.
@@ -878,6 +882,7 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
+        let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
@@ -933,6 +938,7 @@ impl State {
             compositor_state,
             xdg_shell_state,
             xdg_activation_state,
+            xdg_dialog_state,
             host_launch_activations: HashMap::new(),
             host_launch_surface_labels: HashMap::new(),
             xdg_decoration_state,
@@ -1882,6 +1888,7 @@ impl State {
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id)
+            || crate::compositor::foreign::store().is_sheet(surface_id)
     }
 
     /// Pump the share-session encoder for `surface_id` on a fresh commit.
@@ -3690,6 +3697,186 @@ impl XdgActivationHandler for State {
     }
 }
 
+impl XdgDialogHandler for State {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
+        let surface_id = surface_id(toplevel.wl_surface());
+        crate::compositor::foreign::store().set_sheet_modal(surface_id, is_modal);
+    }
+}
+
+impl State {
+    /// Whether `parent` is something a dialog can be shown on: a tab, or a
+    /// sheet already on one.
+    fn can_host_sheet(&self, parent: SurfaceId) -> bool {
+        crate::compositor::foreign::store().is_sheet(parent) || {
+            let tree = self.workspace_tree.read();
+            tab_binding::group_id_for_surface(&tree, parent).is_some()
+        }
+    }
+
+    /// Bring `surface`'s place in the desktop in line with its xdg parent:
+    /// a sheet on the parent's tile while it has one, a tab otherwise.
+    fn sync_toplevel_parent(&mut self, surface: &ToplevelSurface) {
+        let id = surface_id(surface.wl_surface());
+        if self.osk_surface == Some(id)
+            || self.is_floating_toplevel(id)
+            || self.is_output_presentation_surface(id)
+        {
+            return;
+        }
+        let store = crate::compositor::foreign::store();
+        let was_sheet = store.is_sheet(id);
+        let parent = surface
+            .parent()
+            .map(|parent| surface_id(&parent))
+            .filter(|parent| self.can_host_sheet(*parent));
+        let Some(parent) = parent else {
+            if was_sheet {
+                store.detach_sheet(id);
+                self.adopt_former_sheet(surface);
+            }
+            return;
+        };
+        let modal = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().map(|data| data.modal))
+                .unwrap_or(false)
+        });
+        if !store.attach_sheet(id, parent, modal) {
+            tracing::warn!(surface_id = id, parent, "refused a cyclic xdg parent");
+            return;
+        }
+        if was_sheet {
+            return;
+        }
+        // Adopted as a tab when it was created (the parent arrives after
+        // `get_toplevel`); a dialog is part of its parent's window, so that
+        // provisional tab goes.
+        let _ = {
+            let mut tree = self.workspace_tree.write();
+            tab_binding::close_tab_for_destroyed_surface(&mut tree, id)
+        };
+        self.client_input.promote_to_overlay(id);
+        let root = store.sheet_root(id);
+        // Unlike a tab, the parent's tile does not size a sheet: the dialog
+        // picks its own size, bounded by the tile it sits on.
+        let scale = self.surface_scale(root);
+        let bounds = store.placement(root).map(|rect| {
+            (
+                logical_extent(rect.width(), scale),
+                logical_extent(rect.height(), scale),
+            )
+        });
+        surface.with_pending_state(|pending| {
+            pending.size = None;
+            pending.bounds = bounds.map(Into::into);
+        });
+        tracing::info!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            parent,
+            root,
+            modal,
+            "showing transient toplevel as a sheet on its parent's tile"
+        );
+    }
+
+    /// A sheet whose parent went away is a window in its own right, per
+    /// xdg-shell; adopt it as a tab in the active workspace.
+    fn adopt_former_sheet(&self, surface: &ToplevelSurface) {
+        let id = surface_id(surface.wl_surface());
+        let announced = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+        });
+        let client = surface.wl_surface().client();
+        let identity = authenticated_toplevel_identity(
+            client
+                .as_ref()
+                .and_then(|client| client.get_data::<ClientState>()),
+            announced,
+        );
+        let Ok((app_id, room)) = identity else {
+            surface.send_close();
+            return;
+        };
+        let adopted = {
+            let mut tree = self.workspace_tree.write();
+            if let Some(room) = room {
+                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room).is_some()
+            } else {
+                tab_binding::adopt_toplevel(&mut tree, id, app_id);
+                true
+            }
+        };
+        if !adopted {
+            surface.send_close();
+        }
+    }
+
+    /// A toplevel is going away: its own sheet link goes, and every sheet
+    /// that hung off it follows. A sheet whose parent was itself a sheet
+    /// moves down onto that sheet's parent; one whose parent was the tile is
+    /// asked to close with it, and becomes a tab meanwhile so a dialog that
+    /// ignores the close is still reachable.
+    fn release_sheets_of_destroyed(&self, id: SurfaceId) {
+        let store = crate::compositor::foreign::store();
+        let grandparent = store.detach_sheet(id).map(|link| link.parent);
+        let orphans = store.sheet_children(id);
+        if orphans.is_empty() {
+            return;
+        }
+        let toplevels: Vec<ToplevelSurface> = self.xdg_shell_state.toplevel_surfaces().to_vec();
+        for orphan in orphans {
+            let Some(toplevel) = toplevels
+                .iter()
+                .find(|toplevel| surface_id(toplevel.wl_surface()) == orphan)
+            else {
+                store.detach_sheet(orphan);
+                continue;
+            };
+            if let Some(grandparent) = grandparent {
+                let modal = store.sheet_link(orphan).is_some_and(|link| link.modal);
+                let _ = store.attach_sheet(orphan, grandparent, modal);
+                continue;
+            }
+            toplevel.send_close();
+            store.detach_sheet(orphan);
+            self.adopt_former_sheet(toplevel);
+        }
+    }
+
+    /// Ask every sheet on `root`'s tile to close — the user closed the
+    /// window they belong to.
+    pub(crate) fn close_sheets_over(&self, root: SurfaceId) {
+        let sheets = crate::compositor::foreign::store().sheets_over(root);
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            let id = surface_id(toplevel.wl_surface());
+            if sheets.iter().any(|link| link.surface == id) {
+                toplevel.send_close();
+            }
+        }
+    }
+}
+
+/// `px` physical pixels as whole surface-local (logical) pixels at `scale`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to [1.0, i32::MAX] and rounded before the cast, so it neither truncates a fraction nor wraps"
+)]
+fn logical_extent(px: f64, scale: f64) -> i32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -3793,6 +3980,7 @@ impl XdgShellHandler for State {
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         crate::shell::launcher::forget_surface_launch(surface_id);
+        self.release_sheets_of_destroyed(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }
@@ -3906,6 +4094,10 @@ impl XdgShellHandler for State {
                 }
                 return;
             }
+            if crate::compositor::foreign::store().is_sheet(surface_id) {
+                // A sheet has no tab to rename; the id is read again should it ever become one.
+                return;
+            }
             let host_launch_title = self
                 .host_launch_surface_labels
                 .get(&surface_id)
@@ -3922,6 +4114,13 @@ impl XdgShellHandler for State {
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
+    }
+
+    /// `xdg_toplevel.set_parent`: a toplevel with a parent is a dialog of
+    /// that window, shown as a sheet on its tile; losing the parent makes
+    /// it an ordinary tab again.
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        self.sync_toplevel_parent(&surface);
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -4285,6 +4484,7 @@ impl FractionalScaleHandler for State {
 delegate_compositor!(State);
 delegate_xdg_activation!(State);
 delegate_xdg_shell!(State);
+delegate_xdg_dialog!(State);
 // `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
 delegate_xdg_decoration!(State);
 delegate_shm!(State);
