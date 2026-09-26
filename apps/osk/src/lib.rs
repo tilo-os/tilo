@@ -82,6 +82,7 @@
 /// socket; the string alone never grants input-method privileges.
 pub const KEYBOARD_APP_ID: &str = "so.tilo.osk";
 
+pub mod autocorrect;
 pub mod dict;
 pub mod futo;
 pub mod imclient;
@@ -95,6 +96,7 @@ pub mod toolbar;
 pub mod touch_model;
 pub mod widget;
 
+pub use autocorrect::{Autocorrector, KeyAdjacency};
 pub use dict::{Dictionary, Entry};
 pub use futo::FutoSwipeModel;
 pub use imclient::{
