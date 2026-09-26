@@ -6,8 +6,8 @@ use crate::semantic_document_read::retirement::{
     MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
     retirement_test_requested,
 };
-use crate::widget::{AppKind, AppWidget, Container, IconDescriptor};
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use crate::widget::{Container, IconDescriptor};
+use automerge::{ROOT, transaction::Transactable};
 use std::{
     cell::RefCell,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -64,6 +64,14 @@ struct Root {
     observed: Rc<Observations>,
 }
 impl Widget for Root {
+    crate::testing::delegate_widget_methods!(
+        inner: sync,
+        build_layout,
+        apply_layout,
+        draw,
+        handle_event,
+        get_rect
+    );
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
@@ -78,97 +86,34 @@ impl Widget for Root {
         self.inner.install_control_custody(domain, attachment);
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, path: &automerge::ObjId) {
-        self.inner.sync(doc, path);
-    }
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &Theme,
-        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        self.inner.build_layout(taffy, theme, nodes)
-    }
-    fn apply_layout(
-        &mut self,
-        taffy: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        self.inner.apply_layout(taffy, node, origin);
-    }
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-    }
     fn name(&self) -> &str {
         "retirement lifecycle probe"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.inner.get_rect()
-    }
 }
-impl AppWidget for Root {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Editor
-    }
-    fn app_title(&self) -> &str {
-        "Retirement lifecycle probe"
-    }
-    fn app_icon(&self) -> IconDescriptor {
-        IconDescriptor::Glyph("R")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
-    fn capture_application_view(
-        &self,
-    ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError> {
-        if self.observed.armed.get() {
-            self.observed.record("capture");
-            if let Some((started, resume)) = self.observed.capture_pause.borrow_mut().take() {
-                started.send(()).unwrap();
-                resume.recv().unwrap();
+crate::testing::test_app_widget!(
+    Root,
+    "Retirement lifecycle probe",
+    icon = IconDescriptor::Glyph("R"),
+    {
+        fn capture_application_view(
+            &self,
+        ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError>
+        {
+            if self.observed.armed.get() {
+                self.observed.record("capture");
+                if let Some((started, resume)) = self.observed.capture_pause.borrow_mut().take() {
+                    started.send(()).unwrap();
+                    resume.recv().unwrap();
+                }
+                assert!(
+                    !self.observed.panic_capture.replace(false),
+                    "real capture probe"
+                );
             }
-            assert!(
-                !self.observed.panic_capture.replace(false),
-                "real capture probe"
-            );
+            Ok(None)
         }
-        Ok(None)
     }
-}
+);
 impl Drop for Root {
     fn drop(&mut self) {
         self.observed.record("root-drop");
@@ -229,13 +174,20 @@ fn assert_retired_events(observed: &Observations, expected: &[&str]) {
     );
 }
 #[test]
-fn retirement_lifecycle_component_close_retires_before_capture_and_drop() {
-    let host = ProbeHost::new();
-    let (_domain, mount, observed) = mounted();
-    let mut component = component(&host, mount);
-    observed.armed.set(true);
-    component.close();
-    assert_retired_events(&observed, &["capture", "root-drop"]);
+fn retirement_lifecycle_component_close_retires_before_capture_and_drop_even_when_capture_unwinds()
+{
+    for capture_panics in [false, true] {
+        let host = ProbeHost::new();
+        let (_domain, mount, observed) = mounted();
+        let mut component = component(&host, mount);
+        observed.armed.set(true);
+        observed.panic_capture.set(capture_panics);
+        assert_eq!(
+            catch_unwind(AssertUnwindSafe(|| component.close())).is_err(),
+            capture_panics
+        );
+        assert_retired_events(&observed, &["capture", "root-drop"]);
+    }
 }
 #[test]
 fn retirement_lifecycle_checkpoint_stays_open_until_admitted_close() {
@@ -249,16 +201,6 @@ fn retirement_lifecycle_checkpoint_stays_open_until_admitted_close() {
     observed.events.borrow_mut().clear();
     component.finish_admitted_close();
     assert_retired_events(&observed, &["root-drop"]);
-}
-#[test]
-fn retirement_lifecycle_capture_unwind_is_already_retired() {
-    let host = ProbeHost::new();
-    let (_domain, mount, observed) = mounted();
-    let mut component = component(&host, mount);
-    observed.armed.set(true);
-    observed.panic_capture.set(true);
-    assert!(catch_unwind(AssertUnwindSafe(|| component.close())).is_err());
-    assert_retired_events(&observed, &["capture", "root-drop"]);
 }
 #[test]
 fn retirement_lifecycle_outer_app_close_and_drop_preserve_capture_behavior() {
@@ -388,22 +330,20 @@ fn retirement_lifecycle_successful_transfer_does_not_retire_early() {
 }
 
 #[test]
-fn retirement_lifecycle_component_constructor_control_panic_retires_before_root_drop() {
-    let host = ProbeHost::new();
-    let (_domain, mount, observed) = mounted();
-    observed.panic_install.set(Some(0));
-    assert!(catch_unwind(AssertUnwindSafe(|| component(&host, mount))).is_err());
-    assert_retired_events(&observed, &["root-drop"]);
-}
-
-#[test]
-fn retirement_lifecycle_mount_and_outer_control_panic_retires_before_root_drop() {
-    for index in [1, 2] {
+fn retirement_lifecycle_control_installation_panic_retires_before_root_drop() {
+    // Installation 0 happens in the component constructor; 1 and 2 happen
+    // while the app mounts the component and its outer controls.
+    for index in [0, 1, 2] {
         let host = ProbeHost::new();
         let (_domain, mount, observed) = mounted();
-        let component = component(&host, mount);
         observed.panic_install.set(Some(index));
-        assert!(catch_unwind(AssertUnwindSafe(|| app(component))).is_err());
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            let component = component(&host, mount);
+            if index > 0 {
+                app(component);
+            }
+        }));
+        assert!(unwound.is_err());
         assert_retired_events(&observed, &["root-drop"]);
     }
 }

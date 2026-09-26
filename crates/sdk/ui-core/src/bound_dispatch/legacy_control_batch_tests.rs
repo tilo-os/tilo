@@ -6,7 +6,7 @@
 use super::*;
 use crate::bound_dispatch::legacy_document_tests::{SetValue, independent_batch_fixture};
 #[test]
-fn round1_headless_drain_keeps_independent_document_and_disposable_view_controls() {
+fn headless_drain_keeps_independent_document_and_disposable_view_controls() {
     for case in ["closed", "unavailable", "busy"] {
         for failed_first in [false, true] {
             for view in [false, true] {

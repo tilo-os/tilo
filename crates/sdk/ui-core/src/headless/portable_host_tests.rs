@@ -32,6 +32,31 @@ fn frame(root: Box<dyn Widget>) -> FrameHarness {
     )
 }
 
+fn move_to(x: f64, y: f64) -> WindowEvent {
+    WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    }
+}
+
+fn focused(frame: &FrameHarness, name: &str) -> bool {
+    frame.access_node_named(name, None).unwrap().state.focused
+}
+
+fn target_and_other() -> Column {
+    Column::new()
+        .push(Box::new(Button::new("target", "Target", None)))
+        .push(Box::new(Button::new("other", "Other", None)))
+}
+
+fn behind_background(content: impl Widget + 'static) -> FrameHarness {
+    frame(Box::new(
+        Column::new()
+            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(content)),
+    ))
+}
+
 #[test]
 fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
     let theme = Theme::dark();
@@ -68,8 +93,7 @@ struct OverlayProbe {
 }
 
 impl Widget for OverlayProbe {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-
+    crate::testing::inert_widget_methods!(sync, draw, name = "overlay-probe");
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -99,9 +123,6 @@ impl Widget for OverlayProbe {
         );
     }
 
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-
     fn draw_overlay(
         &mut self,
         _: &mut Scene,
@@ -111,24 +132,6 @@ impl Widget for OverlayProbe {
         _: &PresenceCtx,
     ) {
         self.draws.set(self.draws.get() + 1);
-    }
-
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-
-    fn name(&self) -> &'static str {
-        "overlay-probe"
     }
 
     fn get_rect(&self) -> Rect {
@@ -193,47 +196,22 @@ struct Scheduled {
     updates: Rc<Cell<usize>>,
 }
 impl Widget for Scheduled {
+    crate::testing::inert_widget_methods!(
+        sync,
+        leaf_layout,
+        apply_layout,
+        draw,
+        get_rect,
+        name = "scheduled"
+    );
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.inspections.set(self.inspections.get() + 1);
         None
     }
 
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
         self.updates.set(self.updates.get() + 1);
         false
-    }
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        _: &Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = t.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(node, self as *mut dyn Widget);
-        node
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-    fn name(&self) -> &'static str {
-        "scheduled"
-    }
-    fn get_rect(&self) -> Rect {
-        Rect::ZERO
     }
     fn needs_redraw(&self) -> bool {
         false
@@ -295,44 +273,20 @@ fn portable_review_trap_confines_tab_shift_tab_and_spatial_focus() {
         2,
         "background excluded by the same native trap policy"
     );
-    assert!(
-        frame
-            .access_node_named("first", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "first"));
     frame.key("Tab");
-    assert!(frame.access_node_named("last", None).unwrap().state.focused);
+    assert!(focused(&frame, "last"));
     frame.key("Tab");
-    assert!(
-        frame
-            .access_node_named("first", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "first"));
     frame.set_modifiers(&["shift".into()]);
     frame.key("Tab");
-    assert!(frame.access_node_named("last", None).unwrap().state.focused);
+    assert!(focused(&frame, "last"));
     frame.set_modifiers(&["alt".into()]);
     frame.key("ArrowUp");
-    assert!(
-        frame
-            .access_node_named("first", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "first"));
     frame.set_modifiers(&["alt".into()]);
     frame.key("ArrowUp");
-    assert!(
-        frame
-            .access_node_named("first", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "first"));
 }
 
 /// A retained modal with explicit native Widget focus/modal contracts. Its real
@@ -344,9 +298,7 @@ struct Gate {
     delivered: Rc<Cell<usize>>,
 }
 impl Widget for Gate {
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.content.sync(doc, path);
-    }
+    crate::testing::delegate_widget_methods!(content: sync, apply_layout);
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -356,9 +308,6 @@ impl Widget for Gate {
         let node = self.content.build_layout(t, theme, nodes);
         nodes.insert(node, self as *mut dyn Widget);
         node
-    }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.content.apply_layout(t, node, origin);
     }
     fn draw(
         &mut self,
@@ -443,39 +392,17 @@ fn portable_review_modal_enter_leave_restores_semantic_focus() {
         traps: true,
         delivered: Rc::default(),
     };
-    let mut frame = frame(Box::new(
-        Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
-            .push(Box::new(gate)),
-    ));
+    let mut frame = behind_background(gate);
     frame
         .perform_named("background", &crate::a11y::Action::Focus)
         .unwrap();
     open.set(true);
     frame.relayout();
-    assert!(
-        frame
-            .access_node_named("inside", None)
-            .unwrap()
-            .state
-            .focused
-    );
-    assert!(
-        !frame
-            .access_node_named("background", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "inside"));
+    assert!(!focused(&frame, "background"));
     open.set(false);
     frame.relayout();
-    assert!(
-        frame
-            .access_node_named("background", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "background"));
 }
 #[test]
 fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
@@ -486,11 +413,7 @@ fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
         traps: false,
         delivered: delivered.clone(),
     };
-    let mut frame = frame(Box::new(
-        Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
-            .push(Box::new(gate)),
-    ));
+    let mut frame = behind_background(gate);
     frame
         .perform_named("inside", &crate::a11y::Action::Focus)
         .unwrap();
@@ -504,20 +427,8 @@ fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
         3,
         "modal-owned keys must reach ordinary widget dispatch"
     );
-    assert!(
-        frame
-            .access_node_named("inside", None)
-            .unwrap()
-            .state
-            .focused
-    );
-    assert!(
-        !frame
-            .access_node_named("background", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(focused(&frame, "inside"));
+    assert!(!focused(&frame, "background"));
 }
 
 #[test]
@@ -529,24 +440,14 @@ fn portable_review_empty_trap_forwards_unhandled_tab_without_background_focus() 
         traps: true,
         delivered: delivered.clone(),
     };
-    let mut frame = frame(Box::new(
-        Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
-            .push(Box::new(gate)),
-    ));
+    let mut frame = behind_background(gate);
     frame.key("Tab");
     assert_eq!(
         delivered.get(),
         1,
         "native traversal declines Tab when the trap has no focusable controls"
     );
-    assert!(
-        !frame
-            .access_node_named("background", None)
-            .unwrap()
-            .state
-            .focused
-    );
+    assert!(!focused(&frame, "background"));
 }
 
 #[test]
@@ -616,15 +517,8 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
     // Two retained buttons; the column below them is empty space with no
     // hover state. (A childless Container is a leaf that never opts into
     // incremental redraw, so it is deliberately not used as the inert area.)
-    let root = Column::new()
-        .push(Box::new(Button::new("target", "Target", None)))
-        .push(Box::new(Button::new("other", "Other", None)));
-    let mut frame = frame(Box::new(root));
+    let mut frame = frame(Box::new(target_and_other()));
     let device_id = winit::event::DeviceId::dummy();
-    let move_to = |x: f64, y: f64| WindowEvent::CursorMoved {
-        device_id,
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    };
     let button = frame.targets()["target"];
     let other = frame.targets()["other"];
     let filler_point = (button.center().x, other.max_y() + 40.0);
@@ -690,15 +584,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     // Inert pointer motion must neither rebuild nor re-solve nor re-apply the
     // retained tree: the frame counter stays put and the last relayout is the
     // one the hover produced.
-    let root = Column::new()
-        .push(Box::new(Button::new("target", "Target", None)))
-        .push(Box::new(Button::new("other", "Other", None)));
-    let mut frame = frame(Box::new(root));
-    let device_id = winit::event::DeviceId::dummy();
-    let move_to = |x: f64, y: f64| WindowEvent::CursorMoved {
-        device_id,
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    };
+    let mut frame = frame(Box::new(target_and_other()));
     let button = frame.targets()["target"];
     let other = frame.targets()["other"];
     let filler = (button.center().x, other.max_y() + 40.0);
@@ -817,10 +703,7 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
 
 #[test]
 fn viewport_change_rebuilds_and_matches_a_fresh_composition() {
-    let root = Column::new()
-        .push(Box::new(Button::new("target", "Target", None)))
-        .push(Box::new(Button::new("other", "Other", None)));
-    let mut frame = frame(Box::new(root));
+    let mut frame = frame(Box::new(target_and_other()));
     let ids = frame.layout_node_ids();
     frame.resize((360, 200)).unwrap();
     assert!(

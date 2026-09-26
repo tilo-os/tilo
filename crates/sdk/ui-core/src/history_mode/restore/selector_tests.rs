@@ -835,6 +835,26 @@ fn real_browser_tags_and_unicode_family_identities_restore() {
     ));
 }
 
+fn string_at(doc: &AutoCommit, object: &ObjId, key: &str) -> Option<String> {
+    doc.get(object, key)
+        .unwrap()
+        .unwrap()
+        .0
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// Runs a depth-boundary case on a thread with an explicit 2 MiB stack.
+fn on_deep_stack(name: &str, case: fn()) {
+    std::thread::Builder::new()
+        .name(name.into())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(case)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 const FIXED_COMPLEMENT: HistoryRestoreNode = HistoryRestoreNode::MapOverlay(&HistoryMapOverlay {
     fields: &[HistoryMapField {
         key: "profile",
@@ -948,11 +968,11 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
     assert_eq!(object(&fixed, &outer, "view"), outer_view);
     assert_eq!(object(&fixed, &profile, "presence"), presence);
     assert_eq!(
-        fixed.get(&profile, "name").unwrap().unwrap().0.as_str(),
+        string_at(&fixed, &profile, "name").as_deref(),
         Some("target")
     );
     assert_eq!(
-        fixed.get(&presence, "status").unwrap().unwrap().0.as_str(),
+        string_at(&fixed, &presence, "status").as_deref(),
         Some("current")
     );
 
@@ -986,7 +1006,7 @@ fn complement_structural_dispatch_works_at_fixed_entry_and_family_positions() {
     assert_eq!(object(&family, &ROOT, "record:item-a"), record);
     assert_eq!(object(&family, &record, "presence"), presence);
     assert_eq!(
-        family.get(&record, "name").unwrap().unwrap().0.as_str(),
+        string_at(&family, &record, "name").as_deref(),
         Some("target")
     );
 }
@@ -1019,7 +1039,7 @@ fn complement_membership_resurrection_omits_excluded_fields_and_never_revives_id
         assert!(doc.get(row, "last_used").unwrap().is_none());
     }
     assert_eq!(
-        doc.get(&restored_b, "name").unwrap().unwrap().0.as_str(),
+        string_at(&doc, &restored_b, "name").as_deref(),
         Some("target-b")
     );
     assert_eq!(doc.length(&restored_empty), 0);
@@ -1103,15 +1123,9 @@ fn complement_live_validator_failure_rolls_back_multiple_writes_and_identities()
     assert_eq!(doc.pending_ops(), 0);
     assert_eq!(object(&doc, &ROOT, "profile"), profile);
     assert_eq!(object(&doc, &profile, "presence"), presence);
-    assert_eq!(
-        doc.get(&profile, "a").unwrap().unwrap().0.as_str(),
-        Some("live-a")
-    );
+    assert_eq!(string_at(&doc, &profile, "a").as_deref(), Some("live-a"));
     assert!(doc.get(&profile, "b").unwrap().is_none());
-    assert_eq!(
-        doc.get(&profile, "c").unwrap().unwrap().0.as_str(),
-        Some("live-c")
-    );
+    assert_eq!(string_at(&doc, &profile, "c").as_deref(), Some("live-c"));
 }
 
 #[test]
@@ -1190,10 +1204,7 @@ fn complement_preserves_conflicted_excluded_alternatives_absence_and_rich_text()
     assert_eq!(object(&doc, &profile, "runtime_text"), runtime_text);
     assert_eq!(doc.get(&runtime_text, 0).unwrap().unwrap().1, block);
     assert_eq!(doc.marks(&runtime_text).unwrap(), text_marks);
-    assert_eq!(
-        doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
+    assert_eq!(string_at(&doc, &profile, "name").as_deref(), Some("target"));
 }
 
 #[test]
@@ -1315,13 +1326,10 @@ fn complement_registration_enforces_only_declared_count_name_and_byte_bounds() {
 }
 
 fn nested_map_chain(doc: &mut AutoCommit, root: &ObjId, count: usize) {
-    let mut parent = root.clone();
-    for index in 0..count {
-        parent = doc
-            .put_object(&parent, format!("d{index}"), ObjType::Map)
-            .unwrap();
-    }
-    doc.put(&parent, "leaf", true).unwrap();
+    let deepest = nested_map_chain_ids(doc, root, count)
+        .pop()
+        .unwrap_or_else(|| root.clone());
+    doc.put(&deepest, "leaf", true).unwrap();
 }
 
 fn nested_map_chain_ids(doc: &mut AutoCommit, root: &ObjId, count: usize) -> Vec<ObjId> {
@@ -1338,13 +1346,10 @@ fn nested_map_chain_ids(doc: &mut AutoCommit, root: &ObjId, count: usize) -> Vec
 
 #[test]
 fn complement_codec_depth_and_exact_map_shape_are_enforced() {
-    std::thread::Builder::new()
-        .name("complement-depth-boundary".into())
-        .stack_size(2 * 1024 * 1024)
-        .spawn(complement_codec_depth_and_exact_map_shape_are_enforced_inner)
-        .unwrap()
-        .join()
-        .unwrap();
+    on_deep_stack(
+        "complement-depth-boundary",
+        complement_codec_depth_and_exact_map_shape_are_enforced_inner,
+    );
 }
 
 fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
@@ -1424,26 +1429,16 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         assert_eq!(&retained, expected);
     }
     assert_eq!(
-        boundary.get(&retained, "leaf").unwrap().unwrap().0.as_str(),
+        string_at(&boundary, &retained, "leaf").as_deref(),
         Some("target")
     );
     assert_eq!(
-        boundary
-            .get(&profile, "sibling")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
+        string_at(&boundary, &profile, "sibling").as_deref(),
         Some("target-sibling")
     );
     assert_eq!(object(&boundary, &profile, "presence"), presence);
     assert_eq!(
-        boundary
-            .get(&presence, "status")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
+        string_at(&boundary, &presence, "status").as_deref(),
         Some("current-protected")
     );
     let replacement = object(&boundary, &profile, "replacement");
@@ -1451,12 +1446,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     assert_ne!(replacement, replacement_target);
     assert_ne!(replacement, replacement_live);
     assert_eq!(
-        boundary
-            .get(&replacement, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
+        string_at(&boundary, &replacement, "value").as_deref(),
         Some("target-map")
     );
     boundary.commit().unwrap();
@@ -1598,24 +1588,19 @@ fn deepest_entry_schema() -> &'static HistoryRestoreSchema {
 
 #[test]
 fn accepted_selector_and_protected_codec_boundaries() {
-    std::thread::Builder::new()
-        .name("accepted-selector-protected-boundaries".into())
-        .stack_size(2 * 1024 * 1024)
-        .spawn(accepted_selector_and_protected_codec_boundaries_inner)
-        .unwrap()
-        .join()
-        .unwrap();
+    on_deep_stack(
+        "accepted-selector-protected-boundaries",
+        accepted_selector_and_protected_codec_boundaries_inner,
+    );
 }
 
 fn accepted_selector_and_protected_codec_boundaries_inner() {
     let deep_schema = deepest_entry_schema();
     let mut selected = AutoCommit::new();
-    let mut parent = selected.put_object(ROOT, "deep", ObjType::Map).unwrap();
-    for index in 0..255 {
-        parent = selected
-            .put_object(&parent, format!("d{index}"), ObjType::Map)
-            .unwrap();
-    }
+    let deep = selected.put_object(ROOT, "deep", ObjType::Map).unwrap();
+    let parent = nested_map_chain_ids(&mut selected, &deep, 255)
+        .pop()
+        .unwrap();
     selected.put(&parent, "entry", "target").unwrap();
     let target = selected.get_heads();
     selected.put(&parent, "entry", "current").unwrap();
@@ -1626,7 +1611,7 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
         RestoreOutcome::Changed
     );
     assert_eq!(
-        selected.get(&parent, "entry").unwrap().unwrap().0.as_str(),
+        string_at(&selected, &parent, "entry").as_deref(),
         Some("target")
     );
     drop(prepared);
@@ -1773,13 +1758,10 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
 
 #[test]
 fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action() {
-    std::thread::Builder::new()
-        .name("deep-owned-state-restore".into())
-        .stack_size(2 * 1024 * 1024)
-        .spawn(deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner)
-        .unwrap()
-        .join()
-        .unwrap();
+    on_deep_stack(
+        "deep-owned-state-restore",
+        deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner,
+    );
 }
 
 fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner() {
@@ -1844,14 +1826,14 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     }
     assert_eq!(object(&state.doc, &profile, "presence"), presence);
     assert_eq!(
-        state.doc.get(&deepest, "leaf").unwrap().unwrap().0.as_str(),
+        string_at(&state.doc, &deepest, "leaf").as_deref(),
         Some("target")
     );
     state
         .undo_as(Some(&UserId("ada".into())), None, None)
         .unwrap();
     assert_eq!(
-        state.doc.get(&deepest, "leaf").unwrap().unwrap().0.as_str(),
+        string_at(&state.doc, &deepest, "leaf").as_deref(),
         Some("current")
     );
     drop(plan);
@@ -1977,10 +1959,7 @@ fn complement_freshness_checks_excluded_changes_before_writing() {
         RestoreError::StaleReview
     );
     assert_eq!(doc.clone().save(), before);
-    assert_eq!(
-        doc.get(&profile, "name").unwrap().unwrap().0.as_str(),
-        Some("live")
-    );
+    assert_eq!(string_at(&doc, &profile, "name").as_deref(), Some("live"));
 }
 
 #[test]

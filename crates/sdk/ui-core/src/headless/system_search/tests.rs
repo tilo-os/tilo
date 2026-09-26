@@ -53,6 +53,43 @@ fn actions() -> Vec<tilo_actions::Resource> {
         ),
     ]
 }
+fn searching(query: &str) -> FrameHarness {
+    let mut f = frame();
+    f.replace_global_search_data(data());
+    f.open_global_search_all(query).unwrap();
+    f
+}
+fn tab_intent() -> Option<GlobalSearchIntent> {
+    Some(GlobalSearchIntent::SelectHostTarget {
+        revision: "generation-1".into(),
+        target: "opaque-tab-11".into(),
+    })
+}
+fn card(f: &FrameHarness) -> Rect {
+    f.system_search.overlay.as_ref().unwrap().get_rect()
+}
+fn first_row(f: &FrameHarness) -> Rect {
+    f.system_search
+        .overlay
+        .as_ref()
+        .unwrap()
+        .palette
+        .row_rect(0)
+        .unwrap()
+}
+fn move_pointer(f: &mut FrameHarness, x: f64, y: f64) {
+    f.send_host_event(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    });
+}
+fn press(f: &mut FrameHarness, button: MouseButton) {
+    f.send_host_event(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button,
+    });
+}
 fn enter(f: &mut FrameHarness) {
     f.send_host_event(&key_event(
         &Key::Named(NamedKey::Enter),
@@ -110,20 +147,13 @@ fn outside_press_dismisses_search_without_activating_a_result() {
             f.replace_global_search_data(data());
             f.open_global_search_all("Trip").unwrap();
             let before = f.state.doc.get_heads();
-            f.send_host_event(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(2.0 * scale, 2.0 * scale),
-            });
+            move_pointer(&mut f, 2.0 * scale, 2.0 * scale);
             assert_eq!(
                 f.global_search_query(),
                 Some("Trip"),
                 "hover does not dismiss"
             );
-            f.send_host_event(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button,
-            });
+            press(&mut f, button);
             assert_eq!(f.global_search_query(), None);
             assert!(f.take_global_search_intent().is_none());
             assert_eq!(f.state.doc.get_heads(), before);
@@ -146,28 +176,16 @@ fn stationary_pointer_press_uses_position_seen_before_keyboard_open() {
         ] {
             let mut f = frame();
             f.set_input_scale(scale).unwrap();
-            f.send_host_event(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(position.x * scale, position.y * scale),
-            });
+            move_pointer(&mut f, position.x * scale, position.y * scale);
             f.replace_global_search_data(data());
             f.open_global_search_all("Trip").unwrap();
             assert_eq!(
-                f.system_search
-                    .overlay
-                    .as_ref()
-                    .unwrap()
-                    .get_rect()
-                    .contains(position),
+                card(&f).contains(position),
                 inside,
                 "fixture position must exercise the intended side of the search card"
             );
 
-            f.send_host_event(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
+            press(&mut f, MouseButton::Left);
             assert_eq!(
                 f.global_search_query().is_some(),
                 inside,
@@ -181,10 +199,7 @@ fn stationary_pointer_press_uses_position_seen_before_keyboard_open() {
 fn touch_completion_does_not_replace_the_stationary_mouse_position() {
     let mut f = frame();
     let mouse = Point::new(400.0, 26.0);
-    f.send_host_event(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(mouse.x, mouse.y),
-    });
+    move_pointer(&mut f, mouse.x, mouse.y);
     for phase in [
         winit::event::TouchPhase::Started,
         winit::event::TouchPhase::Ended,
@@ -200,19 +215,8 @@ fn touch_completion_does_not_replace_the_stationary_mouse_position() {
 
     f.replace_global_search_data(data());
     f.open_global_search_all("Trip").unwrap();
-    assert!(
-        f.system_search
-            .overlay
-            .as_ref()
-            .unwrap()
-            .get_rect()
-            .contains(mouse)
-    );
-    f.send_host_event(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    });
+    assert!(card(&f).contains(mouse));
+    press(&mut f, MouseButton::Left);
     assert_eq!(f.global_search_query(), Some("Trip"));
 }
 
@@ -220,13 +224,10 @@ fn touch_completion_does_not_replace_the_stationary_mouse_position() {
 fn touch_hover_clear_does_not_replace_a_stationary_mouse_press() {
     let mut f = frame();
     let mouse = Point::new(400.0, 26.0);
-    f.send_host_event(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(mouse.x, mouse.y),
-    });
+    move_pointer(&mut f, mouse.x, mouse.y);
     f.replace_global_search_data(data());
     f.open_global_search_all("Trip").unwrap();
-    let rect = f.system_search.overlay.as_ref().unwrap().get_rect();
+    let rect = card(&f);
     assert!(rect.contains(mouse));
     let touch = Point::new(rect.x0 + 2.0, rect.y0 + 2.0);
     for phase in [
@@ -243,11 +244,7 @@ fn touch_hover_clear_does_not_replace_a_stationary_mouse_press() {
     }
     assert_eq!(f.global_search_query(), Some("Trip"));
 
-    f.send_host_event(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    });
+    press(&mut f, MouseButton::Left);
     assert_eq!(f.global_search_query(), Some("Trip"));
 }
 
@@ -257,20 +254,13 @@ fn presses_inside_search_header_and_footer_keep_search_open() {
     f.set_input_scale(2.0).unwrap();
     f.replace_global_search_data(data());
     f.open_global_search_all("Trip").unwrap();
-    let rect = f.system_search.overlay.as_ref().unwrap().get_rect();
+    let rect = card(&f);
     for position in [
         Point::new(rect.x0 + 2.0, rect.y0 + 2.0),
         Point::new(rect.x0 + 2.0, rect.y1 - 2.0),
     ] {
-        f.send_host_event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(position.x * 2.0, position.y * 2.0),
-        });
-        f.send_host_event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        move_pointer(&mut f, position.x * 2.0, position.y * 2.0);
+        press(&mut f, MouseButton::Left);
         assert_eq!(f.global_search_query(), Some("Trip"));
         assert!(f.take_global_search_intent().is_none());
     }
@@ -279,9 +269,7 @@ fn presses_inside_search_header_and_footer_keep_search_open() {
 #[test]
 fn keyboard_semantic_and_scaled_pointer_produce_same_inert_target() {
     for mode in 0..3 {
-        let mut f = frame();
-        f.replace_global_search_data(data());
-        f.open_global_search_all("Trip").unwrap();
+        let mut f = searching("Trip");
         let before = f.state.doc.get_heads();
         if mode == 0 {
             enter(&mut f);
@@ -299,43 +287,18 @@ fn keyboard_semantic_and_scaled_pointer_produce_same_inert_target() {
             .unwrap();
         } else {
             f.set_input_scale(2.0).unwrap();
-            let rect = f
-                .system_search
-                .overlay
-                .as_ref()
-                .unwrap()
-                .palette
-                .row_rect(0)
-                .unwrap();
-            f.send_host_event(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(
-                    rect.center().x * 2.0,
-                    rect.center().y * 2.0,
-                ),
-            });
-            f.send_host_event(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
+            let rect = first_row(&f);
+            move_pointer(&mut f, rect.center().x * 2.0, rect.center().y * 2.0);
+            press(&mut f, MouseButton::Left);
         }
-        assert_eq!(
-            f.take_global_search_intent(),
-            Some(GlobalSearchIntent::SelectHostTarget {
-                revision: "generation-1".into(),
-                target: "opaque-tab-11".into()
-            })
-        );
+        assert_eq!(f.take_global_search_intent(), tab_intent());
         assert!(f.take_global_search_intent().is_none());
         assert_eq!(f.state.doc.get_heads(), before);
     }
 }
 #[test]
 fn revocation_cannot_retarget_old_semantics_and_pending_intents_block_open() {
-    let mut f = frame();
-    f.replace_global_search_data(data());
-    f.open_global_search_all("Trip").unwrap();
+    let mut f = searching("Trip");
     let target = f
         .system_search_inspection()
         .unwrap()
@@ -526,8 +489,15 @@ fn selected_action_collects_real_parameters_and_confirmation() {
         &serde_json::json!({"confirmation_phrase":"INSERT"})
     );
 }
-#[test]
-fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
+/// A mounted provider probe for tab 11 and search sources that point at its
+/// admitted record, not yet handed to the frame.
+fn mounted_provider() -> (
+    crate::application_test_support::ProbeHost,
+    FrameHarness,
+    std::rc::Rc<std::cell::RefCell<crate::application_test_support::ProviderObservations>>,
+    std::rc::Rc<std::cell::RefCell<crate::permissions::PermissionContext>>,
+    GlobalSearchSourceData,
+) {
     use crate::application::{LaunchTarget, RestoreInput};
     use crate::application_test_support::*;
     let host = ProbeHost::new();
@@ -541,10 +511,15 @@ fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
     let component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
-    let mut f = FrameHarness::from_component(component, (800, 640), runner_inputs()).unwrap();
+    let f = FrameHarness::from_component(component, (800, 640), runner_inputs()).unwrap();
     let mut sources = data();
     sources.tabs[0].app_id = APP.into();
     sources.tabs[0].record_id = record;
+    (host, f, observed, permissions, sources)
+}
+#[test]
+fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
+    let (_host, mut f, observed, permissions, mut sources) = mounted_provider();
     f.replace_global_search_data(sources.clone());
     f.open_global_search_all("body-only-query").unwrap();
     assert!(
@@ -562,13 +537,7 @@ fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
         "query-generated body hit, not static title"
     );
     enter(&mut f);
-    assert_eq!(
-        f.take_global_search_intent(),
-        Some(GlobalSearchIntent::SelectHostTarget {
-            revision: "generation-1".into(),
-            target: "opaque-tab-11".into()
-        })
-    );
+    assert_eq!(f.take_global_search_intent(), tab_intent());
     // Same record identity with a mismatched instance is not an admitted correlation.
     sources.tabs[0].instance_id = 12;
     f.replace_global_search_data(sources.clone());
@@ -589,25 +558,10 @@ fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
 
 #[test]
 fn direct_frame_pointer_helpers_cannot_bypass_the_modal_surface() {
-    let mut f = frame();
-    f.replace_global_search_data(data());
-    f.open_global_search_all("Trip").unwrap();
-    let rect = f
-        .system_search
-        .overlay
-        .as_ref()
-        .unwrap()
-        .palette
-        .row_rect(0)
-        .unwrap();
+    let mut f = searching("Trip");
+    let rect = first_row(&f);
     f.click_at(rect.center().x, rect.center().y);
-    assert_eq!(
-        f.take_global_search_intent(),
-        Some(GlobalSearchIntent::SelectHostTarget {
-            revision: "generation-1".into(),
-            target: "opaque-tab-11".into()
-        })
-    );
+    assert_eq!(f.take_global_search_intent(), tab_intent());
     f.open_global_search_all("Trip").unwrap();
     enter(&mut f);
     assert!(
@@ -617,23 +571,7 @@ fn direct_frame_pointer_helpers_cannot_bypass_the_modal_surface() {
 }
 #[test]
 fn layout_refreshes_content_without_retargeting_or_losing_keyboard_selection() {
-    use crate::application::{LaunchTarget, RestoreInput};
-    use crate::application_test_support::*;
-    let host = ProbeHost::new();
-    enable_provider_probe();
-    let permissions = runner_permissions();
-    let definition = runner_probe_definition();
-    let context = host
-        .prepare_with_permissions(definition, 11, &LaunchTarget::New, permissions.clone())
-        .unwrap();
-    let record = context.record().id.as_str().to_owned();
-    let component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let mut f = FrameHarness::from_component(component, (800, 640), runner_inputs()).unwrap();
-    let mut sources = data();
-    sources.tabs[0].app_id = APP.into();
-    sources.tabs[0].record_id = record;
+    let (_host, mut f, _, permissions, sources) = mounted_provider();
     f.replace_global_search_data(sources);
     f.open_global_search_all("").unwrap();
     f.key("ArrowDown");
@@ -675,25 +613,10 @@ fn layout_refreshes_content_without_retargeting_or_losing_keyboard_selection() {
 }
 #[test]
 fn touch_uses_the_same_inert_row_and_never_reaches_the_document() {
-    let mut f = frame();
-    f.replace_global_search_data(data());
-    f.open_global_search_all("Trip").unwrap();
-    let rect = f
-        .system_search
-        .overlay
-        .as_ref()
-        .unwrap()
-        .palette
-        .row_rect(0)
-        .unwrap();
+    let mut f = searching("Trip");
+    let rect = first_row(&f);
     f.tap_at(rect.center().x, rect.center().y);
-    assert_eq!(
-        f.take_global_search_intent(),
-        Some(GlobalSearchIntent::SelectHostTarget {
-            revision: "generation-1".into(),
-            target: "opaque-tab-11".into()
-        })
-    );
+    assert_eq!(f.take_global_search_intent(), tab_intent());
     assert!(f.inspection_json().unwrap().contains("unchanged"));
 }
 
@@ -791,13 +714,7 @@ fn search_captures_keyboard_before_live_and_embedded_history_toolbars() {
             "History toolbar must not consume search typing (embedded={embedded})"
         );
         enter(&mut f);
-        assert_eq!(
-            f.take_global_search_intent(),
-            Some(GlobalSearchIntent::SelectHostTarget {
-                revision: "generation-1".into(),
-                target: "opaque-tab-11".into()
-            })
-        );
+        assert_eq!(f.take_global_search_intent(), tab_intent());
         assert!(
             !history_captures(&f),
             "Enter must not open background History"
@@ -823,10 +740,7 @@ fn search_captures_host_and_direct_pointer_before_history_observation() {
             if direct {
                 f.click_at(history_button.x, history_button.y);
             } else {
-                f.send_host_event(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(history_button.x, history_button.y),
-                });
+                move_pointer(&mut f, history_button.x, history_button.y);
                 for state in [ElementState::Pressed, ElementState::Released] {
                     f.send_host_event(&WindowEvent::MouseInput {
                         device_id: winit::event::DeviceId::dummy(),
@@ -842,22 +756,9 @@ fn search_captures_host_and_direct_pointer_before_history_observation() {
             assert_eq!(f.global_search_query(), None);
             assert!(f.take_global_search_intent().is_none());
             f.open_global_search_all("Trip").unwrap();
-            let row = f
-                .system_search
-                .overlay
-                .as_ref()
-                .unwrap()
-                .palette
-                .row_rect(0)
-                .unwrap();
+            let row = first_row(&f);
             f.click_at(row.center().x, row.center().y);
-            assert_eq!(
-                f.take_global_search_intent(),
-                Some(GlobalSearchIntent::SelectHostTarget {
-                    revision: "generation-1".into(),
-                    target: "opaque-tab-11".into()
-                })
-            );
+            assert_eq!(f.take_global_search_intent(), tab_intent());
             f.click_named("history-open").unwrap();
             assert!(
                 history_captures(&f),
