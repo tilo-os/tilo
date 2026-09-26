@@ -17,14 +17,14 @@ use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 
+pub use crate::target::TILO_OS_PLATFORM;
+
 /// Domain-separation prefix for a registry-entry publisher signature.
 pub const ENTRY_DOMAIN: &[u8] = b"tilo-registry-entry-v1\0";
 
 /// Domain-separation prefix for a registry-owner index signature; not
 /// used in this crate but exposed for federation clients snapshotting registry state.
 pub const INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v1\0";
-
-pub const TILO_OS_PLATFORM: &str = "tilo-os";
 
 /// Localized text whose signed representation is a canonical, ordered map.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +123,10 @@ pub enum EntryValidationError {
     InvalidSupportedLanguages,
     #[error("images contain invalid metadata")]
     InvalidImages,
-    #[error("versions must contain complete Tilo OS x86_64 or aarch64 artifact bindings")]
+    #[error(
+        "versions must contain complete artifact bindings for a Tilo OS x86_64/aarch64 or \
+         web wasm32 target"
+    )]
     InvalidVersionTarget,
 }
 
@@ -151,17 +154,19 @@ pub struct RegistryVersion {
     pub target: RegistryTarget,
 }
 
-/// The machine/runtime contract for one package artifact.
+/// The machine/runtime contract for one package artifact. Accepted
+/// spellings are defined in [`crate::target`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryTarget {
-    /// Extensible platform-family wire name. Only `tilo-os` is accepted by
-    /// this channel today.
+    /// Extensible platform-family wire name: `tilo-os` or `web`.
     pub platform: String,
     /// Architecture wire name.
     pub architecture: String,
-    /// Minimum ISA level, e.g. `x86_64-baseline` or `x86_64-v3`.
+    /// Minimum ISA level, e.g. `x86_64-v3`, or a web feature set such as
+    /// `wasm32-mvp+bulk-memory+sign-ext`.
     pub isa: String,
-    /// Runtime ABI required by the package, if any.
+    /// Runtime ABI required by the package: optional for `tilo-os`,
+    /// `tilo-runtime/<version>+abi.<id>` for `web`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
 }
@@ -278,9 +283,7 @@ impl RegistryEntry {
                     || v.tapp_blake3_hex.len() != 64
                     || !v.tapp_blake3_hex.bytes().all(|b| b.is_ascii_hexdigit())
                     || v.tapp_size_bytes == 0
-                    || v.target.platform != TILO_OS_PLATFORM
-                    || !matches!(v.target.architecture.as_str(), "x86_64" | "aarch64")
-                    || v.target.isa.is_empty()
+                    || v.target.validate().is_err()
             })
         {
             return Err(EntryValidationError::InvalidVersionTarget);
@@ -455,6 +458,7 @@ pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::{WASM32_ARCHITECTURE, WEB_PLATFORM};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
@@ -636,5 +640,31 @@ mod tests {
                 Err(EntryValidationError::InvalidVersionTarget)
             );
         }
+    }
+
+    #[test]
+    fn web_versions_sit_beside_native_versions_of_one_entry() {
+        let mut entry = sample_entry();
+        let mut web = entry.versions[0].clone();
+        web.tapp_url = "https://apps.tilo.so/editor/2026.06-web.tapp".into();
+        web.target = RegistryTarget {
+            platform: WEB_PLATFORM.into(),
+            architecture: WASM32_ARCHITECTURE.into(),
+            isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
+            runtime: Some("tilo-runtime/2026.07+abi.00112233445566778899aabbccddeeff".into()),
+        };
+        entry.versions.push(web);
+        assert_eq!(entry.validate(), Ok(()));
+
+        entry.versions[1].target.runtime = Some("tilo-runtime/2026.07".into());
+        assert_eq!(
+            entry.validate(),
+            Err(EntryValidationError::InvalidVersionTarget)
+        );
+        entry.versions[1].target.runtime = None;
+        assert_eq!(
+            entry.validate(),
+            Err(EntryValidationError::InvalidVersionTarget)
+        );
     }
 }
