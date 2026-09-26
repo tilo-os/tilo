@@ -1337,7 +1337,12 @@ async fn installed_https_private_status_cancel_invoke_and_read_over_actual_actio
 /// A join reply above the inline limit (>1 MiB workspace bootstrap) is
 /// answered with a signed handoff manifest and hydrated range by range
 /// through the installed onboarding chunk route.
-#[tokio::test]
+///
+/// Multi-threaded like the production host: the owner turns this test drives
+/// take hundreds of milliseconds on a multi-megabyte workspace in debug
+/// builds, and on a single-threaded runtime they would stall the HTTPS
+/// listener's handshake, body and reply deadlines along with them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn installed_https_large_join_reply_hydrates_through_the_chunk_route() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
     use qos_peer_state::join::*;
