@@ -187,7 +187,7 @@ impl WebRuntime<'_> {
 /// id      = 16*64( DIGIT / %x61-66 )                 ; lower-case hex
 /// ```
 ///
-/// e.g. `tilo-runtime/2026.07+abi.3f0c9a1e5b7d2468`. SemVer build metadata
+/// e.g. `tilo-runtime/2026.07+abi.3f0c9a1e5b7d2468`. `SemVer` build metadata
 /// is not allowed in `version`: `+` introduces the ABI.
 ///
 /// # Errors
