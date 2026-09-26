@@ -97,6 +97,7 @@ use crate::shell::collaborators_overlay::{
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
@@ -10963,26 +10964,25 @@ impl ShellOverlayHost {
             return;
         };
         if matches!(logical_key, Key::Character(_)) && chord.modifiers.is_empty() {
-            self.shortcut_rebind_message =
-                Some("Add Super, Ctrl, Alt or Shift to printable keys.".into());
+            self.shortcut_rebind_message = Some(t("guide-rebind-needs-modifier"));
             return;
         }
         let mut config = self.shortcut_config.clone();
         if let Err(error) = config.set(action, chord) {
             self.shortcut_rebind_message = Some(match error {
-                settings_store::hardware::ShortcutConfigError::Conflict(other) => format!(
-                    "Already used to {}. Press another shortcut.",
-                    shortcut_action_label(other)
+                settings_store::hardware::ShortcutConfigError::Conflict(other) => t_args(
+                    "guide-rebind-in-use",
+                    &[("action", shortcut_action_label(other).into())],
                 ),
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey => {
-                    "F1 and Print Screen are reserved by the desktop.".into()
+                    t("guide-rebind-reserved")
                 }
                 settings_store::hardware::ShortcutConfigError::InvalidChord
                 | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
-                    "That shortcut is not supported. Press another shortcut.".into()
+                    t("guide-rebind-unsupported")
                 }
                 settings_store::hardware::ShortcutConfigError::TakenByAction => {
-                    "Already used to run an action. Press another shortcut.".into()
+                    t("guide-rebind-taken-by-action")
                 }
             });
             return;
@@ -11000,8 +11000,7 @@ impl ShellOverlayHost {
                 self.shortcut_rebind_message = None;
             }
             Err(_) => {
-                self.shortcut_rebind_message =
-                    Some("Could not save that shortcut. Press another shortcut.".into());
+                self.shortcut_rebind_message = Some(t("guide-rebind-save-failed"));
             }
         }
     }
@@ -11080,17 +11079,17 @@ impl ShellOverlayHost {
         });
         if let Err(error) = restore {
             self.shortcut_rebind_message = Some(match error {
-                settings_store::hardware::ShortcutConfigError::Conflict(other) => format!(
-                    "A default is already used to {}. Change that shortcut first.",
-                    shortcut_action_label(other)
+                settings_store::hardware::ShortcutConfigError::Conflict(other) => t_args(
+                    "guide-reset-in-use",
+                    &[("action", shortcut_action_label(other).into())],
                 ),
                 settings_store::hardware::ShortcutConfigError::TakenByAction => {
-                    "A default now runs an action. Change that shortcut first.".into()
+                    t("guide-reset-taken-by-action")
                 }
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey
                 | settings_store::hardware::ShortcutConfigError::InvalidChord
                 | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
-                    "Could not restore the default shortcuts.".into()
+                    t("guide-reset-invalid")
                 }
             });
             return;
@@ -11108,7 +11107,7 @@ impl ShellOverlayHost {
                 self.shortcut_rebind_message = None;
             }
             Err(_) => {
-                self.shortcut_rebind_message = Some("Could not restore the defaults.".into());
+                self.shortcut_rebind_message = Some(t("guide-reset-save-failed"));
             }
         }
     }
@@ -13232,8 +13231,8 @@ impl ShellOverlayHost {
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
                 chrome.borrow_mut().push_notification(
-                    format!("{action} failed"),
-                    format!("{error}. The current device state is being refreshed."),
+                    t_args("qs-action-failed", &[("action", action.into())]),
+                    t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
                 self.qs_refresh.kick_fast();
             }
@@ -13286,8 +13285,8 @@ impl ShellOverlayHost {
             }
             BluetoothOutcome::ActionFailed { device, error } => {
                 state.push_notification(
-                    format!("Could not connect {device}"),
-                    format!("{error}. The current device state is being refreshed."),
+                    t_args("qs-bluetooth-connect-failed", &[("device", device.into())]),
+                    t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
                 drop(state);
                 self.qs_refresh.kick_bt_devices();
@@ -13316,8 +13315,8 @@ impl ShellOverlayHost {
             }
             VpnPaneOutcome::ActionFailed { profile, error } => {
                 chrome.borrow_mut().push_notification(
-                    format!("Could not change {profile}"),
-                    format!("{error}. The current device state is being refreshed."),
+                    t_args("qs-vpn-change-failed", &[("profile", profile.into())]),
+                    t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
                 self.qs_refresh.kick_fast();
             }
@@ -14043,7 +14042,10 @@ impl ShellOverlayHost {
                         state.quick_settings.pop_level();
                         state.push_notification(
                             "Bluetooth",
-                            format!("Disconnected {} from this device", accessory.name),
+                            t_args(
+                                "qs-bluetooth-disconnected",
+                                &[("device", accessory.name.into())],
+                            ),
                         );
                     }
                     Err(error) => {
@@ -14052,8 +14054,11 @@ impl ShellOverlayHost {
                             Err(error.clone()),
                         );
                         chrome.borrow_mut().push_notification(
-                            format!("Could not disconnect {}", accessory.name),
-                            format!("{error}. The current device state is being refreshed."),
+                            t_args(
+                                "qs-bluetooth-disconnect-failed",
+                                &[("device", accessory.name.into())],
+                            ),
+                            t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                         );
                     }
                 }
@@ -17935,14 +17940,12 @@ impl Widget for ShellOverlayHost {
                                 .collect();
                             root.children.push(
                                 AccessNode::new(Role::Dialog)
-                                    .with_name("Devices and media")
-                                    .with_description(
-                                        "Local audio outputs and identity-certified Tilo devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.",
-                                    )
+                                    .with_name(t("devices-media-title"))
+                                    .with_description(t("devices-media-description"))
                                     .with_state(AccessState::new().modal(true))
                                     .with_children(vec![
                                         AccessNode::new(Role::List)
-                                            .with_name("Media destinations")
+                                            .with_name(t("devices-media-list"))
                                             .with_children(items),
                                     ]),
                             );
@@ -17971,7 +17974,7 @@ impl Widget for ShellOverlayHost {
                     let chord = |action| {
                         shortcuts
                             .bindings
-                            .get(&action).map_or_else(|| "unassigned".to_string(), shortcut_guide_chord)
+                            .get(&action).map_or_else(|| t("guide-unassigned-inline"), shortcut_guide_chord)
                     };
                     let essential_summary = shortcut_reference_rows(shortcuts)
                         .into_iter()
@@ -17983,21 +17986,24 @@ impl Widget for ShellOverlayHost {
                         .join("; ");
                     root.children.push(
                         AccessNode::new(Role::Dialog)
-                            .with_name("Desktop keyboard and mouse guide")
-                            .with_description(format!(
-                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; workspaces with {} or {}; move groups with {} or {}; resize with {} or {}. Essential desktop actions: {essential_summary}. Click a displayed navigation shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
-                                chord(ShortcutAction::FocusPreviousWindow),
-                                chord(ShortcutAction::FocusNextWindow),
-                                chord(ShortcutAction::PreviousTab),
-                                chord(ShortcutAction::NextTab),
-                                chord(ShortcutAction::PreviousStrip),
-                                chord(ShortcutAction::NextStrip),
-                                chord(ShortcutAction::PreviousWorkspace),
-                                chord(ShortcutAction::NextWorkspace),
-                                chord(ShortcutAction::MoveGroupLeft),
-                                chord(ShortcutAction::MoveGroupRight),
-                                chord(ShortcutAction::ResizeNarrower),
-                                chord(ShortcutAction::ResizeWider),
+                            .with_name(t("guide-a11y-name"))
+                            .with_description(t_args(
+                                "guide-a11y-description",
+                                &[
+                                    ("window-back", chord(ShortcutAction::FocusPreviousWindow).into()),
+                                    ("window-next", chord(ShortcutAction::FocusNextWindow).into()),
+                                    ("tab-back", chord(ShortcutAction::PreviousTab).into()),
+                                    ("tab-next", chord(ShortcutAction::NextTab).into()),
+                                    ("strip-back", chord(ShortcutAction::PreviousStrip).into()),
+                                    ("strip-next", chord(ShortcutAction::NextStrip).into()),
+                                    ("workspace-back", chord(ShortcutAction::PreviousWorkspace).into()),
+                                    ("workspace-next", chord(ShortcutAction::NextWorkspace).into()),
+                                    ("group-left", chord(ShortcutAction::MoveGroupLeft).into()),
+                                    ("group-right", chord(ShortcutAction::MoveGroupRight).into()),
+                                    ("narrower", chord(ShortcutAction::ResizeNarrower).into()),
+                                    ("wider", chord(ShortcutAction::ResizeWider).into()),
+                                    ("essentials", essential_summary.into()),
+                                ],
                             ))
                             .with_state(AccessState::new().modal(true)),
                     );
@@ -19846,16 +19852,17 @@ impl ShellOverlayHost {
             &panel_shape,
         );
         let title_size = theme.tokens.typography.scale.xl;
+        let title = t("guide-title");
         text_renderer.draw_text_weighted(
             scene,
-            "Desktop help",
+            &title,
             title_size,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
             TextWeight::Semibold,
         );
-        let (title_width, _) = text_renderer.measure("Desktop help", title_size, None);
+        let (title_width, _) = text_renderer.measure(&title, title_size, None);
         let f1_hint = Rect::new(
             panel.x0 + 34.0 + f64::from(title_width),
             panel.y0 + 22.0,
@@ -19888,7 +19895,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Press F1 anywhere to reopen this guide · Select a navigation keycap to change it",
+            &t("guide-reopen-hint"),
             theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
@@ -19913,10 +19920,11 @@ impl ShellOverlayHost {
             );
         }
         let label_size = theme.tokens.typography.scale.sm;
-        let (done_w, done_h) = text_renderer.measure("Done", label_size, None);
+        let done_label = t("guide-done");
+        let (done_w, done_h) = text_renderer.measure(&done_label, label_size, None);
         text_renderer.draw_text_weighted(
             scene,
-            "Done",
+            &done_label,
             label_size,
             colors.text_primary,
             transform.pre_translate(
@@ -19958,12 +19966,12 @@ impl ShellOverlayHost {
             let feedback = if let Some(action) = self.shortcut_rebind {
                 Some(self.shortcut_rebind_message.clone().map_or_else(
                     || {
-                        format!(
-                            "Press a new shortcut to {} · Esc cancels",
-                            shortcut_action_label(action)
+                        t_args(
+                            "guide-press-new-shortcut",
+                            &[("action", shortcut_action_label(action).into())],
                         )
                     },
-                    |message| format!("{message} · Esc cancels"),
+                    |message| t_args("guide-message-esc-cancels", &[("message", message.into())]),
                 ))
             } else {
                 self.shortcut_rebind_message.clone()
@@ -19992,10 +20000,7 @@ impl ShellOverlayHost {
                 let guide = ControllerButton::Guide.label(family);
                 text_renderer.draw_text(
                     scene,
-                    &format!(
-                        "Move with the stick or D-pad. Hold {guide} to arrange windows. \
-                         In a fullscreen game only {guide} chords reach the desktop."
-                    ),
+                    &t_args("guide-controller-intro", &[("guide", guide.into())]),
                     theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 8.0).into()),
@@ -20011,48 +20016,54 @@ impl ShellOverlayHost {
                 type Choice = (Vec<ControllerButton>, Vec<ControllerButton>);
                 let rows: [(&str, Choice); 13] = [
                     (
-                        "Move focus",
+                        "guide-row-move-focus",
                         (
                             vec![ControllerButton::DpadLeft],
                             vec![ControllerButton::DpadRight],
                         ),
                     ),
-                    ("Select", one(face_button(family, FaceRole::Confirm))),
-                    ("Back", one(face_button(family, FaceRole::Cancel))),
                     (
-                        "Actions for this app",
+                        "guide-row-select",
+                        one(face_button(family, FaceRole::Confirm)),
+                    ),
+                    ("guide-row-back", one(face_button(family, FaceRole::Cancel))),
+                    (
+                        "guide-row-app-actions",
                         one(face_button(family, FaceRole::Third)),
                     ),
-                    ("Search", one(face_button(family, FaceRole::Fourth))),
                     (
-                        "Tabs",
+                        "guide-row-search",
+                        one(face_button(family, FaceRole::Fourth)),
+                    ),
+                    (
+                        "guide-row-tabs",
                         (
                             vec![ControllerButton::LeftBumper],
                             vec![ControllerButton::RightBumper],
                         ),
                     ),
                     (
-                        "Workspaces",
+                        "guide-row-workspaces",
                         (
                             vec![ControllerButton::LeftTrigger],
                             vec![ControllerButton::RightTrigger],
                         ),
                     ),
-                    ("Overview", one(ControllerButton::Select)),
-                    ("This guide", one(ControllerButton::Start)),
+                    ("guide-overview", one(ControllerButton::Select)),
+                    ("guide-row-this-guide", one(ControllerButton::Start)),
                     (
-                        "Windows",
+                        "guide-row-windows",
                         chord(ControllerButton::DpadLeft, ControllerButton::DpadRight),
                     ),
                     (
-                        "Strips",
+                        "guide-row-strips",
                         chord(ControllerButton::DpadUp, ControllerButton::DpadDown),
                     ),
                     (
-                        "Move window",
+                        "guide-row-move-window",
                         chord(ControllerButton::LeftBumper, ControllerButton::RightBumper),
                     ),
-                    ("Quick settings", one(ControllerButton::Guide)),
+                    ("guide-row-quick-settings", one(ControllerButton::Guide)),
                 ];
                 let row_step = if compact_panel { 48.0 } else { 54.0 };
                 let per_column = rows.len().div_ceil(2);
@@ -20063,7 +20074,7 @@ impl ShellOverlayHost {
                     let y = body.y0 + 66.0 + usize_to_f64_lossy(row) * row_step;
                     text_renderer.draw_text(
                         scene,
-                        label,
+                        &t(label),
                         theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
@@ -20086,22 +20097,31 @@ impl ShellOverlayHost {
             ui::InputModality::Touch => {
                 text_renderer.draw_text(
                     scene,
-                    "Gestures follow the desktop's horizontal windows and vertical workspaces.",
+                    &t("guide-touch-intro"),
                     theme.tokens.typography.scale.sm,
                     colors.text_dim,
                     transform.pre_translate((body.x0, body.y0).into()),
                     None,
                 );
                 let gestures = [
-                    ("Focus next window", TouchGesture::SwipeLeft { fingers: 3 }),
                     (
-                        "Focus previous window",
+                        "guide-touch-focus-next-window",
+                        TouchGesture::SwipeLeft { fingers: 3 },
+                    ),
+                    (
+                        "guide-touch-focus-previous-window",
                         TouchGesture::SwipeRight { fingers: 3 },
                     ),
-                    ("Previous workspace", TouchGesture::SwipeUp { fingers: 3 }),
-                    ("Next workspace", TouchGesture::SwipeDown { fingers: 3 }),
-                    ("Open overview", TouchGesture::PinchIn),
-                    ("Close overview", TouchGesture::PinchOut),
+                    (
+                        "guide-touch-previous-workspace",
+                        TouchGesture::SwipeUp { fingers: 3 },
+                    ),
+                    (
+                        "guide-touch-next-workspace",
+                        TouchGesture::SwipeDown { fingers: 3 },
+                    ),
+                    ("guide-touch-open-overview", TouchGesture::PinchIn),
+                    ("guide-touch-close-overview", TouchGesture::PinchOut),
                 ];
                 let narrow = body.width() < 560.0;
                 for (index, (label, gesture)) in gestures.iter().enumerate() {
@@ -20113,7 +20133,7 @@ impl ShellOverlayHost {
                         + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
                     text_renderer.draw_text(
                         scene,
-                        label,
+                        &t(label),
                         theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
@@ -20156,33 +20176,37 @@ impl ShellOverlayHost {
                 };
                 let rows = [
                     (
-                        "Windows",
+                        "guide-row-windows",
                         ShortcutAction::FocusPreviousWindow,
                         ShortcutAction::FocusNextWindow,
                     ),
-                    ("Tabs", ShortcutAction::PreviousTab, ShortcutAction::NextTab),
                     (
-                        "Move tab",
+                        "guide-row-tabs",
+                        ShortcutAction::PreviousTab,
+                        ShortcutAction::NextTab,
+                    ),
+                    (
+                        "guide-row-move-tab",
                         ShortcutAction::AttachTabLeft,
                         ShortcutAction::AttachTabRight,
                     ),
                     (
-                        "Strips",
+                        "guide-row-strips",
                         ShortcutAction::PreviousStrip,
                         ShortcutAction::NextStrip,
                     ),
                     (
-                        "Workspaces",
+                        "guide-row-workspaces",
                         ShortcutAction::PreviousWorkspace,
                         ShortcutAction::NextWorkspace,
                     ),
                     (
-                        "Move group",
+                        "guide-row-move-group",
                         ShortcutAction::MoveGroupLeft,
                         ShortcutAction::MoveGroupRight,
                     ),
                     (
-                        "Resize",
+                        "guide-row-resize",
                         ShortcutAction::ResizeNarrower,
                         ShortcutAction::ResizeWider,
                     ),
@@ -20201,7 +20225,7 @@ impl ShellOverlayHost {
                 );
                 text_renderer.draw_text_weighted(
                     scene,
-                    "EDIT NAVIGATION SHORTCUTS",
+                    &t("guide-navigation-heading"),
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
@@ -20219,7 +20243,7 @@ impl ShellOverlayHost {
                         navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
                     text_renderer.draw_text(
                         scene,
-                        label,
+                        &t(label),
                         theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
@@ -20312,7 +20336,7 @@ impl ShellOverlayHost {
                 let essentials_y = navigation_surface.y1 + 12.0;
                 text_renderer.draw_text_weighted(
                     scene,
-                    "DESKTOP ESSENTIALS",
+                    &t("guide-essentials-heading"),
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
@@ -20329,9 +20353,9 @@ impl ShellOverlayHost {
                     / usize_to_f64_lossy(reference_columns);
                 let reference_height = shortcut_reference_group_height(compact);
                 let group_titles = [
-                    "WINDOWS & WORKSPACES",
-                    "SEARCH & SYSTEM",
-                    "CAPTURE & DISPLAY",
+                    "guide-group-windows",
+                    "guide-group-search",
+                    "guide-group-capture",
                 ];
                 for (group_index, group_rows) in references.chunks(6).enumerate() {
                     let x = body.x0
@@ -20358,7 +20382,7 @@ impl ShellOverlayHost {
                     let group_title = group_titles[group_index];
                     text_renderer.draw_text_weighted(
                         scene,
-                        group_title,
+                        &t(group_title),
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
                         transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
@@ -20417,7 +20441,7 @@ impl ShellOverlayHost {
                     );
                     text_renderer.draw_text(
                         scene,
-                        "Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize",
+                        &t("guide-pointer"),
                         theme.tokens.typography.scale.xs,
                         colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
@@ -20438,7 +20462,7 @@ impl ShellOverlayHost {
                     if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
                         text_renderer.draw_text(
                             scene,
-                            "Vim mode · h j k l",
+                            &t("guide-vim-mode"),
                             theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 50.0).into()),
@@ -20630,7 +20654,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            view.app_name(),
+            &view.app_name(),
             14.0,
             theme.tokens.colors.text_dim,
             transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
@@ -20638,7 +20662,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            view.detail(),
+            &view.detail(),
             14.0,
             theme.tokens.colors.text_dim,
             transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
@@ -20669,15 +20693,15 @@ impl ShellOverlayHost {
             .enumerate()
         {
             let index = usb_start.saturating_add(visible_index);
-            let access = if device.writable {
-                "Read and write"
+            let access_key = if device.writable {
+                "portal-usb-row-read-write"
             } else {
-                "Read only"
+                "portal-usb-row-read-only"
             };
             let label = format!(
-                "[{}] {} — {access}",
+                "[{}] {}",
                 if device.selected { "✓" } else { " " },
-                device.label
+                crate::shell::i18n::t_args(access_key, &[("device", device.label.as_str().into())])
             );
             let focused = index == self.portal_dialogs.selected();
             draw_filter_chip(
@@ -20767,8 +20791,9 @@ impl ShellOverlayHost {
             (layout.remember, self.portal_dialogs.remember_display())
         {
             let label = format!(
-                "[{}] Remember on this device",
-                if remember { "✓" } else { " " }
+                "[{}] {}",
+                if remember { "✓" } else { " " },
+                crate::shell::i18n::t("portal-remember-device")
             );
             draw_filter_chip(
                 scene,
@@ -20793,7 +20818,7 @@ impl ShellOverlayHost {
         }
         for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
             let accelerator = row.accelerator.as_deref().map_or_else(
-                || "Not set".into(),
+                || crate::shell::i18n::t("portal-shortcut-not-set"),
                 crate::portal::global_shortcuts::display_accelerator,
             );
             let label = if row.description.is_empty() {
@@ -20833,7 +20858,7 @@ impl ShellOverlayHost {
             transform,
             text_renderer,
             theme,
-            &ButtonFace::new(layout.cancel, view.cancel_label())
+            &ButtonFace::new(layout.cancel, &view.cancel_label())
                 .radius(button_radius)
                 .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
         );
@@ -20842,7 +20867,7 @@ impl ShellOverlayHost {
             transform,
             text_renderer,
             theme,
-            &ButtonFace::new(layout.confirm, view.confirm_label())
+            &ButtonFace::new(layout.confirm, &view.confirm_label())
                 .primary()
                 .radius(button_radius)
                 .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),

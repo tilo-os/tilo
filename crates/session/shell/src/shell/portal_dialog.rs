@@ -30,6 +30,7 @@ use crate::portal::desktop_services::{
     AppChooserService, ApplicationChoice, ApplicationChoiceRequest, PortalResult,
 };
 use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
+use crate::shell::i18n::{t, t_args};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -751,16 +752,18 @@ impl PortalDialogQueue {
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
-                title: format!(
-                    "{} wants to use {}",
-                    friendly_app_name(&request.app_id),
-                    friendly_app_name(&request.target_app)
+                title: t_args(
+                    "portal-grant-title",
+                    &[
+                        ("app", friendly_app_name(&request.app_id).into()),
+                        ("target", friendly_app_name(&request.target_app).into()),
+                    ],
                 ),
                 action: request.action_label.clone(),
                 detail: action_grant_detail(request),
                 choices: AppActionConsent::ALLOWING
                     .iter()
-                    .map(|answer| answer.label().to_string())
+                    .map(|answer| answer.label())
                     .collect(),
             }),
             PendingDialog::UsbDevices {
@@ -1023,22 +1026,19 @@ impl PortalDialogQueue {
         let Some(accelerator) =
             crate::portal::global_shortcuts::physical_accelerator(physical, modifiers)
         else {
-            request.rows[selected].status =
-                Some("Hold Ctrl, Alt, Shift, or Super, then press a key.".into());
+            request.rows[selected].status = Some(t("portal-shortcut-needs-modifier"));
             return true;
         };
         if crate::portal::global_shortcuts::ShellGlobalShortcutsService::global()
             .is_reserved(&accelerator)
         {
-            request.rows[selected].status =
-                Some("Reserved by Tilo. Choose another shortcut.".into());
+            request.rows[selected].status = Some(t("portal-shortcut-reserved"));
             return true;
         }
         if request.rows.iter().enumerate().any(|(index, other)| {
             index != selected && other.accelerator.as_deref() == Some(accelerator.as_str())
         }) {
-            request.rows[selected].status =
-                Some("Already assigned in this request. Choose another shortcut.".into());
+            request.rows[selected].status = Some(t("portal-shortcut-duplicate"));
             return true;
         }
         request.rows[selected].accelerator = Some(accelerator);
@@ -1200,9 +1200,9 @@ impl DialogView {
     pub fn title(&self) -> String {
         match self {
             Self::ShortcutStep { title, .. } => title.clone(),
-            Self::AppChoice { .. } => "Choose an application".into(),
+            Self::AppChoice { .. } => t("portal-choose-app-title"),
             Self::Review { title, .. } => title.clone(),
-            Self::ShortcutBindings { .. } => "Set global shortcuts".into(),
+            Self::ShortcutBindings { .. } => t("portal-shortcuts-title"),
             Self::LauncherReview { title, .. } => title.clone(),
             Self::UsbDevices { title, .. } => title.clone(),
             Self::ActionGrant { title, .. } => title.clone(),
@@ -1210,7 +1210,7 @@ impl DialogView {
             Self::NetworkSecrets { title, .. } => title.clone(),
         }
     }
-    pub fn app_name(&self) -> &str {
+    pub fn app_name(&self) -> String {
         match self {
             Self::ShortcutStep {
                 shortcut: app_name, ..
@@ -1219,25 +1219,23 @@ impl DialogView {
             | Self::Review { app_name, .. }
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
-            | Self::UsbDevices { app_name, .. } => app_name,
-            Self::ActionGrant { action, .. } => action,
-            Self::Authentication { .. } => "Administrator access",
-            Self::NetworkSecrets { .. } => "Network",
+            | Self::UsbDevices { app_name, .. } => app_name.clone(),
+            Self::ActionGrant { action, .. } => action.clone(),
+            Self::Authentication { .. } => t("portal-auth-heading"),
+            Self::NetworkSecrets { .. } => t("portal-network-heading"),
         }
     }
-    pub fn detail(&self) -> &str {
+    pub fn detail(&self) -> String {
         match self {
             Self::ShortcutStep { detail, .. }
             | Self::AppChoice { detail, .. }
-            | Self::Review { detail, .. } => detail,
-            Self::ShortcutBindings { .. } => {
-                "Select a row, then press the shortcut. Tilo and active app shortcuts cannot be claimed. Backspace clears a row."
-            }
-            Self::LauncherReview { detail, .. } => detail,
-            Self::UsbDevices { detail, .. } => detail,
-            Self::ActionGrant { detail, .. } => detail,
-            Self::Authentication { detail, .. } => detail,
-            Self::NetworkSecrets { detail, .. } => detail,
+            | Self::Review { detail, .. } => detail.clone(),
+            Self::ShortcutBindings { .. } => t("portal-shortcuts-detail"),
+            Self::LauncherReview { detail, .. } => detail.clone(),
+            Self::UsbDevices { detail, .. } => detail.clone(),
+            Self::ActionGrant { detail, .. } => detail.clone(),
+            Self::Authentication { detail, .. } => detail.clone(),
+            Self::NetworkSecrets { detail, .. } => detail.clone(),
         }
     }
     pub fn choices(&self) -> &[String] {
@@ -1297,25 +1295,25 @@ impl DialogView {
             Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
         }
     }
-    pub fn confirm_label(&self) -> &str {
+    pub fn confirm_label(&self) -> String {
         match self {
-            Self::AppChoice { .. } => "Open",
-            Self::ShortcutStep { confirm_label, .. } => confirm_label,
-            Self::Review { confirm_label, .. } => confirm_label,
-            Self::ShortcutBindings { .. } => "Save shortcuts",
-            Self::LauncherReview { confirm_label, .. } => confirm_label,
-            Self::UsbDevices { confirm_label, .. } => confirm_label,
-            Self::ActionGrant { .. } => "Allow",
-            Self::Authentication { .. } => "Authenticate",
-            Self::NetworkSecrets { .. } => "Connect",
+            Self::AppChoice { .. } => t("portal-open"),
+            Self::ShortcutStep { confirm_label, .. } => confirm_label.clone(),
+            Self::Review { confirm_label, .. } => confirm_label.clone(),
+            Self::ShortcutBindings { .. } => t("portal-save-shortcuts"),
+            Self::LauncherReview { confirm_label, .. } => confirm_label.clone(),
+            Self::UsbDevices { confirm_label, .. } => confirm_label.clone(),
+            Self::ActionGrant { .. } => t("portal-allow"),
+            Self::Authentication { .. } => t("portal-authenticate"),
+            Self::NetworkSecrets { .. } => t("portal-connect"),
         }
     }
 
     /// The label of the button that answers no.
-    pub fn cancel_label(&self) -> &'static str {
+    pub fn cancel_label(&self) -> String {
         match self {
             Self::ActionGrant { .. } => AppActionConsent::Deny.label(),
-            _ => "Cancel",
+            _ => t("portal-cancel"),
         }
     }
 
@@ -1405,7 +1403,7 @@ pub struct PortalDialogController {
     entry_focus: usize,
     remember: bool,
     /// Why the network-secrets sheet refused to close.
-    entry_error: Option<&'static str>,
+    entry_error: Option<String>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -1579,14 +1577,9 @@ impl PortalDialogController {
                 let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
                     |(index, (field, value))| {
                         if value.is_empty() {
-                            field
-                                .required
-                                .then_some((index, "Fill in every required field."))
+                            field.required.then(|| (index, t("portal-secret-required")))
                         } else if !field.rule.accepts(value) {
-                            Some((
-                                index,
-                                "A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.",
-                            ))
+                            Some((index, t("portal-secret-wifi-length")))
                         } else {
                             None
                         }
@@ -1964,8 +1957,8 @@ impl PortalDialogController {
     }
 
     /// Why the network-secrets sheet did not close, when it refused.
-    pub fn entry_error(&self) -> Option<&'static str> {
-        self.entry_error
+    pub fn entry_error(&self) -> Option<&str> {
+        self.entry_error.as_deref()
     }
 
     /// The sheet up, for `state-dump`: what the person sees, with every
@@ -2020,7 +2013,7 @@ impl PortalDialogController {
                 } else {
                     serde_json::Value::Null
                 };
-                state["error"] = self.entry_error.into();
+                state["error"] = self.entry_error.clone().into();
             }
             _ => {}
         }
@@ -2136,21 +2129,24 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         .as_deref()
         .or(request.uri.as_deref())
         .or(request.content_type.as_deref())
-        .unwrap_or("this item");
-    format!(
-        "{} wants to open {}",
-        friendly_app_name(&request.app_id),
-        subject
+        .map_or_else(|| t("portal-chooser-this-item"), str::to_string);
+    t_args(
+        "portal-chooser-detail",
+        &[
+            ("app", friendly_app_name(&request.app_id).into()),
+            ("subject", subject.into()),
+        ],
     )
 }
 /// The action's consequences, as the grant sheet states them.
 fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     let risk = crate::shell::app_action_consent::risk_label(request.risk);
-    if request.needs_confirmation {
-        format!("{risk}\nIt still asks you to confirm each time it runs.")
+    let key = if request.needs_confirmation {
+        "portal-grant-detail-confirms"
     } else {
-        format!("{risk}\nIt runs without asking you again.")
-    }
+        "portal-grant-detail-unattended"
+    };
+    t_args(key, &[("risk", risk.into())])
 }
 
 fn friendly_app_name(app_id: &str) -> String {

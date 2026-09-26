@@ -12,6 +12,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
 
+use crate::shell::i18n::t;
+
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, RELATED_GAP, TOGGLE_H, TOGGLE_W,
@@ -113,20 +115,22 @@ impl QuickSettingsVpnPane {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut children = vec![
-            AccessNode::new(Role::Button).with_name("Back").with_state(
-                AccessState::new()
-                    .focusable(true)
-                    .focused(self.keyboard_focus == Some(Self::BACK_FOCUS)),
-            ),
+            AccessNode::new(Role::Button)
+                .with_name(t("qs-back"))
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.keyboard_focus == Some(Self::BACK_FOCUS)),
+                ),
         ];
         children.extend(profiles.iter().enumerate().map(|(index, profile)| {
             AccessNode::new(Role::Switch)
                 .with_name(profile.name.clone())
-                .with_description(if profile.active {
-                    "VPN connected"
+                .with_description(t(if profile.active {
+                    "qs-vpn-connected-a11y"
                 } else {
-                    "VPN disconnected"
-                })
+                    "qs-vpn-disconnected-a11y"
+                }))
                 .with_position(index.saturating_add(1), profiles.len())
                 .with_state(
                     AccessState::new()
@@ -139,12 +143,12 @@ impl QuickSettingsVpnPane {
                 )
         }));
         AccessNode::new(Role::Dialog)
-            .with_name("VPN")
-            .with_description(if profiles.is_empty() {
-                "No VPN profiles configured"
+            .with_name(t("qs-vpn"))
+            .with_description(t(if profiles.is_empty() {
+                "qs-vpn-none-a11y"
             } else {
-                "Connect or disconnect a configured VPN profile"
-            })
+                "qs-vpn-choose-a11y"
+            }))
             .with_state(AccessState::new().modal(true))
             .with_children(children)
     }
@@ -286,7 +290,7 @@ impl QuickSettingsVpnPane {
         self.list.layout(panel, profiles.len());
         let colors = &theme.tokens.colors;
         self.list
-            .draw_header(scene, transform, text, theme, panel, cursor, "VPN");
+            .draw_header(scene, transform, text, theme, panel, cursor, &t("qs-vpn"));
         if self.keyboard_focus == Some(Self::BACK_FOCUS) {
             Button::paint(
                 scene,
@@ -297,18 +301,11 @@ impl QuickSettingsVpnPane {
                     .ghost()
                     .icon(ui::icons::Icon::ChevronLeft)
                     .focused(true)
-                    .accessible_name("Back"),
+                    .accessible_name(&t("qs-back")),
             );
         }
         if profiles.is_empty() {
-            DrillInList::draw_empty(
-                scene,
-                transform,
-                text,
-                theme,
-                panel,
-                "No VPN profiles yet · add one in Settings",
-            );
+            DrillInList::draw_empty(scene, transform, text, theme, panel, &t("qs-vpn-empty"));
             return;
         }
 
@@ -357,15 +354,15 @@ impl QuickSettingsVpnPane {
             let text_x = glyph.x1 + CONTROL_INSET;
             let text_width = (toggle.x0 - RELATED_GAP - text_x).max(1.0);
             let name = text.elide_to_width(&profile.name, name_size, f64_to_f32_lossy(text_width));
-            let status = if profile.active {
-                "Connected"
+            let status = t(if profile.active {
+                "qs-connected"
             } else {
-                "Disconnected"
-            };
+                "qs-disconnected"
+            });
             // Name and status are one measured block on the row's centre
             // line (HIG §7), not two lines pinned from the row's top.
             let (_, name_h) = text.measure_weighted(&name, name_size, None, TextWeight::Medium);
-            let (_, status_h) = text.measure(status, status_size, None);
+            let (_, status_h) = text.measure(&status, status_size, None);
             let block_top = centred_text_top(*row, f64::from(name_h) + f64::from(status_h));
             text.draw_text_weighted(
                 scene,
@@ -378,7 +375,7 @@ impl QuickSettingsVpnPane {
             );
             text.draw_text(
                 scene,
-                status,
+                &status,
                 status_size,
                 if profile.active {
                     colors.accent[5]
