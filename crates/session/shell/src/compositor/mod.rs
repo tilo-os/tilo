@@ -58,6 +58,7 @@ pub mod projection_capture;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
+pub mod screen_dim;
 pub mod selection;
 #[cfg(target_os = "linux")]
 pub mod state;
