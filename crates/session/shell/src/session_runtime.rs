@@ -251,88 +251,96 @@ mod tests {
     }
 
     #[test]
-    fn deliveries_arrive_in_order_and_wake_the_loop() {
-        let (wake, woken) = channel_wake();
-        let (delivery, mailbox) = mailbox::<u32>(wake);
-        assert_eq!(mailbox.take(), Taken::Empty);
-        delivery.deliver(1);
-        delivery.deliver(2);
-        woken.recv().unwrap();
-        assert_eq!(mailbox.drain().collect::<Vec<_>>(), vec![1, 2]);
-        drop(delivery);
-        assert_eq!(mailbox.take(), Taken::Closed);
-    }
-
-    #[test]
-    fn a_blocking_start_reports_once_it_finishes() {
-        let runtime = test_runtime();
-        let (wake, woken) = channel_wake();
-        let (release, released) = mpsc::channel::<()>();
-        let pending = start_blocking(runtime.handle(), wake, move || {
-            released.recv().map_err(|error| error.to_string())?;
-            Ok(7_u32)
-        });
-        assert!(pending.poll().is_none(), "still running");
-        release.send(()).unwrap();
-        let outcome = loop {
+    #[allow(
+        clippy::items_after_statements,
+        reason = "a phase with an early return keeps its original body as a nested fn"
+    )]
+    fn session_starts_are_delivered_in_order_and_never_hang() {
+        // Phase `deliveries_arrive_in_order_and_wake_the_loop`.
+        {
+            let (wake, woken) = channel_wake();
+            let (delivery, mailbox) = mailbox::<u32>(wake);
+            assert_eq!(mailbox.take(), Taken::Empty);
+            delivery.deliver(1);
+            delivery.deliver(2);
             woken.recv().unwrap();
-            if let Some(outcome) = pending.poll() {
-                break outcome;
-            }
-        };
-        assert_eq!(outcome, Ok(7));
+            assert_eq!(mailbox.drain().collect::<Vec<_>>(), vec![1, 2]);
+            drop(delivery);
+            assert_eq!(mailbox.take(), Taken::Closed);
+        }
+        // Phase `a_blocking_start_reports_once_it_finishes`.
+        fn a_blocking_start_reports_once_it_finishes() {
+            let runtime = test_runtime();
+            let (wake, woken) = channel_wake();
+            let (release, released) = mpsc::channel::<()>();
+            let pending = start_blocking(runtime.handle(), wake, move || {
+                released.recv().map_err(|error| error.to_string())?;
+                Ok(7_u32)
+            });
+            assert!(pending.poll().is_none(), "still running");
+            release.send(()).unwrap();
+            let outcome = loop {
+                woken.recv().unwrap();
+                if let Some(outcome) = pending.poll() {
+                    break outcome;
+                }
+            };
+            assert_eq!(outcome, Ok(7));
+        }
+        a_blocking_start_reports_once_it_finishes();
+        // Phase `a_start_that_never_reports_is_a_failure_not_a_hang`.
+        {
+            let (wake, _woken) = channel_wake();
+            let (delivery, mailbox) = mailbox::<Result<u32, String>>(wake);
+            let pending = PendingStart { mailbox };
+            assert!(pending.poll().is_none());
+            drop(delivery);
+            assert!(matches!(pending.poll(), Some(Err(_))));
+        }
     }
 
     #[test]
-    fn a_start_that_never_reports_is_a_failure_not_a_hang() {
-        let (wake, _woken) = channel_wake();
-        let (delivery, mailbox) = mailbox::<Result<u32, String>>(wake);
-        let pending = PendingStart { mailbox };
-        assert!(pending.poll().is_none());
-        drop(delivery);
-        assert!(matches!(pending.poll(), Some(Err(_))));
-    }
-
-    #[test]
-    fn a_registration_finishing_after_release_is_not_kept() {
-        let runtime = test_runtime();
-        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
-        let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
-        let registration = Registration::start(
-            runtime.handle(),
-            "test",
-            async move {
-                let _ = finished.await;
-                Ok::<_, String>(DropSignal(dropped_tx))
-            },
-            |_| {},
-        );
-        assert!(!registration.is_registered());
-        drop(registration);
-        finish.send(()).unwrap();
-        // The late handle is dropped by the task instead of being stored.
-        dropped_rx.recv().unwrap();
-    }
-
-    #[test]
-    fn a_registration_is_held_until_released() {
-        let runtime = test_runtime();
-        let (registered_tx, registered_rx) = mpsc::channel::<()>();
-        let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
-        let registration = Registration::start(
-            runtime.handle(),
-            "test",
-            async move {
-                let handle = DropSignal(dropped_tx);
-                let _ = registered_tx.send(());
-                Ok::<_, String>(handle)
-            },
-            |_| {},
-        );
-        registered_rx.recv().unwrap();
-        // Registered, or about to be: a held handle is never dropped.
-        assert!(dropped_rx.try_recv().is_err());
-        drop(registration);
-        dropped_rx.recv().unwrap();
+    fn registrations_are_held_until_released_and_late_ones_dropped() {
+        // Phase `a_registration_is_held_until_released`.
+        {
+            let runtime = test_runtime();
+            let (registered_tx, registered_rx) = mpsc::channel::<()>();
+            let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+            let registration = Registration::start(
+                runtime.handle(),
+                "test",
+                async move {
+                    let handle = DropSignal(dropped_tx);
+                    let _ = registered_tx.send(());
+                    Ok::<_, String>(handle)
+                },
+                |_| {},
+            );
+            registered_rx.recv().unwrap();
+            // Registered, or about to be: a held handle is never dropped.
+            assert!(dropped_rx.try_recv().is_err());
+            drop(registration);
+            dropped_rx.recv().unwrap();
+        }
+        // Phase `a_registration_finishing_after_release_is_not_kept`.
+        {
+            let runtime = test_runtime();
+            let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+            let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+            let registration = Registration::start(
+                runtime.handle(),
+                "test",
+                async move {
+                    let _ = finished.await;
+                    Ok::<_, String>(DropSignal(dropped_tx))
+                },
+                |_| {},
+            );
+            assert!(!registration.is_registered());
+            drop(registration);
+            finish.send(()).unwrap();
+            // The late handle is dropped by the task instead of being stored.
+            dropped_rx.recv().unwrap();
+        }
     }
 }

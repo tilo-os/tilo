@@ -269,69 +269,73 @@ mod tests {
         }
     }
 
+    /// Schemas are top level with main open, rows resolve to their activation, the first catalog opens main and expansion survives refresh.
     #[test]
-    fn schemas_are_the_top_level_and_main_starts_open() {
-        let events = SchemaActivations::default();
-        let view = browser(&catalog(), &events);
-        let rows: Vec<_> = view
-            .visible_rows()
-            .into_iter()
-            .map(|(_, label, depth)| (label.to_owned(), depth))
-            .collect();
-        assert_eq!(
-            rows,
-            [
-                ("main".to_owned(), 0),
-                ("albums".to_owned(), 1),
-                ("recent".to_owned(), 1),
-                ("archive".to_owned(), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn rows_resolve_to_what_activating_them_means() {
-        let model = model(&catalog());
-        let albums = RelationRef {
-            schema: "main".into(),
-            name: "albums".into(),
-        };
-        assert_eq!(
-            resolve(&model, relation_id(&albums)),
-            Some(Activation::Open(albums.clone()))
-        );
-        let column = stable_id(&["column", "main", "albums", "title"]);
-        assert_eq!(resolve(&model, column), Some(Activation::Open(albums)));
-        assert_eq!(
-            resolve(&model, schema_row_id("archive")),
-            Some(Activation::Toggle(schema_row_id("archive")))
-        );
-    }
-
-    #[test]
-    fn the_first_catalog_opens_main() {
-        let events = SchemaActivations::default();
-        let mut view = browser(&DatabaseSchema::default(), &events);
-        assert_eq!(view.visible_len(), 0);
-        refresh(&mut view, &catalog());
-        assert!(view.is_expanded(schema_row_id("main")));
-    }
-
-    #[test]
-    fn expansion_survives_a_catalog_refresh() {
-        let events = SchemaActivations::default();
-        let mut view = browser(&catalog(), &events);
-        let albums = relation_id(&RelationRef {
-            schema: "main".into(),
-            name: "albums".into(),
-        });
-        view.set_expanded(albums, true);
-        let mut refreshed = catalog();
-        if let Some(table) = refreshed.schemas[0].tables.first_mut() {
-            table.row_count = Some(4);
+    fn schema_navigation_opens_main_and_survives_refresh() {
+        // --- phase: schemas_are_the_top_level_and_main_starts_open ---
+        {
+            let events = SchemaActivations::default();
+            let view = browser(&catalog(), &events);
+            let rows: Vec<_> = view
+                .visible_rows()
+                .into_iter()
+                .map(|(_, label, depth)| (label.to_owned(), depth))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("main".to_owned(), 0),
+                    ("albums".to_owned(), 1),
+                    ("recent".to_owned(), 1),
+                    ("archive".to_owned(), 0),
+                ]
+            );
         }
-        refresh(&mut view, &refreshed);
-        assert!(view.is_expanded(albums));
-        assert_eq!(view.visible_len(), 6, "albums' two columns stay revealed");
+
+        // --- phase: rows_resolve_to_what_activating_them_means ---
+        {
+            let model = model(&catalog());
+            let albums = RelationRef {
+                schema: "main".into(),
+                name: "albums".into(),
+            };
+            assert_eq!(
+                resolve(&model, relation_id(&albums)),
+                Some(Activation::Open(albums.clone()))
+            );
+            let column = stable_id(&["column", "main", "albums", "title"]);
+            assert_eq!(resolve(&model, column), Some(Activation::Open(albums)));
+            assert_eq!(
+                resolve(&model, schema_row_id("archive")),
+                Some(Activation::Toggle(schema_row_id("archive")))
+            );
+        }
+
+        // --- phase: the_first_catalog_opens_main ---
+        {
+            let events = SchemaActivations::default();
+            let mut view = browser(&DatabaseSchema::default(), &events);
+            assert_eq!(view.visible_len(), 0);
+            refresh(&mut view, &catalog());
+            assert!(view.is_expanded(schema_row_id("main")));
+        }
+
+        // --- phase: expansion_survives_a_catalog_refresh ---
+        {
+            let events = SchemaActivations::default();
+            let mut view = browser(&catalog(), &events);
+            let albums = relation_id(&RelationRef {
+                schema: "main".into(),
+                name: "albums".into(),
+            });
+            view.set_expanded(albums, true);
+            let mut refreshed = catalog();
+            if let Some(table) = refreshed.schemas[0].tables.first_mut() {
+                table.row_count = Some(4);
+            }
+            refresh(&mut view, &refreshed);
+            assert!(view.is_expanded(albums));
+            assert_eq!(view.visible_len(), 6, "albums' two columns stay revealed");
+        }
     }
 }

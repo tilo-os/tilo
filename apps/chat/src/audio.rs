@@ -380,26 +380,24 @@ mod tests {
         assert_eq!(MIC_SOURCES.last(), Some(&"autoaudiosrc"));
     }
 
+    /// PCM byte framing, the synthetic test tone, and the real codec round-trip
+    /// with no audio device: PCM → Opus → PCM. Proves the `GStreamer` Opus
+    /// encode/decode contract the call transport carries.
     #[test]
-    fn pcm_bytes_round_trip() {
+    fn test_tone_round_trips_through_pcm_bytes_and_opus_without_a_device() {
+        // PCM bytes round-trip, including the i16 extremes.
         let pcm = vec![0i16, 1, -1, 32767, -32768, 12345];
-        assert_eq!(bytes_to_pcm(&pcm_to_bytes(&pcm)), pcm);
-    }
+        assert_eq!(bytes_to_pcm(&pcm_to_bytes(&pcm)), pcm, "case pcm bytes");
 
-    #[test]
-    fn test_tone_has_expected_length_and_signal() {
+        // Test tone has the expected length and an actual signal.
         let t = test_tone(RATE, CHANNELS, 40);
         assert_eq!(t.len(), (RATE as usize / 1000) * 40, "40 ms of 48 kHz mono");
         assert!(
             t.iter().any(|&s| s.abs() > 1000),
             "tone actually oscillates"
         );
-    }
 
-    /// Real codec round-trip with no audio device: PCM → Opus → PCM. Proves the
-    /// `GStreamer` Opus encode/decode contract the call transport carries.
-    #[test]
-    fn opus_encode_decode_round_trips_without_a_device() {
+        // Opus round-trip (last: the only phase that depends on GStreamer).
         let (Some(mut enc), Some(mut dec)) = (OpusEncoder::new(), OpusDecoder::new()) else {
             eprintln!("GStreamer Opus elements unavailable; skipping codec round-trip");
             return;

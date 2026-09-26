@@ -311,22 +311,22 @@ mod tests {
 </container>"#;
 
     #[test]
-    fn normalize_resolves_dot_segments() {
-        assert_eq!(normalize("OEBPS/./ch1.xhtml"), "OEBPS/ch1.xhtml");
-        assert_eq!(normalize("OEBPS/text/../ch1.xhtml"), "OEBPS/ch1.xhtml");
-        assert_eq!(normalize("../../etc/passwd"), "etc/passwd");
-    }
-
-    #[test]
-    fn join_resolves_relative() {
-        assert_eq!(join("OEBPS", "ch1.xhtml"), "OEBPS/ch1.xhtml");
-        assert_eq!(join("OEBPS/text", "../images/c.png"), "OEBPS/images/c.png");
-        assert_eq!(join("", "ch1.xhtml"), "ch1.xhtml");
-        assert_eq!(join("OEBPS", "/root.png"), "root.png");
-    }
-
-    #[test]
-    fn strip_fragment_and_parent_dir() {
+    fn package_paths_normalize_join_and_split() {
+        for (path, want) in [
+            ("OEBPS/./ch1.xhtml", "OEBPS/ch1.xhtml"),
+            ("OEBPS/text/../ch1.xhtml", "OEBPS/ch1.xhtml"),
+            ("../../etc/passwd", "etc/passwd"),
+        ] {
+            assert_eq!(normalize(path), want, "normalize {path}");
+        }
+        for (base, rel, want) in [
+            ("OEBPS", "ch1.xhtml", "OEBPS/ch1.xhtml"),
+            ("OEBPS/text", "../images/c.png", "OEBPS/images/c.png"),
+            ("", "ch1.xhtml", "ch1.xhtml"),
+            ("OEBPS", "/root.png", "root.png"),
+        ] {
+            assert_eq!(join(base, rel), want, "join {base} + {rel}");
+        }
         assert_eq!(strip_fragment("ch1.xhtml#sec2"), "ch1.xhtml");
         assert_eq!(strip_fragment("ch1.xhtml"), "ch1.xhtml");
         assert_eq!(parent_dir("OEBPS/content.opf"), "OEBPS");
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_container_package_spine_and_nav() {
+    fn packages_resolve_metadata_spine_nav_and_cover() {
         let opf = r#"<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -360,10 +360,8 @@ mod tests {
         assert_eq!(pkg.nav_href.as_deref(), Some("OEBPS/nav.xhtml"));
         assert_eq!(pkg.ncx_href.as_deref(), Some("OEBPS/toc.ncx"));
         assert_eq!(pkg.cover_href, None);
-    }
 
-    #[test]
-    fn cover_resolution_prefers_properties_then_meta_then_name() {
+        // Cover resolution prefers properties, then meta, then the item name.
         let with = |meta: &str, items: &str| {
             let opf = format!(
                 "<package><metadata>{meta}</metadata><manifest>{items}</manifest><spine/></package>"
@@ -392,16 +390,14 @@ mod tests {
             ),
             None
         );
-    }
 
-    #[test]
-    fn empty_spine_parses() {
+        // An empty spine parses.
         let pkg = OpfPackage::parse("<package><manifest/></package>", "").unwrap();
         assert!(pkg.spine.is_empty());
     }
 
     #[test]
-    fn container_errors_are_specific() {
+    fn container_errors_are_specific_and_bounded() {
         let bytes = epub(&[("mimetype", "application/epub+zip")]);
         let mut archive = BoundedArchive::from_bytes(&bytes, ZipLimits::default()).unwrap();
         assert!(matches!(
@@ -425,10 +421,8 @@ mod tests {
             find_opf_path(&mut archive),
             Err(EpubError::RootfileWithoutPath)
         ));
-    }
 
-    #[test]
-    fn oversized_container_is_refused_before_parsing() {
+        // An oversized container is refused before parsing.
         let padding = " ".repeat(usize::try_from(MAX_CONTAINER_BYTES).unwrap());
         let container = format!("{CONTAINER}{padding}");
         let bytes = epub(&[(CONTAINER_PATH, &container)]);

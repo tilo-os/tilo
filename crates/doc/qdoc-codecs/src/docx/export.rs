@@ -2030,26 +2030,296 @@ mod tests {
     }
 
     #[test]
-    fn export_import_roundtrips_model() {
-        let body = concat!(
-            r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>"#,
-            r#"<w:p><w:r><w:t xml:space="preserve">a </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:r><w:t xml:space="preserve"> b</w:t></w:r></w:p>"#,
-        );
-        let docx = minimal_docx_styled("", body);
-        let mut d = Document::new();
-        import_docx(&docx, &mut d);
-        let m1 = norm(&d.materialize());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn text_and_paragraph_formatting_roundtrips_through_docx() {
+        // Phase `export_import_roundtrips_model`.
+        {
+            let body = concat!(
+                r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>"#,
+                r#"<w:p><w:r><w:t xml:space="preserve">a </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:r><w:t xml:space="preserve"> b</w:t></w:r></w:p>"#,
+            );
+            let docx = minimal_docx_styled("", body);
+            let mut d = Document::new();
+            import_docx(&docx, &mut d);
+            let m1 = norm(&d.materialize());
 
-        let exported = export_docx(&d);
-        let c = DocxContainer::read(&exported).unwrap();
-        assert!(c.get("word/document.xml").is_some());
-        assert!(c.get("[Content_Types].xml").is_some());
-        assert!(c.get("_rels/.rels").is_some());
+            let exported = export_docx(&d);
+            let c = DocxContainer::read(&exported).unwrap();
+            assert!(c.get("word/document.xml").is_some());
+            assert!(c.get("[Content_Types].xml").is_some());
+            assert!(c.get("_rels/.rels").is_some());
 
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let m2 = norm(&d2.materialize());
-        assert_eq!(m1, m2, "model round-trips through .docx export then import");
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let m2 = norm(&d2.materialize());
+            assert_eq!(m1, m2, "model round-trips through .docx export then import");
+        }
+        // Phase `heading_paragraph_props_roundtrip`.
+        {
+            let mut d = Document::new();
+            let h = d.insert_block(None, "heading");
+            d.splice_text(&h, 0, 0, "Head");
+            let p = d.insert_block(Some(&h), "paragraph");
+            d.splice_text(&p, 0, 0, "styled");
+            {
+                let mut dm = d.as_mut();
+                dm.set_attr(&h, "level", 3_i64);
+                dm.set_attr(&p, "align", "center");
+                dm.add_mark(&p, 0, 6, "fontSize", 22_i64);
+                dm.add_mark(&p, 0, 6, "fontFamily", "serif");
+                dm.add_mark(&p, 0, 6, "underline", true);
+            }
+
+            let exported = export_docx(&d);
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(3)));
+            let b = &snap.blocks[1];
+            assert_eq!(b.text, "styled");
+            assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)),
+                "{:?}",
+                b.marks
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+                "{:?}",
+                b.marks
+            );
+            assert!(
+                b.marks.iter().any(|m| m.name == "underline"),
+                "{:?}",
+                b.marks
+            );
+        }
+        // Phase `highlight_super_and_line_spacing_roundtrip`.
+        {
+            let mut d = Document::new();
+            let id = d.insert_block(None, "paragraph");
+            d.splice_text(&id, 0, 0, "E=mc2");
+            {
+                let mut dm = d.as_mut();
+                dm.add_mark(&id, 0, 5, "highlight", "#ffff00");
+                dm.add_mark(&id, 4, 5, "super", true);
+                dm.set_attr(&id, "line_spacing", 1.5_f64);
+            }
+
+            let exported = export_docx(&d);
+            let c = DocxContainer::read(&exported).unwrap();
+            let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#),
+                "highlight shd: {xml}"
+            );
+            assert!(
+                xml.contains(r#"<w:vertAlign w:val="superscript"/>"#),
+                "super vertAlign: {xml}"
+            );
+            assert!(
+                xml.contains(r#"<w:spacing w:line="360" w:lineRule="auto"/>"#),
+                "line spacing: {xml}"
+            );
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let b = &snap.blocks[0];
+            assert_eq!(b.text, "E=mc2");
+            assert!(
+                b.marks.iter().any(|m| m.name == "highlight"
+                    && m.value == MarkValue::Str("#ffff00".into())
+                    && m.start == 0
+                    && m.end == 5),
+                "highlight mark: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks.iter().any(|m| m.name == "super"
+                    && m.value == MarkValue::Bool(true)
+                    && m.start == 4
+                    && m.end == 5),
+                "super mark: {:?}",
+                b.marks
+            );
+            assert_eq!(
+                b.attrs.get("line_spacing"),
+                Some(&AttrVal::Float(1.5)),
+                "line_spacing attr: {:?}",
+                b.attrs
+            );
+        }
+        // Phase `subscript_roundtrips_through_docx`.
+        {
+            let mut d = Document::new();
+            let id = d.insert_block(None, "paragraph");
+            d.splice_text(&id, 0, 0, "H2O");
+            d.as_mut().add_mark(&id, 1, 2, "sub", true);
+
+            let exported = export_docx(&d);
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let b = &snap.blocks[0];
+            assert!(
+                b.marks.iter().any(|m| m.name == "sub"
+                    && m.value == MarkValue::Bool(true)
+                    && m.start == 1
+                    && m.end == 2),
+                "sub mark: {:?}",
+                b.marks
+            );
+        }
+        // Phase `colored_serif_20pt_justified_run_roundtrips_through_docx`.
+        {
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "styled");
+            {
+                let mut dm = d.as_mut();
+                dm.set_attr(&p, "align", "justify");
+                dm.add_mark(&p, 0, 6, "color", "#3366cc");
+                dm.add_mark(&p, 0, 6, "fontFamily", "serif");
+                dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
+            }
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains(r#"<w:jc w:val="both"/>"#),
+                "justify → w:jc both: {document}"
+            );
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let b = &d2.materialize().blocks[0];
+            assert_eq!(b.text, "styled");
+            assert_eq!(
+                b.attrs.get("align"),
+                Some(&AttrVal::Str("justify".into())),
+                "justify survives: {:?}",
+                b.attrs
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())),
+                "colour: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
+                "serif: {:?}",
+                b.marks
+            );
+            assert!(
+                b.marks
+                    .iter()
+                    .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
+                "20pt: {:?}",
+                b.marks
+            );
+        }
+        // Phase `named_paragraph_style_roundtrips_through_docx`.
+        {
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "fancy");
+            {
+                let mut dm = d.as_mut();
+                let mut props = BTreeMap::new();
+                props.insert("name".to_string(), AttrVal::Str("Fancy".into()));
+                props.insert("font".to_string(), AttrVal::Str("serif".into()));
+                props.insert("size".to_string(), AttrVal::Float(20.0));
+                props.insert("bold".to_string(), AttrVal::Bool(true));
+                props.insert("italic".to_string(), AttrVal::Bool(true));
+                props.insert("color".to_string(), AttrVal::Str("#ff0000".into()));
+                props.insert("align".to_string(), AttrVal::Str("center".into()));
+                props.insert("space_after".to_string(), AttrVal::Float(12.0));
+                dm.set_style("Fancy", &props);
+                dm.set_attr(&p, "style", "Fancy");
+            }
+
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains(r#"<w:pStyle w:val="Fancy"/>"#),
+                "paragraph references the named style: {document}"
+            );
+            let styles = std::str::from_utf8(cont.get("word/styles.xml").unwrap()).unwrap();
+            assert!(
+                styles.contains(r#"<w:style w:type="paragraph" w:styleId="Fancy">"#),
+                "named style defined as OOXML w:style: {styles}"
+            );
+            assert!(
+                styles.contains("<w:b/>")
+                    && styles.contains("<w:i/>")
+                    && styles.contains(r#"<w:sz w:val="40"/>"#),
+                "props emitted: {styles}"
+            );
+            assert!(
+                styles.contains(r#"<w:jc w:val="center"/>"#)
+                    && styles.contains(r#"<w:color w:val="FF0000"/>"#),
+                "pPr/colour emitted: {styles}"
+            );
+            let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+            assert!(
+                ct.contains("/word/styles.xml"),
+                "styles override registered: {ct}"
+            );
+            let rels =
+                std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+            assert!(
+                rels.contains(r#"Target="styles.xml""#),
+                "styles relationship registered: {rels}"
+            );
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let b = &snap.blocks[0];
+            assert_eq!(b.text, "fancy");
+            assert_eq!(
+                b.attrs.get("style"),
+                Some(&AttrVal::Str("Fancy".into())),
+                "block keeps its style ref: {:?}",
+                b.attrs
+            );
+
+            let st = snap
+                .styles
+                .get("Fancy")
+                .expect("style present in container after round-trip");
+            assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
+            assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
+            assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
+            assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
+            assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
+            assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())));
+            assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
+            assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
+
+            let exported2 = export_docx(&d2);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            assert_eq!(
+                norm(&d2.materialize()),
+                norm(&d3.materialize()),
+                "named-style model is stable across a second round-trip"
+            );
+        }
     }
 
     // 1×1 PNG blob for the image round-trip tests.
@@ -2062,987 +2332,1021 @@ mod tests {
     ];
 
     #[test]
-    fn image_inline_roundtrips_through_docx() {
-        let mut d = Document::new();
-        let p1 = d.insert_block(None, "paragraph");
-        d.splice_text(&p1, 0, 0, "before");
-        let img = d.insert_block(Some(&p1), "image");
-        let p3 = d.insert_block(Some(&img), "paragraph");
-        d.splice_text(&p3, 0, 0, "after");
-        let mut inputs = tilo_content::ContentInputs::new();
-        let hash = d.attach(&TINY_PNG, &mut inputs);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn images_roundtrip_through_docx() {
+        // Phase `image_inline_roundtrips_through_docx`.
         {
-            let mut dm = d.as_mut();
-            dm.set_attr(&img, "blob", hash.as_str());
-            dm.set_attr(&img, "width", 64_i64);
-            dm.set_attr(&img, "height", 48_i64);
-        }
-
-        let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
-        let cont = DocxContainer::read(&exported).unwrap();
-        let media = cont
-            .parts
-            .iter()
-            .find(|(n, _)| {
-                n.starts_with("word/media/")
-                    && std::path::Path::new(n)
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-            })
-            .expect("media part written");
-        assert_eq!(media.1, &TINY_PNG[..], "image bytes written verbatim");
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains("<wp:inline"),
-            "inline drawing emitted: {document}"
-        );
-        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(
-            rels.contains(&format!(
-                r#"Target="media/qdoc-{}.png""#,
-                &tilo_content::hash_bytes(&TINY_PNG)[..16]
-            )),
-            "image rel wired: {rels}"
-        );
-        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(
-            ct.contains(r#"Extension="png""#),
-            "png content-type default: {ct}"
-        );
-
-        let mut d2 = Document::new();
-        let mut reimported = tilo_content::ContentInputs::new();
-        DocxCodec
-            .import(&exported, &mut d2.as_mut(), &mut reimported)
-            .unwrap();
-        let snap = d2.materialize();
-        let im = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "image")
-            .expect("image block present");
-        let blob_hash = match im.attrs.get("blob") {
-            Some(AttrVal::Str(h)) => h.clone(),
-            other => panic!("image missing blob attr: {other:?}"),
-        };
-        assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
-        assert_eq!(
-            reimported.get(&blob_hash),
-            Some(&TINY_PNG[..]),
-            "blob bytes survive"
-        );
-        assert_eq!(
-            im.attrs.get("anchor"),
-            Some(&AttrVal::Str("inline".into())),
-            "{:?}",
-            im.attrs
-        );
-        assert_eq!(
-            im.attrs.get("width"),
-            Some(&AttrVal::Int(64)),
-            "{:?}",
-            im.attrs
-        );
-        assert_eq!(
-            im.attrs.get("height"),
-            Some(&AttrVal::Int(48)),
-            "{:?}",
-            im.attrs
-        );
-    }
-
-    #[test]
-    fn image_positioning_roundtrips_through_docx() {
-        let mut d = Document::new();
-        let p1 = d.insert_block(None, "paragraph");
-        d.splice_text(&p1, 0, 0, "text");
-        let img = d.insert_block(Some(&p1), "image");
-        let mut inputs = tilo_content::ContentInputs::new();
-        let hash = d.attach(&TINY_PNG, &mut inputs);
-        {
-            let mut dm = d.as_mut();
-            dm.set_attr(&img, "blob", hash.as_str());
-            dm.set_attr(&img, "anchor", "paragraph");
-            dm.set_attr(&img, "wrap", "right");
-            dm.set_attr(&img, "width", 120_i64);
-            dm.set_attr(&img, "height", 80_i64);
-        }
-
-        let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
-        let cont = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains("<wp:anchor"),
-            "anchor drawing emitted: {document}"
-        );
-        assert!(
-            document.contains(r#"<wp:wrapSquare wrapText="right"/>"#),
-            "right wrap emitted: {document}"
-        );
-
-        let mut d2 = Document::new();
-        let mut reimported = tilo_content::ContentInputs::new();
-        DocxCodec
-            .import(&exported, &mut d2.as_mut(), &mut reimported)
-            .unwrap();
-        let snap = d2.materialize();
-        let im = snap
-            .blocks
-            .iter()
-            .find(|b| b.kind == "image")
-            .expect("image block present");
-        assert_eq!(
-            im.attrs.get("anchor"),
-            Some(&AttrVal::Str("paragraph".into())),
-            "{:?}",
-            im.attrs
-        );
-        assert_eq!(
-            im.attrs.get("wrap"),
-            Some(&AttrVal::Str("right".into())),
-            "{:?}",
-            im.attrs
-        );
-        assert_eq!(
-            im.attrs.get("width"),
-            Some(&AttrVal::Int(120)),
-            "{:?}",
-            im.attrs
-        );
-        assert_eq!(
-            im.attrs.get("height"),
-            Some(&AttrVal::Int(80)),
-            "{:?}",
-            im.attrs
-        );
-    }
-
-    #[test]
-    fn heading_paragraph_props_roundtrip() {
-        let mut d = Document::new();
-        let h = d.insert_block(None, "heading");
-        d.splice_text(&h, 0, 0, "Head");
-        let p = d.insert_block(Some(&h), "paragraph");
-        d.splice_text(&p, 0, 0, "styled");
-        {
-            let mut dm = d.as_mut();
-            dm.set_attr(&h, "level", 3_i64);
-            dm.set_attr(&p, "align", "center");
-            dm.add_mark(&p, 0, 6, "fontSize", 22_i64);
-            dm.add_mark(&p, 0, 6, "fontFamily", "serif");
-            dm.add_mark(&p, 0, 6, "underline", true);
-        }
-
-        let exported = export_docx(&d);
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        assert_eq!(snap.blocks[0].kind, "heading");
-        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(3)));
-        let b = &snap.blocks[1];
-        assert_eq!(b.text, "styled");
-        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)),
-            "{:?}",
-            b.marks
-        );
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
-            "{:?}",
-            b.marks
-        );
-        assert!(
-            b.marks.iter().any(|m| m.name == "underline"),
-            "{:?}",
-            b.marks
-        );
-    }
-
-    #[test]
-    fn highlight_super_and_line_spacing_roundtrip() {
-        let mut d = Document::new();
-        let id = d.insert_block(None, "paragraph");
-        d.splice_text(&id, 0, 0, "E=mc2");
-        {
-            let mut dm = d.as_mut();
-            dm.add_mark(&id, 0, 5, "highlight", "#ffff00");
-            dm.add_mark(&id, 4, 5, "super", true);
-            dm.set_attr(&id, "line_spacing", 1.5_f64);
-        }
-
-        let exported = export_docx(&d);
-        let c = DocxContainer::read(&exported).unwrap();
-        let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#),
-            "highlight shd: {xml}"
-        );
-        assert!(
-            xml.contains(r#"<w:vertAlign w:val="superscript"/>"#),
-            "super vertAlign: {xml}"
-        );
-        assert!(
-            xml.contains(r#"<w:spacing w:line="360" w:lineRule="auto"/>"#),
-            "line spacing: {xml}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let b = &snap.blocks[0];
-        assert_eq!(b.text, "E=mc2");
-        assert!(
-            b.marks.iter().any(|m| m.name == "highlight"
-                && m.value == MarkValue::Str("#ffff00".into())
-                && m.start == 0
-                && m.end == 5),
-            "highlight mark: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks.iter().any(|m| m.name == "super"
-                && m.value == MarkValue::Bool(true)
-                && m.start == 4
-                && m.end == 5),
-            "super mark: {:?}",
-            b.marks
-        );
-        assert_eq!(
-            b.attrs.get("line_spacing"),
-            Some(&AttrVal::Float(1.5)),
-            "line_spacing attr: {:?}",
-            b.attrs
-        );
-    }
-
-    #[test]
-    fn subscript_roundtrips_through_docx() {
-        let mut d = Document::new();
-        let id = d.insert_block(None, "paragraph");
-        d.splice_text(&id, 0, 0, "H2O");
-        d.as_mut().add_mark(&id, 1, 2, "sub", true);
-
-        let exported = export_docx(&d);
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let b = &snap.blocks[0];
-        assert!(
-            b.marks.iter().any(|m| m.name == "sub"
-                && m.value == MarkValue::Bool(true)
-                && m.start == 1
-                && m.end == 2),
-            "sub mark: {:?}",
-            b.marks
-        );
-    }
-
-    #[test]
-    fn bookmark_and_cross_reference_roundtrip_through_docx() {
-        let mut d = Document::new();
-        let target = d.insert_block(None, "paragraph");
-        d.splice_text(&target, 0, 0, "the intro section");
-        d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
-        let src = d.insert_block(Some(&target), "paragraph");
-        d.splice_text(&src, 0, 0, "see above");
-        d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
-
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#),
-            "bookmarkStart emitted: {document}"
-        );
-        assert!(
-            document.contains(r#"<w:bookmarkEnd w:id="0"/>"#),
-            "bookmarkEnd emitted: {document}"
-        );
-        assert!(
-            document.contains(r#"<w:hyperlink w:anchor="intro">"#),
-            "cross-ref hyperlink emitted: {document}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        assert_eq!(
-            snap.bookmarks.len(),
-            1,
-            "one bookmark survives: {:?}",
-            snap.bookmarks
-        );
-        let bm = &snap.bookmarks[0];
-        assert_eq!(bm.name, "intro");
-        assert_eq!(
-            (bm.range.1, bm.range.2),
-            (4, 9),
-            "bookmark range over 'intro': {bm:?}"
-        );
-        let tb = snap
-            .blocks
-            .iter()
-            .find(|b| b.text == "the intro section")
-            .unwrap();
-        let mark = tb
-            .marks
-            .iter()
-            .find(|m| m.name == qdoc::schema::MARK_BOOKMARK)
-            .expect("bookmark mark present");
-        assert_eq!((mark.start, mark.end), (4, 9));
-        assert_eq!(mark.value, MarkValue::Str("intro".into()));
-        let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
-        let link = sb
-            .marks
-            .iter()
-            .find(|m| m.name == "link")
-            .expect("cross-ref link mark present");
-        assert_eq!(
-            (link.start, link.end),
-            (4, 9),
-            "cross-ref over 'above': {:?}",
-            sb.marks
-        );
-        assert_eq!(link.value, MarkValue::Str("#intro".into()));
-    }
-
-    #[test]
-    fn lists_roundtrip_with_ordering() {
-        let mut d = Document::new();
-        let a = d.insert_block(None, "list_item");
-        d.splice_text(&a, 0, 0, "first");
-        let b = d.insert_block(Some(&a), "list_item");
-        d.splice_text(&b, 0, 0, "second");
-        {
-            let mut dm = d.as_mut();
-            dm.set_attr(&a, "ordered", true);
-            dm.set_attr(&b, "ordered", false);
-        }
-
-        let exported = export_docx(&d);
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|x| x.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 2, "{snap:?}");
-        assert_eq!(items[0].text, "first");
-        assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)));
-        assert_eq!(items[1].attrs.get("ordered"), Some(&AttrVal::Bool(false)));
-    }
-
-    #[test]
-    fn list_numbering_format_and_start_roundtrip_through_docx() {
-        // Upper-roman ordered list starting at 3: format + start must round-trip.
-        let mut d = Document::new();
-        let a = d.insert_block(None, "list_item");
-        d.splice_text(&a, 0, 0, "three");
-        let b = d.insert_block(Some(&a), "list_item");
-        d.splice_text(&b, 0, 0, "four");
-        {
-            let mut dm = d.as_mut();
-            for id in [&a, &b] {
-                dm.set_attr(id, "ordered", true);
-                dm.set_attr(id, "num_format", "upper-roman");
-                dm.set_attr(id, "num_start", 3_i64);
-                dm.set_attr(id, "num_restart", true);
-            }
-        }
-
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let numbering = std::str::from_utf8(cont.get("word/numbering.xml").unwrap()).unwrap();
-        assert!(
-            numbering.contains(r#"<w:numFmt w:val="upperRoman"/>"#),
-            "upper-roman numFmt emitted: {numbering}"
-        );
-        assert!(
-            numbering.contains(r#"<w:start w:val="3"/>"#),
-            "start value emitted: {numbering}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let items: Vec<_> = snap
-            .blocks
-            .iter()
-            .filter(|x| x.kind == "list_item")
-            .collect();
-        assert_eq!(items.len(), 2, "{snap:?}");
-        for it in &items {
-            assert_eq!(
-                it.attrs.get("ordered"),
-                Some(&AttrVal::Bool(true)),
-                "still ordered: {:?}",
-                it.attrs
-            );
-            assert_eq!(
-                it.attrs.get("num_format"),
-                Some(&AttrVal::Str("upper-roman".into())),
-                "format survives: {:?}",
-                it.attrs
-            );
-            assert_eq!(
-                it.attrs.get("num_start"),
-                Some(&AttrVal::Int(3)),
-                "start survives: {:?}",
-                it.attrs
-            );
-        }
-
-        let exported2 = export_docx(&d2);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        assert_eq!(
-            norm(&d2.materialize()),
-            norm(&d3.materialize()),
-            "list-numbering model stable across a second round-trip"
-        );
-    }
-
-    #[test]
-    fn colored_serif_20pt_justified_run_roundtrips_through_docx() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "styled");
-        {
-            let mut dm = d.as_mut();
-            dm.set_attr(&p, "align", "justify");
-            dm.add_mark(&p, 0, 6, "color", "#3366cc");
-            dm.add_mark(&p, 0, 6, "fontFamily", "serif");
-            dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
-        }
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains(r#"<w:jc w:val="both"/>"#),
-            "justify → w:jc both: {document}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let b = &d2.materialize().blocks[0];
-        assert_eq!(b.text, "styled");
-        assert_eq!(
-            b.attrs.get("align"),
-            Some(&AttrVal::Str("justify".into())),
-            "justify survives: {:?}",
-            b.attrs
-        );
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "color" && m.value == MarkValue::Str("#3366cc".into())),
-            "colour: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())),
-            "serif: {:?}",
-            b.marks
-        );
-        assert!(
-            b.marks
-                .iter()
-                .any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)),
-            "20pt: {:?}",
-            b.marks
-        );
-    }
-
-    #[test]
-    fn table_roundtrips_as_editable_cells() {
-        let mut d = Document::new();
-        let mut prev: Option<String> = None;
-        for (r, c, t) in [(0, 0, "a"), (0, 1, "b"), (1, 0, "c"), (1, 1, "d")] {
-            let id = d.insert_block(prev.as_deref(), "cell");
-            d.splice_text(&id, 0, 0, t);
+            let mut d = Document::new();
+            let p1 = d.insert_block(None, "paragraph");
+            d.splice_text(&p1, 0, 0, "before");
+            let img = d.insert_block(Some(&p1), "image");
+            let p3 = d.insert_block(Some(&img), "paragraph");
+            d.splice_text(&p3, 0, 0, "after");
+            let mut inputs = tilo_content::ContentInputs::new();
+            let hash = d.attach(&TINY_PNG, &mut inputs);
             {
                 let mut dm = d.as_mut();
-                dm.set_attr(&id, "table", "T1");
-                dm.set_attr(&id, "row", i64::from(r));
-                dm.set_attr(&id, "col", i64::from(c));
+                dm.set_attr(&img, "blob", hash.as_str());
+                dm.set_attr(&img, "width", 64_i64);
+                dm.set_attr(&img, "height", 48_i64);
             }
-            prev = Some(id);
-        }
-        let exported = export_docx(&d);
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
-        assert_eq!(
-            cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
-            vec!["a", "b", "c", "d"],
-            "{snap:?}"
-        );
-        assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
-        assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
-        // Cells stay editable: their text lives in a real Text object.
-        let id = &cells[0].id;
-        d2.splice_text(id, 1, 0, "X");
-        assert_eq!(d2.block_text(id).as_deref(), Some("aX"));
-    }
 
-    #[test]
-    fn named_paragraph_style_roundtrips_through_docx() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "fancy");
+            let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
+            let cont = DocxContainer::read(&exported).unwrap();
+            let media = cont
+                .parts
+                .iter()
+                .find(|(n, _)| {
+                    n.starts_with("word/media/")
+                        && std::path::Path::new(n)
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+                })
+                .expect("media part written");
+            assert_eq!(media.1, &TINY_PNG[..], "image bytes written verbatim");
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains("<wp:inline"),
+                "inline drawing emitted: {document}"
+            );
+            let rels =
+                std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+            assert!(
+                rels.contains(&format!(
+                    r#"Target="media/qdoc-{}.png""#,
+                    &tilo_content::hash_bytes(&TINY_PNG)[..16]
+                )),
+                "image rel wired: {rels}"
+            );
+            let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+            assert!(
+                ct.contains(r#"Extension="png""#),
+                "png content-type default: {ct}"
+            );
+
+            let mut d2 = Document::new();
+            let mut reimported = tilo_content::ContentInputs::new();
+            DocxCodec
+                .import(&exported, &mut d2.as_mut(), &mut reimported)
+                .unwrap();
+            let snap = d2.materialize();
+            let im = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "image")
+                .expect("image block present");
+            let blob_hash = match im.attrs.get("blob") {
+                Some(AttrVal::Str(h)) => h.clone(),
+                other => panic!("image missing blob attr: {other:?}"),
+            };
+            assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
+            assert_eq!(
+                reimported.get(&blob_hash),
+                Some(&TINY_PNG[..]),
+                "blob bytes survive"
+            );
+            assert_eq!(
+                im.attrs.get("anchor"),
+                Some(&AttrVal::Str("inline".into())),
+                "{:?}",
+                im.attrs
+            );
+            assert_eq!(
+                im.attrs.get("width"),
+                Some(&AttrVal::Int(64)),
+                "{:?}",
+                im.attrs
+            );
+            assert_eq!(
+                im.attrs.get("height"),
+                Some(&AttrVal::Int(48)),
+                "{:?}",
+                im.attrs
+            );
+        }
+        // Phase `image_positioning_roundtrips_through_docx`.
         {
-            let mut dm = d.as_mut();
-            let mut props = BTreeMap::new();
-            props.insert("name".to_string(), AttrVal::Str("Fancy".into()));
-            props.insert("font".to_string(), AttrVal::Str("serif".into()));
-            props.insert("size".to_string(), AttrVal::Float(20.0));
-            props.insert("bold".to_string(), AttrVal::Bool(true));
-            props.insert("italic".to_string(), AttrVal::Bool(true));
-            props.insert("color".to_string(), AttrVal::Str("#ff0000".into()));
-            props.insert("align".to_string(), AttrVal::Str("center".into()));
-            props.insert("space_after".to_string(), AttrVal::Float(12.0));
-            dm.set_style("Fancy", &props);
-            dm.set_attr(&p, "style", "Fancy");
+            let mut d = Document::new();
+            let p1 = d.insert_block(None, "paragraph");
+            d.splice_text(&p1, 0, 0, "text");
+            let img = d.insert_block(Some(&p1), "image");
+            let mut inputs = tilo_content::ContentInputs::new();
+            let hash = d.attach(&TINY_PNG, &mut inputs);
+            {
+                let mut dm = d.as_mut();
+                dm.set_attr(&img, "blob", hash.as_str());
+                dm.set_attr(&img, "anchor", "paragraph");
+                dm.set_attr(&img, "wrap", "right");
+                dm.set_attr(&img, "width", 120_i64);
+                dm.set_attr(&img, "height", 80_i64);
+            }
+
+            let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
+            let cont = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains("<wp:anchor"),
+                "anchor drawing emitted: {document}"
+            );
+            assert!(
+                document.contains(r#"<wp:wrapSquare wrapText="right"/>"#),
+                "right wrap emitted: {document}"
+            );
+
+            let mut d2 = Document::new();
+            let mut reimported = tilo_content::ContentInputs::new();
+            DocxCodec
+                .import(&exported, &mut d2.as_mut(), &mut reimported)
+                .unwrap();
+            let snap = d2.materialize();
+            let im = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "image")
+                .expect("image block present");
+            assert_eq!(
+                im.attrs.get("anchor"),
+                Some(&AttrVal::Str("paragraph".into())),
+                "{:?}",
+                im.attrs
+            );
+            assert_eq!(
+                im.attrs.get("wrap"),
+                Some(&AttrVal::Str("right".into())),
+                "{:?}",
+                im.attrs
+            );
+            assert_eq!(
+                im.attrs.get("width"),
+                Some(&AttrVal::Int(120)),
+                "{:?}",
+                im.attrs
+            );
+            assert_eq!(
+                im.attrs.get("height"),
+                Some(&AttrVal::Int(80)),
+                "{:?}",
+                im.attrs
+            );
         }
-
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains(r#"<w:pStyle w:val="Fancy"/>"#),
-            "paragraph references the named style: {document}"
-        );
-        let styles = std::str::from_utf8(cont.get("word/styles.xml").unwrap()).unwrap();
-        assert!(
-            styles.contains(r#"<w:style w:type="paragraph" w:styleId="Fancy">"#),
-            "named style defined as OOXML w:style: {styles}"
-        );
-        assert!(
-            styles.contains("<w:b/>")
-                && styles.contains("<w:i/>")
-                && styles.contains(r#"<w:sz w:val="40"/>"#),
-            "props emitted: {styles}"
-        );
-        assert!(
-            styles.contains(r#"<w:jc w:val="center"/>"#)
-                && styles.contains(r#"<w:color w:val="FF0000"/>"#),
-            "pPr/colour emitted: {styles}"
-        );
-        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(
-            ct.contains("/word/styles.xml"),
-            "styles override registered: {ct}"
-        );
-        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(
-            rels.contains(r#"Target="styles.xml""#),
-            "styles relationship registered: {rels}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let b = &snap.blocks[0];
-        assert_eq!(b.text, "fancy");
-        assert_eq!(
-            b.attrs.get("style"),
-            Some(&AttrVal::Str("Fancy".into())),
-            "block keeps its style ref: {:?}",
-            b.attrs
-        );
-
-        let st = snap
-            .styles
-            .get("Fancy")
-            .expect("style present in container after round-trip");
-        assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
-        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
-        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
-        assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
-        assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
-        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())));
-        assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
-        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
-
-        let exported2 = export_docx(&d2);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        assert_eq!(
-            norm(&d2.materialize()),
-            norm(&d3.materialize()),
-            "named-style model is stable across a second round-trip"
-        );
     }
 
     #[test]
-    fn document_properties_roundtrip_through_docx() {
-        // Title/author/subject/keywords/dates/generator export into core.xml + app.xml generator.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "body");
-        d.set_doc_prop("title", "My Title");
-        d.set_doc_prop("author", "Ada Lovelace");
-        d.set_doc_prop("subject", "Analytical Engine");
-        d.set_doc_prop("keywords", "computing, history");
-        d.set_doc_prop("created", "2020-01-02T03:04:05Z");
-        d.set_doc_prop("modified", "2021-06-07T08:09:10Z");
-        d.set_doc_prop("generator", "qdoc/1.0");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn lists_tables_and_cross_references_roundtrip_through_docx() {
+        // Phase `lists_roundtrip_with_ordering`.
+        {
+            let mut d = Document::new();
+            let a = d.insert_block(None, "list_item");
+            d.splice_text(&a, 0, 0, "first");
+            let b = d.insert_block(Some(&a), "list_item");
+            d.splice_text(&b, 0, 0, "second");
+            {
+                let mut dm = d.as_mut();
+                dm.set_attr(&a, "ordered", true);
+                dm.set_attr(&b, "ordered", false);
+            }
 
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let core =
-            std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written")).unwrap();
-        assert!(
-            core.contains("<dc:title>My Title</dc:title>"),
-            "title in core.xml: {core}"
-        );
-        assert!(
-            core.contains("<dc:creator>Ada Lovelace</dc:creator>"),
-            "creator: {core}"
-        );
-        assert!(
-            core.contains("<dc:subject>Analytical Engine</dc:subject>"),
-            "subject: {core}"
-        );
-        assert!(
-            core.contains("<cp:keywords>computing, history</cp:keywords>"),
-            "keywords: {core}"
-        );
-        assert!(
-            core.contains("2020-01-02T03:04:05Z</dcterms:created>"),
-            "created: {core}"
-        );
-        assert!(
-            core.contains("2021-06-07T08:09:10Z</dcterms:modified>"),
-            "modified: {core}"
-        );
-        let app =
-            std::str::from_utf8(cont.get("docProps/app.xml").expect("app.xml written")).unwrap();
-        assert!(
-            app.contains("<Application>qdoc/1.0</Application>"),
-            "generator in app.xml: {app}"
-        );
-        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(
-            ct.contains("/docProps/core.xml") && ct.contains("/docProps/app.xml"),
-            "overrides registered: {ct}"
-        );
-        let rels = std::str::from_utf8(cont.get("_rels/.rels").unwrap()).unwrap();
-        assert!(
-            rels.contains(r#"Target="docProps/core.xml""#)
-                && rels.contains(r#"Target="docProps/app.xml""#),
-            "rels registered: {rels}"
-        );
+            let exported = export_docx(&d);
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|x| x.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2, "{snap:?}");
+            assert_eq!(items[0].text, "first");
+            assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)));
+            assert_eq!(items[1].attrs.get("ordered"), Some(&AttrVal::Bool(false)));
+        }
+        // Phase `list_numbering_format_and_start_roundtrip_through_docx`.
+        {
+            // Upper-roman ordered list starting at 3: format + start must round-trip.
+            let mut d = Document::new();
+            let a = d.insert_block(None, "list_item");
+            d.splice_text(&a, 0, 0, "three");
+            let b = d.insert_block(Some(&a), "list_item");
+            d.splice_text(&b, 0, 0, "four");
+            {
+                let mut dm = d.as_mut();
+                for id in [&a, &b] {
+                    dm.set_attr(id, "ordered", true);
+                    dm.set_attr(id, "num_format", "upper-roman");
+                    dm.set_attr(id, "num_start", 3_i64);
+                    dm.set_attr(id, "num_restart", true);
+                }
+            }
 
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let props = d2.doc_props();
-        assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
-        assert_eq!(
-            props.get("author").map(String::as_str),
-            Some("Ada Lovelace")
-        );
-        assert_eq!(
-            props.get("subject").map(String::as_str),
-            Some("Analytical Engine")
-        );
-        assert_eq!(
-            props.get("keywords").map(String::as_str),
-            Some("computing, history")
-        );
-        assert_eq!(
-            props.get("created").map(String::as_str),
-            Some("2020-01-02T03:04:05Z")
-        );
-        assert_eq!(
-            props.get("modified").map(String::as_str),
-            Some("2021-06-07T08:09:10Z")
-        );
-        assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
-        assert_eq!(d2.materialize().blocks[0].text, "body");
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let numbering = std::str::from_utf8(cont.get("word/numbering.xml").unwrap()).unwrap();
+            assert!(
+                numbering.contains(r#"<w:numFmt w:val="upperRoman"/>"#),
+                "upper-roman numFmt emitted: {numbering}"
+            );
+            assert!(
+                numbering.contains(r#"<w:start w:val="3"/>"#),
+                "start value emitted: {numbering}"
+            );
 
-        let exported2 = export_docx(&d2);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        assert_eq!(
-            d2.doc_props(),
-            d3.doc_props(),
-            "properties stable across a second round-trip"
-        );
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|x| x.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2, "{snap:?}");
+            for it in &items {
+                assert_eq!(
+                    it.attrs.get("ordered"),
+                    Some(&AttrVal::Bool(true)),
+                    "still ordered: {:?}",
+                    it.attrs
+                );
+                assert_eq!(
+                    it.attrs.get("num_format"),
+                    Some(&AttrVal::Str("upper-roman".into())),
+                    "format survives: {:?}",
+                    it.attrs
+                );
+                assert_eq!(
+                    it.attrs.get("num_start"),
+                    Some(&AttrVal::Int(3)),
+                    "start survives: {:?}",
+                    it.attrs
+                );
+            }
+
+            let exported2 = export_docx(&d2);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            assert_eq!(
+                norm(&d2.materialize()),
+                norm(&d3.materialize()),
+                "list-numbering model stable across a second round-trip"
+            );
+        }
+        // Phase `table_roundtrips_as_editable_cells`.
+        {
+            let mut d = Document::new();
+            let mut prev: Option<String> = None;
+            for (r, c, t) in [(0, 0, "a"), (0, 1, "b"), (1, 0, "c"), (1, 1, "d")] {
+                let id = d.insert_block(prev.as_deref(), "cell");
+                d.splice_text(&id, 0, 0, t);
+                {
+                    let mut dm = d.as_mut();
+                    dm.set_attr(&id, "table", "T1");
+                    dm.set_attr(&id, "row", i64::from(r));
+                    dm.set_attr(&id, "col", i64::from(c));
+                }
+                prev = Some(id);
+            }
+            let exported = export_docx(&d);
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(
+                cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+                vec!["a", "b", "c", "d"],
+                "{snap:?}"
+            );
+            assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
+            assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
+            // Cells stay editable: their text lives in a real Text object.
+            let id = &cells[0].id;
+            d2.splice_text(id, 1, 0, "X");
+            assert_eq!(d2.block_text(id).as_deref(), Some("aX"));
+        }
+        // Phase `bookmark_and_cross_reference_roundtrip_through_docx`.
+        {
+            let mut d = Document::new();
+            let target = d.insert_block(None, "paragraph");
+            d.splice_text(&target, 0, 0, "the intro section");
+            d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+            let src = d.insert_block(Some(&target), "paragraph");
+            d.splice_text(&src, 0, 0, "see above");
+            d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#),
+                "bookmarkStart emitted: {document}"
+            );
+            assert!(
+                document.contains(r#"<w:bookmarkEnd w:id="0"/>"#),
+                "bookmarkEnd emitted: {document}"
+            );
+            assert!(
+                document.contains(r#"<w:hyperlink w:anchor="intro">"#),
+                "cross-ref hyperlink emitted: {document}"
+            );
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            assert_eq!(
+                snap.bookmarks.len(),
+                1,
+                "one bookmark survives: {:?}",
+                snap.bookmarks
+            );
+            let bm = &snap.bookmarks[0];
+            assert_eq!(bm.name, "intro");
+            assert_eq!(
+                (bm.range.1, bm.range.2),
+                (4, 9),
+                "bookmark range over 'intro': {bm:?}"
+            );
+            let tb = snap
+                .blocks
+                .iter()
+                .find(|b| b.text == "the intro section")
+                .unwrap();
+            let mark = tb
+                .marks
+                .iter()
+                .find(|m| m.name == qdoc::schema::MARK_BOOKMARK)
+                .expect("bookmark mark present");
+            assert_eq!((mark.start, mark.end), (4, 9));
+            assert_eq!(mark.value, MarkValue::Str("intro".into()));
+            let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
+            let link = sb
+                .marks
+                .iter()
+                .find(|m| m.name == "link")
+                .expect("cross-ref link mark present");
+            assert_eq!(
+                (link.start, link.end),
+                (4, 9),
+                "cross-ref over 'above': {:?}",
+                sb.marks
+            );
+            assert_eq!(link.value, MarkValue::Str("#intro".into()));
+        }
     }
 
     #[test]
-    fn core_xml_preserves_unmodeled_fields_and_updates_modeled() {
-        // An imported unmodeled field (revision) must survive while the title updates on export.
-        let core = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn document_properties_and_unmodeled_parts_roundtrip_through_docx() {
+        // Phase `document_properties_roundtrip_through_docx`.
+        {
+            // Title/author/subject/keywords/dates/generator export into core.xml + app.xml generator.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "body");
+            d.set_doc_prop("title", "My Title");
+            d.set_doc_prop("author", "Ada Lovelace");
+            d.set_doc_prop("subject", "Analytical Engine");
+            d.set_doc_prop("keywords", "computing, history");
+            d.set_doc_prop("created", "2020-01-02T03:04:05Z");
+            d.set_doc_prop("modified", "2021-06-07T08:09:10Z");
+            d.set_doc_prop("generator", "qdoc/1.0");
+
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let core =
+                std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written"))
+                    .unwrap();
+            assert!(
+                core.contains("<dc:title>My Title</dc:title>"),
+                "title in core.xml: {core}"
+            );
+            assert!(
+                core.contains("<dc:creator>Ada Lovelace</dc:creator>"),
+                "creator: {core}"
+            );
+            assert!(
+                core.contains("<dc:subject>Analytical Engine</dc:subject>"),
+                "subject: {core}"
+            );
+            assert!(
+                core.contains("<cp:keywords>computing, history</cp:keywords>"),
+                "keywords: {core}"
+            );
+            assert!(
+                core.contains("2020-01-02T03:04:05Z</dcterms:created>"),
+                "created: {core}"
+            );
+            assert!(
+                core.contains("2021-06-07T08:09:10Z</dcterms:modified>"),
+                "modified: {core}"
+            );
+            let app = std::str::from_utf8(cont.get("docProps/app.xml").expect("app.xml written"))
+                .unwrap();
+            assert!(
+                app.contains("<Application>qdoc/1.0</Application>"),
+                "generator in app.xml: {app}"
+            );
+            let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+            assert!(
+                ct.contains("/docProps/core.xml") && ct.contains("/docProps/app.xml"),
+                "overrides registered: {ct}"
+            );
+            let rels = std::str::from_utf8(cont.get("_rels/.rels").unwrap()).unwrap();
+            assert!(
+                rels.contains(r#"Target="docProps/core.xml""#)
+                    && rels.contains(r#"Target="docProps/app.xml""#),
+                "rels registered: {rels}"
+            );
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let props = d2.doc_props();
+            assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
+            assert_eq!(
+                props.get("author").map(String::as_str),
+                Some("Ada Lovelace")
+            );
+            assert_eq!(
+                props.get("subject").map(String::as_str),
+                Some("Analytical Engine")
+            );
+            assert_eq!(
+                props.get("keywords").map(String::as_str),
+                Some("computing, history")
+            );
+            assert_eq!(
+                props.get("created").map(String::as_str),
+                Some("2020-01-02T03:04:05Z")
+            );
+            assert_eq!(
+                props.get("modified").map(String::as_str),
+                Some("2021-06-07T08:09:10Z")
+            );
+            assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
+            assert_eq!(d2.materialize().blocks[0].text, "body");
+
+            let exported2 = export_docx(&d2);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            assert_eq!(
+                d2.doc_props(),
+                d3.doc_props(),
+                "properties stable across a second round-trip"
+            );
+        }
+        // Phase `core_xml_preserves_unmodeled_fields_and_updates_modeled`.
+        {
+            // An imported unmodeled field (revision) must survive while the title updates on export.
+            let core = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"><dc:title>Old</dc:title><cp:revision>4</cp:revision></cp:coreProperties>"#;
-        let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
-        let mut c = DocxContainer::read(&base).unwrap();
-        c.set("docProps/core.xml", core.as_bytes().to_vec());
-        let docx = c.write().unwrap();
+            let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
+            let mut c = DocxContainer::read(&base).unwrap();
+            c.set("docProps/core.xml", core.as_bytes().to_vec());
+            let docx = c.write().unwrap();
 
-        let mut d = Document::new();
-        import_docx(&docx, &mut d);
-        assert_eq!(
-            d.doc_prop("title").as_deref(),
-            Some("Old"),
-            "title imported from core.xml"
-        );
-        d.set_doc_prop("title", "New");
+            let mut d = Document::new();
+            import_docx(&docx, &mut d);
+            assert_eq!(
+                d.doc_prop("title").as_deref(),
+                Some("Old"),
+                "title imported from core.xml"
+            );
+            d.set_doc_prop("title", "New");
 
-        let exported = export_docx(&d);
-        let out = DocxContainer::read(&exported).unwrap();
-        let core_out = std::str::from_utf8(out.get("docProps/core.xml").unwrap()).unwrap();
-        assert!(
-            core_out.contains("<dc:title>New</dc:title>"),
-            "title updated: {core_out}"
-        );
-        assert!(
-            !core_out.contains("<dc:title>Old</dc:title>"),
-            "old title gone: {core_out}"
-        );
-        assert!(
-            core_out.contains("revision>4</"),
-            "unmodeled field preserved: {core_out}"
-        );
+            let exported = export_docx(&d);
+            let out = DocxContainer::read(&exported).unwrap();
+            let core_out = std::str::from_utf8(out.get("docProps/core.xml").unwrap()).unwrap();
+            assert!(
+                core_out.contains("<dc:title>New</dc:title>"),
+                "title updated: {core_out}"
+            );
+            assert!(
+                !core_out.contains("<dc:title>Old</dc:title>"),
+                "old title gone: {core_out}"
+            );
+            assert!(
+                core_out.contains("revision>4</"),
+                "unmodeled field preserved: {core_out}"
+            );
+        }
+        // Phase `no_docprops_when_no_properties_and_none_imported`.
+        {
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "plain");
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            assert!(
+                cont.get("docProps/core.xml").is_none(),
+                "no core.xml for a doc with no properties"
+            );
+            assert!(
+                cont.get("docProps/app.xml").is_none(),
+                "no app.xml for a doc with no properties"
+            );
+        }
+        // Phase `preserves_unmodeled_parts`.
+        {
+            let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
+            let mut c = DocxContainer::read(&base).unwrap();
+            c.set("customXml/item1.xml", b"<root>custom</root>".to_vec());
+            let docx = c.write().unwrap();
+
+            let mut d = Document::new();
+            import_docx(&docx, &mut d);
+            let exported = export_docx(&d);
+
+            let out = DocxContainer::read(&exported).unwrap();
+            assert_eq!(
+                out.get("customXml/item1.xml"),
+                Some(&b"<root>custom</root>"[..]),
+                "unmodeled part must round-trip byte-identically"
+            );
+            assert!(out.get("word/document.xml").is_some(), "body regenerated");
+            assert_eq!(out.get("word/styles.xml"), c.get("word/styles.xml"));
+        }
     }
 
     #[test]
-    fn no_docprops_when_no_properties_and_none_imported() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "plain");
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        assert!(
-            cont.get("docProps/core.xml").is_none(),
-            "no core.xml for a doc with no properties"
-        );
-        assert!(
-            cont.get("docProps/app.xml").is_none(),
-            "no app.xml for a doc with no properties"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn headers_and_footers_with_page_fields_roundtrip_through_docx() {
+        // Phase `header_footer_with_page_number_roundtrip_through_docx`.
+        {
+            use qdoc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
+            // A header "Title" + page-number footer must export wired through sectPr and re-import intact.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "body");
+            let h = d.insert_header_block(None, "paragraph");
+            d.splice_header_text(&h, 0, 0, "Title");
+            let f = d.insert_footer_block(None, "paragraph");
+            d.splice_footer_text(&f, 0, 0, "Page ");
+            d.insert_footer_page_number(&f, 5);
 
-    #[test]
-    fn header_footer_with_page_number_roundtrip_through_docx() {
-        use qdoc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
-        // A header "Title" + page-number footer must export wired through sectPr and re-import intact.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "body");
-        let h = d.insert_header_block(None, "paragraph");
-        d.splice_header_text(&h, 0, 0, "Title");
-        let f = d.insert_footer_block(None, "paragraph");
-        d.splice_footer_text(&f, 0, 0, "Page ");
-        d.insert_footer_page_number(&f, 5);
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let hdr =
+                std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written"))
+                    .unwrap();
+            assert!(
+                hdr.contains("<w:hdr") && hdr.contains("Title"),
+                "header part holds the title: {hdr}"
+            );
+            let ftr =
+                std::str::from_utf8(cont.get("word/footer1.xml").expect("footer1.xml written"))
+                    .unwrap();
+            assert!(ftr.contains("<w:ftr"), "footer part is a w:ftr: {ftr}");
+            assert!(
+                ftr.contains(r#"w:instr=" PAGE ""#),
+                "PAGE field emitted: {ftr}"
+            );
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains("<w:sectPr>"),
+                "sectPr present: {document}"
+            );
+            assert!(
+                document.contains(r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#),
+                "header ref: {document}"
+            );
+            assert!(
+                document.contains(r#"<w:footerReference w:type="default" r:id="rIdQdocFtr"/>"#),
+                "footer ref: {document}"
+            );
+            let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+            assert!(
+                ct.contains("/word/header1.xml") && ct.contains("/word/footer1.xml"),
+                "overrides registered: {ct}"
+            );
+            let rels =
+                std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+            assert!(
+                rels.contains(r#"Target="header1.xml""#)
+                    && rels.contains(r#"Target="footer1.xml""#),
+                "rels registered: {rels}"
+            );
 
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let hdr = std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written"))
-            .unwrap();
-        assert!(
-            hdr.contains("<w:hdr") && hdr.contains("Title"),
-            "header part holds the title: {hdr}"
-        );
-        let ftr = std::str::from_utf8(cont.get("word/footer1.xml").expect("footer1.xml written"))
-            .unwrap();
-        assert!(ftr.contains("<w:ftr"), "footer part is a w:ftr: {ftr}");
-        assert!(
-            ftr.contains(r#"w:instr=" PAGE ""#),
-            "PAGE field emitted: {ftr}"
-        );
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains("<w:sectPr>"),
-            "sectPr present: {document}"
-        );
-        assert!(
-            document.contains(r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#),
-            "header ref: {document}"
-        );
-        assert!(
-            document.contains(r#"<w:footerReference w:type="default" r:id="rIdQdocFtr"/>"#),
-            "footer ref: {document}"
-        );
-        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(
-            ct.contains("/word/header1.xml") && ct.contains("/word/footer1.xml"),
-            "overrides registered: {ct}"
-        );
-        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(
-            rels.contains(r#"Target="header1.xml""#) && rels.contains(r#"Target="footer1.xml""#),
-            "rels registered: {rels}"
-        );
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            assert_eq!(d2.materialize().blocks[0].text, "body", "body intact");
+            let header = d2.header();
+            assert_eq!(header.len(), 1, "header block present: {header:?}");
+            assert_eq!(header[0].text, "Title");
+            let footer = d2.footer();
+            assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
+            assert_eq!(
+                footer[0].text,
+                format!("Page {FIELD_PLACEHOLDER}"),
+                "placeholder kept: {:?}",
+                footer[0].text
+            );
+            let field = footer[0]
+                .marks
+                .iter()
+                .find(|m| m.name == MARK_FIELD)
+                .expect("page-number field survives");
+            assert_eq!(
+                (field.start, field.end),
+                (5, 6),
+                "field spans the placeholder: {:?}",
+                footer[0].marks
+            );
+            assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        assert_eq!(d2.materialize().blocks[0].text, "body", "body intact");
-        let header = d2.header();
-        assert_eq!(header.len(), 1, "header block present: {header:?}");
-        assert_eq!(header[0].text, "Title");
-        let footer = d2.footer();
-        assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
-        assert_eq!(
-            footer[0].text,
-            format!("Page {FIELD_PLACEHOLDER}"),
-            "placeholder kept: {:?}",
-            footer[0].text
-        );
-        let field = footer[0]
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_FIELD)
-            .expect("page-number field survives");
-        assert_eq!(
-            (field.start, field.end),
-            (5, 6),
-            "field spans the placeholder: {:?}",
-            footer[0].marks
-        );
-        assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
-
-        // Idempotent across a second round-trip (block ids are volatile; compare text+marks, not BlockView).
-        let exported2 = export_docx(&d2);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        assert_eq!(
-            norm_region(&d2.header()),
-            norm_region(&d3.header()),
-            "header stable across a second round-trip"
-        );
-        assert_eq!(
-            norm_region(&d2.footer()),
-            norm_region(&d3.footer()),
-            "footer stable across a second round-trip"
-        );
-    }
-
-    #[test]
-    fn imports_complex_page_field_from_header() {
-        // Complex-field form (fldChar begin/instrText PAGE/separate/end) imports as a single
-        // page-number field, dropping the cached result text.
-        use qdoc::schema::{FIELD_PLACEHOLDER, MARK_FIELD};
-        let header = concat!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-            "\n",
-            r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
-            r#"<w:p><w:r><w:t xml:space="preserve">p. </w:t></w:r>"#,
-            r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r>"#,
-            r#"<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>"#,
-            r#"<w:r><w:fldChar w:fldCharType="separate"/></w:r>"#,
-            r#"<w:r><w:t>7</w:t></w:r>"#,
-            r#"<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:hdr>"#,
-        );
-        let body = concat!(
-            r#"<w:p><w:r><w:t>body</w:t></w:r></w:p>"#,
-            r#"<w:sectPr><w:headerReference w:type="default" r:id="rId7"/></w:sectPr>"#,
-        );
-        let base = minimal_docx_styled("", body);
-        let mut c = DocxContainer::read(&base).unwrap();
-        c.set("word/header1.xml", header.as_bytes().to_vec());
-        let rels = std::str::from_utf8(c.get("word/_rels/document.xml.rels").unwrap())
-            .unwrap()
-            .to_string();
-        let rels = rels.replace(
+            // Idempotent across a second round-trip (block ids are volatile; compare text+marks, not BlockView).
+            let exported2 = export_docx(&d2);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            assert_eq!(
+                norm_region(&d2.header()),
+                norm_region(&d3.header()),
+                "header stable across a second round-trip"
+            );
+            assert_eq!(
+                norm_region(&d2.footer()),
+                norm_region(&d3.footer()),
+                "footer stable across a second round-trip"
+            );
+        }
+        // Phase `imports_complex_page_field_from_header`.
+        {
+            // Complex-field form (fldChar begin/instrText PAGE/separate/end) imports as a single
+            // page-number field, dropping the cached result text.
+            use qdoc::schema::{FIELD_PLACEHOLDER, MARK_FIELD};
+            let header = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                "\n",
+                r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+                r#"<w:p><w:r><w:t xml:space="preserve">p. </w:t></w:r>"#,
+                r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r>"#,
+                r#"<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>"#,
+                r#"<w:r><w:fldChar w:fldCharType="separate"/></w:r>"#,
+                r#"<w:r><w:t>7</w:t></w:r>"#,
+                r#"<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:hdr>"#,
+            );
+            let body = concat!(
+                r#"<w:p><w:r><w:t>body</w:t></w:r></w:p>"#,
+                r#"<w:sectPr><w:headerReference w:type="default" r:id="rId7"/></w:sectPr>"#,
+            );
+            let base = minimal_docx_styled("", body);
+            let mut c = DocxContainer::read(&base).unwrap();
+            c.set("word/header1.xml", header.as_bytes().to_vec());
+            let rels = std::str::from_utf8(c.get("word/_rels/document.xml.rels").unwrap())
+                .unwrap()
+                .to_string();
+            let rels = rels.replace(
             "</Relationships>",
             r#"<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>"#,
         );
-        c.set("word/_rels/document.xml.rels", rels.into_bytes());
-        let docx = c.write().unwrap();
+            c.set("word/_rels/document.xml.rels", rels.into_bytes());
+            let docx = c.write().unwrap();
 
-        let mut d = Document::new();
-        import_docx(&docx, &mut d);
-        let header = d.header();
-        assert_eq!(header.len(), 1, "{header:?}");
-        // "p. " + a single placeholder; the cached "7" result is dropped.
-        assert_eq!(
-            header[0].text,
-            format!("p. {FIELD_PLACEHOLDER}"),
-            "complex field → one placeholder: {:?}",
-            header[0].text
-        );
-        assert!(
-            header[0]
-                .marks
-                .iter()
-                .any(|m| m.name == MARK_FIELD && m.start == 3 && m.end == 4),
-            "field mark: {:?}",
-            header[0].marks
-        );
+            let mut d = Document::new();
+            import_docx(&docx, &mut d);
+            let header = d.header();
+            assert_eq!(header.len(), 1, "{header:?}");
+            // "p. " + a single placeholder; the cached "7" result is dropped.
+            assert_eq!(
+                header[0].text,
+                format!("p. {FIELD_PLACEHOLDER}"),
+                "complex field → one placeholder: {:?}",
+                header[0].text
+            );
+            assert!(
+                header[0]
+                    .marks
+                    .iter()
+                    .any(|m| m.name == MARK_FIELD && m.start == 3 && m.end == 4),
+                "field mark: {:?}",
+                header[0].marks
+            );
+        }
     }
 
     #[test]
-    fn footnote_imports_from_footnotes_part() {
-        use qdoc::document::MarkValue;
-        use qdoc::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
-        // "see ref" referencing footnote id 2 in word/footnotes.xml: import must place a
-        // note-ref marker + create the note.
-        let body = concat!(
-            r#"<w:p>"#,
-            r#"<w:r><w:t xml:space="preserve">see </w:t></w:r>"#,
-            r#"<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="2"/></w:r>"#,
-            r#"<w:r><w:t>ref</w:t></w:r>"#,
-            r#"</w:p>"#,
-        );
-        let footnotes = concat!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-            "\n",
-            r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
-            r#"<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>"#,
-            r#"<w:footnote w:id="2"><w:p><w:r><w:t>the footnote</w:t></w:r></w:p></w:footnote>"#,
-            r#"</w:footnotes>"#,
-        );
-        let base = minimal_docx(body);
-        let mut c = DocxContainer::read(&base).unwrap();
-        c.set("word/footnotes.xml", footnotes.as_bytes().to_vec());
-        let docx = c.write().unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn notes_comments_and_tracked_changes_roundtrip_through_docx() {
+        // Phase `footnote_imports_from_footnotes_part`.
+        {
+            use qdoc::document::MarkValue;
+            use qdoc::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
+            // "see ref" referencing footnote id 2 in word/footnotes.xml: import must place a
+            // note-ref marker + create the note.
+            let body = concat!(
+                r#"<w:p>"#,
+                r#"<w:r><w:t xml:space="preserve">see </w:t></w:r>"#,
+                r#"<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="2"/></w:r>"#,
+                r#"<w:r><w:t>ref</w:t></w:r>"#,
+                r#"</w:p>"#,
+            );
+            let footnotes = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                "\n",
+                r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+                r#"<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>"#,
+                r#"<w:footnote w:id="2"><w:p><w:r><w:t>the footnote</w:t></w:r></w:p></w:footnote>"#,
+                r#"</w:footnotes>"#,
+            );
+            let base = minimal_docx(body);
+            let mut c = DocxContainer::read(&base).unwrap();
+            c.set("word/footnotes.xml", footnotes.as_bytes().to_vec());
+            let docx = c.write().unwrap();
 
-        let mut d = Document::new();
-        import_docx(&docx, &mut d);
-        let snap = d.materialize();
-        let p = &snap.blocks[0];
-        assert_eq!(
-            p.text,
-            format!("see {FIELD_PLACEHOLDER}ref"),
-            "placeholder spliced inline: {:?}",
-            p.text
-        );
-        let nref = p
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_NOTE_REF)
-            .expect("note-ref mark present");
-        assert_eq!(
-            (nref.start, nref.end),
-            (4, 5),
-            "marker covers the placeholder: {:?}",
-            p.marks
-        );
-        let nid = match &nref.value {
-            MarkValue::Str(s) => s.clone(),
-            other => panic!("note-ref value is the note id: {other:?}"),
-        };
-        assert_eq!(
-            snap.notes.len(),
-            1,
-            "one note, separators skipped: {:?}",
-            snap.notes
-        );
-        assert_eq!(snap.notes[0].id, nid);
-        assert_eq!(snap.notes[0].kind, "footnote");
-        assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
+            let mut d = Document::new();
+            import_docx(&docx, &mut d);
+            let snap = d.materialize();
+            let p = &snap.blocks[0];
+            assert_eq!(
+                p.text,
+                format!("see {FIELD_PLACEHOLDER}ref"),
+                "placeholder spliced inline: {:?}",
+                p.text
+            );
+            let nref = p
+                .marks
+                .iter()
+                .find(|m| m.name == MARK_NOTE_REF)
+                .expect("note-ref mark present");
+            assert_eq!(
+                (nref.start, nref.end),
+                (4, 5),
+                "marker covers the placeholder: {:?}",
+                p.marks
+            );
+            let nid = match &nref.value {
+                MarkValue::Str(s) => s.clone(),
+                other => panic!("note-ref value is the note id: {other:?}"),
+            };
+            assert_eq!(
+                snap.notes.len(),
+                1,
+                "one note, separators skipped: {:?}",
+                snap.notes
+            );
+            assert_eq!(snap.notes[0].id, nid);
+            assert_eq!(snap.notes[0].kind, "footnote");
+            assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
+        }
+        // Phase `footnote_and_endnote_roundtrip_through_docx`.
+        {
+            // A footnote + an endnote built from scratch: export must write both note parts + refs
+            // + content-types/rels, re-importing the same markers/notes/kinds.
+            let exported = export_footnote_endnote_fixture();
+            assert_footnote_endnote_docx_xml(&exported);
+
+            let d2 = assert_footnote_endnote_reimport(&exported);
+
+            let exported2 = export_docx(&d2);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            let kinds_texts = |snap: &DocSnapshot| {
+                let mut v: Vec<(String, String)> = snap
+                    .notes
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.kind.clone(),
+                            n.blocks.iter().map(|b| b.text.clone()).collect(),
+                        )
+                    })
+                    .collect();
+                v.sort();
+                v
+            };
+            assert_eq!(
+                kinds_texts(&d2.materialize()),
+                kinds_texts(&d3.materialize()),
+                "notes stable across a second round-trip"
+            );
+        }
+        // Phase `comment_imports_from_comments_part`.
+        {
+            use qdoc::document::MarkValue;
+            use qdoc::schema::MARK_COMMENT;
+            // "fix this word" with "this word" wrapped in comment range id 0: import must place a
+            // `comment` mark + create the comment.
+            let body = concat!(
+                r#"<w:p>"#,
+                r#"<w:r><w:t xml:space="preserve">fix </w:t></w:r>"#,
+                r#"<w:commentRangeStart w:id="0"/>"#,
+                r#"<w:r><w:t>this word</w:t></w:r>"#,
+                r#"<w:commentRangeEnd w:id="0"/>"#,
+                r#"<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>"#,
+                r#"</w:p>"#,
+            );
+            let comments = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                "\n",
+                r#"<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+                r#"<w:comment w:id="0" w:author="Ada" w:date="2021-01-02T03:04:05"><w:p><w:r><w:t>note: fix</w:t></w:r></w:p></w:comment>"#,
+                r#"</w:comments>"#,
+            );
+            let base = minimal_docx(body);
+            let mut c = DocxContainer::read(&base).unwrap();
+            c.set("word/comments.xml", comments.as_bytes().to_vec());
+            let docx = c.write().unwrap();
+
+            let mut d = Document::new();
+            import_docx(&docx, &mut d);
+            let snap = d.materialize();
+            let p = &snap.blocks[0];
+            assert_eq!(
+                p.text, "fix this word",
+                "comment markup not in text: {:?}",
+                p.text
+            );
+            let cm = p
+                .marks
+                .iter()
+                .find(|m| m.name == MARK_COMMENT)
+                .expect("comment mark present");
+            assert_eq!(
+                (cm.start, cm.end),
+                (4, 13),
+                "marker spans 'this word': {:?}",
+                p.marks
+            );
+            let cid = match &cm.value {
+                MarkValue::Str(s) => s.clone(),
+                other => panic!("comment value is the comment id: {other:?}"),
+            };
+            assert_eq!(snap.comments.len(), 1, "one comment: {:?}", snap.comments);
+            let cmt = &snap.comments[0];
+            assert_eq!(cmt.id, cid);
+            assert_eq!(cmt.author, "Ada");
+            assert_eq!(cmt.date, "2021-01-02T03:04:05");
+            assert_eq!(cmt.blocks[0].text, "note: fix");
+        }
+        // Phase `comment_roundtrips_through_docx`.
+        {
+            use qdoc::document::MarkValue;
+            use qdoc::schema::MARK_COMMENT;
+            type CommentTuple = (String, String, Option<(usize, usize)>);
+            // A comment built from scratch over "this word" must export comments.xml + range markers
+            // + reference + content-types/rels, re-importing intact.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "please fix this word now");
+            d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
+
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let cmts =
+                std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written"))
+                    .unwrap();
+            assert!(
+                cmts.contains(r#"w:author="Ada Lovelace""#),
+                "author emitted: {cmts}"
+            );
+            assert!(cmts.contains("note: fix"), "comment body emitted: {cmts}");
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains("<w:commentRangeStart"),
+                "range start emitted: {document}"
+            );
+            assert!(
+                document.contains("<w:commentRangeEnd"),
+                "range end emitted: {document}"
+            );
+            assert!(
+                document.contains("<w:commentReference"),
+                "reference emitted: {document}"
+            );
+            let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+            assert!(
+                ct.contains("/word/comments.xml"),
+                "comments part in content-types: {ct}"
+            );
+            let rels =
+                std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+            assert!(
+                rels.contains(r#"Target="comments.xml""#),
+                "comments rel registered: {rels}"
+            );
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            assert_eq!(snap.blocks[0].text, "please fix this word now");
+            let cm = snap.blocks[0]
+                .marks
+                .iter()
+                .find(|m| m.name == MARK_COMMENT)
+                .expect("comment marker survives");
+            assert_eq!(
+                (cm.start, cm.end),
+                (11, 20),
+                "anchored range survives: {:?}",
+                snap.blocks[0].marks
+            );
+            let new_id = match &cm.value {
+                MarkValue::Str(s) => s.clone(),
+                _ => panic!("comment value"),
+            };
+            let cmt = snap
+                .comments
+                .iter()
+                .find(|c| c.id == new_id)
+                .expect("comment present by id");
+            assert_eq!(cmt.author, "Ada Lovelace");
+            assert_eq!(cmt.blocks[0].text, "note: fix");
+            assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
+
+            let exported2 = export_docx(&d2);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            let authors_texts = |snap: &DocSnapshot| {
+                let mut v: Vec<CommentTuple> = snap
+                    .comments
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.author.clone(),
+                            c.blocks.iter().map(|b| b.text.clone()).collect(),
+                            c.range.as_ref().map(|(_, s, e)| (*s, *e)),
+                        )
+                    })
+                    .collect();
+                v.sort();
+                v
+            };
+            assert_eq!(
+                authors_texts(&d2.materialize()),
+                authors_texts(&d3.materialize()),
+                "comments stable across a second round-trip"
+            );
+        }
+        // Phase `tracked_changes_roundtrip_through_docx`.
+        {
+            type ChangeTuple = (qdoc::snapshot::ChangeKind, String, Option<(usize, usize)>);
+            // Tracked insertion + deletion (with author) export as <w:ins>/<w:del> wrappers (deleted
+            // text via <w:delText>), re-importing kind/author + anchored ranges.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "hello world");
+            let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00Z");
+            let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00Z"); // "world"
+            let _ = (ins, del);
+
+            let exported = export_docx(&d);
+            let cont = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+            assert_docx_shows_tracked_changes(document);
+
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let snap = d2.materialize();
+            let (ins_id, del_id) = assert_import_recovers_changes(&snap);
+
+            // accept_change on the insertion clears the mark; on the deletion removes text.
+            d2.accept_change(&ins_id);
+            d2.accept_change(&del_id);
+            let after = d2.materialize();
+            assert_eq!(
+                after.blocks[0].text, "hello there ",
+                "accept-ins keeps text; accept-del removes 'world'"
+            );
+            assert!(after.changes.is_empty(), "both changes resolved");
+
+            let exported2 = export_docx(&d);
+            let mut d3 = Document::new();
+            import_docx(&exported2, &mut d3);
+            let summary = |snap: &DocSnapshot| {
+                let mut v: Vec<ChangeTuple> = snap
+                    .changes
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.kind,
+                            c.author.clone(),
+                            c.range.as_ref().map(|(_, s, e)| (*s, *e)),
+                        )
+                    })
+                    .collect();
+                v.sort_by(|a, b| (a.2, &a.1).cmp(&(b.2, &b.1)));
+                v
+            };
+            let mut d_re = Document::new();
+            import_docx(&exported, &mut d_re);
+            assert_eq!(
+                summary(&d_re.materialize()),
+                summary(&d3.materialize()),
+                "changes stable across a second round-trip"
+            );
+        }
     }
 
     /// Builds the footnote+endnote fixture and exports it to `.docx` bytes
@@ -3146,197 +3450,6 @@ mod tests {
         d2
     }
 
-    #[test]
-    fn footnote_and_endnote_roundtrip_through_docx() {
-        // A footnote + an endnote built from scratch: export must write both note parts + refs
-        // + content-types/rels, re-importing the same markers/notes/kinds.
-        let exported = export_footnote_endnote_fixture();
-        assert_footnote_endnote_docx_xml(&exported);
-
-        let d2 = assert_footnote_endnote_reimport(&exported);
-
-        let exported2 = export_docx(&d2);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        let kinds_texts = |snap: &DocSnapshot| {
-            let mut v: Vec<(String, String)> = snap
-                .notes
-                .iter()
-                .map(|n| {
-                    (
-                        n.kind.clone(),
-                        n.blocks.iter().map(|b| b.text.clone()).collect(),
-                    )
-                })
-                .collect();
-            v.sort();
-            v
-        };
-        assert_eq!(
-            kinds_texts(&d2.materialize()),
-            kinds_texts(&d3.materialize()),
-            "notes stable across a second round-trip"
-        );
-    }
-
-    #[test]
-    fn comment_imports_from_comments_part() {
-        use qdoc::document::MarkValue;
-        use qdoc::schema::MARK_COMMENT;
-        // "fix this word" with "this word" wrapped in comment range id 0: import must place a
-        // `comment` mark + create the comment.
-        let body = concat!(
-            r#"<w:p>"#,
-            r#"<w:r><w:t xml:space="preserve">fix </w:t></w:r>"#,
-            r#"<w:commentRangeStart w:id="0"/>"#,
-            r#"<w:r><w:t>this word</w:t></w:r>"#,
-            r#"<w:commentRangeEnd w:id="0"/>"#,
-            r#"<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>"#,
-            r#"</w:p>"#,
-        );
-        let comments = concat!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-            "\n",
-            r#"<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
-            r#"<w:comment w:id="0" w:author="Ada" w:date="2021-01-02T03:04:05"><w:p><w:r><w:t>note: fix</w:t></w:r></w:p></w:comment>"#,
-            r#"</w:comments>"#,
-        );
-        let base = minimal_docx(body);
-        let mut c = DocxContainer::read(&base).unwrap();
-        c.set("word/comments.xml", comments.as_bytes().to_vec());
-        let docx = c.write().unwrap();
-
-        let mut d = Document::new();
-        import_docx(&docx, &mut d);
-        let snap = d.materialize();
-        let p = &snap.blocks[0];
-        assert_eq!(
-            p.text, "fix this word",
-            "comment markup not in text: {:?}",
-            p.text
-        );
-        let cm = p
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_COMMENT)
-            .expect("comment mark present");
-        assert_eq!(
-            (cm.start, cm.end),
-            (4, 13),
-            "marker spans 'this word': {:?}",
-            p.marks
-        );
-        let cid = match &cm.value {
-            MarkValue::Str(s) => s.clone(),
-            other => panic!("comment value is the comment id: {other:?}"),
-        };
-        assert_eq!(snap.comments.len(), 1, "one comment: {:?}", snap.comments);
-        let cmt = &snap.comments[0];
-        assert_eq!(cmt.id, cid);
-        assert_eq!(cmt.author, "Ada");
-        assert_eq!(cmt.date, "2021-01-02T03:04:05");
-        assert_eq!(cmt.blocks[0].text, "note: fix");
-    }
-
-    #[test]
-    fn comment_roundtrips_through_docx() {
-        use qdoc::document::MarkValue;
-        use qdoc::schema::MARK_COMMENT;
-        type CommentTuple = (String, String, Option<(usize, usize)>);
-        // A comment built from scratch over "this word" must export comments.xml + range markers
-        // + reference + content-types/rels, re-importing intact.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "please fix this word now");
-        d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
-
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let cmts =
-            std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written"))
-                .unwrap();
-        assert!(
-            cmts.contains(r#"w:author="Ada Lovelace""#),
-            "author emitted: {cmts}"
-        );
-        assert!(cmts.contains("note: fix"), "comment body emitted: {cmts}");
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains("<w:commentRangeStart"),
-            "range start emitted: {document}"
-        );
-        assert!(
-            document.contains("<w:commentRangeEnd"),
-            "range end emitted: {document}"
-        );
-        assert!(
-            document.contains("<w:commentReference"),
-            "reference emitted: {document}"
-        );
-        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
-        assert!(
-            ct.contains("/word/comments.xml"),
-            "comments part in content-types: {ct}"
-        );
-        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
-        assert!(
-            rels.contains(r#"Target="comments.xml""#),
-            "comments rel registered: {rels}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        assert_eq!(snap.blocks[0].text, "please fix this word now");
-        let cm = snap.blocks[0]
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_COMMENT)
-            .expect("comment marker survives");
-        assert_eq!(
-            (cm.start, cm.end),
-            (11, 20),
-            "anchored range survives: {:?}",
-            snap.blocks[0].marks
-        );
-        let new_id = match &cm.value {
-            MarkValue::Str(s) => s.clone(),
-            _ => panic!("comment value"),
-        };
-        let cmt = snap
-            .comments
-            .iter()
-            .find(|c| c.id == new_id)
-            .expect("comment present by id");
-        assert_eq!(cmt.author, "Ada Lovelace");
-        assert_eq!(cmt.blocks[0].text, "note: fix");
-        assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
-
-        let exported2 = export_docx(&d2);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        let authors_texts = |snap: &DocSnapshot| {
-            let mut v: Vec<CommentTuple> = snap
-                .comments
-                .iter()
-                .map(|c| {
-                    (
-                        c.author.clone(),
-                        c.blocks.iter().map(|b| b.text.clone()).collect(),
-                        c.range.as_ref().map(|(_, s, e)| (*s, *e)),
-                    )
-                })
-                .collect();
-            v.sort();
-            v
-        };
-        assert_eq!(
-            authors_texts(&d2.materialize()),
-            authors_texts(&d3.materialize()),
-            "comments stable across a second round-trip"
-        );
-    }
-
     /// Asserts the exported `document.xml` carries the `<w:ins>`/`<w:del>` wrappers,
     /// `<w:delText>`, and both change authors.
     fn assert_docx_shows_tracked_changes(document: &str) {
@@ -3427,83 +3540,101 @@ mod tests {
     }
 
     #[test]
-    fn tracked_changes_roundtrip_through_docx() {
-        type ChangeTuple = (qdoc::snapshot::ChangeKind, String, Option<(usize, usize)>);
-        // Tracked insertion + deletion (with author) export as <w:ins>/<w:del> wrappers (deleted
-        // text via <w:delText>), re-importing kind/author + anchored ranges.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "hello world");
-        let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00Z");
-        let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00Z"); // "world"
-        let _ = (ins, del);
+    fn section_columns_roundtrip_through_docx() {
+        // Phase `columns_roundtrip`.
+        {
+            // 2-column body with a gap must round-trip; sectPr carries `w:cols w:num="2" w:space="…"`.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "flows across columns");
+            d.set_columns(2, Some(24.0)); // 24 px gap → 360 twips
 
-        let exported = export_docx(&d);
-        let cont = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
-        assert_docx_shows_tracked_changes(document);
+            let exported = export_docx(&d);
+            let out = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                document.contains("<w:sectPr>"),
+                "sectPr emitted for columns: {document}"
+            );
+            assert!(
+                document.contains(r#"<w:cols w:num="2""#),
+                "w:cols num=2 in sectPr: {document}"
+            );
+            assert!(
+                document.contains(r#"w:space="360""#),
+                "w:cols space=360 twips (24px): {document}"
+            );
 
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let snap = d2.materialize();
-        let (ins_id, del_id) = assert_import_recovers_changes(&snap);
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            let (count, gap) = d2.columns();
+            assert_eq!(count, 2, "column count survives .docx round-trip");
+            assert_eq!(gap, Some(24.0), "column gap (px) survives .docx round-trip");
+            assert_eq!(
+                d2.materialize().columns,
+                2,
+                "snapshot surfaces the column count"
+            );
+        }
+        // Phase `columns_added_to_existing_header_sectpr`.
+        {
+            // A doc that already needs a sectPr (has a header) must get w:cols ADDED to it, not a second one.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "body");
+            let h = d.insert_header_block(None, "paragraph");
+            d.splice_header_text(&h, 0, 0, "Header");
+            d.set_columns(3, None);
 
-        // accept_change on the insertion clears the mark; on the deletion removes text.
-        d2.accept_change(&ins_id);
-        d2.accept_change(&del_id);
-        let after = d2.materialize();
-        assert_eq!(
-            after.blocks[0].text, "hello there ",
-            "accept-ins keeps text; accept-del removes 'world'"
-        );
-        assert!(after.changes.is_empty(), "both changes resolved");
+            let exported = export_docx(&d);
+            let out = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+            assert_eq!(
+                document.matches("<w:sectPr>").count(),
+                1,
+                "exactly one sectPr: {document}"
+            );
+            assert!(
+                document.contains("<w:headerReference"),
+                "header reference kept: {document}"
+            );
+            assert!(
+                document.contains(r#"<w:cols w:num="3""#),
+                "columns folded into the sectPr: {document}"
+            );
 
-        let exported2 = export_docx(&d);
-        let mut d3 = Document::new();
-        import_docx(&exported2, &mut d3);
-        let summary = |snap: &DocSnapshot| {
-            let mut v: Vec<ChangeTuple> = snap
-                .changes
-                .iter()
-                .map(|c| {
-                    (
-                        c.kind,
-                        c.author.clone(),
-                        c.range.as_ref().map(|(_, s, e)| (*s, *e)),
-                    )
-                })
-                .collect();
-            v.sort_by(|a, b| (a.2, &a.1).cmp(&(b.2, &b.1)));
-            v
-        };
-        let mut d_re = Document::new();
-        import_docx(&exported, &mut d_re);
-        assert_eq!(
-            summary(&d_re.materialize()),
-            summary(&d3.materialize()),
-            "changes stable across a second round-trip"
-        );
-    }
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            assert_eq!(
+                d2.columns().0,
+                3,
+                "column count survives alongside the header"
+            );
+            assert_eq!(
+                d2.header()[0].text,
+                "Header",
+                "header survives alongside columns"
+            );
+        }
+        // Phase `single_column_emits_no_cols`.
+        {
+            // Default single-column doc must not emit w:cols, nor force a sectPr for nothing.
+            let mut d = Document::new();
+            let p = d.insert_block(None, "paragraph");
+            d.splice_text(&p, 0, 0, "plain");
 
-    #[test]
-    fn preserves_unmodeled_parts() {
-        let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
-        let mut c = DocxContainer::read(&base).unwrap();
-        c.set("customXml/item1.xml", b"<root>custom</root>".to_vec());
-        let docx = c.write().unwrap();
+            let exported = export_docx(&d);
+            let out = DocxContainer::read(&exported).unwrap();
+            let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+            assert!(
+                !document.contains("<w:cols"),
+                "no w:cols for a single-column doc: {document}"
+            );
 
-        let mut d = Document::new();
-        import_docx(&docx, &mut d);
-        let exported = export_docx(&d);
-
-        let out = DocxContainer::read(&exported).unwrap();
-        assert_eq!(
-            out.get("customXml/item1.xml"),
-            Some(&b"<root>custom</root>"[..]),
-            "unmodeled part must round-trip byte-identically"
-        );
-        assert!(out.get("word/document.xml").is_some(), "body regenerated");
-        assert_eq!(out.get("word/styles.xml"), c.get("word/styles.xml"));
+            let mut d2 = Document::new();
+            import_docx(&exported, &mut d2);
+            assert_eq!(d2.columns(), (1, None), "single-column default round-trips");
+        }
     }
 
     #[test]
@@ -3586,102 +3717,5 @@ mod tests {
             )
             .unwrap();
         assert_eq!(norm(&again.materialize()), norm(&snap));
-    }
-
-    #[test]
-    fn columns_roundtrip() {
-        // 2-column body with a gap must round-trip; sectPr carries `w:cols w:num="2" w:space="…"`.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "flows across columns");
-        d.set_columns(2, Some(24.0)); // 24 px gap → 360 twips
-
-        let exported = export_docx(&d);
-        let out = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            document.contains("<w:sectPr>"),
-            "sectPr emitted for columns: {document}"
-        );
-        assert!(
-            document.contains(r#"<w:cols w:num="2""#),
-            "w:cols num=2 in sectPr: {document}"
-        );
-        assert!(
-            document.contains(r#"w:space="360""#),
-            "w:cols space=360 twips (24px): {document}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        let (count, gap) = d2.columns();
-        assert_eq!(count, 2, "column count survives .docx round-trip");
-        assert_eq!(gap, Some(24.0), "column gap (px) survives .docx round-trip");
-        assert_eq!(
-            d2.materialize().columns,
-            2,
-            "snapshot surfaces the column count"
-        );
-    }
-
-    #[test]
-    fn columns_added_to_existing_header_sectpr() {
-        // A doc that already needs a sectPr (has a header) must get w:cols ADDED to it, not a second one.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "body");
-        let h = d.insert_header_block(None, "paragraph");
-        d.splice_header_text(&h, 0, 0, "Header");
-        d.set_columns(3, None);
-
-        let exported = export_docx(&d);
-        let out = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
-        assert_eq!(
-            document.matches("<w:sectPr>").count(),
-            1,
-            "exactly one sectPr: {document}"
-        );
-        assert!(
-            document.contains("<w:headerReference"),
-            "header reference kept: {document}"
-        );
-        assert!(
-            document.contains(r#"<w:cols w:num="3""#),
-            "columns folded into the sectPr: {document}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        assert_eq!(
-            d2.columns().0,
-            3,
-            "column count survives alongside the header"
-        );
-        assert_eq!(
-            d2.header()[0].text,
-            "Header",
-            "header survives alongside columns"
-        );
-    }
-
-    #[test]
-    fn single_column_emits_no_cols() {
-        // Default single-column doc must not emit w:cols, nor force a sectPr for nothing.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "plain");
-
-        let exported = export_docx(&d);
-        let out = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
-        assert!(
-            !document.contains("<w:cols"),
-            "no w:cols for a single-column doc: {document}"
-        );
-
-        let mut d2 = Document::new();
-        import_docx(&exported, &mut d2);
-        assert_eq!(d2.columns(), (1, None), "single-column default round-trips");
     }
 }

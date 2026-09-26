@@ -404,169 +404,169 @@ mod tests {
     }
 
     #[test]
-    fn exact_records_are_returned_never_hash_authority() {
-        let fixture = Fixture::new();
-        let registry = fixture.registry(4, 1_000);
-        let first = FileRecordId::new();
-        let second = FileRecordId::new();
-        registry.register(fixture.session(first));
-        registry.register(fixture.session(second));
-        assert_eq!(
-            registry.readable_record_ids(fixture.workspace, &fixture.peer),
-            vec![first, second]
-                .into_iter()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn bound_evicts_oldest_session_deterministically() {
-        let fixture = Fixture::new();
-        let registry = fixture.registry(2, 1_000);
-        let first = FileRecordId::new();
-        let second = FileRecordId::new();
-        let third = FileRecordId::new();
-        let first_binding = registry.register(fixture.session(first));
-        registry.register(fixture.session(second));
-        registry.register(fixture.session(third));
-        assert_eq!(registry.len(), 2);
-        assert!(!registry.remove(first_binding.session_id));
-        let readable = registry.readable_record_ids(fixture.workspace, &fixture.peer);
-        assert!(!readable.contains(&first));
-        assert!(readable.contains(&second));
-        assert!(readable.contains(&third));
-    }
-
-    #[test]
-    fn registry_expiry_is_independent_and_fail_closed() {
-        let fixture = Fixture::new();
-        let registry = fixture.registry(2, 50);
-        registry.register(fixture.session(FileRecordId::new()));
-        fixture.clock.set(NOW_MS + 50);
-        assert!(
-            registry
-                .readable_record_ids(fixture.workspace, &fixture.peer)
-                .is_empty()
-        );
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn grant_and_device_revocation_apply_on_next_lookup() {
-        let fixture = Fixture::new();
-        let registry = fixture.registry(4, 1_000);
-        let record = FileRecordId::new();
-        let binding = registry.register(fixture.session(record));
-        fixture.authority.revoke(binding.grant_id).unwrap();
-        assert!(
-            registry
-                .readable_record_ids(fixture.workspace, &fixture.peer)
-                .is_empty()
-        );
-
-        let record = FileRecordId::new();
-        registry.register(fixture.session(record));
-        fixture.live.0.store(false, Ordering::SeqCst);
-        assert!(
-            registry
-                .readable_record_ids(fixture.workspace, &fixture.peer)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn wrong_device_or_person_gets_no_records() {
-        let fixture = Fixture::new();
-        let registry = fixture.registry(2, 1_000);
-        registry.register(fixture.session(FileRecordId::new()));
-        let mut wrong_device = fixture.peer.clone();
-        wrong_device.device_public_key = [99; 32];
-        assert!(
-            registry
-                .readable_record_ids(fixture.workspace, &wrong_device)
-                .is_empty()
-        );
-        let mut wrong_person = fixture.peer.clone();
-        wrong_person.user_public_key = [98; 32];
-        assert!(
-            registry
-                .readable_record_ids(fixture.workspace, &wrong_person)
-                .is_empty()
-        );
-        assert!(
-            registry
-                .readable_record_ids(Uuid::new_v4(), &fixture.peer)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn device_only_lookup_recovers_person_from_session_and_rechecks_revocation() {
-        let fixture = Fixture::new();
-        let registry = fixture.registry(2, 1_000);
-        let record = FileRecordId::new();
-        let binding = registry.register(fixture.session(record));
-        let device = Ed25519PublicKey::from_bytes(fixture.peer.device_public_key);
-        assert_eq!(
-            registry.readable_record_ids_for_device(fixture.workspace, device),
-            vec![record]
-        );
-        assert!(
-            registry
-                .readable_record_ids_for_device(
-                    fixture.workspace,
-                    Ed25519PublicKey::from_bytes([77; 32]),
-                )
-                .is_empty()
-        );
-        fixture.authority.revoke(binding.grant_id).unwrap();
-        assert!(
-            registry
-                .readable_record_ids_for_device(fixture.workspace, device)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn concurrent_registration_and_lookup_never_exceeds_bound() {
-        let fixture = Arc::new(Fixture::new());
-        let registry = fixture.registry(8, 1_000);
-        let mut threads = Vec::new();
-        for _ in 0..24 {
-            let fixture = fixture.clone();
-            let registry = registry.clone();
-            threads.push(thread::spawn(move || {
-                registry.register(fixture.session(FileRecordId::new()));
-                let _ = registry.readable_record_ids(fixture.workspace, &fixture.peer);
-            }));
+    fn record_lookups_return_exact_records_only_to_the_current_bound_subject() {
+        // Phase `exact_records_are_returned_never_hash_authority`.
+        {
+            let fixture = Fixture::new();
+            let registry = fixture.registry(4, 1_000);
+            let first = FileRecordId::new();
+            let second = FileRecordId::new();
+            registry.register(fixture.session(first));
+            registry.register(fixture.session(second));
+            assert_eq!(
+                registry.readable_record_ids(fixture.workspace, &fixture.peer),
+                vec![first, second]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
         }
-        for thread in threads {
-            thread.join().unwrap();
+        // Phase `grant_and_device_revocation_apply_on_next_lookup`.
+        {
+            let fixture = Fixture::new();
+            let registry = fixture.registry(4, 1_000);
+            let record = FileRecordId::new();
+            let binding = registry.register(fixture.session(record));
+            fixture.authority.revoke(binding.grant_id).unwrap();
+            assert!(
+                registry
+                    .readable_record_ids(fixture.workspace, &fixture.peer)
+                    .is_empty()
+            );
+
+            let record = FileRecordId::new();
+            registry.register(fixture.session(record));
+            fixture.live.0.store(false, Ordering::SeqCst);
+            assert!(
+                registry
+                    .readable_record_ids(fixture.workspace, &fixture.peer)
+                    .is_empty()
+            );
         }
-        assert!(registry.len() <= 8);
-        assert!(
-            registry
-                .readable_record_ids(fixture.workspace, &fixture.peer)
-                .len()
-                <= 8
-        );
+        // Phase `wrong_device_or_person_gets_no_records`.
+        {
+            let fixture = Fixture::new();
+            let registry = fixture.registry(2, 1_000);
+            registry.register(fixture.session(FileRecordId::new()));
+            let mut wrong_device = fixture.peer.clone();
+            wrong_device.device_public_key = [99; 32];
+            assert!(
+                registry
+                    .readable_record_ids(fixture.workspace, &wrong_device)
+                    .is_empty()
+            );
+            let mut wrong_person = fixture.peer.clone();
+            wrong_person.user_public_key = [98; 32];
+            assert!(
+                registry
+                    .readable_record_ids(fixture.workspace, &wrong_person)
+                    .is_empty()
+            );
+            assert!(
+                registry
+                    .readable_record_ids(Uuid::new_v4(), &fixture.peer)
+                    .is_empty()
+            );
+        }
+        // Phase `device_only_lookup_recovers_person_from_session_and_rechecks_revocation`.
+        {
+            let fixture = Fixture::new();
+            let registry = fixture.registry(2, 1_000);
+            let record = FileRecordId::new();
+            let binding = registry.register(fixture.session(record));
+            let device = Ed25519PublicKey::from_bytes(fixture.peer.device_public_key);
+            assert_eq!(
+                registry.readable_record_ids_for_device(fixture.workspace, device),
+                vec![record]
+            );
+            assert!(
+                registry
+                    .readable_record_ids_for_device(
+                        fixture.workspace,
+                        Ed25519PublicKey::from_bytes([77; 32]),
+                    )
+                    .is_empty()
+            );
+            fixture.authority.revoke(binding.grant_id).unwrap();
+            assert!(
+                registry
+                    .readable_record_ids_for_device(fixture.workspace, device)
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
-    fn invalid_limits_are_rejected() {
-        assert!(matches!(
-            RecordAccessRegistry::new(0, 1),
-            Err(RecordAccessRegistryError::InvalidCapacity)
-        ));
-        assert!(matches!(
-            RecordAccessRegistry::new(MAX_RECORD_ACCESS_ENTRIES + 1, 1),
-            Err(RecordAccessRegistryError::InvalidCapacity)
-        ));
-        assert!(matches!(
-            RecordAccessRegistry::new(1, 0),
-            Err(RecordAccessRegistryError::InvalidTtl)
-        ));
+    fn the_session_registry_is_bounded_expiring_and_validated() {
+        // Phase `bound_evicts_oldest_session_deterministically`.
+        {
+            let fixture = Fixture::new();
+            let registry = fixture.registry(2, 1_000);
+            let first = FileRecordId::new();
+            let second = FileRecordId::new();
+            let third = FileRecordId::new();
+            let first_binding = registry.register(fixture.session(first));
+            registry.register(fixture.session(second));
+            registry.register(fixture.session(third));
+            assert_eq!(registry.len(), 2);
+            assert!(!registry.remove(first_binding.session_id));
+            let readable = registry.readable_record_ids(fixture.workspace, &fixture.peer);
+            assert!(!readable.contains(&first));
+            assert!(readable.contains(&second));
+            assert!(readable.contains(&third));
+        }
+        // Phase `registry_expiry_is_independent_and_fail_closed`.
+        {
+            let fixture = Fixture::new();
+            let registry = fixture.registry(2, 50);
+            registry.register(fixture.session(FileRecordId::new()));
+            fixture.clock.set(NOW_MS + 50);
+            assert!(
+                registry
+                    .readable_record_ids(fixture.workspace, &fixture.peer)
+                    .is_empty()
+            );
+            assert!(registry.is_empty());
+        }
+        // Phase `concurrent_registration_and_lookup_never_exceeds_bound`.
+        {
+            let fixture = Arc::new(Fixture::new());
+            let registry = fixture.registry(8, 1_000);
+            let mut threads = Vec::new();
+            for _ in 0..24 {
+                let fixture = fixture.clone();
+                let registry = registry.clone();
+                threads.push(thread::spawn(move || {
+                    registry.register(fixture.session(FileRecordId::new()));
+                    let _ = registry.readable_record_ids(fixture.workspace, &fixture.peer);
+                }));
+            }
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            assert!(registry.len() <= 8);
+            assert!(
+                registry
+                    .readable_record_ids(fixture.workspace, &fixture.peer)
+                    .len()
+                    <= 8
+            );
+        }
+        // Phase `invalid_limits_are_rejected`.
+        {
+            assert!(matches!(
+                RecordAccessRegistry::new(0, 1),
+                Err(RecordAccessRegistryError::InvalidCapacity)
+            ));
+            assert!(matches!(
+                RecordAccessRegistry::new(MAX_RECORD_ACCESS_ENTRIES + 1, 1),
+                Err(RecordAccessRegistryError::InvalidCapacity)
+            ));
+            assert!(matches!(
+                RecordAccessRegistry::new(1, 0),
+                Err(RecordAccessRegistryError::InvalidTtl)
+            ));
+        }
     }
 }

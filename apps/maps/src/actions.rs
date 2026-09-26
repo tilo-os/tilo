@@ -679,257 +679,271 @@ mod tests {
         ],
     }
 
-    /// Ctrl+K on Maps yields the workspace tree: a `maps.place` child per saved
-    /// place (un-save), a `maps.route` child for the active route (clear), and a
-    /// `maps.region` child per offline area (delete), plus the workspace-level
-    /// clear-offline action. Drives the real resource path.
     #[test]
-    fn ctrl_k_publishes_the_workspace_tree() {
-        let mut model = full_model();
-        model.places.push({
-            let mut p = Place::new(
-                "viktualienmarkt",
-                "Viktualienmarkt",
-                Category::Shop,
-                "",
-                LatLon::new(48.135, 11.576),
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn workspace_resources_publish_bounded_exact_trees() {
+        // Phase `ctrl_k_publishes_the_workspace_tree`.
+        // Ctrl+K on Maps yields the workspace tree: a `maps.place` child per saved
+        // place (un-save), a `maps.route` child for the active route (clear), and a
+        // `maps.region` child per offline area (delete), plus the workspace-level
+        // clear-offline action. Drives the real resource path.
+        {
+            let mut model = full_model();
+            model.places.push({
+                let mut p = Place::new(
+                    "viktualienmarkt",
+                    "Viktualienmarkt",
+                    Category::Shop,
+                    "",
+                    LatLon::new(48.135, 11.576),
+                );
+                p.saved = false;
+                p
+            });
+            let doc = seeded(&model);
+
+            let resources = provide_resources(&doc);
+            assert_eq!(resources.len(), 1, "one workspace root");
+            let root = &resources[0];
+            assert_eq!(root.kind, "maps.workspace");
+
+            let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(root_actions.contains(&"clear-regions"), "{root_actions:?}");
+            assert_eq!(
+                root.actions
+                    .iter()
+                    .find(|action| action.id == "clear-regions")
+                    .expect("clear regions action")
+                    .contract
+                    .risk,
+                RiskLevel::Destructive
             );
-            p.saved = false;
-            p
-        });
-        let doc = seeded(&model);
 
-        let resources = provide_resources(&doc);
-        assert_eq!(resources.len(), 1, "one workspace root");
-        let root = &resources[0];
-        assert_eq!(root.kind, "maps.workspace");
-
-        let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(root_actions.contains(&"clear-regions"), "{root_actions:?}");
-        assert_eq!(
-            root.actions
+            let place = root
+                .children
                 .iter()
-                .find(|action| action.id == "clear-regions")
-                .expect("clear regions action")
-                .contract
-                .risk,
-            RiskLevel::Destructive
-        );
-
-        let place = root
-            .children
-            .iter()
-            .find(|r| r.kind == "maps.place")
-            .expect("a saved-place resource");
-        assert!(
-            place.actions.iter().any(|a| a.id == "unsave"),
-            "saved place exports un-save"
-        );
-        let route = root
-            .children
-            .iter()
-            .find(|r| r.kind == "maps.route")
-            .expect("a route resource");
-        assert!(
-            route.actions.iter().any(|a| a.id == "clear"),
-            "route exports clear"
-        );
-        let reg = root
-            .children
-            .iter()
-            .find(|r| r.kind == "maps.region")
-            .expect("a region resource");
-        assert!(
-            reg.actions.iter().any(|a| a.id == "delete"),
-            "region exports delete"
-        );
-        assert_eq!(
-            reg.actions[0].contract.confirmation,
-            ConfirmationPolicy::Confirm
-        );
-    }
-
-    /// An unseeded document publishes nothing (no fabricated tree).
-    #[test]
-    fn empty_doc_publishes_nothing() {
-        let doc = AutoCommit::new();
-        assert!(provide_resources(&doc).is_empty());
-    }
-
-    /// Search intent/history are shared and agent-addressable; the ranked
-    /// result list itself is an intentionally local derived cache.
-    #[test]
-    fn search_results_and_history_publish_as_resources() {
-        let mut model = full_model();
-        let result = Place::new(
-            "pinakothek",
-            "Alte Pinakothek",
-            Category::Museum,
-            "Barer Straße 27",
-            LatLon::new(48.1484, 11.5707),
-        );
-        model.places.push(result);
-        let _ = result;
-        model.push_recent("art museum");
-        let doc = seeded(&model);
-
-        let root = &provide_resources(&doc)[0];
-        let search = root
-            .actions
-            .iter()
-            .find(|action| action.id == "search")
-            .expect("prompted Search maps action");
-        assert!(matches!(search.input, ActionInput::Prompted { .. }));
-        assert!(
-            root.actions
+                .find(|r| r.kind == "maps.place")
+                .expect("a saved-place resource");
+            assert!(
+                place.actions.iter().any(|a| a.id == "unsave"),
+                "saved place exports un-save"
+            );
+            let route = root
+                .children
                 .iter()
-                .any(|action| action.id == "clear-search-history")
-        );
-
-        assert!(
-            root.children
+                .find(|r| r.kind == "maps.route")
+                .expect("a route resource");
+            assert!(
+                route.actions.iter().any(|a| a.id == "clear"),
+                "route exports clear"
+            );
+            let reg = root
+                .children
                 .iter()
-                .all(|resource| resource.kind != "maps.search-result"),
-            "ranked search results are local derived cache, not shared resources"
-        );
+                .find(|r| r.kind == "maps.region")
+                .expect("a region resource");
+            assert!(
+                reg.actions.iter().any(|a| a.id == "delete"),
+                "region exports delete"
+            );
+            assert_eq!(
+                reg.actions[0].contract.confirmation,
+                ConfirmationPolicy::Confirm
+            );
+        }
 
-        let history = root
-            .children
-            .iter()
-            .find(|resource| resource.kind == "maps.search-history")
-            .expect("search history resource");
-        assert_eq!(history.label, "art museum");
-        assert!(
-            history
+        // Phase `empty_doc_publishes_nothing`.
+        // An unseeded document publishes nothing (no fabricated tree).
+        {
+            let doc = AutoCommit::new();
+            assert!(provide_resources(&doc).is_empty());
+        }
+
+        // Phase `search_results_and_history_publish_as_resources`.
+        // Search intent/history are shared and agent-addressable; the ranked
+        // result list itself is an intentionally local derived cache.
+        {
+            let mut model = full_model();
+            let result = Place::new(
+                "pinakothek",
+                "Alte Pinakothek",
+                Category::Museum,
+                "Barer Straße 27",
+                LatLon::new(48.1484, 11.5707),
+            );
+            model.places.push(result);
+            let _ = result;
+            model.push_recent("art museum");
+            let doc = seeded(&model);
+
+            let root = &provide_resources(&doc)[0];
+            let search = root
                 .actions
                 .iter()
-                .any(|action| action.id == "search-again")
-        );
-    }
-
-    #[test]
-    fn large_collections_are_bounded_eagerly_and_resolve_exactly() {
-        let mut model = full_model();
-        model.results.clear();
-        model.places.clear();
-        model.regions.clear();
-        model.recents = (0..20).map(|index| format!("query-{index}")).collect();
-        for index in 0..20 {
-            let mut place = Place::new(
-                &format!("place-{index}"),
-                &format!("Place {index}"),
-                Category::Landmark,
-                "",
-                LatLon::new(48.0, 11.0),
+                .find(|action| action.id == "search")
+                .expect("prompted Search maps action");
+            assert!(matches!(search.input, ActionInput::Prompted { .. }));
+            assert!(
+                root.actions
+                    .iter()
+                    .any(|action| action.id == "clear-search-history")
             );
-            place.saved = true;
-            model.places.push(place);
-            model.regions.push(region(
-                &format!("region-{index}"),
-                &format!("Region {index}"),
-            ));
-        }
-        let doc = seeded(&model);
-        let root = &provide_resources(&doc)[0];
-        for kind in ["maps.search-history", "maps.place", "maps.region"] {
-            assert_eq!(
+
+            assert!(
                 root.children
                     .iter()
-                    .filter(|resource| resource.kind == kind)
-                    .count(),
-                EAGER_PER_KIND_LIMIT,
-                "{kind} must stay bounded in the contextual snapshot"
+                    .all(|resource| resource.kind != "maps.search-result"),
+                "ranked search results are local derived cache, not shared resources"
+            );
+
+            let history = root
+                .children
+                .iter()
+                .find(|resource| resource.kind == "maps.search-history")
+                .expect("search history resource");
+            assert_eq!(history.label, "art museum");
+            assert!(
+                history
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "search-again")
             );
         }
 
-        let app = crate::app::MapsApp::offline();
-        assert!(
-            ResourceProvider::resource(&app, &doc, "maps.place:place-19").is_some(),
-            "an omitted saved place remains exactly addressable"
-        );
-        assert!(
-            ResourceProvider::resource(&app, &doc, "maps.region:region-19").is_some(),
-            "an omitted offline region remains exactly addressable"
-        );
-        assert!(
-            ResourceProvider::resource(&app, &doc, "maps.search-history:query-19").is_some(),
-            "an omitted history item remains exactly addressable"
-        );
+        // Phase `large_collections_are_bounded_eagerly_and_resolve_exactly`.
+        {
+            let mut model = full_model();
+            model.results.clear();
+            model.places.clear();
+            model.regions.clear();
+            model.recents = (0..20).map(|index| format!("query-{index}")).collect();
+            for index in 0..20 {
+                let mut place = Place::new(
+                    &format!("place-{index}"),
+                    &format!("Place {index}"),
+                    Category::Landmark,
+                    "",
+                    LatLon::new(48.0, 11.0),
+                );
+                place.saved = true;
+                model.places.push(place);
+                model.regions.push(region(
+                    &format!("region-{index}"),
+                    &format!("Region {index}"),
+                ));
+            }
+            let doc = seeded(&model);
+            let root = &provide_resources(&doc)[0];
+            for kind in ["maps.search-history", "maps.place", "maps.region"] {
+                assert_eq!(
+                    root.children
+                        .iter()
+                        .filter(|resource| resource.kind == kind)
+                        .count(),
+                    EAGER_PER_KIND_LIMIT,
+                    "{kind} must stay bounded in the contextual snapshot"
+                );
+            }
+
+            let app = crate::app::MapsApp::offline();
+            assert!(
+                ResourceProvider::resource(&app, &doc, "maps.place:place-19").is_some(),
+                "an omitted saved place remains exactly addressable"
+            );
+            assert!(
+                ResourceProvider::resource(&app, &doc, "maps.region:region-19").is_some(),
+                "an omitted offline region remains exactly addressable"
+            );
+            assert!(
+                ResourceProvider::resource(&app, &doc, "maps.search-history:query-19").is_some(),
+                "an omitted history item remains exactly addressable"
+            );
+        }
     }
 
     #[test]
-    fn committed_search_history_is_a_deterministic_model_action() {
-        let mut model = full_model();
-        model.results = model.places.clone();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn model_actions_are_deterministic_and_converge() {
+        // Phase `committed_search_history_is_a_deterministic_model_action`.
+        {
+            let mut model = full_model();
+            model.results = model.places.clone();
 
-        MapsAction::CommitSearch {
-            query: "  museums  ".to_string(),
-        }
-        .apply_to_model(&mut model);
-        assert_eq!(model.recents.first().map(String::as_str), Some("museums"));
+            MapsAction::CommitSearch {
+                query: "  museums  ".to_string(),
+            }
+            .apply_to_model(&mut model);
+            assert_eq!(model.recents.first().map(String::as_str), Some("museums"));
 
-        MapsAction::ClearRecents.apply_to_model(&mut model);
-        assert!(model.recents.is_empty());
-    }
-
-    #[test]
-    fn divergent_encoded_route_acceptances_converge_without_torn_context() {
-        let mut seed = seeded(&full_model());
-        seed.commit();
-        let bytes = seed.save();
-        let mut a = AutoCommit::load(&bytes).unwrap();
-        a.set_actor(ActorId::from([1; 16].as_slice()));
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        b.set_actor(ActorId::from([2; 16].as_slice()));
-
-        let mut route_a = full_model().route.unwrap();
-        route_a.distance_m = 1_111.0;
-        let mut route_b = route_a.clone();
-        route_b.distance_m = 2_222.0;
-        for (doc, action) in [
-            (
-                &mut a,
-                MapsAction::SetRoute {
-                    route: route_a,
-                    origin: Some(LatLon::new(1.0, 1.0)),
-                    origin_name: "Alpha origin".into(),
-                    dest: Some(LatLon::new(2.0, 2.0)),
-                    dest_name: "Alpha destination".into(),
-                    mode: TravelMode::Car,
-                },
-            ),
-            (
-                &mut b,
-                MapsAction::SetRoute {
-                    route: route_b,
-                    origin: Some(LatLon::new(3.0, 3.0)),
-                    origin_name: "Beta origin".into(),
-                    dest: Some(LatLon::new(4.0, 4.0)),
-                    dest_name: "Beta destination".into(),
-                    mode: TravelMode::Foot,
-                },
-            ),
-        ] {
-            let encoded = encode(&action);
-            registry().decode(&encoded).unwrap().apply(doc).unwrap();
+            MapsAction::ClearRecents.apply_to_model(&mut model);
+            assert!(model.recents.is_empty());
         }
 
-        a.merge_incoming(&mut b).unwrap();
-        b.merge_incoming(&mut a).unwrap();
-        let left = MapsDoc::load(&a).unwrap();
-        let right = MapsDoc::load(&b).unwrap();
-        assert_eq!(left, right, "both merge directions project identically");
-        let distance = left.route.unwrap().distance_m;
-        assert!(
-            (distance == 1_111.0
-                && left.origin_name == "Alpha origin"
-                && left.dest_name == "Alpha destination"
-                && left.mode == TravelMode::Car)
-                || (distance == 2_222.0
-                    && left.origin_name == "Beta origin"
-                    && left.dest_name == "Beta destination"
-                    && left.mode == TravelMode::Foot),
-            "the winning route and its labels/mode must remain one atomic acceptance"
-        );
+        // Phase `divergent_encoded_route_acceptances_converge_without_torn_context`.
+        {
+            let mut seed = seeded(&full_model());
+            seed.commit();
+            let bytes = seed.save();
+            let mut a = AutoCommit::load(&bytes).unwrap();
+            a.set_actor(ActorId::from([1; 16].as_slice()));
+            let mut b = AutoCommit::load(&bytes).unwrap();
+            b.set_actor(ActorId::from([2; 16].as_slice()));
+
+            let mut route_a = full_model().route.unwrap();
+            route_a.distance_m = 1_111.0;
+            let mut route_b = route_a.clone();
+            route_b.distance_m = 2_222.0;
+            for (doc, action) in [
+                (
+                    &mut a,
+                    MapsAction::SetRoute {
+                        route: route_a,
+                        origin: Some(LatLon::new(1.0, 1.0)),
+                        origin_name: "Alpha origin".into(),
+                        dest: Some(LatLon::new(2.0, 2.0)),
+                        dest_name: "Alpha destination".into(),
+                        mode: TravelMode::Car,
+                    },
+                ),
+                (
+                    &mut b,
+                    MapsAction::SetRoute {
+                        route: route_b,
+                        origin: Some(LatLon::new(3.0, 3.0)),
+                        origin_name: "Beta origin".into(),
+                        dest: Some(LatLon::new(4.0, 4.0)),
+                        dest_name: "Beta destination".into(),
+                        mode: TravelMode::Foot,
+                    },
+                ),
+            ] {
+                let encoded = encode(&action);
+                registry().decode(&encoded).unwrap().apply(doc).unwrap();
+            }
+
+            a.merge_incoming(&mut b).unwrap();
+            b.merge_incoming(&mut a).unwrap();
+            let left = MapsDoc::load(&a).unwrap();
+            let right = MapsDoc::load(&b).unwrap();
+            assert_eq!(left, right, "both merge directions project identically");
+            let distance = left.route.unwrap().distance_m;
+            assert!(
+                (distance == 1_111.0
+                    && left.origin_name == "Alpha origin"
+                    && left.dest_name == "Alpha destination"
+                    && left.mode == TravelMode::Car)
+                    || (distance == 2_222.0
+                        && left.origin_name == "Beta origin"
+                        && left.dest_name == "Beta destination"
+                        && left.mode == TravelMode::Foot),
+                "the winning route and its labels/mode must remain one atomic acceptance"
+            );
+        }
     }
 }

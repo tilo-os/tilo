@@ -82,13 +82,13 @@ pub mod dmabuf;
 pub mod encode;
 pub mod engine;
 pub mod event;
+pub mod event_sound;
 /// Registry refresh when system extensions (the codec pack) merge or unmerge.
 #[cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
 pub mod extensions;
 pub mod frame;
 pub mod handoff;
 pub mod hw;
-pub mod notification_sound;
 pub mod pw_stream;
 pub mod realtime;
 pub mod ring;

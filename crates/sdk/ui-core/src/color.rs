@@ -284,75 +284,81 @@ mod tests {
     }
 
     #[test]
-    fn parse_hex_accepts_the_common_forms() {
-        let blue = Some(Color::from_rgb8(0x3B, 0x82, 0xF6));
-        assert_eq!(parse_hex("#3B82F6"), blue);
-        assert_eq!(parse_hex("3b82f6"), blue);
-        assert_eq!(parse_hex("  #3b82F6 "), blue);
-        assert_eq!(parse_hex("#f0a"), Some(Color::from_rgb8(0xFF, 0x00, 0xAA)));
-        assert_eq!(
-            parse_hex("#0000ffee"),
-            Some(Color::from_rgba8(0x00, 0x00, 0xFF, 0xEE))
-        );
-    }
+    fn hex_parsing_accepts_common_forms_rejects_malformed_and_round_trips() {
+        // Case `parse_hex_accepts_the_common_forms`.
+        {
+            let blue = Some(Color::from_rgb8(0x3B, 0x82, 0xF6));
+            assert_eq!(parse_hex("#3B82F6"), blue);
+            assert_eq!(parse_hex("3b82f6"), blue);
+            assert_eq!(parse_hex("  #3b82F6 "), blue);
+            assert_eq!(parse_hex("#f0a"), Some(Color::from_rgb8(0xFF, 0x00, 0xAA)));
+            assert_eq!(
+                parse_hex("#0000ffee"),
+                Some(Color::from_rgba8(0x00, 0x00, 0xFF, 0xEE))
+            );
+        }
 
-    #[test]
-    fn parse_hex_rejects_malformed_input() {
-        for bad in [
-            "", "#", "#12", "#1234", "#12345", "#1234567", "nope", "#zzzzzz", "##abc12", "ä♥X",
-            "+f+f+f", "#+1+2+3", "#-12345",
-        ] {
-            assert_eq!(parse_hex(bad), None, "{bad:?}");
+        // Case `parse_hex_rejects_malformed_input`.
+        {
+            for bad in [
+                "", "#", "#12", "#1234", "#12345", "#1234567", "nope", "#zzzzzz", "##abc12", "ä♥X",
+                "+f+f+f", "#+1+2+3", "#-12345",
+            ] {
+                assert_eq!(parse_hex(bad), None, "{bad:?}");
+            }
+        }
+
+        // Case `hex_round_trips`.
+        {
+            for c in [
+                Color::from_rgb8(0, 0, 0),
+                Color::from_rgb8(255, 255, 255),
+                Color::from_rgb8(0x12, 0xAB, 0xEF),
+            ] {
+                assert_eq!(parse_hex(&to_hex(c)), Some(c));
+            }
+            assert_eq!(to_hex(Color::from_rgba8(1, 2, 3, 4)), "#010203");
         }
     }
 
     #[test]
-    fn hex_round_trips() {
-        for c in [
-            Color::from_rgb8(0, 0, 0),
-            Color::from_rgb8(255, 255, 255),
-            Color::from_rgb8(0x12, 0xAB, 0xEF),
-        ] {
-            assert_eq!(parse_hex(&to_hex(c)), Some(c));
-        }
-        assert_eq!(to_hex(Color::from_rgba8(1, 2, 3, 4)), "#010203");
-    }
-
-    #[test]
-    fn hsv_round_trips_every_grey_and_a_colour_sweep() {
-        for v in 0..=255u8 {
-            let grey = Color::from_rgb8(v, v, v);
-            let (h, s, val) = rgb_to_hsv(grey);
-            assert!(h.abs() < f32::EPSILON && s.abs() < f32::EPSILON);
-            assert_eq!(hsv_to_rgb(h, s, val), grey);
-        }
-        for r in (0..=255u8).step_by(15) {
-            for g in (0..=255u8).step_by(17) {
-                for b in (0..=255u8).step_by(51) {
-                    let c = Color::from_rgb8(r, g, b);
-                    let (h, s, v) = rgb_to_hsv(c);
-                    assert_eq!(rgb(hsv_to_rgb(h, s, v)), rgb(c));
-                    let (h, s, l) = rgb_to_hsl(c);
-                    assert_eq!(rgb(hsl_to_rgb(h, s, l)), rgb(c));
+    fn hsv_hue_and_luminance_conversions_round_trip_wrap_and_bound() {
+        // Case `hsv_round_trips_every_grey_and_a_colour_sweep`.
+        {
+            for v in 0..=255u8 {
+                let grey = Color::from_rgb8(v, v, v);
+                let (h, s, val) = rgb_to_hsv(grey);
+                assert!(h.abs() < f32::EPSILON && s.abs() < f32::EPSILON);
+                assert_eq!(hsv_to_rgb(h, s, val), grey);
+            }
+            for r in (0..=255u8).step_by(15) {
+                for g in (0..=255u8).step_by(17) {
+                    for b in (0..=255u8).step_by(51) {
+                        let c = Color::from_rgb8(r, g, b);
+                        let (h, s, v) = rgb_to_hsv(c);
+                        assert_eq!(rgb(hsv_to_rgb(h, s, v)), rgb(c));
+                        let (h, s, l) = rgb_to_hsl(c);
+                        assert_eq!(rgb(hsl_to_rgb(h, s, l)), rgb(c));
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn hue_wraps_in_both_directions() {
-        assert_eq!(hsv_to_rgb(-120.0, 1.0, 1.0), hsv_to_rgb(240.0, 1.0, 1.0));
-        assert_eq!(hsl_to_rgb(-120.0, 1.0, 0.5), hsl_to_rgb(240.0, 1.0, 0.5));
-        assert_eq!(hsv_to_rgb(360.0, 1.0, 1.0), Color::from_rgb8(255, 0, 0));
-    }
+        // Case `hue_wraps_in_both_directions`.
+        {
+            assert_eq!(hsv_to_rgb(-120.0, 1.0, 1.0), hsv_to_rgb(240.0, 1.0, 1.0));
+            assert_eq!(hsl_to_rgb(-120.0, 1.0, 0.5), hsl_to_rgb(240.0, 1.0, 0.5));
+            assert_eq!(hsv_to_rgb(360.0, 1.0, 1.0), Color::from_rgb8(255, 0, 0));
+        }
 
-    #[test]
-    fn luminance_and_contrast_bounds() {
-        assert!(relative_luminance(Color::BLACK).abs() < 1e-12);
-        assert!((relative_luminance(Color::WHITE) - 1.0).abs() < 1e-12);
-        assert!((contrast_ratio(Color::BLACK, Color::WHITE) - 21.0).abs() < 1e-9);
-        assert!((contrast_ratio(Color::WHITE, Color::BLACK) - 21.0).abs() < 1e-9);
-        let grey = Color::from_rgb8(0x77, 0x77, 0x77);
-        assert!((contrast_ratio(grey, grey) - 1.0).abs() < 1e-12);
+        // Case `luminance_and_contrast_bounds`.
+        {
+            assert!(relative_luminance(Color::BLACK).abs() < 1e-12);
+            assert!((relative_luminance(Color::WHITE) - 1.0).abs() < 1e-12);
+            assert!((contrast_ratio(Color::BLACK, Color::WHITE) - 21.0).abs() < 1e-9);
+            assert!((contrast_ratio(Color::WHITE, Color::BLACK) - 21.0).abs() < 1e-9);
+            let grey = Color::from_rgb8(0x77, 0x77, 0x77);
+            assert!((contrast_ratio(grey, grey) - 1.0).abs() < 1e-12);
+        }
     }
 }

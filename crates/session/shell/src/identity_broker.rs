@@ -523,107 +523,110 @@ mod tests {
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
 
-    /// The identity service's bytes: the launcher's handshake is a
-    /// little-endian `u32` length then JSON; every later frame is a
-    /// little-endian `u32` length then postcard.
     #[test]
-    fn identity_service_wire_bytes_are_pinned() {
-        let (mut app, mut service) = UnixStream::pair().expect("pair");
-        app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
-            .expect("handshake");
-        let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
-        assert_eq!(
-            (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
-            ("w", "a")
-        );
+    fn identity_service_wire_is_pinned_and_signing_requires_the_exact_capability() {
+        // Phase `identity_service_wire_bytes_are_pinned`.
+        // The identity service's bytes: the launcher's handshake is a
+        // little-endian `u32` length then JSON; every later frame is a
+        // little-endian `u32` length then postcard.
+        {
+            let (mut app, mut service) = UnixStream::pair().expect("pair");
+            app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
+                .expect("handshake");
+            let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
+            assert_eq!(
+                (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
+                ("w", "a")
+            );
 
-        write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
-        let mut sent = [0_u8; 8];
-        app.read_exact(&mut sent).expect("response");
-        assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
-        app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
-        assert!(matches!(
-            read_action_frame::<Request>(&mut service).expect("request"),
-            Request::CollaborationJoin { workspace_id } if workspace_id == "w"
-        ));
-    }
-
-    #[test]
-    fn signing_requires_the_exact_app_action_capability() {
-        let temp = tempfile::tempdir().expect("temp");
-        let xdg = temp.path().join("config");
-        let system_root = temp.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &xdg)
-            .set("TILO_IDENTITY_ROOT", &system_root);
-        let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
-        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
-
-        let room = RoomId::new();
-        let mut workspace =
-            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
-        workspace.room = room;
-        let mut tree = crate::shell::state::WorkspaceTree::default();
-        tree.desktop.workspaces.push(workspace);
-        let tree = tree.shared();
-
-        assert!(matches!(
-            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-            Response::Denied(_)
-        ));
-        tree.write().desktop.workspaces[0]
-            .capabilities
-            .push(CapOverride::grant(
-                Subject::app("so.tilo.notes"),
-                Scope::Action {
-                    app: "so.tilo.notes".into(),
-                    action: "document.save".into(),
-                },
-                Verb::Write,
+            write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
+            let mut sent = [0_u8; 8];
+            app.read_exact(&mut sent).expect("response");
+            assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
+            app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
+            assert!(matches!(
+                read_action_frame::<Request>(&mut service).expect("request"),
+                Request::CollaborationJoin { workspace_id } if workspace_id == "w"
             ));
-        let Response::Signature(signature) =
-            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
-        else {
-            panic!("granted action was not signed");
-        };
-        let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
-            .expect("registry")
-            .expect("profile");
-        let cert = tilo_user_identity::persist::read_device_cert(
-            &paths.device_cert_for_user(&profile.user_public_key),
-        )
-        .expect("device certificate");
-        tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
-        assert_eq!(cert.user_public_key, profile.user_public_key);
-        VerifyingKey::from_bytes(&cert.device_public_key)
-            .expect("key")
-            .verify(
-                b"payload",
-                &Signature::from_slice(&signature).expect("signature"),
-            )
-            .expect("valid device signature");
-        assert!(matches!(
-            sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
-            Response::Denied(_)
-        ));
+        }
+        // Phase `signing_requires_the_exact_app_action_capability`.
+        {
+            let temp = tempfile::tempdir().expect("temp");
+            let xdg = temp.path().join("config");
+            let system_root = temp.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set("TILO_IDENTITY_ROOT", &system_root);
+            let identity_dir = xdg.join("tilo/identity");
+            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
+                .expect("identity");
 
-        let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-            .expect("device key")
-            .verifying_key()
-            .to_bytes();
-        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-            .revoke(
-                &profile.id,
-                device_key,
-                tilo_user_identity::RevocationReason::Compromised,
-                1,
+            let room = RoomId::new();
+            let mut workspace =
+                crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
+            workspace.room = room;
+            let mut tree = crate::shell::state::WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let tree = tree.shared();
+
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                Response::Denied(_)
+            ));
+            tree.write().desktop.workspaces[0]
+                .capabilities
+                .push(CapOverride::grant(
+                    Subject::app("so.tilo.notes"),
+                    Scope::Action {
+                        app: "so.tilo.notes".into(),
+                        action: "document.save".into(),
+                    },
+                    Verb::Write,
+                ));
+            let Response::Signature(signature) =
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
+            else {
+                panic!("granted action was not signed");
+            };
+            let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
+                .expect("registry")
+                .expect("profile");
+            let cert = tilo_user_identity::persist::read_device_cert(
+                &paths.device_cert_for_user(&profile.user_public_key),
             )
-            .expect("revoke current device");
-        assert!(matches!(
-            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
-            Response::Denied(reason) if reason.contains("revoked")
-        ));
+            .expect("device certificate");
+            tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
+            assert_eq!(cert.user_public_key, profile.user_public_key);
+            VerifyingKey::from_bytes(&cert.device_public_key)
+                .expect("key")
+                .verify(
+                    b"payload",
+                    &Signature::from_slice(&signature).expect("signature"),
+                )
+                .expect("valid device signature");
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
+                Response::Denied(_)
+            ));
+
+            let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+                .expect("device key")
+                .verifying_key()
+                .to_bytes();
+            crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
+                .revoke(
+                    &profile.id,
+                    device_key,
+                    tilo_user_identity::RevocationReason::Compromised,
+                    1,
+                )
+                .expect("revoke current device");
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                Response::Denied(reason) if reason.contains("revoked")
+            ));
+        }
     }
 
     #[test]

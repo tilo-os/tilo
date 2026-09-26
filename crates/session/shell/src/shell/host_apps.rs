@@ -45,6 +45,9 @@ pub struct HostApp {
     pub mime_types: Vec<String>,
     /// `Terminal=true`: a console program, run inside the Tilo terminal.
     pub terminal: bool,
+    /// `Icon=`: an icon-theme name or an absolute path, resolved by
+    /// [`crate::app_icons`].
+    pub icon: Option<String>,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -133,6 +136,7 @@ impl HostApp {
             window_identities: entry.window_identities(),
             mime_types: entry.mime_types.clone(),
             terminal: entry.terminal,
+            icon: entry.icon.clone(),
         }
     }
 
@@ -566,6 +570,7 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -574,149 +579,157 @@ mod tests {
     }
 
     #[test]
-    fn a_host_launch_command_carries_no_room_and_no_capabilities() {
-        let app = app("com.spotify.Client", "Spotify", &["spotify"]);
-        let cmd = build_launch_command(
-            &app,
-            Path::new("/usr/libexec/tilo-launcher"),
-            Path::new("/run/user/1000/wayland-1"),
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(cmd.program, PathBuf::from("/usr/libexec/tilo-launcher"));
-        assert_eq!(
-            cmd.args,
-            vec![
-                "run-host",
-                "--desktop-id",
-                "com.spotify.Client",
-                "--wayland-socket",
-                "/run/user/1000/wayland-1",
-            ]
-        );
-        assert!(
-            !cmd.args.iter().any(|a| a == "--workspace-id"),
-            "a host app is in no room; naming one would be false"
-        );
-        assert!(
-            !cmd.args.iter().any(|a| a == "--capabilities"),
-            "there is no sandbox to enforce a capability against"
-        );
-    }
-
-    #[test]
-    fn a_document_rides_across_as_open() {
-        let app = app(
-            "org.gnome.TextEditor",
-            "Text Editor",
-            &["org.gnome.TextEditor"],
-        );
-        let cmd = build_launch_command(
-            &app,
-            Path::new("/usr/libexec/tilo-launcher"),
-            Path::new("/run/user/1000/wayland-1"),
-            Some(Path::new("/home/u/notes.txt")),
-            None,
-            None,
-            None,
-        );
-        assert_eq!(cmd.args[5], "--open");
-        assert_eq!(cmd.args[6], "/home/u/notes.txt");
-    }
-
-    #[test]
-    fn an_x11_bridge_rides_to_the_unconfined_launcher() {
-        let app = app("com.valvesoftware.Steam", "Steam", &["steam"]);
-        let x11 = X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
-        };
-        let cmd = build_launch_command(
-            &app,
-            Path::new("/usr/bin/tilo-launcher"),
-            Path::new("/run/user/1000/wayland-2"),
-            None,
-            Some(&x11),
-            Some("room-7".into()),
-            None,
-        );
-        assert!(
-            cmd.args
-                .windows(2)
-                .any(|pair| pair == ["--x11-display", ":1234"])
-        );
-        assert!(cmd.args.windows(2).any(|pair| {
-            pair == [
-                "--x11-authority",
-                "/run/user/1000/tilo-session/Xauthority-1234",
-            ]
-        }));
-        assert_eq!(cmd.portal_workspace_id.as_deref(), Some("room-7"));
-        assert!(
-            !cmd.env.iter().any(|(key, _)| key.contains("WORKSPACE")),
-            "portal attribution is compositor bookkeeping, not ambient authority"
-        );
-    }
-
-    /// Scan the host for installed applications.
-    #[test]
-    fn the_host_scan_returns_entries_with_usable_identities() {
-        invalidate_cache();
-        let apps = host_apps();
-        // No entries is legitimate (a minimal container); assert shape, not count.
-        for app in apps.iter().take(50) {
-            assert!(!app.desktop_id.is_empty());
-            assert!(!app.name.is_empty(), "{} has no name", app.desktop_id);
-            assert!(
-                !app.window_identities.is_empty(),
-                "{} offers nothing to correlate a window against",
-                app.desktop_id
+    fn host_launches_carry_no_room_or_capabilities_and_bridge_x11() {
+        fn a_host_launch_command_carries_no_room_and_no_capabilities() {
+            let app = app("com.spotify.Client", "Spotify", &["spotify"]);
+            let cmd = build_launch_command(
+                &app,
+                Path::new("/usr/libexec/tilo-launcher"),
+                Path::new("/run/user/1000/wayland-1"),
+                None,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(cmd.program, PathBuf::from("/usr/libexec/tilo-launcher"));
+            assert_eq!(
+                cmd.args,
+                vec![
+                    "run-host",
+                    "--desktop-id",
+                    "com.spotify.Client",
+                    "--wayland-socket",
+                    "/run/user/1000/wayland-1",
+                ]
             );
             assert!(
-                !app.window_identities.iter().any(|i| i == "flatpak"),
-                "{} would match every Flatpak window on the system",
-                app.desktop_id
+                !cmd.args.iter().any(|a| a == "--workspace-id"),
+                "a host app is in no room; naming one would be false"
+            );
+            assert!(
+                !cmd.args.iter().any(|a| a == "--capabilities"),
+                "there is no sandbox to enforce a capability against"
             );
         }
+
+        fn a_document_rides_across_as_open() {
+            let app = app(
+                "org.gnome.TextEditor",
+                "Text Editor",
+                &["org.gnome.TextEditor"],
+            );
+            let cmd = build_launch_command(
+                &app,
+                Path::new("/usr/libexec/tilo-launcher"),
+                Path::new("/run/user/1000/wayland-1"),
+                Some(Path::new("/home/u/notes.txt")),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(cmd.args[5], "--open");
+            assert_eq!(cmd.args[6], "/home/u/notes.txt");
+        }
+
+        fn an_x11_bridge_rides_to_the_unconfined_launcher() {
+            let app = app("com.valvesoftware.Steam", "Steam", &["steam"]);
+            let x11 = X11Session {
+                display: ":1234".into(),
+                authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
+            };
+            let cmd = build_launch_command(
+                &app,
+                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/run/user/1000/wayland-2"),
+                None,
+                Some(&x11),
+                Some("room-7".into()),
+                None,
+            );
+            assert!(
+                cmd.args
+                    .windows(2)
+                    .any(|pair| pair == ["--x11-display", ":1234"])
+            );
+            assert!(cmd.args.windows(2).any(|pair| {
+                pair == [
+                    "--x11-authority",
+                    "/run/user/1000/tilo-session/Xauthority-1234",
+                ]
+            }));
+            assert_eq!(cmd.portal_workspace_id.as_deref(), Some("room-7"));
+            assert!(
+                !cmd.env.iter().any(|(key, _)| key.contains("WORKSPACE")),
+                "portal attribution is compositor bookkeeping, not ambient authority"
+            );
+        }
+
+        a_host_launch_command_carries_no_room_and_no_capabilities();
+        a_document_rides_across_as_open();
+        an_x11_bridge_rides_to_the_unconfined_launcher();
     }
 
     #[test]
-    fn cross_source_aliases_are_one_app_and_keep_flatpak_confinement() {
-        let system = HostApp {
-            source_label: "System",
-            ..app("vendor-chat", "Chat", &["Chat"])
-        };
-        let flatpak = HostApp {
-            source_label: "Flatpak",
-            ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
-        };
-        let apps = deduplicate_host_apps(vec![system, flatpak.clone()]);
-        assert_eq!(apps, vec![flatpak]);
-    }
+    fn host_scan_identities_aliases_and_adoption_are_canonical() {
+        /// Scan the host for installed applications.
+        fn the_host_scan_returns_entries_with_usable_identities() {
+            invalidate_cache();
+            let apps = host_apps();
+            // No entries is legitimate (a minimal container); assert shape, not count.
+            for app in apps.iter().take(50) {
+                assert!(!app.desktop_id.is_empty());
+                assert!(!app.name.is_empty(), "{} has no name", app.desktop_id);
+                assert!(
+                    !app.window_identities.is_empty(),
+                    "{} offers nothing to correlate a window against",
+                    app.desktop_id
+                );
+                assert!(
+                    !app.window_identities.iter().any(|i| i == "flatpak"),
+                    "{} would match every Flatpak window on the system",
+                    app.desktop_id
+                );
+            }
+        }
 
-    #[test]
-    fn same_named_distinct_modes_remain_visible() {
-        let apps = deduplicate_host_apps(vec![
-            app("org.example.Editor", "Editor", &["Editor"]),
-            app("org.example.EditorSafe", "Editor", &["EditorSafe"]),
-        ]);
-        assert_eq!(apps.len(), 2);
-    }
+        fn cross_source_aliases_are_one_app_and_keep_flatpak_confinement() {
+            let system = HostApp {
+                source_label: "System",
+                ..app("vendor-chat", "Chat", &["Chat"])
+            };
+            let flatpak = HostApp {
+                source_label: "Flatpak",
+                ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
+            };
+            let apps = deduplicate_host_apps(vec![system, flatpak.clone()]);
+            assert_eq!(apps, vec![flatpak]);
+        }
 
-    #[test]
-    fn window_adoption_uses_the_canonical_alias() {
-        let system = HostApp {
-            source_label: "System",
-            ..app("vendor-chat", "Chat", &["Chat"])
-        };
-        let flatpak = HostApp {
-            source_label: "Flatpak",
-            ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
-        };
-        let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
-        assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
+        fn same_named_distinct_modes_remain_visible() {
+            let apps = deduplicate_host_apps(vec![
+                app("org.example.Editor", "Editor", &["Editor"]),
+                app("org.example.EditorSafe", "Editor", &["EditorSafe"]),
+            ]);
+            assert_eq!(apps.len(), 2);
+        }
+
+        fn window_adoption_uses_the_canonical_alias() {
+            let system = HostApp {
+                source_label: "System",
+                ..app("vendor-chat", "Chat", &["Chat"])
+            };
+            let flatpak = HostApp {
+                source_label: "Flatpak",
+                ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
+            };
+            let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
+            assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
+        }
+
+        the_host_scan_returns_entries_with_usable_identities();
+        cross_source_aliases_are_one_app_and_keep_flatpak_confinement();
+        same_named_distinct_modes_remain_visible();
+        window_adoption_uses_the_canonical_alias();
     }
 
     #[test]

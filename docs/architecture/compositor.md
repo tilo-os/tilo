@@ -258,8 +258,8 @@ participate in topology, input routing, hotplug, VT resume and presentation.
 The cursor is confined to the union of live output rectangles rather than the
 combined bounding box, which keeps L-shaped and vertically offset layouts from
 creating invisible dead regions. Tilo deliberately does not implement
-multi-workspace-per-output or workspace pinning: displays are private viewports
-onto one collaborative workspace plane (see
+multi-workspace-per-output or workspace pinning: every display shows the same
+workspace, and each holds its own window groups, partitioned per device (see
 [`displays-and-infinite-workspaces.md`](displays-and-infinite-workspaces.md)).
 
 ## Sessions and seat acquisition (DRM mode)

@@ -387,51 +387,55 @@ mod tests {
         )
     }
 
+    /// Keyboard choices are safe and reset on reopen, and Tab and Shift-Tab reach every choice.
     #[test]
-    fn unsaved_prompt_keyboard_choices_are_safe_and_reset_on_reopen() {
-        let mut dialog = UnsavedChanges::default();
-        assert!(!dialog.is_open());
-        assert_eq!(press(&mut dialog, NamedKey::Enter), None);
-        dialog.open();
-        assert!(dialog.is_open());
-        assert_eq!(
-            press(&mut dialog, NamedKey::Enter),
-            Some(UnsavedChoice::Save)
-        );
-        assert!(!dialog.is_open());
-        dialog.open();
-        assert_eq!(
-            press(&mut dialog, NamedKey::Escape),
-            Some(UnsavedChoice::Cancel)
-        );
-        dialog.open();
-        press(&mut dialog, NamedKey::ArrowLeft);
-        assert_eq!(
-            press(&mut dialog, NamedKey::Space),
-            Some(UnsavedChoice::Discard)
-        );
-        dialog.open();
-        assert_eq!(
-            press(&mut dialog, NamedKey::Enter),
-            Some(UnsavedChoice::Save)
-        );
-    }
+    fn the_unsaved_prompt_keyboard_reaches_every_safe_choice() {
+        // Phase: unsaved_prompt_keyboard_choices_are_safe_and_reset_on_reopen.
+        {
+            let mut dialog = UnsavedChanges::default();
+            assert!(!dialog.is_open());
+            assert_eq!(press(&mut dialog, NamedKey::Enter), None);
+            dialog.open();
+            assert!(dialog.is_open());
+            assert_eq!(
+                press(&mut dialog, NamedKey::Enter),
+                Some(UnsavedChoice::Save)
+            );
+            assert!(!dialog.is_open());
+            dialog.open();
+            assert_eq!(
+                press(&mut dialog, NamedKey::Escape),
+                Some(UnsavedChoice::Cancel)
+            );
+            dialog.open();
+            press(&mut dialog, NamedKey::ArrowLeft);
+            assert_eq!(
+                press(&mut dialog, NamedKey::Space),
+                Some(UnsavedChoice::Discard)
+            );
+            dialog.open();
+            assert_eq!(
+                press(&mut dialog, NamedKey::Enter),
+                Some(UnsavedChoice::Save)
+            );
+        }
 
-    #[test]
-    fn unsaved_prompt_tab_and_shift_tab_reach_every_choice() {
-        let mut dialog = UnsavedChanges::default();
-        dialog.open();
-        press(&mut dialog, NamedKey::Tab);
-        assert_eq!(
-            press(&mut dialog, NamedKey::Enter),
-            Some(UnsavedChoice::Cancel)
-        );
-        dialog.open();
-        dialog.handle_event(&key(NamedKey::Tab), 1.0, ModifiersState::SHIFT.into());
-        assert_eq!(
-            press(&mut dialog, NamedKey::Enter),
-            Some(UnsavedChoice::Discard)
-        );
+        // Phase: unsaved_prompt_tab_and_shift_tab_reach_every_choice.
+        {
+            let mut dialog = UnsavedChanges::default();
+            dialog.open();
+            press(&mut dialog, NamedKey::Tab);
+            assert_eq!(
+                press(&mut dialog, NamedKey::Enter),
+                Some(UnsavedChoice::Cancel)
+            );
+            dialog.open();
+            dialog.handle_event(&key(NamedKey::Tab), 1.0, ModifiersState::SHIFT.into());
+            assert_eq!(
+                press(&mut dialog, NamedKey::Enter),
+                Some(UnsavedChoice::Discard)
+            );
+        }
     }
 
     #[test]

@@ -409,159 +409,162 @@ mod tests {
     }
 
     #[test]
-    fn named_session_rejects_wrong_person_and_device() {
-        let fixture = Fixture::new();
-        let stranger = Ed25519PublicKey::from_bytes([99; 32]);
-        let token = fixture.named_token(stranger, FilePermission::View);
-        fixture.register(&token);
-        assert!(matches!(
-            fixture.open_named(token),
-            Err(ShareSessionError::Authority(
-                ShareAuthorityError::WrongRecipient
-            ))
-        ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn share_sessions_bind_subject_scope_and_keep_live_checks() {
+        // Phase `named_session_rejects_wrong_person_and_device`.
+        {
+            let fixture = Fixture::new();
+            let stranger = Ed25519PublicKey::from_bytes([99; 32]);
+            let token = fixture.named_token(stranger, FilePermission::View);
+            fixture.register(&token);
+            assert!(matches!(
+                fixture.open_named(token),
+                Err(ShareSessionError::Authority(
+                    ShareAuthorityError::WrongRecipient
+                ))
+            ));
 
-        let token = fixture.named_token(
-            Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
-            FilePermission::View,
-        );
-        fixture.register(&token);
-        let mut peer = fixture.peer.clone();
-        peer.device_public_key = [44; 32];
-        assert!(matches!(
-            ShareSession::open_named_with_clock(
-                fixture.workspace,
-                peer,
-                token,
-                fixture.authority.clone(),
-                fixture.live.clone(),
-                fixture.clock,
-            ),
-            Err(ShareSessionError::PeerIdentityMismatch)
-        ));
-    }
+            let token = fixture.named_token(
+                Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
+                FilePermission::View,
+            );
+            fixture.register(&token);
+            let mut peer = fixture.peer.clone();
+            peer.device_public_key = [44; 32];
+            assert!(matches!(
+                ShareSession::open_named_with_clock(
+                    fixture.workspace,
+                    peer,
+                    token,
+                    fixture.authority.clone(),
+                    fixture.live.clone(),
+                    fixture.clock,
+                ),
+                Err(ShareSessionError::PeerIdentityMismatch)
+            ));
+        }
+        // Phase `view_cannot_write_and_record_scope_is_exact`.
+        {
+            let fixture = Fixture::new();
+            let token = fixture.named_token(
+                Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
+                FilePermission::View,
+            );
+            fixture.register(&token);
+            let session = fixture.open_named(token).unwrap();
+            let actor = session.actor();
+            assert!(
+                session
+                    .authorize(&actor, fixture.record, RecordAction::Read)
+                    .is_ok()
+            );
+            assert!(matches!(
+                session.authorize(&actor, fixture.record, RecordAction::Write),
+                Err(ShareSessionError::Authority(
+                    ShareAuthorityError::InsufficientPermission
+                ))
+            ));
+            assert!(matches!(
+                session.authorize(&actor, FileRecordId::new(), RecordAction::Read),
+                Err(ShareSessionError::WrongRecord)
+            ));
+        }
+        // Phase `grant_and_device_revocation_take_effect_after_session_creation`.
+        {
+            let fixture = Fixture::new();
+            let token = fixture.named_token(
+                Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
+                FilePermission::Edit,
+            );
+            fixture.register(&token);
+            let session = fixture.open_named(token.clone()).unwrap();
+            let actor = session.actor();
+            fixture.authority.revoke(token.id).unwrap();
+            assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
 
-    #[test]
-    fn view_cannot_write_and_record_scope_is_exact() {
-        let fixture = Fixture::new();
-        let token = fixture.named_token(
-            Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
-            FilePermission::View,
-        );
-        fixture.register(&token);
-        let session = fixture.open_named(token).unwrap();
-        let actor = session.actor();
-        assert!(
-            session
-                .authorize(&actor, fixture.record, RecordAction::Read)
-                .is_ok()
-        );
-        assert!(matches!(
-            session.authorize(&actor, fixture.record, RecordAction::Write),
-            Err(ShareSessionError::Authority(
-                ShareAuthorityError::InsufficientPermission
-            ))
-        ));
-        assert!(matches!(
-            session.authorize(&actor, FileRecordId::new(), RecordAction::Read),
-            Err(ShareSessionError::WrongRecord)
-        ));
-    }
-
-    #[test]
-    fn grant_and_device_revocation_take_effect_after_session_creation() {
-        let fixture = Fixture::new();
-        let token = fixture.named_token(
-            Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
-            FilePermission::Edit,
-        );
-        fixture.register(&token);
-        let session = fixture.open_named(token.clone()).unwrap();
-        let actor = session.actor();
-        fixture.authority.revoke(token.id).unwrap();
-        assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
-
-        let fixture = Fixture::new();
-        let token = fixture.named_token(
-            Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
-            FilePermission::Edit,
-        );
-        fixture.register(&token);
-        let session = fixture.open_named(token).unwrap();
-        let actor = session.actor();
-        fixture.live.0.store(false, Ordering::SeqCst);
-        assert!(!session.actor_is_certified(&actor));
-        assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
-    }
-
-    #[test]
-    fn expiry_is_rechecked_after_session_creation() {
-        let fixture = Fixture::new();
-        let token = fixture.named_token(
-            Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
-            FilePermission::View,
-        );
-        fixture.register(&token);
-        let session = fixture.open_named(token).unwrap();
-        let actor = session.actor();
-        fixture.clock.set(5_000);
-        assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
-    }
-
-    #[test]
-    fn bearer_one_use_allows_same_actor_reconnect_and_keeps_live_checks() {
-        let fixture = Fixture::new();
-        let mut rng = UnwrapErr(SysRng);
-        let invite = mint_bearer_file_invite(
-            FileInviteSpec {
-                workspace_id: fixture.workspace,
-                record_id: fixture.record,
-                subject: FileInviteSubject::Bearer {
-                    secret_hash: [0; 32],
+            let fixture = Fixture::new();
+            let token = fixture.named_token(
+                Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
+                FilePermission::Edit,
+            );
+            fixture.register(&token);
+            let session = fixture.open_named(token).unwrap();
+            let actor = session.actor();
+            fixture.live.0.store(false, Ordering::SeqCst);
+            assert!(!session.actor_is_certified(&actor));
+            assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
+        }
+        // Phase `expiry_is_rechecked_after_session_creation`.
+        {
+            let fixture = Fixture::new();
+            let token = fixture.named_token(
+                Ed25519PublicKey::from_bytes(fixture.person.verifying_key().to_bytes()),
+                FilePermission::View,
+            );
+            fixture.register(&token);
+            let session = fixture.open_named(token).unwrap();
+            let actor = session.actor();
+            fixture.clock.set(5_000);
+            assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
+        }
+        // Phase `bearer_one_use_allows_same_actor_reconnect_and_keeps_live_checks`.
+        {
+            let fixture = Fixture::new();
+            let mut rng = UnwrapErr(SysRng);
+            let invite = mint_bearer_file_invite(
+                FileInviteSpec {
+                    workspace_id: fixture.workspace,
+                    record_id: fixture.record,
+                    subject: FileInviteSubject::Bearer {
+                        secret_hash: [0; 32],
+                    },
+                    permission: FilePermission::View,
+                    expires_at_ms: Some(5_000),
+                    max_redemptions: Some(1),
                 },
-                permission: FilePermission::View,
-                expires_at_ms: Some(5_000),
-                max_redemptions: Some(1),
-            },
-            &fixture.issuer,
-            &mut rng,
-        )
-        .unwrap();
-        fixture.register(&invite.token);
-        fixture.live.0.store(false, Ordering::SeqCst);
-        assert!(matches!(
-            ShareSession::open_bearer_with_clock(
+                &fixture.issuer,
+                &mut rng,
+            )
+            .unwrap();
+            fixture.register(&invite.token);
+            fixture.live.0.store(false, Ordering::SeqCst);
+            assert!(matches!(
+                ShareSession::open_bearer_with_clock(
+                    fixture.workspace,
+                    fixture.peer.clone(),
+                    invite.clone(),
+                    fixture.authority.clone(),
+                    fixture.live.clone(),
+                    fixture.clock.clone(),
+                ),
+                Err(ShareSessionError::UncertifiedActor)
+            ));
+            fixture.live.0.store(true, Ordering::SeqCst);
+            let session = ShareSession::open_bearer_with_clock(
                 fixture.workspace,
                 fixture.peer.clone(),
                 invite.clone(),
                 fixture.authority.clone(),
                 fixture.live.clone(),
                 fixture.clock.clone(),
-            ),
-            Err(ShareSessionError::UncertifiedActor)
-        ));
-        fixture.live.0.store(true, Ordering::SeqCst);
-        let session = ShareSession::open_bearer_with_clock(
-            fixture.workspace,
-            fixture.peer.clone(),
-            invite.clone(),
-            fixture.authority.clone(),
-            fixture.live.clone(),
-            fixture.clock.clone(),
-        )
-        .unwrap();
-        ShareSession::open_bearer_with_clock(
-            fixture.workspace,
-            fixture.peer.clone(),
-            invite,
-            fixture.authority.clone(),
-            fixture.live.clone(),
-            fixture.clock.clone(),
-        )
-        .expect("the same certified actor can reconnect without another redemption");
-        let actor = session.actor();
-        assert!(session.allows(&actor, fixture.record, RecordAction::Read));
-        fixture.authority.revoke(session.token.id).unwrap();
-        assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
+            )
+            .unwrap();
+            ShareSession::open_bearer_with_clock(
+                fixture.workspace,
+                fixture.peer.clone(),
+                invite,
+                fixture.authority.clone(),
+                fixture.live.clone(),
+                fixture.clock.clone(),
+            )
+            .expect("the same certified actor can reconnect without another redemption");
+            let actor = session.actor();
+            assert!(session.allows(&actor, fixture.record, RecordAction::Read));
+            fixture.authority.revoke(session.token.id).unwrap();
+            assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
+        }
     }
 }

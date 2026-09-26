@@ -196,23 +196,22 @@ pub struct AvatarBytes(#[serde(with = "serde_bytes")] pub Vec<u8>);
 mod tests {
     use super::*;
 
+    /// Attestation ids are unique, clearances order by level, and claims
+    /// round-trip canonically.
     #[test]
-    fn attestation_id_is_unique() {
+    fn identity_types_are_unique_ordered_and_round_trip() {
+        // Case: attestation ids are unique.
         let a = AttestationId::new();
         let b = AttestationId::new();
         assert_ne!(a, b);
-    }
 
-    #[test]
-    fn clearance_ordering() {
+        // Case: clearance ordering.
         assert!(Clearance::PUBLIC < Clearance::RESTRICTED);
         assert!(Clearance::INTERNAL < Clearance::CONFIDENTIAL);
         assert_eq!(Clearance::PUBLIC, Clearance(0));
         assert_eq!(Clearance::RESTRICTED, Clearance(3));
-    }
 
-    #[test]
-    fn claim_round_trip() {
+        // Case: claim round trip.
         let c = Claim::EmployeeOf("ACME".into());
         let bytes = canonical_bytes(&c).unwrap();
         let back: Claim = crate::canonical::from_canonical_bytes(&bytes).unwrap();

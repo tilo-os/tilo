@@ -70,25 +70,29 @@ mod tests {
     use crate::widget::{Button, Text, Widget};
 
     #[test]
-    fn layouts_accept_heterogeneous_children_and_remain_concrete() {
-        let column =
-            crate::column![Text::new("Title"), Button::new("save", "Save", None)].with_gap(7.0);
-        let row = crate::row![Text::new("A"), Text::new("B")].no_wrap();
-        let stack = crate::stack![Text::new("Back"), Text::new("Front")];
+    fn layouts_accept_heterogeneous_or_no_children() {
+        fn layouts_accept_heterogeneous_children_and_remain_concrete() {
+            let column =
+                crate::column![Text::new("Title"), Button::new("save", "Save", None)].with_gap(7.0);
+            let row = crate::row![Text::new("A"), Text::new("B")].no_wrap();
+            let stack = crate::stack![Text::new("Back"), Text::new("Front")];
 
-        assert_eq!(Widget::children(&column).len(), 2);
-        assert_eq!(Widget::children(&row).len(), 2);
-        assert_eq!(Widget::children(&stack).len(), 2);
-    }
+            assert_eq!(Widget::children(&column).len(), 2);
+            assert_eq!(Widget::children(&row).len(), 2);
+            assert_eq!(Widget::children(&stack).len(), 2);
+        }
 
-    #[test]
-    fn empty_layouts_are_valid() {
-        let column = crate::column![];
-        let row = crate::row![];
-        let stack = crate::stack![];
+        fn empty_layouts_are_valid() {
+            let column = crate::column![];
+            let row = crate::row![];
+            let stack = crate::stack![];
 
-        assert!(Widget::children(&column).is_empty());
-        assert!(Widget::children(&row).is_empty());
-        assert!(Widget::children(&stack).is_empty());
+            assert!(Widget::children(&column).is_empty());
+            assert!(Widget::children(&row).is_empty());
+            assert!(Widget::children(&stack).is_empty());
+        }
+
+        layouts_accept_heterogeneous_children_and_remain_concrete();
+        empty_layouts_are_valid();
     }
 }

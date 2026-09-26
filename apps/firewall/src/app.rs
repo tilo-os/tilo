@@ -4202,230 +4202,298 @@ mod tests {
         a
     }
 
+    /// Live, unavailable, failed-recovery and demo builds write only honest state to the document and announce backend status.
     #[test]
-    fn live_new_does_not_fabricate_sample_config() {
-        // The honesty guard: the live constructor must never seed the demo
-        // sample. On a host without firewalld it is empty + unavailable; on
-        // one with firewalld it reflects the real host — either way it is
-        // not the fabricated sample ruleset.
-        let live = FirewallApp::new();
-        assert_ne!(
-            live.config,
-            crate::sample::sample_config(),
-            "live app must not start on the fabricated sample firewall"
-        );
-    }
+    fn backend_availability_governs_what_is_written_and_announced() {
+        // --- phase: live_new_does_not_fabricate_sample_config ---
+        {
+            // The honesty guard: the live constructor must never seed the demo
+            // sample. On a host without firewalld it is empty + unavailable; on
+            // one with firewalld it reflects the real host — either way it is
+            // not the fabricated sample ruleset.
+            let live = FirewallApp::new();
+            assert_ne!(
+                live.config,
+                crate::sample::sample_config(),
+                "live app must not start on the fabricated sample firewall"
+            );
+        }
 
-    #[test]
-    fn root_accessibility_announces_backend_status() {
-        let mut app = app_with_rect();
-        app.status = "Rules applied".into();
-        let node = app.accessibility().expect("firewall exports a window");
-        assert_eq!(node.role, Role::Window);
-        assert!(
-            node.children
-                .iter()
-                .any(|child| child.name.as_deref() == Some("Rules applied"))
-        );
-    }
+        // --- phase: unavailable_firewall_writes_nothing_to_doc ---
+        {
+            // With no readable firewall the config is empty and `sync` must not
+            // publish a fabricated ruleset into the shared document.
+            let mut a = FirewallApp::from_parts(FirewallConfig::empty(), false);
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(!a.available);
+            assert!(a.config.zones.is_empty());
+            assert!(
+                FirewallDoc::load(&doc).is_none(),
+                "the unavailable state must leave the document empty, not seed a config"
+            );
+        }
 
-    #[test]
-    fn zone_list_uses_shared_semantics_and_is_reader_operable() {
-        let mut app = app_with_rect();
-        let node = app.accessibility().expect("firewall semantics");
-        let zones = node
-            .children
-            .iter()
-            .find(|child| child.name.as_deref() == Some("Firewall zones"))
-            .expect("zone list");
-        assert_eq!(zones.role, Role::List);
-        assert_eq!(zones.children.len(), ZoneKind::ALL.len());
-        assert!(zones.children.iter().all(|zone| {
-            zone.role == Role::ListItem
-                && zone.bounds.is_some()
-                && zone.pos_in_set.is_some()
-                && zone.set_size == Some(ZoneKind::ALL.len())
-                && zone.action_target.is_some()
-        }));
-
-        let mut doc = AutoCommit::new();
-        assert!(app.perform_semantic_action(
-            "firewall.zone:home",
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.selected_zone, ZoneKind::Home);
-    }
-
-    #[test]
-    fn rules_table_uses_shared_semantics_and_rows_select_through_a11y() {
-        let mut app = app_with_rect();
-        let node = app.accessibility().expect("firewall semantics");
-        let table = node
-            .children
-            .iter()
-            .find(|child| child.role == Role::Table)
-            .expect("rules table");
-        assert_eq!(table.children[0].name.as_deref(), Some("Column headers"));
-        assert_eq!(table.children[0].children.len(), 5);
-        let row = &table.children[1];
-        assert_eq!(row.children[0].name.as_deref(), Some("Target"));
-        assert!(row.children[0].value.is_some());
-        let toggle = row
-            .children
-            .iter()
-            .find(|child| child.role == Role::ToggleButton)
-            .expect("rule toggle semantics");
-        assert_eq!(toggle.state.checked, Some(true));
-        let toggle_target = toggle.action_target.clone().expect("toggle action target");
-        let delete_target = row
-            .children
-            .iter()
-            .find(|child| child.role == Role::Button)
-            .and_then(|child| child.action_target.clone())
-            .expect("delete action target");
-        let target = row.action_target.clone().expect("selectable rule row");
-        let id = target
-            .strip_prefix("firewall.rule.select:")
-            .and_then(|id| RuleId::parse_str(id).ok())
-            .expect("rule id target");
-
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.perform_semantic_action(
-            &target,
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.selected_rule, Some(id));
-        let was_enabled = app
-            .selected_zone_ref()
-            .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
-            .is_some_and(|rule| rule.enabled);
-        assert!(app.perform_semantic_action(
-            &toggle_target,
-            &A11yAction::ToggleCheck,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_ne!(
-            app.selected_zone_ref()
-                .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
-                .is_some_and(|rule| rule.enabled),
-            was_enabled
-        );
-        let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
-        assert!(app.perform_semantic_action(
-            &delete_target,
-            &A11yAction::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.pending_delete, Some(id));
-        assert_eq!(
-            app.selected_zone_ref().map_or(0, |zone| zone.rules.len()),
-            before
-        );
-    }
-
-    #[test]
-    fn unavailable_firewall_writes_nothing_to_doc() {
-        // With no readable firewall the config is empty and `sync` must not
-        // publish a fabricated ruleset into the shared document.
-        let mut a = FirewallApp::from_parts(FirewallConfig::empty(), false);
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        assert!(!a.available);
-        assert!(a.config.zones.is_empty());
-        assert!(
-            FirewallDoc::load(&doc).is_none(),
-            "the unavailable state must leave the document empty, not seed a config"
-        );
-    }
-
-    #[test]
-    fn failed_recovery_keeps_rules_unwritten_and_exports_retry_semantics() {
-        let mut app = FirewallApp::from_parts(FirewallConfig::empty(), false);
-        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-        app.relayout();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-
-        let semantics = app.accessibility().expect("recovery semantics");
-        assert!(semantics.children.iter().any(|child| {
-            child.action_target.as_deref() == Some("firewall.retry")
-                && child.name.as_deref() == Some("Retry connection to firewalld")
-        }));
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources[0].kind, "firewall.recovery");
-        assert!(
-            resources[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "retry")
-        );
-
-        app.recover_from_probe(None, &mut doc);
-        assert!(!app.available);
-        assert!(FirewallDoc::load(&doc).is_none());
-        assert!(app.status.contains("Still unable to reach firewalld"));
-    }
-
-    #[test]
-    fn demo_build_publishes_sample_for_shots() {
-        // The `--shots` build still populates so the screenshot is real.
-        let mut a = FirewallApp::new_demo();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let stored = FirewallDoc::load(&doc).expect("demo build seeds the document");
-        // The demo build publishes the populated sample (so the --shots
-        // screenshot is real) — distinct from the live app, which publishes
-        // nothing. Assert on the sample's zone set (robust to store→load field
-        // normalisation like empty→"0" ports that can break exact equality).
-        let sample = crate::sample::sample_config();
-        assert!(
-            !stored.zones.is_empty(),
-            "demo publishes a populated firewall"
-        );
-        assert_eq!(
-            stored.zones.len(),
-            sample.zones.len(),
-            "demo publishes every sample zone"
-        );
-    }
-
-    #[test]
-    fn relayout_produces_all_nine_zone_rows() {
-        let a = app_with_rect();
-        assert_eq!(a.layout.zone_rows.len(), 9);
-    }
-
-    /// The header captions and the rows read one `RuleColumns`; this pins the
-    /// two places that can still drift: the `ON` caption over the toggles the
-    /// layout actually built, and the target caption starting at the text
-    /// column rather than under the status dot.
-    #[test]
-    fn table_header_columns_follow_the_built_rows() {
-        for width in [1200.0, 480.0] {
-            let mut app = FirewallApp::new_demo();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+        // --- phase: failed_recovery_keeps_rules_unwritten_and_exports_retry_semantics ---
+        {
+            let mut app = FirewallApp::from_parts(FirewallConfig::empty(), false);
+            app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
             app.relayout();
-            let l = &app.layout;
-            let cols = rule_columns(l.table);
-            let first = l.rule_rows.first().expect("demo zone has rules");
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+
+            let semantics = app.accessibility().expect("recovery semantics");
+            assert!(semantics.children.iter().any(|child| {
+                child.action_target.as_deref() == Some("firewall.retry")
+                    && child.name.as_deref() == Some("Retry connection to firewalld")
+            }));
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources[0].kind, "firewall.recovery");
             assert!(
-                (cols.ctrl - first.toggle.x0).abs() < 1e-6,
-                "ON caption must start over the row toggles at width {width}"
+                resources[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "retry")
             );
+
+            app.recover_from_probe(None, &mut doc);
+            assert!(!app.available);
+            assert!(FirewallDoc::load(&doc).is_none());
+            assert!(app.status.contains("Still unable to reach firewalld"));
+        }
+
+        // --- phase: demo_build_publishes_sample_for_shots ---
+        {
+            // The `--shots` build still populates so the screenshot is real.
+            let mut a = FirewallApp::new_demo();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let stored = FirewallDoc::load(&doc).expect("demo build seeds the document");
+            // The demo build publishes the populated sample (so the --shots
+            // screenshot is real) — distinct from the live app, which publishes
+            // nothing. Assert on the sample's zone set (robust to store→load field
+            // normalisation like empty→"0" ports that can break exact equality).
+            let sample = crate::sample::sample_config();
             assert!(
-                cols.text > cols.dot,
-                "target caption sits after the status dot, over the row text"
+                !stored.zones.is_empty(),
+                "demo publishes a populated firewall"
             );
+            assert_eq!(
+                stored.zones.len(),
+                sample.zones.len(),
+                "demo publishes every sample zone"
+            );
+        }
+
+        // --- phase: root_accessibility_announces_backend_status ---
+        {
+            let mut app = app_with_rect();
+            app.status = "Rules applied".into();
+            let node = app.accessibility().expect("firewall exports a window");
+            assert_eq!(node.role, Role::Window);
             assert!(
-                first.rect.x0 <= cols.dot && cols.text < cols.proto,
-                "columns stay inside the row at width {width}"
+                node.children
+                    .iter()
+                    .any(|child| child.name.as_deref() == Some("Rules applied"))
+            );
+        }
+    }
+
+    /// The zone list and rules table use shared semantics and are operable through accessibility.
+    #[test]
+    fn zone_list_and_rules_table_are_reader_operable() {
+        // --- phase: zone_list_uses_shared_semantics_and_is_reader_operable ---
+        {
+            let mut app = app_with_rect();
+            let node = app.accessibility().expect("firewall semantics");
+            let zones = node
+                .children
+                .iter()
+                .find(|child| child.name.as_deref() == Some("Firewall zones"))
+                .expect("zone list");
+            assert_eq!(zones.role, Role::List);
+            assert_eq!(zones.children.len(), ZoneKind::ALL.len());
+            assert!(zones.children.iter().all(|zone| {
+                zone.role == Role::ListItem
+                    && zone.bounds.is_some()
+                    && zone.pos_in_set.is_some()
+                    && zone.set_size == Some(ZoneKind::ALL.len())
+                    && zone.action_target.is_some()
+            }));
+
+            let mut doc = AutoCommit::new();
+            assert!(app.perform_semantic_action(
+                "firewall.zone:home",
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.selected_zone, ZoneKind::Home);
+        }
+
+        // --- phase: rules_table_uses_shared_semantics_and_rows_select_through_a11y ---
+        {
+            let mut app = app_with_rect();
+            let node = app.accessibility().expect("firewall semantics");
+            let table = node
+                .children
+                .iter()
+                .find(|child| child.role == Role::Table)
+                .expect("rules table");
+            assert_eq!(table.children[0].name.as_deref(), Some("Column headers"));
+            assert_eq!(table.children[0].children.len(), 5);
+            let row = &table.children[1];
+            assert_eq!(row.children[0].name.as_deref(), Some("Target"));
+            assert!(row.children[0].value.is_some());
+            let toggle = row
+                .children
+                .iter()
+                .find(|child| child.role == Role::ToggleButton)
+                .expect("rule toggle semantics");
+            assert_eq!(toggle.state.checked, Some(true));
+            let toggle_target = toggle.action_target.clone().expect("toggle action target");
+            let delete_target = row
+                .children
+                .iter()
+                .find(|child| child.role == Role::Button)
+                .and_then(|child| child.action_target.clone())
+                .expect("delete action target");
+            let target = row.action_target.clone().expect("selectable rule row");
+            let id = target
+                .strip_prefix("firewall.rule.select:")
+                .and_then(|id| RuleId::parse_str(id).ok())
+                .expect("rule id target");
+
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.perform_semantic_action(
+                &target,
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.selected_rule, Some(id));
+            let was_enabled = app
+                .selected_zone_ref()
+                .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+                .is_some_and(|rule| rule.enabled);
+            assert!(app.perform_semantic_action(
+                &toggle_target,
+                &A11yAction::ToggleCheck,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_ne!(
+                app.selected_zone_ref()
+                    .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+                    .is_some_and(|rule| rule.enabled),
+                was_enabled
+            );
+            let before = app.selected_zone_ref().map_or(0, |zone| zone.rules.len());
+            assert!(app.perform_semantic_action(
+                &delete_target,
+                &A11yAction::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.pending_delete, Some(id));
+            assert_eq!(
+                app.selected_zone_ref().map_or(0, |zone| zone.rules.len()),
+                before
+            );
+        }
+    }
+
+    /// Relayout builds every zone row, header columns and service hit rects follow the built rows, and selected rows register on the raised card.
+    #[test]
+    fn table_geometry_follows_the_built_rows() {
+        // --- phase: relayout_produces_all_nine_zone_rows ---
+        {
+            let a = app_with_rect();
+            assert_eq!(a.layout.zone_rows.len(), 9);
+        }
+
+        // --- phase: table_header_columns_follow_the_built_rows ---
+        // The header captions and the rows read one `RuleColumns`; this pins the
+        // two places that can still drift: the `ON` caption over the toggles the
+        // layout actually built, and the target caption starting at the text
+        // column rather than under the status dot.
+        {
+            for width in [1200.0, 480.0] {
+                let mut app = FirewallApp::new_demo();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.relayout();
+                let l = &app.layout;
+                let cols = rule_columns(l.table);
+                let first = l.rule_rows.first().expect("demo zone has rules");
+                assert!(
+                    (cols.ctrl - first.toggle.x0).abs() < 1e-6,
+                    "ON caption must start over the row toggles at width {width}"
+                );
+                assert!(
+                    cols.text > cols.dot,
+                    "target caption sits after the status dot, over the row text"
+                );
+                assert!(
+                    first.rect.x0 <= cols.dot && cols.text < cols.proto,
+                    "columns stay inside the row at width {width}"
+                );
+            }
+        }
+
+        // --- phase: service_selector_hit_rects_are_contiguous ---
+        // The service stepper's three controls hit-test as one contiguous strip
+        // — no dead zone between `<`, the value and `>` — while the painted
+        // value well is inset a token step from each stepper so the controls
+        // never touch (HIG §7). Wide and stacked layouts alike.
+        {
+            for width in [1280.0, 800.0] {
+                let (mut app, _) = measured_app(width, 1.0);
+                app.form.is_service = true;
+                app.relayout();
+                let l = &app.layout;
+                assert!(
+                    (l.service_prev.x1 - l.service_sel.x0).abs() < 1e-6,
+                    "no dead zone after `<` at {width}px"
+                );
+                assert!(
+                    (l.service_sel.x1 - l.service_next.x0).abs() < 1e-6,
+                    "no dead zone before `>` at {width}px"
+                );
+                assert!(
+                    l.service_sel.width() > 2.0 * S1 + 60.0,
+                    "the inset value well still has room for a service name at {width}px"
+                );
+            }
+        }
+
+        // --- phase: selected_rows_register_on_the_raised_card_on_every_preset ---
+        // A selected rule row sits on the raised table card. `selection_tier`'s
+        // lift ends at `raised` — the card's own colour on the light preset —
+        // so the row takes a wash measured against the card instead, and that
+        // wash registers on every preset (HIG §9.5's Δ-luminance bar) with the
+        // ring as the stronger step.
+        {
+            use ui::surface::edge_delta;
+            use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let raised = theme.tokens.colors.surfaces.raised;
+                let (fill, edge) = selected_on(raised);
+                assert!(
+                    edge_delta(fill, raised) >= HAIRLINE_MIN_DELTA,
+                    "the selected fill registers on the card"
+                );
+                assert!(
+                    edge_delta(edge, raised) >= edge_delta(fill, raised),
+                    "the ring is at least as strong a step as the fill"
+                );
+            }
+            // The case the wash exists for: on the light preset the tier's lift
+            // is the card itself, so it would not register at all.
+            let light = Theme::light();
+            let tier = selection_tier(&light, SelectionState::active(true));
+            assert!(
+                edge_delta(tier.fill, light.tokens.colors.surfaces.raised) < HAIRLINE_MIN_DELTA
             );
         }
     }
@@ -4445,430 +4513,428 @@ mod tests {
         (app, tr)
     }
 
-    /// The service stepper's three controls hit-test as one contiguous strip
-    /// — no dead zone between `<`, the value and `>` — while the painted
-    /// value well is inset a token step from each stepper so the controls
-    /// never touch (HIG §7). Wide and stacked layouts alike.
+    /// Summary cards, bands, breakpoints and the compact services route follow the text scale.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn service_selector_hit_rects_are_contiguous() {
-        for width in [1280.0, 800.0] {
-            let (mut app, _) = measured_app(width, 1.0);
-            app.form.is_service = true;
-            app.relayout();
-            let l = &app.layout;
+    fn layout_grows_with_the_text_scale() {
+        // --- phase: summary_card_height_follows_the_wrapped_chip_rows ---
+        // The summary card is as tall as its chip rows need: one row at desktop
+        // width keeps the 134px floor, and the phone width — where the five chips
+        // wrap onto two rows — grows by exactly one chip row instead of reserving
+        // the old fixed 188px band (which left ~60px blank under the chips).
+        {
+            let (wide, _) = measured_app(1280.0, 1.0);
+            let chips = &wide.layout.stat_chips;
+            assert_eq!(chips.len(), 5, "public zone has five stat chips");
             assert!(
-                (l.service_prev.x1 - l.service_sel.x0).abs() < 1e-6,
-                "no dead zone after `<` at {width}px"
+                chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6),
+                "desktop width keeps every chip on one row"
             );
+            assert!((wide.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
             assert!(
-                (l.service_sel.x1 - l.service_next.x0).abs() < 1e-6,
-                "no dead zone before `>` at {width}px"
+                chips
+                    .iter()
+                    .all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
+                "chips stay inside the card"
             );
+
+            // 480px: the five chips still fit one row, so the card keeps the
+            // one-row height instead of the fixed 188px narrow band that
+            // reserved a wrap which never happened.
+            let (narrow, _) = measured_app(480.0, 1.0);
+            let chips = &narrow.layout.stat_chips;
+            assert!(chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6));
+            assert!((narrow.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
+
+            // 360px: they wrap, and the card grows by exactly the rows it needs.
+            let (phone, _) = measured_app(360.0, 1.0);
+            let chips = &phone.layout.stat_chips;
             assert!(
-                l.service_sel.width() > 2.0 * S1 + 60.0,
-                "the inset value well still has room for a service name at {width}px"
+                chips.iter().any(|c| (c.y0 - chips[0].y0).abs() > 1e-6),
+                "five chips wrap onto a second row at 360px"
             );
-        }
-    }
-
-    /// A selected rule row sits on the raised table card. `selection_tier`'s
-    /// lift ends at `raised` — the card's own colour on the light preset —
-    /// so the row takes a wash measured against the card instead, and that
-    /// wash registers on every preset (HIG §9.5's Δ-luminance bar) with the
-    /// ring as the stronger step.
-    #[test]
-    fn selected_rows_register_on_the_raised_card_on_every_preset() {
-        use ui::surface::edge_delta;
-        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let raised = theme.tokens.colors.surfaces.raised;
-            let (fill, edge) = selected_on(raised);
+            let last = chips.last().unwrap();
             assert!(
-                edge_delta(fill, raised) >= HAIRLINE_MIN_DELTA,
-                "the selected fill registers on the card"
+                (phone.layout.summary.y1 - last.y1 - PAD).abs() < 1e-6,
+                "the card ends one padding below the last chip row, not ~60px later"
             );
+            assert!(phone.layout.summary.height() < 188.0);
             assert!(
-                edge_delta(edge, raised) >= edge_delta(fill, raised),
-                "the ring is at least as strong a step as the fill"
+                chips
+                    .iter()
+                    .all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
+                "wrapped chips never run off the card's right edge"
             );
-        }
-        // The case the wash exists for: on the light preset the tier's lift
-        // is the card itself, so it would not register at all.
-        let light = Theme::light();
-        let tier = selection_tier(&light, SelectionState::active(true));
-        assert!(edge_delta(tier.fill, light.tokens.colors.surfaces.raised) < HAIRLINE_MIN_DELTA);
-    }
-
-    /// The summary card is as tall as its chip rows need: one row at desktop
-    /// width keeps the 134px floor, and the phone width — where the five chips
-    /// wrap onto two rows — grows by exactly one chip row instead of reserving
-    /// the old fixed 188px band (which left ~60px blank under the chips).
-    #[test]
-    fn summary_card_height_follows_the_wrapped_chip_rows() {
-        let (wide, _) = measured_app(1280.0, 1.0);
-        let chips = &wide.layout.stat_chips;
-        assert_eq!(chips.len(), 5, "public zone has five stat chips");
-        assert!(
-            chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6),
-            "desktop width keeps every chip on one row"
-        );
-        assert!((wide.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
-        assert!(
-            chips
-                .iter()
-                .all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
-            "chips stay inside the card"
-        );
-
-        // 480px: the five chips still fit one row, so the card keeps the
-        // one-row height instead of the fixed 188px narrow band that
-        // reserved a wrap which never happened.
-        let (narrow, _) = measured_app(480.0, 1.0);
-        let chips = &narrow.layout.stat_chips;
-        assert!(chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6));
-        assert!((narrow.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
-
-        // 360px: they wrap, and the card grows by exactly the rows it needs.
-        let (phone, _) = measured_app(360.0, 1.0);
-        let chips = &phone.layout.stat_chips;
-        assert!(
-            chips.iter().any(|c| (c.y0 - chips[0].y0).abs() > 1e-6),
-            "five chips wrap onto a second row at 360px"
-        );
-        let last = chips.last().unwrap();
-        assert!(
-            (phone.layout.summary.y1 - last.y1 - PAD).abs() < 1e-6,
-            "the card ends one padding below the last chip row, not ~60px later"
-        );
-        assert!(phone.layout.summary.height() < 188.0);
-        assert!(
-            chips
-                .iter()
-                .all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
-            "wrapped chips never run off the card's right edge"
-        );
-        // Everything below the card follows it.
-        assert!(phone.layout.filter_seg[0].y0 >= phone.layout.summary.y1 + PAD - 1e-6);
-    }
-
-    /// At 1× the measured bands are exactly the constants the layout was
-    /// drawn for; at 2× they grow with the type and no control overlaps its
-    /// neighbour or leaves its card.
-    #[test]
-    fn bands_hold_their_1x_floors_and_grow_with_the_text_scale() {
-        let (one, _) = measured_app(1280.0, 1.0);
-        let m = &one.metrics;
-        let floors = Metrics::default();
-        assert!((m.ctrl_h - CTRL_H).abs() < 1e-6);
-        assert!((m.header_h - HEADER_H).abs() < 1e-6);
-        assert!((m.rule_row_h - RULE_ROW_H).abs() < 1e-6);
-        assert!((m.rule_row_h_narrow - RULE_ROW_H_NARROW).abs() < 1e-6);
-        assert!((m.table_head_h - floors.table_head_h).abs() < 1e-6);
-        assert!((m.svc_row_h - SVC_ROW_H).abs() < 1e-6);
-        assert!((m.seg_h - floors.seg_h).abs() < 1e-6);
-        assert!((m.rail_row_h - floors.rail_row_h).abs() < 1e-6);
-        assert!((m.chip_h - floors.chip_h).abs() < 1e-6);
-        assert!((one.layout.form.height() - FORM_H).abs() < 1e-6);
-        assert!((one.layout.header.height() - HEADER_H).abs() < 1e-6);
-        // The first (unmeasured) frame lays out exactly like the measured 1×
-        // frame: no jump on open.
-        let mut unmeasured = FirewallApp::new_demo();
-        unmeasured.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        unmeasured.relayout();
-        assert_eq!(unmeasured.layout.form, one.layout.form);
-        assert_eq!(unmeasured.layout.table, one.layout.table);
-        assert_eq!(unmeasured.layout.header, one.layout.header);
-
-        // 2400px at 2× is the wide layout (the breakpoint scales too).
-        let (two, mut tr) = measured_app(2400.0, 2.0);
-        let m = &two.metrics;
-        assert!(m.ctrl_h > CTRL_H && m.header_h > HEADER_H && m.rule_row_h > RULE_ROW_H);
-        let l = &two.layout;
-        assert!(!l.narrow);
-        assert!(
-            l.form.height() > FORM_H,
-            "form grows with its control bands"
-        );
-        // Header controls fit their labels and stay inside the header band.
-        for b in [l.enable_pill, l.panic_btn, l.apply_btn] {
-            assert!(b.y0 >= l.header.y0 && b.y1 <= l.header.y1);
-        }
-        assert!(
-            l.enable_pill.width() > 92.0,
-            "the enable pill widens for its 2× label"
-        );
-        // Form: line 1 clears the title band, line 2 clears line 1, the status
-        // band clears line 2, and nothing leaves the card.
-        let title_h = f64::from(tr.measure("Hg", 13.0, None).1);
-        assert!(l.kind_seg[0].y0 >= l.form.y0 + 12.0 + title_h);
-        assert!(l.source_field.y0 >= l.kind_seg[0].y1);
-        assert!(l.add_btn.y1 + m.form_status_h <= l.form.y1 + 1e-6);
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "two independent containment checks on different controls"
-        )]
-        let action_and_kind_fit =
-            l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0;
-        assert!(action_and_kind_fit);
-        // Rows never overlap and the first clears the caption band.
-        assert!(l.rule_rows[0].rect.y0 >= l.table.y0 + m.table_head_h);
-        for pair in l.rule_rows.windows(2) {
-            assert!(pair[1].rect.y0 >= pair[0].rect.y1);
+            // Everything below the card follows it.
+            assert!(phone.layout.filter_seg[0].y0 >= phone.layout.summary.y1 + PAD - 1e-6);
         }
 
-        // The stacked 2× form: four control lines, the `Source` caption's gap
-        // and the title band all clear each other inside the card.
-        let (stacked, _) = measured_app(800.0, 2.0);
-        let l = &stacked.layout;
-        assert!(l.narrow);
-        assert!(l.kind_seg[0].y0 >= l.form.y0 + stacked.metrics.form_title_h_narrow - 1e-6);
-        assert!(l.service_sel.y0.max(l.port_field.y0) >= l.kind_seg[0].y1);
-        assert!(
-            l.source_field.y0
-                >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap - 1e-6
-        );
-        assert!(l.add_btn.y0 >= l.source_field.y1 && l.add_btn.y1 <= l.form.y1 + 1e-6);
-    }
+        // --- phase: bands_hold_their_1x_floors_and_grow_with_the_text_scale ---
+        // At 1× the measured bands are exactly the constants the layout was
+        // drawn for; at 2× they grow with the type and no control overlaps its
+        // neighbour or leaves its card.
+        {
+            let (one, _) = measured_app(1280.0, 1.0);
+            let m = &one.metrics;
+            let floors = Metrics::default();
+            assert!((m.ctrl_h - CTRL_H).abs() < 1e-6);
+            assert!((m.header_h - HEADER_H).abs() < 1e-6);
+            assert!((m.rule_row_h - RULE_ROW_H).abs() < 1e-6);
+            assert!((m.rule_row_h_narrow - RULE_ROW_H_NARROW).abs() < 1e-6);
+            assert!((m.table_head_h - floors.table_head_h).abs() < 1e-6);
+            assert!((m.svc_row_h - SVC_ROW_H).abs() < 1e-6);
+            assert!((m.seg_h - floors.seg_h).abs() < 1e-6);
+            assert!((m.rail_row_h - floors.rail_row_h).abs() < 1e-6);
+            assert!((m.chip_h - floors.chip_h).abs() < 1e-6);
+            assert!((one.layout.form.height() - FORM_H).abs() < 1e-6);
+            assert!((one.layout.header.height() - HEADER_H).abs() < 1e-6);
+            // The first (unmeasured) frame lays out exactly like the measured 1×
+            // frame: no jump on open.
+            let mut unmeasured = FirewallApp::new_demo();
+            unmeasured.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            unmeasured.relayout();
+            assert_eq!(unmeasured.layout.form, one.layout.form);
+            assert_eq!(unmeasured.layout.table, one.layout.table);
+            assert_eq!(unmeasured.layout.header, one.layout.header);
 
-    /// The narrow / services breakpoints follow the text scale: an 800px
-    /// window at 2× has the room of a 400px window at 1×, so it stacks the
-    /// form and takes two-line rows instead of crushing five columns.
-    #[test]
-    fn breakpoints_follow_the_text_scale() {
-        let (one, _) = measured_app(800.0, 1.0);
-        assert!(!one.layout.narrow);
-        let (two, _) = measured_app(800.0, 2.0);
-        assert!(two.layout.narrow, "800px at 2× takes the narrow layout");
-        assert!(!two.layout.services_visible);
-        let (wide, _) = measured_app(2400.0, 2.0);
-        assert!(!wide.layout.narrow && wide.layout.services_visible);
-    }
-
-    #[test]
-    fn filter_restricts_rule_rows() {
-        let mut a = app_with_rect();
-        a.filter = Filter::Deny;
-        a.relayout();
-        // public has 3 deny rules in the sample.
-        let denies = a
-            .selected_zone_ref()
-            .unwrap()
-            .rules
-            .iter()
-            .filter(|r| r.action == Action::Deny)
-            .count();
-        assert_eq!(a.layout.rule_rows.len(), denies);
-        assert!(denies > 0);
-    }
-
-    #[test]
-    fn presentation_changes_do_not_create_document_heads() {
-        let mut app = app_with_rect();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let heads = doc.get_heads();
-
-        // Selection, filters, drawer geometry and draft focus are deliberately
-        // per-window presentation state, never collaborative data.
-        app.select_zone(ZoneKind::Home);
-        app.filter = Filter::Allow;
-        app.rail.toggle();
-        app.set_form_focus(Some(FocusField::Port));
-        app.relayout();
-
-        assert_eq!(doc.get_heads(), heads);
-    }
-
-    #[test]
-    fn compact_services_route_keeps_the_entire_catalog_interactive() {
-        for width in [640.0, 900.0] {
-            let mut app = app_with_rect();
-            app.rect = Rect::new(0.0, 0.0, width, 800.0);
-            app.compact_view = CompactView::Services;
-            app.relayout();
-
-            assert!(app.layout.compact_services);
-            assert_eq!(app.layout.content_seg.len(), 2);
-            assert_eq!(app.layout.service_rows.len(), ServiceCatalog::ALL.len());
-            let semantics = app.accessibility().expect("compact services semantics");
-            let services = semantics
-                .children
-                .iter()
-                .find(|node| node.name.as_deref() == Some("Services in public"))
-                .expect("compact services list");
-            assert_eq!(services.children.len(), ServiceCatalog::ALL.len());
-            assert!(services.children.iter().all(|row| {
-                row.role == Role::ListItem
-                    && row.pos_in_set.is_some()
-                    && row.set_size == Some(ServiceCatalog::ALL.len())
-                    && row.children.iter().any(|control| {
-                        control.role == Role::Switch
-                            && control.action_target.is_some()
-                            && control.state.checked.is_some()
-                    })
-            }));
-
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            let ssh_was_enabled = app
-                .selected_zone_ref()
-                .is_some_and(|zone| zone.has_service("ssh"));
-            assert!(app.perform_semantic_action(
-                "firewall.service.toggle:public:ssh",
-                &A11yAction::ToggleCheck,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_ne!(
-                app.selected_zone_ref()
-                    .is_some_and(|zone| zone.has_service("ssh")),
-                ssh_was_enabled
+            // 2400px at 2× is the wide layout (the breakpoint scales too).
+            let (two, mut tr) = measured_app(2400.0, 2.0);
+            let m = &two.metrics;
+            assert!(m.ctrl_h > CTRL_H && m.header_h > HEADER_H && m.rule_row_h > RULE_ROW_H);
+            let l = &two.layout;
+            assert!(!l.narrow);
+            assert!(
+                l.form.height() > FORM_H,
+                "form grows with its control bands"
             );
-        }
-    }
-
-    #[test]
-    fn add_rule_from_form_appends_and_selects() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        // Actions read the shared config from the document, so seed it first —
-        // the same publish `sync` does on the app's first frame.
-        a.sync(&mut doc, &automerge::ROOT);
-        let before = a.selected_zone_ref().unwrap().rules.len();
-        a.form.is_service = false;
-        a.form.port.set_text("9000");
-        a.form.action = Action::Allow;
-        a.form.source.set_text("");
-        a.add_rule_from_form(&mut doc);
-        let after = a.selected_zone_ref().unwrap().rules.len();
-        assert_eq!(after, before + 1);
-        assert!(a.selected_rule.is_some());
-        let last = a.selected_zone_ref().unwrap().rules.last().unwrap();
-        assert_eq!(
-            last.matcher,
-            Matcher::Port {
-                port: "9000".into(),
-                proto: Proto::Tcp
+            // Header controls fit their labels and stay inside the header band.
+            for b in [l.enable_pill, l.panic_btn, l.apply_btn] {
+                assert!(b.y0 >= l.header.y0 && b.y1 <= l.header.y1);
             }
-        );
+            assert!(
+                l.enable_pill.width() > 92.0,
+                "the enable pill widens for its 2× label"
+            );
+            // Form: line 1 clears the title band, line 2 clears line 1, the status
+            // band clears line 2, and nothing leaves the card.
+            let title_h = f64::from(tr.measure("Hg", 13.0, None).1);
+            assert!(l.kind_seg[0].y0 >= l.form.y0 + 12.0 + title_h);
+            assert!(l.source_field.y0 >= l.kind_seg[0].y1);
+            assert!(l.add_btn.y1 + m.form_status_h <= l.form.y1 + 1e-6);
+            #[expect(
+                clippy::suspicious_operation_groupings,
+                reason = "two independent containment checks on different controls"
+            )]
+            let action_and_kind_fit =
+                l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0;
+            assert!(action_and_kind_fit);
+            // Rows never overlap and the first clears the caption band.
+            assert!(l.rule_rows[0].rect.y0 >= l.table.y0 + m.table_head_h);
+            for pair in l.rule_rows.windows(2) {
+                assert!(pair[1].rect.y0 >= pair[0].rect.y1);
+            }
+
+            // The stacked 2× form: four control lines, the `Source` caption's gap
+            // and the title band all clear each other inside the card.
+            let (stacked, _) = measured_app(800.0, 2.0);
+            let l = &stacked.layout;
+            assert!(l.narrow);
+            assert!(l.kind_seg[0].y0 >= l.form.y0 + stacked.metrics.form_title_h_narrow - 1e-6);
+            assert!(l.service_sel.y0.max(l.port_field.y0) >= l.kind_seg[0].y1);
+            assert!(
+                l.source_field.y0
+                    >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap
+                        - 1e-6
+            );
+            assert!(l.add_btn.y0 >= l.source_field.y1 && l.add_btn.y1 <= l.form.y1 + 1e-6);
+        }
+
+        // --- phase: breakpoints_follow_the_text_scale ---
+        // The narrow / services breakpoints follow the text scale: an 800px
+        // window at 2× has the room of a 400px window at 1×, so it stacks the
+        // form and takes two-line rows instead of crushing five columns.
+        {
+            let (one, _) = measured_app(800.0, 1.0);
+            assert!(!one.layout.narrow);
+            let (two, _) = measured_app(800.0, 2.0);
+            assert!(two.layout.narrow, "800px at 2× takes the narrow layout");
+            assert!(!two.layout.services_visible);
+            let (wide, _) = measured_app(2400.0, 2.0);
+            assert!(!wide.layout.narrow && wide.layout.services_visible);
+        }
+
+        // --- phase: compact_services_route_keeps_the_entire_catalog_interactive ---
+        {
+            for width in [640.0, 900.0] {
+                let mut app = app_with_rect();
+                app.rect = Rect::new(0.0, 0.0, width, 800.0);
+                app.compact_view = CompactView::Services;
+                app.relayout();
+
+                assert!(app.layout.compact_services);
+                assert_eq!(app.layout.content_seg.len(), 2);
+                assert_eq!(app.layout.service_rows.len(), ServiceCatalog::ALL.len());
+                let semantics = app.accessibility().expect("compact services semantics");
+                let services = semantics
+                    .children
+                    .iter()
+                    .find(|node| node.name.as_deref() == Some("Services in public"))
+                    .expect("compact services list");
+                assert_eq!(services.children.len(), ServiceCatalog::ALL.len());
+                assert!(services.children.iter().all(|row| {
+                    row.role == Role::ListItem
+                        && row.pos_in_set.is_some()
+                        && row.set_size == Some(ServiceCatalog::ALL.len())
+                        && row.children.iter().any(|control| {
+                            control.role == Role::Switch
+                                && control.action_target.is_some()
+                                && control.state.checked.is_some()
+                        })
+                }));
+
+                let mut doc = AutoCommit::new();
+                app.sync(&mut doc, &automerge::ROOT);
+                let ssh_was_enabled = app
+                    .selected_zone_ref()
+                    .is_some_and(|zone| zone.has_service("ssh"));
+                assert!(app.perform_semantic_action(
+                    "firewall.service.toggle:public:ssh",
+                    &A11yAction::ToggleCheck,
+                    &mut doc,
+                    &automerge::ROOT,
+                ));
+                assert_ne!(
+                    app.selected_zone_ref()
+                        .is_some_and(|zone| zone.has_service("ssh")),
+                    ssh_was_enabled
+                );
+            }
+        }
     }
 
+    /// Filtering, adding, toggling, zone switching and deleting rules round-trip through the document; presentation changes create no heads.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn toggle_service_round_trips_through_doc() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        // ssh (idx 0) is enabled on public in the sample.
-        let was = a.selected_zone_ref().unwrap().has_service("ssh");
-        a.toggle_service(0, &mut doc);
-        let now = a.selected_zone_ref().unwrap().has_service("ssh");
-        assert_ne!(was, now);
-        // The native shared document reflects the change.
-        let reloaded = FirewallDoc::load(&doc).unwrap();
-        assert_eq!(
-            reloaded.zone(ZoneKind::Public).unwrap().has_service("ssh"),
-            now
-        );
-    }
-
-    #[test]
-    fn set_active_zone_changes_default() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        a.select_zone(ZoneKind::Home);
-        a.set_active_zone(&mut doc);
-        assert_eq!(a.config.default_zone, ZoneKind::Home);
-        // The change lands in the shared document, not just the in-memory view.
-        assert_eq!(
-            FirewallDoc::load(&doc).unwrap().default_zone,
-            ZoneKind::Home
-        );
-    }
-
-    #[test]
-    fn cycle_zone_wraps() {
-        let mut a = app_with_rect();
-        a.select_zone(ZoneKind::ALL[0]);
-        a.cycle_zone(-1);
-        assert_eq!(a.selected_zone, ZoneKind::ALL[8]);
-        a.cycle_zone(1);
-        assert_eq!(a.selected_zone, ZoneKind::ALL[0]);
-    }
-
-    #[test]
-    fn delete_rule_removes_from_zone() {
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let id = a.selected_zone_ref().unwrap().rules[0].id;
-        let before = a.selected_zone_ref().unwrap().rules.len();
-        a.delete_rule(id, &mut doc);
-        assert_eq!(a.selected_zone_ref().unwrap().rules.len(), before - 1);
-        // …and the shared document agrees.
-        assert!(
-            !FirewallDoc::load(&doc)
-                .unwrap()
-                .zone(a.selected_zone)
+    fn rule_and_zone_edits_round_trip_through_the_document() {
+        // --- phase: filter_restricts_rule_rows ---
+        {
+            let mut a = app_with_rect();
+            a.filter = Filter::Deny;
+            a.relayout();
+            // public has 3 deny rules in the sample.
+            let denies = a
+                .selected_zone_ref()
                 .unwrap()
                 .rules
                 .iter()
-                .any(|r| r.id == id),
-            "the deleted rule is gone from the document too"
-        );
-    }
+                .filter(|r| r.action == Action::Deny)
+                .count();
+            assert_eq!(a.layout.rule_rows.len(), denies);
+            assert!(denies > 0);
+        }
 
-    /// One source of truth: the real trash-button path (`delete_rule`) dispatches
-    /// the byte-identical [`EncodedAction`] the palette's per-rule "delete" spec
-    /// builds. Proven on the production method, not a reconstruction of it.
-    #[test]
-    fn delete_button_dispatches_the_palette_action() {
-        use tilo_actions::ActionInput;
+        // --- phase: presentation_changes_do_not_create_document_heads ---
+        {
+            let mut app = app_with_rect();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let heads = doc.get_heads();
 
-        let mut a = app_with_rect();
-        let mut doc = AutoCommit::new();
-        a.sync(&mut doc, &automerge::ROOT);
-        let zone = a.selected_zone;
-        let id = a.selected_zone_ref().unwrap().rules[0].id;
+            // Selection, filters, drawer geometry and draft focus are deliberately
+            // per-window presentation state, never collaborative data.
+            app.select_zone(ZoneKind::Home);
+            app.filter = Filter::Allow;
+            app.rail.toggle();
+            app.set_form_focus(Some(FocusField::Port));
+            app.relayout();
 
-        // The palette's delete spec for this exact rule.
-        let resources = Widget::resources(&a, &doc);
-        let spec_encoded = resources[0]
-            .children
-            .iter()
-            .find(|z| z.id.as_str() == format!("firewall.zone:{}", zone.name()))
-            .and_then(|z| {
-                z.children
+            assert_eq!(doc.get_heads(), heads);
+        }
+
+        // --- phase: add_rule_from_form_appends_and_selects ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            // Actions read the shared config from the document, so seed it first —
+            // the same publish `sync` does on the app's first frame.
+            a.sync(&mut doc, &automerge::ROOT);
+            let before = a.selected_zone_ref().unwrap().rules.len();
+            a.form.is_service = false;
+            a.form.port.set_text("9000");
+            a.form.action = Action::Allow;
+            a.form.source.set_text("");
+            a.add_rule_from_form(&mut doc);
+            let after = a.selected_zone_ref().unwrap().rules.len();
+            assert_eq!(after, before + 1);
+            assert!(a.selected_rule.is_some());
+            let last = a.selected_zone_ref().unwrap().rules.last().unwrap();
+            assert_eq!(
+                last.matcher,
+                Matcher::Port {
+                    port: "9000".into(),
+                    proto: Proto::Tcp
+                }
+            );
+        }
+
+        // --- phase: toggle_service_round_trips_through_doc ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            // ssh (idx 0) is enabled on public in the sample.
+            let was = a.selected_zone_ref().unwrap().has_service("ssh");
+            a.toggle_service(0, &mut doc);
+            let now = a.selected_zone_ref().unwrap().has_service("ssh");
+            assert_ne!(was, now);
+            // The native shared document reflects the change.
+            let reloaded = FirewallDoc::load(&doc).unwrap();
+            assert_eq!(
+                reloaded.zone(ZoneKind::Public).unwrap().has_service("ssh"),
+                now
+            );
+        }
+
+        // --- phase: set_active_zone_changes_default ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            a.select_zone(ZoneKind::Home);
+            a.set_active_zone(&mut doc);
+            assert_eq!(a.config.default_zone, ZoneKind::Home);
+            // The change lands in the shared document, not just the in-memory view.
+            assert_eq!(
+                FirewallDoc::load(&doc).unwrap().default_zone,
+                ZoneKind::Home
+            );
+        }
+
+        // --- phase: cycle_zone_wraps ---
+        {
+            let mut a = app_with_rect();
+            a.select_zone(ZoneKind::ALL[0]);
+            a.cycle_zone(-1);
+            assert_eq!(a.selected_zone, ZoneKind::ALL[8]);
+            a.cycle_zone(1);
+            assert_eq!(a.selected_zone, ZoneKind::ALL[0]);
+        }
+
+        // --- phase: delete_rule_removes_from_zone ---
+        {
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let id = a.selected_zone_ref().unwrap().rules[0].id;
+            let before = a.selected_zone_ref().unwrap().rules.len();
+            a.delete_rule(id, &mut doc);
+            assert_eq!(a.selected_zone_ref().unwrap().rules.len(), before - 1);
+            // …and the shared document agrees.
+            assert!(
+                !FirewallDoc::load(&doc)
+                    .unwrap()
+                    .zone(a.selected_zone)
+                    .unwrap()
+                    .rules
                     .iter()
-                    .find(|r| r.id.as_str() == format!("firewall.rule:{id}"))
-            })
-            .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
-            .map(|act| match &act.input {
-                ActionInput::Immediate(enc) => enc.clone(),
-                ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
-            })
-            .expect("a delete spec for the rule");
+                    .any(|r| r.id == id),
+                "the deleted rule is gone from the document too"
+            );
+        }
 
-        // The real button path records what it dispatched.
-        a.delete_rule(id, &mut doc);
-        let dispatched = a
-            .last_dispatched()
-            .cloned()
-            .expect("the button dispatched an action");
-        assert_eq!(
-            dispatched, spec_encoded,
-            "button and palette are one action"
-        );
+        // --- phase: delete_button_dispatches_the_palette_action ---
+        // One source of truth: the real trash-button path (`delete_rule`) dispatches
+        // the byte-identical [`EncodedAction`] the palette's per-rule "delete" spec
+        // builds. Proven on the production method, not a reconstruction of it.
+        {
+            use tilo_actions::ActionInput;
+
+            let mut a = app_with_rect();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            let zone = a.selected_zone;
+            let id = a.selected_zone_ref().unwrap().rules[0].id;
+
+            // The palette's delete spec for this exact rule.
+            let resources = Widget::resources(&a, &doc);
+            let spec_encoded = resources[0]
+                .children
+                .iter()
+                .find(|z| z.id.as_str() == format!("firewall.zone:{}", zone.name()))
+                .and_then(|z| {
+                    z.children
+                        .iter()
+                        .find(|r| r.id.as_str() == format!("firewall.rule:{id}"))
+                })
+                .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
+                .map(|act| match &act.input {
+                    ActionInput::Immediate(enc) => enc.clone(),
+                    ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+                })
+                .expect("a delete spec for the rule");
+
+            // The real button path records what it dispatched.
+            a.delete_rule(id, &mut doc);
+            let dispatched = a
+                .last_dispatched()
+                .cloned()
+                .expect("the button dispatched an action");
+            assert_eq!(
+                dispatched, spec_encoded,
+                "button and palette are one action"
+            );
+        }
     }
 
+    /// An exported firewall effect is accepted then completes after sync; cancellation before sync prevents it.
     #[test]
-    fn exported_effect_is_accepted_then_completes_after_sync() {
-        let mut app = FirewallApp::new_demo();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let invocation = tilo_actions::InvocationId::new();
-        let started = app
-            .start_resource_operation(
+    fn exported_effects_complete_only_after_sync() {
+        // --- phase: exported_effect_is_accepted_then_completes_after_sync ---
+        {
+            let mut app = FirewallApp::new_demo();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let invocation = tilo_actions::InvocationId::new();
+            let started = app
+                .start_resource_operation(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &serde_json::to_vec(&"").unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap();
+            assert_eq!(
+                started,
+                Some(ui::widget::ResourceOperationStart::Accepted),
+                "queue admission must not be reported as success"
+            );
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                    .is_none()
+            );
+
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // --- phase: cancellation_before_sync_prevents_firewall_effect ---
+        {
+            let mut app = FirewallApp::new_demo();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let invocation = tilo_actions::InvocationId::new();
+            app.start_resource_operation(
                 invocation,
                 tilo_actions::OperationKind::Effect,
                 "firewall.apply",
@@ -4877,42 +4943,11 @@ mod tests {
                 &automerge::ROOT,
             )
             .unwrap();
-        assert_eq!(
-            started,
-            Some(ui::widget::ResourceOperationStart::Accepted),
-            "queue admission must not be reported as success"
-        );
-        assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none()
-        );
-
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
-
-    #[test]
-    fn cancellation_before_sync_prevents_firewall_effect() {
-        let mut app = FirewallApp::new_demo();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        let invocation = tilo_actions::InvocationId::new();
-        app.start_resource_operation(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            "firewall.apply",
-            &serde_json::to_vec(&"").unwrap(),
-            &doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(matches!(
-            app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-        ));
-        assert!(app.pending_effect.is_none());
+            assert!(matches!(
+                app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+            ));
+            assert!(app.pending_effect.is_none());
+        }
     }
 }

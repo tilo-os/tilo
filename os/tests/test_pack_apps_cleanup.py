@@ -43,14 +43,13 @@ esac
             if supplied:
                 self.assertEqual((stage / 'publisher.json').read_text(), 'caller-owned-key')
 
-    def test_default_private_stage_removed_after_success(self):
-        self.exercise()
-
-    def test_default_private_stage_removed_after_failure(self):
-        self.exercise(fail=True)
-
-    def test_caller_owned_stage_and_key_preserved(self):
-        self.exercise(supplied=True)
+    def test_stage_cleanup_ownership(self):
+        with self.subTest(phase="default_private_stage_removed_after_success"):
+            self.exercise()
+        with self.subTest(phase="default_private_stage_removed_after_failure"):
+            self.exercise(fail=True)
+        with self.subTest(phase="caller_owned_stage_and_key_preserved"):
+            self.exercise(supplied=True)
 
 
 if __name__ == '__main__':

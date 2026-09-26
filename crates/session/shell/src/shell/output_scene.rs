@@ -21,6 +21,9 @@ use vello::peniko::{BlendMode, Fill};
 /// One display the shell draws across.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputGeometry {
+    /// The compositor's stable id for the display (`OutputId`); `0` is the
+    /// primary.
+    pub id: u32,
     /// Left edge in the logical desktop.
     pub x: f64,
     /// Top edge in the logical desktop.
@@ -43,6 +46,7 @@ impl OutputGeometry {
     #[must_use]
     pub fn unscaled(x: f64, y: f64, width: f64, height: f64) -> Self {
         Self {
+            id: 0,
             x,
             y,
             width,
@@ -50,6 +54,13 @@ impl OutputGeometry {
             scale: 1.0,
             scene: Rect::new(x, y, x + width, y + height),
         }
+    }
+
+    /// The same display under the compositor's id `id`.
+    #[must_use]
+    pub fn with_id(mut self, id: u32) -> Self {
+        self.id = id;
+        self
     }
 
     /// The display's rectangle in the logical desktop.
@@ -206,6 +217,7 @@ mod tests {
     fn mixed() -> Vec<OutputGeometry> {
         vec![
             OutputGeometry {
+                id: 0,
                 x: 0.0,
                 y: 0.0,
                 width: 1280.0,
@@ -214,6 +226,7 @@ mod tests {
                 scene: Rect::new(0.0, 0.0, 2560.0, 1600.0),
             },
             OutputGeometry {
+                id: 1,
                 x: 1280.0,
                 y: 200.0,
                 width: 1920.0,
@@ -267,7 +280,7 @@ mod tests {
     fn unscaled_side_by_side_displays_need_no_transform() {
         let outputs = [
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
-            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 1024.0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 1024.0).with_id(1),
         ];
         assert!(is_identity(&outputs));
         assert!(!is_identity(&mixed()));

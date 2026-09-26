@@ -333,160 +333,160 @@ mod tests {
     }
 
     #[test]
-    fn added_and_modified_are_told_apart_by_the_base() {
-        let d = scratch();
-        let base = d.path().join("base");
-        let upper = d.path().join("upper");
-        fs::create_dir_all(base.join("usr/bin")).unwrap();
-        fs::create_dir_all(upper.join("usr/bin")).unwrap();
-        fs::write(base.join("usr/bin/existing"), b"old").unwrap();
-        fs::write(upper.join("usr/bin/existing"), b"new").unwrap();
-        fs::write(upper.join("usr/bin/fresh"), b"hi").unwrap();
+    fn diffs_tell_added_modified_and_deleted_paths_apart_by_base() {
+        // Phase `added_and_modified_are_told_apart_by_the_base`.
+        {
+            let d = scratch();
+            let base = d.path().join("base");
+            let upper = d.path().join("upper");
+            fs::create_dir_all(base.join("usr/bin")).unwrap();
+            fs::create_dir_all(upper.join("usr/bin")).unwrap();
+            fs::write(base.join("usr/bin/existing"), b"old").unwrap();
+            fs::write(upper.join("usr/bin/existing"), b"new").unwrap();
+            fs::write(upper.join("usr/bin/fresh"), b"hi").unwrap();
 
-        let diff = compute(&upper, Some(&base)).unwrap();
-        let by_path: BTreeMap<_, _> = diff
-            .changes
-            .iter()
-            .map(|c| (c.path.clone(), c.kind))
-            .collect();
-        assert_eq!(
-            by_path[Path::new("/usr/bin/existing")],
-            ChangeKind::Modified
-        );
-        assert_eq!(by_path[Path::new("/usr/bin/fresh")], ChangeKind::Added);
-        // Plain parent directories are structure, not change.
-        assert!(!by_path.contains_key(Path::new("/usr")));
-        assert!(!by_path.contains_key(Path::new("/usr/bin")));
+            let diff = compute(&upper, Some(&base)).unwrap();
+            let by_path: BTreeMap<_, _> = diff
+                .changes
+                .iter()
+                .map(|c| (c.path.clone(), c.kind))
+                .collect();
+            assert_eq!(
+                by_path[Path::new("/usr/bin/existing")],
+                ChangeKind::Modified
+            );
+            assert_eq!(by_path[Path::new("/usr/bin/fresh")], ChangeKind::Added);
+            // Plain parent directories are structure, not change.
+            assert!(!by_path.contains_key(Path::new("/usr")));
+            assert!(!by_path.contains_key(Path::new("/usr/bin")));
+        }
+        // Phase `without_a_base_everything_reads_as_added`.
+        {
+            let d = scratch();
+            let upper = d.path().join("upper");
+            fs::create_dir_all(upper.join("etc")).unwrap();
+            fs::write(upper.join("etc/hosts"), b"x").unwrap();
+
+            let diff = compute(&upper, None).unwrap();
+            assert_eq!(diff.changes.len(), 1);
+            assert_eq!(diff.changes[0].kind, ChangeKind::Added);
+        }
+        // Phase `a_brand_new_directory_is_not_reported_as_a_replacement`.
+        // `user.overlay.opaque` can only be set on a real overlay mount, so these two tests cover
+        // the base-existence half directly; the xattr half is exercised by the live layer path.
+        {
+            let d = scratch();
+            let base = d.path().join("base");
+            let upper = d.path().join("upper");
+            fs::create_dir_all(&base).unwrap();
+            // dpkg creates directories like this constantly; none of them replace anything, since the
+            // base has no such path.
+            fs::create_dir_all(upper.join("usr/share/cowsay/cows")).unwrap();
+            fs::write(upper.join("usr/share/cowsay/cows/default.cow"), b"cow").unwrap();
+
+            let diff = compute(&upper, Some(&base)).unwrap();
+            assert!(
+                !diff.changes.iter().any(|c| c.kind == ChangeKind::Replaced),
+                "{:?}",
+                diff.changes
+            );
+        }
+        // Phase `metadata_paths_are_matched_on_whole_components`.
+        {
+            // `/var/lib/dpkg-custom` is not dpkg's database and must stay visible.
+            assert!(is_pkg_metadata(Path::new("/var/lib/dpkg/status")));
+            assert!(is_pkg_metadata(Path::new("/var/lib/dpkg")));
+            assert!(!is_pkg_metadata(Path::new("/var/lib/dpkg-custom/thing")));
+            assert!(!is_pkg_metadata(Path::new("/usr/bin/dpkg")));
+        }
     }
 
     #[test]
-    fn without_a_base_everything_reads_as_added() {
-        let d = scratch();
-        let upper = d.path().join("upper");
-        fs::create_dir_all(upper.join("etc")).unwrap();
-        fs::write(upper.join("etc/hosts"), b"x").unwrap();
+    fn package_bookkeeping_and_claimed_files_are_attributed_to_packages() {
+        // Phase `dpkg_receipts_become_a_package_list`.
+        {
+            let d = scratch();
+            let upper = d.path().join("upper");
+            let info = upper.join("var/lib/dpkg/info");
+            fs::create_dir_all(&info).unwrap();
+            fs::write(info.join("cowsay.list"), b"/usr/games/cowsay\n").unwrap();
+            fs::write(info.join("cowsay.md5sums"), b"").unwrap();
+            fs::write(info.join("libfoo1:amd64.list"), b"").unwrap();
 
-        let diff = compute(&upper, None).unwrap();
-        assert_eq!(diff.changes.len(), 1);
-        assert_eq!(diff.changes[0].kind, ChangeKind::Added);
-    }
+            let diff = compute(&upper, None).unwrap();
+            assert_eq!(diff.packages["apt"], vec!["cowsay", "libfoo1"]);
+        }
+        // Phase `package_bookkeeping_is_separated_from_real_changes`.
+        {
+            let d = scratch();
+            let upper = d.path().join("upper");
+            fs::create_dir_all(upper.join("var/lib/dpkg/info")).unwrap();
+            fs::create_dir_all(upper.join("usr/games")).unwrap();
+            // An empty manifest claims nothing, so the binary stays unexplained.
+            fs::write(upper.join("var/lib/dpkg/info/cowsay.list"), b"").unwrap();
+            fs::write(upper.join("var/lib/dpkg/status"), b"").unwrap();
+            fs::write(upper.join("usr/games/cowsay"), b"#!/bin/sh\n").unwrap();
 
-    #[test]
-    fn dpkg_receipts_become_a_package_list() {
-        let d = scratch();
-        let upper = d.path().join("upper");
-        let info = upper.join("var/lib/dpkg/info");
-        fs::create_dir_all(&info).unwrap();
-        fs::write(info.join("cowsay.list"), b"/usr/games/cowsay\n").unwrap();
-        fs::write(info.join("cowsay.md5sums"), b"").unwrap();
-        fs::write(info.join("libfoo1:amd64.list"), b"").unwrap();
+            let diff = compute(&upper, None).unwrap();
+            let substantive: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
+            assert_eq!(substantive, vec![PathBuf::from("/usr/games/cowsay")]);
+            assert_eq!(diff.explained_count(), 2);
+        }
+        // Phase `files_a_package_claims_are_attributed_to_it_not_to_the_user`.
+        {
+            // The point of the whole exercise: nine packages' worth of files must not drown the one
+            // config a person edited by hand.
+            let d = scratch();
+            let upper = d.path().join("upper");
+            let info = upper.join("var/lib/dpkg/info");
+            fs::create_dir_all(&info).unwrap();
+            fs::create_dir_all(upper.join("usr/games")).unwrap();
+            fs::create_dir_all(upper.join("usr/share/cowsay/cows")).unwrap();
+            fs::create_dir_all(upper.join("etc")).unwrap();
 
-        let diff = compute(&upper, None).unwrap();
-        assert_eq!(diff.packages["apt"], vec!["cowsay", "libfoo1"]);
-    }
+            fs::write(
+                info.join("cowsay.list"),
+                b"/usr/games/cowsay\n/usr/share/cowsay/cows/default.cow\n",
+            )
+            .unwrap();
+            fs::write(upper.join("usr/games/cowsay"), b"bin").unwrap();
+            fs::write(upper.join("usr/share/cowsay/cows/default.cow"), b"cow").unwrap();
+            // Not claimed by any package: this is the user's own work.
+            fs::write(upper.join("etc/my-tweak.conf"), b"tuned = yes").unwrap();
 
-    #[test]
-    fn package_bookkeeping_is_separated_from_real_changes() {
-        let d = scratch();
-        let upper = d.path().join("upper");
-        fs::create_dir_all(upper.join("var/lib/dpkg/info")).unwrap();
-        fs::create_dir_all(upper.join("usr/games")).unwrap();
-        // An empty manifest claims nothing, so the binary stays unexplained.
-        fs::write(upper.join("var/lib/dpkg/info/cowsay.list"), b"").unwrap();
-        fs::write(upper.join("var/lib/dpkg/status"), b"").unwrap();
-        fs::write(upper.join("usr/games/cowsay"), b"#!/bin/sh\n").unwrap();
-
-        let diff = compute(&upper, None).unwrap();
-        let substantive: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
-        assert_eq!(substantive, vec![PathBuf::from("/usr/games/cowsay")]);
-        assert_eq!(diff.explained_count(), 2);
-    }
-
-    #[test]
-    fn files_a_package_claims_are_attributed_to_it_not_to_the_user() {
-        // The point of the whole exercise: nine packages' worth of files must not drown the one
-        // config a person edited by hand.
-        let d = scratch();
-        let upper = d.path().join("upper");
-        let info = upper.join("var/lib/dpkg/info");
-        fs::create_dir_all(&info).unwrap();
-        fs::create_dir_all(upper.join("usr/games")).unwrap();
-        fs::create_dir_all(upper.join("usr/share/cowsay/cows")).unwrap();
-        fs::create_dir_all(upper.join("etc")).unwrap();
-
-        fs::write(
-            info.join("cowsay.list"),
-            b"/usr/games/cowsay\n/usr/share/cowsay/cows/default.cow\n",
-        )
-        .unwrap();
-        fs::write(upper.join("usr/games/cowsay"), b"bin").unwrap();
-        fs::write(upper.join("usr/share/cowsay/cows/default.cow"), b"cow").unwrap();
-        // Not claimed by any package: this is the user's own work.
-        fs::write(upper.join("etc/my-tweak.conf"), b"tuned = yes").unwrap();
-
-        let diff = compute(&upper, None).unwrap();
-        let substantive: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
-        assert_eq!(substantive, vec![PathBuf::from("/etc/my-tweak.conf")]);
-        assert_eq!(diff.packages["apt"], vec!["cowsay"]);
-        // Nothing is lost — the full change set is still there to be printed.
-        assert_eq!(diff.changes.len(), 4);
-    }
-
-    #[test]
-    fn a_deletion_is_shown_even_when_a_package_owns_the_path() {
-        // Deleting a file a package installed is the user's doing and the single most surprising
-        // thing a layer can hide; ownership must not excuse it. (Constructed directly — a real
-        // whiteout needs a mount.)
-        let mut owned = std::collections::BTreeSet::new();
-        owned.insert(PathBuf::from("/usr/games/cowsay"));
-        owned.insert(PathBuf::from("/usr/share/cowsay/cows/default.cow"));
-        let diff = Diff {
-            changes: vec![
-                Change {
-                    path: PathBuf::from("/usr/games/cowsay"),
-                    kind: ChangeKind::Deleted,
-                    size: None,
-                },
-                Change {
-                    path: PathBuf::from("/usr/share/cowsay/cows/default.cow"),
-                    kind: ChangeKind::Added,
-                    size: Some(3),
-                },
-            ],
-            packages: BTreeMap::new(),
-            owned_by_packages: owned,
-        };
-        let shown: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
-        assert_eq!(shown, vec![PathBuf::from("/usr/games/cowsay")]);
-    }
-
-    /// `user.overlay.opaque` can only be set on a real overlay mount, so these two tests cover
-    /// the base-existence half directly; the xattr half is exercised by the live layer path.
-    #[test]
-    fn a_brand_new_directory_is_not_reported_as_a_replacement() {
-        let d = scratch();
-        let base = d.path().join("base");
-        let upper = d.path().join("upper");
-        fs::create_dir_all(&base).unwrap();
-        // dpkg creates directories like this constantly; none of them replace anything, since the
-        // base has no such path.
-        fs::create_dir_all(upper.join("usr/share/cowsay/cows")).unwrap();
-        fs::write(upper.join("usr/share/cowsay/cows/default.cow"), b"cow").unwrap();
-
-        let diff = compute(&upper, Some(&base)).unwrap();
-        assert!(
-            !diff.changes.iter().any(|c| c.kind == ChangeKind::Replaced),
-            "{:?}",
-            diff.changes
-        );
-    }
-
-    #[test]
-    fn metadata_paths_are_matched_on_whole_components() {
-        // `/var/lib/dpkg-custom` is not dpkg's database and must stay visible.
-        assert!(is_pkg_metadata(Path::new("/var/lib/dpkg/status")));
-        assert!(is_pkg_metadata(Path::new("/var/lib/dpkg")));
-        assert!(!is_pkg_metadata(Path::new("/var/lib/dpkg-custom/thing")));
-        assert!(!is_pkg_metadata(Path::new("/usr/bin/dpkg")));
+            let diff = compute(&upper, None).unwrap();
+            let substantive: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
+            assert_eq!(substantive, vec![PathBuf::from("/etc/my-tweak.conf")]);
+            assert_eq!(diff.packages["apt"], vec!["cowsay"]);
+            // Nothing is lost — the full change set is still there to be printed.
+            assert_eq!(diff.changes.len(), 4);
+        }
+        // Phase `a_deletion_is_shown_even_when_a_package_owns_the_path`.
+        {
+            // Deleting a file a package installed is the user's doing and the single most surprising
+            // thing a layer can hide; ownership must not excuse it. (Constructed directly — a real
+            // whiteout needs a mount.)
+            let mut owned = std::collections::BTreeSet::new();
+            owned.insert(PathBuf::from("/usr/games/cowsay"));
+            owned.insert(PathBuf::from("/usr/share/cowsay/cows/default.cow"));
+            let diff = Diff {
+                changes: vec![
+                    Change {
+                        path: PathBuf::from("/usr/games/cowsay"),
+                        kind: ChangeKind::Deleted,
+                        size: None,
+                    },
+                    Change {
+                        path: PathBuf::from("/usr/share/cowsay/cows/default.cow"),
+                        kind: ChangeKind::Added,
+                        size: Some(3),
+                    },
+                ],
+                packages: BTreeMap::new(),
+                owned_by_packages: owned,
+            };
+            let shown: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
+            assert_eq!(shown, vec![PathBuf::from("/usr/games/cowsay")]);
+        }
     }
 }

@@ -1502,7 +1502,7 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn a_seeded_document_has_no_image_open() {
+    fn seeding_and_opening_keep_state_and_never_carry_pixels_or_origin_paths() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         assert!(
@@ -1510,23 +1510,68 @@ mod tests {
             "a fresh document must not fabricate a photograph"
         );
         assert!(PhotosDoc::edits(&doc).is_identity());
+
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            let img = OpenImage::from_path("/x/harbour.png", 800, 600);
+            PhotosDoc::set_image(&mut doc, Some(&img));
+            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+
+            PhotosDoc::seed(&mut doc);
+            assert_eq!(PhotosDoc::image(&doc).unwrap().name, "harbour.png");
+            assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
+        }
+
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+            let img = OpenImage::from_path("/x/other.png", 10, 10);
+            PhotosDoc::set_image(&mut doc, Some(&img));
+            assert!(
+                PhotosDoc::edits(&doc).is_identity(),
+                "a newly opened photograph must start untouched"
+            );
+        }
+
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            let origin = "/var/home/alice/Private/harbour.png";
+            let hash = "a".repeat(64);
+            let image = OpenImage::from_path(origin, 800, 600).with_content(hash.clone());
+
+            PhotosDoc::set_image(&mut doc, Some(&image));
+
+            let image_json = read_str(&doc, &ROOT, "image").expect("image JSON");
+            assert!(!image_json.contains(origin));
+            assert!(read_str(&doc, &ROOT, "library").is_none());
+            let open = PhotosDoc::image(&doc).expect("imported image");
+            assert_eq!(open.path, "harbour.png");
+            assert_eq!(open.content.as_deref(), Some(hash.as_str()));
+            assert_eq!(PhotosDoc::library(&doc).photos[0].image.path, "harbour.png");
+        }
+
+        // The invariant the content store exists to protect, asserted here rather
+        // than assumed: a document that has an image open is still tiny, because
+        // the pixels are not in it.
+        {
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 4000, 3000);
+            PhotosDoc::set_image(&mut doc, Some(&img));
+            PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+            let saved = doc.save().len();
+            assert!(
+                saved < 4096,
+                "the document grew to {saved} bytes; an image must never travel inside a change"
+            );
+        }
     }
 
     #[test]
-    fn seeding_twice_does_not_discard_state() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let img = OpenImage::from_path("/x/harbour.png", 800, 600);
-        PhotosDoc::set_image(&mut doc, Some(&img));
-        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-
-        PhotosDoc::seed(&mut doc);
-        assert_eq!(PhotosDoc::image(&doc).unwrap().name, "harbour.png");
-        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
-    }
-
-    #[test]
-    fn edits_round_trip_through_the_crdt() {
+    fn edits_round_trip_migrate_and_merge_at_separate_fields() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         let e = Edits {
@@ -1542,137 +1587,101 @@ mod tests {
         assert_eq!(PhotosDoc::edits(&doc), e);
         assert!(read_str(&doc, &ROOT, "edits").is_none());
         assert!(!PhotosDoc::edits_roots(&doc).is_empty());
-    }
 
-    #[test]
-    fn legacy_edits_scalar_migrates_to_independent_fields_without_reemitting_it() {
-        let mut doc = AutoCommit::new();
-        let legacy = Edits {
-            crop: Rect01 {
-                x: 0.125,
-                y: 0.25,
-                w: 0.5,
-                h: 0.625,
-            },
-            rotate_quarters: 3,
-        };
-        PhotosDoc::write_json(&mut doc, "edits", &legacy);
-
-        PhotosDoc::seed(&mut doc);
-
-        let restored = PhotosDoc::edits(&doc);
-        assert!((restored.crop.x - legacy.crop.x).abs() <= f64::EPSILON);
-        assert!((restored.crop.y - legacy.crop.y).abs() <= f64::EPSILON);
-        assert!((restored.crop.w - legacy.crop.w).abs() <= f64::EPSILON);
-        assert!((restored.crop.h - legacy.crop.h).abs() <= f64::EPSILON);
-        assert_eq!(restored.rotate_quarters, legacy.rotate_quarters);
-        assert!(read_str(&doc, &ROOT, "edits").is_none());
-        assert!(!PhotosDoc::edits_roots(&doc).is_empty());
-    }
-
-    #[test]
-    fn concurrent_crop_and_rotation_merge_at_their_separate_crdt_fields() {
-        let mut cropper = replica(1);
-        let mut rotator = copy(&mut cropper);
-        rotator.set_actor(automerge::ActorId::from([2u8; 16].as_slice()));
-        let crop = Rect01 {
-            x: 0.2,
-            y: 0.1,
-            w: 0.6,
-            h: 0.75,
-        };
-        PhotosDoc::set_edits(
-            &mut cropper,
-            &Edits {
-                crop,
-                ..Edits::default()
-            },
-        );
-        PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
-
-        let mut merged = copy(&mut cropper);
-        merged
-            .merge_incoming(&mut copy(&mut rotator))
-            .expect("independent edit fields merge");
-        let edits = PhotosDoc::edits(&merged);
-        assert!((edits.crop.x - crop.x).abs() <= f64::EPSILON);
-        assert!((edits.crop.y - crop.y).abs() <= f64::EPSILON);
-        assert!((edits.crop.w - crop.w).abs() <= f64::EPSILON);
-        assert!((edits.crop.h - crop.h).abs() <= f64::EPSILON);
-        assert_eq!(edits.rotate_quarters, 1);
-    }
-
-    #[test]
-    fn an_observed_reset_consolidates_competing_edit_roots_and_clears_them() {
-        let mut cropper = replica(1);
-        let mut rotator = copy(&mut cropper);
-        rotator.set_actor(automerge::ActorId::from([2u8; 16].as_slice()));
-        PhotosDoc::set_edits(
-            &mut cropper,
-            &Edits {
+        {
+            let mut doc = AutoCommit::new();
+            let legacy = Edits {
                 crop: Rect01 {
-                    x: 0.2,
-                    y: 0.2,
+                    x: 0.125,
+                    y: 0.25,
                     w: 0.5,
-                    h: 0.5,
+                    h: 0.625,
                 },
-                ..Edits::default()
-            },
-        );
-        PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
-        let mut observed = copy(&mut cropper);
-        observed
-            .merge_incoming(&mut copy(&mut rotator))
-            .expect("both edit roots merge for the observing editor");
-        assert!(!PhotosDoc::edits(&observed).is_identity());
+                rotate_quarters: 3,
+            };
+            PhotosDoc::write_json(&mut doc, "edits", &legacy);
 
-        PhotosDoc::set_edits(&mut observed, &Edits::default());
+            PhotosDoc::seed(&mut doc);
 
-        assert!(PhotosDoc::edits(&observed).is_identity());
-        assert_eq!(PhotosDoc::edits_roots(&observed).len(), 1);
+            let restored = PhotosDoc::edits(&doc);
+            assert!((restored.crop.x - legacy.crop.x).abs() <= f64::EPSILON);
+            assert!((restored.crop.y - legacy.crop.y).abs() <= f64::EPSILON);
+            assert!((restored.crop.w - legacy.crop.w).abs() <= f64::EPSILON);
+            assert!((restored.crop.h - legacy.crop.h).abs() <= f64::EPSILON);
+            assert_eq!(restored.rotate_quarters, legacy.rotate_quarters);
+            assert!(read_str(&doc, &ROOT, "edits").is_none());
+            assert!(!PhotosDoc::edits_roots(&doc).is_empty());
+        }
+
+        {
+            let mut cropper = replica(1);
+            let mut rotator = fork(&mut cropper, 2u8);
+            let crop = Rect01 {
+                x: 0.2,
+                y: 0.1,
+                w: 0.6,
+                h: 0.75,
+            };
+            PhotosDoc::set_edits(
+                &mut cropper,
+                &Edits {
+                    crop,
+                    ..Edits::default()
+                },
+            );
+            PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
+
+            let mut merged = copy(&mut cropper);
+            merged
+                .merge_incoming(&mut copy(&mut rotator))
+                .expect("independent edit fields merge");
+            let edits = PhotosDoc::edits(&merged);
+            assert!((edits.crop.x - crop.x).abs() <= f64::EPSILON);
+            assert!((edits.crop.y - crop.y).abs() <= f64::EPSILON);
+            assert!((edits.crop.w - crop.w).abs() <= f64::EPSILON);
+            assert!((edits.crop.h - crop.h).abs() <= f64::EPSILON);
+            assert_eq!(edits.rotate_quarters, 1);
+        }
+
+        {
+            let mut cropper = replica(1);
+            let mut rotator = fork(&mut cropper, 2u8);
+            PhotosDoc::set_edits(
+                &mut cropper,
+                &Edits {
+                    crop: Rect01 {
+                        x: 0.2,
+                        y: 0.2,
+                        w: 0.5,
+                        h: 0.5,
+                    },
+                    ..Edits::default()
+                },
+            );
+            PhotosDoc::set_edits(&mut rotator, &Edits::default().rotated_right());
+            let mut observed = copy(&mut cropper);
+            observed
+                .merge_incoming(&mut copy(&mut rotator))
+                .expect("both edit roots merge for the observing editor");
+            assert!(!PhotosDoc::edits(&observed).is_identity());
+
+            PhotosDoc::set_edits(&mut observed, &Edits::default());
+
+            assert!(PhotosDoc::edits(&observed).is_identity());
+            assert_eq!(PhotosDoc::edits_roots(&observed).len(), 1);
+        }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn opening_a_new_image_clears_the_previous_crop() {
+    fn library_records_migrate_and_merge_independent_photo_fields() {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-        let img = OpenImage::from_path("/x/other.png", 10, 10);
-        PhotosDoc::set_image(&mut doc, Some(&img));
-        assert!(
-            PhotosDoc::edits(&doc).is_identity(),
-            "a newly opened photograph must start untouched"
-        );
-    }
-
-    #[test]
-    fn content_addressed_imports_do_not_replicate_the_origin_path() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let origin = "/var/home/alice/Private/harbour.png";
-        let hash = "a".repeat(64);
-        let image = OpenImage::from_path(origin, 800, 600).with_content(hash.clone());
-
-        PhotosDoc::set_image(&mut doc, Some(&image));
-
-        let image_json = read_str(&doc, &ROOT, "image").expect("image JSON");
-        assert!(!image_json.contains(origin));
-        assert!(read_str(&doc, &ROOT, "library").is_none());
-        let open = PhotosDoc::image(&doc).expect("imported image");
-        assert_eq!(open.path, "harbour.png");
-        assert_eq!(open.content.as_deref(), Some(hash.as_str()));
-        assert_eq!(PhotosDoc::library(&doc).photos[0].image.path, "harbour.png");
-    }
-
-    #[test]
-    fn legacy_library_scalar_migrates_once_to_keyed_records() {
-        let mut doc = AutoCommit::new();
-        let photo = LibraryPhoto::from_image(
+        let legacy_photo = LibraryPhoto::from_image(
             OpenImage::from_path("/legacy/harbour.png", 800, 600).with_content("b".repeat(64)),
         );
-        let photo_id = photo.id.clone();
+        let photo_id = legacy_photo.id.clone();
         let library = PhotoLibrary {
-            photos: vec![photo],
+            photos: vec![legacy_photo],
             albums: vec![crate::model::Album {
                 id: "photos.album:legacy".into(),
                 name: "Legacy".into(),
@@ -1690,6 +1699,187 @@ mod tests {
             .expect("structured library root");
         assert!(PhotosDoc::map_at(&doc, &root, "photos").is_some());
         assert_eq!(PhotosDoc::library(&doc).portable(), library.portable());
+
+        {
+            use crate::actions::{MetadataLabelsPatch, MetadataPatch};
+
+            let mut base = replica(1);
+            let mut item = photo("legacy-labels");
+            item.tags = vec!["original".into()];
+            PhotosDoc::set_library(
+                &mut base,
+                &PhotoLibrary {
+                    photos: vec![item.clone()],
+                    ..Default::default()
+                },
+            );
+
+            // Recreate the pre-membership-map wire shape so both offline replicas
+            // independently perform the migration while adding a different tag.
+            let root = PhotosDoc::library_roots(&base)
+                .into_iter()
+                .next()
+                .expect("library root");
+            let tags = PhotosDoc::map_at(&base, &root, "photo_tags").expect("tags map");
+            base.delete(&tags, &item.id).expect("remove membership map");
+            PhotosDoc::write_json_at(&mut base, &tags, &item.id, &item.tags);
+
+            let bytes = base.save();
+            let mut left = AutoCommit::load(&bytes).expect("left replica");
+            left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+            let mut right = AutoCommit::load(&bytes).expect("right replica");
+            right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+            for (doc, tag) in [(&mut left, "left"), (&mut right, "right")] {
+                PhotosAction::SetMetadataBatch {
+                    photo_ids: vec![item.id.clone()],
+                    folder: MetadataPatch::Keep,
+                    people: MetadataLabelsPatch::Keep,
+                    tags: MetadataLabelsPatch::Add(vec![tag.into()]),
+                    captured_at: MetadataPatch::Keep,
+                    location: MetadataPatch::Keep,
+                }
+                .apply(doc)
+                .expect("offline migration applies");
+            }
+
+            let mut left_first = copy(&mut left);
+            let mut right_for_left = copy(&mut right);
+            let left_result = merge(&mut left_first, &mut right_for_left);
+            let mut right_first = copy(&mut right);
+            let mut left_for_right = copy(&mut left);
+            let right_result = merge(&mut right_first, &mut left_for_right);
+            for library in [left_result, right_result] {
+                assert_eq!(
+                    library.photo(&item.id).expect("photo").tags,
+                    ["left", "original", "right"],
+                    "conflicting migration maps must be unioned in either merge order"
+                );
+            }
+        }
+
+        {
+            let first = photo("first");
+            let second = photo("second");
+            let mut base = replica(1);
+            PhotosDoc::set_library(
+                &mut base,
+                &PhotoLibrary {
+                    photos: vec![first.clone(), second.clone()],
+                    ..Default::default()
+                },
+            );
+            let mut favorite = fork(&mut base, 2);
+            let mut metadata = fork(&mut base, 3);
+            let mut left = PhotosDoc::library(&favorite);
+            left.photo_mut(&first.id).expect("first").favorite = true;
+            PhotosDoc::set_library(&mut favorite, &left);
+            let mut right = PhotosDoc::library(&metadata);
+            right.photo_mut(&second.id).expect("second").tags = vec!["sunset".into()];
+            PhotosDoc::set_library(&mut metadata, &right);
+
+            let merged = merge(&mut favorite, &mut metadata);
+            assert!(merged.photo(&first.id).expect("first").favorite);
+            assert_eq!(merged.photo(&second.id).expect("second").tags, ["sunset"]);
+        }
+
+        {
+            let item = photo("same");
+            let item_id = item.id.clone();
+            let mut base = replica(1);
+            PhotosDoc::set_library(
+                &mut base,
+                &PhotoLibrary {
+                    photos: vec![item],
+                    ..Default::default()
+                },
+            );
+            let mut favorite = fork(&mut base, 2);
+            let mut metadata = fork(&mut base, 3);
+            let mut left = PhotosDoc::library(&favorite);
+            left.photo_mut(&item_id).expect("photo").favorite = true;
+            PhotosDoc::set_library(&mut favorite, &left);
+            let mut right = PhotosDoc::library(&metadata);
+            right.photo_mut(&item_id).expect("photo").folder = Some("Travel".into());
+            PhotosDoc::set_library(&mut metadata, &right);
+
+            let merged = merge(&mut favorite, &mut metadata);
+            let item = merged.photo(&item_id).expect("photo");
+            assert!(item.favorite);
+            assert_eq!(item.folder.as_deref(), Some("Travel"));
+        }
+
+        {
+            let item = photo("concurrent-analysis");
+            let item_id = item.id.clone();
+            let content = item.image.content.clone().unwrap();
+            let mut base = replica(1);
+            PhotosDoc::set_library(
+                &mut base,
+                &PhotoLibrary {
+                    photos: vec![item],
+                    ..Default::default()
+                },
+            );
+            let mut ocr = fork(&mut base, 2);
+            let mut vision = fork(&mut base, 3);
+
+            let ocr_provenance = crate::model::AnalysisProvenance {
+                source: "local-ocr".into(),
+                engine: "tilo-ocr".into(),
+                language: "eng".into(),
+                content: content.clone(),
+                scope: "shared".into(),
+                ..Default::default()
+            };
+            let mut library = PhotosDoc::library(&ocr);
+            library.photo_mut(&item_id).unwrap().analysis = Some(ImageAnalysis {
+                ocr_text: "concurrent receipt".into(),
+                provenance: ocr_provenance.clone(),
+                ocr_provenance: Some(ocr_provenance),
+                ..Default::default()
+            });
+            PhotosDoc::set_library(&mut ocr, &library);
+
+            let vision_provenance = crate::model::AnalysisProvenance {
+                source: "local-vision".into(),
+                engine: "tilo-vision".into(),
+                model_id: "signed-model".into(),
+                model_revision: "a".repeat(64),
+                content,
+                scope: "shared".into(),
+                ..Default::default()
+            };
+            let mut library = PhotosDoc::library(&vision);
+            library.photo_mut(&item_id).unwrap().analysis = Some(ImageAnalysis {
+                description: "A bicycle beside a lake".into(),
+                objects: vec!["bicycle".into()],
+                provenance: vision_provenance.clone(),
+                vision_provenance: Some(vision_provenance),
+                ..Default::default()
+            });
+            PhotosDoc::set_library(&mut vision, &library);
+
+            let mut left = copy(&mut ocr);
+            let mut right_for_left = copy(&mut vision);
+            let left_result = merge(&mut left, &mut right_for_left);
+            let mut right = copy(&mut vision);
+            let mut left_for_right = copy(&mut ocr);
+            let right_result = merge(&mut right, &mut left_for_right);
+            for result in [left_result, right_result] {
+                let analysis = result.photo(&item_id).unwrap().analysis.as_ref().unwrap();
+                assert_eq!(analysis.ocr_text, "concurrent receipt");
+                assert_eq!(analysis.description, "A bicycle beside a lake");
+                assert_eq!(analysis.objects, ["bicycle"]);
+                assert_eq!(
+                    analysis.ocr_provenance.as_ref().unwrap().source,
+                    "local-ocr"
+                );
+                assert_eq!(
+                    analysis.vision_provenance.as_ref().unwrap().source,
+                    "local-vision"
+                );
+            }
+        }
     }
 
     fn photo(id: &str) -> LibraryPhoto {
@@ -1705,199 +1895,9 @@ mod tests {
         PhotosDoc::library(left)
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn concurrent_legacy_label_migrations_keep_original_and_offline_adds() {
-        use crate::actions::{MetadataLabelsPatch, MetadataPatch};
-
-        let mut base = replica(1);
-        let mut item = photo("legacy-labels");
-        item.tags = vec!["original".into()];
-        PhotosDoc::set_library(
-            &mut base,
-            &PhotoLibrary {
-                photos: vec![item.clone()],
-                ..Default::default()
-            },
-        );
-
-        // Recreate the pre-membership-map wire shape so both offline replicas
-        // independently perform the migration while adding a different tag.
-        let root = PhotosDoc::library_roots(&base)
-            .into_iter()
-            .next()
-            .expect("library root");
-        let tags = PhotosDoc::map_at(&base, &root, "photo_tags").expect("tags map");
-        base.delete(&tags, &item.id).expect("remove membership map");
-        PhotosDoc::write_json_at(&mut base, &tags, &item.id, &item.tags);
-
-        let bytes = base.save();
-        let mut left = AutoCommit::load(&bytes).expect("left replica");
-        left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut right = AutoCommit::load(&bytes).expect("right replica");
-        right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-        for (doc, tag) in [(&mut left, "left"), (&mut right, "right")] {
-            PhotosAction::SetMetadataBatch {
-                photo_ids: vec![item.id.clone()],
-                folder: MetadataPatch::Keep,
-                people: MetadataLabelsPatch::Keep,
-                tags: MetadataLabelsPatch::Add(vec![tag.into()]),
-                captured_at: MetadataPatch::Keep,
-                location: MetadataPatch::Keep,
-            }
-            .apply(doc)
-            .expect("offline migration applies");
-        }
-
-        let mut left_first = copy(&mut left);
-        let mut right_for_left = copy(&mut right);
-        let left_result = merge(&mut left_first, &mut right_for_left);
-        let mut right_first = copy(&mut right);
-        let mut left_for_right = copy(&mut left);
-        let right_result = merge(&mut right_first, &mut left_for_right);
-        for library in [left_result, right_result] {
-            assert_eq!(
-                library.photo(&item.id).expect("photo").tags,
-                ["left", "original", "right"],
-                "conflicting migration maps must be unioned in either merge order"
-            );
-        }
-    }
-
-    #[test]
-    fn concurrent_independent_photo_fields_merge_without_rewriting_neighbors() {
-        let first = photo("first");
-        let second = photo("second");
-        let mut base = replica(1);
-        PhotosDoc::set_library(
-            &mut base,
-            &PhotoLibrary {
-                photos: vec![first.clone(), second.clone()],
-                ..Default::default()
-            },
-        );
-        let mut favorite = copy(&mut base);
-        favorite.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut metadata = copy(&mut base);
-        metadata.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-        let mut left = PhotosDoc::library(&favorite);
-        left.photo_mut(&first.id).expect("first").favorite = true;
-        PhotosDoc::set_library(&mut favorite, &left);
-        let mut right = PhotosDoc::library(&metadata);
-        right.photo_mut(&second.id).expect("second").tags = vec!["sunset".into()];
-        PhotosDoc::set_library(&mut metadata, &right);
-
-        let merged = merge(&mut favorite, &mut metadata);
-        assert!(merged.photo(&first.id).expect("first").favorite);
-        assert_eq!(merged.photo(&second.id).expect("second").tags, ["sunset"]);
-    }
-
-    #[test]
-    fn same_photo_favorite_and_metadata_merge_at_distinct_fields() {
-        let item = photo("same");
-        let item_id = item.id.clone();
-        let mut base = replica(1);
-        PhotosDoc::set_library(
-            &mut base,
-            &PhotoLibrary {
-                photos: vec![item],
-                ..Default::default()
-            },
-        );
-        let mut favorite = copy(&mut base);
-        favorite.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut metadata = copy(&mut base);
-        metadata.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-        let mut left = PhotosDoc::library(&favorite);
-        left.photo_mut(&item_id).expect("photo").favorite = true;
-        PhotosDoc::set_library(&mut favorite, &left);
-        let mut right = PhotosDoc::library(&metadata);
-        right.photo_mut(&item_id).expect("photo").folder = Some("Travel".into());
-        PhotosDoc::set_library(&mut metadata, &right);
-
-        let merged = merge(&mut favorite, &mut metadata);
-        let item = merged.photo(&item_id).expect("photo");
-        assert!(item.favorite);
-        assert_eq!(item.folder.as_deref(), Some("Travel"));
-    }
-
-    #[test]
-    fn concurrent_ocr_and_vision_components_converge_in_either_merge_order() {
-        let item = photo("concurrent-analysis");
-        let item_id = item.id.clone();
-        let content = item.image.content.clone().unwrap();
-        let mut base = replica(1);
-        PhotosDoc::set_library(
-            &mut base,
-            &PhotoLibrary {
-                photos: vec![item],
-                ..Default::default()
-            },
-        );
-        let mut ocr = copy(&mut base);
-        ocr.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut vision = copy(&mut base);
-        vision.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-
-        let ocr_provenance = crate::model::AnalysisProvenance {
-            source: "local-ocr".into(),
-            engine: "tilo-ocr".into(),
-            language: "eng".into(),
-            content: content.clone(),
-            scope: "shared".into(),
-            ..Default::default()
-        };
-        let mut library = PhotosDoc::library(&ocr);
-        library.photo_mut(&item_id).unwrap().analysis = Some(ImageAnalysis {
-            ocr_text: "concurrent receipt".into(),
-            provenance: ocr_provenance.clone(),
-            ocr_provenance: Some(ocr_provenance),
-            ..Default::default()
-        });
-        PhotosDoc::set_library(&mut ocr, &library);
-
-        let vision_provenance = crate::model::AnalysisProvenance {
-            source: "local-vision".into(),
-            engine: "tilo-vision".into(),
-            model_id: "signed-model".into(),
-            model_revision: "a".repeat(64),
-            content,
-            scope: "shared".into(),
-            ..Default::default()
-        };
-        let mut library = PhotosDoc::library(&vision);
-        library.photo_mut(&item_id).unwrap().analysis = Some(ImageAnalysis {
-            description: "A bicycle beside a lake".into(),
-            objects: vec!["bicycle".into()],
-            provenance: vision_provenance.clone(),
-            vision_provenance: Some(vision_provenance),
-            ..Default::default()
-        });
-        PhotosDoc::set_library(&mut vision, &library);
-
-        let mut left = copy(&mut ocr);
-        let mut right_for_left = copy(&mut vision);
-        let left_result = merge(&mut left, &mut right_for_left);
-        let mut right = copy(&mut vision);
-        let mut left_for_right = copy(&mut ocr);
-        let right_result = merge(&mut right, &mut left_for_right);
-        for result in [left_result, right_result] {
-            let analysis = result.photo(&item_id).unwrap().analysis.as_ref().unwrap();
-            assert_eq!(analysis.ocr_text, "concurrent receipt");
-            assert_eq!(analysis.description, "A bicycle beside a lake");
-            assert_eq!(analysis.objects, ["bicycle"]);
-            assert_eq!(
-                analysis.ocr_provenance.as_ref().unwrap().source,
-                "local-ocr"
-            );
-            assert_eq!(
-                analysis.vision_provenance.as_ref().unwrap().source,
-                "local-vision"
-            );
-        }
-    }
-
-    #[test]
-    fn concurrent_album_membership_and_rename_merge() {
+    fn albums_library_roots_and_deletes_converge_across_replicas() {
         let item = photo("member");
         let item_id = item.id.clone();
         let album = crate::model::Album {
@@ -1913,10 +1913,8 @@ mod tests {
                 albums: vec![album.clone()],
             },
         );
-        let mut membership = copy(&mut base);
-        membership.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut rename = copy(&mut base);
-        rename.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+        let mut membership = fork(&mut base, 2);
+        let mut rename = fork(&mut base, 3);
         let mut left = PhotosDoc::library(&membership);
         left.album_mut(&album.id)
             .expect("album")
@@ -1931,120 +1929,120 @@ mod tests {
         let album = merged.album(&album.id).expect("album");
         assert_eq!(album.name, "Summer trip");
         assert_eq!(album.photo_ids, [item_id]);
-    }
 
-    #[test]
-    fn concurrent_absolute_album_memberships_converge_without_interleaving() {
-        let first = photo("first-member");
-        let second = photo("second-member");
-        let third = photo("third-member");
-        let album_id = "photos.album:shared".to_owned();
-        let mut base = replica(1);
-        PhotosDoc::set_library(
-            &mut base,
-            &PhotoLibrary {
-                photos: vec![first.clone(), second.clone(), third.clone()],
-                albums: vec![crate::model::Album {
-                    id: album_id.clone(),
-                    name: "Shared".into(),
-                    photo_ids: vec![first.id],
-                }],
-            },
-        );
-        let mut left = copy(&mut base);
-        left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut right = copy(&mut base);
-        right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-        let left_members = vec![second.id];
-        let right_members = vec![third.id];
-        let mut library = PhotosDoc::library(&left);
-        library.album_mut(&album_id).expect("album").photo_ids = left_members.clone();
-        PhotosDoc::set_library(&mut left, &library);
-        let mut library = PhotosDoc::library(&right);
-        library.album_mut(&album_id).expect("album").photo_ids = right_members.clone();
-        PhotosDoc::set_library(&mut right, &library);
+        {
+            let first = photo("first-member");
+            let second = photo("second-member");
+            let third = photo("third-member");
+            let album_id = "photos.album:shared".to_owned();
+            let mut base = replica(1);
+            PhotosDoc::set_library(
+                &mut base,
+                &PhotoLibrary {
+                    photos: vec![first.clone(), second.clone(), third.clone()],
+                    albums: vec![crate::model::Album {
+                        id: album_id.clone(),
+                        name: "Shared".into(),
+                        photo_ids: vec![first.id],
+                    }],
+                },
+            );
+            let mut left = fork(&mut base, 2);
+            let mut right = fork(&mut base, 3);
+            let left_members = vec![second.id];
+            let right_members = vec![third.id];
+            let mut library = PhotosDoc::library(&left);
+            library.album_mut(&album_id).expect("album").photo_ids = left_members.clone();
+            PhotosDoc::set_library(&mut left, &library);
+            let mut library = PhotosDoc::library(&right);
+            library.album_mut(&album_id).expect("album").photo_ids = right_members.clone();
+            PhotosDoc::set_library(&mut right, &library);
 
-        let mut left_first = copy(&mut left);
-        let mut right_for_left = copy(&mut right);
-        let merged_left = merge(&mut left_first, &mut right_for_left);
-        let mut right_first = copy(&mut right);
-        let mut left_for_right = copy(&mut left);
-        let merged_right = merge(&mut right_first, &mut left_for_right);
-        let left_result = &merged_left.album(&album_id).expect("album").photo_ids;
-        let right_result = &merged_right.album(&album_id).expect("album").photo_ids;
-        assert_eq!(left_result, right_result, "merge order must not matter");
-        assert!(
-            left_result == &left_members || left_result == &right_members,
-            "absolute replacements must not interleave into {left_result:?}"
-        );
-    }
-
-    #[test]
-    fn concurrent_library_root_creation_keeps_both_imports_then_consolidates() {
-        let mut left = replica(1);
-        let mut right = replica(2);
-        let left_photo = photo("left-root");
-        let right_photo = photo("right-root");
-        PhotosDoc::set_library(
-            &mut left,
-            &PhotoLibrary {
-                photos: vec![left_photo.clone()],
-                ..Default::default()
-            },
-        );
-        PhotosDoc::set_library(
-            &mut right,
-            &PhotoLibrary {
-                photos: vec![right_photo.clone()],
-                ..Default::default()
-            },
-        );
-        left.merge_incoming(&mut right)
-            .expect("independently created library roots merge");
-        let merged = PhotosDoc::library(&left);
-        assert!(merged.photo(&left_photo.id).is_some());
-        assert!(merged.photo(&right_photo.id).is_some());
-
-        PhotosDoc::seed(&mut left);
-
-        assert_eq!(PhotosDoc::library_roots(&left).len(), 1);
-        let consolidated = PhotosDoc::library(&left);
-        assert!(consolidated.photo(&left_photo.id).is_some());
-        assert!(consolidated.photo(&right_photo.id).is_some());
-    }
-
-    #[test]
-    fn concurrent_delete_wins_over_stale_import_or_metadata() {
-        let item = photo("removed");
-        let mut base = replica(1);
-        PhotosDoc::set_library(
-            &mut base,
-            &PhotoLibrary {
-                photos: vec![item],
-                ..Default::default()
-            },
-        );
-        let mut delete = copy(&mut base);
-        delete.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-        let mut stale_import = copy(&mut base);
-        stale_import.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-        let importing = PhotosDoc::library(&stale_import).photos[0].clone();
-        let importing_id = importing.id.clone();
-        PhotosAction::RemovePhoto {
-            photo_id: importing_id,
+            let mut left_first = copy(&mut left);
+            let mut right_for_left = copy(&mut right);
+            let merged_left = merge(&mut left_first, &mut right_for_left);
+            let mut right_first = copy(&mut right);
+            let mut left_for_right = copy(&mut left);
+            let merged_right = merge(&mut right_first, &mut left_for_right);
+            let left_result = &merged_left.album(&album_id).expect("album").photo_ids;
+            let right_result = &merged_right.album(&album_id).expect("album").photo_ids;
+            assert_eq!(left_result, right_result, "merge order must not matter");
+            assert!(
+                left_result == &left_members || left_result == &right_members,
+                "absolute replacements must not interleave into {left_result:?}"
+            );
         }
-        .apply(&mut delete)
-        .expect("canonical delete applies");
-        assert!(PhotosDoc::library(&delete).photos.is_empty());
-        // This models an import from a replica that still held the same
-        // content-addressed id. It does not get to resurrect a delete it has
-        // not observed; explicit re-import after observing the tombstone does.
-        PhotosAction::ImportPhoto { photo: importing }
-            .apply(&mut stale_import)
-            .expect("canonical stale import remains replayable");
 
-        let merged = merge(&mut delete, &mut stale_import);
-        assert!(merged.photos.is_empty());
+        {
+            let mut left = replica(1);
+            let mut right = replica(2);
+            let left_photo = photo("left-root");
+            let right_photo = photo("right-root");
+            PhotosDoc::set_library(
+                &mut left,
+                &PhotoLibrary {
+                    photos: vec![left_photo.clone()],
+                    ..Default::default()
+                },
+            );
+            PhotosDoc::set_library(
+                &mut right,
+                &PhotoLibrary {
+                    photos: vec![right_photo.clone()],
+                    ..Default::default()
+                },
+            );
+            left.merge_incoming(&mut right)
+                .expect("independently created library roots merge");
+            let merged = PhotosDoc::library(&left);
+            assert!(merged.photo(&left_photo.id).is_some());
+            assert!(merged.photo(&right_photo.id).is_some());
+
+            PhotosDoc::seed(&mut left);
+
+            assert_eq!(PhotosDoc::library_roots(&left).len(), 1);
+            let consolidated = PhotosDoc::library(&left);
+            assert!(consolidated.photo(&left_photo.id).is_some());
+            assert!(consolidated.photo(&right_photo.id).is_some());
+        }
+
+        {
+            let item = photo("removed");
+            let mut base = replica(1);
+            PhotosDoc::set_library(
+                &mut base,
+                &PhotoLibrary {
+                    photos: vec![item],
+                    ..Default::default()
+                },
+            );
+            let mut delete = fork(&mut base, 2);
+            let mut stale_import = fork(&mut base, 3);
+            let importing = PhotosDoc::library(&stale_import).photos[0].clone();
+            let importing_id = importing.id.clone();
+            PhotosAction::RemovePhoto {
+                photo_id: importing_id,
+            }
+            .apply(&mut delete)
+            .expect("canonical delete applies");
+            assert!(PhotosDoc::library(&delete).photos.is_empty());
+            // This models an import from a replica that still held the same
+            // content-addressed id. It does not get to resurrect a delete it has
+            // not observed; explicit re-import after observing the tombstone does.
+            PhotosAction::ImportPhoto { photo: importing }
+                .apply(&mut stale_import)
+                .expect("canonical stale import remains replayable");
+
+            let merged = merge(&mut delete, &mut stale_import);
+            assert!(merged.photos.is_empty());
+        }
+    }
+
+    /// Another participant's replica of `doc`, with its own fixed actor id.
+    fn fork(doc: &mut AutoCommit, actor: u8) -> AutoCommit {
+        let mut replica = copy(doc);
+        replica.set_actor(automerge::ActorId::from([actor; 16].as_slice()));
+        replica
     }
 
     /// A copy of `doc` as another machine would hold it, for merging back.
@@ -2081,11 +2079,42 @@ mod tests {
     /// orderings, and both merge directions are checked because it is one
     /// document afterwards and both participants have to be looking at it.
     #[test]
-    fn a_replica_that_opens_empty_never_closes_the_photograph_the_room_holds() {
+    fn the_room_photograph_survives_an_empty_replica_but_not_a_seen_close() {
         for (open_actor, empty_actor) in [(1u8, 2u8), (2u8, 1u8)] {
             for empty_is_ahead in [false, true] {
                 run_the_empty_replica_against_the_open_one(open_actor, empty_actor, empty_is_ahead);
             }
+        }
+
+        // And the rule is about concurrency, not about refusing to let go.
+        //
+        // Closing a photograph is a write that *saw* the open one, so it
+        // supersedes it rather than competing with it — there is one value under
+        // the key afterwards and it is the close. Without this the fix above
+        // would read as "a photograph can never be closed once any replica has
+        // seen it", which would be a worse defect than the one it replaces.
+        {
+            let mut here = replica(1);
+            let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
+            PhotosDoc::set_image(&mut here, Some(&img));
+            PhotosDoc::set_edits(&mut here, &Edits::default().rotated_right());
+
+            // A collaborator, holding the same document, closes it and resets the
+            // turn — both after seeing what was there.
+            let mut there = fork(&mut here, 2u8);
+            PhotosDoc::set_image(&mut there, None);
+
+            let mut back = copy(&mut here);
+            back.merge_incoming(&mut copy(&mut there))
+                .expect("the collaborator's document must merge back");
+            assert!(
+                PhotosDoc::image(&back).is_none(),
+                "a close that saw the open supersedes it; the photograph must go",
+            );
+            assert!(
+                PhotosDoc::edits(&back).is_identity(),
+                "and opening or closing a photograph resets the edits with it",
+            );
         }
     }
 
@@ -2162,55 +2191,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// And the rule is about concurrency, not about refusing to let go.
-    ///
-    /// Closing a photograph is a write that *saw* the open one, so it
-    /// supersedes it rather than competing with it — there is one value under
-    /// the key afterwards and it is the close. Without this the fix above
-    /// would read as "a photograph can never be closed once any replica has
-    /// seen it", which would be a worse defect than the one it replaces.
-    #[test]
-    fn a_participant_who_closes_the_photograph_closes_it_everywhere() {
-        let mut here = replica(1);
-        let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
-        PhotosDoc::set_image(&mut here, Some(&img));
-        PhotosDoc::set_edits(&mut here, &Edits::default().rotated_right());
-
-        // A collaborator, holding the same document, closes it and resets the
-        // turn — both after seeing what was there.
-        let mut there = copy(&mut here);
-        there.set_actor(automerge::ActorId::from([2u8; 16].as_slice()));
-        PhotosDoc::set_image(&mut there, None);
-
-        let mut back = copy(&mut here);
-        back.merge_incoming(&mut copy(&mut there))
-            .expect("the collaborator's document must merge back");
-        assert!(
-            PhotosDoc::image(&back).is_none(),
-            "a close that saw the open supersedes it; the photograph must go",
-        );
-        assert!(
-            PhotosDoc::edits(&back).is_identity(),
-            "and opening or closing a photograph resets the edits with it",
-        );
-    }
-
-    /// The invariant the content store exists to protect, asserted here rather
-    /// than assumed: a document that has an image open is still tiny, because
-    /// the pixels are not in it.
-    #[test]
-    fn the_document_never_carries_the_pixels() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 4000, 3000);
-        PhotosDoc::set_image(&mut doc, Some(&img));
-        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
-        let saved = doc.save().len();
-        assert!(
-            saved < 4096,
-            "the document grew to {saved} bytes; an image must never travel inside a change"
-        );
     }
 }

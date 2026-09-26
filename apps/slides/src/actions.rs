@@ -1645,284 +1645,300 @@ mod tests {
         ],
     }
 
-    /// Ctrl+K on Slides yields the deck root exporting "Add slide" + a theme row
-    /// per palette, a `slides.slide:<id>` child per slide (duplicate / delete /
-    /// layout / background), and a `slides.element:<id>` per element (delete /
-    /// bring-front / send-back). Drives the real resource hook.
+    /// Ctrl+K publishes the slides tree and nested view resources export stable broker addresses.
     #[test]
-    fn ctrl_k_publishes_the_slides_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one deck root");
-        let deck = &resources[0];
-        assert_eq!(deck.kind, "slides.deck");
-        let deck_actions: Vec<&str> = deck.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(deck_actions.contains(&"add-slide"), "{deck_actions:?}");
-        assert!(deck_actions.contains(&"theme-emerald"), "{deck_actions:?}");
-        assert!(
-            deck_actions.contains(&"present-largest-external")
-                && deck_actions.contains(&"present-primary-external"),
-            "presentation output policies must be available through the same resource surface: {deck_actions:?}"
-        );
-
-        assert_eq!(
-            deck.children.len(),
-            seed_deck().slides.len(),
-            "one child per slide"
-        );
-        let slide = &deck.children[0];
-        assert_eq!(slide.kind, "slides.slide");
-        let s_actions: Vec<&str> = slide.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(s_actions.contains(&"duplicate"), "{s_actions:?}");
-        assert!(s_actions.contains(&"delete"), "{s_actions:?}");
-        assert!(s_actions.contains(&"layout-two-column"), "{s_actions:?}");
-        assert!(s_actions.contains(&"background-deep"), "{s_actions:?}");
-
-        let element = slide
-            .children
-            .first()
-            .expect("a slide has at least one element");
-        assert_eq!(element.kind, "slides.element");
-        let e_actions: Vec<&str> = element.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(e_actions.contains(&"delete"), "{e_actions:?}");
-        assert!(e_actions.contains(&"bring-front"), "{e_actions:?}");
-        assert!(e_actions.contains(&"send-back"), "{e_actions:?}");
-    }
-
-    #[test]
-    fn nested_view_resources_export_stable_broker_addresses() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let slide = &resources[0].children[0];
-        let slide_id = slide.id.0.strip_prefix("slides.slide:").unwrap();
-        let open_slide = slide
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .unwrap();
-        assert_eq!(open_slide.kind, OperationKind::View);
-        assert_eq!(
-            open_slide_address(slide_id),
-            tilo_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
-        );
-
-        let element = slide
-            .children
-            .iter()
-            .find(|resource| resource.kind == "slides.element" && !resource.children.is_empty())
-            .expect("slide has a searchable text element");
-        let text = &element.children[0];
-        let element_id = element.id.0.strip_prefix("slides.element:").unwrap();
-        assert_eq!(open_element_address(element_id).resource, element.id.0);
-        assert_eq!(open_text_address(element_id).resource, text.id.0);
-
-        let address = open_text_address(element_id);
-        let encoded = tilo_actions::door::encode(&resources, &address, None)
-            .expect("text address resolves through the published resource tree");
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(SlidesOperation::RevealElement {
-                slide: slide_id.to_string(),
-                element: element_id.to_string(),
-                edit_text: true,
-            })
-        );
-    }
-
-    #[test]
-    fn stale_and_hostile_actions_are_refused_without_a_partial_write() {
-        let (_app, mut doc) = seeded();
-        let before = doc.get_heads();
-        let live = SlidesDoc::load(&doc).unwrap();
-        let element = live.slides[0].elements[0].id.clone();
-
-        for action in [
-            // A stale numeric index is intentionally *not* hostile: the
-            // canonical element id below resolves it after a remote insert.
-            move_element_action(99, "stale-element", 10.0, 10.0),
-            move_element_action(0, element.clone(), f64::NAN, 10.0),
-            delete_element_action(0, "stale-element"),
-            set_slide_layout_action(99, "stale-slide", Layout::Blank),
-            set_slide_background_action(0, "stale-slide", Background::Deep),
-            SlidesAction::SetDeckPalette {
-                palette: "untrusted-purple".into(),
-            },
-            SlidesAction::RestyleElement {
-                slide: 0,
-                id: element,
-                patch: StylePatch::default(),
-            },
-        ] {
+    fn slides_tree_exports_stable_broker_addresses() {
+        // Case `ctrl_k_publishes_the_slides_tree`.
+        // Ctrl+K on Slides yields the deck root exporting "Add slide" + a theme row
+        // per palette, a `slides.slide:<id>` child per slide (duplicate / delete /
+        // layout / background), and a `slides.element:<id>` per element (delete /
+        // bring-front / send-back). Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one deck root");
+            let deck = &resources[0];
+            assert_eq!(deck.kind, "slides.deck");
+            let deck_actions: Vec<&str> = deck.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(deck_actions.contains(&"add-slide"), "{deck_actions:?}");
+            assert!(deck_actions.contains(&"theme-emerald"), "{deck_actions:?}");
             assert!(
-                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
-                "invalid action must be visibly refused: {action:?}"
+                deck_actions.contains(&"present-largest-external")
+                    && deck_actions.contains(&"present-primary-external"),
+                "presentation output policies must be available through the same resource surface: {deck_actions:?}"
             );
-            assert_eq!(doc.get_heads(), before, "a refused action is atomic");
+
+            assert_eq!(
+                deck.children.len(),
+                seed_deck().slides.len(),
+                "one child per slide"
+            );
+            let slide = &deck.children[0];
+            assert_eq!(slide.kind, "slides.slide");
+            let s_actions: Vec<&str> = slide.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(s_actions.contains(&"duplicate"), "{s_actions:?}");
+            assert!(s_actions.contains(&"delete"), "{s_actions:?}");
+            assert!(s_actions.contains(&"layout-two-column"), "{s_actions:?}");
+            assert!(s_actions.contains(&"background-deep"), "{s_actions:?}");
+
+            let element = slide
+                .children
+                .first()
+                .expect("a slide has at least one element");
+            assert_eq!(element.kind, "slides.element");
+            let e_actions: Vec<&str> = element.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(e_actions.contains(&"delete"), "{e_actions:?}");
+            assert!(e_actions.contains(&"bring-front"), "{e_actions:?}");
+            assert!(e_actions.contains(&"send-back"), "{e_actions:?}");
+        }
+
+        // Case `nested_view_resources_export_stable_broker_addresses`.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let slide = &resources[0].children[0];
+            let slide_id = slide.id.0.strip_prefix("slides.slide:").unwrap();
+            let open_slide = slide
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .unwrap();
+            assert_eq!(open_slide.kind, OperationKind::View);
+            assert_eq!(
+                open_slide_address(slide_id),
+                tilo_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
+            );
+
+            let element = slide
+                .children
+                .iter()
+                .find(|resource| resource.kind == "slides.element" && !resource.children.is_empty())
+                .expect("slide has a searchable text element");
+            let text = &element.children[0];
+            let element_id = element.id.0.strip_prefix("slides.element:").unwrap();
+            assert_eq!(open_element_address(element_id).resource, element.id.0);
+            assert_eq!(open_text_address(element_id).resource, text.id.0);
+
+            let address = open_text_address(element_id);
+            let encoded = tilo_actions::door::encode(&resources, &address, None)
+                .expect("text address resolves through the published resource tree");
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+                Some(SlidesOperation::RevealElement {
+                    slide: slide_id.to_string(),
+                    element: element_id.to_string(),
+                    edit_text: true,
+                })
+            );
         }
     }
 
+    /// Stale, hostile, over-limit and duplicate actions are refused without partial writes.
     #[test]
-    fn stable_ids_keep_an_element_action_on_its_original_slide_after_an_insert() {
-        let (_app, mut doc) = seeded();
-        let before = SlidesDoc::load(&doc).expect("seeded deck");
-        let target_slide = before.slides[1].id.clone();
-        let element = before.slides[1].elements[0].id.clone();
-        let action = move_element_action(1, element.clone(), 321.0, 222.0);
+    fn hostile_or_over_limit_actions_are_refused_atomically() {
+        // Case `stale_and_hostile_actions_are_refused_without_a_partial_write`.
+        {
+            let (_app, mut doc) = seeded();
+            let before = doc.get_heads();
+            let live = SlidesDoc::load(&doc).unwrap();
+            let element = live.slides[0].elements[0].id.clone();
 
-        // This simulates a collaborator inserting a slide before the authored
-        // numeric position while the action is in flight.
-        SlidesDoc::insert_slide(&mut doc, 0, &crate::model::Slide::new(Layout::Blank));
-        action
-            .apply(&mut doc)
-            .expect("stable id resolves after insert");
+            for action in [
+                // A stale numeric index is intentionally *not* hostile: the
+                // canonical element id below resolves it after a remote insert.
+                move_element_action(99, "stale-element", 10.0, 10.0),
+                move_element_action(0, element.clone(), f64::NAN, 10.0),
+                delete_element_action(0, "stale-element"),
+                set_slide_layout_action(99, "stale-slide", Layout::Blank),
+                set_slide_background_action(0, "stale-slide", Background::Deep),
+                SlidesAction::SetDeckPalette {
+                    palette: "untrusted-purple".into(),
+                },
+                SlidesAction::RestyleElement {
+                    slide: 0,
+                    id: element,
+                    patch: StylePatch::default(),
+                },
+            ] {
+                assert!(
+                    matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                    "invalid action must be visibly refused: {action:?}"
+                );
+                assert_eq!(doc.get_heads(), before, "a refused action is atomic");
+            }
+        }
 
-        let after = SlidesDoc::load(&doc).expect("deck remains readable");
-        let target = after
-            .slides
-            .iter()
-            .find(|slide| slide.id == target_slide)
-            .expect("same canonical slide");
-        let moved = target.element(&element).expect("same canonical element");
-        assert_eq!((moved.x, moved.y), (321.0, 222.0));
-        assert!(
-            after.slides[1].element(&element).is_none(),
-            "the stale numeric slot was not mutated"
-        );
+        // Case `aggregate_slide_limit_refuses_atomically_at_the_boundary`.
+        {
+            let mut deck = crate::model::starter_deck();
+            deck.slides = (0..MAX_TOTAL_SLIDES)
+                .map(|_| crate::model::Slide::new(Layout::Blank))
+                .collect();
+            let mut doc = AutoCommit::new();
+            SlidesDoc::seed(&mut doc, &deck);
+            let before = doc.save();
+            let action =
+                insert_slide_action(deck.slides.len(), &crate::model::Slide::new(Layout::Blank));
+            assert!(action.apply(&mut doc).is_err());
+            assert_eq!(
+                doc.save(),
+                before,
+                "a refused aggregate action writes nothing"
+            );
+        }
+
+        // Case `duplicate_element_insert_is_refused_before_document_mutation`.
+        {
+            let (_app, mut doc) = seeded();
+            let before = doc.get_heads();
+            let duplicate = SlidesDoc::load(&doc).unwrap().slides[0].elements[0].clone();
+            let slide_id = SlidesDoc::load(&doc).unwrap().slides[0].id.clone();
+            let action = add_element_action(0, slide_id, &duplicate);
+            assert!(matches!(
+                action.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(doc.get_heads(), before);
+        }
     }
 
+    /// Stable ids and absolute slide order/insert/z replay identically after divergent edits.
     #[test]
-    fn absolute_slide_order_replays_identically_after_divergent_inserts() {
-        let (_app, mut a) = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn absolute_orders_replay_identically_after_divergence() {
+        // Case `stable_ids_keep_an_element_action_on_its_original_slide_after_an_insert`.
+        {
+            let (_app, mut doc) = seeded();
+            let before = SlidesDoc::load(&doc).expect("seeded deck");
+            let target_slide = before.slides[1].id.clone();
+            let element = before.slides[1].elements[0].id.clone();
+            let action = move_element_action(1, element.clone(), 321.0, 222.0);
 
-        let base = SlidesDoc::load(&a).expect("seeded deck");
-        let moved = base.slides[1].id.clone();
-        let rank = SlidesDoc::rank_for_move(&a, 1, 3).expect("valid authored reorder");
-        let encoded = encode(&set_slide_order_action(moved.clone(), rank));
-        assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
-        let action: SlidesAction =
-            serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
+            // This simulates a collaborator inserting a slide before the authored
+            // numeric position while the action is in flight.
+            SlidesDoc::insert_slide(&mut doc, 0, &crate::model::Slide::new(Layout::Blank));
+            action
+                .apply(&mut doc)
+                .expect("stable id resolves after insert");
 
-        // Each receiver has independently evolved its positional view before
-        // the same reorder arrives. The action carries the author-computed
-        // scalar rank, so neither receiver recomputes a different destination.
-        SlidesDoc::insert_slide(&mut a, 0, &crate::model::Slide::new(Layout::Blank));
-        SlidesDoc::insert_slide(&mut b, 2, &crate::model::Slide::new(Layout::Blank));
-        action.apply(&mut a).expect("absolute rank applies to a");
-        action.apply(&mut b).expect("absolute rank applies to b");
-        assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
-        assert_eq!(SlidesDoc::slide_order(&b, &moved), Some(rank));
+            let after = SlidesDoc::load(&doc).expect("deck remains readable");
+            let target = after
+                .slides
+                .iter()
+                .find(|slide| slide.id == target_slide)
+                .expect("same canonical slide");
+            let moved = target.element(&element).expect("same canonical element");
+            assert_eq!((moved.x, moved.y), (321.0, 222.0));
+            assert!(
+                after.slides[1].element(&element).is_none(),
+                "the stale numeric slot was not mutated"
+            );
+        }
 
-        a.merge_incoming(&mut b).expect("merge into a");
-        b.merge_incoming(&mut a).expect("merge into b");
-        assert_eq!(
-            SlidesDoc::load(&a),
-            SlidesDoc::load(&b),
-            "the divergent replicas converge after replaying one encoded rank"
-        );
-        assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
-    }
+        // Case `absolute_slide_order_replays_identically_after_divergent_inserts`.
+        {
+            let (_app, mut a) = seeded();
+            a.commit();
+            let bytes = a.save();
+            let mut b = AutoCommit::load(&bytes).expect("replica loads");
 
-    #[test]
-    fn absolute_slide_insert_replays_identically_after_divergent_inserts() {
-        let (_app, mut a) = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+            let base = SlidesDoc::load(&a).expect("seeded deck");
+            let moved = base.slides[1].id.clone();
+            let rank = SlidesDoc::rank_for_move(&a, 1, 3).expect("valid authored reorder");
+            let encoded = encode(&set_slide_order_action(moved.clone(), rank));
+            assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
+            let action: SlidesAction =
+                serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
 
-        let inserted = crate::model::Slide::new(Layout::Blank);
-        let inserted_id = inserted.id.clone();
-        let rank = SlidesDoc::rank_for_insert(&a, 1);
-        let encoded = encode(&insert_slide_with_order_action(&inserted, rank));
-        assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
-        let action: SlidesAction =
-            serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
+            // Each receiver has independently evolved its positional view before
+            // the same reorder arrives. The action carries the author-computed
+            // scalar rank, so neither receiver recomputes a different destination.
+            SlidesDoc::insert_slide(&mut a, 0, &crate::model::Slide::new(Layout::Blank));
+            SlidesDoc::insert_slide(&mut b, 2, &crate::model::Slide::new(Layout::Blank));
+            action.apply(&mut a).expect("absolute rank applies to a");
+            action.apply(&mut b).expect("absolute rank applies to b");
+            assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
+            assert_eq!(SlidesDoc::slide_order(&b, &moved), Some(rank));
 
-        // The receivers disagree about their current insertion slots, but the
-        // new slide's encoded rank remains the exact authored scalar.
-        SlidesDoc::insert_slide(&mut a, 0, &crate::model::Slide::new(Layout::Blank));
-        SlidesDoc::insert_slide(&mut b, 3, &crate::model::Slide::new(Layout::Blank));
-        action
-            .apply(&mut a)
-            .expect("absolute insertion applies to a");
-        action
-            .apply(&mut b)
-            .expect("absolute insertion applies to b");
-        assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
-        assert_eq!(SlidesDoc::slide_order(&b, &inserted_id), Some(rank));
+            a.merge_incoming(&mut b).expect("merge into a");
+            b.merge_incoming(&mut a).expect("merge into b");
+            assert_eq!(
+                SlidesDoc::load(&a),
+                SlidesDoc::load(&b),
+                "the divergent replicas converge after replaying one encoded rank"
+            );
+            assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
+        }
 
-        a.merge_incoming(&mut b).expect("merge into a");
-        b.merge_incoming(&mut a).expect("merge into b");
-        assert_eq!(SlidesDoc::load(&a), SlidesDoc::load(&b));
-        assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
-    }
+        // Case `absolute_slide_insert_replays_identically_after_divergent_inserts`.
+        {
+            let (_app, mut a) = seeded();
+            a.commit();
+            let bytes = a.save();
+            let mut b = AutoCommit::load(&bytes).expect("replica loads");
 
-    #[test]
-    fn absolute_element_z_replays_identically_after_divergent_arrangement() {
-        let (_app, mut a) = seeded();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+            let inserted = crate::model::Slide::new(Layout::Blank);
+            let inserted_id = inserted.id.clone();
+            let rank = SlidesDoc::rank_for_insert(&a, 1);
+            let encoded = encode(&insert_slide_with_order_action(&inserted, rank));
+            assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
+            let action: SlidesAction =
+                serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
 
-        let deck = SlidesDoc::load(&a).expect("seeded deck");
-        let slide_id = deck.slides[0].id.clone();
-        let target = deck.slides[0].elements[0].id.clone();
-        let other_a = deck.slides[0].elements[1].id.clone();
-        let other_b = deck.slides[0].elements[2].id.clone();
-        let z = restack_z_for_author(&a, &slide_id, &target, true).expect("front z");
-        let encoded = encode(&set_element_z_action(slide_id, target.clone(), z));
-        let action: SlidesAction =
-            serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
+            // The receivers disagree about their current insertion slots, but the
+            // new slide's encoded rank remains the exact authored scalar.
+            SlidesDoc::insert_slide(&mut a, 0, &crate::model::Slide::new(Layout::Blank));
+            SlidesDoc::insert_slide(&mut b, 3, &crate::model::Slide::new(Layout::Blank));
+            action
+                .apply(&mut a)
+                .expect("absolute insertion applies to a");
+            action
+                .apply(&mut b)
+                .expect("absolute insertion applies to b");
+            assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
+            assert_eq!(SlidesDoc::slide_order(&b, &inserted_id), Some(rank));
 
-        // Different local z extrema must not change the encoded target z.
-        SlidesDoc::set_element_z(&mut a, 0, &other_a, 80);
-        SlidesDoc::set_element_z(&mut b, 0, &other_b, -80);
-        action.apply(&mut a).expect("absolute z applies to a");
-        action.apply(&mut b).expect("absolute z applies to b");
+            a.merge_incoming(&mut b).expect("merge into a");
+            b.merge_incoming(&mut a).expect("merge into b");
+            assert_eq!(SlidesDoc::load(&a), SlidesDoc::load(&b));
+            assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
+        }
 
-        a.merge_incoming(&mut b).expect("merge into a");
-        b.merge_incoming(&mut a).expect("merge into b");
-        let left = SlidesDoc::load(&a).expect("merged deck");
-        assert_eq!(Some(left.clone()), SlidesDoc::load(&b));
-        assert_eq!(
-            left.slides[0].element(&target).expect("target survives").z,
-            z,
-            "both replicas applied the author-computed z, not local extrema"
-        );
-    }
+        // Case `absolute_element_z_replays_identically_after_divergent_arrangement`.
+        {
+            let (_app, mut a) = seeded();
+            a.commit();
+            let bytes = a.save();
+            let mut b = AutoCommit::load(&bytes).expect("replica loads");
 
-    #[test]
-    fn aggregate_slide_limit_refuses_atomically_at_the_boundary() {
-        let mut deck = crate::model::starter_deck();
-        deck.slides = (0..MAX_TOTAL_SLIDES)
-            .map(|_| crate::model::Slide::new(Layout::Blank))
-            .collect();
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &deck);
-        let before = doc.save();
-        let action =
-            insert_slide_action(deck.slides.len(), &crate::model::Slide::new(Layout::Blank));
-        assert!(action.apply(&mut doc).is_err());
-        assert_eq!(
-            doc.save(),
-            before,
-            "a refused aggregate action writes nothing"
-        );
-    }
+            let deck = SlidesDoc::load(&a).expect("seeded deck");
+            let slide_id = deck.slides[0].id.clone();
+            let target = deck.slides[0].elements[0].id.clone();
+            let other_a = deck.slides[0].elements[1].id.clone();
+            let other_b = deck.slides[0].elements[2].id.clone();
+            let z = restack_z_for_author(&a, &slide_id, &target, true).expect("front z");
+            let encoded = encode(&set_element_z_action(slide_id, target.clone(), z));
+            let action: SlidesAction =
+                serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
 
-    #[test]
-    fn duplicate_element_insert_is_refused_before_document_mutation() {
-        let (_app, mut doc) = seeded();
-        let before = doc.get_heads();
-        let duplicate = SlidesDoc::load(&doc).unwrap().slides[0].elements[0].clone();
-        let slide_id = SlidesDoc::load(&doc).unwrap().slides[0].id.clone();
-        let action = add_element_action(0, slide_id, &duplicate);
-        assert!(matches!(
-            action.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(doc.get_heads(), before);
+            // Different local z extrema must not change the encoded target z.
+            SlidesDoc::set_element_z(&mut a, 0, &other_a, 80);
+            SlidesDoc::set_element_z(&mut b, 0, &other_b, -80);
+            action.apply(&mut a).expect("absolute z applies to a");
+            action.apply(&mut b).expect("absolute z applies to b");
+
+            a.merge_incoming(&mut b).expect("merge into a");
+            b.merge_incoming(&mut a).expect("merge into b");
+            let left = SlidesDoc::load(&a).expect("merged deck");
+            assert_eq!(Some(left.clone()), SlidesDoc::load(&b));
+            assert_eq!(
+                left.slides[0].element(&target).expect("target survives").z,
+                z,
+                "both replicas applied the author-computed z, not local extrema"
+            );
+        }
     }
 }

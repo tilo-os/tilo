@@ -566,381 +566,411 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "live")]
     #[test]
-    fn authorization_reports_browser_failure_before_waiting_for_callback() {
-        let result = run_loopback_authorization(
-            OAuthProvider::Google,
-            "test-client",
-            "fixture@example.invalid",
-            |url| {
-                assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
-                Err("fixture browser unavailable".into())
-            },
-            std::time::Duration::ZERO,
-        );
-        assert_eq!(
-            result.unwrap_err(),
-            "could not open sign-in browser: fixture browser unavailable"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn loopback_redirect_captures_the_code_and_rejects_bad_callbacks() {
+        // Phase `parse_redirect_line_extracts_code_and_state`.
+        {
+            let line = "GET /oauth?state=xyz&code=4%2F0Afoo&scope=mail HTTP/1.1";
+            match parse_redirect_line(line) {
+                Some(RedirectResult::Code { code, state }) => {
+                    assert_eq!(code, "4/0Afoo", "percent-decoded code");
+                    assert_eq!(state, "xyz");
+                }
+                other => panic!("expected a code, got {other:?}"),
+            }
+        }
+
+        // Phase `parse_redirect_line_surfaces_provider_error`.
+        {
+            let line = "GET /oauth?error=access_denied&state=xyz HTTP/1.1";
+            assert_eq!(
+                parse_redirect_line(line),
+                Some(RedirectResult::Error("access_denied".into()))
+            );
+        }
+
+        // Phase `parse_redirect_line_ignores_non_callback_requests`.
+        {
+            assert!(parse_redirect_line("GET /favicon.ico HTTP/1.1").is_none());
+            assert!(parse_redirect_line("GET / HTTP/1.1").is_none());
+        }
+
+        // Phase `loopback_server_captures_code_from_a_real_local_client`.
+        {
+            use std::io::Write;
+            // Bind the real ephemeral loopback listener, connect a local client to
+            // its redirect_uri, and prove wait_for_code returns the captured code.
+            // Exercises the production socket path — no network egress.
+            let server = LoopbackServer::bind().expect("bind loopback");
+            let uri = server.redirect_uri();
+            let port = server.port();
+            assert!(uri.starts_with(&format!("http://127.0.0.1:{port}/")));
+            let client = std::thread::spawn(move || {
+                use std::io::Read;
+                // The listener is already bound and listening, so the connect
+                // queues until the acceptor loop picks it up; no head start needed.
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+                s.write_all(
+                    b"GET /oauth?code=THECODE&state=STATE123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+                )
+                .expect("write request");
+                let mut resp = Vec::new();
+                let _ = s.read_to_end(&mut resp);
+                // The browser gets a human-readable close-tab page.
+                assert!(String::from_utf8_lossy(&resp).contains("close this tab"));
+            });
+            let code = server
+                .wait_for_code("STATE123", std::time::Duration::from_secs(5))
+                .expect("capture code");
+            assert_eq!(code, "THECODE");
+            client.join().unwrap();
+        }
+
+        // Phase `loopback_server_rejects_state_mismatch`.
+        {
+            use std::io::Write;
+            let server = LoopbackServer::bind().expect("bind");
+            let port = server.port();
+            std::thread::spawn(move || {
+                if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                    let _ = s.write_all(b"GET /oauth?code=X&state=WRONG HTTP/1.1\r\n\r\n");
+                }
+            });
+            let err = server
+                .wait_for_code("EXPECTED", std::time::Duration::from_secs(5))
+                .unwrap_err();
+            assert!(err.contains("state mismatch"), "{err}");
+        }
+
+        // Phase `authorization_reports_browser_failure_before_waiting_for_callback`.
+        #[cfg(feature = "live")]
+        {
+            let result = run_loopback_authorization(
+                OAuthProvider::Google,
+                "test-client",
+                "fixture@example.invalid",
+                |url| {
+                    assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
+                    Err("fixture browser unavailable".into())
+                },
+                std::time::Duration::ZERO,
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                "could not open sign-in browser: fixture browser unavailable"
+            );
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {
         hex::encode(bytes)
     }
 
+    /// SHA-256, base64 variants, PKCE and XOAUTH2 match their published vectors.
     #[test]
-    fn sha256_matches_known_vectors() {
-        assert_eq!(
-            hex(&sha256(b"")),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            hex(&sha256(b"abc")),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn oauth_wire_encodings_match_reference_vectors() {
+        // Phase `sha256_matches_known_vectors`.
+        {
+            assert_eq!(
+                hex(&sha256(b"")),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            );
+            assert_eq!(
+                hex(&sha256(b"abc")),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            );
+        }
 
-    #[test]
-    fn base64url_matches_rfc4648_vectors() {
-        assert_eq!(base64url_nopad(b""), "");
-        assert_eq!(base64url_nopad(b"f"), "Zg");
-        assert_eq!(base64url_nopad(b"fo"), "Zm8");
-        assert_eq!(base64url_nopad(b"foo"), "Zm9v");
-        assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
-        // URL-safe alphabet: must never emit '+' or '/' or '='.
-        let s = base64url_nopad(&[0xfb, 0xff, 0xbf]);
-        assert!(
-            !s.contains('+') && !s.contains('/') && !s.contains('='),
-            "{s}"
-        );
-    }
+        // Phase `sha256_matches_nist_multi_block_vectors`.
+        {
+            // FIPS 180-4 example vectors that cross the one-block padding boundary
+            // (56 bytes needs a second block for the length) and span two blocks.
+            assert_eq!(
+                hex(&sha256(
+                    b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+                )),
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+            );
+            assert_eq!(
+                hex(&sha256(
+                    b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+                )),
+                "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+            );
+            assert_eq!(
+                hex(&sha256(&vec![b'a'; 1_000_000])),
+                "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+            );
+        }
 
-    #[test]
-    fn pkce_s256_challenge_matches_rfc7636_appendix_b() {
-        // RFC 7636 Appendix B canonical vector.
-        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        let pkce = Pkce::from_verifier(verifier);
-        assert_eq!(pkce.verifier, verifier);
-        assert_eq!(
-            pkce.challenge,
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
-    }
+        // Phase `base64url_matches_rfc4648_vectors`.
+        {
+            assert_eq!(base64url_nopad(b""), "");
+            assert_eq!(base64url_nopad(b"f"), "Zg");
+            assert_eq!(base64url_nopad(b"fo"), "Zm8");
+            assert_eq!(base64url_nopad(b"foo"), "Zm9v");
+            assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
+            // URL-safe alphabet: must never emit '+' or '/' or '='.
+            let s = base64url_nopad(&[0xfb, 0xff, 0xbf]);
+            assert!(
+                !s.contains('+') && !s.contains('/') && !s.contains('='),
+                "{s}"
+            );
+        }
 
-    #[test]
-    fn sha256_matches_nist_multi_block_vectors() {
-        // FIPS 180-4 example vectors that cross the one-block padding boundary
-        // (56 bytes needs a second block for the length) and span two blocks.
-        assert_eq!(
-            hex(&sha256(
-                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
-            )),
-            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
-        );
-        assert_eq!(
-            hex(&sha256(
-                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
-            )),
-            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
-        );
-        assert_eq!(
-            hex(&sha256(&vec![b'a'; 1_000_000])),
-            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
-        );
-    }
+        // Phase `base64_standard_matches_rfc4648_vectors`.
+        {
+            // RFC 4648 §10 vectors — the padded, +/ alphabet SASL requires.
+            assert_eq!(base64_standard(b""), "");
+            assert_eq!(base64_standard(b"f"), "Zg==");
+            assert_eq!(base64_standard(b"fo"), "Zm8=");
+            assert_eq!(base64_standard(b"foo"), "Zm9v");
+            assert_eq!(base64_standard(b"foob"), "Zm9vYg==");
+            assert_eq!(base64_standard(b"fooba"), "Zm9vYmE=");
+            assert_eq!(base64_standard(b"foobar"), "Zm9vYmFy");
+        }
 
-    #[test]
-    fn base64_variants_differ_only_in_alphabet_and_padding() {
-        // 0xfb 0xff 0xbf hits both alphabet-specific sextets (62 and 63).
-        assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
-        assert_eq!(base64_standard(&[0xfb, 0xff, 0xbf]), "+/+/");
-        assert_eq!(base64url_nopad(&[0xfb, 0xff]), "-_8");
-        assert_eq!(base64_standard(&[0xfb, 0xff]), "+/8=");
-        assert_eq!(base64url_nopad(&[0xfb]), "-w");
-        assert_eq!(base64_standard(&[0xfb]), "+w==");
-        // Neither encoder wraps long output into lines.
-        let long = [0xa5_u8; 300];
-        assert_eq!(base64url_nopad(&long).len(), 400);
-        assert_eq!(base64_standard(&long).len(), 400);
-        assert!(!base64_standard(&long).contains(['\r', '\n']));
-    }
+        // Phase `base64_variants_differ_only_in_alphabet_and_padding`.
+        {
+            // 0xfb 0xff 0xbf hits both alphabet-specific sextets (62 and 63).
+            assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
+            assert_eq!(base64_standard(&[0xfb, 0xff, 0xbf]), "+/+/");
+            assert_eq!(base64url_nopad(&[0xfb, 0xff]), "-_8");
+            assert_eq!(base64_standard(&[0xfb, 0xff]), "+/8=");
+            assert_eq!(base64url_nopad(&[0xfb]), "-w");
+            assert_eq!(base64_standard(&[0xfb]), "+w==");
+            // Neither encoder wraps long output into lines.
+            let long = [0xa5_u8; 300];
+            assert_eq!(base64url_nopad(&long).len(), 400);
+            assert_eq!(base64_standard(&long).len(), 400);
+            assert!(!base64_standard(&long).contains(['\r', '\n']));
+        }
 
-    #[test]
-    fn xoauth2_sasl_matches_google_documentation_vector() {
-        // The worked example in Google's XOAUTH2 protocol documentation.
-        assert_eq!(
-            xoauth2_sasl(
-                "someuser@example.com",
-                "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
-            ),
-            "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
-        );
-    }
+        // Phase `pkce_s256_challenge_matches_rfc7636_appendix_b`.
+        {
+            // RFC 7636 Appendix B canonical vector.
+            let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+            let pkce = Pkce::from_verifier(verifier);
+            assert_eq!(pkce.verifier, verifier);
+            assert_eq!(
+                pkce.challenge,
+                "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+            );
+        }
 
-    #[test]
-    fn google_authorization_url_is_pinned_byte_for_byte() {
-        let req = AuthRequest {
-            provider: OAuthProvider::Google,
-            client_id: "cid.apps.googleusercontent.com".into(),
-            redirect_uri: "http://127.0.0.1:8080/oauth".into(),
-            pkce: Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-            state: "xyz 123".into(),
-            login_hint: "person@gmail.com".into(),
-        };
-        assert_eq!(
-            req.authorization_url(),
-            "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid.apps.googleusercontent.com\
-             &response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth\
-             &scope=https%3A%2F%2Fmail.google.com%2F\
-             &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\
-             &code_challenge_method=S256&state=xyz%20123&access_type=offline\
-             &prompt=consent&login_hint=person%40gmail.com"
-        );
-    }
+        // Phase `generate_yields_valid_verifier_and_matching_challenge`.
+        {
+            let p = Pkce::generate();
+            // RFC 7636: verifier length 43..=128 after base64url of 32 bytes = 43.
+            assert!(
+                p.verifier.len() >= 43 && p.verifier.len() <= 128,
+                "len {}",
+                p.verifier.len()
+            );
+            assert!(
+                p.verifier
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            );
+            // The challenge is the S256 of exactly this verifier.
+            assert_eq!(p.challenge, Pkce::from_verifier(&p.verifier).challenge);
+        }
 
-    #[test]
-    fn generate_yields_valid_verifier_and_matching_challenge() {
-        let p = Pkce::generate();
-        // RFC 7636: verifier length 43..=128 after base64url of 32 bytes = 43.
-        assert!(
-            p.verifier.len() >= 43 && p.verifier.len() <= 128,
-            "len {}",
-            p.verifier.len()
-        );
-        assert!(
-            p.verifier
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        );
-        // The challenge is the S256 of exactly this verifier.
-        assert_eq!(p.challenge, Pkce::from_verifier(&p.verifier).challenge);
-    }
+        // Phase `xoauth2_sasl_matches_google_documentation_vector`.
+        {
+            // The worked example in Google's XOAUTH2 protocol documentation.
+            assert_eq!(
+                xoauth2_sasl(
+                    "someuser@example.com",
+                    "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
+                ),
+                "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
+            );
+        }
 
-    #[test]
-    fn google_authorization_url_is_well_formed() {
-        let req = AuthRequest {
-            provider: OAuthProvider::Google,
-            client_id: "cid.apps.googleusercontent.com".into(),
-            redirect_uri: "http://127.0.0.1:8080/oauth".into(),
-            pkce: Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-            state: "xyz123".into(),
-            login_hint: "person@gmail.com".into(),
-        };
-        let url = req.authorization_url();
-        assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains("code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
-        assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains("client_id=cid.apps.googleusercontent.com"));
-        // redirect_uri + login_hint are percent-encoded.
-        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth"));
-        assert!(url.contains("login_hint=person%40gmail.com"));
-        // Google-specific refresh-token params.
-        assert!(url.contains("access_type=offline"));
-        assert!(url.contains("prompt=consent"));
-        // The mail scope is present (percent-encoded ':' and '/').
-        assert!(url.contains("scope=https%3A%2F%2Fmail.google.com%2F"));
-    }
-
-    #[test]
-    fn microsoft_url_uses_microsoft_endpoint_and_no_google_params() {
-        let req = AuthRequest {
-            provider: OAuthProvider::Microsoft,
-            client_id: "app-guid".into(),
-            redirect_uri: "http://127.0.0.1:8080/oauth".into(),
-            pkce: Pkce::generate(),
-            state: "s".into(),
-            login_hint: String::new(),
-        };
-        let url = req.authorization_url();
-        assert!(url.starts_with("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"));
-        assert!(
-            !url.contains("access_type=offline"),
-            "google-only param leaked"
-        );
-        // Dots are unreserved, so the scope substring survives percent-encoding.
-        assert!(
-            url.contains("IMAP.AccessAsUser.All"),
-            "outlook IMAP scope present"
-        );
-    }
-
-    #[test]
-    fn provider_recognised_from_domain() {
-        assert_eq!(
-            OAuthProvider::from_domain("gmail.com"),
-            Some(OAuthProvider::Google)
-        );
-        assert_eq!(
-            OAuthProvider::from_domain("Outlook.com"),
-            Some(OAuthProvider::Microsoft)
-        );
-        assert_eq!(OAuthProvider::from_domain("fastmail.com"), None);
-    }
-
-    #[test]
-    fn token_response_parses_access_and_refresh() {
-        let json = r#"{"access_token":"ya29.abc","expires_in":3599,"refresh_token":"1//xyz","token_type":"Bearer"}"#;
-        let t = parse_token_response(json).expect("valid token payload");
-        assert_eq!(t.access_token, "ya29.abc");
-        assert_eq!(t.refresh_token, "1//xyz");
-        assert_eq!(t.expires_in, 3599);
-    }
-
-    #[test]
-    fn token_response_rejects_error_payload() {
-        let json = r#"{"error":"invalid_grant","error_description":"Bad Request"}"#;
-        assert!(
-            parse_token_response(json).is_none(),
-            "error payload must not parse as tokens"
-        );
-    }
-
-    #[test]
-    fn base64_standard_matches_rfc4648_vectors() {
-        // RFC 4648 §10 vectors — the padded, +/ alphabet SASL requires.
-        assert_eq!(base64_standard(b""), "");
-        assert_eq!(base64_standard(b"f"), "Zg==");
-        assert_eq!(base64_standard(b"fo"), "Zm8=");
-        assert_eq!(base64_standard(b"foo"), "Zm9v");
-        assert_eq!(base64_standard(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_standard(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_standard(b"foobar"), "Zm9vYmFy");
-    }
-
-    #[test]
-    fn xoauth2_sasl_has_exact_wire_shape() {
-        // The decoded SASL string must be user=<u>^Aauth=Bearer <t>^A^A, and
-        // the base64 must be the standard (padded) alphabet.
-        let s = xoauth2_sasl("user@example.com", "ya29.tok");
-        // The base64 must encode exactly `user=<u>^Aauth=Bearer <t>^A^A`.
-        let expected_raw = "user=user@example.com\x01auth=Bearer ya29.tok\x01\x01";
-        assert_eq!(s, base64_standard(expected_raw.as_bytes()));
-        // Standard alphabet only (SASL mandates +/ and `=` padding, never the
-        // URL-safe -_ variant).
-        assert!(
-            s.chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=')
-        );
-        assert!(
-            !s.contains('-') && !s.contains('_'),
-            "must be standard, not URL-safe base64: {s}"
-        );
-    }
-
-    #[test]
-    fn parse_redirect_line_extracts_code_and_state() {
-        let line = "GET /oauth?state=xyz&code=4%2F0Afoo&scope=mail HTTP/1.1";
-        match parse_redirect_line(line) {
-            Some(RedirectResult::Code { code, state }) => {
-                assert_eq!(code, "4/0Afoo", "percent-decoded code");
-                assert_eq!(state, "xyz");
-            }
-            other => panic!("expected a code, got {other:?}"),
+        // Phase `xoauth2_sasl_has_exact_wire_shape`.
+        {
+            // The decoded SASL string must be user=<u>^Aauth=Bearer <t>^A^A, and
+            // the base64 must be the standard (padded) alphabet.
+            let s = xoauth2_sasl("user@example.com", "ya29.tok");
+            // The base64 must encode exactly `user=<u>^Aauth=Bearer <t>^A^A`.
+            let expected_raw = "user=user@example.com\x01auth=Bearer ya29.tok\x01\x01";
+            assert_eq!(s, base64_standard(expected_raw.as_bytes()));
+            // Standard alphabet only (SASL mandates +/ and `=` padding, never the
+            // URL-safe -_ variant).
+            assert!(
+                s.chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=')
+            );
+            assert!(
+                !s.contains('-') && !s.contains('_'),
+                "must be standard, not URL-safe base64: {s}"
+            );
         }
     }
 
     #[test]
-    fn parse_redirect_line_surfaces_provider_error() {
-        let line = "GET /oauth?error=access_denied&state=xyz HTTP/1.1";
-        assert_eq!(
-            parse_redirect_line(line),
-            Some(RedirectResult::Error("access_denied".into()))
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn authorization_urls_are_pinned_per_provider() {
+        // Phase `google_authorization_url_is_pinned_byte_for_byte`.
+        {
+            let req = AuthRequest {
+                provider: OAuthProvider::Google,
+                client_id: "cid.apps.googleusercontent.com".into(),
+                redirect_uri: "http://127.0.0.1:8080/oauth".into(),
+                pkce: Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+                state: "xyz 123".into(),
+                login_hint: "person@gmail.com".into(),
+            };
+            assert_eq!(
+                req.authorization_url(),
+                "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid.apps.googleusercontent.com\
+                 &response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth\
+                 &scope=https%3A%2F%2Fmail.google.com%2F\
+                 &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\
+                 &code_challenge_method=S256&state=xyz%20123&access_type=offline\
+                 &prompt=consent&login_hint=person%40gmail.com"
+            );
+        }
+
+        // Phase `google_authorization_url_is_well_formed`.
+        {
+            let req = AuthRequest {
+                provider: OAuthProvider::Google,
+                client_id: "cid.apps.googleusercontent.com".into(),
+                redirect_uri: "http://127.0.0.1:8080/oauth".into(),
+                pkce: Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+                state: "xyz123".into(),
+                login_hint: "person@gmail.com".into(),
+            };
+            let url = req.authorization_url();
+            assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
+            assert!(url.contains("response_type=code"));
+            assert!(url.contains("code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
+            assert!(url.contains("code_challenge_method=S256"));
+            assert!(url.contains("client_id=cid.apps.googleusercontent.com"));
+            // redirect_uri + login_hint are percent-encoded.
+            assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth"));
+            assert!(url.contains("login_hint=person%40gmail.com"));
+            // Google-specific refresh-token params.
+            assert!(url.contains("access_type=offline"));
+            assert!(url.contains("prompt=consent"));
+            // The mail scope is present (percent-encoded ':' and '/').
+            assert!(url.contains("scope=https%3A%2F%2Fmail.google.com%2F"));
+        }
+
+        // Phase `microsoft_url_uses_microsoft_endpoint_and_no_google_params`.
+        {
+            let req = AuthRequest {
+                provider: OAuthProvider::Microsoft,
+                client_id: "app-guid".into(),
+                redirect_uri: "http://127.0.0.1:8080/oauth".into(),
+                pkce: Pkce::generate(),
+                state: "s".into(),
+                login_hint: String::new(),
+            };
+            let url = req.authorization_url();
+            assert!(
+                url.starts_with("https://login.microsoftonline.com/common/oauth2/v2.0/authorize?")
+            );
+            assert!(
+                !url.contains("access_type=offline"),
+                "google-only param leaked"
+            );
+            // Dots are unreserved, so the scope substring survives percent-encoding.
+            assert!(
+                url.contains("IMAP.AccessAsUser.All"),
+                "outlook IMAP scope present"
+            );
+        }
+
+        // Phase `provider_recognised_from_domain`.
+        {
+            assert_eq!(
+                OAuthProvider::from_domain("gmail.com"),
+                Some(OAuthProvider::Google)
+            );
+            assert_eq!(
+                OAuthProvider::from_domain("Outlook.com"),
+                Some(OAuthProvider::Microsoft)
+            );
+            assert_eq!(OAuthProvider::from_domain("fastmail.com"), None);
+        }
     }
 
     #[test]
-    fn parse_redirect_line_ignores_non_callback_requests() {
-        assert!(parse_redirect_line("GET /favicon.ico HTTP/1.1").is_none());
-        assert!(parse_redirect_line("GET / HTTP/1.1").is_none());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn token_responses_parse_seal_and_expire_with_skew() {
+        // Phase `token_response_parses_access_and_refresh`.
+        {
+            let json = r#"{"access_token":"ya29.abc","expires_in":3599,"refresh_token":"1//xyz","token_type":"Bearer"}"#;
+            let t = parse_token_response(json).expect("valid token payload");
+            assert_eq!(t.access_token, "ya29.abc");
+            assert_eq!(t.refresh_token, "1//xyz");
+            assert_eq!(t.expires_in, 3599);
+        }
 
-    #[test]
-    fn loopback_server_captures_code_from_a_real_local_client() {
-        use std::io::Write;
-        // Bind the real ephemeral loopback listener, connect a local client to
-        // its redirect_uri, and prove wait_for_code returns the captured code.
-        // Exercises the production socket path — no network egress.
-        let server = LoopbackServer::bind().expect("bind loopback");
-        let uri = server.redirect_uri();
-        let port = server.port();
-        assert!(uri.starts_with(&format!("http://127.0.0.1:{port}/")));
-        let client = std::thread::spawn(move || {
-            use std::io::Read;
-            // Give the acceptor a moment to enter its loop.
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
-            s.write_all(
-                b"GET /oauth?code=THECODE&state=STATE123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
-            )
-            .expect("write request");
-            let mut resp = Vec::new();
-            let _ = s.read_to_end(&mut resp);
-            // The browser gets a human-readable close-tab page.
-            assert!(String::from_utf8_lossy(&resp).contains("close this tab"));
-        });
-        let code = server
-            .wait_for_code("STATE123", std::time::Duration::from_secs(5))
-            .expect("capture code");
-        assert_eq!(code, "THECODE");
-        client.join().unwrap();
-    }
+        // Phase `token_response_rejects_error_payload`.
+        {
+            let json = r#"{"error":"invalid_grant","error_description":"Bad Request"}"#;
+            assert!(
+                parse_token_response(json).is_none(),
+                "error payload must not parse as tokens"
+            );
+        }
 
-    #[test]
-    fn loopback_server_rejects_state_mismatch() {
-        use std::io::Write;
-        let server = LoopbackServer::bind().expect("bind");
-        let port = server.port();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-                let _ = s.write_all(b"GET /oauth?code=X&state=WRONG HTTP/1.1\r\n\r\n");
-            }
-        });
-        let err = server
-            .wait_for_code("EXPECTED", std::time::Duration::from_secs(5))
-            .unwrap_err();
-        assert!(err.contains("state mismatch"), "{err}");
-    }
+        // Phase `tokens_round_trip_through_a_vault_secret`.
+        {
+            let tokens = OAuthTokens {
+                access_token: "at".into(),
+                refresh_token: "rt".into(),
+                expires_in: 3600,
+                obtained_at: 1000,
+            };
+            let secret = tokens_to_secret(&tokens);
+            assert!(
+                secret.password.is_empty(),
+                "OAuth secret carries no password"
+            );
+            assert_eq!(tokens_from_secret(&secret), Some(tokens));
+        }
 
-    #[test]
-    fn tokens_round_trip_through_a_vault_secret() {
-        let tokens = OAuthTokens {
-            access_token: "at".into(),
-            refresh_token: "rt".into(),
-            expires_in: 3600,
-            obtained_at: 1000,
-        };
-        let secret = tokens_to_secret(&tokens);
-        assert!(
-            secret.password.is_empty(),
-            "OAuth secret carries no password"
-        );
-        assert_eq!(tokens_from_secret(&secret), Some(tokens));
-    }
-
-    #[test]
-    fn token_expiry_accounts_for_lifetime_and_skew() {
-        let t = OAuthTokens {
-            access_token: "a".into(),
-            refresh_token: "r".into(),
-            expires_in: 3600,
-            obtained_at: 1_000_000,
-        };
-        // Well within lifetime: not expired.
-        assert!(!t.is_expired_with_skew(60, 1_000_100));
-        // Past expiry: expired.
-        assert!(t.is_expired_with_skew(60, 1_004_601));
-        // Within the skew window before expiry: treated as expired so it's
-        // refreshed proactively.
-        assert!(t.is_expired_with_skew(60, 1_003_550));
-        // A token with no reported lifetime is always considered expired.
-        let no_life = OAuthTokens {
-            expires_in: 0,
-            obtained_at: 1_000_000,
-            ..t
-        };
-        assert!(no_life.is_expired_with_skew(60, 1_000_000));
+        // Phase `token_expiry_accounts_for_lifetime_and_skew`.
+        {
+            let t = OAuthTokens {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                expires_in: 3600,
+                obtained_at: 1_000_000,
+            };
+            // Well within lifetime: not expired.
+            assert!(!t.is_expired_with_skew(60, 1_000_100));
+            // Past expiry: expired.
+            assert!(t.is_expired_with_skew(60, 1_004_601));
+            // Within the skew window before expiry: treated as expired so it's
+            // refreshed proactively.
+            assert!(t.is_expired_with_skew(60, 1_003_550));
+            // A token with no reported lifetime is always considered expired.
+            let no_life = OAuthTokens {
+                expires_in: 0,
+                obtained_at: 1_000_000,
+                ..t
+            };
+            assert!(no_life.is_expired_with_skew(60, 1_000_000));
+        }
     }
 }

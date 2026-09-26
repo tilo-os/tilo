@@ -351,71 +351,75 @@ fn render_directory_palette_fixture(
 }
 
 #[test]
-fn directory_action_row_is_painted_with_label_and_subtitle_at_normal_and_narrow_sizes() {
-    for (vw, vh) in [(1280.0, 800.0), (800.0, 600.0)] {
-        let mut harness = directory_palette_fixture(vw, vh);
-        let rows = harness.host.palette_rows_detailed();
-        assert!(
-            rows.iter().any(|(_, label, subtitle)| {
-                label == "Open project workspace"
-                    && subtitle.as_deref() == Some("Example project · Code Editor")
-            }),
-            "directory action must reach the painted palette rows at {vw}x{vh}: {rows:?}"
-        );
-        assert!(
-            harness.host.palette.is_focused(),
-            "open directory palette must retain keyboard focus at {vw}x{vh}"
-        );
-        let palette = harness.host.palette.get_rect();
-        assert!(
-            palette.width() > 0.0 && palette.height() > 0.0,
-            "directory palette must retain a drawable card at {vw}x{vh}: {palette:?}"
-        );
-        paint(&mut harness);
-        assert!(
-            harness.host.palette_visible(),
-            "drawing the directory row must not dismiss the focused palette"
-        );
-        let semantics = harness.host.accessibility().expect("shell semantics");
-        let palette = semantics
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Command palette"))
-            .expect("the visible palette must be in the accessibility tree");
-        let result = palette
-            .children
-            .get(1)
-            .and_then(|list| list.children.first())
-            .expect("the directory action must be a semantic palette result");
-        assert_eq!(result.name.as_deref(), Some("Open project workspace"));
-        assert_eq!(
-            result.description.as_deref(),
-            Some("Example project · Code Editor")
-        );
-        assert!(
-            harness.host.focus_synthetic_accessibility(&[0, 1, 0]),
-            "the directory action must be reachable through the host accessibility path"
-        );
+fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
+    fn directory_action_row_is_painted_with_label_and_subtitle_at_normal_and_narrow_sizes() {
+        for (vw, vh) in [(1280.0, 800.0), (800.0, 600.0)] {
+            let mut harness = directory_palette_fixture(vw, vh);
+            let rows = harness.host.palette_rows_detailed();
+            assert!(
+                rows.iter().any(|(_, label, subtitle)| {
+                    label == "Open project workspace"
+                        && subtitle.as_deref() == Some("Example project · Code Editor")
+                }),
+                "directory action must reach the painted palette rows at {vw}x{vh}: {rows:?}"
+            );
+            assert!(
+                harness.host.palette.is_focused(),
+                "open directory palette must retain keyboard focus at {vw}x{vh}"
+            );
+            let palette = harness.host.palette.get_rect();
+            assert!(
+                palette.width() > 0.0 && palette.height() > 0.0,
+                "directory palette must retain a drawable card at {vw}x{vh}: {palette:?}"
+            );
+            paint(&mut harness);
+            assert!(
+                harness.host.palette_visible(),
+                "drawing the directory row must not dismiss the focused palette"
+            );
+            let semantics = harness.host.accessibility().expect("shell semantics");
+            let palette = semantics
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Command palette"))
+                .expect("the visible palette must be in the accessibility tree");
+            let result = palette
+                .children
+                .get(1)
+                .and_then(|list| list.children.first())
+                .expect("the directory action must be a semantic palette result");
+            assert_eq!(result.name.as_deref(), Some("Open project workspace"));
+            assert_eq!(
+                result.description.as_deref(),
+                Some("Example project · Code Editor")
+            );
+            assert!(
+                harness.host.focus_synthetic_accessibility(&[0, 1, 0]),
+                "the directory action must be reachable through the host accessibility path"
+            );
+        }
     }
-}
 
-#[test]
-fn directory_palette_fixture_writes_normal_and_narrow_pngs() {
-    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../target/directory-palette-review");
-    for (name, vw, vh, width, height) in [
-        ("normal.png", 1280.0, 800.0, 1280, 800),
-        ("narrow.png", 800.0, 600.0, 800, 600),
-    ] {
-        let mut harness = directory_palette_fixture(vw, vh);
-        let path = output.join(name);
-        render_directory_palette_fixture(&mut harness, width, height, &path);
-        assert!(
-            path.is_file(),
-            "directory palette screenshot missing: {}",
-            path.display()
-        );
+    fn directory_palette_fixture_writes_normal_and_narrow_pngs() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/directory-palette-review");
+        for (name, vw, vh, width, height) in [
+            ("normal.png", 1280.0, 800.0, 1280, 800),
+            ("narrow.png", 800.0, 600.0, 800, 600),
+        ] {
+            let mut harness = directory_palette_fixture(vw, vh);
+            let path = output.join(name);
+            render_directory_palette_fixture(&mut harness, width, height, &path);
+            assert!(
+                path.is_file(),
+                "directory palette screenshot missing: {}",
+                path.display()
+            );
+        }
     }
+
+    directory_action_row_is_painted_with_label_and_subtitle_at_normal_and_narrow_sizes();
+    directory_palette_fixture_writes_normal_and_narrow_pngs();
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
@@ -471,138 +475,146 @@ fn pump_with_modifiers(
 }
 
 #[test]
-fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
-    let mut h = build_harness();
-    h.host.set_followed_peer(Some("ada".into()));
-    let before = h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
-        .tabs
-        .len();
-    let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-
-    assert!(pump_with_modifiers(
-        &mut h,
-        &key_pressed(Key::Character("w".into())),
-        modifiers,
-    ));
-    assert!(h.host.followed_peer.is_none(), "the key exits Follow mode");
-    assert_eq!(
-        h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
-            .tabs
-            .len(),
-        before,
-        "the handoff key must not also close the focused tab"
-    );
-}
-
 #[allow(
-    clippy::cast_precision_loss,
-    reason = "the test renders bounded monotonic millisecond timestamps through the UI's f64 chart interface"
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-#[test]
-fn lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions() {
-    let mut h = build_harness();
-    h.chrome
-        .borrow_mut()
-        .tree_mut()
-        .append_empty_workspace("Second");
-    let active_before = h.chrome.borrow().tree().desktop.active;
+fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
+    fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
+        let mut h = build_harness();
+        h.host.set_followed_peer(Some("ada".into()));
+        let before = h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .len();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
 
-    // This is the exact lock-boundary call made by native.rs after it
-    // cancels the backend stream. Late End events must not turn a partial
-    // vertical three-finger swipe into a workspace switch.
-    for id in 0..3 {
-        let _ = pump(
+        assert!(pump_with_modifiers(
             &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Started,
-                400.0 + id as f64 * 8.0,
-                500.0,
-            ),
-        );
-    }
-    for id in 0..3 {
-        assert!(pump(
-            &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Moved,
-                400.0 + id as f64 * 8.0,
-                350.0
-            )
+            &key_pressed(Key::Character("w".into())),
+            modifiers,
         ));
-    }
-    h.host.cancel_direct_touch_gestures();
-    for id in 0..3 {
-        let _ = pump(
-            &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Ended,
-                400.0 + id as f64 * 8.0,
-                350.0,
-            ),
+        assert!(h.host.followed_peer.is_none(), "the key exits Follow mode");
+        assert_eq!(
+            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            before,
+            "the handoff key must not also close the focused tab"
         );
     }
 
-    // Physical removal runs through the raw Cancelled phase instead of
-    // the explicit lock helper. It must have the same no-terminal-action
-    // property even if stale End edges arrive after unplug.
-    for id in 10..13 {
-        let _ = pump(
-            &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Started,
-                500.0 + (id - 10) as f64 * 8.0,
-                500.0,
-            ),
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the test renders bounded monotonic millisecond timestamps through the UI's f64 chart interface"
+    )]
+    fn lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions() {
+        let mut h = build_harness();
+        h.chrome
+            .borrow_mut()
+            .tree_mut()
+            .append_empty_workspace("Second");
+        let active_before = h.chrome.borrow().tree().desktop.active;
+
+        // This is the exact lock-boundary call made by native.rs after it
+        // cancels the backend stream. Late End events must not turn a partial
+        // vertical three-finger swipe into a workspace switch.
+        for id in 0..3 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Started,
+                    400.0 + id as f64 * 8.0,
+                    500.0,
+                ),
+            );
+        }
+        for id in 0..3 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Moved,
+                    400.0 + id as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        h.host.cancel_direct_touch_gestures();
+        for id in 0..3 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Ended,
+                    400.0 + id as f64 * 8.0,
+                    350.0,
+                ),
+            );
+        }
+
+        // Physical removal runs through the raw Cancelled phase instead of
+        // the explicit lock helper. It must have the same no-terminal-action
+        // property even if stale End edges arrive after unplug.
+        for id in 10..13 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Started,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    500.0,
+                ),
+            );
+        }
+        for id in 10..13 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Moved,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        for id in 10..13 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Cancelled,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        for id in 10..13 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Ended,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0,
+                ),
+            );
+        }
+
+        let chrome = h.chrome.borrow();
+        assert_eq!(
+            chrome.tree().desktop.active,
+            active_before,
+            "a cancelled touch stream cannot switch workspaces"
         );
-    }
-    for id in 10..13 {
-        assert!(pump(
-            &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Moved,
-                500.0 + (id - 10) as f64 * 8.0,
-                350.0
-            )
-        ));
-    }
-    for id in 10..13 {
-        assert!(pump(
-            &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Cancelled,
-                500.0 + (id - 10) as f64 * 8.0,
-                350.0
-            )
-        ));
-    }
-    for id in 10..13 {
-        let _ = pump(
-            &mut h,
-            &touch_at(
-                id,
-                winit::event::TouchPhase::Ended,
-                500.0 + (id - 10) as f64 * 8.0,
-                350.0,
-            ),
+        assert!(
+            !chrome.overlays.overview,
+            "a cancelled touch stream cannot commit overview"
         );
     }
 
-    let chrome = h.chrome.borrow();
-    assert_eq!(
-        chrome.tree().desktop.active,
-        active_before,
-        "a cancelled touch stream cannot switch workspaces"
-    );
-    assert!(
-        !chrome.overlays.overview,
-        "a cancelled touch stream cannot commit overview"
-    );
+    first_local_key_releases_follow_without_also_running_a_shell_chord();
+    lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions();
 }
 
 fn left_button_pressed() -> WindowEvent {
@@ -685,1017 +697,1221 @@ fn settle_with_theme(h: &mut AbsorbHarness, vw: f64, vh: f64, theme: &Theme) {
     let _ = paint_scene(h, theme);
 }
 
-/// A chip or scope segment rests at the §9.6 Selector height and grows
-/// with its measured label — at 200 % text the label sat visibly
-/// outside a fixed 24 px pill — but stops `s1` short of the band's
-/// row, so two rows of chips keep a gutter rather than touching.
 #[test]
-fn filter_controls_grow_with_their_label_and_stay_inside_the_row() {
-    let mut tr = TextRenderer::new();
-    let row_h = CommandPalette::new().filter_strip_row_height();
-    let base = Theme::dark();
-    let at_base = ShellOverlayHost::filter_control_height(&base, &mut tr, row_h);
-    assert_eq!(
-        at_base, SELECTOR_HEIGHT_PX,
-        "resting height is the Selector's"
-    );
-
-    let large = Theme::dark().with_text_scale(2.0);
-    let size = ShellOverlayHost::filter_label_size(&large, &tr);
-    let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
-    let at_large = ShellOverlayHost::filter_control_height(&large, &mut tr, row_h);
-    assert!(
-        at_large > at_base,
-        "a 200% label needs a taller control: {at_large} vs {at_base}"
-    );
-    assert!(
-        at_large >= f64::from(lh),
-        "the control ({at_large}) must be at least its label's line ({lh})"
-    );
-    let s1 = f64::from(large.tokens.spacing.s1);
-    assert!(
-        at_large <= row_h - s1,
-        "the control ({at_large}) must leave an s1 gutter inside its {row_h} px row"
-    );
-}
-
-/// Every kind chip, the "All" reset and every scope segment is a named,
-/// bounded semantic node carrying the rect production `draw` painted it
-/// at — so a screen reader, a script and the UX bench can name a chip
-/// rather than guess where the strip wrapped it to.
-#[test]
-#[expect(
+#[allow(
     clippy::too_many_lines,
-    reason = "an end-to-end test scenario that reads top to bottom"
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
-    use crate::shell::search::ResourceKind;
-    use ui::a11y::Role;
-    let (vw, vh) = (1280.0, 800.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.host.set_palette_visible(true);
-    // Open (focused), as Super+K leaves it: only then does the palette
-    // publish its query and result list, which the band follows.
-    h.host.set_palette_focus(true);
-    h.host.force_palette_settled();
-    settle(&mut h, vw, vh);
-
-    let tree = h.host.accessibility().expect("the host publishes a tree");
-    let palette = tree
-        .children
-        .iter()
-        .find(|n| n.name.as_deref() == Some("Command palette"))
-        .expect("the open palette is in the tree");
-    let band_index = h
-        .host
-        .search_filters_child_index()
-        .expect("an open palette places the band after its own children");
-    assert_eq!(band_index, 2, "query, results, then the band");
-    let filters = palette
-        .children
-        .get(band_index)
-        .expect("the filter band is the palette's trailing child");
-    assert_eq!(filters.name.as_deref(), Some("Search filters"));
-    let (kinds_group, scope_group) = (&filters.children[0], &filters.children[1]);
-
-    let kinds = h.host.search_registry.registered_kinds();
-    assert_eq!(kinds_group.children.len(), kinds.len() + 1);
-    let all = &kinds_group.children[0];
-    assert_eq!(all.role, Role::ToggleButton);
-    assert_eq!(all.name.as_deref(), Some("Filter: All"));
-    assert_eq!(
-        all.state.checked,
-        Some(true),
-        "the palette starts unfiltered"
-    );
-    // 2026-09-17 (S1-28): a chip's published bounds are its pointer
-    // target — the painted pill grown to the §9.6 floor, the rect a
-    // press is hit-tested against — not the pill itself. The pill sits
-    // inside it, horizontally identical.
-    let floor = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
-    let pill_inside_target = |pill: Rect, target: Rect| {
-        (pill.x0 - target.x0).abs() < 0.01
-            && (pill.x1 - target.x1).abs() < 0.01
-            && target.y0 <= pill.y0 + 0.01
-            && target.y1 >= pill.y1 - 0.01
-            && target.height() + 0.01 >= floor
-            && (target.center().y - pill.center().y).abs() < 0.01
-    };
-    let all_target = all
-        .bounds
-        .map(ui::AccessBounds::to_rect)
-        .expect("All is bounded");
-    assert_eq!(all_target, h.host.search_all_chip_hit_rect());
-    assert!(
-        pill_inside_target(h.host.search_all_chip_rect, all_target),
-        "All's target {all_target:?} must wrap its pill {:?} to the {floor} px floor",
-        h.host.search_all_chip_rect
-    );
-    for (i, kind) in kinds.iter().enumerate() {
-        let chip = &kinds_group.children[i + 1];
+fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
+    /// A chip or scope segment rests at the §9.6 Selector height and grows
+    /// with its measured label — at 200 % text the label sat visibly
+    /// outside a fixed 24 px pill — but stops `s1` short of the band's
+    /// row, so two rows of chips keep a gutter rather than touching.
+    fn filter_controls_grow_with_their_label_and_stay_inside_the_row() {
+        let mut tr = TextRenderer::new();
+        let row_h = CommandPalette::new().filter_strip_row_height();
+        let base = Theme::dark();
+        let at_base = ShellOverlayHost::filter_control_height(&base, &mut tr, row_h);
         assert_eq!(
-            chip.name.as_deref(),
-            Some(format!("Filter: {}", kind.label()).as_str())
+            at_base, SELECTOR_HEIGHT_PX,
+            "resting height is the Selector's"
         );
-        assert_ne!(
-            chip.name.as_deref(),
-            Some(kind.label()),
-            "a chip must not publish the bare kind label — a window title may share it"
+
+        let large = Theme::dark().with_text_scale(2.0);
+        let size = ShellOverlayHost::filter_label_size(&large, &tr);
+        let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
+        let at_large = ShellOverlayHost::filter_control_height(&large, &mut tr, row_h);
+        assert!(
+            at_large > at_base,
+            "a 200% label needs a taller control: {at_large} vs {at_base}"
         );
-        assert_eq!(chip.state.checked, Some(false));
-        let target = chip
+        assert!(
+            at_large >= f64::from(lh),
+            "the control ({at_large}) must be at least its label's line ({lh})"
+        );
+        let s1 = f64::from(large.tokens.spacing.s1);
+        assert!(
+            at_large <= row_h - s1,
+            "the control ({at_large}) must leave an s1 gutter inside its {row_h} px row"
+        );
+    }
+
+    /// Every kind chip, the "All" reset and every scope segment is a named,
+    /// bounded semantic node carrying the rect production `draw` painted it
+    /// at — so a screen reader, a script and the UX bench can name a chip
+    /// rather than guess where the strip wrapped it to.
+    fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
+        use crate::shell::search::ResourceKind;
+        use ui::a11y::Role;
+        let (vw, vh) = (1280.0, 800.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        // Open (focused), as Super+K leaves it: only then does the palette
+        // publish its query and result list, which the band follows.
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        settle(&mut h, vw, vh);
+
+        let tree = h.host.accessibility().expect("the host publishes a tree");
+        let palette = tree
+            .children
+            .iter()
+            .find(|n| n.name.as_deref() == Some("Command palette"))
+            .expect("the open palette is in the tree");
+        let band_index = h
+            .host
+            .search_filters_child_index()
+            .expect("an open palette places the band after its own children");
+        assert_eq!(band_index, 2, "query, results, then the band");
+        let filters = palette
+            .children
+            .get(band_index)
+            .expect("the filter band is the palette's trailing child");
+        assert_eq!(filters.name.as_deref(), Some("Search filters"));
+        let (kinds_group, scope_group) = (&filters.children[0], &filters.children[1]);
+
+        let kinds = h.host.search_registry.registered_kinds();
+        assert_eq!(kinds_group.children.len(), kinds.len() + 1);
+        let all = &kinds_group.children[0];
+        assert_eq!(all.role, Role::ToggleButton);
+        assert_eq!(all.name.as_deref(), Some("Filter: All"));
+        assert_eq!(
+            all.state.checked,
+            Some(true),
+            "the palette starts unfiltered"
+        );
+        // 2026-09-17 (S1-28): a chip's published bounds are its pointer
+        // target — the painted pill grown to the §9.6 floor, the rect a
+        // press is hit-tested against — not the pill itself. The pill sits
+        // inside it, horizontally identical.
+        let floor = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
+        let pill_inside_target = |pill: Rect, target: Rect| {
+            (pill.x0 - target.x0).abs() < 0.01
+                && (pill.x1 - target.x1).abs() < 0.01
+                && target.y0 <= pill.y0 + 0.01
+                && target.y1 >= pill.y1 - 0.01
+                && target.height() + 0.01 >= floor
+                && (target.center().y - pill.center().y).abs() < 0.01
+        };
+        let all_target = all
             .bounds
             .map(ui::AccessBounds::to_rect)
-            .expect("chip is bounded");
-        assert_eq!(
-            target,
-            h.host.search_chip_hit_rect(i),
-            "chip {i} carries its pointer target"
-        );
+            .expect("All is bounded");
+        assert_eq!(all_target, h.host.search_all_chip_hit_rect());
         assert!(
-            pill_inside_target(h.host.search_chip_rects[i], target),
-            "chip {i}'s target {target:?} must wrap its pill {:?} to the {floor} px floor",
-            h.host.search_chip_rects[i]
+            pill_inside_target(h.host.search_all_chip_rect, all_target),
+            "All's target {all_target:?} must wrap its pill {:?} to the {floor} px floor",
+            h.host.search_all_chip_rect
         );
-        assert_eq!(
-            h.host
-                .synthetic_accessibility_rect(&[0, band_index, 0, i + 1]),
-            Some(target),
-            "the routed geometry for chip {i} is the same rect"
-        );
-        assert!(
-            chip.action_target
-                .as_deref()
-                .is_some_and(|t| t.starts_with("palette:filter:") && t.matches(':').count() == 2),
-            "chip {i} carries a single-segment address: {:?}",
-            chip.action_target
-        );
-    }
-
-    let scopes = h.host.search_scope_list();
-    assert_eq!(scope_group.children.len(), scopes.len());
-    let checked = scope_group
-        .children
-        .iter()
-        .filter(|n| n.state.checked == Some(true))
-        .count();
-    assert_eq!(checked, 1, "exactly one scope is current");
-    for (idx, node) in scope_group.children.iter().enumerate() {
-        assert_eq!(node.role, Role::RadioButton);
-        let hit = h.host.search_scope_segment_hit_rect(idx);
-        assert_eq!(node.bounds.map(ui::AccessBounds::to_rect), Some(hit));
-        let track = h.host.search_scope_track_rect();
-        assert!(
-            hit.contains(h.host.search_scope_pill_rect(idx).center())
-                && (hit.height() - track.height().max(floor)).abs() < 0.01
-                && (hit.center().y - track.center().y).abs() < 0.01,
-            "segment {idx}'s target is its slice of the track grown to the {floor} px floor: {hit:?} vs {track:?}"
-        );
-        assert!(
-            node.name
-                .as_deref()
-                .is_some_and(|n| n.starts_with("Scope: ")),
-            "scope names are prefixed: {:?}",
-            node.name
-        );
-    }
-
-    // The controls share one centre line: chips and the scope switch
-    // are laid out to the same control height in the band's first row.
-    // Addresses stay unique and single-segment even for hostile labels.
-    let odd = [
-        ResourceKind::Custom("Foo Bar".into()),
-        ResourceKind::Custom("foo  bar".into()),
-        ResourceKind::Custom("CI: Builds".into()),
-    ];
-    let keys: Vec<String> = (0..odd.len())
-        .map(|i| ShellOverlayHost::search_filter_key(&odd, i))
-        .collect();
-    assert_eq!(keys[0], "palette:filter:foo-bar");
-    assert_ne!(
-        keys[0], keys[1],
-        "a case/whitespace twin gets its own address"
-    );
-    assert_eq!(keys[2], "palette:filter:ci-builds");
-
-    // Paint and target are two rects with one centre line: the pills
-    // share top and bottom edges at the Selector height, and their
-    // pointer targets share top and bottom edges at the floor.
-    let all_rect = h.host.search_all_chip_rect;
-    let track = h.host.search_scope_track_rect();
-    assert!(
-        (all_rect.y0 - track.y0).abs() < 0.5 && (all_rect.y1 - track.y1).abs() < 0.5,
-        "All chip {all_rect:?} and scope track {track:?} do not share top and bottom edges"
-    );
-    let all_target = h.host.search_all_chip_hit_rect();
-    let first_scope = h.host.search_scope_segment_hit_rect(0);
-    assert!(
-        (all_target.y0 - first_scope.y0).abs() < 0.5
-            && (all_target.y1 - first_scope.y1).abs() < 0.5,
-        "All target {all_target:?} and scope target {first_scope:?} do not share top and bottom edges"
-    );
-    assert!(
-        (all_rect.height() - f64::from(Theme::dark().tokens.metrics.selector_height)).abs() < 0.01,
-        "a chip rests at the Selector height (`metrics.selector_height`), got {}",
-        all_rect.height()
-    );
-    assert!(
-        all_target.height() + 0.01 >= floor,
-        "a chip's target meets the pointer floor {floor}, got {}",
-        all_target.height()
-    );
-}
-
-/// At 200 % text on a compact card the two scope labels need more than
-/// the share of the band the switch may take beside the chips, so the
-/// switch takes the first row alone, whole, and the chips start on the
-/// next row: no "Works…", no overlap, one more reserved row (S1-29).
-/// At 100 % on a wide card the switch shares the first row as before.
-#[test]
-fn a_scope_switch_too_wide_to_share_the_first_row_takes_its_own() {
-    let (vw, vh) = (800.0, 700.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
-    h.host.force_palette_settled();
-    let theme = Theme::dark().with_text_scale(2.0);
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(2.0);
-    // Paint, relayout, paint: the first paint measures the switch and
-    // asks the palette for the extra row; the second lays out with it.
-    for _ in 0..3 {
-        let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
-        h.taffy = tree;
-        h.root_node = root;
-        h.host.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &ui::presence::PresenceCtx::default(),
-        );
-    }
-    assert!(
-        h.host.scope_switch_has_own_row(),
-        "the measured switch ({}) exceeds its share of the {} px band",
-        h.host.search_scope_measured_track_w(),
-        h.host.search_banner_rect().width()
-    );
-    let band = h.host.search_banner_rect();
-    let row_h = h.host.palette.filter_strip_row_height();
-    let track = h.host.search_scope_track_rect();
-    assert!(
-        (track.center().y - (band.y0 + row_h / 2.0)).abs() < 0.5,
-        "the switch sits on the band's first row: {track:?} in {band:?}"
-    );
-    let measured = h.host.search_scope_measured_track_w();
-    assert!(
-        (track.width() - measured.min(band.width())).abs() < 0.5,
-        "on its own row the switch is its full measured width ({measured}), capped only by the band ({}), not by the shared-row share: {track:?}",
-        band.width()
-    );
-    assert!(
-        measured <= band.width(),
-        "two scope labels at 200 % fit an 800 px card once the label is drawn at the person's size, not double-scaled: {measured} vs {}",
-        band.width()
-    );
-    for idx in 0..h.host.search_scope_list().len() {
-        let seg = h.host.search_scope_pill_rect(idx);
-        let label = h
-            .host
-            .search_scope_pill_label(h.host.search_scope_list()[idx]);
-        let size = ShellOverlayHost::filter_label_size(&theme, &tr);
-        let (w, _) = tr.measure_weighted(&label, size, None, TextWeight::Medium);
-        assert!(
-            f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
-            "{label:?} ({w} px) fits its segment {seg:?} whole"
-        );
-    }
-    let all = h.host.search_all_chip_rect;
-    assert!(
-        all.y0 >= band.y0 + row_h - 0.5,
-        "the chips start on the second row: All {all:?} under row 1 of {band:?}"
-    );
-    assert!(
-        h.host.search_chip_rows >= 2,
-        "the band reserved a row for the switch plus the chips' rows"
-    );
-    for (i, chip) in h.host.search_chip_rects.iter().enumerate() {
-        assert!(
-            chip.intersect(track).is_zero_area(),
-            "chip {i} {chip:?} does not run under the switch {track:?}"
-        );
-    }
-
-    // Wide card, 100 %: the switch shares the first row with "All".
-    let (vw, vh) = (1280.0, 800.0);
-    let mut wide = build_harness_sized(vw, vh);
-    wide.host.set_palette_visible(true);
-    wide.host.set_palette_focus(true);
-    wide.host.force_palette_settled();
-    settle(&mut wide, vw, vh);
-    assert!(!wide.host.scope_switch_has_own_row());
-    let all = wide.host.search_all_chip_rect;
-    let track = wide.host.search_scope_track_rect();
-    assert!((all.center().y - track.center().y).abs() < 0.5);
-}
-
-/// Below 100 % text the palette's row (`36·text_scale`) is shorter than
-/// the unscaled pointer floor, so a target grown to the floor would
-/// overlap its neighbours' and the first row's would protrude above
-/// the band. The floor is clamped to `row_h − s1` and every target is
-/// clipped to the band: rows never share a pixel, nothing leaves the
-/// band, and every target still wraps its pill.
-#[test]
-fn selector_targets_never_overlap_or_leave_the_band_at_small_text() {
-    let (vw, vh) = (900.0, 700.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
-    h.host.force_palette_settled();
-    let theme = Theme::dark().with_text_scale(0.75);
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(0.75);
-    for _ in 0..3 {
-        let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
-        h.taffy = tree;
-        h.root_node = root;
-        h.host.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &ui::presence::PresenceCtx::default(),
-        );
-    }
-    let band = h.host.search_banner_rect();
-    let row_h = h.host.palette.filter_strip_row_height();
-    let s1 = f64::from(theme.tokens.spacing.s1);
-    assert!(
-        h.host.search_pointer_floor_h <= row_h - s1 + 0.01,
-        "the floor ({}) is clamped to the row less its gutter ({})",
-        h.host.search_pointer_floor_h,
-        row_h - s1
-    );
-    let mut targets: Vec<(Rect, Rect)> = vec![(
-        h.host.search_all_chip_rect,
-        h.host.search_all_chip_hit_rect(),
-    )];
-    for i in 0..h.host.search_chip_rects.len() {
-        targets.push((h.host.search_chip_rects[i], h.host.search_chip_hit_rect(i)));
-    }
-    for idx in 0..h.host.search_scope_list().len() {
-        targets.push((
-            h.host.search_scope_pill_rect(idx),
-            h.host.search_scope_segment_hit_rect(idx),
-        ));
-    }
-    assert!(targets.len() >= 4, "the band has chips and scopes to check");
-    for (pill, target) in &targets {
-        assert!(
-            target.y0 >= band.y0 - 0.01 && target.y1 <= band.y1 + 0.01,
-            "target {target:?} stays inside the band {band:?}"
-        );
-        assert!(
-            target.y0 <= pill.y0 + 0.01 && target.y1 >= pill.y1 - 0.01,
-            "target {target:?} still wraps its pill {pill:?}"
-        );
-    }
-    for (i, (_, a)) in targets.iter().enumerate() {
-        for (_, b) in targets.iter().skip(i + 1) {
-            let overlap = a.intersect(*b);
+        for (i, kind) in kinds.iter().enumerate() {
+            let chip = &kinds_group.children[i + 1];
+            assert_eq!(
+                chip.name.as_deref(),
+                Some(format!("Filter: {}", kind.label()).as_str())
+            );
+            assert_ne!(
+                chip.name.as_deref(),
+                Some(kind.label()),
+                "a chip must not publish the bare kind label — a window title may share it"
+            );
+            assert_eq!(chip.state.checked, Some(false));
+            let target = chip
+                .bounds
+                .map(ui::AccessBounds::to_rect)
+                .expect("chip is bounded");
+            assert_eq!(
+                target,
+                h.host.search_chip_hit_rect(i),
+                "chip {i} carries its pointer target"
+            );
             assert!(
-                overlap.is_zero_area() || overlap.width() <= 1.0 || overlap.height() <= 1.0,
-                "targets overlap by more than a pixel: {a:?} vs {b:?}"
+                pill_inside_target(h.host.search_chip_rects[i], target),
+                "chip {i}'s target {target:?} must wrap its pill {:?} to the {floor} px floor",
+                h.host.search_chip_rects[i]
+            );
+            assert_eq!(
+                h.host
+                    .synthetic_accessibility_rect(&[0, band_index, 0, i + 1]),
+                Some(target),
+                "the routed geometry for chip {i} is the same rect"
+            );
+            assert!(
+                chip.action_target.as_deref().is_some_and(
+                    |t| t.starts_with("palette:filter:") && t.matches(':').count() == 2
+                ),
+                "chip {i} carries a single-segment address: {:?}",
+                chip.action_target
             );
         }
-    }
-}
 
-/// The band's "which one is chosen" is the shared selection tier, not
-/// the accent: the chosen chip's body is the full lift, an idle one has
-/// no body, and the ink on each is legible against what is under it
-/// (HIG §9.3 / §9.4; the accent is reserved for live state).
-#[test]
-fn filter_band_paints_selection_as_a_lift_never_as_accent() {
-    use ui::a11y::contrast_ratio;
-    let theme = Theme::dark();
-    let colors = &theme.tokens.colors;
-    let chosen = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
-    let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
-    assert_eq!(chosen.fill, colors.lift(1.0));
-    assert_ne!(
-        chosen.fill,
-        colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
-        "a chosen chip is lifted, not accent-filled"
-    );
-    assert!(chosen.border.is_some() && chosen.inner_glow.is_some());
-    assert_eq!(
-        idle.fill.components[3], 0.0,
-        "an idle chip has no body of its own"
-    );
-    // The ink the painter picks for each state clears the fill it sits on.
-    let ground = ui::chrome::shell::panel_ground(&theme);
-    let chosen_ink = colors.ink_on(
-        chosen.fill,
-        colors.text_primary,
-        ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-    );
-    let idle_ink = colors.ink_on(
-        ground,
-        colors.text_dim,
-        ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-    );
-    assert!(contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-    assert!(contrast_ratio(idle_ink, ground) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-    // And the same holds on the light and high-contrast presets.
-    for theme in [Theme::light(), Theme::high_contrast()] {
+        let scopes = h.host.search_scope_list();
+        assert_eq!(scope_group.children.len(), scopes.len());
+        let checked = scope_group
+            .children
+            .iter()
+            .filter(|n| n.state.checked == Some(true))
+            .count();
+        assert_eq!(checked, 1, "exactly one scope is current");
+        for (idx, node) in scope_group.children.iter().enumerate() {
+            assert_eq!(node.role, Role::RadioButton);
+            let hit = h.host.search_scope_segment_hit_rect(idx);
+            assert_eq!(node.bounds.map(ui::AccessBounds::to_rect), Some(hit));
+            let track = h.host.search_scope_track_rect();
+            assert!(
+                hit.contains(h.host.search_scope_pill_rect(idx).center())
+                    && (hit.height() - track.height().max(floor)).abs() < 0.01
+                    && (hit.center().y - track.center().y).abs() < 0.01,
+                "segment {idx}'s target is its slice of the track grown to the {floor} px floor: {hit:?} vs {track:?}"
+            );
+            assert!(
+                node.name
+                    .as_deref()
+                    .is_some_and(|n| n.starts_with("Scope: ")),
+                "scope names are prefixed: {:?}",
+                node.name
+            );
+        }
+
+        // The controls share one centre line: chips and the scope switch
+        // are laid out to the same control height in the band's first row.
+        // Addresses stay unique and single-segment even for hostile labels.
+        let odd = [
+            ResourceKind::Custom("Foo Bar".into()),
+            ResourceKind::Custom("foo  bar".into()),
+            ResourceKind::Custom("CI: Builds".into()),
+        ];
+        let keys: Vec<String> = (0..odd.len())
+            .map(|i| ShellOverlayHost::search_filter_key(&odd, i))
+            .collect();
+        assert_eq!(keys[0], "palette:filter:foo-bar");
+        assert_ne!(
+            keys[0], keys[1],
+            "a case/whitespace twin gets its own address"
+        );
+        assert_eq!(keys[2], "palette:filter:ci-builds");
+
+        // Paint and target are two rects with one centre line: the pills
+        // share top and bottom edges at the Selector height, and their
+        // pointer targets share top and bottom edges at the floor.
+        let all_rect = h.host.search_all_chip_rect;
+        let track = h.host.search_scope_track_rect();
+        assert!(
+            (all_rect.y0 - track.y0).abs() < 0.5 && (all_rect.y1 - track.y1).abs() < 0.5,
+            "All chip {all_rect:?} and scope track {track:?} do not share top and bottom edges"
+        );
+        let all_target = h.host.search_all_chip_hit_rect();
+        let first_scope = h.host.search_scope_segment_hit_rect(0);
+        assert!(
+            (all_target.y0 - first_scope.y0).abs() < 0.5
+                && (all_target.y1 - first_scope.y1).abs() < 0.5,
+            "All target {all_target:?} and scope target {first_scope:?} do not share top and bottom edges"
+        );
+        assert!(
+            (all_rect.height() - f64::from(Theme::dark().tokens.metrics.selector_height)).abs()
+                < 0.01,
+            "a chip rests at the Selector height (`metrics.selector_height`), got {}",
+            all_rect.height()
+        );
+        assert!(
+            all_target.height() + 0.01 >= floor,
+            "a chip's target meets the pointer floor {floor}, got {}",
+            all_target.height()
+        );
+    }
+
+    /// At 200 % text on a compact card the two scope labels need more than
+    /// the share of the band the switch may take beside the chips, so the
+    /// switch takes the first row alone, whole, and the chips start on the
+    /// next row: no "Works…", no overlap, one more reserved row (S1-29).
+    /// At 100 % on a wide card the switch shares the first row as before.
+    fn a_scope_switch_too_wide_to_share_the_first_row_takes_its_own() {
+        let (vw, vh) = (800.0, 700.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        // Paint, relayout, paint: the first paint measures the switch and
+        // asks the palette for the extra row; the second lays out with it.
+        for _ in 0..3 {
+            let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
+            h.taffy = tree;
+            h.root_node = root;
+            h.host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
+        assert!(
+            h.host.scope_switch_has_own_row(),
+            "the measured switch ({}) exceeds its share of the {} px band",
+            h.host.search_scope_measured_track_w(),
+            h.host.search_banner_rect().width()
+        );
+        let band = h.host.search_banner_rect();
+        let row_h = h.host.palette.filter_strip_row_height();
+        let track = h.host.search_scope_track_rect();
+        assert!(
+            (track.center().y - (band.y0 + row_h / 2.0)).abs() < 0.5,
+            "the switch sits on the band's first row: {track:?} in {band:?}"
+        );
+        let measured = h.host.search_scope_measured_track_w();
+        assert!(
+            (track.width() - measured.min(band.width())).abs() < 0.5,
+            "on its own row the switch is its full measured width ({measured}), capped only by the band ({}), not by the shared-row share: {track:?}",
+            band.width()
+        );
+        assert!(
+            measured <= band.width(),
+            "two scope labels at 200 % fit an 800 px card once the label is drawn at the person's size, not double-scaled: {measured} vs {}",
+            band.width()
+        );
+        for idx in 0..h.host.search_scope_list().len() {
+            let seg = h.host.search_scope_pill_rect(idx);
+            let label = h
+                .host
+                .search_scope_pill_label(h.host.search_scope_list()[idx]);
+            let size = ShellOverlayHost::filter_label_size(&theme, &tr);
+            let (w, _) = tr.measure_weighted(&label, size, None, TextWeight::Medium);
+            assert!(
+                f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
+                "{label:?} ({w} px) fits its segment {seg:?} whole"
+            );
+        }
+        let all = h.host.search_all_chip_rect;
+        assert!(
+            all.y0 >= band.y0 + row_h - 0.5,
+            "the chips start on the second row: All {all:?} under row 1 of {band:?}"
+        );
+        assert!(
+            h.host.search_chip_rows >= 2,
+            "the band reserved a row for the switch plus the chips' rows"
+        );
+        for (i, chip) in h.host.search_chip_rects.iter().enumerate() {
+            assert!(
+                chip.intersect(track).is_zero_area(),
+                "chip {i} {chip:?} does not run under the switch {track:?}"
+            );
+        }
+
+        // Wide card, 100 %: the switch shares the first row with "All".
+        let (vw, vh) = (1280.0, 800.0);
+        let mut wide = build_harness_sized(vw, vh);
+        wide.host.set_palette_visible(true);
+        wide.host.set_palette_focus(true);
+        wide.host.force_palette_settled();
+        settle(&mut wide, vw, vh);
+        assert!(!wide.host.scope_switch_has_own_row());
+        let all = wide.host.search_all_chip_rect;
+        let track = wide.host.search_scope_track_rect();
+        assert!((all.center().y - track.center().y).abs() < 0.5);
+    }
+
+    /// Below 100 % text the palette's row (`36·text_scale`) is shorter than
+    /// the unscaled pointer floor, so a target grown to the floor would
+    /// overlap its neighbours' and the first row's would protrude above
+    /// the band. The floor is clamped to `row_h − s1` and every target is
+    /// clipped to the band: rows never share a pixel, nothing leaves the
+    /// band, and every target still wraps its pill.
+    fn selector_targets_never_overlap_or_leave_the_band_at_small_text() {
+        let (vw, vh) = (900.0, 700.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(0.75);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(0.75);
+        for _ in 0..3 {
+            let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
+            h.taffy = tree;
+            h.root_node = root;
+            h.host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
+        let band = h.host.search_banner_rect();
+        let row_h = h.host.palette.filter_strip_row_height();
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        assert!(
+            h.host.search_pointer_floor_h <= row_h - s1 + 0.01,
+            "the floor ({}) is clamped to the row less its gutter ({})",
+            h.host.search_pointer_floor_h,
+            row_h - s1
+        );
+        let mut targets: Vec<(Rect, Rect)> = vec![(
+            h.host.search_all_chip_rect,
+            h.host.search_all_chip_hit_rect(),
+        )];
+        for i in 0..h.host.search_chip_rects.len() {
+            targets.push((h.host.search_chip_rects[i], h.host.search_chip_hit_rect(i)));
+        }
+        for idx in 0..h.host.search_scope_list().len() {
+            targets.push((
+                h.host.search_scope_pill_rect(idx),
+                h.host.search_scope_segment_hit_rect(idx),
+            ));
+        }
+        assert!(targets.len() >= 4, "the band has chips and scopes to check");
+        for (pill, target) in &targets {
+            assert!(
+                target.y0 >= band.y0 - 0.01 && target.y1 <= band.y1 + 0.01,
+                "target {target:?} stays inside the band {band:?}"
+            );
+            assert!(
+                target.y0 <= pill.y0 + 0.01 && target.y1 >= pill.y1 - 0.01,
+                "target {target:?} still wraps its pill {pill:?}"
+            );
+        }
+        for (i, (_, a)) in targets.iter().enumerate() {
+            for (_, b) in targets.iter().skip(i + 1) {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.is_zero_area() || overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                    "targets overlap by more than a pixel: {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    /// The band's "which one is chosen" is the shared selection tier, not
+    /// the accent: the chosen chip's body is the full lift, an idle one has
+    /// no body, and the ink on each is legible against what is under it
+    /// (HIG §9.3 / §9.4; the accent is reserved for live state).
+    fn filter_band_paints_selection_as_a_lift_never_as_accent() {
+        use ui::a11y::contrast_ratio;
+        let theme = Theme::dark();
         let colors = &theme.tokens.colors;
         let chosen = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
-        let ink = colors.ink_on(
+        let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
+        assert_eq!(chosen.fill, colors.lift(1.0));
+        assert_ne!(
+            chosen.fill,
+            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            "a chosen chip is lifted, not accent-filled"
+        );
+        assert!(chosen.border.is_some() && chosen.inner_glow.is_some());
+        assert_eq!(
+            idle.fill.components[3], 0.0,
+            "an idle chip has no body of its own"
+        );
+        // The ink the painter picks for each state clears the fill it sits on.
+        let ground = ui::chrome::shell::panel_ground(&theme);
+        let chosen_ink = colors.ink_on(
             chosen.fill,
             colors.text_primary,
             ui::tokens::colors::ON_FILL_MIN_CONTRAST,
         );
-        assert!(
-            contrast_ratio(ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-            "chosen-chip ink must clear its lift on every preset"
+        let idle_ink = colors.ink_on(
+            ground,
+            colors.text_dim,
+            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
         );
+        assert!(
+            contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST
+        );
+        assert!(contrast_ratio(idle_ink, ground) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        // And the same holds on the light and high-contrast presets.
+        for theme in [Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let chosen =
+                ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
+            let ink = colors.ink_on(
+                chosen.fill,
+                colors.text_primary,
+                ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+            );
+            assert!(
+                contrast_ratio(ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+                "chosen-chip ink must clear its lift on every preset"
+            );
+        }
     }
-}
 
-/// Every filter must be reachable at every width. An unpainted chip has
-/// no rect, so its filter is unclickable even though the registry lists
-/// it — at 1600px five kinds exactly filled the row, hiding a sixth.
-/// Asserts on the rects production `draw` cached, since that's what a
-/// click is hit-tested against.
-#[test]
-fn palette_height_only_resize_requests_a_corrected_layout() {
-    let mut h = build_harness_sized(800.0, 900.0);
-    h.host.set_palette_visible(true);
-    h.host.force_palette_settled();
-    let theme = Theme::dark().with_text_scale(2.0);
-    settle_with_theme(&mut h, 800.0, 900.0, &theme);
-    h.host.palette_layout_dirty = false;
-    let _ = lay_out_host_with_theme(&mut h.host, 800.0, 500.0, &theme);
-    assert!(
-        h.host.palette_layout_dirty,
-        "height-only resize must recompute palette cap from new viewport"
-    );
-    let _ = lay_out_host_with_theme(&mut h.host, 800.0, 500.0, &theme);
-    assert!(h.host.palette.get_rect().y1 <= 484.0);
-}
-
-#[test]
-fn compact_large_text_launcher_chips_fit_full_labels_and_viewport() {
-    let mut h = build_harness_sized(800.0, 700.0);
-    h.host.set_palette_visible(true);
-    h.host.force_palette_settled();
-    let theme = Theme::dark().with_text_scale(2.0);
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(2.0);
-    for _ in 0..4 {
-        let (tree, root) = lay_out_host_with_theme(&mut h.host, 800.0, 700.0, &theme);
-        h.taffy = tree;
-        h.root_node = root;
-        h.host.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &ui::presence::PresenceCtx::default(),
-        );
-    }
-    assert!(h.host.palette.get_rect().y1 <= 684.0);
-    let size = theme.tokens.typography.scale.xs / tr.text_scale();
-    for (kind, rect) in h
-        .host
-        .search_registry
-        .registered_kinds()
-        .iter()
-        .zip(&h.host.search_chip_rects)
-    {
-        let (w, height) = tr.measure(kind.label(), size, None);
-        assert!(
-            f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
-            "{} needs readable width: {:?}",
-            kind.label(),
-            rect
-        );
-        assert!(
-            f64::from(height) <= rect.height(),
-            "{} needs text height: {:?}",
-            kind.label(),
-            rect
-        );
-    }
-    for (i, scope) in h.host.search_scope_list().iter().enumerate() {
-        let label = h.host.search_scope_pill_label(*scope);
-        let (w, height) = tr.measure(&label, size, None);
-        let rect = h.host.search_scope_pill_rect(i);
-        assert!(
-            f64::from(w) + 10.0 <= rect.width(),
-            "{label} scope truncated"
-        );
-        assert!(f64::from(height) <= rect.height());
-    }
+    filter_controls_grow_with_their_label_and_stay_inside_the_row();
+    filter_chips_and_scope_segments_are_bounded_semantic_targets();
+    a_scope_switch_too_wide_to_share_the_first_row_takes_its_own();
+    selector_targets_never_overlap_or_leave_the_band_at_small_text();
+    filter_band_paints_selection_as_a_lift_never_as_accent();
 }
 
 #[test]
-fn every_kind_is_reachable_at_every_width() {
-    // 800 is the narrowest viewport `shots --sweep` renders, where the
-    // palette card hits its 560px floor and the filter band is tightest.
-    for (vw, vh) in [(800.0, 600.0), (1280.0, 800.0), (1600.0, 900.0)] {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
+    fn compact_large_text_launcher_chips_fit_full_labels_and_viewport() {
+        let mut h = build_harness_sized(800.0, 700.0);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        for _ in 0..4 {
+            let (tree, root) = lay_out_host_with_theme(&mut h.host, 800.0, 700.0, &theme);
+            h.taffy = tree;
+            h.root_node = root;
+            h.host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
+        assert!(h.host.palette.get_rect().y1 <= 684.0);
+        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        for (kind, rect) in h
+            .host
+            .search_registry
+            .registered_kinds()
+            .iter()
+            .zip(&h.host.search_chip_rects)
+        {
+            let (w, height) = tr.measure(kind.label(), size, None);
+            assert!(
+                f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
+                "{} needs readable width: {:?}",
+                kind.label(),
+                rect
+            );
+            assert!(
+                f64::from(height) <= rect.height(),
+                "{} needs text height: {:?}",
+                kind.label(),
+                rect
+            );
+        }
+        for (i, scope) in h.host.search_scope_list().iter().enumerate() {
+            let label = h.host.search_scope_pill_label(*scope);
+            let (w, height) = tr.measure(&label, size, None);
+            let rect = h.host.search_scope_pill_rect(i);
+            assert!(
+                f64::from(w) + 10.0 <= rect.width(),
+                "{label} scope truncated"
+            );
+            assert!(f64::from(height) <= rect.height());
+        }
+    }
+
+    fn every_kind_is_reachable_at_every_width() {
+        // 800 is the narrowest viewport `shots --sweep` renders, where the
+        // palette card hits its 560px floor and the filter band is tightest.
+        for (vw, vh) in [(800.0, 600.0), (1280.0, 800.0), (1600.0, 900.0)] {
+            let mut h = build_harness_sized(vw, vh);
+            h.host.set_palette_visible(true);
+            h.host.force_palette_settled();
+            settle(&mut h, vw, vh);
+
+            let kinds = h.host.search_registry.registered_kinds();
+            let rects = h.host.search_chip_rects.clone();
+            assert_eq!(
+                rects.len(),
+                kinds.len(),
+                "at {vw}x{vh} the strip painted {} of {} kinds — an \
+                 unpainted chip has no rect, so the filter it stands for \
+                 cannot be clicked at all: {:?}",
+                rects.len(),
+                kinds.len(),
+                kinds
+                    .iter()
+                    .map(super::super::search::ResourceKind::label)
+                    .collect::<Vec<_>>()
+            );
+
+            let band = h.host.search_banner_rect();
+            let all = h.host.search_all_chip_rect;
+            let track = h.host.search_scope_track_rect();
+            let mut painted: Vec<(String, Rect)> = vec![("All".to_string(), all)];
+            painted.extend(
+                kinds
+                    .iter()
+                    .map(|k| k.label().to_string())
+                    .zip(rects.iter().copied()),
+            );
+            for (label, r) in &painted {
+                assert!(
+                    r.area() > 0.0,
+                    "at {vw}x{vh} the {label} chip has no area: {r:?}"
+                );
+                assert!(
+                    r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5,
+                    "at {vw}x{vh} the {label} chip {r:?} is outside the \
+                     band {band:?} — it would paint over the results"
+                );
+                assert!(
+                    r.x0 >= band.x0 - 0.5 && r.x1 <= band.x1 + 0.5,
+                    "at {vw}x{vh} the {label} chip {r:?} runs past the \
+                     band's edges {band:?}"
+                );
+            }
+            // Nothing overlaps anything: two chips sharing pixels means
+            // one of them eats the other's clicks.
+            for i in 0..painted.len() {
+                for j in (i + 1)..painted.len() {
+                    let (a, b) = (painted[i].1, painted[j].1);
+                    assert!(
+                        a.intersect(b).area() <= 0.0,
+                        "at {vw}x{vh} the {} and {} chips overlap: {a:?} / {b:?}",
+                        painted[i].0,
+                        painted[j].0
+                    );
+                }
+                assert!(
+                    painted[i].1.intersect(track).area() <= 0.0,
+                    "at {vw}x{vh} the {} chip sits under the scope switch: \
+                     {:?} / {track:?}",
+                    painted[i].0,
+                    painted[i].1
+                );
+            }
+        }
+    }
+
+    /// Clicking the last chip at the narrowest viewport must apply its
+    /// filter — driven through the production `handle_event` router against
+    /// the rect `draw` actually cached, so a mis-placed chip fails here too.
+    fn the_last_chip_can_be_clicked_at_the_narrowest_width() {
+        let (vw, vh) = (800.0, 600.0);
         let mut h = build_harness_sized(vw, vh);
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
         settle(&mut h, vw, vh);
 
-        let kinds = h.host.search_registry.registered_kinds();
-        let rects = h.host.search_chip_rects.clone();
+        let last_kind = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .last()
+            .cloned()
+            .expect("the registry has kinds");
+        assert!(
+            h.host.active_kind_filter.is_empty(),
+            "the palette starts unfiltered"
+        );
+        let target = *h
+            .host
+            .search_chip_rects
+            .last()
+            .expect("the last kind must have been painted");
+        pump(&mut h, &cursor_moved_at(target.center()));
+        pump(&mut h, &left_button_pressed());
+
         assert_eq!(
-            rects.len(),
-            kinds.len(),
-            "at {vw}x{vh} the strip painted {} of {} kinds — an \
-                 unpainted chip has no rect, so the filter it stands for \
-                 cannot be clicked at all: {:?}",
-            rects.len(),
-            kinds.len(),
-            kinds
+            h.host.active_kind_filter,
+            vec![last_kind.clone()],
+            "clicking the last chip at {vw}x{vh} must filter to {:?}; the \
+             palette instead holds {:?}",
+            last_kind.label(),
+            h.host
+                .active_kind_filter
                 .iter()
                 .map(super::super::search::ResourceKind::label)
                 .collect::<Vec<_>>()
         );
-
-        let band = h.host.search_banner_rect();
-        let all = h.host.search_all_chip_rect;
-        let track = h.host.search_scope_track_rect();
-        let mut painted: Vec<(String, Rect)> = vec![("All".to_string(), all)];
-        painted.extend(
-            kinds
-                .iter()
-                .map(|k| k.label().to_string())
-                .zip(rects.iter().copied()),
+        assert!(
+            h.host.palette_visible(),
+            "and the click must not be taken for a dismissal"
         );
-        for (label, r) in &painted {
-            assert!(
-                r.area() > 0.0,
-                "at {vw}x{vh} the {label} chip has no area: {r:?}"
+    }
+
+    /// The layout rule itself, at widths no card would ever have, so the
+    /// invariant is pinned rather than inferred from one viewport: every
+    /// chip gets a positive, non-overlapping rect inside the band, even
+    /// when the rows on offer cannot hold them at natural width.
+    fn the_chip_strip_places_every_chip_however_narrow_the_band() {
+        let band = Rect::new(0.0, 0.0, 240.0, 36.0);
+        let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
+        for rows_available in [1usize, 2, 3] {
+            let strip = lay_out_chip_strip(
+                &natural,
+                band,
+                band.x1 - 100.0,
+                rows_available,
+                36.0,
+                24.0,
+                8.0,
+            );
+            assert_eq!(
+                strip.rects.len(),
+                natural.len(),
+                "every chip gets a rect at {rows_available} row(s)"
             );
             assert!(
-                r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5,
-                "at {vw}x{vh} the {label} chip {r:?} is outside the \
-                     band {band:?} — it would paint over the results"
+                strip.rows_needed >= 1,
+                "the strip always needs at least one row"
             );
-            assert!(
-                r.x0 >= band.x0 - 0.5 && r.x1 <= band.x1 + 0.5,
-                "at {vw}x{vh} the {label} chip {r:?} runs past the \
-                     band's edges {band:?}"
-            );
-        }
-        // Nothing overlaps anything: two chips sharing pixels means
-        // one of them eats the other's clicks.
-        for i in 0..painted.len() {
-            for j in (i + 1)..painted.len() {
-                let (a, b) = (painted[i].1, painted[j].1);
+            for (i, r) in strip.rects.iter().enumerate() {
                 assert!(
-                    a.intersect(b).area() <= 0.0,
-                    "at {vw}x{vh} the {} and {} chips overlap: {a:?} / {b:?}",
-                    painted[i].0,
-                    painted[j].0
+                    r.width() > 0.0 && r.height() > 0.0,
+                    "chip {i} of {} is not clickable at {rows_available} \
+                     row(s): {r:?}",
+                    natural.len()
+                );
+                assert!(
+                    r.x0 >= band.x0 - 0.001,
+                    "chip {i} starts left of the band: {r:?}"
                 );
             }
-            assert!(
-                painted[i].1.intersect(track).area() <= 0.0,
-                "at {vw}x{vh} the {} chip sits under the scope switch: \
-                     {:?} / {track:?}",
-                painted[i].0,
-                painted[i].1
+            for i in 0..strip.rects.len() {
+                for j in (i + 1)..strip.rects.len() {
+                    assert!(
+                        strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
+                        "chips {i} and {j} overlap at {rows_available} \
+                         row(s): {:?} / {:?}",
+                        strip.rects[i],
+                        strip.rects[j]
+                    );
+                }
+            }
+        }
+        // And when there is room, nothing is squeezed: the chips keep
+        // their natural widths.
+        let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
+        let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0, 8.0);
+        assert_eq!(strip.rows_needed, 1);
+        for (i, r) in strip.rects.iter().enumerate() {
+            assert_eq!(
+                r.width(),
+                natural[i],
+                "chip {i} was squeezed with room to spare"
             );
         }
     }
+
+    /// Every filter must be reachable at every width. An unpainted chip has
+    /// no rect, so its filter is unclickable even though the registry lists
+    /// it — at 1600px five kinds exactly filled the row, hiding a sixth.
+    /// Asserts on the rects production `draw` cached, since that's what a
+    /// click is hit-tested against.
+    fn palette_height_only_resize_requests_a_corrected_layout() {
+        let mut h = build_harness_sized(800.0, 900.0);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(2.0);
+        settle_with_theme(&mut h, 800.0, 900.0, &theme);
+        h.host.palette_layout_dirty = false;
+        let _ = lay_out_host_with_theme(&mut h.host, 800.0, 500.0, &theme);
+        assert!(
+            h.host.palette_layout_dirty,
+            "height-only resize must recompute palette cap from new viewport"
+        );
+        let _ = lay_out_host_with_theme(&mut h.host, 800.0, 500.0, &theme);
+        assert!(h.host.palette.get_rect().y1 <= 484.0);
+    }
+
+    compact_large_text_launcher_chips_fit_full_labels_and_viewport();
+    every_kind_is_reachable_at_every_width();
+    the_last_chip_can_be_clicked_at_the_narrowest_width();
+    the_chip_strip_places_every_chip_however_narrow_the_band();
+    palette_height_only_resize_requests_a_corrected_layout();
 }
 
-/// Clicking the last chip at the narrowest viewport must apply its
-/// filter — driven through the production `handle_event` router against
-/// the rect `draw` actually cached, so a mis-placed chip fails here too.
 #[test]
-fn the_last_chip_can_be_clicked_at_the_narrowest_width() {
-    let (vw, vh) = (800.0, 600.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.host.set_palette_visible(true);
-    h.host.force_palette_settled();
-    settle(&mut h, vw, vh);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_selection() {
+    /// Clicking a kind chip or scope switch must filter, not be mistaken
+    /// for a dismissal click outside the card. Drives the production
+    /// `handle_event` router against rects `draw` just cached.
+    fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
 
-    let last_kind = h
-        .host
-        .search_registry
-        .registered_kinds()
-        .last()
-        .cloned()
-        .expect("the registry has kinds");
-    assert!(
-        h.host.active_kind_filter.is_empty(),
-        "the palette starts unfiltered"
-    );
-    let target = *h
-        .host
-        .search_chip_rects
-        .last()
-        .expect("the last kind must have been painted");
-    pump(&mut h, &cursor_moved_at(target.center()));
-    pump(&mut h, &left_button_pressed());
+        assert!(
+            h.host.active_kind_filter.is_empty(),
+            "the palette starts unfiltered"
+        );
+        paint_then_click(&mut h, |host| {
+            host.search_chip_rects
+                .first()
+                .copied()
+                .expect("the chip strip must have painted at least one chip")
+                .center()
+        });
 
-    assert_eq!(
-        h.host.active_kind_filter,
-        vec![last_kind.clone()],
-        "clicking the last chip at {vw}x{vh} must filter to {:?}; the \
-             palette instead holds {:?}",
-        last_kind.label(),
-        h.host
-            .active_kind_filter
-            .iter()
-            .map(super::super::search::ResourceKind::label)
-            .collect::<Vec<_>>()
-    );
-    assert!(
-        h.host.palette_visible(),
-        "and the click must not be taken for a dismissal"
-    );
-}
-
-/// The layout rule itself, at widths no card would ever have, so the
-/// invariant is pinned rather than inferred from one viewport: every
-/// chip gets a positive, non-overlapping rect inside the band, even
-/// when the rows on offer cannot hold them at natural width.
-#[test]
-fn the_chip_strip_places_every_chip_however_narrow_the_band() {
-    let band = Rect::new(0.0, 0.0, 240.0, 36.0);
-    let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
-    for rows_available in [1usize, 2, 3] {
-        let strip = lay_out_chip_strip(
-            &natural,
-            band,
-            band.x1 - 100.0,
-            rows_available,
-            36.0,
-            24.0,
-            8.0,
+        assert!(
+            h.host.palette_visible(),
+            "a click on a chip inside the card must not dismiss the palette"
         );
         assert_eq!(
-            strip.rects.len(),
-            natural.len(),
-            "every chip gets a rect at {rows_available} row(s)"
+            h.host.active_kind_filter.len(),
+            1,
+            "the first chip must have toggled a kind on: {:?}",
+            h.host.active_kind_filter
+        );
+
+        // …and the "All" chip clears it again.
+        paint_then_click(&mut h, |host| host.search_all_chip_rect.center());
+        assert!(
+            h.host.palette_visible(),
+            "the All chip must not dismiss the palette either"
         );
         assert!(
-            strip.rows_needed >= 1,
-            "the strip always needs at least one row"
+            h.host.active_kind_filter.is_empty(),
+            "All must clear the kind filter, got {:?}",
+            h.host.active_kind_filter
         );
-        for (i, r) in strip.rects.iter().enumerate() {
-            assert!(
-                r.width() > 0.0 && r.height() > 0.0,
-                "chip {i} of {} is not clickable at {rows_available} \
-                     row(s): {r:?}",
-                natural.len()
-            );
-            assert!(
-                r.x0 >= band.x0 - 0.001,
-                "chip {i} starts left of the band: {r:?}"
-            );
-        }
-        for i in 0..strip.rects.len() {
-            for j in (i + 1)..strip.rects.len() {
-                assert!(
-                    strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
-                    "chips {i} and {j} overlap at {rows_available} \
-                         row(s): {:?} / {:?}",
-                    strip.rects[i],
-                    strip.rects[j]
-                );
-            }
-        }
     }
-    // And when there is room, nothing is squeezed: the chips keep
-    // their natural widths.
-    let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
-    let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0, 8.0);
-    assert_eq!(strip.rows_needed, 1);
-    for (i, r) in strip.rects.iter().enumerate() {
+
+    /// A new-window picker deliberately begins with both launch sources so
+    /// either kind of program can be opened. Selecting Host Apps from that
+    /// state must replace the source selection, not toggle host rows off and
+    /// leave Applications lit (the live picker regression this covers).
+    fn host_apps_chip_exclusively_filters_a_new_window_picker() {
+        use crate::shell::search::ResourceKind;
+
+        let mut h = build_harness();
+        h.host
+            .search_registry
+            .register(Rc::new(AppSourceFilterFixtureProvider));
+        h.host.active_kind_filter = app_kind_filter();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+
+        let host_chip = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .iter()
+            .position(|kind| *kind == ResourceKind::HostApplication)
+            .expect("Host Apps chip is registered");
+        paint_then_click(&mut h, |host| host.search_chip_rects[host_chip].center());
+
         assert_eq!(
-            r.width(),
-            natural[i],
-            "chip {i} was squeezed with room to spare"
+            h.host.active_kind_filter,
+            vec![ResourceKind::HostApplication]
+        );
+        assert!(
+            h.host.search_results.iter().any(|row| {
+                row.provider_id == "app-source-filter-fixture" && row.id == "fixture-host-app"
+            }),
+            "the selected Host Apps source must reach the production palette query"
+        );
+        assert!(
+            h.host
+                .search_results
+                .iter()
+                .all(|row| row.kind == ResourceKind::HostApplication),
+            "Host Apps must not leave Tilo application rows visible: {:?}",
+            h.host
+                .search_results
+                .iter()
+                .map(|row| (&row.title, &row.kind))
+                .collect::<Vec<_>>()
         );
     }
-}
 
-/// Clicking a kind chip or scope switch must filter, not be mistaken
-/// for a dismissal click outside the card. Drives the production
-/// `handle_event` router against rects `draw` just cached.
-#[test]
-fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
-    let mut h = build_harness();
-    h.host.set_palette_visible(true);
-    h.host.force_palette_settled();
+    fn app_search_arrows_and_enter_activate_the_visibly_selected_row() {
+        use crate::shell::search::ResourceKind;
 
-    assert!(
-        h.host.active_kind_filter.is_empty(),
-        "the palette starts unfiltered"
-    );
-    paint_then_click(&mut h, |host| {
-        host.search_chip_rects
-            .first()
-            .copied()
-            .expect("the chip strip must have painted at least one chip")
-            .center()
-    });
-
-    assert!(
-        h.host.palette_visible(),
-        "a click on a chip inside the card must not dismiss the palette"
-    );
-    assert_eq!(
-        h.host.active_kind_filter.len(),
-        1,
-        "the first chip must have toggled a kind on: {:?}",
-        h.host.active_kind_filter
-    );
-
-    // …and the "All" chip clears it again.
-    paint_then_click(&mut h, |host| host.search_all_chip_rect.center());
-    assert!(
-        h.host.palette_visible(),
-        "the All chip must not dismiss the palette either"
-    );
-    assert!(
-        h.host.active_kind_filter.is_empty(),
-        "All must clear the kind filter, got {:?}",
-        h.host.active_kind_filter
-    );
-}
-
-/// A new-window picker deliberately begins with both launch sources so
-/// either kind of program can be opened. Selecting Host Apps from that
-/// state must replace the source selection, not toggle host rows off and
-/// leave Applications lit (the live picker regression this covers).
-#[test]
-fn host_apps_chip_exclusively_filters_a_new_window_picker() {
-    use crate::shell::search::ResourceKind;
-
-    let mut h = build_harness();
-    h.host
-        .search_registry
-        .register(Rc::new(AppSourceFilterFixtureProvider));
-    h.host.active_kind_filter = app_kind_filter();
-    h.host.set_palette_visible(true);
-    h.host.force_palette_settled();
-
-    let host_chip = h
-        .host
-        .search_registry
-        .registered_kinds()
-        .iter()
-        .position(|kind| *kind == ResourceKind::HostApplication)
-        .expect("Host Apps chip is registered");
-    paint_then_click(&mut h, |host| host.search_chip_rects[host_chip].center());
-
-    assert_eq!(
-        h.host.active_kind_filter,
-        vec![ResourceKind::HostApplication]
-    );
-    assert!(
-        h.host.search_results.iter().any(|row| {
-            row.provider_id == "app-source-filter-fixture" && row.id == "fixture-host-app"
-        }),
-        "the selected Host Apps source must reach the production palette query"
-    );
-    assert!(
+        let mut h = build_harness();
         h.host
-            .search_results
-            .iter()
-            .all(|row| row.kind == ResourceKind::HostApplication),
-        "Host Apps must not leave Tilo application rows visible: {:?}",
-        h.host
-            .search_results
-            .iter()
-            .map(|row| (&row.title, &row.kind))
-            .collect::<Vec<_>>()
-    );
-}
+            .search_registry
+            .register(Rc::new(AppSourceFilterFixtureProvider));
+        h.host.active_kind_filter = vec![ResourceKind::Application, ResourceKind::HostApplication];
+        h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        h.host.palette.set_query("Open");
+        let doc = AutoCommit::new();
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
 
-#[test]
-fn app_search_arrows_and_enter_activate_the_visibly_selected_row() {
-    use crate::shell::search::ResourceKind;
+        let (_, _, initially_selected, rows) = h.host.palette_snapshot();
+        assert!(
+            rows.len() >= 2,
+            "fixture must expose both app sources: {rows:?}"
+        );
+        let initially_selected = initially_selected.expect("first row is visibly selected");
+        assert_eq!(initially_selected, rows[0].0);
 
-    let mut h = build_harness();
-    h.host
-        .search_registry
-        .register(Rc::new(AppSourceFilterFixtureProvider));
-    h.host.active_kind_filter = vec![ResourceKind::Application, ResourceKind::HostApplication];
-    h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
-    h.host.force_palette_settled();
-    h.host.palette.set_query("Open");
-    let doc = AutoCommit::new();
-    h.host.refresh_search_results(&doc, &automerge::ROOT);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::ArrowDown)),));
+        let (_, _, selected_after_arrow, rows_after_arrow) = h.host.palette_snapshot();
+        let selected_after_arrow = selected_after_arrow.expect("arrow keeps a row selected");
+        assert_eq!(
+            rows_after_arrow, rows,
+            "navigation must not reorder search results"
+        );
+        assert_eq!(
+            selected_after_arrow, rows[1].0,
+            "ArrowDown must move the visible selection to the second app"
+        );
 
-    let (_, _, initially_selected, rows) = h.host.palette_snapshot();
-    assert!(
-        rows.len() >= 2,
-        "fixture must expose both app sources: {rows:?}"
-    );
-    let initially_selected = initially_selected.expect("first row is visibly selected");
-    assert_eq!(initially_selected, rows[0].0);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter)),));
+        assert!(
+            !h.host.palette_visible(),
+            "Enter's activation path must complete the selected app action"
+        );
+        assert_ne!(
+            selected_after_arrow, initially_selected,
+            "activation must follow the arrow-selected row, not stale result zero"
+        );
+    }
 
-    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::ArrowDown)),));
-    let (_, _, selected_after_arrow, rows_after_arrow) = h.host.palette_snapshot();
-    let selected_after_arrow = selected_after_arrow.expect("arrow keeps a row selected");
-    assert_eq!(
-        rows_after_arrow, rows,
-        "navigation must not reorder search results"
-    );
-    assert_eq!(
-        selected_after_arrow, rows[1].0,
-        "ArrowDown must move the visible selection to the second app"
-    );
+    /// Same for the scope switch, which shares the band.
+    fn clicking_a_scope_segment_switches_scope_without_dismissing() {
+        use crate::shell::chrome_state::SearchScope;
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
+        h.chrome.borrow_mut().search_resource_scope =
+            Some(crate::shell::chrome_state::SearchResourceScope {
+                peer_id: 7,
+                cluster_id: "room:test".into(),
+                app_id: "so.tilo.reader".into(),
+                resource: "book:42".into(),
+                label: "Book of Tilo".into(),
+                kind: "ebook.book".into(),
+            });
+        assert_eq!(
+            h.host.search_scope_pill_label(SearchScope::Workspace),
+            "‹ Book of Tilo",
+            "the selected place pill doubles as a visible resource breadcrumb"
+        );
 
-    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter)),));
-    assert!(
-        !h.host.palette_visible(),
-        "Enter's activation path must complete the selected app action"
-    );
-    assert_ne!(
-        selected_after_arrow, initially_selected,
-        "activation must follow the arrow-selected row, not stale result zero"
-    );
-}
-
-/// Same for the scope switch, which shares the band.
-#[test]
-fn clicking_a_scope_segment_switches_scope_without_dismissing() {
-    use crate::shell::chrome_state::SearchScope;
-    let mut h = build_harness();
-    h.host.set_palette_visible(true);
-    h.host.force_palette_settled();
-    h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
-    h.chrome.borrow_mut().search_resource_scope =
-        Some(crate::shell::chrome_state::SearchResourceScope {
-            peer_id: 7,
-            cluster_id: "room:test".into(),
-            app_id: "so.tilo.reader".into(),
-            resource: "book:42".into(),
-            label: "Book of Tilo".into(),
-            kind: "ebook.book".into(),
+        paint_then_click(&mut h, |host| {
+            let workspace = host
+                .search_scope_list()
+                .iter()
+                .position(|scope| *scope == SearchScope::Workspace)
+                .expect("workspace scope segment");
+            host.search_scope_pill_rect(workspace).center()
         });
-    assert_eq!(
-        h.host.search_scope_pill_label(SearchScope::Workspace),
-        "‹ Book of Tilo",
-        "the selected place pill doubles as a visible resource breadcrumb"
-    );
+        assert!(
+            h.chrome.borrow().search_resource_scope.is_none(),
+            "clicking the visible breadcrumb leaves the nested resource scope"
+        );
 
-    paint_then_click(&mut h, |host| {
-        let workspace = host
-            .search_scope_list()
-            .iter()
-            .position(|scope| *scope == SearchScope::Workspace)
-            .expect("workspace scope segment");
-        host.search_scope_pill_rect(workspace).center()
-    });
-    assert!(
-        h.chrome.borrow().search_resource_scope.is_none(),
-        "clicking the visible breadcrumb leaves the nested resource scope"
-    );
+        // The last segment is All (the scope list is
+        // [ActiveApp?, Workspace, All]).
+        paint_then_click(&mut h, |host| {
+            let last = host.search_scope_list().len() - 1;
+            host.search_scope_pill_rect(last).center()
+        });
 
-    // The last segment is All (the scope list is
-    // [ActiveApp?, Workspace, All]).
-    paint_then_click(&mut h, |host| {
-        let last = host.search_scope_list().len() - 1;
-        host.search_scope_pill_rect(last).center()
-    });
+        assert!(h.host.palette_visible(), "the palette must stay open");
+        assert_eq!(
+            h.chrome.borrow().search_scope,
+            SearchScope::All,
+            "clicking the trailing segment must select the All scope"
+        );
+        assert!(
+            h.chrome.borrow().search_resource_scope.is_none(),
+            "choosing a place leaves the nested resource scope"
+        );
+    }
 
-    assert!(h.host.palette_visible(), "the palette must stay open");
-    assert_eq!(
-        h.chrome.borrow().search_scope,
-        SearchScope::All,
-        "clicking the trailing segment must select the All scope"
-    );
-    assert!(
-        h.chrome.borrow().search_resource_scope.is_none(),
-        "choosing a place leaves the nested resource scope"
-    );
+    clicking_a_kind_chip_filters_without_dismissing_the_palette();
+    host_apps_chip_exclusively_filters_a_new_window_picker();
+    app_search_arrows_and_enter_activate_the_visibly_selected_row();
+    clicking_a_scope_segment_switches_scope_without_dismissing();
 }
 
 #[test]
-fn overlay_absorbs_cursor_moved_when_palette_open() {
-    let mut h = build_harness();
-    h.host.set_palette_visible(true);
-    let palette_rect = h.host.palette.get_rect();
-    assert!(
-        palette_rect.area() > 0.0,
-        "palette must have a non-empty rect after layout"
-    );
-    let p = palette_rect.center();
-    let cm = cursor_moved_at(p);
-    let handled = pump(&mut h, &cm);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
+    fn overlay_absorbs_cursor_moved_when_palette_open() {
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        let palette_rect = h.host.palette.get_rect();
+        assert!(
+            palette_rect.area() > 0.0,
+            "palette must have a non-empty rect after layout"
+        );
+        let p = palette_rect.center();
+        let cm = cursor_moved_at(p);
+        let handled = pump(&mut h, &cm);
 
-    assert!(
-        handled,
-        "CursorMoved over the open palette must be absorbed (handled = true)"
-    );
-    let log = h.log.borrow();
-    assert!(
-        !log.iter().any(|s| s == "CursorMoved"),
-        "content.handle_event must NOT see CursorMoved when the palette absorbs it; log = {:?}",
-        *log
-    );
+        assert!(
+            handled,
+            "CursorMoved over the open palette must be absorbed (handled = true)"
+        );
+        let log = h.log.borrow();
+        assert!(
+            !log.iter().any(|s| s == "CursorMoved"),
+            "content.handle_event must NOT see CursorMoved when the palette absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    fn overlay_absorbs_released_inside_qs() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        let qs_rect = h.host.quick_settings_rect();
+        assert!(qs_rect.area() > 0.0, "qs rect must be non-empty");
+        let p = qs_rect.center();
+        // Released doesn't carry position data, so seed `last_cursor` via
+        // a CursorMoved first. Clear the log so the Released assertion is
+        // unambiguous.
+        pump(&mut h, &cursor_moved_at(p));
+        h.log.borrow_mut().clear();
+
+        let released = left_button_released();
+        let handled = pump(&mut h, &released);
+
+        assert!(
+            handled,
+            "MouseInput::Released over the open quick-settings popover must be absorbed"
+        );
+        let log = h.log.borrow();
+        assert!(
+            !log.iter().any(|s| s == "MouseInput::Released"),
+            "content.handle_event must NOT see Released when QS absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    fn overlay_absorbs_keyboard_text_and_release_when_qs_open() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.log.borrow_mut().clear();
+
+        assert!(pump(&mut h, &key_pressed(Key::Character("x".into()))));
+        assert!(pump(&mut h, &key_released(Key::Character("x".into()))));
+        let log = h.log.borrow();
+        assert!(
+            log.is_empty(),
+            "keyboard input must not reach the focused client while QS is open; log = {:?}",
+            *log
+        );
+    }
+
+    fn overlay_absorbs_cursor_moved_inside_ws_settings() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.ws_settings = true;
+        let ws_rect = h.host.ws_settings_rect();
+        assert!(ws_rect.area() > 0.0, "ws-settings rect must be non-empty");
+        let p = ws_rect.center();
+
+        let cm = cursor_moved_at(p);
+        let handled = pump(&mut h, &cm);
+
+        assert!(
+            handled,
+            "CursorMoved over the open ws-settings modal must be absorbed"
+        );
+        let log = h.log.borrow();
+        assert!(
+            !log.iter().any(|s| s == "CursorMoved"),
+            "content.handle_event must NOT see CursorMoved when ws-settings absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    fn cursor_moved_outside_open_overlay_still_reaches_content() {
+        // Negative test: outside every overlay's rect the absorb gate must
+        // NOT fire — the gate is bounded by rect, not "any pointer event
+        // while an overlay is open".
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        // A point in the top-left corner that the palette (centered modal)
+        // can't possibly contain.
+        let p = Point::new(8.0, 8.0);
+        let cm = cursor_moved_at(p);
+        let _ = pump(&mut h, &cm);
+
+        let log = h.log.borrow();
+        assert!(
+            log.iter().any(|s| s == "CursorMoved"),
+            "outside-overlay CursorMoved must still reach content; log = {:?}",
+            *log
+        );
+    }
+
+    fn ordinary_desktop_has_no_bottom_right_help_hit_target() {
+        let mut h = build_harness();
+        // This point was inside the persistent Help pill. On an ordinary
+        // desktop it must remain available to the focused client.
+        let p = Point::new(h.host.rect.x1 - 20.0, h.host.rect.y1 - 20.0);
+        assert!(!h.host.cursor_over_open_overlay(p));
+
+        let _ = pump(&mut h, &cursor_moved_at(p));
+        h.log.borrow_mut().clear();
+        assert!(
+            !pump(&mut h, &left_button_pressed()),
+            "a click in the old Help-pill corner must not be claimed by shell chrome"
+        );
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Pressed"),
+            "the old Help-pill corner must reach client content"
+        );
+        assert!(
+            !h.chrome.borrow().overlays.shortcut_help,
+            "the click must not open desktop help"
+        );
+    }
+
+    overlay_absorbs_cursor_moved_when_palette_open();
+    overlay_absorbs_released_inside_qs();
+    overlay_absorbs_keyboard_text_and_release_when_qs_open();
+    overlay_absorbs_cursor_moved_inside_ws_settings();
+    cursor_moved_outside_open_overlay_still_reaches_content();
+    ordinary_desktop_has_no_bottom_right_help_hit_target();
 }
 
 #[test]
-fn overlay_absorbs_released_inside_qs() {
-    let mut h = build_harness();
-    h.chrome.borrow_mut().overlays.quick_settings = true;
-    let qs_rect = h.host.quick_settings_rect();
-    assert!(qs_rect.area() > 0.0, "qs rect must be non-empty");
-    let p = qs_rect.center();
-    // Released doesn't carry position data, so seed `last_cursor` via
-    // a CursorMoved first. Clear the log so the Released assertion is
-    // unambiguous.
-    pump(&mut h, &cursor_moved_at(p));
-    h.log.borrow_mut().clear();
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
+    fn quick_settings_power_tile_opens_the_power_menu_on_the_first_click() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+        let power = h
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
+            .expect("the visible Power tile has semantic geometry");
 
-    let released = left_button_released();
-    let handled = pump(&mut h, &released);
+        let _ = pump(&mut h, &cursor_moved_at(power.center()));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(h.host.power_menu.is_open());
+        assert!(!h.chrome.borrow().overlays.quick_settings);
+    }
 
-    assert!(
-        handled,
-        "MouseInput::Released over the open quick-settings popover must be absorbed"
-    );
-    let log = h.log.borrow();
-    assert!(
-        !log.iter().any(|s| s == "MouseInput::Released"),
-        "content.handle_event must NOT see Released when QS absorbs it; log = {:?}",
-        *log
-    );
-}
+    fn quick_settings_power_tile_tracks_its_entrance_animation() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.host.set_quick_settings_capture_openness(500);
+        paint(&mut h);
+        let stable_power = h
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
+            .expect("the visible Power tile has semantic geometry");
+        let painted_power = h
+            .host
+            .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
 
-#[test]
-fn quick_settings_power_tile_opens_the_power_menu_on_the_first_click() {
-    let mut h = build_harness();
-    h.chrome.borrow_mut().overlays.quick_settings = true;
-    h.host.force_quick_settings_settled();
-    paint(&mut h);
-    let power = h
-        .host
-        .quick_settings_semantic_rects()
-        .into_iter()
-        .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
-        .expect("the visible Power tile has semantic geometry");
+        let _ = pump(&mut h, &cursor_moved_at(painted_power));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(
+            h.host.power_menu.is_open(),
+            "clicking the visibly transformed Power tile must open its menu"
+        );
+        assert!(!h.chrome.borrow().overlays.quick_settings);
+    }
 
-    let _ = pump(&mut h, &cursor_moved_at(power.center()));
-    assert!(pump(&mut h, &left_button_pressed()));
-    assert!(h.host.power_menu.is_open());
-    assert!(!h.chrome.borrow().overlays.quick_settings);
-}
+    fn compact_quick_settings_drill_ins_own_wheel_scrolling() {
+        use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
 
-#[test]
-fn quick_settings_power_tile_tracks_its_entrance_animation() {
-    let mut h = build_harness();
-    h.chrome.borrow_mut().overlays.quick_settings = true;
-    h.host.set_quick_settings_capture_openness(500);
-    paint(&mut h);
-    let stable_power = h
-        .host
-        .quick_settings_semantic_rects()
-        .into_iter()
-        .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
-        .expect("the visible Power tile has semantic geometry");
-    let painted_power = h
-        .host
-        .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
+        let (vw, vh) = (960.0, 540.0);
+        let wheel = MouseScrollDelta::LineDelta(0.0, -2.0);
 
-    let _ = pump(&mut h, &cursor_moved_at(painted_power));
-    assert!(pump(&mut h, &left_button_pressed()));
-    assert!(
-        h.host.power_menu.is_open(),
-        "clicking the visibly transformed Power tile must open its menu"
-    );
-    assert!(!h.chrome.borrow().overlays.quick_settings);
-}
+        let mut wifi = build_harness_sized(vw, vh);
+        {
+            let mut state = wifi.chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state.quick_settings.wifi = true;
+            state.quick_settings.wifi_networks = (0..18)
+                .map(|index| WifiNetwork {
+                    ssid: format!("Network {index}"),
+                    signal: 3,
+                    secure: false,
+                    connected: false,
+                })
+                .collect();
+            state.quick_settings.push_level(QsLevel::Wifi);
+        }
+        wifi.host.force_quick_settings_settled();
+        settle(&mut wifi, vw, vh);
+        let wifi_center = wifi.host.quick_settings_rect().center();
+        assert!(pump(&mut wifi, &cursor_moved_at(wifi_center)));
+        assert!(wifi.host.handle_qs_drill_in_wheel(wheel, 1.0));
+        let wifi_names = wifi
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert!(wifi_names.contains(&"quick_settings_wifi_network[2]".to_string()));
+        assert!(!wifi_names.contains(&"quick_settings_wifi_network[0]".to_string()));
 
-#[test]
-fn overlay_absorbs_keyboard_text_and_release_when_qs_open() {
-    let mut h = build_harness();
-    h.chrome.borrow_mut().overlays.quick_settings = true;
-    h.log.borrow_mut().clear();
+        let mut bluetooth = build_harness_sized(vw, vh);
+        {
+            let mut state = bluetooth.chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state.quick_settings.bt_devices = (0..18)
+                .map(|index| BtDevice {
+                    name: format!("Device {index}"),
+                    address: format!("02:00:00:00:00:{index:02X}"),
+                    battery: 70,
+                    connected: false,
+                })
+                .collect();
+            state.quick_settings.push_level(QsLevel::Bluetooth);
+        }
+        bluetooth.host.force_quick_settings_settled();
+        settle(&mut bluetooth, vw, vh);
+        let bluetooth_center = bluetooth.host.quick_settings_rect().center();
+        assert!(pump(&mut bluetooth, &cursor_moved_at(bluetooth_center)));
+        assert!(bluetooth.host.handle_qs_drill_in_wheel(wheel, 1.0));
+        let bluetooth_names = bluetooth
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert!(bluetooth_names.contains(&"quick_settings_bluetooth_device[2]".to_string()));
+        assert!(!bluetooth_names.contains(&"quick_settings_bluetooth_device[0]".to_string()));
 
-    assert!(pump(&mut h, &key_pressed(Key::Character("x".into()))));
-    assert!(pump(&mut h, &key_released(Key::Character("x".into()))));
-    let log = h.log.borrow();
-    assert!(
-        log.is_empty(),
-        "keyboard input must not reach the focused client while QS is open; log = {:?}",
-        *log
-    );
+        let mut vpn = build_harness_sized(vw, vh);
+        {
+            let mut state = vpn.chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state.quick_settings.vpns = (0..18)
+                .map(|index| os_actions::VpnConnectionInfo {
+                    name: format!("Profile {index}"),
+                    uuid: format!("profile-{index}"),
+                    active: false,
+                    kind: "wireguard".into(),
+                })
+                .collect();
+            state.quick_settings.push_level(QsLevel::Vpn);
+        }
+        vpn.host.force_quick_settings_settled();
+        settle(&mut vpn, vw, vh);
+        let vpn_center = vpn.host.quick_settings_rect().center();
+        assert!(pump(&mut vpn, &cursor_moved_at(vpn_center)));
+        assert!(vpn.host.handle_qs_drill_in_wheel(wheel, 1.0));
+        let vpn_names = vpn
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert!(vpn_names.contains(&"quick_settings_vpn_profile[2]".to_string()));
+        assert!(!vpn_names.contains(&"quick_settings_vpn_profile[0]".to_string()));
+    }
+
+    quick_settings_power_tile_opens_the_power_menu_on_the_first_click();
+    quick_settings_power_tile_tracks_its_entrance_animation();
+    compact_quick_settings_drill_ins_own_wheel_scrolling();
 }
 
 fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f64) {
@@ -1726,336 +1942,287 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
     );
 }
 
+#[test]
 #[allow(
-    clippy::arithmetic_side_effects,
-    clippy::unchecked_time_subtraction,
-    reason = "the deterministic notification-age fixture subtracts known earlier test instants"
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-#[test]
-fn notification_history_labels_age_and_severity_concisely() {
-    let now = Instant::now();
-    let notification = crate::shell::notification::Notification::new("Backup", "Failed")
-        .with_severity(crate::shell::notification::NotificationSeverity::Warning)
-        .with_created_at(now - Duration::from_secs(3 * 60));
+fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::unchecked_time_subtraction,
+        reason = "the deterministic notification-age fixture subtracts known earlier test instants"
+    )]
+    fn notification_history_labels_age_and_severity_concisely() {
+        let now = Instant::now();
+        let notification = crate::shell::notification::Notification::new("Backup", "Failed")
+            .with_severity(crate::shell::notification::NotificationSeverity::Warning)
+            .with_created_at(now - Duration::from_secs(3 * 60));
 
-    assert_eq!(
-        notification_history_relative_time(&notification, now),
-        "3 min ago"
-    );
-    assert_eq!(
-        notification_severity_label(notification.severity),
-        "Warning"
-    );
-}
-
-#[test]
-fn notification_history_wheel_reaches_older_retained_errors_on_compact_layouts() {
-    for (vw, vh) in [(960.0, 540.0), (1280.0, 720.0)] {
-        let mut h = build_harness_sized(vw, vh);
-        open_notification_history(&mut h, 18, vw, vh);
-        let visible = h.host.qs_notification_visible_rows();
-        let total = h.chrome.borrow().notification_history().len();
-        assert!(visible < total, "the fixture must overflow at {vw}x{vh}");
-        let panel = h.host.quick_settings_rect();
-        assert!(
-            panel.y1 <= vh - 16.0,
-            "panel must stay within the bottom inset"
-        );
-
-        assert!(pump(&mut h, &cursor_moved_at(panel.center())));
-        let wheel = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
         assert_eq!(
-            h.host.qs_notification_history_start, 2,
-            "wheel down reveals older retained errors at {vw}x{vh}"
+            notification_history_relative_time(&notification, now),
+            "3 min ago"
         );
-        assert!(
-            !h.log.borrow().iter().any(|entry| entry == "MouseWheel"),
-            "a notification-pane wheel must not scroll content underneath"
-        );
-    }
-}
-
-#[test]
-fn compact_quick_settings_drill_ins_own_wheel_scrolling() {
-    use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
-
-    let (vw, vh) = (960.0, 540.0);
-    let wheel = MouseScrollDelta::LineDelta(0.0, -2.0);
-
-    let mut wifi = build_harness_sized(vw, vh);
-    {
-        let mut state = wifi.chrome.borrow_mut();
-        state.overlays.quick_settings = true;
-        state.quick_settings.wifi = true;
-        state.quick_settings.wifi_networks = (0..18)
-            .map(|index| WifiNetwork {
-                ssid: format!("Network {index}"),
-                signal: 3,
-                secure: false,
-                connected: false,
-            })
-            .collect();
-        state.quick_settings.push_level(QsLevel::Wifi);
-    }
-    wifi.host.force_quick_settings_settled();
-    settle(&mut wifi, vw, vh);
-    let wifi_center = wifi.host.quick_settings_rect().center();
-    assert!(pump(&mut wifi, &cursor_moved_at(wifi_center)));
-    assert!(wifi.host.handle_qs_drill_in_wheel(wheel, 1.0));
-    let wifi_names = wifi
-        .host
-        .quick_settings_semantic_rects()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    assert!(wifi_names.contains(&"quick_settings_wifi_network[2]".to_string()));
-    assert!(!wifi_names.contains(&"quick_settings_wifi_network[0]".to_string()));
-
-    let mut bluetooth = build_harness_sized(vw, vh);
-    {
-        let mut state = bluetooth.chrome.borrow_mut();
-        state.overlays.quick_settings = true;
-        state.quick_settings.bt_devices = (0..18)
-            .map(|index| BtDevice {
-                name: format!("Device {index}"),
-                address: format!("02:00:00:00:00:{index:02X}"),
-                battery: 70,
-                connected: false,
-            })
-            .collect();
-        state.quick_settings.push_level(QsLevel::Bluetooth);
-    }
-    bluetooth.host.force_quick_settings_settled();
-    settle(&mut bluetooth, vw, vh);
-    let bluetooth_center = bluetooth.host.quick_settings_rect().center();
-    assert!(pump(&mut bluetooth, &cursor_moved_at(bluetooth_center)));
-    assert!(bluetooth.host.handle_qs_drill_in_wheel(wheel, 1.0));
-    let bluetooth_names = bluetooth
-        .host
-        .quick_settings_semantic_rects()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    assert!(bluetooth_names.contains(&"quick_settings_bluetooth_device[2]".to_string()));
-    assert!(!bluetooth_names.contains(&"quick_settings_bluetooth_device[0]".to_string()));
-
-    let mut vpn = build_harness_sized(vw, vh);
-    {
-        let mut state = vpn.chrome.borrow_mut();
-        state.overlays.quick_settings = true;
-        state.quick_settings.vpns = (0..18)
-            .map(|index| os_actions::VpnConnectionInfo {
-                name: format!("Profile {index}"),
-                uuid: format!("profile-{index}"),
-                active: false,
-                kind: "wireguard".into(),
-            })
-            .collect();
-        state.quick_settings.push_level(QsLevel::Vpn);
-    }
-    vpn.host.force_quick_settings_settled();
-    settle(&mut vpn, vw, vh);
-    let vpn_center = vpn.host.quick_settings_rect().center();
-    assert!(pump(&mut vpn, &cursor_moved_at(vpn_center)));
-    assert!(vpn.host.handle_qs_drill_in_wheel(wheel, 1.0));
-    let vpn_names = vpn
-        .host
-        .quick_settings_semantic_rects()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    assert!(vpn_names.contains(&"quick_settings_vpn_profile[2]".to_string()));
-    assert!(!vpn_names.contains(&"quick_settings_vpn_profile[0]".to_string()));
-}
-
-#[test]
-fn notification_history_keyboard_reaches_both_ends_and_exposes_navigation() {
-    let mut h = build_harness_sized(1280.0, 720.0);
-    open_notification_history(&mut h, 22, 1280.0, 720.0);
-    let total = h.chrome.borrow().notification_history().len();
-    let max_start = h.host.qs_notification_max_start(total);
-
-    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
-    assert_eq!(h.host.qs_notification_history_start, max_start);
-    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
-    assert_eq!(h.host.qs_notification_history_start, 0);
-    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageDown))));
-    assert_eq!(
-        h.host.qs_notification_history_start,
-        h.host.qs_notification_visible_rows().min(max_start),
-        "Page Down advances by exactly the visible card count"
-    );
-
-    paint(&mut h);
-    let semantics = h.host.accessibility().expect("notification pane semantics");
-    let notifications = semantics
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Notifications"))
-        .expect("Quick Settings exposes the notification drill-in as a dialog");
-    assert!(
-        notifications
-            .description
-            .as_deref()
-            .is_some_and(|description| description.contains("Page Up and Page Down")),
-        "screen-reader instructions must name retained-history navigation"
-    );
-    let retained = notifications
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Retained notifications"))
-        .expect("the visible notification cards must be exposed as a list");
-    assert_eq!(
-        retained.children.len(),
-        h.host.qs_notification_visible_rows().min(total),
-        "screen readers receive every currently visible title/body card"
-    );
-    let state = h.chrome.borrow();
-    let visible = h.host.qs_notification_visible_rows();
-    let start = h
-        .host
-        .qs_notification_history_start
-        .min(total.saturating_sub(visible));
-    for (item, notification) in retained.children.iter().zip(
-        state
-            .notification_history()
-            .iter()
-            .rev()
-            .skip(start)
-            .take(retained.children.len()),
-    ) {
-        let description = item
-            .description
-            .as_deref()
-            .expect("every retained card exposes its hierarchy");
-        assert!(
-            description.starts_with("Error. From System. ")
-                && description.contains("Detailed recovery guidance")
-                && description.contains(&notification.body),
-            "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows; got {description:?}"
+        assert_eq!(
+            notification_severity_label(notification.severity),
+            "Warning"
         );
     }
-}
 
-#[test]
-fn notification_history_back_control_stays_wide_and_clickable_with_large_text() {
-    let (width, height) = (960.0, 540.0);
-    let mut h = build_harness_sized(width, height);
-    open_notification_history(&mut h, 18, width, height);
-    let theme = Theme::dark().with_text_scale(1.3);
-    settle_with_theme(&mut h, width, height, &theme);
-    let back = h.host.qs_notification_back_rect();
-    let clear = h.host.qs_notification_clear_rect();
-    assert!(back.width() >= 64.0, "Back needs a textual tap target");
-    assert!(
-        back.intersect(clear).area() <= 0.0,
-        "Back and Clear must remain distinct at large text"
-    );
-    // The production click router uses this exact drill-in handler after
-    // it has classified the current Quick Settings level.
-    h.host.handle_shell_quick_settings_drill_in_click(
-        back.center(),
-        &crate::shell::quick_settings::QsLevel::Notifications,
-    );
-    assert!(matches!(
-        h.chrome.borrow().quick_settings.current_level(),
-        crate::shell::quick_settings::QsLevel::Root
-    ));
-}
+    fn notification_history_wheel_reaches_older_retained_errors_on_compact_layouts() {
+        for (vw, vh) in [(960.0, 540.0), (1280.0, 720.0)] {
+            let mut h = build_harness_sized(vw, vh);
+            open_notification_history(&mut h, 18, vw, vh);
+            let visible = h.host.qs_notification_visible_rows();
+            let total = h.chrome.borrow().notification_history().len();
+            assert!(visible < total, "the fixture must overflow at {vw}x{vh}");
+            let panel = h.host.quick_settings_rect();
+            assert!(
+                panel.y1 <= vh - 16.0,
+                "panel must stay within the bottom inset"
+            );
 
-#[test]
-fn notification_history_clear_all_is_recoverable_by_pointer_keyboard_and_accessibility() {
-    let (width, height) = (960.0, 540.0);
-    let mut h = build_harness_sized(width, height);
-    open_notification_history(&mut h, 18, width, height);
-    // Retire the still-visible capped toasts before clearing history. A
-    // later arrival can then contribute exactly one new history record,
-    // rather than first evicting an unrelated live toast as well.
-    let live_ids: Vec<_> = h
-        .chrome
-        .borrow()
-        .notifications()
-        .iter()
-        .map(|notification| notification.id)
-        .collect();
-    for id in live_ids {
-        h.chrome.borrow_mut().dismiss_notification(id);
+            assert!(pump(&mut h, &cursor_moved_at(panel.center())));
+            let wheel = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
+            assert_eq!(
+                h.host.qs_notification_history_start, 2,
+                "wheel down reveals older retained errors at {vw}x{vh}"
+            );
+            assert!(
+                !h.log.borrow().iter().any(|entry| entry == "MouseWheel"),
+                "a notification-pane wheel must not scroll content underneath"
+            );
+        }
     }
-    let original: Vec<_> = h
-        .chrome
-        .borrow()
-        .notification_history()
-        .iter()
-        .map(|notification| notification.id)
-        .collect();
 
-    assert!(h.host.focus_synthetic_accessibility(&[0, 0, 1]));
-    assert!(
-        h.host
-            .handle_qs_notification_keyboard(&Key::Named(NamedKey::Enter))
-    );
-    assert!(h.chrome.borrow().notification_history().is_empty());
-    assert!(h.chrome.borrow().can_undo_notification_history_clear());
-    let arrived = h
-        .chrome
-        .borrow_mut()
-        .push_notification("Arrived during undo", "Still visible");
-    h.chrome.borrow_mut().dismiss_notification(arrived);
-    let during_undo: Vec<_> = h
-        .chrome
-        .borrow()
-        .notification_history()
-        .iter()
-        .map(|notification| notification.id)
-        .collect();
-    assert_eq!(during_undo.last(), Some(&arrived));
-    assert!(
-        h.host
-            .qs_notification_undo_rect()
-            .intersect(h.host.qs_notification_back_rect())
-            .area()
-            <= 0.0
-    );
+    fn notification_history_keyboard_reaches_both_ends_and_exposes_navigation() {
+        let mut h = build_harness_sized(1280.0, 720.0);
+        open_notification_history(&mut h, 22, 1280.0, 720.0);
+        let total = h.chrome.borrow().notification_history().len();
+        let max_start = h.host.qs_notification_max_start(total);
 
-    let semantics = h.host.accessibility().expect("notification pane semantics");
-    let dialog = semantics
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Notifications"))
-        .expect("notification dialog");
-    assert!(dialog.children.iter().any(|node| {
-        node.name.as_deref() == Some("Notifications cleared") && node.live.is_some()
-    }));
-    assert!(
-        dialog
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+        assert_eq!(h.host.qs_notification_history_start, max_start);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
+        assert_eq!(h.host.qs_notification_history_start, 0);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageDown))));
+        assert_eq!(
+            h.host.qs_notification_history_start,
+            h.host.qs_notification_visible_rows().min(max_start),
+            "Page Down advances by exactly the visible card count"
+        );
+
+        paint(&mut h);
+        let semantics = h.host.accessibility().expect("notification pane semantics");
+        let notifications = semantics
             .children
             .iter()
-            .any(|node| node.name.as_deref() == Some("Undo clear notifications"))
-    );
+            .find(|node| node.name.as_deref() == Some("Notifications"))
+            .expect("Quick Settings exposes the notification drill-in as a dialog");
+        assert!(
+            notifications
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("Page Up and Page Down")),
+            "screen-reader instructions must name retained-history navigation"
+        );
+        let retained = notifications
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Retained notifications"))
+            .expect("the visible notification cards must be exposed as a list");
+        assert_eq!(
+            retained.children.len(),
+            h.host.qs_notification_visible_rows().min(total),
+            "screen readers receive every currently visible title/body card"
+        );
+        let state = h.chrome.borrow();
+        let visible = h.host.qs_notification_visible_rows();
+        let start = h
+            .host
+            .qs_notification_history_start
+            .min(total.saturating_sub(visible));
+        for (item, notification) in retained.children.iter().zip(
+            state
+                .notification_history()
+                .iter()
+                .rev()
+                .skip(start)
+                .take(retained.children.len()),
+        ) {
+            let description = item
+                .description
+                .as_deref()
+                .expect("every retained card exposes its hierarchy");
+            assert!(
+                description.starts_with("Error. From System. ")
+                    && description.contains("Detailed recovery guidance")
+                    && description.contains(&notification.body),
+                "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows; got {description:?}"
+            );
+        }
+    }
 
-    assert_eq!(
-        h.host.synthetic_accessibility_rect(&[0, 0, 3]),
-        Some(h.host.qs_notification_undo_rect())
-    );
-    assert!(h.host.focus_synthetic_accessibility(&[0, 0, 3]));
-    assert!(
-        h.host
-            .handle_qs_notification_keyboard(&Key::Named(NamedKey::Enter))
-    );
-    let restored: Vec<_> = h
-        .chrome
-        .borrow()
-        .notification_history()
-        .iter()
-        .map(|notification| notification.id)
-        .collect();
-    assert_eq!(&restored[..original.len()], original);
-    assert_eq!(&restored[original.len()..], during_undo);
+    fn notification_history_back_control_stays_wide_and_clickable_with_large_text() {
+        let (width, height) = (960.0, 540.0);
+        let mut h = build_harness_sized(width, height);
+        open_notification_history(&mut h, 18, width, height);
+        let theme = Theme::dark().with_text_scale(1.3);
+        settle_with_theme(&mut h, width, height, &theme);
+        let back = h.host.qs_notification_back_rect();
+        let clear = h.host.qs_notification_clear_rect();
+        assert!(back.width() >= 64.0, "Back needs a textual tap target");
+        assert!(
+            back.intersect(clear).area() <= 0.0,
+            "Back and Clear must remain distinct at large text"
+        );
+        // The production click router uses this exact drill-in handler after
+        // it has classified the current Quick Settings level.
+        h.host.handle_shell_quick_settings_drill_in_click(
+            back.center(),
+            &crate::shell::quick_settings::QsLevel::Notifications,
+        );
+        assert!(matches!(
+            h.chrome.borrow().quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Root
+        ));
+    }
+
+    /// The notification page sizes itself and counts its rows by one rule:
+    /// the pager band exists only when there is something to page to. A
+    /// history that fits ends on the panel padding and shows every record;
+    /// one that overflows gives the pager its room and shows exactly the
+    /// rows above it.
+    fn notification_history_reserves_the_pager_only_when_it_overflows() {
+        let theme = Theme::dark();
+        let type_px = (
+            theme.tokens.typography.scale.xs,
+            theme.tokens.typography.scale.sm,
+        );
+        let fits = NotificationHistoryLayout::preferred_height(3, 3, type_px);
+        let short = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, fits), type_px);
+        assert_eq!(short.visible_rows(3), 3, "every record fits, none is paged");
+        assert!(
+            (short.panel.y1 - short.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+            "no pager band under a history that fits"
+        );
+        let overflows = NotificationHistoryLayout::preferred_height(7, 18, type_px);
+        let long = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, overflows), type_px);
+        assert_eq!(
+            long.visible_rows(18),
+            7,
+            "the seven sized-for rows are the visible ones"
+        );
+        assert!(
+            long.row(6).y1 + qs::RELATED_GAP <= long.footer().y0,
+            "the last visible row clears the pager band"
+        );
+        assert!(
+            overflows - fits > 4.0 * long.row_h(),
+            "the overflow page is taller by its extra rows and the pager"
+        );
+    }
+
+    fn notification_history_clear_all_is_recoverable_by_pointer_keyboard_and_accessibility() {
+        let (width, height) = (960.0, 540.0);
+        let mut h = build_harness_sized(width, height);
+        open_notification_history(&mut h, 18, width, height);
+        // Retire the still-visible capped toasts before clearing history. A
+        // later arrival can then contribute exactly one new history record,
+        // rather than first evicting an unrelated live toast as well.
+        let live_ids: Vec<_> = h
+            .chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        for id in live_ids {
+            h.chrome.borrow_mut().dismiss_notification(id);
+        }
+        let original: Vec<_> = h
+            .chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0, 1]));
+        assert!(
+            h.host
+                .handle_qs_notification_keyboard(&Key::Named(NamedKey::Enter))
+        );
+        assert!(h.chrome.borrow().notification_history().is_empty());
+        assert!(h.chrome.borrow().can_undo_notification_history_clear());
+        let arrived = h
+            .chrome
+            .borrow_mut()
+            .push_notification("Arrived during undo", "Still visible");
+        h.chrome.borrow_mut().dismiss_notification(arrived);
+        let during_undo: Vec<_> = h
+            .chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        assert_eq!(during_undo.last(), Some(&arrived));
+        assert!(
+            h.host
+                .qs_notification_undo_rect()
+                .intersect(h.host.qs_notification_back_rect())
+                .area()
+                <= 0.0
+        );
+
+        let semantics = h.host.accessibility().expect("notification pane semantics");
+        let dialog = semantics
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Notifications"))
+            .expect("notification dialog");
+        assert!(dialog.children.iter().any(|node| {
+            node.name.as_deref() == Some("Notifications cleared") && node.live.is_some()
+        }));
+        assert!(
+            dialog
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Undo clear notifications"))
+        );
+
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0, 0, 3]),
+            Some(h.host.qs_notification_undo_rect())
+        );
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0, 3]));
+        assert!(
+            h.host
+                .handle_qs_notification_keyboard(&Key::Named(NamedKey::Enter))
+        );
+        let restored: Vec<_> = h
+            .chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        assert_eq!(&restored[..original.len()], original);
+        assert_eq!(&restored[original.len()..], during_undo);
+    }
+
+    notification_history_labels_age_and_severity_concisely();
+    notification_history_wheel_reaches_older_retained_errors_on_compact_layouts();
+    notification_history_keyboard_reaches_both_ends_and_exposes_navigation();
+    notification_history_back_control_stays_wide_and_clickable_with_large_text();
+    notification_history_reserves_the_pager_only_when_it_overflows();
+    notification_history_clear_all_is_recoverable_by_pointer_keyboard_and_accessibility();
 }
 
 /// Keep visual review on the exact production draw path at 1:1 pixels.
@@ -2378,176 +2545,73 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
     }
 }
 
-/// The notification page sizes itself and counts its rows by one rule:
-/// the pager band exists only when there is something to page to. A
-/// history that fits ends on the panel padding and shows every record;
-/// one that overflows gives the pager its room and shows exactly the
-/// rows above it.
 #[test]
-fn notification_history_reserves_the_pager_only_when_it_overflows() {
-    let theme = Theme::dark();
-    let type_px = (
-        theme.tokens.typography.scale.xs,
-        theme.tokens.typography.scale.sm,
-    );
-    let fits = NotificationHistoryLayout::preferred_height(3, 3, type_px);
-    let short = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, fits), type_px);
-    assert_eq!(short.visible_rows(3), 3, "every record fits, none is paged");
-    assert!(
-        (short.panel.y1 - short.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
-        "no pager band under a history that fits"
-    );
-    let overflows = NotificationHistoryLayout::preferred_height(7, 18, type_px);
-    let long = NotificationHistoryLayout::new(Rect::new(0.0, 0.0, 400.0, overflows), type_px);
-    assert_eq!(
-        long.visible_rows(18),
-        7,
-        "the seven sized-for rows are the visible ones"
-    );
-    assert!(
-        long.row(6).y1 + qs::RELATED_GAP <= long.footer().y0,
-        "the last visible row clears the pager band"
-    );
-    assert!(
-        overflows - fits > 4.0 * long.row_h(),
-        "the overflow page is taller by its extra rows and the pager"
-    );
-}
+fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
+    fn workspace_lens_leaves_wide_workspace_visible_and_interactive() {
+        let mut h = build_harness_sized(1600.0, 900.0);
+        h.chrome
+            .borrow_mut()
+            .open_workspace_settings(WsTab::General);
+        let lens = h.host.ws_settings_rect();
+        assert_eq!(lens.x0, 20.0, "lens docks to the left inset");
+        assert!(lens.x1 < 900.0, "workspace remains visible beside {lens:?}");
 
-#[test]
-fn overlay_absorbs_cursor_moved_inside_ws_settings() {
-    let mut h = build_harness();
-    h.chrome.borrow_mut().overlays.ws_settings = true;
-    let ws_rect = h.host.ws_settings_rect();
-    assert!(ws_rect.area() > 0.0, "ws-settings rect must be non-empty");
-    let p = ws_rect.center();
+        let workspace_point = Point::new(1000.0, 300.0);
+        assert!(!lens.contains(workspace_point));
+        pump(&mut h, &cursor_moved_at(workspace_point));
+        h.log.borrow_mut().clear();
+        assert!(!pump(&mut h, &left_button_pressed()));
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Pressed")
+        );
+        assert!(h.chrome.borrow().overlays.ws_settings);
+    }
 
-    let cm = cursor_moved_at(p);
-    let handled = pump(&mut h, &cm);
+    fn workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs() {
+        let h = build_harness_sized(600.0, 700.0);
+        let lens = h.host.ws_settings_rect();
+        assert_eq!(lens.x0, 20.0);
+        assert_eq!(lens.x1, 580.0);
+        assert_eq!(lens.y1, 680.0);
+    }
 
-    assert!(
-        handled,
-        "CursorMoved over the open ws-settings modal must be absorbed"
-    );
-    let log = h.log.borrow();
-    assert!(
-        !log.iter().any(|s| s == "CursorMoved"),
-        "content.handle_event must NOT see CursorMoved when ws-settings absorbs it; log = {:?}",
-        *log
-    );
-}
+    fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
+        let h = build_harness_sized(800.0, 600.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        let done = h.host.shortcut_help_done_rect();
+        assert_eq!(panel.x0, 32.0);
+        assert_eq!(panel.x1, 768.0);
+        assert_eq!(panel.y0, 32.0);
+        assert_eq!(panel.y1, 568.0);
+        assert!(done.y0 >= panel.y0 + 16.0);
+        assert!(done.y1 <= panel.y1 - 18.0);
 
-#[test]
-fn workspace_lens_leaves_wide_workspace_visible_and_interactive() {
-    let mut h = build_harness_sized(1600.0, 900.0);
-    h.chrome
-        .borrow_mut()
-        .open_workspace_settings(WsTab::General);
-    let lens = h.host.ws_settings_rect();
-    assert_eq!(lens.x0, 20.0, "lens docks to the left inset");
-    assert!(lens.x1 < 900.0, "workspace remains visible beside {lens:?}");
+        let body_bottom = panel.y1 - 22.0;
+        let body_top = panel.y0 + 88.0;
+        let navigation_height = 154.0;
+        let essentials_y = body_top + navigation_height + 12.0;
+        let compact_final_pill_bottom =
+            essentials_y + 18.0 + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
+        assert!(
+            compact_final_pill_bottom <= body_bottom,
+            "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
+        );
+    }
 
-    let workspace_point = Point::new(1000.0, 300.0);
-    assert!(!lens.contains(workspace_point));
-    pump(&mut h, &cursor_moved_at(workspace_point));
-    h.log.borrow_mut().clear();
-    assert!(!pump(&mut h, &left_button_pressed()));
-    assert!(
-        h.log
-            .borrow()
-            .iter()
-            .any(|event| event == "MouseInput::Pressed")
-    );
-    assert!(h.chrome.borrow().overlays.ws_settings);
-}
+    fn wide_shortcut_help_remains_a_contextual_card() {
+        let h = build_harness_sized(1280.0, 800.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        assert_eq!(panel.width(), 960.0);
+        assert_eq!(panel.height(), 600.0);
+        assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
+        assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
+    }
 
-#[test]
-fn workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs() {
-    let h = build_harness_sized(600.0, 700.0);
-    let lens = h.host.ws_settings_rect();
-    assert_eq!(lens.x0, 20.0);
-    assert_eq!(lens.x1, 580.0);
-    assert_eq!(lens.y1, 680.0);
-}
-
-#[test]
-fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
-    let h = build_harness_sized(800.0, 600.0);
-    let panel = h.host.shortcut_help_panel_rect();
-    let done = h.host.shortcut_help_done_rect();
-    assert_eq!(panel.x0, 32.0);
-    assert_eq!(panel.x1, 768.0);
-    assert_eq!(panel.y0, 32.0);
-    assert_eq!(panel.y1, 568.0);
-    assert!(done.y0 >= panel.y0 + 16.0);
-    assert!(done.y1 <= panel.y1 - 18.0);
-
-    let body_bottom = panel.y1 - 22.0;
-    let body_top = panel.y0 + 88.0;
-    let navigation_height = 154.0;
-    let essentials_y = body_top + navigation_height + 12.0;
-    let compact_final_pill_bottom =
-        essentials_y + 18.0 + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
-    assert!(
-        compact_final_pill_bottom <= body_bottom,
-        "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
-    );
-}
-
-#[test]
-fn wide_shortcut_help_remains_a_contextual_card() {
-    let h = build_harness_sized(1280.0, 800.0);
-    let panel = h.host.shortcut_help_panel_rect();
-    assert_eq!(panel.width(), 960.0);
-    assert_eq!(panel.height(), 600.0);
-    assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
-    assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
-}
-
-#[test]
-fn cursor_moved_outside_open_overlay_still_reaches_content() {
-    // Negative test: outside every overlay's rect the absorb gate must
-    // NOT fire — the gate is bounded by rect, not "any pointer event
-    // while an overlay is open".
-    let mut h = build_harness();
-    h.host.set_palette_visible(true);
-    // A point in the top-left corner that the palette (centered modal)
-    // can't possibly contain.
-    let p = Point::new(8.0, 8.0);
-    let cm = cursor_moved_at(p);
-    let _ = pump(&mut h, &cm);
-
-    let log = h.log.borrow();
-    assert!(
-        log.iter().any(|s| s == "CursorMoved"),
-        "outside-overlay CursorMoved must still reach content; log = {:?}",
-        *log
-    );
-}
-
-#[test]
-fn ordinary_desktop_has_no_bottom_right_help_hit_target() {
-    let mut h = build_harness();
-    // This point was inside the persistent Help pill. On an ordinary
-    // desktop it must remain available to the focused client.
-    let p = Point::new(h.host.rect.x1 - 20.0, h.host.rect.y1 - 20.0);
-    assert!(!h.host.cursor_over_open_overlay(p));
-
-    let _ = pump(&mut h, &cursor_moved_at(p));
-    h.log.borrow_mut().clear();
-    assert!(
-        !pump(&mut h, &left_button_pressed()),
-        "a click in the old Help-pill corner must not be claimed by shell chrome"
-    );
-    assert!(
-        h.log
-            .borrow()
-            .iter()
-            .any(|event| event == "MouseInput::Pressed"),
-        "the old Help-pill corner must reach client content"
-    );
-    assert!(
-        !h.chrome.borrow().overlays.shortcut_help,
-        "the click must not open desktop help"
-    );
+    workspace_lens_leaves_wide_workspace_visible_and_interactive();
+    workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
+    compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
+    wide_shortcut_help_remains_a_contextual_card();
 }

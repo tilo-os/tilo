@@ -929,84 +929,92 @@ mod tests {
         palette: ["Analyze Projects", "Choose folder", "Go back"],
     }
 
+    /// Common locations are exposed as resources, and the analyze action, clicks and a portal-picked folder all enter the same scan pipeline.
     #[test]
-    fn resource_surface_exposes_common_locations() {
-        let app = DiskUsageApp::new();
-        let resources = app.resources(&AutoCommit::new());
-        assert_eq!(resources.len(), 1);
-        assert!(resources[0].actions.len() >= 3);
-        assert_eq!(app.local_resource_operation_handlers(), &[OPERATION_TYPE]);
+    fn folder_scans_enter_through_resources_clicks_and_portal() {
+        // --- phase: resource_surface_exposes_common_locations ---
+        {
+            let app = DiskUsageApp::new();
+            let resources = app.resources(&AutoCommit::new());
+            assert_eq!(resources.len(), 1);
+            assert!(resources[0].actions.len() >= 3);
+            assert_eq!(app.local_resource_operation_handlers(), &[OPERATION_TYPE]);
+        }
+
+        // --- phase: analyze_operation_uses_the_same_navigation_path_as_clicks ---
+        {
+            let mut app = DiskUsageApp::new();
+            let path = PathBuf::from("/definitely-not-a-real-disk-usage-test-path");
+            let payload = serde_json::to_vec(&DiskUsageOperation::Analyze { path: path.clone() })
+                .unwrap_or_default();
+            let handled = app
+                .invoke_resource_operation_v2(
+                    OperationKind::Effect,
+                    OPERATION_TYPE,
+                    &payload,
+                    &AutoCommit::new(),
+                    &ObjId::Root,
+                )
+                .unwrap_or_default();
+            assert!(handled.is_some());
+            assert!(matches!(app.view, View::Loading(ref loading) if loading == &path));
+            assert!(app.next_wake_deadline().is_some());
+            app.go_home();
+            assert!(matches!(app.view, View::Home));
+            assert!(app.next_wake_deadline().is_none());
+        }
+
+        // --- phase: portal_selected_folder_enters_the_scan_pipeline ---
+        {
+            let mut app = DiskUsageApp::new();
+            let selected = PathBuf::from("/portal-selected-folder");
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(selected.clone()));
+            let payload = serde_json::to_vec(&DiskUsageOperation::Choose).unwrap_or_default();
+            let handled = ui::host::scoped(&services, || {
+                app.invoke_resource_operation_v2(
+                    OperationKind::Effect,
+                    OPERATION_TYPE,
+                    &payload,
+                    &AutoCommit::new(),
+                    &ObjId::Root,
+                )
+                .unwrap_or_default()
+            });
+            assert!(handled.is_some());
+            let picks = recorder.pick_requests();
+            assert_eq!(picks.len(), 1);
+            assert!(picks[0].is_directory());
+            let mut document = AutoCommit::new();
+            assert!(app.update(&mut document, &ObjId::Root));
+            assert!(matches!(app.view, View::Loading(ref path) if path == &selected));
+            app.cancel_scan();
+        }
     }
 
+    /// The idle analyzer schedules no frames and the narrow home view keeps common places visible.
     #[test]
-    fn analyze_operation_uses_the_same_navigation_path_as_clicks() {
-        let mut app = DiskUsageApp::new();
-        let path = PathBuf::from("/definitely-not-a-real-disk-usage-test-path");
-        let payload = serde_json::to_vec(&DiskUsageOperation::Analyze { path: path.clone() })
-            .unwrap_or_default();
-        let handled = app
-            .invoke_resource_operation_v2(
-                OperationKind::Effect,
-                OPERATION_TYPE,
-                &payload,
-                &AutoCommit::new(),
-                &ObjId::Root,
-            )
-            .unwrap_or_default();
-        assert!(handled.is_some());
-        assert!(matches!(app.view, View::Loading(ref loading) if loading == &path));
-        assert!(app.next_wake_deadline().is_some());
-        app.go_home();
-        assert!(matches!(app.view, View::Home));
-        assert!(app.next_wake_deadline().is_none());
-    }
+    fn home_view_idles_and_keeps_common_places_visible() {
+        // --- phase: idle_analyzer_does_not_schedule_frames ---
+        {
+            assert!(DiskUsageApp::new().next_wake_deadline().is_none());
+        }
 
-    #[test]
-    fn idle_analyzer_does_not_schedule_frames() {
-        assert!(DiskUsageApp::new().next_wake_deadline().is_none());
-    }
-
-    #[test]
-    fn portal_selected_folder_enters_the_scan_pipeline() {
-        let mut app = DiskUsageApp::new();
-        let selected = PathBuf::from("/portal-selected-folder");
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(selected.clone()));
-        let payload = serde_json::to_vec(&DiskUsageOperation::Choose).unwrap_or_default();
-        let handled = ui::host::scoped(&services, || {
-            app.invoke_resource_operation_v2(
-                OperationKind::Effect,
-                OPERATION_TYPE,
-                &payload,
-                &AutoCommit::new(),
-                &ObjId::Root,
-            )
-            .unwrap_or_default()
-        });
-        assert!(handled.is_some());
-        let picks = recorder.pick_requests();
-        assert_eq!(picks.len(), 1);
-        assert!(picks[0].is_directory());
-        let mut document = AutoCommit::new();
-        assert!(app.update(&mut document, &ObjId::Root));
-        assert!(matches!(app.view, View::Loading(ref path) if path == &selected));
-        app.cancel_scan();
-    }
-
-    #[test]
-    fn narrow_home_keeps_common_places_visible() {
-        let mut app = DiskUsageApp::sample_home();
-        app.recent.extend([
-            PathBuf::from("/one"),
-            PathBuf::from("/two"),
-            PathBuf::from("/three"),
-        ]);
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        assert_eq!(app.cards().len(), 6);
-        assert!(app.cards().iter().any(|place| place.label == "File system"));
-        assert_eq!(
-            app.cards().last().map(|place| place.label.as_str()),
-            Some("Choose folder")
-        );
+        // --- phase: narrow_home_keeps_common_places_visible ---
+        {
+            let mut app = DiskUsageApp::sample_home();
+            app.recent.extend([
+                PathBuf::from("/one"),
+                PathBuf::from("/two"),
+                PathBuf::from("/three"),
+            ]);
+            app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+            assert_eq!(app.cards().len(), 6);
+            assert!(app.cards().iter().any(|place| place.label == "File system"));
+            assert_eq!(
+                app.cards().last().map(|place| place.label.as_str()),
+                Some("Choose folder")
+            );
+        }
     }
 }

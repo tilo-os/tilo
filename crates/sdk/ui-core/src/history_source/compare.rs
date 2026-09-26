@@ -107,62 +107,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_comparison_materializes_exact_before_and_after_states() {
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "title", "before").unwrap();
-        doc.commit();
-        doc.put(automerge::ROOT, "title", "during").unwrap();
-        let a = doc.commit().unwrap();
-        doc.put(automerge::ROOT, "status", "done").unwrap();
-        let b = doc.commit().unwrap();
-        let ids = [
-            entry_id_from_hash(&a.to_string()),
-            entry_id_from_hash(&b.to_string()),
-        ];
+    fn group_comparison_materialises_exact_states_and_refuses_empty_selection() {
+        // phase: group_comparison_materializes_exact_before_and_after_states
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "before").unwrap();
+            doc.commit();
+            doc.put(automerge::ROOT, "title", "during").unwrap();
+            let a = doc.commit().unwrap();
+            doc.put(automerge::ROOT, "status", "done").unwrap();
+            let b = doc.commit().unwrap();
+            let ids = [
+                entry_id_from_hash(&a.to_string()),
+                entry_id_from_hash(&b.to_string()),
+            ];
 
-        let comparison = compare_entries(&mut doc, &ids).unwrap();
-        assert!(!comparison.patches.is_empty());
-        let before = AutoCommit::load(&comparison.before_document).unwrap();
-        let after = AutoCommit::load(&comparison.after_document).unwrap();
-        assert_eq!(
-            before
-                .get(automerge::ROOT, "title")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("before")
-        );
-        assert_eq!(
-            after
-                .get(automerge::ROOT, "title")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("during")
-        );
-        assert_eq!(
-            after
-                .get(automerge::ROOT, "status")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("done")
-        );
-    }
-
-    #[test]
-    fn unknown_or_empty_selection_is_refused() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(
-            compare_entries(&mut doc, &[]).unwrap_err(),
-            CompareError::EmptySelection
-        );
-        assert!(matches!(
-            compare_entries(&mut doc, &[HistoryEntryId([9; 16])]),
-            Err(CompareError::UnknownEntry(_))
-        ));
+            let comparison = compare_entries(&mut doc, &ids).unwrap();
+            assert!(!comparison.patches.is_empty());
+            let before = AutoCommit::load(&comparison.before_document).unwrap();
+            let after = AutoCommit::load(&comparison.after_document).unwrap();
+            assert_eq!(
+                before
+                    .get(automerge::ROOT, "title")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("before")
+            );
+            assert_eq!(
+                after
+                    .get(automerge::ROOT, "title")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("during")
+            );
+            assert_eq!(
+                after
+                    .get(automerge::ROOT, "status")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("done")
+            );
+        }
+        // phase: unknown_or_empty_selection_is_refused
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(
+                compare_entries(&mut doc, &[]).unwrap_err(),
+                CompareError::EmptySelection
+            );
+            assert!(matches!(
+                compare_entries(&mut doc, &[HistoryEntryId([9; 16])]),
+                Err(CompareError::UnknownEntry(_))
+            ));
+        }
     }
 }

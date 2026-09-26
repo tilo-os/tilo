@@ -870,8 +870,10 @@ impl Widget for AppearancePane {
 mod tests {
     use super::*;
 
+    /// The pane seeds its prefs into the document, hands the shell its live
+    /// appearance intent, and builds a layout.
     #[test]
-    fn seed_writes_current_prefs_into_crdt() {
+    fn appearance_pane_seeds_prefs_and_expresses_its_intent() {
         let mut pane = AppearancePane::with_prefs(AppearancePrefs {
             theme: "Nord".into(),
             high_contrast: true,
@@ -898,37 +900,7 @@ mod tests {
             "1.25 seeds the '125%' UI-scale label"
         );
         assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
-    }
 
-    #[test]
-    fn changing_ui_scale_updates_prefs_and_resolves() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // The UI-scale dropdown writes the chosen label.
-        let _ = doc.put(&root, UI_SCALE_KEY, "150%");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().ui_scale, 1.50);
-        // The pref folds into the resolved theme's ui_scale + scaled tokens.
-        let resolved = pane.prefs().resolve_theme();
-        assert_eq!(resolved.ui_scale, 1.50);
-        let base_gap = ui::Theme::dark().tokens.spacing.s3;
-        assert!((resolved.tokens.spacing.s3 - base_gap * 1.50).abs() < 1e-2);
-    }
-
-    #[test]
-    fn ui_scale_label_and_factor_round_trip() {
-        assert_eq!(ui_scale_label(1.0), "100%");
-        assert_eq!(ui_scale_label(1.25), "125%");
-        assert_eq!(ui_scale_label(1.50), "150%");
-        assert_eq!(ui_scale_factor("90%"), Some(0.90));
-        assert_eq!(ui_scale_factor("nope"), None);
-    }
-
-    #[test]
-    fn appearance_intent_reflects_ui_scale_and_text_size_for_live_apply() {
         let pane = AppearancePane::with_prefs(AppearancePrefs {
             theme: "Nord".into(),
             high_contrast: false,
@@ -947,60 +919,40 @@ mod tests {
         assert_eq!(intent.text_scale, 1.15);
         assert!(intent.reduce_motion);
         assert!(!intent.high_contrast);
+
+        let mut pane = build();
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
     #[test]
-    fn changing_theme_key_updates_and_resolves() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Dropdown writes the chosen theme name.
-        let _ = doc.put(&root, THEME_KEY, "Gruvbox");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().theme, "Gruvbox");
-        // The pref resolves to the real theme constructor.
-        assert_eq!(pane.prefs().resolve_theme().name, "Gruvbox");
-    }
+    fn searching_for_wallpaper_lands_on_the_wallpaper_control() {
+        use crate::categories::Category;
+        let hits: Vec<Category> = Category::ALL
+            .iter()
+            .copied()
+            .filter(|category| category.matches("wallpaper"))
+            .collect();
+        assert_eq!(hits, vec![Category::Appearance]);
 
-    #[test]
-    fn changing_text_size_and_toggles_updates_prefs() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, TEXT_SIZE_KEY, "Larger");
-        let _ = doc.put(
-            &root,
-            HIGH_CONTRAST_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        let _ = doc.put(
-            &root,
-            REDUCE_MOTION_KEY,
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().text_scale, 1.30);
-        assert!(pane.prefs().high_contrast);
-        assert!(pane.prefs().reduce_motion);
-        // high_contrast wins the resolved palette.
-        assert_eq!(pane.prefs().resolve_theme().name, "High Contrast");
-    }
-
-    #[test]
-    fn unknown_theme_value_is_ignored() {
-        // The pane persists through the per-user settings file.
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, THEME_KEY, "not-a-theme");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().theme, "Dark", "stayed on the default");
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        let ids: Vec<String> = node_map
+            .values()
+            // SAFETY: the map was just built from the live pane tree.
+            .filter_map(|&widget| unsafe { (*widget).test_id() }.map(str::to_string))
+            .collect();
+        for id in ["appearance.wallpaper.choose", "appearance.wallpaper_scope"] {
+            assert!(
+                ids.iter().any(|candidate| candidate == id),
+                "{id} missing from {ids:?}"
+            );
+        }
     }
 
     #[test]
@@ -1057,45 +1009,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn searching_for_wallpaper_lands_on_the_wallpaper_control() {
-        use crate::categories::Category;
-        let hits: Vec<Category> = Category::ALL
-            .iter()
-            .copied()
-            .filter(|category| category.matches("wallpaper"))
-            .collect();
-        assert_eq!(hits, vec![Category::Appearance]);
-
+    /// A default pane (persisting through a scratch settings file) after the
+    /// document carries `edits`.
+    fn pane_after_edits(edits: &[(&str, automerge::ScalarValue)]) -> AppearancePane {
         let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-        let ids: Vec<String> = node_map
-            .values()
-            // SAFETY: the map was just built from the live pane tree.
-            .filter_map(|&widget| unsafe { (*widget).test_id() }.map(str::to_string))
-            .collect();
-        for id in ["appearance.wallpaper.choose", "appearance.wallpaper_scope"] {
-            assert!(
-                ids.iter().any(|candidate| candidate == id),
-                "{id} missing from {ids:?}"
-            );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        for (key, value) in edits {
+            let _ = doc.put(&root, *key, value.clone());
         }
+        pane.sync(&mut doc, &root);
+        pane
+    }
+
+    /// Dropdown and toggle edits in the document update the prefs, which
+    /// resolve to the real theme; unknown values are ignored.
+    #[test]
+    fn appearance_edits_update_prefs_and_resolve() {
+        use automerge::ScalarValue::{Boolean, Str};
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let pane = pane_after_edits(&[(UI_SCALE_KEY, Str("150%".into()))]);
+        assert_eq!(pane.prefs().ui_scale, 1.50);
+        // The pref folds into the resolved theme's ui_scale + scaled tokens.
+        let resolved = pane.prefs().resolve_theme();
+        assert_eq!(resolved.ui_scale, 1.50);
+        let base_gap = ui::Theme::dark().tokens.spacing.s3;
+        assert!((resolved.tokens.spacing.s3 - base_gap * 1.50).abs() < 1e-2);
+
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let pane = pane_after_edits(&[(THEME_KEY, Str("Gruvbox".into()))]);
+        assert_eq!(pane.prefs().theme, "Gruvbox");
+        assert_eq!(pane.prefs().resolve_theme().name, "Gruvbox");
+
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let pane = pane_after_edits(&[
+            (TEXT_SIZE_KEY, Str("Larger".into())),
+            (HIGH_CONTRAST_KEY, Boolean(true)),
+            (REDUCE_MOTION_KEY, Boolean(true)),
+        ]);
+        assert_eq!(pane.prefs().text_scale, 1.30);
+        assert!(pane.prefs().high_contrast);
+        assert!(pane.prefs().reduce_motion);
+        // high_contrast wins the resolved palette.
+        assert_eq!(pane.prefs().resolve_theme().name, "High Contrast");
+
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let pane = pane_after_edits(&[(THEME_KEY, Str("not-a-theme".into()))]);
+        assert_eq!(pane.prefs().theme, "Dark", "stayed on the default");
     }
 
     #[test]
-    fn builds_layout() {
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-    }
-
-    #[test]
-    fn text_size_label_and_scale_round_trip() {
+    fn scale_and_text_size_labels_round_trip() {
+        for (factor, label) in [(1.0, "100%"), (1.25, "125%"), (1.50, "150%")] {
+            assert_eq!(ui_scale_label(factor), label);
+        }
+        assert_eq!(ui_scale_factor("90%"), Some(0.90));
+        assert_eq!(ui_scale_factor("nope"), None);
         assert_eq!(text_size_label(1.0), "Default");
         assert_eq!(text_size_label(1.30), "Larger");
         assert_eq!(text_size_scale("Small"), Some(0.85));

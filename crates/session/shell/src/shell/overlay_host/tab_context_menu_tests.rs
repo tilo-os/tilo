@@ -263,359 +263,375 @@ impl Harness {
     }
 }
 
-/// The whole pointer story, on the production `handle_event` path: a
-/// right-click on a pill opens the menu at the pointer with every
-/// action bounded and named; Down arms the first row, Down again the
-/// second; Escape closes it and the tree forgets it.
 #[test]
-fn right_click_on_a_tab_opens_the_menu_arrows_move_the_highlight_and_escape_closes() {
-    let mut h = harness(2);
-    assert!(!h.host.tab_context_menu_is_open());
-    assert!(h.menu_node().is_none(), "no menu is published while closed");
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
+    /// The whole pointer story, on the production `handle_event` path: a
+    /// right-click on a pill opens the menu at the pointer with every
+    /// action bounded and named; Down arms the first row, Down again the
+    /// second; Escape closes it and the tree forgets it.
+    fn right_click_on_a_tab_opens_the_menu_arrows_move_the_highlight_and_escape_closes() {
+        let mut h = harness(2);
+        assert!(!h.host.tab_context_menu_is_open());
+        assert!(h.menu_node().is_none(), "no menu is published while closed");
 
-    let p = h.pill_centre(1);
-    h.right_click_pill(1);
-    assert!(
-        h.host.tab_context_menu_is_open(),
-        "the right-click opened the menu"
-    );
-    let rect = h
-        .host
-        .tab_context_menu_rect()
-        .expect("an open menu has a rect");
-    assert!(
-        (rect.x0 - p.x).abs() < 0.5 && (rect.y0 - p.y).abs() < 0.5,
-        "the menu hangs off the pointer ({p:?}), not a fixed spot: {rect:?}"
-    );
-    assert!(
-        rect.x1 <= VW && rect.y1 <= VH,
-        "the menu stays inside the host: {rect:?}"
-    );
+        let p = h.pill_centre(1);
+        h.right_click_pill(1);
+        assert!(
+            h.host.tab_context_menu_is_open(),
+            "the right-click opened the menu"
+        );
+        let rect = h
+            .host
+            .tab_context_menu_rect()
+            .expect("an open menu has a rect");
+        assert!(
+            (rect.x0 - p.x).abs() < 0.5 && (rect.y0 - p.y).abs() < 0.5,
+            "the menu hangs off the pointer ({p:?}), not a fixed spot: {rect:?}"
+        );
+        assert!(
+            rect.x1 <= VW && rect.y1 <= VH,
+            "the menu stays inside the host: {rect:?}"
+        );
 
-    let menu = h
-        .menu_node()
-        .expect("the open menu is the first overlay in the tree");
-    let expected_name = format!("{} tab menu", h.titles[1]);
-    assert_eq!(menu.name.as_deref(), Some(expected_name.as_str()));
-    assert_eq!(menu.state.expanded, Some(true));
-    let labels: Vec<_> = menu
-        .children
-        .iter()
-        .filter_map(|c| c.name.as_deref())
-        .collect();
-    assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
-    for (i, item) in menu.children.iter().enumerate() {
-        assert_eq!(item.role, Role::MenuItem);
-        assert!(item.state.focusable);
+        let menu = h
+            .menu_node()
+            .expect("the open menu is the first overlay in the tree");
+        let expected_name = format!("{} tab menu", h.titles[1]);
+        assert_eq!(menu.name.as_deref(), Some(expected_name.as_str()));
+        assert_eq!(menu.state.expanded, Some(true));
+        let labels: Vec<_> = menu
+            .children
+            .iter()
+            .filter_map(|c| c.name.as_deref())
+            .collect();
+        assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+        for (i, item) in menu.children.iter().enumerate() {
+            assert_eq!(item.role, Role::MenuItem);
+            assert!(item.state.focusable);
+            assert!(
+                !item.state.focused,
+                "row {i} is not armed before any hover or key"
+            );
+            let bounds = item
+                .bounds
+                .map(ui::AccessBounds::to_rect)
+                .expect("row is bounded");
+            assert!(
+                rect.contains(bounds.center()),
+                "row {i} lies inside the menu"
+            );
+            assert_eq!(
+                h.host.synthetic_accessibility_rect(&[0, i]),
+                Some(bounds),
+                "the routed geometry for row {i} is its published rect"
+            );
+            assert!(
+                item.action_target
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("tabmenu:")),
+                "row {i} carries a semantic address: {:?}",
+                item.action_target
+            );
+        }
+
         assert!(
-            !item.state.focused,
-            "row {i} is not armed before any hover or key"
+            h.key(Key::Named(NamedKey::ArrowDown)),
+            "the menu owns the keyboard"
         );
-        let bounds = item
-            .bounds
-            .map(ui::AccessBounds::to_rect)
-            .expect("row is bounded");
-        assert!(
-            rect.contains(bounds.center()),
-            "row {i} lies inside the menu"
-        );
+        let focused: Vec<bool> = h
+            .menu_node()
+            .expect("still open")
+            .children
+            .iter()
+            .map(|c| c.state.focused)
+            .collect();
+        assert_eq!(focused, [true, false, false], "Down arms the first row");
+
+        h.key(Key::Named(NamedKey::ArrowDown));
+        let focused: Vec<bool> = h
+            .menu_node()
+            .expect("still open")
+            .children
+            .iter()
+            .map(|c| c.state.focused)
+            .collect();
         assert_eq!(
-            h.host.synthetic_accessibility_rect(&[0, i]),
-            Some(bounds),
-            "the routed geometry for row {i} is its published rect"
+            focused,
+            [false, true, false],
+            "Down again moves to the second row"
         );
+
+        assert!(h.key(Key::Named(NamedKey::Escape)));
+        assert!(!h.host.tab_context_menu_is_open(), "Escape closes the menu");
+        assert!(h.menu_node().is_none(), "a closed menu leaves the tree");
+        assert_eq!(h.tab_ids(0), h.tabs, "nothing was acted on");
+    }
+
+    /// A left press outside the menu dismisses it and is absorbed — the
+    /// window beneath must not also be activated by the dismissing click.
+    fn a_click_outside_the_menu_dismisses_it_and_goes_no_further() {
+        let mut h = harness(2);
+        h.right_click_pill(0);
+        assert!(h.host.tab_context_menu_is_open());
+        h.move_to(Point::new(VW - 40.0, VH - 40.0));
+        let handled = h.press(MouseButton::Left);
+        assert!(handled, "the dismissing click is absorbed");
+        assert!(!h.host.tab_context_menu_is_open());
+        assert_eq!(h.tab_ids(0), h.tabs);
+    }
+
+    /// A single-tab group is offered Close only: splitting its one tab
+    /// would dissolve and re-create the group, a no-op that reads as a
+    /// glitch. The split targets refuse through every route.
+    fn a_single_tab_group_is_offered_close_only() {
+        let mut h = harness(1);
+        h.right_click_pill(0);
+        let labels: Vec<_> = h
+            .menu_node()
+            .expect("open")
+            .children
+            .iter()
+            .filter_map(|c| c.name.clone())
+            .collect();
+        assert_eq!(labels, ["Close Tab"]);
+        assert!(!h.host.perform_semantic_action(
+            "tabmenu:split-right",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &automerge::ROOT,
+        ));
         assert!(
-            item.action_target
-                .as_deref()
-                .is_some_and(|t| t.starts_with("tabmenu:")),
-            "row {i} carries a semantic address: {:?}",
-            item.action_target
+            h.host.tab_context_menu_is_open(),
+            "a refused target leaves the menu up"
         );
     }
 
-    assert!(
-        h.key(Key::Named(NamedKey::ArrowDown)),
-        "the menu owns the keyboard"
-    );
-    let focused: Vec<bool> = h
-        .menu_node()
-        .expect("still open")
-        .children
-        .iter()
-        .map(|c| c.state.focused)
-        .collect();
-    assert_eq!(focused, [true, false, false], "Down arms the first row");
+    /// The menu paints through the shared widget with the live theme and
+    /// an `e4` shadow following its outline, and never paints when closed.
+    fn the_open_menu_paints_and_the_closed_one_does_not() {
+        let mut h = harness(2);
+        let mut tr = TextRenderer::new();
+        let presence = ui::presence::PresenceCtx::default();
+        let mut closed = Scene::new();
+        h.host
+            .draw_tab_context_menu(&mut closed, Affine::IDENTITY, &mut tr, &h.theme, &presence);
+        assert!(
+            closed.encoding().is_empty(),
+            "a closed menu contributes nothing to the scene"
+        );
+        h.right_click_pill(1);
+        let mut open = Scene::new();
+        h.host
+            .draw_tab_context_menu(&mut open, Affine::IDENTITY, &mut tr, &h.theme, &presence);
+        assert!(
+            !open.encoding().is_empty(),
+            "an open menu paints its surface, rows and shadow"
+        );
+    }
 
-    h.key(Key::Named(NamedKey::ArrowDown));
-    let focused: Vec<bool> = h
-        .menu_node()
-        .expect("still open")
-        .children
-        .iter()
-        .map(|c| c.state.focused)
-        .collect();
-    assert_eq!(
-        focused,
-        [false, true, false],
-        "Down again moves to the second row"
-    );
-
-    assert!(h.key(Key::Named(NamedKey::Escape)));
-    assert!(!h.host.tab_context_menu_is_open(), "Escape closes the menu");
-    assert!(h.menu_node().is_none(), "a closed menu leaves the tree");
-    assert_eq!(h.tab_ids(0), h.tabs, "nothing was acted on");
+    right_click_on_a_tab_opens_the_menu_arrows_move_the_highlight_and_escape_closes();
+    a_click_outside_the_menu_dismisses_it_and_goes_no_further();
+    a_single_tab_group_is_offered_close_only();
+    the_open_menu_paints_and_the_closed_one_does_not();
 }
 
-/// A left press outside the menu dismisses it and is absorbed — the
-/// window beneath must not also be activated by the dismissing click.
 #[test]
-fn a_click_outside_the_menu_dismisses_it_and_goes_no_further() {
-    let mut h = harness(2);
-    h.right_click_pill(0);
-    assert!(h.host.tab_context_menu_is_open());
-    h.move_to(Point::new(VW - 40.0, VH - 40.0));
-    let handled = h.press(MouseButton::Left);
-    assert!(handled, "the dismissing click is absorbed");
-    assert!(!h.host.tab_context_menu_is_open());
-    assert_eq!(h.tab_ids(0), h.tabs);
-}
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
+    /// Clicking "Close Tab" runs the same durable lifecycle as the `✕` and
+    /// the chord: the tab is gone from the persisted tree before the event
+    /// returns.
+    fn clicking_close_tab_removes_that_tab_from_the_tree() {
+        let mut h = harness(2);
+        h.right_click_pill(1);
+        let close = h
+            .menu_node()
+            .expect("open")
+            .children
+            .into_iter()
+            .find(|c| c.name.as_deref() == Some("Close Tab"))
+            .and_then(|c| c.bounds.map(ui::AccessBounds::to_rect))
+            .expect("Close Tab is a bounded row");
+        h.move_to(close.center());
+        assert!(h.press(MouseButton::Left));
+        assert!(
+            !h.host.tab_context_menu_is_open(),
+            "a selection closes the menu"
+        );
+        let closed = h.tabs[1];
+        let remaining: Vec<u64> = h.tabs.iter().copied().filter(|t| *t != closed).collect();
+        assert_eq!(
+            h.tab_ids(0),
+            remaining,
+            "the right-clicked tab was closed, the rest remain"
+        );
+    }
 
-/// Clicking "Close Tab" runs the same durable lifecycle as the `✕` and
-/// the chord: the tab is gone from the persisted tree before the event
-/// returns.
-#[test]
-fn clicking_close_tab_removes_that_tab_from_the_tree() {
-    let mut h = harness(2);
-    h.right_click_pill(1);
-    let close = h
-        .menu_node()
-        .expect("open")
-        .children
-        .into_iter()
-        .find(|c| c.name.as_deref() == Some("Close Tab"))
-        .and_then(|c| c.bounds.map(ui::AccessBounds::to_rect))
-        .expect("Close Tab is a bounded row");
-    h.move_to(close.center());
-    assert!(h.press(MouseButton::Left));
-    assert!(
-        !h.host.tab_context_menu_is_open(),
-        "a selection closes the menu"
-    );
-    let closed = h.tabs[1];
-    let remaining: Vec<u64> = h.tabs.iter().copied().filter(|t| *t != closed).collect();
-    assert_eq!(
-        h.tab_ids(0),
-        remaining,
-        "the right-clicked tab was closed, the rest remain"
-    );
-}
+    /// "Split Right" through Enter is tree-first (`window_actions::split_tab`:
+    /// cache, replicated document, chrome bump) with the live tab host moved
+    /// under the tree's new group id in the same dispatch — so the tree is
+    /// right before any frame, and the resync the bump triggers finds the
+    /// group present and keeps the window state.
+    fn split_right_by_keyboard_moves_the_tab_into_a_new_group_beside_it() {
+        let mut h = harness(2);
+        h.right_click_pill(1);
+        h.key(Key::Named(NamedKey::ArrowDown)); // Close Tab
+        h.key(Key::Named(NamedKey::ArrowDown)); // Split Right
+        assert!(h.key(Key::Named(NamedKey::Enter)));
+        assert!(!h.host.tab_context_menu_is_open());
+        // Tree-first: the tree is already split before any structure pass.
+        assert_eq!(
+            h.group_ids().len(),
+            2,
+            "the tree split in the same dispatch"
+        );
+        let _ = h.host.take_structure_dirty();
+        let groups = h.group_ids();
+        assert_eq!(groups.len(), 2, "a second group appeared: {groups:?}");
+        assert_eq!(groups[0], h.group, "the source group keeps its slot");
+        let moved = h.tabs[1];
+        let remaining: Vec<u64> = h.tabs.iter().copied().filter(|t| *t != moved).collect();
+        assert_eq!(
+            h.tab_ids(0),
+            remaining,
+            "the tree's source group lost the moved tab"
+        );
+        assert_eq!(
+            h.tab_ids(1),
+            [moved],
+            "the split tab is the new group's only tab"
+        );
 
-/// "Split Right" through Enter is tree-first (`window_actions::split_tab`:
-/// cache, replicated document, chrome bump) with the live tab host moved
-/// under the tree's new group id in the same dispatch — so the tree is
-/// right before any frame, and the resync the bump triggers finds the
-/// group present and keeps the window state.
-#[test]
-fn split_right_by_keyboard_moves_the_tab_into_a_new_group_beside_it() {
-    let mut h = harness(2);
-    h.right_click_pill(1);
-    h.key(Key::Named(NamedKey::ArrowDown)); // Close Tab
-    h.key(Key::Named(NamedKey::ArrowDown)); // Split Right
-    assert!(h.key(Key::Named(NamedKey::Enter)));
-    assert!(!h.host.tab_context_menu_is_open());
-    // Tree-first: the tree is already split before any structure pass.
-    assert_eq!(
-        h.group_ids().len(),
-        2,
-        "the tree split in the same dispatch"
-    );
-    let _ = h.host.take_structure_dirty();
-    let groups = h.group_ids();
-    assert_eq!(groups.len(), 2, "a second group appeared: {groups:?}");
-    assert_eq!(groups[0], h.group, "the source group keeps its slot");
-    let moved = h.tabs[1];
-    let remaining: Vec<u64> = h.tabs.iter().copied().filter(|t| *t != moved).collect();
-    assert_eq!(
-        h.tab_ids(0),
-        remaining,
-        "the tree's source group lost the moved tab"
-    );
-    assert_eq!(
-        h.tab_ids(1),
-        [moved],
-        "the split tab is the new group's only tab"
-    );
+        // The next chrome revision runs the tree→row resync. Before
+        // 2026-09-17 the mirror only inserted the new group, so the tree
+        // still listed the moved tab in its source and this resync
+        // re-created it there as a second, hostless card — for the menu and
+        // for the drag-out split alike. Both live groups must stay exact.
+        h.chrome.borrow_mut().bump();
+        let _ = h.host.take_structure_dirty();
+        let live_source: Vec<u64> = h
+            .host
+            .group_at_for_tests(h.strip, 0)
+            .expect("source group is live")
+            .tabs()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(
+            live_source, remaining,
+            "no duplicate of the moved tab in the source"
+        );
+        let live_new: Vec<u64> = h
+            .host
+            .group_at_for_tests(h.strip, 1)
+            .expect("new group is live")
+            .tabs()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(live_new, [moved]);
+        assert_eq!(
+            h.group_ids().len(),
+            2,
+            "the resync neither revived nor evicted a group"
+        );
+    }
 
-    // The next chrome revision runs the tree→row resync. Before
-    // 2026-09-17 the mirror only inserted the new group, so the tree
-    // still listed the moved tab in its source and this resync
-    // re-created it there as a second, hostless card — for the menu and
-    // for the drag-out split alike. Both live groups must stay exact.
-    h.chrome.borrow_mut().bump();
-    let _ = h.host.take_structure_dirty();
-    let live_source: Vec<u64> = h
-        .host
-        .group_at_for_tests(h.strip, 0)
-        .expect("source group is live")
-        .tabs()
-        .iter()
-        .map(|t| t.id)
-        .collect();
-    assert_eq!(
-        live_source, remaining,
-        "no duplicate of the moved tab in the source"
-    );
-    let live_new: Vec<u64> = h
-        .host
-        .group_at_for_tests(h.strip, 1)
-        .expect("new group is live")
-        .tabs()
-        .iter()
-        .map(|t| t.id)
-        .collect();
-    assert_eq!(live_new, [moved]);
-    assert_eq!(
-        h.group_ids().len(),
-        2,
-        "the resync neither revived nor evicted a group"
-    );
-}
+    /// The registry door: `tab.split-right` runs `window_actions::split_active_tab`
+    /// on the focused tab with no menu and no live host in hand; the tree
+    /// splits at once and the resync builds the widget side — one group
+    /// per tree group, the moved tab in the new one, nothing duplicated.
+    fn the_registry_split_action_lands_in_the_tree_and_the_resync_builds_the_group() {
+        let mut h = harness(2);
+        let active = crate::shell::window_actions::active_tab_id(&h.chrome.borrow())
+            .expect("the demo workspace has a focused tab");
+        let new_group = {
+            let mut st = h.chrome.borrow_mut();
+            crate::shell::window_actions::split_active_tab(
+                &mut st,
+                crate::shell::window_actions::SplitPlacement::Right,
+            )
+            .expect("a multi-tab group splits")
+        };
+        assert_eq!(
+            h.group_ids(),
+            [h.group, new_group],
+            "tree-first, beside the source"
+        );
+        assert_eq!(h.tab_ids(1), [active]);
+        assert!(
+            !h.tab_ids(0).contains(&active),
+            "the source lost the moved tab"
+        );
+        // The bump `split_active_tab` made drives the resync.
+        let _ = h.host.take_structure_dirty();
+        let live: Vec<Vec<u64>> = (0..2)
+            .map(|i| {
+                h.host
+                    .group_at_for_tests(h.strip, i)
+                    .expect("both groups are live")
+                    .tabs()
+                    .iter()
+                    .map(|t| t.id)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            live[1],
+            [active],
+            "the resync built the new group around the tab"
+        );
+        assert!(!live[0].contains(&active), "and took it out of the source");
+        // The refusal path: a single-tab group is not split, and says why.
+        let single = harness(1);
+        let err = {
+            let mut st = single.chrome.borrow_mut();
+            crate::shell::window_actions::split_active_tab(
+                &mut st,
+                crate::shell::window_actions::SplitPlacement::Right,
+            )
+            .expect_err("a group's only tab is not split")
+        };
+        assert_eq!(err, crate::shell::window_actions::TabActionError::OnlyTab);
+        assert_eq!(single.group_ids().len(), 1, "nothing changed");
+    }
 
-/// The registry door: `tab.split-right` runs `window_actions::split_active_tab`
-/// on the focused tab with no menu and no live host in hand; the tree
-/// splits at once and the resync builds the widget side — one group
-/// per tree group, the moved tab in the new one, nothing duplicated.
-#[test]
-fn the_registry_split_action_lands_in_the_tree_and_the_resync_builds_the_group() {
-    let mut h = harness(2);
-    let active = crate::shell::window_actions::active_tab_id(&h.chrome.borrow())
-        .expect("the demo workspace has a focused tab");
-    let new_group = {
-        let mut st = h.chrome.borrow_mut();
-        crate::shell::window_actions::split_active_tab(
-            &mut st,
-            crate::shell::window_actions::SplitPlacement::Right,
-        )
-        .expect("a multi-tab group splits")
-    };
-    assert_eq!(
-        h.group_ids(),
-        [h.group, new_group],
-        "tree-first, beside the source"
-    );
-    assert_eq!(h.tab_ids(1), [active]);
-    assert!(
-        !h.tab_ids(0).contains(&active),
-        "the source lost the moved tab"
-    );
-    // The bump `split_active_tab` made drives the resync.
-    let _ = h.host.take_structure_dirty();
-    let live: Vec<Vec<u64>> = (0..2)
-        .map(|i| {
-            h.host
-                .group_at_for_tests(h.strip, i)
-                .expect("both groups are live")
-                .tabs()
-                .iter()
-                .map(|t| t.id)
-                .collect()
-        })
-        .collect();
-    assert_eq!(
-        live[1],
-        [active],
-        "the resync built the new group around the tab"
-    );
-    assert!(!live[0].contains(&active), "and took it out of the source");
-    // The refusal path: a single-tab group is not split, and says why.
-    let single = harness(1);
-    let err = {
-        let mut st = single.chrome.borrow_mut();
-        crate::shell::window_actions::split_active_tab(
-            &mut st,
-            crate::shell::window_actions::SplitPlacement::Right,
-        )
-        .expect_err("a group's only tab is not split")
-    };
-    assert_eq!(err, crate::shell::window_actions::TabActionError::OnlyTab);
-    assert_eq!(single.group_ids().len(), 1, "nothing changed");
-}
+    /// The semantic door: an assistive technology or a script activates
+    /// `tabmenu:new-group` on the open menu and gets the same operation.
+    fn the_semantic_route_performs_the_same_action_as_the_pointer() {
+        let mut h = harness(2);
+        h.right_click_pill(1);
+        let performed = h.host.perform_semantic_action(
+            "tabmenu:new-group",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &automerge::ROOT,
+        );
+        assert!(performed, "an offered row activates");
+        assert!(!h.host.tab_context_menu_is_open());
+        let _ = h.host.take_structure_dirty();
+        assert_eq!(h.group_ids().len(), 2);
+        assert_eq!(h.tab_ids(1), [h.tabs[1]]);
 
-/// The semantic door: an assistive technology or a script activates
-/// `tabmenu:new-group` on the open menu and gets the same operation.
-#[test]
-fn the_semantic_route_performs_the_same_action_as_the_pointer() {
-    let mut h = harness(2);
-    h.right_click_pill(1);
-    let performed = h.host.perform_semantic_action(
-        "tabmenu:new-group",
-        &ui::a11y::Action::Activate,
-        &mut h.doc,
-        &automerge::ROOT,
-    );
-    assert!(performed, "an offered row activates");
-    assert!(!h.host.tab_context_menu_is_open());
-    let _ = h.host.take_structure_dirty();
-    assert_eq!(h.group_ids().len(), 2);
-    assert_eq!(h.tab_ids(1), [h.tabs[1]]);
+        // A target that is not on the menu — or a menu that is not open —
+        // refuses rather than acting on a stale tab.
+        assert!(!h.host.perform_semantic_action(
+            "tabmenu:close",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &automerge::ROOT,
+        ));
+    }
 
-    // A target that is not on the menu — or a menu that is not open —
-    // refuses rather than acting on a stale tab.
-    assert!(!h.host.perform_semantic_action(
-        "tabmenu:close",
-        &ui::a11y::Action::Activate,
-        &mut h.doc,
-        &automerge::ROOT,
-    ));
-}
-
-/// A single-tab group is offered Close only: splitting its one tab
-/// would dissolve and re-create the group, a no-op that reads as a
-/// glitch. The split targets refuse through every route.
-#[test]
-fn a_single_tab_group_is_offered_close_only() {
-    let mut h = harness(1);
-    h.right_click_pill(0);
-    let labels: Vec<_> = h
-        .menu_node()
-        .expect("open")
-        .children
-        .iter()
-        .filter_map(|c| c.name.clone())
-        .collect();
-    assert_eq!(labels, ["Close Tab"]);
-    assert!(!h.host.perform_semantic_action(
-        "tabmenu:split-right",
-        &ui::a11y::Action::Activate,
-        &mut h.doc,
-        &automerge::ROOT,
-    ));
-    assert!(
-        h.host.tab_context_menu_is_open(),
-        "a refused target leaves the menu up"
-    );
-}
-
-/// The menu paints through the shared widget with the live theme and
-/// an `e4` shadow following its outline, and never paints when closed.
-#[test]
-fn the_open_menu_paints_and_the_closed_one_does_not() {
-    let mut h = harness(2);
-    let mut tr = TextRenderer::new();
-    let presence = ui::presence::PresenceCtx::default();
-    let mut closed = Scene::new();
-    h.host
-        .draw_tab_context_menu(&mut closed, Affine::IDENTITY, &mut tr, &h.theme, &presence);
-    assert!(
-        closed.encoding().is_empty(),
-        "a closed menu contributes nothing to the scene"
-    );
-    h.right_click_pill(1);
-    let mut open = Scene::new();
-    h.host
-        .draw_tab_context_menu(&mut open, Affine::IDENTITY, &mut tr, &h.theme, &presence);
-    assert!(
-        !open.encoding().is_empty(),
-        "an open menu paints its surface, rows and shadow"
-    );
+    clicking_close_tab_removes_that_tab_from_the_tree();
+    split_right_by_keyboard_moves_the_tab_into_a_new_group_beside_it();
+    the_registry_split_action_lands_in_the_tree_and_the_resync_builds_the_group();
+    the_semantic_route_performs_the_same_action_as_the_pointer();
 }

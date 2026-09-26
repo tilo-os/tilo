@@ -567,124 +567,131 @@ mod tests {
     use super::*;
 
     #[test]
-    fn route_history_push_replace_back_forward_and_reset_are_explicit() {
-        let handle = RouteHandle::new("home", ["home", "settings", "about"]).unwrap();
-        assert_eq!(handle.current(), "home");
-        assert!(!handle.can_back());
-        assert!(handle.push("settings").unwrap());
-        assert!(handle.push("about").unwrap());
-        assert_eq!(
-            handle.history(),
-            (
-                vec!["home".into(), "settings".into()],
-                "about".into(),
-                vec![]
-            )
-        );
-        assert!(handle.back());
-        assert_eq!(handle.current(), "settings");
-        assert!(handle.can_forward());
-        assert!(handle.forward());
-        assert!(handle.replace("settings").unwrap());
-        assert_eq!(handle.history().0, ["home"]);
-        assert!(handle.reset("home").unwrap());
-        assert_eq!(handle.history(), (vec![], "home".into(), vec![]));
+    fn route_history_mutations_are_explicit_and_bounded() {
+        // Case `route_history_push_replace_back_forward_and_reset_are_explicit`.
+        {
+            let handle = RouteHandle::new("home", ["home", "settings", "about"]).unwrap();
+            assert_eq!(handle.current(), "home");
+            assert!(!handle.can_back());
+            assert!(handle.push("settings").unwrap());
+            assert!(handle.push("about").unwrap());
+            assert_eq!(
+                handle.history(),
+                (
+                    vec!["home".into(), "settings".into()],
+                    "about".into(),
+                    vec![]
+                )
+            );
+            assert!(handle.back());
+            assert_eq!(handle.current(), "settings");
+            assert!(handle.can_forward());
+            assert!(handle.forward());
+            assert!(handle.replace("settings").unwrap());
+            assert_eq!(handle.history().0, ["home"]);
+            assert!(handle.reset("home").unwrap());
+            assert_eq!(handle.history(), (vec![], "home".into(), vec![]));
+        }
+
+        // Case `unknown_routes_and_duplicate_current_pushes_do_not_mutate_history`.
+        {
+            let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
+            assert!(!handle.push("home").unwrap());
+            let before = handle.history();
+            assert_eq!(
+                handle.push("missing"),
+                Err(RouteError::UnknownRoute("missing".into()))
+            );
+            assert_eq!(handle.history(), before);
+            assert!(handle.push_action("missing").is_err());
+        }
+
+        // Case `exhausted_revision_refuses_route_mutations_without_reusing_a_snapshot`.
+        {
+            let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
+            handle.state.borrow_mut().revision = u64::MAX;
+            let before = handle.history();
+            assert_eq!(handle.push("settings"), Err(RouteError::RevisionExhausted));
+            assert_eq!(handle.history(), before);
+            assert!(!handle.back());
+            assert!(!handle.forward());
+        }
     }
 
     #[test]
-    fn unknown_routes_and_duplicate_current_pushes_do_not_mutate_history() {
-        let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
-        assert!(!handle.push("home").unwrap());
-        let before = handle.history();
-        assert_eq!(
-            handle.push("missing"),
-            Err(RouteError::UnknownRoute("missing".into()))
-        );
-        assert_eq!(handle.history(), before);
-        assert!(handle.push_action("missing").is_err());
-    }
+    fn screen_builds_restore_the_last_valid_route_and_reset_focus_on_success() {
+        // Case `failed_screen_build_restores_the_last_valid_route`.
+        {
+            let theme = Theme::default();
+            let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
+                if route == "broken" {
+                    Err("invalid screen".into())
+                } else {
+                    Ok(Box::new(
+                        super::super::Text::new(route).with_role(crate::tokens::TextRole::Body),
+                    ))
+                }
+            })
+            .unwrap();
+            let handle = router.handle();
+            handle.push("broken").unwrap();
+            let mut state = crate::State::new();
+            let root = state.root.clone();
+            router.sync(&mut state.doc, &root);
+            assert_eq!(handle.current(), "home");
+            assert!(matches!(
+                router.last_error(),
+                Some(RouteError::Build { .. })
+            ));
+            assert!(!router.take_structure_dirty());
+        }
 
-    #[test]
-    fn exhausted_revision_refuses_route_mutations_without_reusing_a_snapshot() {
-        let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
-        handle.state.borrow_mut().revision = u64::MAX;
-        let before = handle.history();
-        assert_eq!(handle.push("settings"), Err(RouteError::RevisionExhausted));
-        assert_eq!(handle.history(), before);
-        assert!(!handle.back());
-        assert!(!handle.forward());
-    }
+        // Case `failed_build_at_final_revision_keeps_route_and_retained_child_coherent`.
+        {
+            let theme = Theme::default();
+            let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
+                if route == "broken" {
+                    Err("invalid screen".into())
+                } else {
+                    Ok(Box::new(
+                        super::super::Text::new(route).with_role(crate::tokens::TextRole::Body),
+                    ))
+                }
+            })
+            .unwrap();
+            let handle = router.handle();
+            handle.state.borrow_mut().revision = u64::MAX - 1;
+            assert!(handle.push("broken").unwrap());
+            let mut state = crate::State::new();
+            let root = state.root.clone();
+            router.sync(&mut state.doc, &root);
+            assert_eq!(handle.current(), "home");
+            assert_eq!(router.seen.revision, u64::MAX);
+            assert_eq!(handle.snapshot().revision, u64::MAX);
+            assert!(matches!(
+                router.last_error(),
+                Some(RouteError::Build { .. })
+            ));
+            assert!(!router.take_structure_dirty());
+        }
 
-    #[test]
-    fn failed_screen_build_restores_the_last_valid_route() {
-        let theme = Theme::default();
-        let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
-            if route == "broken" {
-                Err("invalid screen".into())
-            } else {
-                Ok(Box::new(
-                    super::super::Text::new(route).with_role(crate::tokens::TextRole::Body),
-                ))
-            }
-        })
-        .unwrap();
-        let handle = router.handle();
-        handle.push("broken").unwrap();
-        let mut state = crate::State::new();
-        let root = state.root.clone();
-        router.sync(&mut state.doc, &root);
-        assert_eq!(handle.current(), "home");
-        assert!(matches!(
-            router.last_error(),
-            Some(RouteError::Build { .. })
-        ));
-        assert!(!router.take_structure_dirty());
-    }
+        // Case `initial_deep_link_and_successful_transition_rebuild_and_reset_focus`.
+        {
+            let theme = Theme::default();
+            let mut router =
+                Router::new("settings", ["home", "settings"], &theme, |route, _, _| {
+                    Ok(Box::new(super::super::Button::new(route, route, None)))
+                })
+                .unwrap();
+            assert_eq!(router.handle().current(), "settings");
 
-    #[test]
-    fn failed_build_at_final_revision_keeps_route_and_retained_child_coherent() {
-        let theme = Theme::default();
-        let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
-            if route == "broken" {
-                Err("invalid screen".into())
-            } else {
-                Ok(Box::new(
-                    super::super::Text::new(route).with_role(crate::tokens::TextRole::Body),
-                ))
-            }
-        })
-        .unwrap();
-        let handle = router.handle();
-        handle.state.borrow_mut().revision = u64::MAX - 1;
-        assert!(handle.push("broken").unwrap());
-        let mut state = crate::State::new();
-        let root = state.root.clone();
-        router.sync(&mut state.doc, &root);
-        assert_eq!(handle.current(), "home");
-        assert_eq!(router.seen.revision, u64::MAX);
-        assert_eq!(handle.snapshot().revision, u64::MAX);
-        assert!(matches!(
-            router.last_error(),
-            Some(RouteError::Build { .. })
-        ));
-        assert!(!router.take_structure_dirty());
-    }
-
-    #[test]
-    fn initial_deep_link_and_successful_transition_rebuild_and_reset_focus() {
-        let theme = Theme::default();
-        let mut router = Router::new("settings", ["home", "settings"], &theme, |route, _, _| {
-            Ok(Box::new(super::super::Button::new(route, route, None)))
-        })
-        .unwrap();
-        assert_eq!(router.handle().current(), "settings");
-
-        router.handle().replace("home").unwrap();
-        let mut state = crate::State::new();
-        let root = state.root.clone();
-        router.sync(&mut state.doc, &root);
-        assert!(router.take_structure_dirty());
-        assert!(router.take_focus_reset());
-        assert!(!router.take_focus_reset(), "focus reset is edge-triggered");
+            router.handle().replace("home").unwrap();
+            let mut state = crate::State::new();
+            let root = state.root.clone();
+            router.sync(&mut state.doc, &root);
+            assert!(router.take_structure_dirty());
+            assert!(router.take_focus_reset());
+            assert!(!router.take_focus_reset(), "focus reset is edge-triggered");
+        }
     }
 }

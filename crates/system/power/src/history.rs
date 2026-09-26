@@ -126,61 +126,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cadence_and_retention_are_bounded() {
-        let mut history = BatteryHistory::default();
-        assert!(history.record(BatteryHistoryPoint {
-            unix_minute: 100,
-            capacity: 50,
-            health: Some(90),
-            on_ac: false,
-        }));
-        assert!(!history.record(BatteryHistoryPoint {
-            unix_minute: 105,
-            capacity: 49,
-            health: Some(90),
-            on_ac: false,
-        }));
-        assert_eq!(history.points.len(), 1);
-        for minute in (120..=50_000).step_by(15) {
-            history.record(BatteryHistoryPoint {
-                unix_minute: minute,
+    fn history_is_bounded_private_atomic_and_anonymous() {
+        // Phase `cadence_and_retention_are_bounded`.
+        {
+            let mut history = BatteryHistory::default();
+            assert!(history.record(BatteryHistoryPoint {
+                unix_minute: 100,
                 capacity: 50,
-                health: None,
-                on_ac: true,
-            });
+                health: Some(90),
+                on_ac: false,
+            }));
+            assert!(!history.record(BatteryHistoryPoint {
+                unix_minute: 105,
+                capacity: 49,
+                health: Some(90),
+                on_ac: false,
+            }));
+            assert_eq!(history.points.len(), 1);
+            for minute in (120..=50_000).step_by(15) {
+                history.record(BatteryHistoryPoint {
+                    unix_minute: minute,
+                    capacity: 50,
+                    health: None,
+                    on_ac: true,
+                });
+            }
+            assert!(history.points.len() <= MAX_POINTS);
+            assert!(
+                history.points.iter().all(|point| {
+                    50_000u64.saturating_sub(point.unix_minute) <= MAX_AGE_MINUTES
+                })
+            );
         }
-        assert!(history.points.len() <= MAX_POINTS);
-        assert!(
-            history
-                .points
-                .iter()
-                .all(|point| { 50_000u64.saturating_sub(point.unix_minute) <= MAX_AGE_MINUTES })
-        );
-    }
-
-    #[test]
-    fn durable_file_is_private_atomic_and_schema_contains_no_identity() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo/history.json");
-        assert!(
-            record_power_history_at(
-                &path,
-                BatteryHistoryPoint {
-                    unix_minute: 100,
-                    capacity: 72,
-                    health: Some(88),
-                    on_ac: false,
-                }
-            )
-            .unwrap()
-        );
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let text = std::fs::read_to_string(path).unwrap();
-        assert!(!text.contains("serial"));
-        assert!(!text.contains("application"));
+        // Phase `durable_file_is_private_atomic_and_schema_contains_no_identity`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tilo/history.json");
+            assert!(
+                record_power_history_at(
+                    &path,
+                    BatteryHistoryPoint {
+                        unix_minute: 100,
+                        capacity: 72,
+                        health: Some(88),
+                        on_ac: false,
+                    }
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let text = std::fs::read_to_string(path).unwrap();
+            assert!(!text.contains("serial"));
+            assert!(!text.contains("application"));
+        }
     }
 }

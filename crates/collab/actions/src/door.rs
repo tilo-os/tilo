@@ -755,10 +755,20 @@ mod tests {
         )
     }
 
+    /// A descriptor carries nothing that could act, survey annotates only the declared view-open
+    /// action, enumeration leaves the document untouched, and an address survives its string form.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn surveying_through_the_door_describes_without_acting() {
+        a_descriptor_carries_nothing_that_could_act();
+        survey_annotates_only_the_declared_view_open_action();
+        enumeration_leaves_the_document_untouched();
+        an_address_survives_its_string_form();
+    }
+
     /// A descriptor carries no live handle: two trees whose actions *do
     /// different things* survey to equal descriptors — only the address
     /// reaches the closure, and only against a tree handed in again.
-    #[test]
     fn a_descriptor_carries_nothing_that_could_act() {
         let honest = open();
         let hijacked = note(&Note::Retitle("hijacked".into()), |_| Note::Star);
@@ -795,7 +805,6 @@ mod tests {
         assert_eq!(described.len(), 2);
     }
 
-    #[test]
     fn survey_annotates_only_the_declared_view_open_action() {
         let open =
             ActionSpec::operation("open", "Open", OperationKind::View, "notes.open", &()).unwrap();
@@ -837,10 +846,22 @@ mod tests {
         );
     }
 
+    /// Stale addresses, mismatched arguments and unregistered action types are refused rather than
+    /// redirected or applied; an accepted change is attributed to the caller and ambient task
+    /// context reaches it without overwriting the resource.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn invoking_through_the_door_refuses_mismatches_and_attributes_the_caller() {
+        an_address_that_no_longer_resolves_is_refused_not_redirected();
+        an_argument_that_does_not_match_the_declaration_is_refused();
+        an_unregistered_action_type_is_refused_rather_than_applied();
+        a_change_through_the_door_is_attributed_to_the_caller();
+        ambient_task_context_reaches_door_actions_without_overwriting_resource();
+    }
+
     /// A tree is per-frame presentation, so an address is re-resolved against a
     /// freshly built one. An address whose resource has gone is refused, not
     /// applied to whatever is open in its place.
-    #[test]
     fn an_address_that_no_longer_resolves_is_refused_not_redirected() {
         let address = survey(&open())[0].address.clone();
         assert_eq!(address, star());
@@ -866,7 +887,6 @@ mod tests {
     /// Argument rules are checked both directions: a missing declared
     /// argument, and one supplied where none was declared. Neither is
     /// quietly tolerated.
-    #[test]
     fn an_argument_that_does_not_match_the_declaration_is_refused() {
         let tree = open();
         let described = survey(&tree);
@@ -893,7 +913,6 @@ mod tests {
     /// An action the app never registered a decoder for cannot be run, even
     /// though its own tree offers it: the door will not dispatch what it cannot
     /// reconstruct the way a replaying peer would.
-    #[test]
     fn an_unregistered_action_type_is_refused_rather_than_applied() {
         let tree = open();
         let mut doc = AutoCommit::new();
@@ -938,7 +957,6 @@ mod tests {
     /// Asking what can be done here is not doing it: building the tree and
     /// surveying it twice leaves the document byte-identical, so a caller may
     /// explore an unfamiliar app without changing it.
-    #[test]
     fn enumeration_leaves_the_document_untouched() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "title", ScalarValue::Str("Harbour".into()))
@@ -967,7 +985,6 @@ mod tests {
     /// A change made through the door commits under the *caller's* actor, so
     /// history names who asked rather than the app — and since the actor
     /// rides the envelope, a peer still replays to the identical document.
-    #[test]
     fn a_change_through_the_door_is_attributed_to_the_caller() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
@@ -1028,7 +1045,6 @@ mod tests {
         assert_eq!(transport.replicated.len(), 1);
     }
 
-    #[test]
     fn ambient_task_context_reaches_door_actions_without_overwriting_resource() {
         let mut doc = AutoCommit::new();
         let mut transport = LocalTransport::new();
@@ -1066,7 +1082,16 @@ mod tests {
         );
     }
 
+    /// Consequential actions and values classified destructive need consent, and effective
+    /// confirmation reads every argument form.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn consequential_door_actions_need_consent_whatever_form_the_argument_takes() {
+        consequential_actions_cannot_cross_the_door_without_consent();
+        a_value_classified_as_destructive_needs_the_same_consent();
+        effective_confirmation_reads_every_argument_form();
+    }
+
     fn consequential_actions_cannot_cross_the_door_without_consent() {
         let resources = vec![
             Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
@@ -1153,7 +1178,6 @@ mod tests {
             .and_then(|(value, _)| value.into_string().ok())
     }
 
-    #[test]
     fn a_value_classified_as_destructive_needs_the_same_consent() {
         let resources = edit_by_value();
         let mut doc = AutoCommit::new();
@@ -1207,7 +1231,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn effective_confirmation_reads_every_argument_form() {
         let resources = edit_by_value();
         let spec = resolve(&resources, &edit()).unwrap();
@@ -1237,7 +1260,6 @@ mod tests {
     /// Resource ids carry colons, so the address separator has to be something
     /// they cannot contain; and a string that is not an address is refused
     /// rather than half-parsed into a lookup.
-    #[test]
     fn an_address_survives_its_string_form() {
         let address = star();
         assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
