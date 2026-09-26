@@ -1355,7 +1355,7 @@ impl TestControlConn {
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
-            eprintln!("nirios compositor: test_control connection check: {error}");
+            eprintln!("tilo compositor: test_control connection check: {error}");
             return true;
         }
         descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -2863,7 +2863,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
         let pending = &conn.output[conn.output_offset..];
         match conn.reader.get_mut().write(pending) {
             Ok(0) => {
-                eprintln!("nirios compositor: test_control write: disconnected");
+                eprintln!("tilo compositor: test_control write: disconnected");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2872,7 +2872,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 return PendingConnectionProgress::OutputPending;
             }
             Err(error) => {
-                eprintln!("nirios compositor: test_control write: {error}");
+                eprintln!("tilo compositor: test_control write: {error}");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }

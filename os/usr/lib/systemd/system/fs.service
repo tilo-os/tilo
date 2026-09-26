@@ -1,6 +1,6 @@
 [Unit]
 Description=QuickFS Collaborative Filesystem (native store volume or Iroh-backed FUSE3 mount)
-Documentation=https://github.com/nirios/quickdesktop
+Documentation=https://code.tilo.so/tilo/tilo
 After=local-fs.target network.target systemd-tmpfiles-setup.service
 Wants=network.target
 # The store volume (/var/lib/tilo/store) is mounted `nofail`, so local-fs.target

@@ -1,6 +1,6 @@
 [Unit]
 Description=Tilo: harden /proc with hidepid (hide other users' processes)
-Documentation=https://github.com/nirios/quickdesktop
+Documentation=https://code.tilo.so/tilo/tilo
 # The global remount is quick, but must finish before any untrusted login
 # process can inspect another user's /proc entries.
 After=local-fs.target
