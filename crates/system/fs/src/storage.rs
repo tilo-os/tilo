@@ -9,12 +9,10 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
 use iroh_blobs::Hash;
 use runtime_fs::storage::{
-    EvictionReport, EvictionSelection, StorageAggregate, StorageRequest, StorageResponse,
-    SyncStorageSnapshot, SyncedFileState,
+    EvictionReport, EvictionSelection, STORAGE_FRAMING, StorageAggregate, StorageRequest,
+    StorageResponse, SyncStorageSnapshot, SyncedFileState,
 };
-use serde::{Serialize, de::DeserializeOwned};
 use tilo_clock::unix_now_ms;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::availability::{AvailabilityPolicy, AvailabilityRegistry, RecordAvailability};
 use crate::eviction::{EvictionCoordinator, EvictionPlan, EvictionQueue, EvictionRequestId};
@@ -44,11 +42,12 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
         };
         let authority = authority.clone();
         tokio::spawn(async move {
-            loop {
-                let request: StorageRequest = match read_async_frame(&mut stream).await {
-                    Ok(request) => request,
-                    Err(_) => break,
-                };
+            // A close, a malformed or oversized frame, or a failed write
+            // ends the connection.
+            while let Ok(Some(request)) = STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut stream)
+                .await
+            {
                 let response = match request {
                     StorageRequest::Snapshot => {
                         StorageResponse::Snapshot(authority.snapshot().await)
@@ -58,42 +57,16 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                         Err(error) => StorageResponse::Error(error.to_string()),
                     },
                 };
-                if write_async_frame(&mut stream, &response).await.is_err() {
+                if STORAGE_FRAMING
+                    .write_value_async(&mut stream, &response)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
         });
     }
-}
-
-const MAX_FRAME: usize = 16 * 1024 * 1024;
-
-async fn read_async_frame<T: DeserializeOwned>(
-    stream: &mut tokio::net::UnixStream,
-) -> std::io::Result<T> {
-    let len = stream.read_u32_le().await? as usize;
-    if len > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    let mut data = vec![0; len];
-    stream.read_exact(&mut data).await?;
-    postcard::from_bytes(&data).map_err(std::io::Error::other)
-}
-
-// `T: Sync` so `&T` is `Send` — required for the future this returns to be
-// usable from the `tokio::spawn`ed connection task in `serve`.
-async fn write_async_frame<T: Serialize + Sync>(
-    stream: &mut tokio::net::UnixStream,
-    value: &T,
-) -> std::io::Result<()> {
-    let data = postcard::to_allocvec(value).map_err(std::io::Error::other)?;
-    if data.len() > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    let len = u32::try_from(data.len())
-        .map_err(|_| std::io::Error::other("storage frame too large to length-prefix"))?;
-    stream.write_u32_le(len).await?;
-    stream.write_all(&data).await
 }
 
 #[derive(Clone)]
@@ -598,6 +571,46 @@ fn aggregate<'a>(
 mod tests {
     use super::*;
     use crate::namespace::ROOT_INO;
+
+    #[tokio::test]
+    async fn storage_frames_are_little_endian_length_then_postcard() {
+        let (mut client, mut server) = tokio::net::UnixStream::pair().unwrap();
+        let mut wire = Vec::new();
+        STORAGE_FRAMING
+            .write_value_async(&mut wire, &StorageResponse::Error("no".into()))
+            .await
+            .unwrap();
+        assert_eq!(wire, [4, 0, 0, 0, 2, 2, b'n', b'o']);
+
+        tokio::io::AsyncWriteExt::write_all(&mut client, &[1, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        drop(client);
+        let request: Option<StorageRequest> =
+            STORAGE_FRAMING.read_value_async(&mut server).await.unwrap();
+        assert!(matches!(request, Some(StorageRequest::Snapshot)));
+        let closed: Option<StorageRequest> =
+            STORAGE_FRAMING.read_value_async(&mut server).await.unwrap();
+        assert!(closed.is_none());
+    }
+
+    #[tokio::test]
+    async fn storage_frames_over_sixteen_mebibytes_are_refused() {
+        let oversized = (16_u32 * 1024 * 1024 + 1).to_le_bytes();
+        assert!(matches!(
+            STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut &oversized[..])
+                .await,
+            Err(wire_frame::FrameError::TooLarge(_))
+        ));
+        let truncated = [2, 0, 0, 0, 1];
+        assert!(matches!(
+            STORAGE_FRAMING
+                .read_value_async::<_, StorageRequest>(&mut &truncated[..])
+                .await,
+            Err(wire_frame::FrameError::Truncated)
+        ));
+    }
 
     #[test]
     fn only_explicit_app_namespaces_are_attributed() {
