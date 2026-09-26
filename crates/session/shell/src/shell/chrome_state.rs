@@ -632,6 +632,13 @@ pub struct ChromeState {
     /// History removed by the most recent Clear all action. Kept only long
     /// enough to make that destructive-looking action safely reversible.
     pending_notification_history_clear: Option<PendingNotificationHistoryClear>,
+    /// Private on-disk copy of [`Self::notification_history`]. `None` in
+    /// tests and offscreen renders, which must never touch a user's state.
+    notification_history_store:
+        Option<crate::shell::notification_history::NotificationHistoryStore>,
+    /// Set by every history mutation; [`Self::flush_notification_history`]
+    /// writes the store once per frame at most.
+    notification_history_dirty: bool,
     /// Exact unread counts accepted only from launcher-verified senders.
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
@@ -802,6 +809,8 @@ impl ChromeState {
             notification_bridge: None,
             notification_history: Vec::new(),
             pending_notification_history_clear: None,
+            notification_history_store: None,
+            notification_history_dirty: false,
             notification_badges: BTreeMap::new(),
             notification_sound: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
@@ -1801,9 +1810,8 @@ impl ChromeState {
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
         self.notification_history.push(n);
-        while self.notification_history.len() > MAX_HISTORY {
-            self.notification_history.remove(0);
-        }
+        retain_newest_history(&mut self.notification_history);
+        self.notification_history_dirty = true;
     }
 
     pub fn push_warning_notification(
@@ -2014,6 +2022,7 @@ impl ChromeState {
 
     fn clear_notification_history_at(&mut self, now: std::time::Instant) {
         if !self.notification_history.is_empty() {
+            self.notification_history_dirty = true;
             let mut removed = std::mem::take(&mut self.notification_history);
             if let Some(pending) = self.pending_notification_history_clear.as_mut() {
                 pending.notifications.append(&mut removed);
@@ -2043,6 +2052,7 @@ impl ChromeState {
         pending.notifications.append(&mut self.notification_history);
         retain_newest_history(&mut pending.notifications);
         self.notification_history = pending.notifications;
+        self.notification_history_dirty = true;
         self.bump();
         true
     }
@@ -2058,6 +2068,195 @@ impl ChromeState {
             self.bump();
         }
         expired
+    }
+
+    /// Rows of the notification centre, newest first, grouped by verified
+    /// app. `collapsed` names the group keys the viewer folded.
+    pub fn notification_history_rows(
+        &self,
+        collapsed: &std::collections::BTreeSet<String>,
+    ) -> Vec<crate::shell::notification_history::HistoryRow> {
+        crate::shell::notification_history::history_rows(&self.notification_history, collapsed)
+    }
+
+    /// Restore the retained history from `store` and keep it written there
+    /// from now on. Restored entries are older than anything this session
+    /// already retained, so they go first and the newest bound still holds.
+    pub fn attach_notification_history_store(
+        &mut self,
+        store: crate::shell::notification_history::NotificationHistoryStore,
+    ) {
+        let mut restored = store.load();
+        let had_session_entries = !self.notification_history.is_empty();
+        restored.append(&mut self.notification_history);
+        retain_newest_history(&mut restored);
+        self.notification_history = restored;
+        self.notification_history_store = Some(store);
+        self.notification_history_dirty = had_session_entries;
+        self.bump();
+    }
+
+    /// Write the retained history if it changed since the last write. Called
+    /// once per compositor tick; a failed write is logged and retried on the
+    /// next change rather than every frame.
+    pub fn flush_notification_history(&mut self) {
+        if !self.notification_history_dirty {
+            return;
+        }
+        self.notification_history_dirty = false;
+        let Some(store) = self.notification_history_store.as_ref() else {
+            return;
+        };
+        if let Err(error) = store.save(&self.notification_history) {
+            tracing::warn!(
+                path = %store.path().display(),
+                "could not save notification history: {error}"
+            );
+        }
+    }
+
+    /// The user activated a retained notification. A live D-Bus sender gets
+    /// `ActionInvoked` for the default action; a notification mirrored from
+    /// another device routes that action back to exactly that device. An
+    /// entry restored after a restart has no sender left, so the caller opens
+    /// the verified app instead. Acted-on entries leave the history.
+    pub fn activate_history_notification(
+        &mut self,
+        id: u64,
+    ) -> crate::shell::notification_history::HistoryActivation {
+        use crate::shell::notification_history::HistoryActivation;
+        let Some(pos) = self.notification_history.iter().position(|n| n.id == id) else {
+            return HistoryActivation::Missing;
+        };
+        let Some(notification) = self.notification_history.get(pos) else {
+            return HistoryActivation::Missing;
+        };
+        let key = notification.default_action_key();
+        let outcome = if notification.remote_route.is_some() {
+            match key.and_then(|key| notification.remote_action_command(&key)) {
+                Some(command) => {
+                    self.queue_remote_notification_command(command);
+                    HistoryActivation::Invoked
+                }
+                None => HistoryActivation::Unavailable,
+            }
+        } else if let (Some(bridge), Some(dbus_id), Some(key)) =
+            (self.notification_bridge.as_ref(), notification.dbus_id, key)
+        {
+            bridge.note_action(dbus_id, key);
+            HistoryActivation::Invoked
+        } else if let Some(app_id) = notification.app_id.clone() {
+            HistoryActivation::OpenApp {
+                label: crate::shell::notification_history::group_label(notification),
+                app_id,
+            }
+        } else {
+            HistoryActivation::Unavailable
+        };
+        if matches!(
+            outcome,
+            HistoryActivation::Invoked | HistoryActivation::OpenApp { .. }
+        ) {
+            self.notification_history.remove(pos);
+            self.notification_history_dirty = true;
+            self.bump();
+        }
+        outcome
+    }
+
+    /// Remove one retained notification. Dismissing a mirrored notification
+    /// here dismisses it on the device it came from too.
+    pub fn dismiss_history_notification(&mut self, id: u64) -> bool {
+        let Some(pos) = self.notification_history.iter().position(|n| n.id == id) else {
+            return false;
+        };
+        let removed = self.notification_history.remove(pos);
+        if let Some(command) = removed.remote_dismiss_command() {
+            self.queue_remote_notification_command(command);
+        }
+        self.notification_history_dirty = true;
+        self.bump();
+        true
+    }
+
+    /// Remove every retained notification of one app group.
+    pub fn dismiss_history_group(&mut self, key: &str) -> usize {
+        let ids: Vec<u64> = self
+            .notification_history
+            .iter()
+            .filter(|n| crate::shell::notification_history::group_key(n).as_deref() == Some(key))
+            .map(|n| n.id)
+            .collect();
+        for id in &ids {
+            self.dismiss_history_notification(*id);
+        }
+        ids.len()
+    }
+
+    /// The agent collaborator a retained notification could be handed to:
+    /// the first agent admitted to the workspace the notification came from
+    /// (or the active one, for shell and mirrored notifications). Whether
+    /// that agent is live is the caller's question — only the collaboration
+    /// broker knows.
+    pub fn notification_agent_candidate(
+        &self,
+        notification: &Notification,
+    ) -> Option<(WorkspaceId, crate::shell::state::RoomId, String)> {
+        let tree = self.tree();
+        let workspace = notification
+            .source_workspace
+            .and_then(|id| {
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id.0 == id)
+            })
+            .or_else(|| tree.desktop.active_workspace())?;
+        let (agent, _) = workspace.agent_members().into_iter().next()?;
+        Some((workspace.id, workspace.room, agent))
+    }
+
+    /// Hand a retained notification to an agent collaborator as a queued
+    /// workspace task carrying the notification as a typed resource. Returns
+    /// the task id, which the caller dispatches to the live agent.
+    pub fn hand_history_notification_to_agent(
+        &mut self,
+        id: u64,
+        workspace: WorkspaceId,
+        agent: &str,
+    ) -> Option<String> {
+        let notification = self.notification_history.iter().find(|n| n.id == id)?;
+        let summary = if notification.body.is_empty() {
+            notification.title.clone()
+        } else {
+            format!("{}: {}", notification.title, notification.body)
+        };
+        let title: String = summary.chars().take(240).collect();
+        let resource = crate::shell::state::WorkspaceTaskResource {
+            app_id: notification.app_id.clone(),
+            app_label: notification.app_name.clone(),
+            id: format!("notification:{}", uuid::Uuid::new_v4()),
+            kind: "notification".to_string(),
+            label: notification.title.clone(),
+        };
+        let room = self
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|candidate| candidate.room)?;
+        let actor = self.local_user_for_room(&room);
+        let task = self.tree_mut().create_workspace_task(
+            workspace,
+            title,
+            actor,
+            Some(agent.to_string()),
+            crate::shell::state::WorkspaceTaskRoute::Model,
+            Some(resource),
+        )?;
+        self.bump();
+        Some(task)
     }
 
     // ---------- Do-Not-Disturb ----------
@@ -2320,6 +2519,7 @@ impl ChromeState {
             let id = existing.id;
             *existing = replacement.clone();
             existing.id = id;
+            self.notification_history_dirty = true;
             self.bump();
             return true;
         }
@@ -2359,6 +2559,9 @@ impl ChromeState {
                 .as_ref()
                 .map_or(0, |pending| pending.notifications.len()),
         );
+        if after.1 != before.1 {
+            self.notification_history_dirty = true;
+        }
         if after != before {
             self.bump();
         }

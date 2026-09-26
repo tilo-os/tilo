@@ -110,6 +110,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     chrome
         .borrow_mut()
         .set_notification_bridge(notification_bridge.clone());
+    if let Some(store) = crate::shell::notification_history::NotificationHistoryStore::for_user() {
+        chrome.borrow_mut().attach_notification_history_store(store);
+    }
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&chrome, notice);
     }
