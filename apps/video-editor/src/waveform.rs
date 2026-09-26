@@ -154,6 +154,13 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
         return None;
     }
 
+    // A source the pipeline cannot read (no audio, unknown container) reports
+    // an error on the bus and never reaches EOS at the sink; stop there rather
+    // than polling the sink until the budget runs out.
+    let Some(bus) = pipeline.bus() else {
+        let _ = pipeline.set_state(gst::State::Null);
+        return None;
+    };
     let mut windows: Vec<f32> = Vec::new();
     let mut acc = 0.0f32;
     let mut in_window = 0usize;
@@ -161,6 +168,9 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     let mut saw_any = false;
     loop {
         if std::time::Instant::now() > deadline {
+            break;
+        }
+        if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
             break;
         }
         match appsink.try_pull_sample(gst::ClockTime::from_mseconds(200)) {
