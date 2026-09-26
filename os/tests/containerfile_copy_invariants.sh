@@ -42,7 +42,7 @@ containerfile="$repo/os/Containerfile"
 # before fs.service and the loop unit of image-backed stores. The signature
 # attachment lookups for the code.tilo.so OS repository and the
 # registry.tilo.so owner namespace are staged with the other trust inputs; the
-# former code.sandbox.example lookup is gone. Sorting
+# former code-host lookup is gone. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
