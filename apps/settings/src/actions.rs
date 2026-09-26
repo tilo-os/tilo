@@ -346,6 +346,9 @@ pub enum DisplayOperation {
     SetNightLight {
         enabled: bool,
     },
+    SetNightLightSchedule {
+        enabled: bool,
+    },
     SetNightLightTemperature {
         label: String,
     },
@@ -834,6 +837,11 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         });
     let allowed = match key {
         "appearance.theme"
+        | "appearance.schedule"
+        | "appearance.sunrise"
+        | "appearance.sunset"
+        | "appearance.wallpaper_scope"
+        | "appearance.wallpaper_target"
         | "appearance.text_size"
         | "appearance.ui_scale"
         | "region.currency"
@@ -1743,6 +1751,44 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         &["90%", "100%", "110%", "125%", "150%"],
         s(panes::appearance::UI_SCALE_KEY, "100%"),
     ));
+    sec = sec.with_action(choice_prompt_spec(
+        "schedule",
+        "Set day and night schedule",
+        panes::appearance::SCHEDULE_KEY,
+        "Sunset to sunrise, Custom times",
+        &panes::appearance::SCHEDULE_LABELS,
+        s(
+            panes::appearance::SCHEDULE_KEY,
+            panes::appearance::schedule_label(&d.appearance.schedule),
+        ),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "sunrise",
+        "Set when the day starts",
+        panes::appearance::SUNRISE_KEY,
+        "HH:MM, in half hours",
+        &panes::appearance::TIMES,
+        s(panes::appearance::SUNRISE_KEY, &d.appearance.sunrise),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "sunset",
+        "Set when the night starts",
+        panes::appearance::SUNSET_KEY,
+        "HH:MM, in half hours",
+        &panes::appearance::TIMES,
+        s(panes::appearance::SUNSET_KEY, &d.appearance.sunset),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "wallpaper_scope",
+        "Set which workspaces a new wallpaper covers",
+        panes::appearance::WALLPAPER_SCOPE_KEY,
+        "This workspace, Every workspace",
+        &panes::appearance::WALLPAPER_SCOPE_LABELS,
+        s(
+            panes::appearance::WALLPAPER_SCOPE_KEY,
+            panes::appearance::scope_label(&d.appearance.wallpaper_scope),
+        ),
+    ));
     sec
 }
 
@@ -2380,6 +2426,18 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             )
         },
     ));
+    sec = sec.with_action(local_bool_spec(
+        "night_light_schedule",
+        "Set Night Light schedule",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLightSchedule { enabled },
+            )
+        },
+    ));
     sec = sec.with_action(local_choice_spec(
         "night_light_temperature",
         "Set Night Light warmth",
@@ -2749,6 +2807,18 @@ pub fn display_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 encode_local_operation(
                     DISPLAY_OPERATION_TYPE,
                     &DisplayOperation::SetNightLight { enabled },
+                )
+            },
+        ),
+        "night_light_schedule" => local_bool_spec(
+            "night_light_schedule",
+            "Set Night Light schedule",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLightSchedule { enabled },
                 )
             },
         ),

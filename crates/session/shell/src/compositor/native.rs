@@ -4499,6 +4499,9 @@ fn install_session_peer_sync(
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)
@@ -5406,6 +5409,21 @@ pub fn run() {
         std::process::exit(1);
     }
     crate::compositor::foreign::install_completion_ping(&capture_ping);
+    // Convertibles: the accelerometer turns the built-in panel. The ping
+    // only wakes the loop; the change itself is drained below.
+    let device_rotation = match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => crate::compositor::device_rotation::spawn(move || ping.ping()),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the device rotation wake source");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the device rotation wake source");
+            None
+        }
+    };
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -7077,6 +7095,12 @@ pub fn run() {
         }
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
+        }
+        if let Some(rotation) = device_rotation
+            .as_ref()
+            .and_then(|changes| changes.try_iter().last())
+        {
+            backend.set_device_rotation(Some(rotation));
         }
         if state.output_management.take_staged_by_tool() {
             frame_builder.with_chrome(|chrome| {

@@ -470,6 +470,10 @@ pub trait Decorator {
         self.inner().cursor_shape(point)
     }
 
+    fn claims_raw_touch(&self, point: vello::kurbo::Point) -> bool {
+        self.inner().claims_raw_touch(point)
+    }
+
     fn tooltip(&self) -> Option<&str> {
         self.inner().tooltip()
     }
@@ -1234,6 +1238,10 @@ impl<T: Decorator> Widget for T {
 
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         Decorator::cursor_shape(self, point)
+    }
+
+    fn claims_raw_touch(&self, point: vello::kurbo::Point) -> bool {
+        Decorator::claims_raw_touch(self, point)
     }
 
     fn tooltip(&self) -> Option<&str> {

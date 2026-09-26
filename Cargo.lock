@@ -12670,6 +12670,7 @@ dependencies = [
  "mime_guess",
  "naga",
  "neighbour-wire",
+ "notify",
  "os-actions",
  "package-store",
  "parking_lot",

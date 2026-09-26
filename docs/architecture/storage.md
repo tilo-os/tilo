@@ -1041,10 +1041,16 @@ One engine moves record operations, file content, CRDT segments and packages.
 **What the transfer engine implements** (`crates/system/fs/src/sync/session.rs`,
 `hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
 
-- `tilo-fs-session/1`: one connection per peer, authenticated once, a
+- `tilo-fs-session/2`: one connection per peer, authenticated once, a
   QUIC stream per request, every request authorised against the live
   policy and certification. It carries the namespace (Automerge sync
   between writers; changes since the reader's heads for read-only peers),
+  each payload bound to the requesting workspace by the sender's device
+  signature over the workspace, the payload kind and the digest of its
+  bytes, and applied only from a device the receiver's policy lets read
+  (or, for sync, write) the whole workspace
+  (`crates/system/fs/src/namespace_binding.rs`; `tilo-fs-sync/1` does the
+  same),
   range-based reconciliation of record stream heads, pulls of up to 1024
   streams per request with files up to 4 KiB inline, batched replica
   receipts (only for revisions not acknowledged recently), the authority

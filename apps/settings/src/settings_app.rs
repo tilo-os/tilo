@@ -1007,7 +1007,8 @@ impl SettingsApp {
                         Ok(())
                     }
                     crate::actions::DisplayOperation::SetAutoBrightness { .. }
-                    | crate::actions::DisplayOperation::SetNightLight { .. } => Ok(()),
+                    | crate::actions::DisplayOperation::SetNightLight { .. }
+                    | crate::actions::DisplayOperation::SetNightLightSchedule { .. } => Ok(()),
                     crate::actions::DisplayOperation::SetNightLightTemperature { label } => {
                         if !["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
                             .contains(&label.as_str())

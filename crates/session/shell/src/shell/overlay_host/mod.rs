@@ -13837,6 +13837,9 @@ impl ShellOverlayHost {
                     pending.night_light,
                     pending.power,
                 );
+                if let Some(locked) = pending.rotation_lock {
+                    Self::save_rotation_lock(locked);
+                }
             }
             RootAction::LayoutChanged => {
                 chrome.borrow_mut().bump();
@@ -13875,6 +13878,16 @@ impl ShellOverlayHost {
             }
         }
     }
+    /// Persist the rotation lock; the compositor's accelerometer worker
+    /// reads it from the same settings document.
+    fn save_rotation_lock(locked: bool) {
+        let mut values = serde_json::Map::new();
+        values.insert("rotation_lock".into(), serde_json::Value::Bool(locked));
+        if let Err(e) = settings_store::update_section("display", values) {
+            tracing::warn!(error = %e, "rotation lock preference save failed");
+        }
+    }
+
     /// Shells out to the OS for changes returned by the root component.
     #[allow(
         clippy::too_many_arguments,

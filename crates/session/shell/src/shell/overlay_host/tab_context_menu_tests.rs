@@ -66,6 +66,7 @@ fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
         tasks: Vec::new(),
         effect_receipts: Vec::new(),
         shortcuts: Vec::new(),
+        schedule_claims: Vec::new(),
         id: ws_id,
         room: crate::shell::state::RoomId::new(),
         name: "Home".into(),
