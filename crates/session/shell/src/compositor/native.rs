@@ -4418,6 +4418,9 @@ fn install_session_peer_sync(
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)

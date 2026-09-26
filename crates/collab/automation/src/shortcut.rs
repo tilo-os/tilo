@@ -350,7 +350,8 @@ impl TriggerSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "every", rename_all = "snake_case")]
 pub enum Schedule {
-    /// A fixed period from the moment the shortcut was saved.
+    /// A fixed period, counted from the Unix epoch so every device the
+    /// shortcut reaches agrees on its fire times.
     Interval { seconds: u64 },
     /// A local wall-clock time on the listed weekdays (every day when empty).
     Calendar {
@@ -387,6 +388,34 @@ pub enum CatchUp {
     Skip,
     /// Run once for however many were missed.
     RunOnce,
+}
+
+/// One of the saver's devices taking one fire time of a schedule, so the
+/// saver's other devices leave it. Kept with the workspace's shortcuts, one
+/// per schedule: a claim on a later fire time replaces an earlier one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleClaim {
+    pub shortcut: String,
+    /// Index of the schedule among the shortcut's triggers.
+    pub trigger: usize,
+    /// The fire time taken, in milliseconds since the Unix epoch.
+    pub due_ms: i64,
+    /// The device that runs it.
+    pub device: String,
+}
+
+impl ScheduleClaim {
+    /// The schedule this claims a fire time of: `shortcut/trigger`.
+    #[must_use]
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.shortcut, self.trigger)
+    }
+
+    /// Whether this claim supersedes `other` for the same schedule.
+    #[must_use]
+    pub fn supersedes(&self, other: &Self) -> bool {
+        (self.due_ms, other.device.as_str()) > (other.due_ms, self.device.as_str())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
