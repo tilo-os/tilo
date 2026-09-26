@@ -14483,6 +14483,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-host"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "ashpd",
+ "futures-util",
+ "hex",
+ "image",
+ "libc",
+ "mime_guess",
+ "open",
+ "smithay-client-toolkit",
+ "smithay-clipboard",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-rt",
+ "tokio",
+ "tracing",
+ "tts",
+ "unic-langid",
+ "url",
+ "web-time",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+ "winit",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
@@ -14787,9 +14816,7 @@ dependencies = [
  "adblock",
  "advisory-lock",
  "app-state",
- "arboard",
  "ash",
- "ashpd",
  "atomic-file",
  "automerge",
  "base64",
@@ -14805,7 +14832,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "fluent",
  "form_urlencoded",
- "futures-util",
  "getrandom 0.4.1",
  "hex",
  "hmac 0.13.0",
@@ -14814,8 +14840,6 @@ dependencies = [
  "image",
  "libc",
  "media",
- "mime_guess",
- "open",
  "percent-encoding",
  "pkg-config",
  "pollster",
@@ -14836,8 +14860,6 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "skrifa 0.40.0",
- "smithay-client-toolkit",
- "smithay-clipboard",
  "spellcheck",
  "syntect",
  "taffy",
@@ -14850,6 +14872,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-font-catalog",
  "tilo-headless-schema",
+ "tilo-host",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",
@@ -14869,15 +14892,12 @@ dependencies = [
  "uuid",
  "vello",
  "vello_encoding",
- "web-time",
  "wgpu",
  "wgpu-hal",
- "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
  "wire-frame",
  "xdg-paths",
- "zbus",
  "zeroize",
 ]
 
