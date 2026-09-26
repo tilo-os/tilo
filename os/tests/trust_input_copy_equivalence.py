@@ -20,6 +20,7 @@ COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
 COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
+COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
 """
 DESTINATIONS = (
     'run/tilo-official-trust', 'run/tilo-trust-tools', 'etc/containers',

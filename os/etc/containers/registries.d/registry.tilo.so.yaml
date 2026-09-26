@@ -1,0 +1,10 @@
+# cosign stores image signatures as sigstore OCI *attachments* in the same
+# registry repository (the sha256-<digest>.sig tag), not in a separate
+# signature store. Tell the containers stack (which bootc uses to verify
+# before `upgrade`) to look for them there, so the sigstoreSigned policy in
+# /etc/containers/policy.json can find and check them. The scope is the
+# owner namespace: every Tilo repository on this registry keeps its
+# signatures as attachments, and the most specific matching scope wins.
+docker:
+  registry.tilo.so/tilo:
+    use-sigstore-attachments: true
