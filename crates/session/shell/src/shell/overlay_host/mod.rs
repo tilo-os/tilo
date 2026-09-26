@@ -13563,7 +13563,11 @@ impl ShellOverlayHost {
                 DeviceFabricUiAction::StopRemoteAudio {
                     session_id: route.session_id,
                 },
-                format!("Stopped routing {}", route.label),
+                if route.phase == crate::shell::remote_audio::RemoteAudioPhase::Interrupted {
+                    format!("Dismissed interrupted {}", route.label)
+                } else {
+                    format!("Stopped routing {}", route.label)
+                },
             )),
             DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
                 let (allow, decline) =
@@ -17418,8 +17422,14 @@ impl Widget for ShellOverlayHost {
                                         ),
                                         DeviceFabricPaneRow::RemoteAudioRoute(route) => (
                                             route.label,
-                                            "Remote audio route active or awaiting approval; activate to stop"
-                                                .into(),
+                                            if route.phase
+                                                == crate::shell::remote_audio::RemoteAudioPhase::Interrupted
+                                            {
+                                                "Remote audio route interrupted; activate to dismiss"
+                                            } else {
+                                                "Remote audio route active or awaiting approval; activate to stop"
+                                            }
+                                            .into(),
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::RemoteCaptureConsent(consent) => (
@@ -22980,15 +22990,20 @@ impl ShellOverlayHost {
                         .iter()
                         .find(|device| device.id == route.peer)
                         .map_or("certified device", |device| device.label.as_str());
-                    let phase = match route.phase {
+                    let detail = match route.phase {
                         crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
-                            "waiting for approval"
+                            format!("waiting for approval with {peer} · select to stop")
                         }
-                        crate::shell::remote_audio::RemoteAudioPhase::Streaming => "streaming",
+                        crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
+                            format!("streaming with {peer} · select to stop")
+                        }
+                        crate::shell::remote_audio::RemoteAudioPhase::Interrupted => {
+                            format!("interrupted with {peer} · select to dismiss")
+                        }
                     };
                     (
                         route.label.clone(),
-                        format!("{phase} with {peer} · select to stop"),
+                        detail,
                         ui::icons::Icon::Volume2,
                         true,
                         true,

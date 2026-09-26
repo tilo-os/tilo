@@ -476,6 +476,13 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         session_id: String,
     },
+    /// Liveness for one approved remote-audio session, sent by both peers
+    /// while it is active. A paused source produces no frames, so silence on
+    /// the media path alone cannot tell an idle route from a dead link.
+    RemoteAudioKeepalive {
+        session_id: [u8; 16],
+        authorization: [u8; 16],
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -793,6 +800,10 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::RemoteAudioStop {
+                session_id,
+                authorization,
+            }
+            | PersonalFabricAction::RemoteAudioKeepalive {
                 session_id,
                 authorization,
             } => {
@@ -2617,6 +2628,22 @@ mod tests {
         assert_eq!(
             envelope(PersonalFabricAction::RemoteAudioCancel {
                 session_id: [0; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioKeepalive {
+                session_id: [4; 16],
+                authorization: [5; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioKeepalive {
+                session_id: [4; 16],
+                authorization: [0; 16],
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
