@@ -2,7 +2,7 @@
 #
 # A monitor answers DDC/CI on the I²C bus its connector carries; Linux
 # exposes that bus as /dev/i2c-N through i2c-dev (loaded by
-# /usr/lib/modules-load.d/tilo-ddc.conf). The compositor and Settings talk
+# /etc/modules-load.d/tilo-ddc.conf). The compositor and Settings talk
 # to it directly (crates/system/os-actions/src/ddc.rs) instead of running
 # ddcutil for every slider step.
 #

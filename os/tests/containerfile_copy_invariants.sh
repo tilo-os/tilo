@@ -43,13 +43,15 @@ containerfile="$repo/os/Containerfile"
 # attachment lookups for the code.tilo.so OS repository and the
 # registry.tilo.so owner namespace are staged with the other trust inputs; the
 # former code-host lookup is gone. The PipeWire client config behind the
-# echo-cancelled microphone for calls is part of the payload. Sorting
+# echo-cancelled microphone for calls is part of the payload. The DDC/CI udev
+# rule and its i2c-dev modules-load snippet, which let the session set external
+# monitors' brightness, are deliberate additions. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=8d7990f8d25cbb71bd70a7f626617bfae30106ef462531530a581b2dd15a1f76
+expected_contract=dc40d398d5bc06c22d8b7929f3db57e99e5fa196cff342bc3f4642ab8dc3d610
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

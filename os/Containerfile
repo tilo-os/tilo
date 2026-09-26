@@ -941,7 +941,7 @@ COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
 COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
-COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf
+COPY os/etc/modules-load.d/tilo-remote-camera.conf os/etc/modules-load.d/tilo-ddc.conf /etc/modules-load.d/
 
 FROM scratch AS rollback-files
 COPY --from=component-files /image/rollback-files/ /
@@ -1951,9 +1951,9 @@ COPY \
 #
 # 70-tilo-ddc.rules hands the display controllers' I²C buses to the active
 # session so external monitors' brightness can be set over DDC/CI; the
-# modules-load snippet makes i2c-dev expose them as /dev/i2c-N.
+# tilo-ddc.conf modules-load snippet (copied with the remote-camera one)
+# makes i2c-dev expose them as /dev/i2c-N.
 COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules /usr/lib/udev/rules.d/
-COPY os/usr/lib/modules-load.d/tilo-ddc.conf /usr/lib/modules-load.d/tilo-ddc.conf
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
