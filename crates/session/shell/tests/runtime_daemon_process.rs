@@ -1,5 +1,7 @@
-//! Real process boundaries: no global test environment mutation and no GUI.
-#![cfg(unix)]
+//! The runtime daemon across real process boundaries: no global test
+//! environment mutation and no GUI. The host is Cargo's build of the
+//! `tilo-runtime-mcp` binary, which Cargo builds, current, for every
+//! integration test run.
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -9,16 +11,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The runtime host every test launches.
+const RUNTIME_BINARY: &str = env!("CARGO_BIN_EXE_tilo-runtime-mcp");
+/// The launcher's absolute bound on a daemon start (`STARTUP.cap` in
+/// `runtime_host::daemon`). A launcher that fails sooner exits with the reason.
+const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
+
 fn host(profile: &Path) -> Command {
-    let mut command = Command::new(
-        std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("tilo-runtime-mcp"),
-    );
+    let mut command = Command::new(RUNTIME_BINARY);
     command
         .env("TILO_RUNTIME_PROFILE", profile)
         .env_remove("TILO_SVC_COLLAB_FD")
@@ -45,6 +45,12 @@ impl DaemonProfile {
 }
 impl Drop for DaemonProfile {
     fn drop(&mut self) {
+        // The daemon's log goes with the profile; keep it for a failed test.
+        if std::thread::panicking()
+            && let Ok(log) = std::fs::read_to_string(self.path().join("daemon.log"))
+        {
+            eprintln!("daemon.log:\n{log}");
+        }
         if let Ok(stream) = UnixStream::connect(self.path().join("native.sock")) {
             let mut stream = stream;
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
@@ -211,7 +217,8 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
             }
         }
     }
-    const TEST: &str = "runtime_host::daemon_process_tests::independent_sdk_apps_late_join_and_survive_another_app_exit";
+    const TEST: &str =
+        "runtime_daemon_process::independent_sdk_apps_late_join_and_survive_another_app_exit";
     if let Ok(app_id) = std::env::var("TILO_NATIVE_SDK_HELPER") {
         runtime_portal::native::ensure_attached(&app_id).unwrap();
         let mut manager = connected_manager();
@@ -229,16 +236,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
             .args(["--exact", TEST, "--nocapture"])
             .env("TILO_NATIVE_SDK_HELPER", id)
             .env("TILO_RUNTIME_PROFILE", profile.path())
-            .env(
-                "TILO_RUNTIME_BINARY",
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join("tilo-runtime-mcp"),
-            )
+            .env("TILO_RUNTIME_BINARY", RUNTIME_BINARY)
             .env_remove("TILO_SVC_COLLAB_FD")
             .env_remove("TILO_SVC_IDENTITY_FD")
             .env_remove("TILO_RUNTIME_STANDALONE")
@@ -251,9 +249,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     apps.0.push(start_app("dev.tilo.independent-first"));
     // The app's own launcher bounds the daemon start and exits with the
     // reason when it fails, so wait as long as that launcher is alive.
-    let deadline = Instant::now()
-        .checked_add(super::daemon::STARTUP.cap)
-        .unwrap();
+    let deadline = Instant::now().checked_add(LAUNCHER_START_CAP).unwrap();
     while UnixStream::connect(profile.path().join("native.sock")).is_err() {
         assert!(
             apps.0[0].try_wait().unwrap().is_none() && Instant::now() < deadline,
@@ -337,7 +333,8 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
             let _ = self.0.wait();
         }
     }
-    const TEST: &str = "runtime_host::daemon_process_tests::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
+    const TEST: &str =
+        "runtime_daemon_process::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
     const APP: &str = "dev.tilo.parent-child";
     if let Ok(stage) = std::env::var("TILO_SDK_FAMILY_STAGE") {
         runtime_portal::native::ensure_attached(APP).unwrap();
@@ -370,16 +367,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", TEST, "--nocapture"])
         .env("TILO_SDK_FAMILY_STAGE", "parent")
-        .env(
-            "TILO_RUNTIME_BINARY",
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("tilo-runtime-mcp"),
-        )
+        .env("TILO_RUNTIME_BINARY", RUNTIME_BINARY)
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
@@ -387,9 +375,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
     let mut family = Family(command.spawn().unwrap());
     // The launcher bounds the daemon start itself and exits with the reason
     // when it fails, which the loop reports at once.
-    let deadline = Instant::now()
-        .checked_add(super::daemon::STARTUP.cap)
-        .unwrap();
+    let deadline = Instant::now().checked_add(LAUNCHER_START_CAP).unwrap();
     loop {
         assert!(
             family.0.try_wait().unwrap().is_none(),
@@ -448,37 +434,4 @@ fn explicit_profile_overrides_are_propagated_to_app_descendants() {
         String::from_utf8(output.stdout).unwrap(),
         profile.path().to_str().unwrap()
     );
-}
-
-#[test]
-fn managed_connection_preparation_clears_ancestor_automatic_metadata() {
-    let profile = DaemonProfile::new();
-    let collab_path = profile.path().join("collab.sock");
-    let identity_path = profile.path().join("identity.sock");
-    let _collab = std::os::unix::net::UnixListener::bind(&collab_path).unwrap();
-    let _identity = std::os::unix::net::UnixListener::bind(&identity_path).unwrap();
-    let mut command = Command::new("/usr/bin/true");
-    command
-        .env("TILO_RUNTIME_CONNECTION_OWNER_PID", "1")
-        .env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.parent");
-    let _connections = super::unix::Connections::prepare(
-        &mut command,
-        "dev.tilo.child",
-        "workspace",
-        &super::unix::ServiceSockets {
-            collab: &collab_path,
-            identity: &identity_path,
-            blobs: &profile.path().join("blobs.sock"),
-        },
-    )
-    .unwrap();
-    for key in [
-        "TILO_RUNTIME_CONNECTION_OWNER_PID",
-        "TILO_RUNTIME_RESUME_LIVE",
-    ] {
-        assert_eq!(
-            command.get_envs().find(|(name, _)| *name == key).unwrap().1,
-            None
-        );
-    }
 }
