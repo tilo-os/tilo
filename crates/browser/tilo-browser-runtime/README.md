@@ -1,7 +1,7 @@
 # Shared Tilo browser renderer
 
-This crate mounts the actual Writer or Chat `ApplicationDefinition` through checked
-`HostContext`, `PortableStorage`, and `FrameHarness`. The logical Vello Scene is
+This crate mounts the actual `ApplicationDefinition` of any app compiled into the
+build through checked `HostContext`, `PortableStorage`, and `FrameHarness`. The logical Vello Scene is
 scaled by the shared DPR transform and presented with WebGPU. WebGL is unsupported.
 This is a local component renderer; it does not authenticate peers, replicate a
 workspace, or implement remote actions or media transport.
@@ -21,6 +21,21 @@ an executable diagnostic fixture. Production hosts import `host.mjs`; `host.d.ts
 describes its API. The build copies canonical product fonts, manifest and licenses.
 The development WASM is intentionally unoptimized; production packaging is separate.
 
+## Applications
+
+`src/catalog.rs` is the one list of component apps in the build and the
+`ApplicationCatalog` both hosts resolve through: `mountDesktop({app})` for a
+standalone app and the canonical desktop for its tabs. An app is available once
+it exposes `definition()` (see `crates/sdk/ui-core/src/application.rs`), builds for
+wasm32, and has a line in `INSTALLED` declaring its record scope.
+
+`app` is a full app id (`so.tilo.word-processor`, `so.tilo.ebook`, ...), one of
+the aliases `writer` and `chat`, or `desktop` for the canonical desktop, which
+requires an admitted certified peer. An id the build does not contain rejects the
+mount and reports `application "..." is not available` through `onStatus`; no
+placeholder is mounted. `applications()` lists what the build contains, and a
+mount's `application` names the resolved id, title and record scope.
+
 ## Lifetime and persistence
 
 `mountDesktop(element, options)` resolves after the first presentation. Supply an
@@ -30,8 +45,10 @@ owned windows. Use `shutdown` only for terminal page-host teardown, not peer clo
 A subsequent mount recreates the terminally stopped loop.
 
 Profile/device storage requires an exclusive Web Lock across tabs. Mounts in one
-page share the same actor owners. Chat uses the existing package/room primary
-record and remains `record=None` on the wire. Writer uses ordinary checked records.
+page share the same actor owners. A package-primary app (Chat) uses the existing
+package/room primary record and remains `record=None` on the wire. Every other
+app uses ordinary checked records: `record` opens one, otherwise the room's last
+record of that app reopens, and `newDocument` (or an empty room) creates one.
 IndexedDB transactions store bytes and actor together with strict durability;
 request success never acknowledges persistence. Failed writes stay pending until
 `flush()`. Failed close retains actor custody and pending bytes; call exported
@@ -62,6 +79,7 @@ GPU presentation are separate flags, so a drawn widget still presents its Scene.
 
 ```sh
 node --test crates/browser/tilo-browser-runtime/web/host.test.mjs
+cargo test --locked -j2 -p tilo-browser-runtime --lib catalog::
 cargo test --locked -j2 -p ui --test it package_primary
 cargo test --locked -j2 -p word-processor --test it canonical_component
 cargo test --locked -j2 -p chat --lib --no-default-features component_tests

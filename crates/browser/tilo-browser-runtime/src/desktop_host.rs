@@ -25,8 +25,7 @@ use tilo_desktop_model::*;
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
-        ApplicationCatalog, ApplicationDefinition, ComponentCloseReport, HostContext, LaunchTarget,
-        RestoreInput,
+        ApplicationDefinition, ComponentCloseReport, HostContext, LaunchTarget, RestoreInput,
     },
     application_view::InstanceViewStore,
     portable_storage::{PortableStorage, StorageKey},
@@ -696,10 +695,7 @@ impl DesktopRoot {
             .map_err(|e| e.to_string())?;
         let views =
             Rc::new(InstanceViewStore::portable(storage.clone(), room).map_err(|e| e.to_string())?);
-        let mut catalog = ApplicationCatalog::new();
-        for definition in desktop::installed_applications() {
-            catalog.register(definition).map_err(|e| e.to_string())?;
-        }
+        let catalog = crate::catalog::catalog().map_err(|e| e.to_string())?;
         let mut resolver = ApplicationCatalogTileResolver {
             catalog,
             host: Contexts {
@@ -2190,7 +2186,14 @@ mod tests {
         let mut routes = BTreeMap::new();
         // Keep the real initialized stores alive until their checked components take custody.
         let mut retained = vec![];
-        for (i, definition) in desktop::installed_applications().into_iter().enumerate() {
+        let fixture_apps = [
+            "so.tilo.word-processor",
+            "so.tilo.chat",
+            "so.tilo.notes",
+            "so.tilo.calculator",
+        ]
+        .map(|app| desktop::definition(app).expect("fixture app is installed"));
+        for (i, definition) in fixture_apps.into_iter().enumerate() {
             let app_id = definition.app_id;
             let id = (5 << 48) | ((i as u64) + 10);
             let record = if i == 0 {

@@ -32,8 +32,11 @@ thread_local! {
     static CLOSED: RefCell<crate::close_recovery::ClosedComponents> = RefCell::new(crate::close_recovery::ClosedComponents::default());
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
 }
+/// The `app` that mounts the canonical desktop rather than one application.
+const DESKTOP: &str = "desktop";
 #[derive(serde::Deserialize)]
 struct Config {
+    /// An installed app id or alias (see `catalog`), or [`DESKTOP`].
     app: String,
     profile: String,
     device: String,
@@ -190,7 +193,11 @@ pub fn mount(
         *next += 1;
         id
     });
-    let config = serde_json::from_str(config).map_err(error)?;
+    let config: Config = serde_json::from_str(config).map_err(error)?;
+    // An unknown app rejects the mount itself, before any window or storage exists.
+    if config.app != DESKTOP {
+        crate::catalog::resolve_mount(&config.app).map_err(error)?;
+    }
     REQUESTS.with_borrow_mut(|r| {
         r.insert(
             id,
@@ -205,6 +212,23 @@ pub fn mount(
     });
     p.send_event(id).map_err(error)?;
     Ok(id)
+}
+/// The installed application a mount's `app` names (an app id or alias).
+#[wasm_bindgen]
+pub fn application(app: &str) -> Result<String, JsValue> {
+    let definition = crate::catalog::resolve_mount(app).map_err(error)?;
+    Ok(crate::catalog::describe(definition).to_string())
+}
+/// Every application this build can mount standalone.
+#[wasm_bindgen]
+pub fn applications() -> String {
+    serde_json::Value::Array(
+        crate::catalog::installed()
+            .into_iter()
+            .map(crate::catalog::describe)
+            .collect(),
+    )
+    .to_string()
 }
 #[wasm_bindgen]
 pub fn close(id: u64) -> Result<String, JsValue> {
@@ -469,19 +493,15 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
-    if config.app == "desktop" {
+    if config.app == DESKTOP {
         return begin_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
     }
-    let definition = match config.app.as_str() {
-        "writer" => word_processor::definition(),
-        "chat" => chat::definition(),
-        _ => return Err(error("unsupported application")),
-    };
+    let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
         .map_err(error)?;
-    let target = if config.app == "chat" {
+    let target = if crate::desktop::opens_package_primary(definition.app_id) {
         let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
         match records.try_open_record(&checkout) {
             Ok(_) => LaunchTarget::Record {
