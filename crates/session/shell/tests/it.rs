@@ -121,6 +121,8 @@ mod notification_center;
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
+#[path = "output_management_protocol.rs"]
+mod output_management_protocol;
 #[path = "peer_join_toast_batches.rs"]
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
