@@ -269,7 +269,91 @@ pub(crate) struct JoinCompletionRecord {
     pub(crate) remote_endpoint: [u8; 32],
     pub(crate) request_id: [u8; 32],
     pub(crate) proof_digest: [u8; 32],
+    /// The delivered bootstrap without its governance messages (see
+    /// [`JoinCompletionRecord::receipt`]). Records committed before receipts
+    /// carry the complete reply instead.
     pub(crate) bootstrap: JoinBootstrap,
+}
+
+/// Marks the single governance entry of a completion receipt. An encoded
+/// neighbour message starts with its small postcard variant index instead.
+const JOIN_RECEIPT_TAG: &[u8] = b"tilo.join-receipt.v1\0";
+
+impl JoinCompletionRecord {
+    /// Durable receipt for a delivered join reply. The reply's governance
+    /// messages are the workspace's complete committed publication, often
+    /// megabytes, so the receipt keeps every other bootstrap field and one
+    /// digest entry over the whole reply in their place. Retaining the
+    /// messages would add a full workspace copy to the owner aggregate on
+    /// every join and defeat the store's incremental journal.
+    pub(crate) fn receipt(
+        remote_endpoint: [u8; 32],
+        request_id: [u8; 32],
+        proof_digest: [u8; 32],
+        delivered: &JoinBootstrap,
+    ) -> anyhow::Result<Self> {
+        let mut marker = JOIN_RECEIPT_TAG.to_vec();
+        marker.extend_from_slice(&bootstrap_digest(delivered)?);
+        Ok(Self {
+            remote_endpoint,
+            request_id,
+            proof_digest,
+            bootstrap: JoinBootstrap {
+                version: delivered.version,
+                invite_id: delivered.invite_id,
+                device_cert: delivered.device_cert.clone(),
+                role: delivered.role,
+                room: delivered.room.clone(),
+                workspace_id: delivered.workspace_id,
+                authority: delivered.authority.clone(),
+                certified_roster: delivered.certified_roster.clone(),
+                revocations: delivered.revocations.clone(),
+                records: delivered.records.clone(),
+                governance_messages: vec![marker],
+                generation: delivered.generation,
+            },
+        })
+    }
+
+    fn delivered_digest(&self) -> Option<&[u8]> {
+        match self.bootstrap.governance_messages.as_slice() {
+            [only] => only
+                .strip_prefix(JOIN_RECEIPT_TAG)
+                .filter(|digest| digest.len() == 32),
+            _ => None,
+        }
+    }
+
+    /// The exact reply this completion delivered. A receipt rebuilds it from
+    /// committed state and answers only when the rebuilt reply is identical
+    /// to the delivered one; once the workspace has moved on, the member
+    /// refreshes through the membership challenge instead.
+    fn replay(&self, owner: &SessionOwner) -> Result<JoinBootstrap, CollaborationError> {
+        let Some(delivered) = self.delivered_digest() else {
+            return Ok(self.bootstrap.clone());
+        };
+        let current = owner.current_join_bootstrap(
+            self.bootstrap.invite_id,
+            self.bootstrap.device_cert.clone(),
+            self.bootstrap.role,
+        );
+        let digest = bootstrap_digest(&current)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        if digest.as_slice() != delivered {
+            return Err(CollaborationError::new(
+                "join request ID already completed; refresh membership for the current workspace",
+            ));
+        }
+        Ok(current)
+    }
+}
+
+fn bootstrap_digest(bootstrap: &JoinBootstrap) -> anyhow::Result<[u8; 32]> {
+    let hasher = postcard::to_io(
+        bootstrap,
+        blake3::Hasher::new_derive_key("tilo join completion receipt v1"),
+    )?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -689,7 +773,7 @@ impl CollaborationService {
                 )
                 .map_err(CollaborationError::new)?;
             return Ok(JoinCompletion {
-                bootstrap: prior.bootstrap.clone(),
+                bootstrap: prior.replay(owner)?,
                 access: owner
                     .peer()
                     .governed_access(system_time(now_ns))
@@ -1403,6 +1487,96 @@ mod tests {
         let mut expired = browser.clone();
         expired.expires_at_ns = Some(now_ns.saturating_sub(1));
         assert!(!owner_enrolled_device(&owner, &expired, now_ns));
+    }
+
+    /// The owner aggregate keeps a digest receipt of a join reply, not the
+    /// workspace publication it carried. A retry answers the delivered reply
+    /// exactly, and refuses once the workspace has changed since.
+    #[test]
+    fn join_completion_receipt_replays_only_the_identical_reply() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let administrator = owner.peer().authority().device_public_key;
+        let now_ns = current_time_ns();
+        let service = CollaborationService::new(vec![]);
+        let (guest_key, guest) = guest(now_ns);
+        let issued = service
+            .issue(&mut owner, administrator, invitation(85, now_ns), now_ns)
+            .unwrap();
+        let challenge = service
+            .challenge(
+                &mut owner,
+                guest.device_public_key,
+                JoinChallengeRequest {
+                    signed_invitation: issued.signed_invitation,
+                    device_cert: guest.clone(),
+                    request_id: [86; 32],
+                },
+                now_ns,
+            )
+            .unwrap()
+            .challenge;
+        let complete = JoinCompleteRequest {
+            proof: qos_peer_state::join::sign_join_proof(challenge, &guest_key).unwrap(),
+        };
+        let joined = service
+            .complete(
+                &mut owner,
+                guest.device_public_key,
+                complete.clone(),
+                now_ns + 1,
+            )
+            .unwrap()
+            .bootstrap;
+        assert!(!joined.governance_messages.is_empty());
+        let record = &owner.collaboration_state().join_completions[0];
+        assert!(record.delivered_digest().is_some());
+        assert_eq!(record.bootstrap.invite_id, joined.invite_id);
+        assert_eq!(record.bootstrap.device_cert, joined.device_cert);
+        let retained = record
+            .bootstrap
+            .governance_messages
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>();
+        assert!(
+            retained < 64,
+            "the receipt retains {retained} publication bytes"
+        );
+
+        let generation = owner.committed_generation();
+        let retry = service
+            .complete(
+                &mut owner,
+                guest.device_public_key,
+                complete.clone(),
+                now_ns + 2,
+            )
+            .unwrap()
+            .bootstrap;
+        assert_eq!(retry, joined);
+        assert_eq!(owner.committed_generation(), generation);
+        let path = owner.root().to_path_buf();
+        drop(owner);
+        let mut owner = SessionOwner::open(&path).unwrap();
+        let reopened = service
+            .complete(
+                &mut owner,
+                guest.device_public_key,
+                complete.clone(),
+                now_ns + 3,
+            )
+            .unwrap()
+            .bootstrap;
+        assert_eq!(reopened, joined, "the receipt survives reopening the owner");
+
+        service
+            .issue(&mut owner, administrator, invitation(87, now_ns), now_ns)
+            .unwrap();
+        let error = service
+            .complete(&mut owner, guest.device_public_key, complete, now_ns + 4)
+            .unwrap_err();
+        assert!(error.to_string().contains("refresh membership"), "{error}");
     }
 
     #[test]

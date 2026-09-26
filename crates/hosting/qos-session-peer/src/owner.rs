@@ -739,12 +739,12 @@ impl SessionOwner {
         };
         state
             .join_completions
-            .push(crate::collaboration::JoinCompletionRecord {
+            .push(crate::collaboration::JoinCompletionRecord::receipt(
                 remote_endpoint,
                 request_id,
                 proof_digest,
-                bootstrap: bootstrap.clone(),
-            });
+                &bootstrap,
+            )?);
         next.collaboration = state;
         let result = self.commit(next, candidate);
         if result.is_ok() {
@@ -1508,6 +1508,12 @@ impl SessionOwner {
             Ok(())
         }
         for row in self.peer.rows() {
+            // Identical heads keep all history: skip saving and reloading
+            // both copies of an unchanged, possibly large, record.
+            let heads = self.peer.document_heads(&row.app_id, &row.record_id);
+            if heads.is_some() && heads == candidate.document_heads(&row.app_id, &row.record_id) {
+                continue;
+            }
             preserves_document(
                 &self
                     .peer

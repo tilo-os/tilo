@@ -115,6 +115,11 @@ impl Harness {
     pub(super) async fn start() -> Self {
         Self::serve(Fixture::new()).await
     }
+    /// An owner whose store appends commits to its journal, as production
+    /// stores do, instead of rewriting the whole checkpoint every commit.
+    async fn start_journaled() -> Self {
+        Self::serve(crate::store::test_journal::with_journal(Fixture::new)).await
+    }
     /// Actual host restart on the same owner root: stop the listener, close
     /// and reopen the owner, then install a fresh ingress (new process-local
     /// registry, host work inventory and sessions) and authenticate again.
@@ -1336,7 +1341,9 @@ async fn installed_https_private_status_cancel_invoke_and_read_over_actual_actio
 async fn installed_https_large_join_reply_hydrates_through_the_chunk_route() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
     use qos_peer_state::join::*;
-    let mut h = Harness::start().await;
+    // A multi-megabyte workspace: whole-checkpoint test commits would add a
+    // full rewrite and file barrier per request that production never pays.
+    let mut h = Harness::start_journaled().await;
     {
         use rand::{Rng as _, SeedableRng};
         let mut input = vec![0u8; 1_200_000];
