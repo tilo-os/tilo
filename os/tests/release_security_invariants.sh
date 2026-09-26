@@ -58,10 +58,17 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
 # (tag, nightly or protected manual main release) must still run it. The third
 # publication branch unbinds the shared compiler cache
 # (tools/tests/test_publication_compiler_cache.py).
+# The rebuild runs in its own, parallel reproduction lane, which exists only in
+# publication matrices and refuses to run otherwise; the publication lane waits
+# for its digest before installing or signing.
 grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
-    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+    | grep -Fq "if: matrix.role == 'reproduce'" \
+  && grep -Fq "echo '::error::a reproduction lane runs only for a publication'" "$workflow" \
+  && grep -A2 -F -- '- name: Wait for the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+  && grep -Fq "second_manifest='\${{ steps.reproduction.outputs.manifest }}'" "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 3 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 4 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 
