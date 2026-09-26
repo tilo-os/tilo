@@ -117,7 +117,7 @@ pub fn category_for_ext(ext: &str) -> FileCategory {
     }
 }
 
-/// Classify a path by its extension. A path with no extension is [`Unknown`].
+/// Classify a path by its extension. A path with no extension is `Unknown`.
 pub fn category_for_path(path: &Path) -> FileCategory {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => category_for_ext(ext),

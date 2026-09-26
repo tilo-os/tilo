@@ -15,7 +15,7 @@
 //!    at or below this generation.
 //! 4. `TPM2_PolicyAuthValue` when a PIN is in use, so it's checked by the TPM as the sealed
 //!    object's authorisation value and covered by the dictionary-attack lockout (the sealed
-//!    object must *not* carry `noda` — see [`seal`]).
+//!    object must *not* carry `noda` — see [`seal`](crate::keyslots::seal)).
 //!
 //! # Signing side
 //!

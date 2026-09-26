@@ -1,7 +1,7 @@
 //! Crash-safe persistence for authenticated record replicas.
 //!
 //! The durable form is an append-only operation log of signed envelopes
-//! ([`crate::record_log`]), not an unsigned materialized snapshot: restart
+//! (`crate::record_log`), not an unsigned materialized snapshot: restart
 //! replays the log in order and reconstructs the exact replay watermarks and
 //! immutable-version collision decisions. Records, stream cursors and the
 //! history projection are all derived from it.

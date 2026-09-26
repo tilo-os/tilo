@@ -106,7 +106,7 @@ impl PlaybackReport {
 }
 
 /// Playback state for an app with its own resolver/transport rather than a
-/// [`MediaEngine`]. The URI is a durable app-owned resource identity, not the
+/// [`MediaEngine`](crate::engine::MediaEngine). The URI is a durable app-owned resource identity, not the
 /// transient URL or device-local cache path currently feeding its decoder.
 #[derive(Clone, Copy, Debug)]
 pub struct AppPlayback<'a> {

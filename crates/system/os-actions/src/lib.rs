@@ -6,7 +6,7 @@
 //!
 //! Design notes:
 //!
-//! - Every helper checks the binary's presence first via [`which`] and returns a clear
+//! - Every helper checks the binary's presence first via `which` and returns a clear
 //!   `"<binary> not installed"` error otherwise, so the QS panel and Settings app stay
 //!   functional on machines missing a daemon (e.g. no `power-profiles-daemon`).
 //! - [`std::process::Command`] (sync) is deliberate: both call sites are user-driven (slider
@@ -341,7 +341,7 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     }
 }
 
-/// Deadline enforced on every shell-out in this crate, via [`process::run_capture`]. A tool
+/// Deadline enforced on every shell-out in this crate, via `process::run_capture`. A tool
 /// that exceeds it is killed and reported as a timeout, so a wedged daemon degrades to a
 /// stale reading instead of blocking its caller indefinitely.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_500);
