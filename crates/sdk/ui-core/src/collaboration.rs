@@ -29,6 +29,8 @@ pub use transport::{
 mod broker;
 mod history;
 #[cfg(feature = "broker-transport")]
+mod route_keys;
+#[cfg(feature = "broker-transport")]
 pub use broker::{CertifiedEndpointIdentity, HostSessionConnector, wifi_continuity_command};
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
@@ -377,6 +379,30 @@ impl RouteSpec {
     }
 }
 
+/// What an endpoint's route can do with content, as apps see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelAccessState {
+    /// No channel encryption applies to this endpoint (a test harness).
+    Unencrypted,
+    /// End-to-end encrypted; content flows.
+    Encrypted,
+    /// This device asked for access and has not been admitted yet, so no
+    /// content can be read or written. Edits wait on the device.
+    WaitingForAccess,
+    /// This device was removed from the channel.
+    Removed,
+    /// This device cannot join the channel right now (no secret store, or
+    /// the room's governor is unknown). Edits wait on the device.
+    Unavailable,
+}
+
+impl ChannelAccessState {
+    /// Whether content currently flows.
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Unencrypted | Self::Encrypted)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
     Context {
@@ -415,6 +441,15 @@ pub enum CollabEvent {
         type_id: String,
         payload: Vec<u8>,
         from_user_id: String,
+    },
+    /// What this endpoint can do with one route's end-to-end encrypted
+    /// content changed: it was admitted, is waiting for access (a new device
+    /// before its welcome arrives), was removed, or cannot join. While a
+    /// route is not open the SDK holds edits and incoming ciphertext on the
+    /// device instead of dropping them; apps show the state.
+    ChannelAccess {
+        route: RouteSpec,
+        state: ChannelAccessState,
     },
     /// A validated signed document envelope from another peer. For cleartext
     /// routes the mutation kind is inside the outer signed payload. For an

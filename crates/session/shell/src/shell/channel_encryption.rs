@@ -633,12 +633,14 @@ impl ChannelKeyAccess {
         }
     }
 
-    /// See [`ChannelEncryption::access`].
-    pub fn access(&self, room: RoomId, channel: ChannelId) -> ChannelAccess {
+    /// See [`ChannelEncryption::access`]; also returns the service's
+    /// generation, which changes whenever any channel's keys or access do.
+    pub fn access(&self, room: RoomId, channel: ChannelId) -> (ChannelAccess, u64) {
         self.inner
             .lock()
-            .map_or(ChannelAccess::Unavailable, |mut service| {
-                service.access(room, channel, Instant::now())
+            .map_or((ChannelAccess::Unavailable, 0), |mut service| {
+                let access = service.access(room, channel, Instant::now());
+                (access, service.generation())
             })
     }
 
@@ -652,6 +654,35 @@ impl ChannelKeyAccess {
     /// See [`ChannelEncryption::generation`].
     pub fn generation(&self) -> u64 {
         self.inner.lock().map_or(0, |service| service.generation())
+    }
+}
+
+/// Where the identity service finds this session's channel encryption
+/// service. The broker that owns the service can start after the identity
+/// service (onboarding defers it), so the slot is filled when it does.
+#[derive(Clone, Default)]
+pub struct ChannelKeyProvider {
+    slot: Arc<Mutex<Option<ChannelKeyAccess>>>,
+}
+
+impl ChannelKeyProvider {
+    /// The slot of this session: its compositor starts one collaboration
+    /// broker and one identity service, which meet here.
+    pub fn session() -> Self {
+        static SESSION: std::sync::OnceLock<ChannelKeyProvider> = std::sync::OnceLock::new();
+        SESSION.get_or_init(Self::default).clone()
+    }
+
+    /// Point the slot at a broker's service (or at none).
+    pub fn set(&self, access: Option<ChannelKeyAccess>) {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = access;
+        }
+    }
+
+    /// The current service, if a broker with one is running.
+    pub fn get(&self) -> Option<ChannelKeyAccess> {
+        self.slot.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
