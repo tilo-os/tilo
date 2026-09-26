@@ -190,6 +190,10 @@ impl CloudOwner {
     pub(crate) fn enrolled(&self) -> Result<EnrolledOwner, String> {
         self.attempt.enrolled().map(EnrolledOwner).map_err(refused)
     }
+    /// Enrolled custody only; never exported from the runtime.
+    pub(super) fn mesh_root_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
+        self.attempt.mesh_root_key().map_err(refused)
+    }
     pub(crate) fn device_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
         self.attempt.device_key().map_err(refused)
     }
@@ -272,4 +276,4 @@ impl CloudOwner {
 
 #[cfg(test)]
 #[path = "owner_tests.rs"]
-mod tests;
+pub(super) mod tests;

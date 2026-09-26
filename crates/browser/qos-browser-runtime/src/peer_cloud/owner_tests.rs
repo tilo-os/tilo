@@ -2,9 +2,9 @@ use super::*;
 use ed25519_dalek::SigningKey;
 use qos_peer_state::join::JoinTransportRequest as Request;
 
-const NOW: u64 = 1_000_000_000_000;
+pub(in crate::peer_cloud) const NOW: u64 = 1_000_000_000_000;
 const ROOM: &str = "6d3c0042-a32d-4c3d-9616-03e621da0f47";
-const ACCOUNT: &str = "account";
+pub(in crate::peer_cloud) const ACCOUNT: &str = "account";
 const MACHINE: &str = "machine";
 
 fn time(now: u64) -> web_time::SystemTime {
@@ -14,14 +14,21 @@ fn host_key() -> SigningKey {
     SigningKey::from_bytes(&[91; 32])
 }
 fn fresh_challenge(now: u64) -> identity::cloud_enrollment::Challenge {
+    fresh_challenge_for(MACHINE, &host_key(), now)
+}
+fn fresh_challenge_for(
+    machine: &str,
+    host: &SigningKey,
+    now: u64,
+) -> identity::cloud_enrollment::Challenge {
     identity::cloud_enrollment::Challenge {
         version: 1,
-        machine_id: MACHINE.into(),
+        machine_id: machine.into(),
         room: ROOM.into(),
         workspace_id: tilo_relay_protocol::room_workspace_id(ROOM)
             .unwrap()
             .to_string(),
-        host_public_key: host_key().verifying_key().to_bytes(),
+        host_public_key: host.verifying_key().to_bytes(),
         nonce: [92; 32],
         expires_at_ns: now + 300_000_000_000,
         root_public_key: None,
@@ -46,6 +53,13 @@ fn apply_payload(owner: &CloudOwner) -> (String, String) {
 
 /// The Store.apply reply shape, signed by the challenged host key.
 fn store_reply(request: &identity::cloud_enrollment::EnrollmentRequest, now: u64) -> String {
+    store_reply_signed(request, &host_key(), now)
+}
+fn store_reply_signed(
+    request: &identity::cloud_enrollment::EnrollmentRequest,
+    host_key: &SigningKey,
+    now: u64,
+) -> String {
     let host = &request.host_certificate;
     let browser = &request.browser_certificate;
     let workspace = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
@@ -58,7 +72,7 @@ fn store_reply(request: &identity::cloud_enrollment::EnrollmentRequest, now: u64
     .unwrap();
     view.set_host_devices(workspace, &[host.device_public_key])
         .unwrap();
-    let directory_update = view.sync_incremental(&host_key(), now).unwrap();
+    let directory_update = view.sync_incremental(host_key, now).unwrap();
     serde_json::to_string(&serde_json::json!({
         "version": 1, "certificate": browser,
         "root_public_key": browser.user_public_key, "host_certificate": host,
@@ -72,13 +86,22 @@ fn store_reply(request: &identity::cloud_enrollment::EnrollmentRequest, now: u64
 
 /// Fresh identity through inspect → durable checkpoint → apply → verified reply.
 fn enrolled_owner() -> (CloudOwner, Vec<u8>) {
-    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
+    enrolled_owner_for(MACHINE, &host_key())
+}
+/// `enrolled_owner` for another machine and host key (machine-mesh tests).
+pub(in crate::peer_cloud) fn enrolled_owner_for(
+    machine: &str,
+    host: &SigningKey,
+) -> (CloudOwner, Vec<u8>) {
+    let material = create(ACCOUNT, machine, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, machine, NOW).unwrap();
     assert!(matches!(owner.step().unwrap(), CloudStep::Inspect));
-    let checkpoint = owner.enroll(&json(&fresh_challenge(NOW)), NOW).unwrap();
+    let checkpoint = owner
+        .enroll(&json(&fresh_challenge_for(machine, host, NOW)), NOW)
+        .unwrap();
     owner.acknowledge(&checkpoint, NOW).unwrap();
     let (_, payload) = apply_payload(&owner);
-    let reply = store_reply(&enrollment(&payload), NOW + 1);
+    let reply = store_reply_signed(&enrollment(&payload), host, NOW + 1);
     let checkpoint = owner.accept(&reply, NOW + 2).unwrap();
     owner.acknowledge(&checkpoint, NOW + 2).unwrap();
     assert!(matches!(owner.step().unwrap(), CloudStep::Enrolled));
