@@ -103,6 +103,8 @@ mod leak_probe;
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
+#[path = "multi_output.rs"]
+mod multi_output;
 #[path = "onboarding_visual.rs"]
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]

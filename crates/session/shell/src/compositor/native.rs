@@ -81,7 +81,7 @@ use crate::compositor::accessibility::{NativeAccessibility, Request as Accessibi
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
-    combined_geometry, headless,
+    combined_geometry, headless, output_geometry,
 };
 use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
@@ -4856,8 +4856,14 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
         BackendKind::Headless => {
             // Initial size from `TILO_HEADLESS_SIZE` (shots-default fallback), keeping
             // headless env-var-driven. Skip `set_base_color`: no window to clear.
-            let (w, h) = headless::resolve_initial_size();
-            match HeadlessBackend::new(w, h) {
+            let outputs = match headless::resolve_initial_outputs() {
+                Ok(outputs) => outputs,
+                Err(e) => {
+                    eprintln!("tilo compositor: --backend headless: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match HeadlessBackend::with_outputs(outputs) {
                 Ok(b) => Box::new(b),
                 Err(e) => {
                     eprintln!("tilo compositor: --backend headless failed: {e}");
@@ -8947,6 +8953,7 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         };
         let mut memberships = SurfaceOutputMemberships::default();
         assert_eq!(
@@ -9001,6 +9008,7 @@ mod tests {
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         };
         let old_outputs = [output(0, 0), output(1, 100)];
         let moved_outputs = [output(0, 100), output(1, 0)];
@@ -10608,26 +10616,15 @@ mod tests {
     }
 }
 
-/// The refresh rate to advertise on `wl_output`, in millihertz. Derived
-/// from the cadence the compositor is actually pacing to, so client frame
-/// timing agrees with real production. `None` when the backend has no
-/// display; globals then advertise 60Hz rather than zero, which some toolkits divide by.
+/// The refresh rate to advertise on a `wl_output` whose backend output
+/// reports none of its own, in millihertz. Derived from the cadence the
+/// compositor is actually pacing to, so client frame timing agrees with real
+/// production. `None` when the backend has no display; globals then
+/// advertise 60Hz rather than zero, which some toolkits divide by.
 fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u32> {
     backend
         .refresh_interval()
-        .filter(|d| !d.is_zero())
-        .map(|d| {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the cast to u32 \
-                          neither truncates a fraction nor loses a sign"
-            )]
-            let mhz = (1000.0 / d.as_secs_f64())
-                .round()
-                .clamp(0.0, f64::from(u32::MAX)) as u32;
-            mhz
-        })
+        .and_then(crate::compositor::backend::interval_to_mhz)
 }
 
 /// Rectangles of Wayland root surfaces that are actually visible in the
@@ -10679,35 +10676,7 @@ fn send_surface_output_changes(
     output_globals: &output_globals::OutputGlobals,
     changes: Vec<SurfaceOutputChange>,
 ) {
-    for change in changes {
-        let (surface_id, output_id) = match change {
-            SurfaceOutputChange::Enter { surface_id, output }
-            | SurfaceOutputChange::Leave { surface_id, output } => (surface_id, output),
-        };
-        let Some(surface) = state.surface_handles.get(&surface_id) else {
-            // Destruction needs no final protocol leave: the client has
-            // already destroyed the resource. Drop the tracker entry on its
-            // next geometry reconciliation instead of resurrecting it here.
-            continue;
-        };
-        let Some(output) = output_globals.handle(output_id) else {
-            // Call ordering makes this an invariant breach, not a retryable
-            // state: removed outputs leave before sync withdraws their global,
-            // and current outputs reconcile after synchronous sync created or
-            // updated every handle. If a handle nevertheless vanished, there
-            // is no client-side output object on which a leave can be sent.
-            tracing::error!(
-                surface_id,
-                output = output_id.0,
-                "wl_surface output transition has no advertised wl_output handle"
-            );
-            continue;
-        };
-        match change {
-            SurfaceOutputChange::Enter { .. } => output.enter(surface),
-            SurfaceOutputChange::Leave { .. } => output.leave(surface),
-        }
-    }
+    output_globals.send_surface_changes(&state.surface_handles, changes);
 }
 
 fn reconcile_surface_output_memberships(
@@ -10779,25 +10748,6 @@ fn apply_shell_gesture(
             }
         }
     });
-}
-
-/// Translate the backend's output list into the geometry the shell's
-/// strips resolve window widths against.
-///
-/// Outputs with a zero dimension are dropped: a connector mid-modeset
-/// reports 0×0, which would hand a strip a display it can't place a window on.
-fn output_geometry(
-    outputs: &[crate::compositor::backend::Output],
-) -> Vec<crate::shell::overlay_host::OutputGeometry> {
-    outputs
-        .iter()
-        .filter(|o| o.size.0 > 0 && o.size.1 > 0)
-        .map(|o| crate::shell::overlay_host::OutputGeometry {
-            x: f64::from(o.position.0),
-            width: f64::from(o.size.0),
-            height: f64::from(o.size.1),
-        })
-        .collect()
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
@@ -11145,6 +11095,7 @@ mod output_geometry_tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
         ];
         let geo = output_geometry(&outs);
@@ -11174,6 +11125,7 @@ mod output_geometry_tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
         ];
         let centre = vello::kurbo::Point::new(2000.0, 400.0);
@@ -11217,6 +11169,7 @@ mod external_floating_security_tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         }
     }
 
