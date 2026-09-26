@@ -604,96 +604,95 @@ mod tests {
     }
 
     #[test]
-    fn public_session_never_exposes_source_uri() {
-        let source = Source::Remote {
-            url: "https://example.test/video?token=secret".into(),
-        };
-        update(
-            9001,
-            EnginePlayback {
-                source: Some(&source),
-                audible: true,
-                position_ms: 42,
-                duration_ms: Some(100),
+    fn handoff_reports_expose_identity_not_uris_and_expire_when_stale() {
+        // Phase `public_session_never_exposes_source_uri`.
+        {
+            let source = Source::Remote {
+                url: "https://example.test/video?token=secret".into(),
+            };
+            update(
+                9001,
+                EnginePlayback {
+                    source: Some(&source),
+                    audible: true,
+                    position_ms: 42,
+                    duration_ms: Some(100),
+                    playing: true,
+                    has_video: true,
+                    controller_bus_name: None,
+                },
+            );
+            let session = playback_sessions()
+                .into_iter()
+                .find(|session| session.id.ends_with(":9001"))
+                .unwrap();
+            assert!(!session.content_id.contains("secret"));
+            assert_eq!(session.title, "Streaming media");
+            remove(9001);
+        }
+        // Phase `app_resource_reports_stable_identity_without_decoder_url`.
+        {
+            let handle = AppPlaybackHandle::new();
+            handle.publish(AppPlayback {
+                resource_uri: "music://track/track-42",
+                title: "A durable song",
+                position_ms: 4_200,
+                duration_ms: Some(9_000),
                 playing: true,
-                has_video: true,
+                has_video: false,
+                audible: true,
+                controller_bus_name: Some("org.mpris.MediaPlayer2.tilo-music"),
+            });
+            let report = playback_reports("so.tilo.music", "workspace")
+                .into_iter()
+                .find(|report| report.session.title == "A durable song")
+                .expect("app-owned playback is reported");
+            assert_eq!(report.session.app_id, "so.tilo.music");
+            assert_eq!(report.workspace_id, "workspace");
+            assert!(matches!(
+                report.source,
+                HandoffSource::AppResource { ref uri } if uri == "music://track/track-42"
+            ));
+            assert!(!format!("{report:?}").contains("googlevideo"));
+        }
+        // Phase `malformed_app_resources_are_withdrawn`.
+        {
+            let handle = AppPlaybackHandle::new();
+            handle.publish(AppPlayback {
+                resource_uri: "1music://track/foreign",
+                title: "Foreign",
+                position_ms: 0,
+                duration_ms: None,
+                playing: true,
+                has_video: false,
+                audible: true,
                 controller_bus_name: None,
-            },
-        );
-        let session = playback_sessions()
-            .into_iter()
-            .find(|session| session.id.ends_with(":9001"))
-            .unwrap();
-        assert!(!session.content_id.contains("secret"));
-        assert_eq!(session.title, "Streaming media");
-        remove(9001);
-    }
+            });
+            assert!(
+                playback_sessions()
+                    .iter()
+                    .all(|session| session.title != "Foreign")
+            );
+        }
+        // Phase `explicit_reports_win_over_discovery_for_the_same_player`.
+        {
+            let explicit = report("explicit", "org.mpris.MediaPlayer2.player");
+            let discovered = report("discovered", "org.mpris.MediaPlayer2.player");
+            let other = report("other", "org.mpris.MediaPlayer2.other");
+            let mut reports = vec![explicit.clone()];
 
-    #[test]
-    fn app_resource_reports_stable_identity_without_decoder_url() {
-        let handle = AppPlaybackHandle::new();
-        handle.publish(AppPlayback {
-            resource_uri: "music://track/track-42",
-            title: "A durable song",
-            position_ms: 4_200,
-            duration_ms: Some(9_000),
-            playing: true,
-            has_video: false,
-            audible: true,
-            controller_bus_name: Some("org.mpris.MediaPlayer2.tilo-music"),
-        });
-        let report = playback_reports("so.tilo.music", "workspace")
-            .into_iter()
-            .find(|report| report.session.title == "A durable song")
-            .expect("app-owned playback is reported");
-        assert_eq!(report.session.app_id, "so.tilo.music");
-        assert_eq!(report.workspace_id, "workspace");
-        assert!(matches!(
-            report.source,
-            HandoffSource::AppResource { ref uri } if uri == "music://track/track-42"
-        ));
-        assert!(!format!("{report:?}").contains("googlevideo"));
-    }
+            append_discovered_reports(&mut reports, &[discovered, other.clone()]);
 
-    #[test]
-    fn malformed_app_resources_are_withdrawn() {
-        let handle = AppPlaybackHandle::new();
-        handle.publish(AppPlayback {
-            resource_uri: "1music://track/foreign",
-            title: "Foreign",
-            position_ms: 0,
-            duration_ms: None,
-            playing: true,
-            has_video: false,
-            audible: true,
-            controller_bus_name: None,
-        });
-        assert!(
-            playback_sessions()
-                .iter()
-                .all(|session| session.title != "Foreign")
-        );
-    }
-
-    #[test]
-    fn explicit_reports_win_over_discovery_for_the_same_player() {
-        let explicit = report("explicit", "org.mpris.MediaPlayer2.player");
-        let discovered = report("discovered", "org.mpris.MediaPlayer2.player");
-        let other = report("other", "org.mpris.MediaPlayer2.other");
-        let mut reports = vec![explicit.clone()];
-
-        append_discovered_reports(&mut reports, &[discovered, other.clone()]);
-
-        assert_eq!(reports, vec![explicit, other]);
-    }
-
-    #[test]
-    fn discovered_reports_expire_when_refresh_stalls() {
-        let now = Instant::now();
-        assert!(system_reports_are_fresh(Some(now), now));
-        assert!(!system_report_age_is_fresh(
-            SYSTEM_REPORT_TTL.saturating_add(Duration::from_millis(1))
-        ));
-        assert!(!system_reports_are_fresh(None, now));
+            assert_eq!(reports, vec![explicit, other]);
+        }
+        // Phase `discovered_reports_expire_when_refresh_stalls`.
+        {
+            let now = Instant::now();
+            assert!(system_reports_are_fresh(Some(now), now));
+            assert!(!system_report_age_is_fresh(
+                SYSTEM_REPORT_TTL.saturating_add(Duration::from_millis(1))
+            ));
+            assert!(!system_reports_are_fresh(None, now));
+        }
     }
 }

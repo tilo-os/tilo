@@ -35,48 +35,47 @@ class Durability(unittest.TestCase):
         native=SimpleNamespace(tools=tools,METADATA='out/tilo-native-builder-artifact.json',inventory=audit)
         return native,root,work,evidence,events,inventory
 
-    def test_late_validation_failure_preserves_checkpoint_and_original_exception(self):
-        with tempfile.TemporaryDirectory() as d:
-            native,root,work,evidence,events,inventory=self.fixture(Path(d))
-            reconstruction={'producer_sha256':'d'*64};failure=FileNotFoundError('missing runtime receipt')
-            with self.assertRaises(FileNotFoundError) as caught:
-                with resume.checkpointed_payload(native,'a'*64,{'architecture':'aarch64'},reconstruction,work,evidence,21842,1) as (actual,files):
-                    self.assertEqual((actual,files),(root,inventory))
-                    self.assertTrue((evidence/'unapproved-payload.json').exists())
-                    reconstruction['runtime_evidence']='later mutation'
-                    (evidence/'reconstruction.json').write_text(json.dumps(reconstruction))
-                    raise failure
-            self.assertIs(caught.exception,failure)
-            receipt=json.loads((evidence/'unapproved-payload.json').read_bytes())
-            snapshot=(evidence/'unapproved-reconstruction.json').read_bytes()
-            self.assertEqual(receipt['reconstruction_evidence_sha256'],hashlib.sha256(snapshot).hexdigest())
-            self.assertNotIn('runtime_evidence',json.loads(snapshot))
-            # Launcher reserializes bounded public JSON; digest is explicitly canonical.
-            exported = json.dumps(json.loads(snapshot))+'\n'
-            self.assertEqual(receipt['reconstruction_evidence_digest_format'], 'json-sort-keys-compact-no-newline')
-            self.assertEqual(receipt['reconstruction_evidence_sha256'], native.tools.sha(native.tools.canonical(json.loads(exported))))
-            self.assertFalse(receipt['complete_native_builder']);self.assertFalse(receipt['installable'])
-            self.assertFalse(receipt['producer_validation_complete']);self.assertTrue(receipt['consumer_adoption_required'])
-            self.assertEqual(events,['inspect','mount','audit','push','unmount'])
-
-    def test_invalid_inventory_or_unchecked_metadata_never_publishes(self):
-        for kind in ('inventory','metadata'):
-            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
-                native,root,work,evidence,events,_=self.fixture(Path(d),ValueError('private material') if kind=='inventory' else None)
-                if kind=='metadata':
-                    (root/'out').mkdir();(root/native.METADATA).write_text('unchecked secret')
-                with self.assertRaises(ValueError):
+    def test_failures_never_publish_or_lose_checkpoint(self):
+        with self.subTest(phase="late_validation_failure_preserves_checkpoint_and_original_exception"):
+            with tempfile.TemporaryDirectory() as d:
+                native,root,work,evidence,events,inventory=self.fixture(Path(d))
+                reconstruction={'producer_sha256':'d'*64};failure=FileNotFoundError('missing runtime receipt')
+                with self.assertRaises(FileNotFoundError) as caught:
+                    with resume.checkpointed_payload(native,'a'*64,{'architecture':'aarch64'},reconstruction,work,evidence,21842,1) as (actual,files):
+                        self.assertEqual((actual,files),(root,inventory))
+                        self.assertTrue((evidence/'unapproved-payload.json').exists())
+                        reconstruction['runtime_evidence']='later mutation'
+                        (evidence/'reconstruction.json').write_text(json.dumps(reconstruction))
+                        raise failure
+                self.assertIs(caught.exception,failure)
+                receipt=json.loads((evidence/'unapproved-payload.json').read_bytes())
+                snapshot=(evidence/'unapproved-reconstruction.json').read_bytes()
+                self.assertEqual(receipt['reconstruction_evidence_sha256'],hashlib.sha256(snapshot).hexdigest())
+                self.assertNotIn('runtime_evidence',json.loads(snapshot))
+                # Launcher reserializes bounded public JSON; digest is explicitly canonical.
+                exported = json.dumps(json.loads(snapshot))+'\n'
+                self.assertEqual(receipt['reconstruction_evidence_digest_format'], 'json-sort-keys-compact-no-newline')
+                self.assertEqual(receipt['reconstruction_evidence_sha256'], native.tools.sha(native.tools.canonical(json.loads(exported))))
+                self.assertFalse(receipt['complete_native_builder']);self.assertFalse(receipt['installable'])
+                self.assertFalse(receipt['producer_validation_complete']);self.assertTrue(receipt['consumer_adoption_required'])
+                self.assertEqual(events,['inspect','mount','audit','push','unmount'])
+        with self.subTest(phase="invalid_inventory_or_unchecked_metadata_never_publishes"):
+            for kind in ('inventory','metadata'):
+                with self.subTest(kind=kind),tempfile.TemporaryDirectory() as d:
+                    native,root,work,evidence,events,_=self.fixture(Path(d),ValueError('private material') if kind=='inventory' else None)
+                    if kind=='metadata':
+                        (root/'out').mkdir();(root/native.METADATA).write_text('unchecked secret')
+                    with self.assertRaises(ValueError):
+                        with resume.checkpointed_payload(native,'a'*64,{'architecture':'aarch64'},{},work,evidence,21842,1):
+                            self.fail('invalid payload admitted')
+                    self.assertNotIn('push',events);self.assertFalse((evidence/'unapproved-payload.json').exists())
+        with self.subTest(phase="wrong_registry_identity_never_writes_verified_receipt"):
+            with tempfile.TemporaryDirectory() as d:
+                native,root,work,evidence,events,_=self.fixture(Path(d),mismatch=True)
+                with self.assertRaisesRegex(ValueError,'published unapproved payload differs'):
                     with resume.checkpointed_payload(native,'a'*64,{'architecture':'aarch64'},{},work,evidence,21842,1):
-                        self.fail('invalid payload admitted')
-                self.assertNotIn('push',events);self.assertFalse((evidence/'unapproved-payload.json').exists())
-
-    def test_wrong_registry_identity_never_writes_verified_receipt(self):
-        with tempfile.TemporaryDirectory() as d:
-            native,root,work,evidence,events,_=self.fixture(Path(d),mismatch=True)
-            with self.assertRaisesRegex(ValueError,'published unapproved payload differs'):
-                with resume.checkpointed_payload(native,'a'*64,{'architecture':'aarch64'},{},work,evidence,21842,1):
-                    self.fail('wrong registry config accepted')
-            self.assertFalse((evidence/'unapproved-payload.json').exists())
+                        self.fail('wrong registry config accepted')
+                self.assertFalse((evidence/'unapproved-payload.json').exists())
 
 
 if __name__=='__main__':unittest.main()

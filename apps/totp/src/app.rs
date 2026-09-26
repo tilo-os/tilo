@@ -1746,214 +1746,371 @@ mod tests {
         (app, state)
     }
 
+    /// Reduced motion wakes on second boundaries, and an unchanged vault skips the document mirror.
     #[test]
-    fn reduced_motion_replaces_vsync_with_a_second_boundary_wake() {
-        let mut app = AuthenticatorApp::demo();
-        assert!(app.needs_animation_frame());
-        assert!(app.next_wake_deadline().is_none());
+    fn idle_frames_do_no_redundant_work() {
+        // Case `reduced_motion_replaces_vsync_with_a_second_boundary_wake`.
+        {
+            let mut app = AuthenticatorApp::demo();
+            assert!(app.needs_animation_frame());
+            assert!(app.next_wake_deadline().is_none());
 
-        Widget::set_motion_reduced(&mut app, true);
+            Widget::set_motion_reduced(&mut app, true);
 
-        assert!(!app.needs_animation_frame());
-        let deadline = app
-            .next_wake_deadline()
-            .expect("the discrete countdown schedules its next second");
-        let delay = deadline.saturating_duration_since(Instant::now());
-        assert!(delay > Duration::ZERO);
-        assert!(delay <= Duration::from_secs(1));
+            assert!(!app.needs_animation_frame());
+            let deadline = app
+                .next_wake_deadline()
+                .expect("the discrete countdown schedules its next second");
+            let delay = deadline.saturating_duration_since(Instant::now());
+            assert!(delay > Duration::ZERO);
+            assert!(delay <= Duration::from_secs(1));
+        }
+
+        // Case `doc_mirror_is_skipped_when_nothing_changed`.
+        {
+            // After the initial seed+mirror, a second sync with no vault change
+            // must not re-dirty or rewrite the document.
+            let (mut app, mut state) = app_with_state();
+            assert!(!app.doc_dirty, "sync clears the doc-dirty flag");
+            app.sync(&mut state.doc, &state.root);
+            assert!(!app.doc_dirty, "idle sync leaves the doc-dirty flag clear");
+        }
     }
 
+    /// Resource, accessibility, event and Enter copies share the row's clipboard semantics; toasts distinguish failures.
     #[test]
-    fn resource_copy_invokes_the_same_clipboard_semantics_as_the_row() {
-        let (mut app, state) = app_with_state();
-        let id = app.vault.ordered()[0].id;
-        let payload =
-            serde_json::to_vec(&crate::actions::TotpOperation::CopyCode { id: id.to_string() })
-                .unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::Effect,
-                crate::actions::TOTP_OPERATION_TYPE,
-                &payload,
-                &state.doc,
+    fn copy_paths_share_row_semantics_and_toast_severity() {
+        // Case `resource_copy_invokes_the_same_clipboard_semantics_as_the_row`.
+        {
+            let (mut app, state) = app_with_state();
+            let id = app.vault.ordered()[0].id;
+            let payload =
+                serde_json::to_vec(&crate::actions::TotpOperation::CopyCode { id: id.to_string() })
+                    .unwrap();
+            assert!(
+                app.invoke_resource_operation(
+                    OperationKind::Effect,
+                    crate::actions::TOTP_OPERATION_TYPE,
+                    &payload,
+                    &state.doc,
+                    &state.root,
+                )
+                .unwrap()
+            );
+            assert_eq!(app.selected, Some(id));
+            assert!(app.last_copied().is_some());
+        }
+
+        // Case `accessibility_copy_uses_the_existing_list_event_path`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let _ = layout_at(&mut app, 640.0, 700.0);
+            let id = app.vault.ordered()[0].id;
+            assert!(app.perform_semantic_action(
+                &format!("totp.copy:{id}"),
+                &A11yAction::Activate,
+                &mut state.doc,
                 &state.root,
-            )
-            .unwrap()
-        );
-        assert_eq!(app.selected, Some(id));
-        assert!(app.last_copied().is_some());
+            ));
+            assert_eq!(app.selected_account(), Some(id));
+            assert!(app.last_copied().is_some());
+        }
+
+        // Case `copy_event_selects_the_account_and_confirms_with_a_toast`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let id = app.vault.ordered()[0].id;
+            let acc = app.vault.get(id).cloned().unwrap();
+            let before = totp::current_code(&acc);
+            app.apply_list_event(ListEvent::Copy(id), &mut state.doc);
+            let after = totp::current_code(&acc);
+            assert_eq!(app.selected, Some(id), "the copied row becomes selected");
+            let (msg, _, kind) = app
+                .toast
+                .clone()
+                .expect("copying shows a confirmation toast");
+            assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
+            assert_eq!(kind, ToastKind::Success);
+            // The copied string is the account's live TOTP code (not its title or
+            // an empty string). It equals the code at some instant during the copy,
+            // so it must match the value just before or just after — deterministic
+            // even across a period rollover.
+            let copied = app.last_copied().expect("a copy records the copied code");
+            assert!(
+                copied == before || copied == after,
+                "copied {copied:?} must equal the account's live code ({before:?}/{after:?})"
+            );
+        }
+
+        // Case `enter_copies_the_selected_accounts_live_code`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let id = app
+                .selected
+                .expect("the demo vault selects the first account");
+            let acc = app.vault.get(id).cloned().unwrap();
+
+            let before = totp::current_code(&acc);
+            let mods = no_mods();
+            dispatch(
+                &mut app,
+                &named_press(NamedKey::Enter),
+                mods,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            let after = totp::current_code(&acc);
+
+            let copied = app.last_copied().expect("Enter copies the selected code");
+            assert!(
+                copied == before || copied == after,
+                "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
+            );
+            let (msg, _, kind) = app.toast.clone().expect("Enter shows a copy toast");
+            assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
+            assert_eq!(kind, ToastKind::Success);
+        }
+
+        // Case `toast_severity_distinguishes_failures_from_confirmations`.
+        {
+            let (mut app, _) = app_with_state();
+            app.toast("Account added", ToastKind::Success);
+            assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Success));
+            app.toast("Invalid QR image", ToastKind::Error);
+            assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Error));
+        }
     }
 
+    /// The accessibility tree names accounts without codes and keeps the add modal protected and complete.
     #[test]
-    fn accessibility_tree_names_accounts_without_exposing_codes() {
-        let (mut app, _state) = app_with_state();
-        let _ = layout_at(&mut app, 640.0, 700.0);
-        let tree = app.accessibility().expect("root has semantic window");
-        assert_eq!(tree.role, Role::Window);
-        assert_eq!(tree.name.as_deref(), Some("Authenticator"));
-        let list = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::List)
-            .expect("named account list");
-        assert!(!list.children.is_empty(), "demo accounts are exported");
-        let account = &list.children[0];
-        assert_eq!(account.role, Role::ListItem);
-        assert!(account.name.as_deref().is_some_and(|name| !name.is_empty()));
-        assert!(
-            account.value.is_none(),
-            "a TOTP credential is never a value"
-        );
-        assert!(account.children.iter().any(|node| {
-            node.name
-                .as_deref()
-                .is_some_and(|name| name.starts_with("Copy code for"))
-        }));
-        assert!(
-            tree.children.iter().all(|node| node.semantic_key.is_none()),
-            "root regions are consistently position-addressed"
-        );
-        let toolbar = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::Toolbar)
-            .expect("authenticator actions toolbar");
-        assert!(
-            toolbar
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn accessibility_names_accounts_and_protects_the_modal() {
+        // Case `accessibility_tree_names_accounts_without_exposing_codes`.
+        {
+            let (mut app, _state) = app_with_state();
+            let _ = layout_at(&mut app, 640.0, 700.0);
+            let tree = app.accessibility().expect("root has semantic window");
+            assert_eq!(tree.role, Role::Window);
+            assert_eq!(tree.name.as_deref(), Some("Authenticator"));
+            let list = tree
                 .children
                 .iter()
-                .all(|node| node.semantic_key.is_some())
-        );
-    }
-
-    #[test]
-    fn accessibility_copy_uses_the_existing_list_event_path() {
-        let (mut app, mut state) = app_with_state();
-        let _ = layout_at(&mut app, 640.0, 700.0);
-        let id = app.vault.ordered()[0].id;
-        assert!(app.perform_semantic_action(
-            &format!("totp.copy:{id}"),
-            &A11yAction::Activate,
-            &mut state.doc,
-            &state.root,
-        ));
-        assert_eq!(app.selected_account(), Some(id));
-        assert!(app.last_copied().is_some());
-    }
-
-    #[test]
-    fn modal_accessibility_is_modal_protected_and_routes_text_actions() {
-        let (mut app, mut state) = app_with_state();
-        let _ = layout_at(&mut app, 640.0, 700.0);
-        app.add_panel.open();
-        app.add_panel.layout(app.rect);
-        let tree = app.accessibility().expect("semantic root");
-        assert_eq!(tree.children.len(), 1, "background controls are inert");
-        let dialog = &tree.children[0];
-        assert_eq!(dialog.role, Role::Dialog);
-        assert!(dialog.state.modal);
-        let secret = dialog
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Secret key"))
-            .expect("protected secret field");
-        assert!(secret.state.protected);
-        assert!(secret.value.is_none());
-        assert!(app.perform_semantic_action(
-            "totp.dialog.issuer",
-            &A11yAction::SetValue("Acme".into()),
-            &mut state.doc,
-            &state.root
-        ));
-        assert_eq!(app.add_panel.field_snapshot().0, "Acme");
-        assert!(app.perform_semantic_action(
-            "totp.dialog.save",
-            &A11yAction::Activate,
-            &mut state.doc,
-            &state.root
-        ));
-        let dialog = &app
-            .accessibility()
-            .expect("still open on validation failure")
-            .children[0];
-        assert!(
-            dialog
+                .find(|node| node.role == Role::List)
+                .expect("named account list");
+            assert!(!list.children.is_empty(), "demo accounts are exported");
+            let account = &list.children[0];
+            assert_eq!(account.role, Role::ListItem);
+            assert!(account.name.as_deref().is_some_and(|name| !name.is_empty()));
+            assert!(
+                account.value.is_none(),
+                "a TOTP credential is never a value"
+            );
+            assert!(account.children.iter().any(|node| {
+                node.name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("Copy code for"))
+            }));
+            assert!(
+                tree.children.iter().all(|node| node.semantic_key.is_none()),
+                "root regions are consistently position-addressed"
+            );
+            let toolbar = tree
                 .children
                 .iter()
-                .any(|node| node.live == Some(Politeness::Assertive))
-        );
-    }
+                .find(|node| node.role == Role::Toolbar)
+                .expect("authenticator actions toolbar");
+            assert!(
+                toolbar
+                    .children
+                    .iter()
+                    .all(|node| node.semantic_key.is_some())
+            );
+        }
 
-    #[test]
-    fn modal_a11y_exposes_advanced_algorithm_and_digit_choices() {
-        let (mut app, mut state) = app_with_state();
-        let _ = layout_at(&mut app, 640.0, 700.0);
-        app.add_panel.open();
-        app.add_panel.layout(app.rect);
-        assert!(app.perform_semantic_action(
-            "totp.dialog.advanced",
-            &A11yAction::Activate,
-            &mut state.doc,
-            &state.root
-        ));
-        assert!(app.perform_semantic_action(
-            "totp.dialog.algorithm:1",
-            &A11yAction::Activate,
-            &mut state.doc,
-            &state.root
-        ));
-        assert!(app.perform_semantic_action(
-            "totp.dialog.digits:8",
-            &A11yAction::Activate,
-            &mut state.doc,
-            &state.root
-        ));
-        let dialog = &app.accessibility().expect("dialog tree").children[0];
-        assert!(
-            dialog
+        // Case `modal_accessibility_is_modal_protected_and_routes_text_actions`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let _ = layout_at(&mut app, 640.0, 700.0);
+            app.add_panel.open();
+            app.add_panel.layout(app.rect);
+            let tree = app.accessibility().expect("semantic root");
+            assert_eq!(tree.children.len(), 1, "background controls are inert");
+            let dialog = &tree.children[0];
+            assert_eq!(dialog.role, Role::Dialog);
+            assert!(dialog.state.modal);
+            let secret = dialog
                 .children
                 .iter()
-                .any(|node| { node.name.as_deref() == Some("SHA256") && node.state.selected })
-        );
-        assert!(
-            dialog
+                .find(|node| node.name.as_deref() == Some("Secret key"))
+                .expect("protected secret field");
+            assert!(secret.state.protected);
+            assert!(secret.value.is_none());
+            assert!(app.perform_semantic_action(
+                "totp.dialog.issuer",
+                &A11yAction::SetValue("Acme".into()),
+                &mut state.doc,
+                &state.root
+            ));
+            assert_eq!(app.add_panel.field_snapshot().0, "Acme");
+            assert!(app.perform_semantic_action(
+                "totp.dialog.save",
+                &A11yAction::Activate,
+                &mut state.doc,
+                &state.root
+            ));
+            let dialog = &app
+                .accessibility()
+                .expect("still open on validation failure")
+                .children[0];
+            assert!(
+                dialog
+                    .children
+                    .iter()
+                    .any(|node| node.live == Some(Politeness::Assertive))
+            );
+        }
+
+        // Case `modal_a11y_exposes_advanced_algorithm_and_digit_choices`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let _ = layout_at(&mut app, 640.0, 700.0);
+            app.add_panel.open();
+            app.add_panel.layout(app.rect);
+            assert!(app.perform_semantic_action(
+                "totp.dialog.advanced",
+                &A11yAction::Activate,
+                &mut state.doc,
+                &state.root
+            ));
+            assert!(app.perform_semantic_action(
+                "totp.dialog.algorithm:1",
+                &A11yAction::Activate,
+                &mut state.doc,
+                &state.root
+            ));
+            assert!(app.perform_semantic_action(
+                "totp.dialog.digits:8",
+                &A11yAction::Activate,
+                &mut state.doc,
+                &state.root
+            ));
+            let dialog = &app.accessibility().expect("dialog tree").children[0];
+            assert!(
+                dialog
+                    .children
+                    .iter()
+                    .any(|node| { node.name.as_deref() == Some("SHA256") && node.state.selected })
+            );
+            assert!(
+                dialog.children.iter().any(|node| {
+                    node.name.as_deref() == Some("8 digits") && node.state.selected
+                })
+            );
+        }
+    }
+
+    /// Narrow, missing-key and resized layouts keep targets inside one centred column.
+    #[test]
+    fn narrow_and_resized_layouts_keep_one_readable_column() {
+        // Case `narrow_header_keeps_the_add_target_inside_the_window`.
+        {
+            let (mut app, _state) = app_with_state();
+            let _ = layout_at(&mut app, 320.0, 640.0);
+            assert!(app.add_btn_rect.width() <= COMPACT_ADD_BTN_W);
+            assert!(app.add_btn_rect.x0 >= app.rect.x0);
+            assert!(app.add_btn_rect.x1 <= app.rect.x1);
+        }
+
+        // Case `missing_key_narrow_root_starts_at_top_with_an_accessible_first_row`.
+        {
+            let mut app = AuthenticatorApp::demo_missing_secret();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let _ = layout_at(&mut app, 390.0, 844.0);
+            assert!(
+                app.list.scroll_offset().abs() <= f64::EPSILON,
+                "shot roots never retain prior scrolling"
+            );
+            let tree = app.accessibility().expect("narrow root has semantics");
+            let list = tree
                 .children
                 .iter()
-                .any(|node| { node.name.as_deref() == Some("8 digits") && node.state.selected })
-        );
-    }
+                .find(|node| node.role == Role::List)
+                .expect("account list stays exposed at the initial scroll position");
+            assert!(
+                list.children
+                    .first()
+                    .is_some_and(|row| row.bounds.is_some()),
+                "the first shared account is both visible and reachable to AT"
+            );
+        }
 
-    #[test]
-    fn narrow_header_keeps_the_add_target_inside_the_window() {
-        let (mut app, _state) = app_with_state();
-        let _ = layout_at(&mut app, 320.0, 640.0);
-        assert!(app.add_btn_rect.width() <= COMPACT_ADD_BTN_W);
-        assert!(app.add_btn_rect.x0 >= app.rect.x0);
-        assert!(app.add_btn_rect.x1 <= app.rect.x1);
-    }
+        // Case `app_reflows_from_the_current_size_not_the_first_frame`.
+        {
+            // Guards the "responsive on first launch, frozen after resize" bug:
+            // the same instance must re-derive its layout from the live window
+            // width on every pass, wide → narrow → wide.
+            let (mut app, _state) = app_with_state();
+            layout_at(&mut app, 1280.0, 720.0);
+            let wide_list_w = app.list_rect.width();
+            let wide_btn_x0 = app.add_btn_rect.x0;
+            // A wide window bounds the list to the readable column, so identity
+            // and code stay within one glance instead of 1000px apart.
+            assert!(
+                (wide_list_w - (READABLE_CONTENT_W - 24.0)).abs() < 0.5,
+                "wide window gives the readable-column list, got {wide_list_w}"
+            );
 
-    #[test]
-    fn missing_key_narrow_root_starts_at_top_with_an_accessible_first_row() {
-        let mut app = AuthenticatorApp::demo_missing_secret();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let _ = layout_at(&mut app, 390.0, 844.0);
-        assert!(
-            app.list.scroll_offset().abs() <= f64::EPSILON,
-            "shot roots never retain prior scrolling"
-        );
-        let tree = app.accessibility().expect("narrow root has semantics");
-        let list = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::List)
-            .expect("account list stays exposed at the initial scroll position");
-        assert!(
-            list.children
-                .first()
-                .is_some_and(|row| row.bounds.is_some()),
-            "the first shared account is both visible and reachable to AT"
-        );
+            layout_at(&mut app, 560.0, 720.0);
+            assert!(
+                app.list_rect.width() < wide_list_w,
+                "list reflows narrower on resize"
+            );
+            assert!(
+                app.add_btn_rect.x0 < wide_btn_x0,
+                "the add button re-anchors to the narrower right edge"
+            );
+            assert!(
+                app.add_btn_rect.x1 <= app.rect.x1,
+                "add button stays inside the window"
+            );
+
+            // Back to wide — it must recover, not stay stuck narrow.
+            layout_at(&mut app, 1280.0, 720.0);
+            assert!(
+                (app.list_rect.width() - wide_list_w).abs() < 0.5,
+                "list widens back to the wide layout"
+            );
+        }
+
+        // Case `header_search_and_list_share_one_centred_readable_column`.
+        {
+            let (mut app, _state) = app_with_state();
+            layout_at(&mut app, 1920.0, 1080.0);
+            let c = app.content_rect;
+            assert!((c.width() - READABLE_CONTENT_W).abs() < 0.5);
+            assert!(
+                (c.center().x - app.rect.center().x).abs() < 0.5,
+                "the column is centred in the window"
+            );
+            // Header actions, search and list all end on the column's edges.
+            assert!((app.add_btn_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
+            assert!((app.search_rect.x0 - (c.x0 + OUTER_PAD)).abs() < 0.5);
+            assert!((app.search_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
+            assert!((app.list_rect.x1 - (c.x1 - 12.0)).abs() < 0.5);
+            assert!(app.edit_btn_rect.x1 < app.add_btn_rect.x0);
+
+            // Narrower than the cap: the column is the window.
+            layout_at(&mut app, 640.0, 800.0);
+            assert!((app.content_rect.width() - 640.0).abs() < 0.5);
+            assert!((app.search_rect.x1 - (640.0 - OUTER_PAD)).abs() < 0.5);
+        }
     }
 
     /// Run the app's real layout passes at a concrete window size, the same
@@ -2017,489 +2174,431 @@ mod tests {
         handled
     }
 
+    /// Only the demo root seeds sample accounts.
     #[test]
-    fn app_reflows_from_the_current_size_not_the_first_frame() {
-        // Guards the "responsive on first launch, frozen after resize" bug:
-        // the same instance must re-derive its layout from the live window
-        // width on every pass, wide → narrow → wide.
-        let (mut app, _state) = app_with_state();
-        layout_at(&mut app, 1280.0, 720.0);
-        let wide_list_w = app.list_rect.width();
-        let wide_btn_x0 = app.add_btn_rect.x0;
-        // A wide window bounds the list to the readable column, so identity
-        // and code stay within one glance instead of 1000px apart.
-        assert!(
-            (wide_list_w - (READABLE_CONTENT_W - 24.0)).abs() < 0.5,
-            "wide window gives the readable-column list, got {wide_list_w}"
-        );
+    fn demo_root_seeds_samples_but_live_root_starts_empty() {
+        // Case `demo_root_seeds_sample_accounts_into_vault_and_doc`.
+        {
+            let (app, state) = app_with_state();
+            assert!(app.vault.len() >= 3, "demo vault should populate");
+            let in_doc = AuthDoc::list_accounts(&state.doc);
+            assert_eq!(in_doc.len(), app.vault.len(), "vault mirrored to CRDT");
+        }
 
-        layout_at(&mut app, 560.0, 720.0);
-        assert!(
-            app.list_rect.width() < wide_list_w,
-            "list reflows narrower on resize"
-        );
-        assert!(
-            app.add_btn_rect.x0 < wide_btn_x0,
-            "the add button re-anchors to the narrower right edge"
-        );
-        assert!(
-            app.add_btn_rect.x1 <= app.rect.x1,
-            "add button stays inside the window"
-        );
-
-        // Back to wide — it must recover, not stay stuck narrow.
-        layout_at(&mut app, 1280.0, 720.0);
-        assert!(
-            (app.list_rect.width() - wide_list_w).abs() < 0.5,
-            "list widens back to the wide layout"
-        );
-    }
-
-    #[test]
-    fn header_search_and_list_share_one_centred_readable_column() {
-        let (mut app, _state) = app_with_state();
-        layout_at(&mut app, 1920.0, 1080.0);
-        let c = app.content_rect;
-        assert!((c.width() - READABLE_CONTENT_W).abs() < 0.5);
-        assert!(
-            (c.center().x - app.rect.center().x).abs() < 0.5,
-            "the column is centred in the window"
-        );
-        // Header actions, search and list all end on the column's edges.
-        assert!((app.add_btn_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
-        assert!((app.search_rect.x0 - (c.x0 + OUTER_PAD)).abs() < 0.5);
-        assert!((app.search_rect.x1 - (c.x1 - OUTER_PAD)).abs() < 0.5);
-        assert!((app.list_rect.x1 - (c.x1 - 12.0)).abs() < 0.5);
-        assert!(app.edit_btn_rect.x1 < app.add_btn_rect.x0);
-
-        // Narrower than the cap: the column is the window.
-        layout_at(&mut app, 640.0, 800.0);
-        assert!((app.content_rect.width() - 640.0).abs() < 0.5);
-        assert!((app.search_rect.x1 - (640.0 - OUTER_PAD)).abs() < 0.5);
-    }
-
-    #[test]
-    fn demo_root_seeds_sample_accounts_into_vault_and_doc() {
-        let (app, state) = app_with_state();
-        assert!(app.vault.len() >= 3, "demo vault should populate");
-        let in_doc = AuthDoc::list_accounts(&state.doc);
-        assert_eq!(in_doc.len(), app.vault.len(), "vault mirrored to CRDT");
-    }
-
-    #[test]
-    fn live_root_starts_empty_without_fabricating_accounts() {
-        // The live app must never auto-populate sample content; a fresh
-        // install with no persisted vault shows an empty list. (This test
-        // is only meaningful when no vault file exists, which is the case
-        // in the hermetic build/CI environment.)
-        let mut app = AuthenticatorApp::new();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        if crate::storage::vault_path().is_none_or(|p| !p.exists()) {
-            assert_eq!(app.vault.len(), 0, "live app must not seed demo accounts");
+        // Case `live_root_starts_empty_without_fabricating_accounts`.
+        {
+            // The live app must never auto-populate sample content; a fresh
+            // install with no persisted vault shows an empty list. (This test
+            // is only meaningful when no vault file exists, which is the case
+            // in the hermetic build/CI environment.)
+            let mut app = AuthenticatorApp::new();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            if crate::storage::vault_path().is_none_or(|p| !p.exists()) {
+                assert_eq!(app.vault.len(), 0, "live app must not seed demo accounts");
+            }
         }
     }
 
+    /// Search filtering (including the empty message), deletion and reordering.
     #[test]
-    fn doc_mirror_is_skipped_when_nothing_changed() {
-        // After the initial seed+mirror, a second sync with no vault change
-        // must not re-dirty or rewrite the document.
-        let (mut app, mut state) = app_with_state();
-        assert!(!app.doc_dirty, "sync clears the doc-dirty flag");
-        app.sync(&mut state.doc, &state.root);
-        assert!(!app.doc_dirty, "idle sync leaves the doc-dirty flag clear");
+    fn vault_events_filter_delete_and_reorder_accounts() {
+        // Case `search_filters_visible_accounts`.
+        {
+            let (mut app, _state) = app_with_state();
+            app.search.set_text("github");
+            app.refresh_list();
+            assert_eq!(app.list.len(), 1);
+            assert_eq!(app.list.account_at(0).unwrap().issuer, "GitHub");
+        }
+
+        // Case `delete_event_removes_account`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let before = app.vault.len();
+            let id = app.vault.ordered()[0].id;
+            app.apply_list_event(ListEvent::Delete(id), &mut state.doc);
+            assert_eq!(app.vault.len(), before - 1);
+            assert!(app.vault.get(id).is_none());
+            // The delete went through the action, so it left the shared document too.
+            assert!(
+                AuthDoc::list_accounts(&state.doc)
+                    .iter()
+                    .all(|a| a.id != id),
+                "the delete action mutated the shared document"
+            );
+        }
+
+        // Case `reorder_event_moves_account_down`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let first = app.vault.ordered()[0].id;
+            let second = app.vault.ordered()[1].id;
+            app.apply_list_event(ListEvent::MoveDown(first), &mut state.doc);
+            assert_eq!(app.vault.ordered()[0].id, second);
+            assert_eq!(app.vault.ordered()[1].id, first);
+            // The reorder is reflected in the document (the source of truth).
+            assert_eq!(AuthDoc::list_accounts(&state.doc)[0].id, second);
+        }
+
+        // Case `search_with_no_matches_sets_a_contextual_empty_message`.
+        {
+            let (mut app, _state) = app_with_state();
+            app.search.set_text("zzz-no-such-service");
+            app.refresh_list();
+            assert!(app.list.is_empty(), "no demo account matches the query");
+            let msg = app.list.empty_message();
+            assert!(
+                msg.contains("zzz-no-such-service"),
+                "the empty state names the unmatched query, got: {msg}"
+            );
+        }
     }
 
+    /// Adding through the panel and attaching a missing local secret to the same id.
     #[test]
-    fn search_filters_visible_accounts() {
-        let (mut app, _state) = app_with_state();
-        app.search.set_text("github");
-        app.refresh_list();
-        assert_eq!(app.list.len(), 1);
-        assert_eq!(app.list.account_at(0).unwrap().issuer, "GitHub");
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn adding_and_attaching_accounts_grows_the_vault() {
+        // Case `adding_an_account_through_the_panel_grows_the_vault`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let before = app.vault.len();
+            app.add_panel.open();
+            // Fill via the paste seam, then run the production save path.
+            app.add_panel
+                .apply_uri("otpauth://totp/Proton:ada@pm.me?secret=JBSWY3DPEHPK3PXP");
+            app.add_panel.save_for_test();
+            assert!(!app.add_panel.is_open(), "a valid save closes the modal");
+            let ev = app.add_panel.take_event().expect("save emits an event");
+            app.apply_add_panel_event(ev, &mut state.doc);
+            assert_eq!(
+                app.vault.len(),
+                before + 1,
+                "the account is added to the vault"
+            );
+            // The save broadcasts only metadata. The secret stays in the local,
+            // encrypted vault even though the account remains collaborative.
+            let in_doc = AuthDoc::list_accounts(&state.doc);
+            assert_eq!(
+                in_doc.len(),
+                before + 1,
+                "the add action mutated the shared document"
+            );
+            assert!(
+                in_doc.iter().any(|a| a.issuer == "Proton"),
+                "the added account is present in the document by issuer"
+            );
+            assert!(
+                in_doc.iter().all(|account| account.secret.is_empty()),
+                "the shared document never receives the setup secret"
+            );
+            // And the host has one undo boundary to record for it.
+            assert!(
+                Widget::take_committed_action(&mut app).is_some(),
+                "the add action registered exactly one undo boundary for the host"
+            );
+        }
 
-    #[test]
-    fn delete_event_removes_account() {
-        let (mut app, mut state) = app_with_state();
-        let before = app.vault.len();
-        let id = app.vault.ordered()[0].id;
-        app.apply_list_event(ListEvent::Delete(id), &mut state.doc);
-        assert_eq!(app.vault.len(), before - 1);
-        assert!(app.vault.get(id).is_none());
-        // The delete went through the action, so it left the shared document too.
-        assert!(
-            AuthDoc::list_accounts(&state.doc)
-                .iter()
-                .all(|a| a.id != id),
-            "the delete action mutated the shared document"
-        );
-    }
+        // Case `missing_local_secret_exposes_honest_setup_then_attaches_to_the_same_id`.
+        {
+            use tilo_actions::Availability;
 
-    #[test]
-    fn reorder_event_moves_account_down() {
-        let (mut app, mut state) = app_with_state();
-        let first = app.vault.ordered()[0].id;
-        let second = app.vault.ordered()[1].id;
-        app.apply_list_event(ListEvent::MoveDown(first), &mut state.doc);
-        assert_eq!(app.vault.ordered()[0].id, second);
-        assert_eq!(app.vault.ordered()[1].id, first);
-        // The reorder is reflected in the document (the source of truth).
-        assert_eq!(AuthDoc::list_accounts(&state.doc)[0].id, second);
-    }
+            let mut app = AuthenticatorApp::empty();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let remote = demo_accounts().remove(0);
+            let id = remote.id;
+            let secret = remote.secret.clone();
+            AuthDoc::upsert_account(&mut state.doc, &remote);
+            app.reload_from_doc(&state.doc);
+            let _ = layout_at(&mut app, 900.0, 700.0);
 
-    #[test]
-    fn copy_event_selects_the_account_and_confirms_with_a_toast() {
-        let (mut app, mut state) = app_with_state();
-        let id = app.vault.ordered()[0].id;
-        let acc = app.vault.get(id).cloned().unwrap();
-        let before = totp::current_code(&acc);
-        app.apply_list_event(ListEvent::Copy(id), &mut state.doc);
-        let after = totp::current_code(&acc);
-        assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-        let (msg, _, kind) = app
-            .toast
-            .clone()
-            .expect("copying shows a confirmation toast");
-        assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
-        assert_eq!(kind, ToastKind::Success);
-        // The copied string is the account's live TOTP code (not its title or
-        // an empty string). It equals the code at some instant during the copy,
-        // so it must match the value just before or just after — deterministic
-        // even across a period rollover.
-        let copied = app.last_copied().expect("a copy records the copied code");
-        assert!(
-            copied == before || copied == after,
-            "copied {copied:?} must equal the account's live code ({before:?}/{after:?})"
-        );
-    }
-
-    #[test]
-    fn adding_an_account_through_the_panel_grows_the_vault() {
-        let (mut app, mut state) = app_with_state();
-        let before = app.vault.len();
-        app.add_panel.open();
-        // Fill via the paste seam, then run the production save path.
-        app.add_panel
-            .apply_uri("otpauth://totp/Proton:ada@pm.me?secret=JBSWY3DPEHPK3PXP");
-        app.add_panel.save_for_test();
-        assert!(!app.add_panel.is_open(), "a valid save closes the modal");
-        let ev = app.add_panel.take_event().expect("save emits an event");
-        app.apply_add_panel_event(ev, &mut state.doc);
-        assert_eq!(
-            app.vault.len(),
-            before + 1,
-            "the account is added to the vault"
-        );
-        // The save broadcasts only metadata. The secret stays in the local,
-        // encrypted vault even though the account remains collaborative.
-        let in_doc = AuthDoc::list_accounts(&state.doc);
-        assert_eq!(
-            in_doc.len(),
-            before + 1,
-            "the add action mutated the shared document"
-        );
-        assert!(
-            in_doc.iter().any(|a| a.issuer == "Proton"),
-            "the added account is present in the document by issuer"
-        );
-        assert!(
-            in_doc.iter().all(|account| account.secret.is_empty()),
-            "the shared document never receives the setup secret"
-        );
-        // And the host has one undo boundary to record for it.
-        assert!(
-            Widget::take_committed_action(&mut app).is_some(),
-            "the add action registered exactly one undo boundary for the host"
-        );
-    }
-
-    #[test]
-    fn missing_local_secret_exposes_honest_setup_then_attaches_to_the_same_id() {
-        use tilo_actions::Availability;
-
-        let mut app = AuthenticatorApp::empty();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let remote = demo_accounts().remove(0);
-        let id = remote.id;
-        let secret = remote.secret.clone();
-        AuthDoc::upsert_account(&mut state.doc, &remote);
-        app.reload_from_doc(&state.doc);
-        let _ = layout_at(&mut app, 900.0, 700.0);
-
-        assert!(!app.has_local_secret(id));
-        let resource = Widget::resource(&app, &state.doc, &crate::actions::account_resource_id(id))
-            .expect("the shared account resolves locally");
-        let copy = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "copy-code")
-            .expect("copy action");
-        assert!(matches!(
-            copy.contract.availability,
-            Availability::Unavailable { ref code, .. } if code == "local_secret_required"
-        ));
-        assert!(
-            resource
+            assert!(!app.has_local_secret(id));
+            let resource =
+                Widget::resource(&app, &state.doc, &crate::actions::account_resource_id(id))
+                    .expect("the shared account resolves locally");
+            let copy = resource
                 .actions
                 .iter()
-                .any(|action| action.id == "set-up-local")
-        );
+                .find(|action| action.id == "copy-code")
+                .expect("copy action");
+            assert!(matches!(
+                copy.contract.availability,
+                Availability::Unavailable { ref code, .. } if code == "local_secret_required"
+            ));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "set-up-local")
+            );
 
-        let encoded =
-            serde_json::to_vec(&crate::actions::TotpOperation::SetUpLocal { id: id.to_string() })
-                .unwrap();
-        assert!(
-            !encoded
-                .windows(secret.len())
-                .any(|window| window == secret.as_bytes()),
-            "the exact-account setup route carries an id, never a secret"
-        );
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                crate::actions::TOTP_OPERATION_TYPE,
-                &encoded,
-                &state.doc,
+            let encoded = serde_json::to_vec(&crate::actions::TotpOperation::SetUpLocal {
+                id: id.to_string(),
+            })
+            .unwrap();
+            assert!(
+                !encoded
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+                "the exact-account setup route carries an id, never a secret"
+            );
+            assert!(
+                app.invoke_resource_operation(
+                    OperationKind::View,
+                    crate::actions::TOTP_OPERATION_TYPE,
+                    &encoded,
+                    &state.doc,
+                    &state.root,
+                )
+                .unwrap()
+            );
+            assert!(app.add_panel.is_open(), "setup opens the local form");
+            app.add_panel.apply_uri(
+                "otpauth://totp/GitHub:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+            );
+            app.add_panel.save_for_test();
+            let event = app.add_panel.take_event().expect("setup save event");
+            assert!(matches!(event, AddPanelEvent::Provision(ref account) if account.id == id));
+            app.apply_add_panel_event(event, &mut state.doc);
+            assert!(app.has_local_secret(id));
+            assert_eq!(
+                app.vault.get(id).map(|account| account.secret.as_str()),
+                Some(secret.as_str())
+            );
+
+            // A subsequent metadata projection keeps the provisioned local key,
+            // while the CRDT remains deliberately credential-free.
+            app.reload_from_doc(&state.doc);
+            assert!(app.has_local_secret(id));
+            let bytes = state.doc.save();
+            assert!(
+                !bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+                "setup never puts a bearer credential in collaboration/history"
+            );
+        }
+    }
+
+    /// Failed loads/saves keep the vault dirty and expose only bounded, user-triggered retries.
+    #[test]
+    fn persistence_failures_keep_the_vault_dirty_with_bounded_retry() {
+        // Case `failed_initial_load_cannot_be_cleared_by_saving_the_empty_view`.
+        {
+            let mut app = AuthenticatorApp::demo_persistence_error();
+            app.vault_recovery_required = true;
+            let message = app.persistence_message.clone();
+            assert!(!app.persist_vault());
+            assert!(!app.retry_persist());
+            assert!(app.persistence_pending);
+            assert_eq!(app.persistence_message, message);
+        }
+
+        // Case `failed_persistence_exposes_a_bounded_retry_effect`.
+        {
+            let mut app = AuthenticatorApp::demo_persistence_error();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let root = Widget::resources(&app, &state.doc).remove(0);
+            let retry = root
+                .actions
+                .iter()
+                .find(|action| action.id == "retry-save")
+                .expect("unsaved local vault exposes one retry effect");
+            assert_eq!(retry.kind, OperationKind::Effect);
+            let encoded = match &retry.input {
+                tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
+            };
+            assert!(
+                app.invoke_resource_operation(
+                    OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &state.doc,
+                    &state.root,
+                )
+                .unwrap()
+            );
+            assert!(
+                !app.persistence_pending,
+                "retry is user-triggered, never a frame loop"
+            );
+        }
+
+        // Case `persistence_banner_has_its_own_bounded_click_and_a11y_retry`.
+        {
+            let mut app = AuthenticatorApp::demo_persistence_error();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let _ = layout_at(&mut app, 390.0, 720.0);
+            let selected = app.vault.ordered()[0].id;
+            app.selected = Some(selected);
+            assert!(
+                app.toast.is_none(),
+                "the durable banner replaces a duplicate toast"
+            );
+
+            assert!(app.persistence_retry_rect.x0 >= app.rect.x0);
+            assert!(app.persistence_retry_rect.x1 <= app.rect.x1);
+            assert!(app.persistence_retry_rect.y0 >= app.header_rect.y1);
+            assert!(
+                app.list_rect.y0 > app.header_rect.y1,
+                "banner reserves list space"
+            );
+
+            let tree = app
+                .accessibility()
+                .expect("persistence state has semantics");
+            let toolbar = tree
+                .children
+                .iter()
+                .find(|node| node.role == Role::Toolbar)
+                .expect("toolbar remains available");
+            assert!(toolbar.children.iter().any(|node| {
+                node.name.as_deref() == Some("Edit selected account")
+                    && node.semantic_key.as_deref() == Some("totp.edit")
+            }));
+            let retry = tree
+                .children
+                .iter()
+                .find(|node| node.semantic_key.as_deref() == Some("totp.retry-persist"))
+                .expect("retry is a separate semantic control");
+            assert_eq!(
+                retry.bounds.map(ui::a11y::AccessBounds::to_rect),
+                Some(app.persistence_retry_rect)
+            );
+            assert!(retry.state.focusable);
+
+            assert!(app.perform_semantic_action(
+                "totp.retry-persist",
+                &A11yAction::Activate,
+                &mut state.doc,
                 &state.root,
-            )
-            .unwrap()
-        );
-        assert!(app.add_panel.is_open(), "setup opens the local form");
-        app.add_panel.apply_uri(
-            "otpauth://totp/GitHub:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
-        );
-        app.add_panel.save_for_test();
-        let event = app.add_panel.take_event().expect("setup save event");
-        assert!(matches!(event, AddPanelEvent::Provision(ref account) if account.id == id));
-        app.apply_add_panel_event(event, &mut state.doc);
-        assert!(app.has_local_secret(id));
-        assert_eq!(
-            app.vault.get(id).map(|account| account.secret.as_str()),
-            Some(secret.as_str())
-        );
+            ));
+            assert!(!app.persistence_pending);
+        }
 
-        // A subsequent metadata projection keeps the provisioned local key,
-        // while the CRDT remains deliberately credential-free.
-        app.reload_from_doc(&state.doc);
-        assert!(app.has_local_secret(id));
-        let bytes = state.doc.save();
-        assert!(
-            !bytes
-                .windows(secret.len())
-                .any(|window| window == secret.as_bytes()),
-            "setup never puts a bearer credential in collaboration/history"
-        );
+        // Case `injected_save_failure_keeps_the_vault_dirty_and_advertises_retry`.
+        {
+            let mut app = AuthenticatorApp::demo();
+            app.seed();
+            app.seeded = true;
+            // Avoid touching a user's live vault: the injected failure returns
+            // before resolving a data directory or key custody.
+            app.seed_mode = SeedMode::Live;
+            crate::storage::force_save_failure_for_test(true);
+            assert!(!app.persist_vault());
+            crate::storage::force_save_failure_for_test(false);
+            assert!(app.persistence_pending);
+
+            let state = ui::State::new();
+            let root = Widget::resources(&app, &state.doc).remove(0);
+            assert!(root.actions.iter().any(|action| action.id == "retry-save"));
+        }
     }
 
+    /// QR import: host portal routing, frame drain, cancel and file decoding.
     #[test]
-    fn failed_initial_load_cannot_be_cleared_by_saving_the_empty_view() {
-        let mut app = AuthenticatorApp::demo_persistence_error();
-        app.vault_recovery_required = true;
-        let message = app.persistence_message.clone();
-        assert!(!app.persist_vault());
-        assert!(!app.retry_persist());
-        assert!(app.persistence_pending);
-        assert_eq!(app.persistence_message, message);
-    }
+    fn qr_import_routes_through_the_host_portal_and_fills_the_panel() {
+        // Case `qr_cta_routes_to_the_host_portal`.
+        // The primary "Scan a QR image" action must reach the **host** file
+        // chooser (the XDG portal), not an in-app picker or a dead-end toast. A
+        // recording host answers the request so no real dialog opens; the
+        // in-flight guard keeps a second tap from stacking another dialog.
+        {
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            let (mut app, _state) = app_with_state();
+            app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
+            app.add_panel.open();
+            app.request_qr_via_portal();
+            assert!(
+                app.portal_rx.is_some(),
+                "the QR action routes through the host portal (not an in-app picker)"
+            );
+            app.request_qr_via_portal();
+            let requests = recorder.pick_requests();
+            assert_eq!(requests.len(), 1, "an in-flight request is not stacked");
+            assert_eq!(requests[0].title(), "Choose a QR image");
+        }
 
-    #[test]
-    fn failed_persistence_exposes_a_bounded_retry_effect() {
-        let mut app = AuthenticatorApp::demo_persistence_error();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let root = Widget::resources(&app, &state.doc).remove(0);
-        let retry = root
-            .actions
-            .iter()
-            .find(|action| action.id == "retry-save")
-            .expect("unsaved local vault exposes one retry effect");
-        assert_eq!(retry.kind, OperationKind::Effect);
-        let encoded = match &retry.input {
-            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            tilo_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
-        };
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-                &state.doc,
-                &state.root,
-            )
-            .unwrap()
-        );
-        assert!(
-            !app.persistence_pending,
-            "retry is user-triggered, never a frame loop"
-        );
-    }
+        // Case `portal_chosen_qr_image_fills_the_add_panel_via_frame_drain`.
+        // End-to-end proof of the import seam on the real per-frame drain: a QR
+        // image the host portal returned is decoded and fills the add panel — a
+        // recording host answers the request (no real dialog) and the next
+        // `sync` loads it.
+        {
+            let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
+            let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let img = dir.join("acme-qr.png");
+            render_qr_png(uri, &img);
 
-    #[test]
-    fn persistence_banner_has_its_own_bounded_click_and_a11y_retry() {
-        let mut app = AuthenticatorApp::demo_persistence_error();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let _ = layout_at(&mut app, 390.0, 720.0);
-        let selected = app.vault.ordered()[0].id;
-        app.selected = Some(selected);
-        assert!(
-            app.toast.is_none(),
-            "the durable banner replaces a duplicate toast"
-        );
+            let (mut app, mut state) = app_with_state();
+            app.add_panel.open();
 
-        assert!(app.persistence_retry_rect.x0 >= app.rect.x0);
-        assert!(app.persistence_retry_rect.x1 <= app.rect.x1);
-        assert!(app.persistence_retry_rect.y0 >= app.header_rect.y1);
-        assert!(
-            app.list_rect.y0 > app.header_rect.y1,
-            "banner reserves list space"
-        );
+            // The host answers the real QR request and the per-frame sync drains
+            // it — the exact channel the off-thread portal worker feeds.
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(img));
+            ui::host::scoped(&services, || app.request_qr_via_portal());
+            app.sync(&mut state.doc, &state.root);
 
-        let tree = app
-            .accessibility()
-            .expect("persistence state has semantics");
-        let toolbar = tree
-            .children
-            .iter()
-            .find(|node| node.role == Role::Toolbar)
-            .expect("toolbar remains available");
-        assert!(toolbar.children.iter().any(|node| {
-            node.name.as_deref() == Some("Edit selected account")
-                && node.semantic_key.as_deref() == Some("totp.edit")
-        }));
-        let retry = tree
-            .children
-            .iter()
-            .find(|node| node.semantic_key.as_deref() == Some("totp.retry-persist"))
-            .expect("retry is a separate semantic control");
-        assert_eq!(
-            retry.bounds.map(ui::a11y::AccessBounds::to_rect),
-            Some(app.persistence_retry_rect)
-        );
-        assert!(retry.state.focusable);
+            assert!(
+                app.portal_rx.is_none(),
+                "the portal channel clears after delivering"
+            );
+            let (issuer, label, secret) = app.add_panel.field_snapshot();
+            assert_eq!(issuer, "Acme");
+            assert_eq!(label, "bob@acme.io");
+            assert_eq!(secret, "JBSWY3DPEHPK3PXP");
+            std::fs::remove_dir_all(&dir).ok();
+        }
 
-        assert!(app.perform_semantic_action(
-            "totp.retry-persist",
-            &A11yAction::Activate,
-            &mut state.doc,
-            &state.root,
-        ));
-        assert!(!app.persistence_pending);
-    }
+        // Case `portal_cancel_leaves_the_add_panel_untouched`.
+        // A cancelled portal interaction is a no-op: the add panel's fields are
+        // left exactly as they were and the channel clears.
+        {
+            let (mut app, mut state) = app_with_state();
+            app.add_panel.open();
+            let before = app.add_panel.field_snapshot();
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Cancelled);
+            ui::host::scoped(&services, || app.request_qr_via_portal());
+            app.sync(&mut state.doc, &state.root);
+            assert!(
+                app.portal_rx.is_none(),
+                "the portal channel clears after a cancel"
+            );
+            assert_eq!(
+                app.add_panel.field_snapshot(),
+                before,
+                "cancel changes nothing"
+            );
+        }
 
-    #[test]
-    fn injected_save_failure_keeps_the_vault_dirty_and_advertises_retry() {
-        let mut app = AuthenticatorApp::demo();
-        app.seed();
-        app.seeded = true;
-        // Avoid touching a user's live vault: the injected failure returns
-        // before resolving a data directory or key custody.
-        app.seed_mode = SeedMode::Live;
-        crate::storage::force_save_failure_for_test(true);
-        assert!(!app.persist_vault());
-        crate::storage::force_save_failure_for_test(false);
-        assert!(app.persistence_pending);
-
-        let state = ui::State::new();
-        let root = Widget::resources(&app, &state.doc).remove(0);
-        assert!(root.actions.iter().any(|action| action.id == "retry-save"));
-    }
-
-    /// The primary "Scan a QR image" action must reach the **host** file
-    /// chooser (the XDG portal), not an in-app picker or a dead-end toast. A
-    /// recording host answers the request so no real dialog opens; the
-    /// in-flight guard keeps a second tap from stacking another dialog.
-    #[test]
-    fn qr_cta_routes_to_the_host_portal() {
-        let (services, recorder) = ui::host::HostServices::recording();
-        let _host = ui::host::enter(&services);
-        let (mut app, _state) = app_with_state();
-        app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
-        app.add_panel.open();
-        app.request_qr_via_portal();
-        assert!(
-            app.portal_rx.is_some(),
-            "the QR action routes through the host portal (not an in-app picker)"
-        );
-        app.request_qr_via_portal();
-        let requests = recorder.pick_requests();
-        assert_eq!(requests.len(), 1, "an in-flight request is not stacked");
-        assert_eq!(requests[0].title(), "Choose a QR image");
-    }
-
-    /// End-to-end proof of the import seam on the real per-frame drain: a QR
-    /// image the host portal returned is decoded and fills the add panel — a
-    /// recording host answers the request (no real dialog) and the next
-    /// `sync` loads it.
-    #[test]
-    fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
-        let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
-        let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("acme-qr.png");
-        render_qr_png(uri, &img);
-
-        let (mut app, mut state) = app_with_state();
-        app.add_panel.open();
-
-        // The host answers the real QR request and the per-frame sync drains
-        // it — the exact channel the off-thread portal worker feeds.
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened(img));
-        ui::host::scoped(&services, || app.request_qr_via_portal());
-        app.sync(&mut state.doc, &state.root);
-
-        assert!(
-            app.portal_rx.is_none(),
-            "the portal channel clears after delivering"
-        );
-        let (issuer, label, secret) = app.add_panel.field_snapshot();
-        assert_eq!(issuer, "Acme");
-        assert_eq!(label, "bob@acme.io");
-        assert_eq!(secret, "JBSWY3DPEHPK3PXP");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A cancelled portal interaction is a no-op: the add panel's fields are
-    /// left exactly as they were and the channel clears.
-    #[test]
-    fn portal_cancel_leaves_the_add_panel_untouched() {
-        let (mut app, mut state) = app_with_state();
-        app.add_panel.open();
-        let before = app.add_panel.field_snapshot();
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Cancelled);
-        ui::host::scoped(&services, || app.request_qr_via_portal());
-        app.sync(&mut state.doc, &state.root);
-        assert!(
-            app.portal_rx.is_none(),
-            "the portal channel clears after a cancel"
-        );
-        assert_eq!(
-            app.add_panel.field_snapshot(),
-            before,
-            "cancel changes nothing"
-        );
-    }
-
-    /// End-to-end proof of the QR-image import seam: a real QR PNG on disk is
-    /// decoded and its otpauth payload fills the add panel.
-    #[test]
-    fn qr_image_file_decodes_and_fills_the_panel() {
-        let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
-        let path = std::env::temp_dir().join(format!("totp-qr-{}.png", uuid::Uuid::new_v4()));
-        render_qr_png(uri, &path);
-        let decoded = crate::qr::decode_image_file(&path).expect("decode a real QR png file");
-        let mut panel = crate::add_panel::AddAccountPanel::new();
-        panel.open();
-        panel.apply_uri(&decoded);
-        let (issuer, label, secret) = panel.field_snapshot();
-        assert_eq!(issuer, "Acme");
-        assert_eq!(label, "bob@acme.io");
-        assert_eq!(secret, "JBSWY3DPEHPK3PXP");
-        std::fs::remove_file(&path).ok();
+        // Case `qr_image_file_decodes_and_fills_the_panel`.
+        // End-to-end proof of the QR-image import seam: a real QR PNG on disk is
+        // decoded and its otpauth payload fills the add panel.
+        {
+            let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
+            let path = std::env::temp_dir().join(format!("totp-qr-{}.png", uuid::Uuid::new_v4()));
+            render_qr_png(uri, &path);
+            let decoded = crate::qr::decode_image_file(&path).expect("decode a real QR png file");
+            let mut panel = crate::add_panel::AddAccountPanel::new();
+            panel.open();
+            panel.apply_uri(&decoded);
+            let (issuer, label, secret) = panel.field_snapshot();
+            assert_eq!(issuer, "Acme");
+            assert_eq!(label, "bob@acme.io");
+            assert_eq!(secret, "JBSWY3DPEHPK3PXP");
+            std::fs::remove_file(&path).ok();
+        }
     }
 
     // ---- pointer + keyboard routing through the real `handle_event` -----
@@ -2510,195 +2609,149 @@ mod tests {
 
     use crate::test_events::{char_press, ctrl, cursor_at, left_press, named_press, no_mods};
 
+    /// Add button, Ctrl+N, slash/Ctrl+F, Escape and the modal's gating of global search.
     #[test]
-    fn clicking_the_add_button_opens_the_modal() {
-        let (mut app, mut state) = app_with_state();
-        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        assert!(!app.add_panel.is_open(), "starts on the list, modal closed");
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn shortcuts_and_clicks_open_the_modal_and_focus_search() {
+        // Case `clicking_the_add_button_opens_the_modal`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            assert!(!app.add_panel.is_open(), "starts on the list, modal closed");
 
-        let btn = app.add_btn_rect.center();
-        let mods = no_mods();
-        dispatch(
-            &mut app,
-            &cursor_at(btn),
-            mods,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        dispatch(
-            &mut app,
-            &left_press(),
-            mods,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        assert!(
-            app.add_panel.is_open(),
-            "clicking the + Add account button opens the add modal"
-        );
-    }
+            let btn = app.add_btn_rect.center();
+            let mods = no_mods();
+            dispatch(
+                &mut app,
+                &cursor_at(btn),
+                mods,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            dispatch(
+                &mut app,
+                &left_press(),
+                mods,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            assert!(
+                app.add_panel.is_open(),
+                "clicking the + Add account button opens the add modal"
+            );
+        }
 
-    #[test]
-    fn ctrl_n_opens_the_add_modal() {
-        let (mut app, mut state) = app_with_state();
-        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        let ctrl = ctrl();
-        let handled = dispatch(
-            &mut app,
-            &char_press("n"),
-            ctrl,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        assert!(handled, "Ctrl+N is consumed");
-        assert!(app.add_panel.is_open(), "Ctrl+N opens the add modal");
-    }
+        // Case `ctrl_n_opens_the_add_modal`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            let ctrl = ctrl();
+            let handled = dispatch(
+                &mut app,
+                &char_press("n"),
+                ctrl,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            assert!(handled, "Ctrl+N is consumed");
+            assert!(app.add_panel.is_open(), "Ctrl+N opens the add modal");
+        }
 
-    #[test]
-    fn slash_and_ctrl_f_focus_the_search_field() {
-        let (mut app, mut state) = app_with_state();
-        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        assert!(!app.search.is_focused());
+        // Case `slash_and_ctrl_f_focus_the_search_field`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            assert!(!app.search.is_focused());
 
-        // "/" focuses search when not already typing there.
-        let mods = no_mods();
-        dispatch(
-            &mut app,
-            &char_press("/"),
-            mods,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        assert!(app.search.is_focused(), "'/' focuses the search field");
+            // "/" focuses search when not already typing there.
+            let mods = no_mods();
+            dispatch(
+                &mut app,
+                &char_press("/"),
+                mods,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            assert!(app.search.is_focused(), "'/' focuses the search field");
 
-        // Ctrl+F also focuses search.
-        app.search.set_focus(false);
-        let ctrl = ctrl();
-        dispatch(
-            &mut app,
-            &char_press("f"),
-            ctrl,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        assert!(app.search.is_focused(), "Ctrl+F focuses the search field");
-    }
+            // Ctrl+F also focuses search.
+            app.search.set_focus(false);
+            let ctrl = ctrl();
+            dispatch(
+                &mut app,
+                &char_press("f"),
+                ctrl,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            assert!(app.search.is_focused(), "Ctrl+F focuses the search field");
+        }
 
-    #[test]
-    fn escape_clears_a_nonempty_search_query() {
-        let (mut app, mut state) = app_with_state();
-        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        app.search.set_focus(true);
-        app.search.set_text("github");
+        // Case `escape_clears_a_nonempty_search_query`.
+        {
+            let (mut app, mut state) = app_with_state();
+            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            app.search.set_focus(true);
+            app.search.set_text("github");
 
-        let mods = no_mods();
-        let handled = dispatch(
-            &mut app,
-            &named_press(NamedKey::Escape),
-            mods,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        assert!(handled, "Escape is consumed while clearing the query");
-        assert!(
-            app.search.value().is_empty(),
-            "Escape clears the search text"
-        );
-        assert!(!app.search.is_focused(), "Escape also drops search focus");
-    }
+            let mods = no_mods();
+            let handled = dispatch(
+                &mut app,
+                &named_press(NamedKey::Escape),
+                mods,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            assert!(handled, "Escape is consumed while clearing the query");
+            assert!(
+                app.search.value().is_empty(),
+                "Escape clears the search text"
+            );
+            assert!(!app.search.is_focused(), "Escape also drops search focus");
+        }
 
-    #[test]
-    fn enter_copies_the_selected_accounts_live_code() {
-        let (mut app, mut state) = app_with_state();
-        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        let id = app
-            .selected
-            .expect("the demo vault selects the first account");
-        let acc = app.vault.get(id).cloned().unwrap();
+        // Case `open_modal_gates_the_global_search_shortcut`.
+        {
+            // While the add modal is open it owns all input: a key that would be a
+            // global shortcut on the list (here "/", focus-search) must be swallowed
+            // by the modal and NOT focus the underlying search field.
+            let (mut app, mut state) = app_with_state();
+            let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
+            app.add_panel.open();
+            app.add_panel.layout(app.rect);
+            assert!(!app.search.is_focused());
 
-        let before = totp::current_code(&acc);
-        let mods = no_mods();
-        dispatch(
-            &mut app,
-            &named_press(NamedKey::Enter),
-            mods,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        let after = totp::current_code(&acc);
-
-        let copied = app.last_copied().expect("Enter copies the selected code");
-        assert!(
-            copied == before || copied == after,
-            "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
-        );
-        let (msg, _, kind) = app.toast.clone().expect("Enter shows a copy toast");
-        assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
-        assert_eq!(kind, ToastKind::Success);
-    }
-
-    #[test]
-    fn toast_severity_distinguishes_failures_from_confirmations() {
-        let (mut app, _) = app_with_state();
-        app.toast("Account added", ToastKind::Success);
-        assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Success));
-        app.toast("Invalid QR image", ToastKind::Error);
-        assert_eq!(app.toast.as_ref().map(|t| t.2), Some(ToastKind::Error));
-    }
-
-    #[test]
-    fn open_modal_gates_the_global_search_shortcut() {
-        // While the add modal is open it owns all input: a key that would be a
-        // global shortcut on the list (here "/", focus-search) must be swallowed
-        // by the modal and NOT focus the underlying search field.
-        let (mut app, mut state) = app_with_state();
-        let (taffy, node) = layout_at(&mut app, 1000.0, 800.0);
-        app.add_panel.open();
-        app.add_panel.layout(app.rect);
-        assert!(!app.search.is_focused());
-
-        let mods = no_mods();
-        dispatch(
-            &mut app,
-            &char_press("/"),
-            mods,
-            &mut state.doc,
-            &state.root,
-            node,
-            &taffy,
-        );
-        assert!(
-            !app.search.is_focused(),
-            "the open modal gates the '/' shortcut from reaching the list"
-        );
-        assert!(app.add_panel.is_open(), "the modal stays open");
-    }
-
-    #[test]
-    fn search_with_no_matches_sets_a_contextual_empty_message() {
-        let (mut app, _state) = app_with_state();
-        app.search.set_text("zzz-no-such-service");
-        app.refresh_list();
-        assert!(app.list.is_empty(), "no demo account matches the query");
-        let msg = app.list.empty_message();
-        assert!(
-            msg.contains("zzz-no-such-service"),
-            "the empty state names the unmatched query, got: {msg}"
-        );
+            let mods = no_mods();
+            dispatch(
+                &mut app,
+                &char_press("/"),
+                mods,
+                &mut state.doc,
+                &state.root,
+                node,
+                &taffy,
+            );
+            assert!(
+                !app.search.is_focused(),
+                "the open modal gates the '/' shortcut from reaching the list"
+            );
+            assert!(app.add_panel.is_open(), "the modal stays open");
+        }
     }
 
     /// A `--shots` entry point: its display name and root-widget factory.

@@ -291,32 +291,25 @@ mod tests {
     }
 
     #[test]
-    fn is_tilo_native_false_without_env() {
-        let _env = clear_tilo_env();
-        assert!(!is_tilo_native());
-    }
-
-    #[test]
-    fn service_fd_returns_none_when_unset() {
-        let _env = clear_tilo_env();
-        assert!(service_fd("collab").is_none());
-        assert!(service_fd("fs").is_none());
-        assert!(service_fd("identity").is_none());
-    }
-
-    #[test]
-    fn service_fd_returns_none_for_garbage_value() {
-        let mut env = clear_tilo_env();
-        env.set("TILO_SVC_COLLAB_FD", "not-a-number");
-        assert!(service_fd("collab").is_none());
-    }
-
-    #[test]
-    fn service_fd_returns_none_for_closed_fd() {
-        let mut env = clear_tilo_env();
-        // A fd well above stdin/stdout/stderr, unlikely to be open in a test process.
-        env.set("TILO_SVC_COLLAB_FD", "999");
-        assert!(service_fd("collab").is_none());
+    fn service_fds_resolve_only_from_a_valid_open_descriptor() {
+        {
+            let _env = clear_tilo_env();
+            assert!(!is_tilo_native(), "case: no env is not native");
+            for service in ["collab", "fs", "identity"] {
+                assert!(service_fd(service).is_none(), "case unset: {service}");
+            }
+        }
+        // (case, TILO_SVC_COLLAB_FD value)
+        let cases = [
+            ("garbage value", "not-a-number"),
+            // A fd well above stdin/stdout/stderr, unlikely to be open in a test process.
+            ("closed fd", "999"),
+        ];
+        for (case, value) in cases {
+            let mut env = clear_tilo_env();
+            env.set("TILO_SVC_COLLAB_FD", value);
+            assert!(service_fd("collab").is_none(), "case {case}");
+        }
     }
 }
 

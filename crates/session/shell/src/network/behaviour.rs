@@ -166,31 +166,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keypair_persists_and_is_the_iroh_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("device/keypair.bin");
-        let first = load_or_create_keypair(&path).expect("create");
-        let second = load_or_create_keypair(&path).expect("load");
-        assert_eq!(first.public(), second.public());
-        let seed: [u8; 32] = std::fs::read(&path).unwrap().try_into().unwrap();
-        assert_eq!(first.to_bytes(), seed);
-    }
-
-    #[test]
-    fn malformed_key_is_never_replaced() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("keypair.bin");
-        std::fs::write(&path, b"not a key").unwrap();
-        #[cfg(unix)]
+    fn device_key_persists_migrates_and_is_never_replaced() {
+        // Phase `keypair_persists_and_is_the_iroh_identity`.
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("device/keypair.bin");
+            let first = load_or_create_keypair(&path).expect("create");
+            let second = load_or_create_keypair(&path).expect("load");
+            assert_eq!(first.public(), second.public());
+            let seed: [u8; 32] = std::fs::read(&path).unwrap().try_into().unwrap();
+            assert_eq!(first.to_bytes(), seed);
         }
-        assert_eq!(
-            load_or_create_keypair(&path).unwrap_err().kind(),
-            std::io::ErrorKind::InvalidData
-        );
-        assert_eq!(std::fs::read(path).unwrap(), b"not a key");
+        // Phase `malformed_key_is_never_replaced`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("keypair.bin");
+            std::fs::write(&path, b"not a key").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            assert_eq!(
+                load_or_create_keypair(&path).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            assert_eq!(std::fs::read(path).unwrap(), b"not a key");
+        }
+        // Phase `protobuf_device_key_is_migrated_in_place`.
+        {
+            #[cfg(unix)]
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("device/keypair.bin");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, legacy_protobuf([7; 32])).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+            let key =
+                load_or_create_keypair_with_legacy(&path, &dir.path().join("unused")).unwrap();
+            assert_eq!(key.to_bytes(), [7; 32]);
+            assert_eq!(std::fs::read(path).unwrap(), [7; 32]);
+        }
+        // Phase `legacy_path_is_adopted_when_device_key_is_absent`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = tilo_user_identity::IdentityPaths::under(dir.path()).device_privkey;
+            let legacy = dir.path().join("tilo-fs/peer-key");
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(&legacy, legacy_protobuf([8; 32])).unwrap();
+
+            let key = load_or_create_keypair_with_legacy(&path, &legacy).unwrap();
+            assert_eq!(key.to_bytes(), [8; 32]);
+            assert_eq!(std::fs::read(path).unwrap(), [8; 32]);
+        }
+        // Phase `legacy_peer_id_maps_to_same_iroh_public_key`.
+        {
+            let signing = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+            let mut peer_id = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+            peer_id.extend_from_slice(&signing.verifying_key().to_bytes());
+            let peer_id = bs58::encode(peer_id).into_string();
+            assert_eq!(
+                endpoint_from_legacy_peer_id(&peer_id),
+                Some(iroh::SecretKey::from_bytes(&[9; 32]).public())
+            );
+        }
+        // Phase `liveness_and_salt_are_stable`.
+        {
+            let key = iroh::SecretKey::from_bytes(&[3; 32]);
+            assert_eq!(peer_salt_from_keypair(&key), peer_salt_from_keypair(&key));
+            assert_eq!(
+                peer_liveness_handle(&key.public()),
+                peer_liveness_handle(&key.public())
+            );
+            assert_ne!(
+                peer_liveness_handle(&key.public()),
+                peer_liveness_handle(&iroh::SecretKey::from_bytes(&[4; 32]).public())
+            );
+        }
     }
 
     fn legacy_protobuf(seed: [u8; 32]) -> Vec<u8> {
@@ -199,62 +254,6 @@ mod tests {
         bytes.extend_from_slice(&seed);
         bytes.extend_from_slice(&signing.verifying_key().to_bytes());
         bytes
-    }
-
-    #[test]
-    fn protobuf_device_key_is_migrated_in_place() {
-        #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("device/keypair.bin");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, legacy_protobuf([7; 32])).unwrap();
-        #[cfg(unix)]
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let key = load_or_create_keypair_with_legacy(&path, &dir.path().join("unused")).unwrap();
-        assert_eq!(key.to_bytes(), [7; 32]);
-        assert_eq!(std::fs::read(path).unwrap(), [7; 32]);
-    }
-
-    #[test]
-    fn legacy_path_is_adopted_when_device_key_is_absent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = tilo_user_identity::IdentityPaths::under(dir.path()).device_privkey;
-        let legacy = dir.path().join("tilo-fs/peer-key");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, legacy_protobuf([8; 32])).unwrap();
-
-        let key = load_or_create_keypair_with_legacy(&path, &legacy).unwrap();
-        assert_eq!(key.to_bytes(), [8; 32]);
-        assert_eq!(std::fs::read(path).unwrap(), [8; 32]);
-    }
-
-    #[test]
-    fn legacy_peer_id_maps_to_same_iroh_public_key() {
-        let signing = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut peer_id = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
-        peer_id.extend_from_slice(&signing.verifying_key().to_bytes());
-        let peer_id = bs58::encode(peer_id).into_string();
-        assert_eq!(
-            endpoint_from_legacy_peer_id(&peer_id),
-            Some(iroh::SecretKey::from_bytes(&[9; 32]).public())
-        );
-    }
-
-    #[test]
-    fn liveness_and_salt_are_stable() {
-        let key = iroh::SecretKey::from_bytes(&[3; 32]);
-        assert_eq!(peer_salt_from_keypair(&key), peer_salt_from_keypair(&key));
-        assert_eq!(
-            peer_liveness_handle(&key.public()),
-            peer_liveness_handle(&key.public())
-        );
-        assert_ne!(
-            peer_liveness_handle(&key.public()),
-            peer_liveness_handle(&iroh::SecretKey::from_bytes(&[4; 32]).public())
-        );
     }
 
     #[cfg(unix)]

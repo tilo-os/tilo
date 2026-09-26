@@ -534,50 +534,54 @@ fn article(s: &mut Store, fixture: SampleArticle<'_>) {
 mod tests {
     use super::*;
 
+    /// The sample store covers every demo surface and preserves article states and inferred tags.
     #[test]
-    fn sample_store_covers_every_demo_surface() {
-        let s = store();
-        assert_eq!(s.folders.len(), 3);
-        assert_eq!(s.feeds.len(), 7);
-        assert_eq!(s.articles.len(), 16);
-        assert!(s.feeds.iter().any(|f| f.kind == FeedKind::Gemini));
+    fn sample_store_covers_demo_surfaces_and_preserves_states() {
+        // --- phase: sample_store_covers_every_demo_surface ---
+        {
+            let s = store();
+            assert_eq!(s.folders.len(), 3);
+            assert_eq!(s.feeds.len(), 7);
+            assert_eq!(s.articles.len(), 16);
+            assert!(s.feeds.iter().any(|f| f.kind == FeedKind::Gemini));
 
-        // The gemini article has gemtext-derived blocks (incl. a link).
-        let gem_feed = s.feeds.iter().find(|f| f.kind == FeedKind::Gemini).unwrap();
-        let gem_art = s
-            .articles
-            .iter()
-            .find(|a| a.feed_id == gem_feed.id)
-            .unwrap();
-        assert!(gem_art.blocks.iter().any(|b| b.kind == BlockKind::Link));
-    }
-
-    #[test]
-    fn sample_article_states_and_inferred_tags_are_preserved() {
-        let s = store();
-        let article = |title: &str| {
-            s.articles
+            // The gemini article has gemtext-derived blocks (incl. a link).
+            let gem_feed = s.feeds.iter().find(|f| f.kind == FeedKind::Gemini).unwrap();
+            let gem_art = s
+                .articles
                 .iter()
-                .find(|article| article.title == title)
-                .unwrap()
-        };
+                .find(|a| a.feed_id == gem_feed.id)
+                .unwrap();
+            assert!(gem_art.blocks.iter().any(|b| b.kind == BlockKind::Link));
+        }
 
-        let release = article("Announcing Rust 1.84.0");
-        assert!(!release.read);
-        assert!(release.starred);
-        assert_eq!(release.tags, ["rust"]);
+        // --- phase: sample_article_states_and_inferred_tags_are_preserved ---
+        {
+            let s = store();
+            let article = |title: &str| {
+                s.articles
+                    .iter()
+                    .find(|article| article.title == title)
+                    .unwrap()
+            };
 
-        let borrow_checker = article("A new era for the borrow checker");
-        assert!(borrow_checker.read);
-        assert!(!borrow_checker.starred);
-        assert!(borrow_checker.tags.is_empty());
+            let release = article("Announcing Rust 1.84.0");
+            assert!(!release.read);
+            assert!(release.starred);
+            assert_eq!(release.tags, ["rust"]);
 
-        let knot = article("Mathematicians prove a long-standing knot conjecture");
-        assert!(!knot.read);
-        assert!(knot.starred);
-        assert_eq!(knot.tags, ["science"]);
+            let borrow_checker = article("A new era for the borrow checker");
+            assert!(borrow_checker.read);
+            assert!(!borrow_checker.starred);
+            assert!(borrow_checker.tags.is_empty());
 
-        let collaboration = article("Designing for the CRDT era");
-        assert_eq!(collaboration.tags, ["design"]);
+            let knot = article("Mathematicians prove a long-standing knot conjecture");
+            assert!(!knot.read);
+            assert!(knot.starred);
+            assert_eq!(knot.tags, ["science"]);
+
+            let collaboration = article("Designing for the CRDT era");
+            assert_eq!(collaboration.tags, ["design"]);
+        }
     }
 }

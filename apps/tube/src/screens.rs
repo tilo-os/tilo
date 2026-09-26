@@ -2953,38 +2953,39 @@ mod selected_contrast_tests {
     }
 
     #[test]
-    fn selected_accent_fill_is_readable() {
-        for (name, t) in themes() {
-            let s = selected_accent_fill(&t);
-            assert!(
-                s.ratio() >= AA_BODY,
-                "[{name}] selected chip/pill contrast {:.2} < {AA_BODY}",
-                s.ratio()
-            );
+    fn selected_and_active_fills_are_readable_in_every_theme() {
+        // Case `selected_accent_fill_is_readable`.
+        {
+            for (name, t) in themes() {
+                let s = selected_accent_fill(&t);
+                assert!(
+                    s.ratio() >= AA_BODY,
+                    "[{name}] selected chip/pill contrast {:.2} < {AA_BODY}",
+                    s.ratio()
+                );
+            }
         }
-    }
-
-    #[test]
-    fn selected_nav_item_is_readable() {
-        for (name, t) in themes() {
-            let s = selected_nav_item(&t);
-            assert!(
-                s.ratio() >= AA_BODY,
-                "[{name}] selected nav-item contrast {:.2} < {AA_BODY}",
-                s.ratio()
-            );
+        // Case `selected_nav_item_is_readable`.
+        {
+            for (name, t) in themes() {
+                let s = selected_nav_item(&t);
+                assert!(
+                    s.ratio() >= AA_BODY,
+                    "[{name}] selected nav-item contrast {:.2} < {AA_BODY}",
+                    s.ratio()
+                );
+            }
         }
-    }
-
-    #[test]
-    fn status_pill_on_is_readable() {
-        for (name, t) in themes() {
-            let s = status_pill_on(&t);
-            assert!(
-                s.ratio() >= AA_BODY,
-                "[{name}] on status-pill contrast {:.2} < {AA_BODY}",
-                s.ratio()
-            );
+        // Case `status_pill_on_is_readable`.
+        {
+            for (name, t) in themes() {
+                let s = status_pill_on(&t);
+                assert!(
+                    s.ratio() >= AA_BODY,
+                    "[{name}] on status-pill contrast {:.2} < {AA_BODY}",
+                    s.ratio()
+                );
+            }
         }
     }
 }
@@ -3015,184 +3016,110 @@ mod search_screen_tests {
         ui::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
-    /// Search preserves query/result context after the top bar scrolls away,
-    /// and its type-filter chips remain available to narrow by kind.
     #[test]
-    fn search_screen_has_type_chips_and_result_context() {
-        use crate::model::Route;
-
-        fn has_id(w: &dyn Widget, id: &str) -> bool {
-            if w.test_id() == Some(id) {
-                return true;
-            }
-            w.children().iter().any(|c| has_id(*c, id))
-        }
-
-        let mut model = crate::sample::model();
-        let mut v = model.videos[0].clone();
-        v.id = "only".into();
-        model.videos = vec![v];
-        model.search_hits_query = "q".into();
-        model.search_hits = vec!["only".into()];
-        model.route = Route::Search("q".into());
-
-        let theme = Theme::dark();
-        let bus = crate::action::new_bus();
-        let mut screen = search(&model, &theme, &bus, Imgs::none(), "q");
-
-        let (w, h) = (1280.0f32, 800.0f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w),
-                        height: length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-
-        assert!(
-            has_id(&screen, "search_type_chips"),
-            "the Video·Playlist·Creator chips are present"
-        );
-        assert!(
-            has_id(&screen, "search_results_summary"),
-            "a sparse result set retains visible result-count context"
-        );
-        assert!(
-            has_id(&screen, "sparse_video_result"),
-            "a lone result uses the centered, constrained desktop composition"
-        );
-        for label in ["video", "playlist", "creator"] {
-            assert!(
-                has_id(&screen, &format!("type_chip_{label}")),
-                "the {label} type chip is present",
-            );
-        }
-    }
-
-    #[test]
-    fn palette_keeps_a_touch_safe_inset_at_the_narrow_breakpoint() {
-        fn rect_for_id(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            w.children()
-                .iter()
-                .find_map(|child| rect_for_id(*child, id))
-        }
-
-        let mut model = crate::sample::model();
-        model.palette_open = true;
-        model.palette_query = "rust".into();
-        let palette_query = ui::LocalState::new(model.palette_query.clone());
-        let theme = Theme::dark();
-        let bus = crate::action::new_bus();
-        let mut palette =
-            command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
-        let (w, h) = (560.0f32, 720.0f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w),
-                        height: length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .expect("root layout node");
-        let mut tr = TextRenderer::new();
-        let map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w),
-                    height: AvailableSpace::Definite(h),
-                },
-                |known, available, node_id, _, _| {
-                    map.get(&node_id).map_or(taffy::Size::ZERO, |ptr| unsafe {
-                        (**ptr).measure(known, available, &mut tr)
-                    })
-                },
-            )
-            .expect("palette layout");
-        palette.apply_layout(&taffy, child, Point::ORIGIN);
-        let card = rect_for_id(&palette, "palette_card").expect("palette card rect");
-        assert!(
-            card.x0 >= 16.0 && card.x1 <= 544.0,
-            "card has safe side insets: {card:?}"
-        );
-        assert!(
-            (card.width() - 526.4).abs() < 1.0,
-            "94% narrow width preserves the 560px max-width composition: {card:?}"
-        );
-    }
-
-    /// Rendered through the real `search` screen with an image store that has
-    /// decoded the result's thumbnail URL, a search-result card must emit an
-    /// IMAGE draw (the real still), not just the gradient poster — the same
-    /// `video_card` image path Home/Trending use.
-    #[test]
-    fn search_result_row_paints_the_fetched_thumbnail() {
-        let fetcher: ui::image_store::Fetcher = Arc::new(|_u: &str| Some(px_png()));
-        let store = ui::ImageStore::new(&fetcher);
-
-        let mut model = crate::sample::model();
-        let mut v = model.videos[0].clone();
-        v.thumbnail_url = "https://i.ytimg.com/vi/testresult/hqdefault.jpg".to_string();
-        let vid = v.id.clone();
-        let thumb = v.thumbnail_url.clone();
-        model.videos = vec![v];
-        model.search_hits_query = "q".to_string();
-        model.search_hits = vec![vid];
-        model.route = Route::Search("q".to_string());
-
-        // Pre-warm the store so the build captures the decoded image.
-        store.get(&thumb);
-        store.block_until_idle(Duration::from_secs(5));
-        assert!(
-            store.get(&thumb).is_some(),
-            "the result thumbnail decoded + cached"
-        );
-
-        let theme = Theme::dark();
-        let bus = crate::action::new_bus();
-        let imgs = Imgs(Some(&store));
-        let mut screen = search(&model, &theme, &bus, imgs, "q");
-
-        // Lay the real screen out in a definite viewport, then draw it.
-        let (w, h) = (1280.0f32, 800.0f32);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w),
-                        height: length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn search_screen_lays_out_chips_inset_and_thumbnails() {
+        // Case `search_screen_has_type_chips_and_result_context`:
+        // Search preserves query/result context after the top bar scrolls away,
+        // and its type-filter chips remain available to narrow by kind.
         {
+            use crate::model::Route;
+
+            fn has_id(w: &dyn Widget, id: &str) -> bool {
+                if w.test_id() == Some(id) {
+                    return true;
+                }
+                w.children().iter().any(|c| has_id(*c, id))
+            }
+
+            let mut model = crate::sample::model();
+            let mut v = model.videos[0].clone();
+            v.id = "only".into();
+            model.videos = vec![v];
+            model.search_hits_query = "q".into();
+            model.search_hits = vec!["only".into()];
+            model.route = Route::Search("q".into());
+
+            let theme = Theme::dark();
+            let bus = crate::action::new_bus();
+            let mut screen = search(&model, &theme, &bus, Imgs::none(), "q");
+
+            let (w, h) = (1280.0f32, 800.0f32);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(w),
+                            height: length(h),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+
+            assert!(
+                has_id(&screen, "search_type_chips"),
+                "the Video·Playlist·Creator chips are present"
+            );
+            assert!(
+                has_id(&screen, "search_results_summary"),
+                "a sparse result set retains visible result-count context"
+            );
+            assert!(
+                has_id(&screen, "sparse_video_result"),
+                "a lone result uses the centered, constrained desktop composition"
+            );
+            for label in ["video", "playlist", "creator"] {
+                assert!(
+                    has_id(&screen, &format!("type_chip_{label}")),
+                    "the {label} type chip is present",
+                );
+            }
+        }
+        // Case `palette_keeps_a_touch_safe_inset_at_the_narrow_breakpoint`.
+        {
+            fn rect_for_id(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+                if w.test_id() == Some(id) {
+                    return Some(w.get_rect());
+                }
+                w.children()
+                    .iter()
+                    .find_map(|child| rect_for_id(*child, id))
+            }
+
+            let mut model = crate::sample::model();
+            model.palette_open = true;
+            model.palette_query = "rust".into();
+            let palette_query = ui::LocalState::new(model.palette_query.clone());
+            let theme = Theme::dark();
+            let bus = crate::action::new_bus();
+            let mut palette =
+                command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
+            let (w, h) = (560.0f32, 720.0f32);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(w),
+                            height: length(h),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .expect("root layout node");
+            let mut tr = TextRenderer::new();
             let map = node_map.clone();
-            let trr = &mut tr;
             taffy
                 .compute_layout_with_measure(
                     root,
@@ -3201,40 +3128,119 @@ mod search_screen_tests {
                         height: AvailableSpace::Definite(h),
                     },
                     |known, available, node_id, _, _| {
-                        if let Some(&ptr) = map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
+                        map.get(&node_id).map_or(taffy::Size::ZERO, |ptr| unsafe {
+                            (**ptr).measure(known, available, &mut tr)
+                        })
                     },
                 )
-                .unwrap();
+                .expect("palette layout");
+            palette.apply_layout(&taffy, child, Point::ORIGIN);
+            let card = rect_for_id(&palette, "palette_card").expect("palette card rect");
+            assert!(
+                card.x0 >= 16.0 && card.x1 <= 544.0,
+                "card has safe side insets: {card:?}"
+            );
+            assert!(
+                (card.width() - 526.4).abs() < 1.0,
+                "94% narrow width preserves the 560px max-width composition: {card:?}"
+            );
         }
-        screen.apply_layout(&taffy, child, Point::ORIGIN);
+        // Case `search_result_row_paints_the_fetched_thumbnail`:
+        // Rendered through the real `search` screen with an image store that has
+        // decoded the result's thumbnail URL, a search-result card must emit an
+        // IMAGE draw (the real still), not just the gradient poster — the same
+        // `video_card` image path Home/Trending use.
+        {
+            let fetcher: ui::image_store::Fetcher = Arc::new(|_u: &str| Some(px_png()));
+            let store = ui::ImageStore::new(&fetcher);
 
-        // The thumbnail resolves its decoded image lazily in `sync` (from the
-        // pre-warmed store), so run it — the real per-frame path — before drawing.
-        let mut doc = automerge::AutoCommit::new();
-        let root_obj = automerge::ROOT;
-        screen.sync(&mut doc, &root_obj);
+            let mut model = crate::sample::model();
+            let mut v = model.videos[0].clone();
+            v.thumbnail_url = "https://i.ytimg.com/vi/testresult/hqdefault.jpg".to_string();
+            let vid = v.id.clone();
+            let thumb = v.thumbnail_url.clone();
+            model.videos = vec![v];
+            model.search_hits_query = "q".to_string();
+            model.search_hits = vec![vid];
+            model.route = Route::Search("q".to_string());
 
-        let mut scene = Scene::new();
-        screen.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let images = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::IMAGE)
-            .count();
-        assert!(
-            images >= 1,
-            "the search result row must paint the fetched thumbnail (IMAGE draw), got {images}"
-        );
+            // Pre-warm the store so the build captures the decoded image.
+            store.get(&thumb);
+            store.block_until_idle(Duration::from_secs(5));
+            assert!(
+                store.get(&thumb).is_some(),
+                "the result thumbnail decoded + cached"
+            );
+
+            let theme = Theme::dark();
+            let bus = crate::action::new_bus();
+            let imgs = Imgs(Some(&store));
+            let mut screen = search(&model, &theme, &bus, imgs, "q");
+
+            // Lay the real screen out in a definite viewport, then draw it.
+            let (w, h) = (1280.0f32, 800.0f32);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let mut tr = TextRenderer::new();
+            let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(w),
+                            height: length(h),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            {
+                let map = node_map.clone();
+                let trr = &mut tr;
+                taffy
+                    .compute_layout_with_measure(
+                        root,
+                        taffy::Size {
+                            width: AvailableSpace::Definite(w),
+                            height: AvailableSpace::Definite(h),
+                        },
+                        |known, available, node_id, _, _| {
+                            if let Some(&ptr) = map.get(&node_id) {
+                                unsafe { (*ptr).measure(known, available, trr) }
+                            } else {
+                                taffy::Size::ZERO
+                            }
+                        },
+                    )
+                    .unwrap();
+            }
+            screen.apply_layout(&taffy, child, Point::ORIGIN);
+
+            // The thumbnail resolves its decoded image lazily in `sync` (from the
+            // pre-warmed store), so run it — the real per-frame path — before drawing.
+            let mut doc = automerge::AutoCommit::new();
+            let root_obj = automerge::ROOT;
+            screen.sync(&mut doc, &root_obj);
+
+            let mut scene = Scene::new();
+            screen.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let images = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::IMAGE)
+                .count();
+            assert!(
+                images >= 1,
+                "the search result row must paint the fetched thumbnail (IMAGE draw), got {images}"
+            );
+        }
     }
 }

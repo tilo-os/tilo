@@ -247,54 +247,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_bluetoothctl_power_yes() {
-        let s = "Controller AA:BB\n\tName: Foo\n\tPowered: yes\n\tDiscoverable: no";
-        assert!(parse_bluetoothctl_power(s).unwrap());
-    }
-
-    #[test]
-    fn parse_bluetoothctl_power_no() {
-        let s = "\tPowered: no";
-        assert!(!parse_bluetoothctl_power(s).unwrap());
-    }
-
-    #[test]
-    fn parse_bluetoothctl_power_missing() {
-        assert!(parse_bluetoothctl_power("no Powered line").is_err());
-    }
-
-    #[test]
-    fn parse_bluetoothctl_devices_basic() {
-        let s = "\
-Device AA:BB:CC:DD:EE:01 AirPods Pro\n\
-Device AA:BB:CC:DD:EE:02 Magic Mouse\n\
-";
-        let v = parse_bluetoothctl_devices(s);
-        assert_eq!(v.len(), 2);
-        assert_eq!(v[0].0, "AA:BB:CC:DD:EE:01");
-        assert_eq!(v[0].1, "AirPods Pro");
-        assert_eq!(v[1].1, "Magic Mouse");
-    }
-
-    #[test]
-    fn parse_bluetoothctl_info_extracts_battery_and_connected() {
-        let s = "\
-Device AA:BB:CC:DD:EE:01\n\
-\tName: AirPods Pro\n\
-\tConnected: yes\n\
-\tBattery Percentage: 0x50 (80)\n\
-";
-        let (connected, battery) = parse_bluetoothctl_info(s);
-        assert!(connected);
-        assert_eq!(battery, 80);
-    }
-
-    #[test]
-    fn parse_bluetoothctl_info_no_battery_defaults_zero() {
-        let s = "\tConnected: no\n";
-        let (connected, battery) = parse_bluetoothctl_info(s);
-        assert!(!connected);
-        assert_eq!(battery, 0);
+    fn bluetoothctl_power_devices_and_info_parse_or_fail() {
+        // Phase `parse_bluetoothctl_power_yes`.
+        {
+            let s = "Controller AA:BB\n\tName: Foo\n\tPowered: yes\n\tDiscoverable: no";
+            assert!(parse_bluetoothctl_power(s).unwrap());
+        }
+        // Phase `parse_bluetoothctl_power_no`.
+        {
+            let s = "\tPowered: no";
+            assert!(!parse_bluetoothctl_power(s).unwrap());
+        }
+        // Phase `parse_bluetoothctl_power_missing`.
+        {
+            assert!(parse_bluetoothctl_power("no Powered line").is_err());
+        }
+        // Phase `parse_bluetoothctl_devices_basic`.
+        {
+            let s = "\
+    Device AA:BB:CC:DD:EE:01 AirPods Pro\n\
+    Device AA:BB:CC:DD:EE:02 Magic Mouse\n\
+    ";
+            let v = parse_bluetoothctl_devices(s);
+            assert_eq!(v.len(), 2);
+            assert_eq!(v[0].0, "AA:BB:CC:DD:EE:01");
+            assert_eq!(v[0].1, "AirPods Pro");
+            assert_eq!(v[1].1, "Magic Mouse");
+        }
+        // Phase `parse_bluetoothctl_info_extracts_battery_and_connected`.
+        {
+            let s = "\
+    Device AA:BB:CC:DD:EE:01\n\
+    \tName: AirPods Pro\n\
+    \tConnected: yes\n\
+    \tBattery Percentage: 0x50 (80)\n\
+    ";
+            let (connected, battery) = parse_bluetoothctl_info(s);
+            assert!(connected);
+            assert_eq!(battery, 80);
+        }
+        // Phase `parse_bluetoothctl_info_no_battery_defaults_zero`.
+        {
+            let s = "\tConnected: no\n";
+            let (connected, battery) = parse_bluetoothctl_info(s);
+            assert!(!connected);
+            assert_eq!(battery, 0);
+        }
     }
 
     fn device(path: &str, address: &str, paired: bool) -> DeviceInfo {
@@ -307,54 +305,54 @@ Device AA:BB:CC:DD:EE:01\n\
     }
 
     #[test]
-    fn handoff_address_resolution_is_case_insensitive_and_unique() {
-        let devices = vec![device(
-            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
-            "AA:BB:CC:DD:EE:FF",
-            false,
-        )];
-        assert_eq!(
-            unique_device_by_address(&devices, "aa:bb:cc:dd:ee:ff")
-                .unwrap()
-                .map(|device| device.path.as_str()),
-            Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
-        );
-    }
-
-    #[test]
-    fn handoff_address_resolution_rejects_cross_adapter_ambiguity() {
-        let devices = vec![
-            device("/org/bluez/hci0/dev_AA", "AA:BB:CC:DD:EE:FF", true),
-            device("/org/bluez/hci1/dev_AA", "AA:BB:CC:DD:EE:FF", false),
-        ];
-        assert!(
-            unique_device_by_address(&devices, "AA:BB:CC:DD:EE:FF")
+    fn handoff_addresses_resolve_uniquely_and_pairing_must_complete() {
+        // Phase `handoff_address_resolution_is_case_insensitive_and_unique`.
+        {
+            let devices = vec![device(
+                "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                "AA:BB:CC:DD:EE:FF",
+                false,
+            )];
+            assert_eq!(
+                unique_device_by_address(&devices, "aa:bb:cc:dd:ee:ff")
+                    .unwrap()
+                    .map(|device| device.path.as_str()),
+                Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+            );
+        }
+        // Phase `handoff_address_resolution_rejects_cross_adapter_ambiguity`.
+        {
+            let devices = vec![
+                device("/org/bluez/hci0/dev_AA", "AA:BB:CC:DD:EE:FF", true),
+                device("/org/bluez/hci1/dev_AA", "AA:BB:CC:DD:EE:FF", false),
+            ];
+            assert!(
+                unique_device_by_address(&devices, "AA:BB:CC:DD:EE:FF")
+                    .unwrap_err()
+                    .contains("ambiguous")
+            );
+        }
+        // Phase `handoff_address_validation_rejects_paths_and_partial_addresses`.
+        {
+            assert!(valid_bluetooth_address("AA:BB:CC:DD:EE:FF"));
+            assert!(valid_bluetooth_address("aa:bb:cc:dd:ee:ff"));
+            assert!(!valid_bluetooth_address("/org/bluez/hci0/dev_AA"));
+            assert!(!valid_bluetooth_address("AA:BB:CC:DD:EE"));
+            assert!(!valid_bluetooth_address("GG:BB:CC:DD:EE:FF"));
+        }
+        // Phase `handoff_pairing_requires_the_connection_to_complete`.
+        {
+            assert_eq!(
+                connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),
+                Ok(())
+            );
+            assert!(
+                connected_pair_outcome(tilo_bluez::PairOutcome::PairedNotConnected {
+                    reason: "accessory stayed busy".into(),
+                })
                 .unwrap_err()
-                .contains("ambiguous")
-        );
-    }
-
-    #[test]
-    fn handoff_address_validation_rejects_paths_and_partial_addresses() {
-        assert!(valid_bluetooth_address("AA:BB:CC:DD:EE:FF"));
-        assert!(valid_bluetooth_address("aa:bb:cc:dd:ee:ff"));
-        assert!(!valid_bluetooth_address("/org/bluez/hci0/dev_AA"));
-        assert!(!valid_bluetooth_address("AA:BB:CC:DD:EE"));
-        assert!(!valid_bluetooth_address("GG:BB:CC:DD:EE:FF"));
-    }
-
-    #[test]
-    fn handoff_pairing_requires_the_connection_to_complete() {
-        assert_eq!(
-            connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),
-            Ok(())
-        );
-        assert!(
-            connected_pair_outcome(tilo_bluez::PairOutcome::PairedNotConnected {
-                reason: "accessory stayed busy".into(),
-            })
-            .unwrap_err()
-            .contains("accessory stayed busy")
-        );
+                .contains("accessory stayed busy")
+            );
+        }
     }
 }

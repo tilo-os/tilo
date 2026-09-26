@@ -937,17 +937,37 @@ mod tests {
     }
 
     #[test]
-    fn rgba_acceptance_asks_only_for_system_memory_rgba() {
-        init();
-        // The compatibility path must never negotiate a GPU buffer that its
-        // consumer cannot paint.
-        let caps = sink_caps(FrameAcceptance::Rgba);
-        let s = caps.to_string();
-        assert!(s.contains("RGBA"), "{s}");
-        assert!(
-            !s.contains("DMABuf"),
-            "RGBA-only consumers must not be offered dmabuf: {s}"
-        );
+    fn rgba_caps_and_seek_flags_are_requested_exactly() {
+        // Phase `rgba_acceptance_asks_only_for_system_memory_rgba`.
+        {
+            init();
+            // The compatibility path must never negotiate a GPU buffer that its
+            // consumer cannot paint.
+            let caps = sink_caps(FrameAcceptance::Rgba);
+            let s = caps.to_string();
+            assert!(s.contains("RGBA"), "{s}");
+            assert!(
+                !s.contains("DMABuf"),
+                "RGBA-only consumers must not be offered dmabuf: {s}"
+            );
+        }
+        // Phase `accurate_seek_carries_the_accurate_flag_and_keyframe_seek_does_not`.
+        {
+            let a = SeekMode::Accurate.flags();
+            assert!(
+                a.contains(gst::SeekFlags::ACCURATE),
+                "exact frame requires ACCURATE"
+            );
+            assert!(a.contains(gst::SeekFlags::FLUSH));
+            assert!(
+                !a.contains(gst::SeekFlags::KEY_UNIT),
+                "KEY_UNIT would snap away from the requested time"
+            );
+
+            let k = SeekMode::Keyframe.flags();
+            assert!(k.contains(gst::SeekFlags::KEY_UNIT));
+            assert!(!k.contains(gst::SeekFlags::ACCURATE));
+        }
     }
 
     #[test]
@@ -991,23 +1011,5 @@ mod tests {
             rest.contains("P010_10LE"),
             "10-bit remains reachable: {rest}"
         );
-    }
-
-    #[test]
-    fn accurate_seek_carries_the_accurate_flag_and_keyframe_seek_does_not() {
-        let a = SeekMode::Accurate.flags();
-        assert!(
-            a.contains(gst::SeekFlags::ACCURATE),
-            "exact frame requires ACCURATE"
-        );
-        assert!(a.contains(gst::SeekFlags::FLUSH));
-        assert!(
-            !a.contains(gst::SeekFlags::KEY_UNIT),
-            "KEY_UNIT would snap away from the requested time"
-        );
-
-        let k = SeekMode::Keyframe.flags();
-        assert!(k.contains(gst::SeekFlags::KEY_UNIT));
-        assert!(!k.contains(gst::SeekFlags::ACCURATE));
     }
 }

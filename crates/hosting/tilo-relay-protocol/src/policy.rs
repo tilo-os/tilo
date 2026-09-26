@@ -88,54 +88,68 @@ mod tests {
         (cert, user.public_key)
     }
 
+    /// Every policy variant against admitted and refused certificates. The
+    /// `own` key argument is what `admits` compares against for the default
+    /// policy; allow-lists look only at the cert's user key and the list.
     #[test]
-    fn default_admits_matching_user() {
-        let (cert, own_pk) = fresh_cert("Alice");
-        assert!(TrustPolicy::default().admits(&cert, &own_pk));
-    }
-
-    #[test]
-    fn matching_user_rejects_others() {
+    fn trust_policies_admit_exactly_their_users() {
         let (cert_alice, alice_pk) = fresh_cert("Alice");
-        let (_, bob_pk) = fresh_cert("Bob");
-        assert!(TrustPolicy::default().admits(&cert_alice, &alice_pk));
-        assert!(!TrustPolicy::default().admits(&cert_alice, &bob_pk));
-    }
-
-    #[test]
-    fn allow_list_admits_listed_user() {
-        let (cert_alice, alice_pk) = fresh_cert("Alice");
-        let (_, bob_pk) = fresh_cert("Bob");
-        let policy = TrustPolicy::AllowList {
+        let (cert_bob, bob_pk) = fresh_cert("Bob");
+        let (cert_anyone, _) = fresh_cert("Anyone");
+        let alice_only = TrustPolicy::AllowList {
             users: vec![hex::encode(alice_pk)],
         };
-        // Bob's pubkey argument does not matter — the policy looks
-        // only at the cert's user pk and the list.
-        assert!(policy.admits(&cert_alice, &bob_pk));
-    }
-
-    #[test]
-    fn allow_list_rejects_unlisted() {
-        let (cert_bob, _bob_pk) = fresh_cert("Bob");
-        let (_, alice_pk) = fresh_cert("Alice");
-        let policy = TrustPolicy::AllowList {
-            users: vec![hex::encode(alice_pk)],
-        };
-        assert!(!policy.admits(&cert_bob, &[0u8; 32]));
-    }
-
-    #[test]
-    fn allow_any_admits_any() {
-        let (cert, _) = fresh_cert("Anyone");
-        assert!(TrustPolicy::AllowAny.admits(&cert, &[0u8; 32]));
-    }
-
-    #[test]
-    fn allow_list_ignores_bad_hex() {
-        let (cert_alice, _) = fresh_cert("Alice");
-        let policy = TrustPolicy::AllowList {
+        let bad_hex = TrustPolicy::AllowList {
             users: vec!["not-hex".into(), "00".repeat(31)],
         };
-        assert!(!policy.admits(&cert_alice, &[0u8; 32]));
+        let cases: [(&str, &TrustPolicy, &DeviceCert, &[u8; 32], bool); 6] = [
+            (
+                "default admits matching user",
+                &TrustPolicy::default(),
+                &cert_alice,
+                &alice_pk,
+                true,
+            ),
+            (
+                "matching user rejects others",
+                &TrustPolicy::default(),
+                &cert_alice,
+                &bob_pk,
+                false,
+            ),
+            // Bob's pubkey argument does not matter — the policy looks
+            // only at the cert's user pk and the list.
+            (
+                "allow list admits listed user",
+                &alice_only,
+                &cert_alice,
+                &bob_pk,
+                true,
+            ),
+            (
+                "allow list rejects unlisted",
+                &alice_only,
+                &cert_bob,
+                &[0u8; 32],
+                false,
+            ),
+            (
+                "allow any admits any",
+                &TrustPolicy::AllowAny,
+                &cert_anyone,
+                &[0u8; 32],
+                true,
+            ),
+            (
+                "allow list ignores bad hex",
+                &bad_hex,
+                &cert_alice,
+                &[0u8; 32],
+                false,
+            ),
+        ];
+        for (name, policy, cert, own, want) in cases {
+            assert_eq!(policy.admits(cert, own), want, "case {name}");
+        }
     }
 }

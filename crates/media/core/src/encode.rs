@@ -588,648 +588,655 @@ mod tests {
     }
 
     #[test]
-    fn a_registered_hardware_encoder_wins_over_every_software_one() {
-        // The machine this was written on has no H.264 hardware encoder, so
-        // the only way to prove the hardware branch is to hand the selector a
-        // registry that has one.
-        for (present, want, family) in [
-            (
-                &["vah264enc", "x264enc", "openh264enc"][..],
-                "vah264enc",
-                EncoderKind::Va,
-            ),
-            (
-                &["nvh264enc", "x264enc", "openh264enc"][..],
-                "nvh264enc",
-                EncoderKind::NvCodec,
-            ),
-            (
-                &["qsvh264enc", "openh264enc"][..],
-                "qsvh264enc",
-                EncoderKind::Qsv,
-            ),
-            (
-                &["vah264lpenc", "openh264enc"][..],
-                "vah264lpenc",
-                EncoderKind::Va,
-            ),
-            (
-                &["vaapih264enc", "openh264enc"][..],
-                "vaapih264enc",
-                EncoderKind::Va,
-            ),
-        ] {
-            let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, registry(present));
-            assert_eq!(sel.spec.element, want, "with {present:?} installed");
-            assert_eq!(sel.spec.kind, family);
-            assert!(
-                sel.confirmed,
-                "the registry confirmed it: {}",
-                sel.describe()
-            );
-            assert!(
-                sel.is_hardware(),
-                "{want} is a hardware encoder: {}",
-                sel.describe()
-            );
-        }
-    }
-
-    #[test]
-    fn without_hardware_the_best_software_encoder_wins() {
-        // x264enc is preferred over openh264enc: openh264 writes Baseline
-        // profile only, so it is measurably worse at the same bitrate.
-        let sel = select_video(
-            VideoCodec::H264,
-            HwEncPolicy::Auto,
-            registry(&["x264enc", "openh264enc"]),
-        );
-        assert_eq!(sel.spec.element, "x264enc", "{}", sel.describe());
-        assert!(sel.confirmed);
-        assert!(!sel.is_hardware(), "x264 is software: {}", sel.describe());
-        assert!(
-            sel.passed_over.contains(&"vah264enc") && sel.passed_over.contains(&"nvh264enc"),
-            "the hardware encoders it looked for are reported: {:?}",
-            sel.passed_over,
-        );
-
-        // And openh264enc when that is genuinely all there is — the situation
-        // on the machine this was written on.
-        let sel = select_video(
-            VideoCodec::H264,
-            HwEncPolicy::Auto,
-            registry(&["openh264enc"]),
-        );
-        assert_eq!(sel.spec.element, "openh264enc", "{}", sel.describe());
-        assert!(!sel.is_hardware());
-    }
-
-    #[test]
-    fn an_empty_registry_never_reads_as_hardware() {
-        // The state that must not be mistaken for a yes: nothing was found.
-        let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, |_| false);
-        assert!(!sel.confirmed, "nothing was confirmed");
-        assert!(
-            !sel.is_hardware(),
-            "an unobserved selection is not a hardware claim"
-        );
-        assert_eq!(
-            sel.spec.element, "openh264enc",
-            "it falls back to the baseline"
-        );
-        assert!(
-            sel.describe().contains("nothing observed"),
-            "the description says it never looked: {}",
-            sel.describe(),
-        );
-
-        // Even when the baseline itself is a hardware element, an unconfirmed
-        // selection must not report hardware.
-        let unconfirmed = Selection {
-            spec: &H264[0],
-            confirmed: false,
-            passed_over: Vec::new(),
-        };
-        assert!(
-            unconfirmed.spec.kind.is_hardware(),
-            "vah264enc is a hardware element"
-        );
-        assert!(
-            !unconfirmed.is_hardware(),
-            "unconfirmed outranks the family: {}",
-            unconfirmed.describe(),
-        );
-    }
-
-    #[test]
-    fn policy_off_refuses_hardware_even_when_it_is_installed() {
-        let full = registry(&["vah264enc", "nvh264enc", "x264enc", "openh264enc"]);
-        let auto = select_video(VideoCodec::H264, HwEncPolicy::Auto, &full);
-        assert!(
-            auto.is_hardware(),
-            "auto takes the GPU: {}",
-            auto.describe()
-        );
-
-        let off = select_video(VideoCodec::H264, HwEncPolicy::Off, &full);
-        assert_eq!(off.spec.element, "x264enc", "{}", off.describe());
-        assert!(!off.is_hardware(), "off means software: {}", off.describe());
-    }
-
-    #[test]
-    fn a_forced_family_outranks_other_hardware_but_falls_back_to_software() {
-        let both = registry(&["vah264enc", "nvh264enc", "openh264enc"]);
-        let forced = select_video(
-            VideoCodec::H264,
-            HwEncPolicy::Force(EncoderKind::NvCodec),
-            &both,
-        );
-        assert_eq!(
-            forced.spec.element,
-            "nvh264enc",
-            "forced family wins: {}",
-            forced.describe()
-        );
-
-        // A forced family that cannot be found drops to software rather than
-        // silently using the other GPU vendor's encoder.
-        let only_va = registry(&["vah264enc", "openh264enc"]);
-        let forced = select_video(
-            VideoCodec::H264,
-            HwEncPolicy::Force(EncoderKind::NvCodec),
-            &only_va,
-        );
-        assert_eq!(
-            forced.spec.element,
-            "openh264enc",
-            "software before another vendor's hardware: {}",
-            forced.describe(),
-        );
-        assert!(!forced.is_hardware());
-    }
-
-    #[test]
-    fn every_codecs_hardware_candidates_precede_its_software_ones() {
-        for codec in [
-            VideoCodec::H264,
-            VideoCodec::Vp8,
-            VideoCodec::Vp9,
-            VideoCodec::Av1,
-        ] {
-            let c = codec.candidates();
-            assert!(!c.is_empty(), "{codec:?} has candidates");
-            let first_sw = c.iter().position(|s| !s.kind.is_hardware());
-            if let Some(i) = first_sw {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn encoder_choice_ranks_hardware_policy_and_software_fallbacks() {
+        // Phase `a_registered_hardware_encoder_wins_over_every_software_one`.
+        {
+            // The machine this was written on has no H.264 hardware encoder, so
+            // the only way to prove the hardware branch is to hand the selector a
+            // registry that has one.
+            for (present, want, family) in [
+                (
+                    &["vah264enc", "x264enc", "openh264enc"][..],
+                    "vah264enc",
+                    EncoderKind::Va,
+                ),
+                (
+                    &["nvh264enc", "x264enc", "openh264enc"][..],
+                    "nvh264enc",
+                    EncoderKind::NvCodec,
+                ),
+                (
+                    &["qsvh264enc", "openh264enc"][..],
+                    "qsvh264enc",
+                    EncoderKind::Qsv,
+                ),
+                (
+                    &["vah264lpenc", "openh264enc"][..],
+                    "vah264lpenc",
+                    EncoderKind::Va,
+                ),
+                (
+                    &["vaapih264enc", "openh264enc"][..],
+                    "vaapih264enc",
+                    EncoderKind::Va,
+                ),
+            ] {
+                let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, registry(present));
+                assert_eq!(sel.spec.element, want, "with {present:?} installed");
+                assert_eq!(sel.spec.kind, family);
                 assert!(
-                    c[i..].iter().all(|s| !s.kind.is_hardware()),
-                    "{codec:?} lists hardware after software: {:?}",
-                    c.iter().map(|s| s.element).collect::<Vec<_>>(),
+                    sel.confirmed,
+                    "the registry confirmed it: {}",
+                    sel.describe()
+                );
+                assert!(
+                    sel.is_hardware(),
+                    "{want} is a hardware encoder: {}",
+                    sel.describe()
                 );
             }
         }
-    }
+        // Phase `without_hardware_the_best_software_encoder_wins`.
+        {
+            // x264enc is preferred over openh264enc: openh264 writes Baseline
+            // profile only, so it is measurably worse at the same bitrate.
+            let sel = select_video(
+                VideoCodec::H264,
+                HwEncPolicy::Auto,
+                registry(&["x264enc", "openh264enc"]),
+            );
+            assert_eq!(sel.spec.element, "x264enc", "{}", sel.describe());
+            assert!(sel.confirmed);
+            assert!(!sel.is_hardware(), "x264 is software: {}", sel.describe());
+            assert!(
+                sel.passed_over.contains(&"vah264enc") && sel.passed_over.contains(&"nvh264enc"),
+                "the hardware encoders it looked for are reported: {:?}",
+                sel.passed_over,
+            );
 
-    #[test]
-    fn bitrate_is_converted_into_each_encoders_own_unit() {
-        let target = 16_000_000u64; // 16 Mbit/s, the 1080p preset.
-
-        let openh264 = H264.iter().find(|s| s.element == "openh264enc").unwrap();
-        assert_eq!(
-            openh264.bitrate_arg(target),
-            "bitrate=16000000",
-            "openh264enc counts in bits per second",
-        );
-
-        let x264 = H264.iter().find(|s| s.element == "x264enc").unwrap();
-        assert_eq!(
-            x264.bitrate_arg(target),
-            "bitrate=16000",
-            "x264enc counts in kilobits — the same number would ask it for 16 Gbit/s",
-        );
-
-        let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
-        assert_eq!(
-            va.bitrate_arg(target),
-            "bitrate=16000",
-            "VA-API counts in kilobits"
-        );
-
-        let vp8 = VP8.iter().find(|s| s.element == "vp8enc").unwrap();
-        assert_eq!(
-            vp8.bitrate_arg(target),
-            "target-bitrate=16000000",
-            "libvpx spells the property differently and counts in bits",
-        );
-    }
-
-    #[test]
-    fn a_kilobit_encoder_never_rounds_a_real_bitrate_down_to_auto() {
-        let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
-        // 0 is the encoders' own "auto" and must survive as such.
-        assert_eq!(va.bitrate_value(0), 0);
-        // Anything genuinely requested must not become it.
-        for bps in [1u64, 500, 999] {
+            // And openh264enc when that is genuinely all there is — the situation
+            // on the machine this was written on.
+            let sel = select_video(
+                VideoCodec::H264,
+                HwEncPolicy::Auto,
+                registry(&["openh264enc"]),
+            );
+            assert_eq!(sel.spec.element, "openh264enc", "{}", sel.describe());
+            assert!(!sel.is_hardware());
+        }
+        // Phase `an_empty_registry_never_reads_as_hardware`.
+        {
+            // The state that must not be mistaken for a yes: nothing was found.
+            let sel = select_video(VideoCodec::H264, HwEncPolicy::Auto, |_| false);
+            assert!(!sel.confirmed, "nothing was confirmed");
+            assert!(
+                !sel.is_hardware(),
+                "an unobserved selection is not a hardware claim"
+            );
             assert_eq!(
-                va.bitrate_value(bps),
-                1,
-                "{bps} bit/s must ask for the smallest real rate, not auto",
+                sel.spec.element, "openh264enc",
+                "it falls back to the baseline"
+            );
+            assert!(
+                sel.describe().contains("nothing observed"),
+                "the description says it never looked: {}",
+                sel.describe(),
+            );
+
+            // Even when the baseline itself is a hardware element, an unconfirmed
+            // selection must not report hardware.
+            let unconfirmed = Selection {
+                spec: &H264[0],
+                confirmed: false,
+                passed_over: Vec::new(),
+            };
+            assert!(
+                unconfirmed.spec.kind.is_hardware(),
+                "vah264enc is a hardware element"
+            );
+            assert!(
+                !unconfirmed.is_hardware(),
+                "unconfirmed outranks the family: {}",
+                unconfirmed.describe(),
             );
         }
-        assert_eq!(va.bitrate_value(8_000_000), 8_000);
+        // Phase `policy_off_refuses_hardware_even_when_it_is_installed`.
+        {
+            let full = registry(&["vah264enc", "nvh264enc", "x264enc", "openh264enc"]);
+            let auto = select_video(VideoCodec::H264, HwEncPolicy::Auto, &full);
+            assert!(
+                auto.is_hardware(),
+                "auto takes the GPU: {}",
+                auto.describe()
+            );
 
-        // The highest export preset is nowhere near the cap, so real requests
-        // pass through untouched.
-        assert_eq!(va.bitrate_value(45_000_000), 45_000);
-    }
-
-    #[test]
-    fn policy_parsing_covers_the_documented_values_and_warns_on_the_rest() {
-        assert_eq!(HwEncPolicy::parse("auto"), HwEncPolicy::Auto);
-        assert_eq!(HwEncPolicy::parse(""), HwEncPolicy::Auto);
-        assert_eq!(HwEncPolicy::parse("off"), HwEncPolicy::Off);
-        assert_eq!(HwEncPolicy::parse(" OFF "), HwEncPolicy::Off);
-        assert_eq!(
-            HwEncPolicy::parse("va"),
-            HwEncPolicy::Force(EncoderKind::Va)
-        );
-        assert_eq!(
-            HwEncPolicy::parse("nvenc"),
-            HwEncPolicy::Force(EncoderKind::NvCodec)
-        );
-        assert_eq!(
-            HwEncPolicy::parse("qsv"),
-            HwEncPolicy::Force(EncoderKind::Qsv)
-        );
-        // A typo must not read as "off" — that would silently disable the GPU.
-        assert_eq!(HwEncPolicy::parse("vaapii"), HwEncPolicy::Auto);
-    }
-
-    #[test]
-    fn the_audio_choice_prefers_the_better_aac_encoder_and_still_lands_somewhere() {
-        let both = select_audio(
-            AudioCodec::Aac,
-            HwEncPolicy::Auto,
-            registry(&["fdkaacenc", "avenc_aac"]),
-        );
-        assert_eq!(
-            both.spec.element, "fdkaacenc",
-            "Fraunhofer is the better AAC encoder"
-        );
-
-        let libav = select_audio(AudioCodec::Aac, HwEncPolicy::Auto, registry(&["avenc_aac"]));
-        assert_eq!(
-            libav.spec.element, "avenc_aac",
-            "and libav's is the fallback"
-        );
-        assert!(libav.confirmed);
-
-        let opus = select_audio(AudioCodec::Opus, HwEncPolicy::Auto, registry(&["opusenc"]));
-        assert_eq!(opus.spec.element, "opusenc");
-    }
-
-    #[test]
-    fn an_encode_report_without_a_video_encoder_is_not_a_hardware_claim() {
-        let empty = EncodeReport::default();
-        assert!(!empty.is_hardware());
-        assert!(
-            empty.describe().contains("no video encoder selected"),
-            "{}",
-            empty.describe(),
-        );
-    }
-
-    /// The table's property names and units, checked against the elements this
-    /// machine actually has.
-    ///
-    /// A wrong property name is not a soft failure: `gst_parse_launch` rejects
-    /// "no property named X" and the export dies. A wrong *unit* is worse,
-    /// because nothing rejects it — the file is simply encoded at 1000× or
-    /// 1/1000× the rate the dialog quoted.
-    ///
-    /// This can only check what is installed, so on a machine with no hardware
-    /// encoder it verifies the software entries only. It fails outright when it
-    /// can check nothing at all, because a check that passes without looking is
-    /// exactly how a wrong table would survive.
-    #[cfg(feature = "encode")]
-    #[test]
-    fn declared_bitrate_properties_exist_on_the_real_elements() {
-        use gstreamer::prelude::*;
-
-        gstreamer::init().expect("gstreamer init");
-
-        let all: Vec<&EncoderSpec> = H264
-            .iter()
-            .chain(VP8)
-            .chain(VP9)
-            .chain(AV1)
-            .chain(AAC)
-            .chain(OPUS)
-            .collect();
-
-        let mut checked_property = Vec::new();
-        let mut checked_units = Vec::new();
-        for spec in &all {
-            let Some(factory) = gstreamer::ElementFactory::find(spec.element) else {
-                continue; // Not installed here; nothing to check.
-            };
-            let Ok(element) = factory.create().build() else {
-                continue; // Present but not instantiable (no device, no licence).
-            };
-            let pspec = element
-                .find_property(spec.bitrate_property)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{} has no property {:?} — the export pipeline would fail to build",
-                        spec.element, spec.bitrate_property,
-                    )
-                });
-            checked_property.push(spec.element);
-
-            // GStreamer property blurbs state the unit in words. Classify only
-            // the ones that say so unambiguously; an unclassifiable blurb is
-            // left alone rather than guessed at.
-            let blurb = pspec.blurb().unwrap_or_default().to_ascii_lowercase();
-            let says_kilobits = blurb.contains("kbps") || blurb.contains("kbit");
-            let says_bits = !says_kilobits
-                && (blurb.contains("bits per second")
-                    || blurb.contains("bits/sec")
-                    || blurb.contains("bits/s")
-                    || blurb.contains("in bps"));
-            if !says_kilobits && !says_bits {
-                continue;
-            }
-            let declared = spec.bitrate_units;
-            let observed = if says_kilobits {
-                BitrateUnits::KilobitsPerSecond
-            } else {
-                BitrateUnits::BitsPerSecond
-            };
+            let off = select_video(VideoCodec::H264, HwEncPolicy::Off, &full);
+            assert_eq!(off.spec.element, "x264enc", "{}", off.describe());
+            assert!(!off.is_hardware(), "off means software: {}", off.describe());
+        }
+        // Phase `a_forced_family_outranks_other_hardware_but_falls_back_to_software`.
+        {
+            let both = registry(&["vah264enc", "nvh264enc", "openh264enc"]);
+            let forced = select_video(
+                VideoCodec::H264,
+                HwEncPolicy::Force(EncoderKind::NvCodec),
+                &both,
+            );
             assert_eq!(
-                declared, observed,
-                "{}.{} is documented as {blurb:?}, but the table declares {declared:?} — \
-                 a 1000x bitrate error the encoder would accept in silence",
-                spec.element, spec.bitrate_property,
+                forced.spec.element,
+                "nvh264enc",
+                "forced family wins: {}",
+                forced.describe()
             );
-            checked_units.push(spec.element);
-        }
 
-        assert!(
-            !checked_property.is_empty(),
-            "this test verified nothing: none of {:?} is installed, so it cannot \
-             observe its subject and must not report success",
-            all.iter().map(|s| s.element).collect::<Vec<_>>(),
-        );
-        assert!(
-            !checked_units.is_empty(),
-            "the bitrate property exists on {checked_property:?} but not one of them \
-             documented its unit, so the units column went unverified",
-        );
-        eprintln!(
-            "encode: bitrate property verified on {checked_property:?}; \
-             units verified on {checked_units:?}",
-        );
-    }
-
-    /// The kilobit half of the units table, proved by encoding.
-    ///
-    /// The software encoders on this machine are all bits-per-second, so the
-    /// blurb check above never exercises the kilobit branch here. `vaav1enc`
-    /// does: it is a real VA-API hardware encoder on this box and it shares
-    /// `GstVaBaseEnc`'s `bitrate` property with `vah264enc`. Encoding the same
-    /// clip at two bitrates 20x apart and comparing file sizes shows the number
-    /// is read as kilobits — were it bits, a 8000 setting would produce a few
-    /// kilobytes rather than megabytes.
-    ///
-    /// Skipped only where the element is absent (no VA-API device); that is a
-    /// property of the machine, not of the code, and the blurb test above still
-    /// covers the table's other half.
-    #[cfg(feature = "encode")]
-    #[test]
-    fn a_va_encoder_reads_its_bitrate_as_kilobits() {
-        use gstreamer::prelude::*;
-
-        gstreamer::init().expect("gstreamer init");
-        let spec = AV1.iter().find(|s| s.element == "vaav1enc").unwrap();
-        assert_eq!(spec.bitrate_units, BitrateUnits::KilobitsPerSecond);
-        if gstreamer::ElementFactory::find(spec.element).is_none() {
-            eprintln!("encode: no vaav1enc on this machine; kilobit encode proof not run");
-            return;
-        }
-
-        let dir = std::env::temp_dir().join(format!("tilo-media-kbps-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let seconds = 5u64;
-        let mut sizes = Vec::new();
-        // 400 kbit/s and 8 Mbit/s, expressed in bits per second — the units the
-        // rest of the codebase speaks. bitrate_value does the conversion.
-        for bps in [400_000u64, 8_000_000] {
-            let out = dir.join(format!("{bps}.mkv"));
-            let desc = format!(
-                "videotestsrc pattern=ball num-buffers={frames} \
-                 ! video/x-raw,width=640,height=360,framerate=30/1 \
-                 ! videoconvert ! {el} {arg} ! av1parse ! matroskamux ! filesink name=probe_output",
-                frames = seconds * 30,
-                el = spec.element,
-                arg = spec.bitrate_arg(bps),
+            // A forced family that cannot be found drops to software rather than
+            // silently using the other GPU vendor's encoder.
+            let only_va = registry(&["vah264enc", "openh264enc"]);
+            let forced = select_video(
+                VideoCodec::H264,
+                HwEncPolicy::Force(EncoderKind::NvCodec),
+                &only_va,
             );
-            let pipeline = match gstreamer::parse::launch(&desc) {
-                Ok(p) => p.downcast::<gstreamer::Pipeline>().expect("a pipeline"),
-                Err(e) => {
-                    eprintln!("encode: vaav1enc pipeline would not build ({e}); proof not run");
-                    return;
+            assert_eq!(
+                forced.spec.element,
+                "openh264enc",
+                "software before another vendor's hardware: {}",
+                forced.describe(),
+            );
+            assert!(!forced.is_hardware());
+        }
+        // Phase `every_codecs_hardware_candidates_precede_its_software_ones`.
+        {
+            for codec in [
+                VideoCodec::H264,
+                VideoCodec::Vp8,
+                VideoCodec::Vp9,
+                VideoCodec::Av1,
+            ] {
+                let c = codec.candidates();
+                assert!(!c.is_empty(), "{codec:?} has candidates");
+                let first_sw = c.iter().position(|s| !s.kind.is_hardware());
+                if let Some(i) = first_sw {
+                    assert!(
+                        c[i..].iter().all(|s| !s.kind.is_hardware()),
+                        "{codec:?} lists hardware after software: {:?}",
+                        c.iter().map(|s| s.element).collect::<Vec<_>>(),
+                    );
                 }
+            }
+        }
+        // Phase `policy_parsing_covers_the_documented_values_and_warns_on_the_rest`.
+        {
+            assert_eq!(HwEncPolicy::parse("auto"), HwEncPolicy::Auto);
+            assert_eq!(HwEncPolicy::parse(""), HwEncPolicy::Auto);
+            assert_eq!(HwEncPolicy::parse("off"), HwEncPolicy::Off);
+            assert_eq!(HwEncPolicy::parse(" OFF "), HwEncPolicy::Off);
+            assert_eq!(
+                HwEncPolicy::parse("va"),
+                HwEncPolicy::Force(EncoderKind::Va)
+            );
+            assert_eq!(
+                HwEncPolicy::parse("nvenc"),
+                HwEncPolicy::Force(EncoderKind::NvCodec)
+            );
+            assert_eq!(
+                HwEncPolicy::parse("qsv"),
+                HwEncPolicy::Force(EncoderKind::Qsv)
+            );
+            // A typo must not read as "off" — that would silently disable the GPU.
+            assert_eq!(HwEncPolicy::parse("vaapii"), HwEncPolicy::Auto);
+        }
+        // Phase `the_audio_choice_prefers_the_better_aac_encoder_and_still_lands_somewhere`.
+        {
+            let both = select_audio(
+                AudioCodec::Aac,
+                HwEncPolicy::Auto,
+                registry(&["fdkaacenc", "avenc_aac"]),
+            );
+            assert_eq!(
+                both.spec.element, "fdkaacenc",
+                "Fraunhofer is the better AAC encoder"
+            );
+
+            let libav = select_audio(AudioCodec::Aac, HwEncPolicy::Auto, registry(&["avenc_aac"]));
+            assert_eq!(
+                libav.spec.element, "avenc_aac",
+                "and libav's is the fallback"
+            );
+            assert!(libav.confirmed);
+
+            let opus = select_audio(AudioCodec::Opus, HwEncPolicy::Auto, registry(&["opusenc"]));
+            assert_eq!(opus.spec.element, "opusenc");
+        }
+    }
+
+    #[test]
+    fn bitrate_units_and_size_predictions_follow_the_chosen_encoder() {
+        // Phase `bitrate_is_converted_into_each_encoders_own_unit`.
+        {
+            let target = 16_000_000u64; // 16 Mbit/s, the 1080p preset.
+
+            let openh264 = H264.iter().find(|s| s.element == "openh264enc").unwrap();
+            assert_eq!(
+                openh264.bitrate_arg(target),
+                "bitrate=16000000",
+                "openh264enc counts in bits per second",
+            );
+
+            let x264 = H264.iter().find(|s| s.element == "x264enc").unwrap();
+            assert_eq!(
+                x264.bitrate_arg(target),
+                "bitrate=16000",
+                "x264enc counts in kilobits — the same number would ask it for 16 Gbit/s",
+            );
+
+            let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
+            assert_eq!(
+                va.bitrate_arg(target),
+                "bitrate=16000",
+                "VA-API counts in kilobits"
+            );
+
+            let vp8 = VP8.iter().find(|s| s.element == "vp8enc").unwrap();
+            assert_eq!(
+                vp8.bitrate_arg(target),
+                "target-bitrate=16000000",
+                "libvpx spells the property differently and counts in bits",
+            );
+        }
+        // Phase `a_kilobit_encoder_never_rounds_a_real_bitrate_down_to_auto`.
+        {
+            let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
+            // 0 is the encoders' own "auto" and must survive as such.
+            assert_eq!(va.bitrate_value(0), 0);
+            // Anything genuinely requested must not become it.
+            for bps in [1u64, 500, 999] {
+                assert_eq!(
+                    va.bitrate_value(bps),
+                    1,
+                    "{bps} bit/s must ask for the smallest real rate, not auto",
+                );
+            }
+            assert_eq!(va.bitrate_value(8_000_000), 8_000);
+
+            // The highest export preset is nowhere near the cap, so real requests
+            // pass through untouched.
+            assert_eq!(va.bitrate_value(45_000_000), 45_000);
+        }
+        // Phase `a_size_is_only_predictable_from_a_confirmed_rate_controlling_encoder`.
+        // A size predicted from the requested bitrate is only meaningful where
+        // the encoder tracks the request and the encoder was actually found.
+        {
+            let tracking = H264.iter().find(|s| s.element == "x264enc").unwrap();
+            let untracked = H264.iter().find(|s| s.element == "openh264enc").unwrap();
+            assert!(
+                untracked.ignores_bitrate,
+                "openh264enc is the measured exception"
+            );
+            assert!(
+                !tracking.ignores_bitrate,
+                "nothing has been observed about x264enc"
+            );
+
+            let sel = |spec: &'static EncoderSpec, confirmed: bool| Selection {
+                spec,
+                confirmed,
+                passed_over: Vec::new(),
             };
-            pipeline
-                .by_name("probe_output")
-                .expect("output sink")
-                .set_property("location", out.to_str().expect("UTF-8 scratch path"));
-            if pipeline.set_state(gstreamer::State::Playing).is_err() {
-                eprintln!("encode: vaav1enc would not start; proof not run");
-                let _ = pipeline.set_state(gstreamer::State::Null);
+            assert!(
+                sel(tracking, true).bitrate_is_predictive(),
+                "a confirmed rate-controlling encoder can be quoted a size",
+            );
+            assert!(
+                !sel(untracked, true).bitrate_is_predictive(),
+                "an encoder measured to ignore its bitrate must not be quoted a size",
+            );
+            // Unconfirmed is "nothing observed", never "probably fine" — the same
+            // discipline `is_hardware` applies.
+            assert!(
+                !sel(tracking, false).bitrate_is_predictive(),
+                "an unconfirmed encoder has not been observed, so nothing follows from it",
+            );
+        }
+        // Phase `an_encode_report_without_a_video_encoder_is_not_a_hardware_claim`.
+        {
+            let empty = EncodeReport::default();
+            assert!(!empty.is_hardware());
+            assert!(
+                empty.describe().contains("no video encoder selected"),
+                "{}",
+                empty.describe(),
+            );
+        }
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn installed_encoder_elements_match_the_bitrate_table() {
+        // Phase `a_va_encoder_reads_its_bitrate_as_kilobits`.
+        // The kilobit half of the units table, proved by encoding.
+        //
+        // The software encoders on this machine are all bits-per-second, so the
+        // blurb check above never exercises the kilobit branch here. `vaav1enc`
+        // does: it is a real VA-API hardware encoder on this box and it shares
+        // `GstVaBaseEnc`'s `bitrate` property with `vah264enc`. Encoding the same
+        // clip at two bitrates 20x apart and comparing file sizes shows the number
+        // is read as kilobits — were it bits, a 8000 setting would produce a few
+        // kilobytes rather than megabytes.
+        //
+        // Skipped only where the element is absent (no VA-API device); that is a
+        // property of the machine, not of the code, and the blurb test above still
+        // covers the table's other half.
+        fn a_va_encoder_reads_its_bitrate_as_kilobits() {
+            use gstreamer::prelude::*;
+
+            gstreamer::init().expect("gstreamer init");
+            let spec = AV1.iter().find(|s| s.element == "vaav1enc").unwrap();
+            assert_eq!(spec.bitrate_units, BitrateUnits::KilobitsPerSecond);
+            if gstreamer::ElementFactory::find(spec.element).is_none() {
+                eprintln!("encode: no vaav1enc on this machine; kilobit encode proof not run");
                 return;
             }
-            let bus = pipeline.bus().expect("bus");
-            let msg = bus.timed_pop_filtered(
-                gstreamer::ClockTime::from_seconds(120),
-                &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
-            );
-            let _ = pipeline.set_state(gstreamer::State::Null);
-            match msg {
-                Some(m) if m.type_() == gstreamer::MessageType::Eos => {}
-                other => {
-                    eprintln!("encode: vaav1enc did not reach EOS ({other:?}); proof not run");
+
+            let dir = std::env::temp_dir().join(format!("tilo-media-kbps-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+            let seconds = 5u64;
+            let mut sizes = Vec::new();
+            // 400 kbit/s and 8 Mbit/s, expressed in bits per second — the units the
+            // rest of the codebase speaks. bitrate_value does the conversion.
+            for bps in [400_000u64, 8_000_000] {
+                let out = dir.join(format!("{bps}.mkv"));
+                let desc = format!(
+                    "videotestsrc pattern=ball num-buffers={frames} \
+                     ! video/x-raw,width=640,height=360,framerate=30/1 \
+                     ! videoconvert ! {el} {arg} ! av1parse ! matroskamux ! filesink name=probe_output",
+                    frames = seconds * 30,
+                    el = spec.element,
+                    arg = spec.bitrate_arg(bps),
+                );
+                let pipeline = match gstreamer::parse::launch(&desc) {
+                    Ok(p) => p.downcast::<gstreamer::Pipeline>().expect("a pipeline"),
+                    Err(e) => {
+                        eprintln!("encode: vaav1enc pipeline would not build ({e}); proof not run");
+                        return;
+                    }
+                };
+                pipeline
+                    .by_name("probe_output")
+                    .expect("output sink")
+                    .set_property("location", out.to_str().expect("UTF-8 scratch path"));
+                if pipeline.set_state(gstreamer::State::Playing).is_err() {
+                    eprintln!("encode: vaav1enc would not start; proof not run");
+                    let _ = pipeline.set_state(gstreamer::State::Null);
                     return;
                 }
-            }
-            sizes.push(std::fs::metadata(&out).map_or(0, |m| m.len()));
-        }
-
-        let (low, high) = (sizes[0], sizes[1]);
-        std::fs::remove_dir_all(&dir).ok();
-
-        // If `bitrate` were bits per second, asking for 8_000_000 bit/s would
-        // have written 8000 into it — five seconds of which is about 5 kB.
-        let as_if_bits = 8_000u64 * seconds / 8;
-        assert!(
-            high > as_if_bits * 20,
-            "5s at the 8 Mbit/s setting produced {high} bytes; if the property were read \
-             as bits per second it would be near {as_if_bits}",
-        );
-        // And the two settings must scale with each other: 20x the request,
-        // near enough 20x the bytes. Rate control is the driver's business, so
-        // this is a wide band — it is proving the unit, not the encoder.
-        let ratio = high as f64 / low.max(1) as f64;
-        assert!(
-            (5.0..40.0).contains(&ratio),
-            "20x the bitrate gave {ratio:.1}x the bytes ({low} -> {high}); the property \
-             is not being read as a rate at all",
-        );
-        eprintln!(
-            "encode: vaav1enc kilobits confirmed — 400 kbit/s -> {low} bytes, \
-             8 Mbit/s -> {high} bytes ({ratio:.1}x)",
-        );
-    }
-
-    /// A size predicted from the requested bitrate is only meaningful where
-    /// the encoder tracks the request and the encoder was actually found.
-    #[test]
-    fn a_size_is_only_predictable_from_a_confirmed_rate_controlling_encoder() {
-        let tracking = H264.iter().find(|s| s.element == "x264enc").unwrap();
-        let untracked = H264.iter().find(|s| s.element == "openh264enc").unwrap();
-        assert!(
-            untracked.ignores_bitrate,
-            "openh264enc is the measured exception"
-        );
-        assert!(
-            !tracking.ignores_bitrate,
-            "nothing has been observed about x264enc"
-        );
-
-        let sel = |spec: &'static EncoderSpec, confirmed: bool| Selection {
-            spec,
-            confirmed,
-            passed_over: Vec::new(),
-        };
-        assert!(
-            sel(tracking, true).bitrate_is_predictive(),
-            "a confirmed rate-controlling encoder can be quoted a size",
-        );
-        assert!(
-            !sel(untracked, true).bitrate_is_predictive(),
-            "an encoder measured to ignore its bitrate must not be quoted a size",
-        );
-        // Unconfirmed is "nothing observed", never "probably fine" — the same
-        // discipline `is_hardware` applies.
-        assert!(
-            !sel(tracking, false).bitrate_is_predictive(),
-            "an unconfirmed encoder has not been observed, so nothing follows from it",
-        );
-    }
-
-    /// The [`EncoderSpec::ignores_bitrate`] measurements, re-run.
-    ///
-    /// That flag is a claim about how an encoder behaves, and a claim in a
-    /// table decays: libvpx and openh264 could gain working rate control, and
-    /// then a size estimate would be withheld that could perfectly well be
-    /// given. So every marked encoder that is installed here is handed
-    /// **incompressible** content at a **low** target and asked what it
-    /// writes.
-    ///
-    /// Incompressible and low both matter. A rate controller holds a low
-    /// target whatever the content costs; an encoder that is really choosing
-    /// a quality overshoots by however much the content needs. On easy
-    /// content the two are indistinguishable — a bouncing ball encoded by
-    /// openh264 at 1 Mbit/s and at 8 Mbit/s comes out byte-identical, and so
-    /// does one encoded by a genuine rate controller that never needed the
-    /// bits. Noise separates them.
-    ///
-    /// Fails rather than skips when a marked encoder is installed and no
-    /// longer overshoots; reports honestly when one is missing, which is a
-    /// property of the machine.
-    #[cfg(feature = "encode")]
-    #[test]
-    fn the_encoders_marked_as_ignoring_their_bitrate_still_do() {
-        use gstreamer::prelude::*;
-
-        gstreamer::init().expect("gstreamer init");
-
-        // element -> the chain that makes a container out of its output.
-        let mux = |element: &str| match element {
-            "openh264enc" => Some("h264parse ! mp4mux"),
-            "vp8enc" | "vp9enc" => Some("webmmux"),
-            _ => None,
-        };
-        let marked: Vec<&EncoderSpec> = H264
-            .iter()
-            .chain(VP8)
-            .chain(VP9)
-            .chain(AV1)
-            .filter(|s| s.ignores_bitrate)
-            .collect();
-        assert!(!marked.is_empty(), "the table marks at least one encoder");
-
-        let dir = std::env::temp_dir().join(format!("tilo-media-rate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let seconds = 1u64;
-        let asked_bps = 1_000_000u64;
-        let mut checked = Vec::new();
-        let mut absent = Vec::new();
-        for spec in &marked {
-            if gstreamer::ElementFactory::find(spec.element).is_none() {
-                absent.push(spec.element);
-                continue;
-            }
-            let Some(mux) = mux(spec.element) else {
-                absent.push(spec.element);
-                continue;
-            };
-            let out = dir.join(format!("{}.bin", spec.element));
-            // `snow` is white noise: nothing to predict, nothing to compress,
-            // so the encoder cannot meet a low target by getting lucky.
-            let desc = format!(
-                "videotestsrc pattern=snow num-buffers={frames} \
-                 ! video/x-raw,width=640,height=360,framerate=30/1 \
-                 ! videoconvert ! {el} {arg} ! {mux} ! filesink name=probe_output",
-                frames = seconds * 30,
-                el = spec.element,
-                arg = spec.bitrate_arg(asked_bps),
-            );
-            let Ok(pipeline) = gstreamer::parse::launch(&desc) else {
-                panic!(
-                    "{} is installed but its pipeline would not build: {desc}",
-                    spec.element
+                let bus = pipeline.bus().expect("bus");
+                let msg = bus.timed_pop_filtered(
+                    gstreamer::ClockTime::from_seconds(120),
+                    &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
                 );
-            };
-            let pipeline = pipeline
-                .downcast::<gstreamer::Pipeline>()
-                .expect("a pipeline");
-            pipeline
-                .by_name("probe_output")
-                .expect("output sink")
-                .set_property("location", out.to_str().expect("UTF-8 scratch path"));
-            pipeline
-                .set_state(gstreamer::State::Playing)
-                .unwrap_or_else(|e| panic!("{} is installed, so it must run: {e}", spec.element));
-            let bus = pipeline.bus().expect("bus");
-            let msg = bus.timed_pop_filtered(
-                gstreamer::ClockTime::from_seconds(300),
-                &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
-            );
-            let _ = pipeline.set_state(gstreamer::State::Null);
-            assert!(
-                matches!(&msg, Some(m) if m.type_() == gstreamer::MessageType::Eos),
-                "the {} encode did not finish: {msg:?}",
-                spec.element,
-            );
-            let bytes = std::fs::metadata(&out).map_or(0, |m| m.len());
-            assert!(bytes > 0, "{} wrote nothing", spec.element);
-            let wrote_bps = bytes * 8 / seconds;
-            let over = wrote_bps as f64 / asked_bps as f64;
-            eprintln!(
-                "encode: {} asked {:.2} Mbit/s, wrote {:.2} Mbit/s ({over:.1}x)",
-                spec.element,
-                asked_bps as f64 / 1e6,
-                wrote_bps as f64 / 1e6,
-            );
-            assert!(
-                over > 2.0,
-                "{} kept within {over:.1}x of a {} bit/s target on noise, so it does \
-                 appear to rate-control after all. The table records it as ignoring the \
-                 setting, which means a size estimate is being withheld that could now be \
-                 given — clear `ignores_bitrate` on it.",
-                spec.element,
-                asked_bps,
-            );
-            checked.push(spec.element);
-        }
-        std::fs::remove_dir_all(&dir).ok();
+                let _ = pipeline.set_state(gstreamer::State::Null);
+                match msg {
+                    Some(m) if m.type_() == gstreamer::MessageType::Eos => {}
+                    other => {
+                        eprintln!("encode: vaav1enc did not reach EOS ({other:?}); proof not run");
+                        return;
+                    }
+                }
+                sizes.push(std::fs::metadata(&out).map_or(0, |m| m.len()));
+            }
 
-        assert!(
-            !checked.is_empty(),
-            "this test verified nothing: none of {marked:?} could be exercised here \
-             (absent: {absent:?}), so it cannot observe its subject and must not \
-             report success",
-        );
-        eprintln!("encode: overshoot confirmed on {checked:?}; not exercised: {absent:?}");
+            let (low, high) = (sizes[0], sizes[1]);
+            std::fs::remove_dir_all(&dir).ok();
+
+            // If `bitrate` were bits per second, asking for 8_000_000 bit/s would
+            // have written 8000 into it — five seconds of which is about 5 kB.
+            let as_if_bits = 8_000u64 * seconds / 8;
+            assert!(
+                high > as_if_bits * 20,
+                "5s at the 8 Mbit/s setting produced {high} bytes; if the property were read \
+                 as bits per second it would be near {as_if_bits}",
+            );
+            // And the two settings must scale with each other: 20x the request,
+            // near enough 20x the bytes. Rate control is the driver's business, so
+            // this is a wide band — it is proving the unit, not the encoder.
+            let ratio = high as f64 / low.max(1) as f64;
+            assert!(
+                (5.0..40.0).contains(&ratio),
+                "20x the bitrate gave {ratio:.1}x the bytes ({low} -> {high}); the property \
+                 is not being read as a rate at all",
+            );
+            eprintln!(
+                "encode: vaav1enc kilobits confirmed — 400 kbit/s -> {low} bytes, \
+                 8 Mbit/s -> {high} bytes ({ratio:.1}x)",
+            );
+        }
+        // Phase `declared_bitrate_properties_exist_on_the_real_elements`.
+        // The table's property names and units, checked against the elements this
+        // machine actually has.
+        //
+        // A wrong property name is not a soft failure: `gst_parse_launch` rejects
+        // "no property named X" and the export dies. A wrong *unit* is worse,
+        // because nothing rejects it — the file is simply encoded at 1000× or
+        // 1/1000× the rate the dialog quoted.
+        //
+        // This can only check what is installed, so on a machine with no hardware
+        // encoder it verifies the software entries only. It fails outright when it
+        // can check nothing at all, because a check that passes without looking is
+        // exactly how a wrong table would survive.
+        {
+            use gstreamer::prelude::*;
+
+            gstreamer::init().expect("gstreamer init");
+
+            let all: Vec<&EncoderSpec> = H264
+                .iter()
+                .chain(VP8)
+                .chain(VP9)
+                .chain(AV1)
+                .chain(AAC)
+                .chain(OPUS)
+                .collect();
+
+            let mut checked_property = Vec::new();
+            let mut checked_units = Vec::new();
+            for spec in &all {
+                let Some(factory) = gstreamer::ElementFactory::find(spec.element) else {
+                    continue; // Not installed here; nothing to check.
+                };
+                let Ok(element) = factory.create().build() else {
+                    continue; // Present but not instantiable (no device, no licence).
+                };
+                let pspec = element
+                    .find_property(spec.bitrate_property)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} has no property {:?} — the export pipeline would fail to build",
+                            spec.element, spec.bitrate_property,
+                        )
+                    });
+                checked_property.push(spec.element);
+
+                // GStreamer property blurbs state the unit in words. Classify only
+                // the ones that say so unambiguously; an unclassifiable blurb is
+                // left alone rather than guessed at.
+                let blurb = pspec.blurb().unwrap_or_default().to_ascii_lowercase();
+                let says_kilobits = blurb.contains("kbps") || blurb.contains("kbit");
+                let says_bits = !says_kilobits
+                    && (blurb.contains("bits per second")
+                        || blurb.contains("bits/sec")
+                        || blurb.contains("bits/s")
+                        || blurb.contains("in bps"));
+                if !says_kilobits && !says_bits {
+                    continue;
+                }
+                let declared = spec.bitrate_units;
+                let observed = if says_kilobits {
+                    BitrateUnits::KilobitsPerSecond
+                } else {
+                    BitrateUnits::BitsPerSecond
+                };
+                assert_eq!(
+                    declared, observed,
+                    "{}.{} is documented as {blurb:?}, but the table declares {declared:?} — \
+                     a 1000x bitrate error the encoder would accept in silence",
+                    spec.element, spec.bitrate_property,
+                );
+                checked_units.push(spec.element);
+            }
+
+            assert!(
+                !checked_property.is_empty(),
+                "this test verified nothing: none of {:?} is installed, so it cannot \
+                 observe its subject and must not report success",
+                all.iter().map(|s| s.element).collect::<Vec<_>>(),
+            );
+            assert!(
+                !checked_units.is_empty(),
+                "the bitrate property exists on {checked_property:?} but not one of them \
+                 documented its unit, so the units column went unverified",
+            );
+            eprintln!(
+                "encode: bitrate property verified on {checked_property:?}; \
+                 units verified on {checked_units:?}",
+            );
+        }
+        // Phase `a_va_encoder_reads_its_bitrate_as_kilobits` (defined above).
+        a_va_encoder_reads_its_bitrate_as_kilobits();
+        // Phase `the_encoders_marked_as_ignoring_their_bitrate_still_do`.
+        // The [`EncoderSpec::ignores_bitrate`] measurements, re-run.
+        //
+        // That flag is a claim about how an encoder behaves, and a claim in a
+        // table decays: libvpx and openh264 could gain working rate control, and
+        // then a size estimate would be withheld that could perfectly well be
+        // given. So every marked encoder that is installed here is handed
+        // **incompressible** content at a **low** target and asked what it
+        // writes.
+        //
+        // Incompressible and low both matter. A rate controller holds a low
+        // target whatever the content costs; an encoder that is really choosing
+        // a quality overshoots by however much the content needs. On easy
+        // content the two are indistinguishable — a bouncing ball encoded by
+        // openh264 at 1 Mbit/s and at 8 Mbit/s comes out byte-identical, and so
+        // does one encoded by a genuine rate controller that never needed the
+        // bits. Noise separates them.
+        //
+        // Fails rather than skips when a marked encoder is installed and no
+        // longer overshoots; reports honestly when one is missing, which is a
+        // property of the machine.
+        {
+            use gstreamer::prelude::*;
+
+            gstreamer::init().expect("gstreamer init");
+
+            // element -> the chain that makes a container out of its output.
+            let mux = |element: &str| match element {
+                "openh264enc" => Some("h264parse ! mp4mux"),
+                "vp8enc" | "vp9enc" => Some("webmmux"),
+                _ => None,
+            };
+            let marked: Vec<&EncoderSpec> = H264
+                .iter()
+                .chain(VP8)
+                .chain(VP9)
+                .chain(AV1)
+                .filter(|s| s.ignores_bitrate)
+                .collect();
+            assert!(!marked.is_empty(), "the table marks at least one encoder");
+
+            let dir = std::env::temp_dir().join(format!("tilo-media-rate-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+            let seconds = 1u64;
+            let asked_bps = 1_000_000u64;
+            let mut checked = Vec::new();
+            let mut absent = Vec::new();
+            for spec in &marked {
+                if gstreamer::ElementFactory::find(spec.element).is_none() {
+                    absent.push(spec.element);
+                    continue;
+                }
+                let Some(mux) = mux(spec.element) else {
+                    absent.push(spec.element);
+                    continue;
+                };
+                let out = dir.join(format!("{}.bin", spec.element));
+                // `snow` is white noise: nothing to predict, nothing to compress,
+                // so the encoder cannot meet a low target by getting lucky.
+                let desc = format!(
+                    "videotestsrc pattern=snow num-buffers={frames} \
+                     ! video/x-raw,width=640,height=360,framerate=30/1 \
+                     ! videoconvert ! {el} {arg} ! {mux} ! filesink name=probe_output",
+                    frames = seconds * 30,
+                    el = spec.element,
+                    arg = spec.bitrate_arg(asked_bps),
+                );
+                let Ok(pipeline) = gstreamer::parse::launch(&desc) else {
+                    panic!(
+                        "{} is installed but its pipeline would not build: {desc}",
+                        spec.element
+                    );
+                };
+                let pipeline = pipeline
+                    .downcast::<gstreamer::Pipeline>()
+                    .expect("a pipeline");
+                pipeline
+                    .by_name("probe_output")
+                    .expect("output sink")
+                    .set_property("location", out.to_str().expect("UTF-8 scratch path"));
+                pipeline
+                    .set_state(gstreamer::State::Playing)
+                    .unwrap_or_else(|e| {
+                        panic!("{} is installed, so it must run: {e}", spec.element)
+                    });
+                let bus = pipeline.bus().expect("bus");
+                let msg = bus.timed_pop_filtered(
+                    gstreamer::ClockTime::from_seconds(300),
+                    &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error],
+                );
+                let _ = pipeline.set_state(gstreamer::State::Null);
+                assert!(
+                    matches!(&msg, Some(m) if m.type_() == gstreamer::MessageType::Eos),
+                    "the {} encode did not finish: {msg:?}",
+                    spec.element,
+                );
+                let bytes = std::fs::metadata(&out).map_or(0, |m| m.len());
+                assert!(bytes > 0, "{} wrote nothing", spec.element);
+                let wrote_bps = bytes * 8 / seconds;
+                let over = wrote_bps as f64 / asked_bps as f64;
+                eprintln!(
+                    "encode: {} asked {:.2} Mbit/s, wrote {:.2} Mbit/s ({over:.1}x)",
+                    spec.element,
+                    asked_bps as f64 / 1e6,
+                    wrote_bps as f64 / 1e6,
+                );
+                assert!(
+                    over > 2.0,
+                    "{} kept within {over:.1}x of a {} bit/s target on noise, so it does \
+                     appear to rate-control after all. The table records it as ignoring the \
+                     setting, which means a size estimate is being withheld that could now be \
+                     given — clear `ignores_bitrate` on it.",
+                    spec.element,
+                    asked_bps,
+                );
+                checked.push(spec.element);
+            }
+            std::fs::remove_dir_all(&dir).ok();
+
+            assert!(
+                !checked.is_empty(),
+                "this test verified nothing: none of {marked:?} could be exercised here \
+                 (absent: {absent:?}), so it cannot observe its subject and must not \
+                 report success",
+            );
+            eprintln!("encode: overshoot confirmed on {checked:?}; not exercised: {absent:?}");
+        }
     }
 }

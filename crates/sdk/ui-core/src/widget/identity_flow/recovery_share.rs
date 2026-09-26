@@ -547,114 +547,123 @@ mod tests {
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
-    fn metadata_never_generates_fake_recovery_words() {
-        let mut rng = UnwrapErr(SysRng);
-        let id = threshold_identity::ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let record = IdentityRecord::from_threshold_identity(
-            &id,
-            "Ada",
-            [1, 2, 3],
-            crate::time::SystemTime::UNIX_EPOCH,
-        )
-        .unwrap();
-        let mut screen = RecoveryShareScreen::new();
-        screen.seed_from_record(&record);
-        assert!(screen.mnemonic().is_empty());
-        assert!(!screen.is_continue_enabled());
-    }
-
-    #[test]
-    fn continue_disabled_until_acknowledged() {
-        let mut s = RecoveryShareScreen::new();
-        s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
-        assert!(!s.is_continue_enabled());
-        s.set_acknowledged(true);
-        assert!(s.is_continue_enabled());
-    }
-
-    #[test]
-    fn continue_disabled_without_mnemonic() {
-        let mut s = RecoveryShareScreen::new();
-        s.set_acknowledged(true);
-        assert!(!s.is_continue_enabled());
-    }
-
-    #[test]
-    fn words_round_trips_through_whitespace() {
-        let mut s = RecoveryShareScreen::new();
-        s.set_mnemonic(" alpha  beta  gamma ");
-        assert_eq!(s.words(), vec!["alpha", "beta", "gamma"]);
-    }
-
-    /// With words the grid is six control-tall rows; without them there is
-    /// no grid and the acknowledgement row follows the explanation directly.
-    #[test]
-    fn plan_reserves_six_control_rows_for_twenty_four_words() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 740.0, 200.0);
-        let mut s = RecoveryShareScreen::new();
-        let bare = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert!(bare.grid.is_none(), "no words, no grid");
-        assert_eq!(bare.ack_row.height(), 34.0);
-
-        s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
-        let full = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let grid = full.grid.expect("24 words fill a grid");
-        assert!((grid.height() - 6.0 * 34.0).abs() < 1e-9);
-        assert_eq!((grid.x0, grid.x1), (body.x0, body.x1));
-        assert!(
-            (full.ack_row.y0 - grid.y1 - f64::from(theme.tokens.spacing.s6)).abs() < 1e-9,
-            "one group gap between the grid and the acknowledgement"
-        );
-        assert!((full.bottom - full.ack_row.y1).abs() < 1e-9);
-    }
-
-    /// At a large text scale the body outruns the card. The acknowledgement
-    /// row must then be clipped to the body, never under the action row —
-    /// and reachable by scrolling, since Continue depends on it.
-    #[test]
-    fn at_two_x_text_the_ack_row_never_overlaps_the_actions_and_scrolls_into_view() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut s = RecoveryShareScreen::new();
-        s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = s.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1280.0),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
+    fn recovery_share_gates_continue_and_never_fakes_words() {
+        fn metadata_never_generates_fake_recovery_words() {
+            let mut rng = UnwrapErr(SysRng);
+            let id =
+                threshold_identity::ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+            let record = IdentityRecord::from_threshold_identity(
+                &id,
+                "Ada",
+                [1, 2, 3],
+                crate::time::SystemTime::UNIX_EPOCH,
             )
-            .expect("layout");
-        s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(
-            s.scroll.max() > 0.0,
-            "24 words at 2× do not fit an 800 px window"
-        );
-        let actions = Rect::new(
-            s.copy_rect.x0.min(s.continue_rect.x0),
-            s.copy_rect.y0.min(s.continue_rect.y0),
-            s.copy_rect.x1.max(s.continue_rect.x1),
-            s.copy_rect.y1.max(s.continue_rect.y1),
-        );
-        assert!(
-            s.ack_hit_rect.intersect(actions).is_zero_area(),
-            "the acknowledgement target {:?} must not reach the action row {actions:?}",
-            s.ack_hit_rect
-        );
-        // Scroll to the bottom: the row is now inside the body and clickable.
-        assert!(s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height));
-        while s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height) {}
-        s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(
-            s.ack_hit_rect.area() > 0.0,
-            "scrolled to the end, the row is a target"
-        );
-        assert!(s.ack_hit_rect.intersect(actions).is_zero_area());
-        assert!(s.ack_hit_rect.y1 <= s.continue_rect.y0);
+            .unwrap();
+            let mut screen = RecoveryShareScreen::new();
+            screen.seed_from_record(&record);
+            assert!(screen.mnemonic().is_empty());
+            assert!(!screen.is_continue_enabled());
+        }
+
+        fn continue_disabled_until_acknowledged() {
+            let mut s = RecoveryShareScreen::new();
+            s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
+            assert!(!s.is_continue_enabled());
+            s.set_acknowledged(true);
+            assert!(s.is_continue_enabled());
+        }
+
+        fn continue_disabled_without_mnemonic() {
+            let mut s = RecoveryShareScreen::new();
+            s.set_acknowledged(true);
+            assert!(!s.is_continue_enabled());
+        }
+
+        fn words_round_trips_through_whitespace() {
+            let mut s = RecoveryShareScreen::new();
+            s.set_mnemonic(" alpha  beta  gamma ");
+            assert_eq!(s.words(), vec!["alpha", "beta", "gamma"]);
+        }
+
+        metadata_never_generates_fake_recovery_words();
+        continue_disabled_until_acknowledged();
+        continue_disabled_without_mnemonic();
+        words_round_trips_through_whitespace();
+    }
+
+    #[test]
+    fn recovery_share_layout_reserves_rows_at_every_text_scale() {
+        /// With words the grid is six control-tall rows; without them there is
+        /// no grid and the acknowledgement row follows the explanation directly.
+        fn plan_reserves_six_control_rows_for_twenty_four_words() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 740.0, 200.0);
+            let mut s = RecoveryShareScreen::new();
+            let bare = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert!(bare.grid.is_none(), "no words, no grid");
+            assert_eq!(bare.ack_row.height(), 34.0);
+
+            s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
+            let full = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let grid = full.grid.expect("24 words fill a grid");
+            assert!((grid.height() - 6.0 * 34.0).abs() < 1e-9);
+            assert_eq!((grid.x0, grid.x1), (body.x0, body.x1));
+            assert!(
+                (full.ack_row.y0 - grid.y1 - f64::from(theme.tokens.spacing.s6)).abs() < 1e-9,
+                "one group gap between the grid and the acknowledgement"
+            );
+            assert!((full.bottom - full.ack_row.y1).abs() < 1e-9);
+        }
+
+        /// At a large text scale the body outruns the card. The acknowledgement
+        /// row must then be clipped to the body, never under the action row —
+        /// and reachable by scrolling, since Continue depends on it.
+        fn at_two_x_text_the_ack_row_never_overlaps_the_actions_and_scrolls_into_view() {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut s = RecoveryShareScreen::new();
+            s.set_mnemonic("a b c d e f g h i j k l m n o p q r s t u v w x");
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = s.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                )
+                .expect("layout");
+            s.apply_layout(&taffy, node, Point::ORIGIN);
+            assert!(
+                s.scroll.max() > 0.0,
+                "24 words at 2× do not fit an 800 px window"
+            );
+            let actions = Rect::new(
+                s.copy_rect.x0.min(s.continue_rect.x0),
+                s.copy_rect.y0.min(s.continue_rect.y0),
+                s.copy_rect.x1.max(s.continue_rect.x1),
+                s.copy_rect.y1.max(s.continue_rect.y1),
+            );
+            assert!(
+                s.ack_hit_rect.intersect(actions).is_zero_area(),
+                "the acknowledgement target {:?} must not reach the action row {actions:?}",
+                s.ack_hit_rect
+            );
+            // Scroll to the bottom: the row is now inside the body and clickable.
+            assert!(s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height));
+            while s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height) {}
+            s.apply_layout(&taffy, node, Point::ORIGIN);
+            assert!(
+                s.ack_hit_rect.area() > 0.0,
+                "scrolled to the end, the row is a target"
+            );
+            assert!(s.ack_hit_rect.intersect(actions).is_zero_area());
+            assert!(s.ack_hit_rect.y1 <= s.continue_rect.y0);
+        }
+
+        plan_reserves_six_control_rows_for_twenty_four_words();
+        at_two_x_text_the_ack_row_never_overlaps_the_actions_and_scrolls_into_view();
     }
 }

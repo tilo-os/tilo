@@ -145,35 +145,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_wpctl_volume_simple() {
-        let s = "Volume: 0.45";
-        let v = parse_wpctl_volume(s).unwrap();
-        assert!((v - 0.45).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_wpctl_volume_muted_suffix() {
-        let s = "Volume: 0.30 [MUTED]";
-        let v = parse_wpctl_volume(s).unwrap();
-        assert!((v - 0.30).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_wpctl_volume_state_reads_level_and_mute_together() {
-        let unmuted = parse_wpctl_volume_state("Volume: 0.45\n").unwrap();
-        assert!((unmuted.level - 0.45).abs() < 1e-6);
-        assert!(!unmuted.muted);
-
-        let muted = parse_wpctl_volume_state("Volume: 0.30 [MUTED]\n").unwrap();
-        assert!(
-            (muted.level - 0.30).abs() < 1e-6,
-            "a muted sink still reports the level it will return to"
-        );
-        assert!(muted.muted);
-    }
-
-    #[test]
-    fn parse_wpctl_volume_garbage_is_err() {
+    fn wpctl_volume_lines_parse_level_and_mute_or_fail() {
+        for (case, line, level, muted) in [
+            ("parse_wpctl_volume_simple", "Volume: 0.45", 0.45, false),
+            (
+                "parse_wpctl_volume_muted_suffix",
+                "Volume: 0.30 [MUTED]",
+                0.30,
+                true,
+            ),
+        ] {
+            let v = parse_wpctl_volume(line).unwrap();
+            assert!((v - level).abs() < 1e-6, "case {case}: level {v}");
+            // The state parser reads level and mute together; a muted sink
+            // still reports the level it will return to.
+            let state = parse_wpctl_volume_state(&format!("{line}\n")).unwrap();
+            assert!(
+                (state.level - level).abs() < 1e-6,
+                "case {case}: state level"
+            );
+            assert_eq!(state.muted, muted, "case {case}: muted");
+        }
+        // parse_wpctl_volume_garbage_is_err
         assert!(parse_wpctl_volume("not-a-line").is_err());
     }
 

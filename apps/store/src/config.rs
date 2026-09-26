@@ -81,63 +81,67 @@ mod tests {
         env
     }
 
-    /// The store and the desktop have to resolve `registries.toml` to
-    /// the same path, or "what this machine can install" and "what this
-    /// machine can open" become two different answers. Asserted here
-    /// rather than left to the re-export being obviously correct: the
-    /// re-export is what someone would undo first when adding a
-    /// store-only setting.
+    /// Registry config path, seeding and round-trips.
     #[test]
-    fn the_store_reads_the_same_registry_file_the_desktop_does() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        assert_eq!(
-            registries_path(),
-            app_cli::config::registries_path(),
-            "one registry list, two readers"
-        );
-        assert_eq!(config_dir().as_deref(), Some(td.path()));
-    }
+    fn registry_config_shares_the_desktop_path_seeds_and_round_trips() {
+        // Case `the_store_reads_the_same_registry_file_the_desktop_does`.
+        // The store and the desktop have to resolve `registries.toml` to
+        // the same path, or "what this machine can install" and "what this
+        // machine can open" become two different answers. Asserted here
+        // rather than left to the re-export being obviously correct: the
+        // re-export is what someone would undo first when adding a
+        // store-only setting.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            assert_eq!(
+                registries_path(),
+                app_cli::config::registries_path(),
+                "one registry list, two readers"
+            );
+            assert_eq!(config_dir().as_deref(), Some(td.path()));
+        }
 
-    #[test]
-    fn seed_written_when_missing() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let regs = load_registries();
-        assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "Tilo main");
-        assert!(td.path().join("registries.toml").exists());
-    }
+        // Case `seed_written_when_missing`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let regs = load_registries();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "Tilo main");
+            assert!(td.path().join("registries.toml").exists());
+        }
 
-    #[test]
-    fn hand_edited_registries_roundtrip() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let text = r#"
+        // Case `hand_edited_registries_roundtrip`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let text = r#"
 [[registry]]
 name = "my mirror"
 base_url = "https://mirror.example.com"
 owner_pubkey_hex = "ab"
 enabled = false
 "#;
-        std::fs::write(td.path().join("registries.toml"), text).unwrap();
-        let regs = load_registries();
-        assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "my mirror");
-        assert!(!regs.registries[0].enabled);
-    }
+            std::fs::write(td.path().join("registries.toml"), text).unwrap();
+            let regs = load_registries();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "my mirror");
+            assert!(!regs.registries[0].enabled);
+        }
 
-    #[test]
-    fn config_roundtrip() {
-        let td = TempDir::new().unwrap();
-        let _g = scoped_dir(&td);
-        let cfg = StoreConfig {
-            last_filter: Some(SourceFilter::Tilo),
-            last_query: Some("term".into()),
-        };
-        save_config(&cfg);
-        let back = load_config();
-        assert_eq!(back.last_filter, Some(SourceFilter::Tilo));
-        assert_eq!(back.last_query.as_deref(), Some("term"));
+        // Case `config_roundtrip`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let cfg = StoreConfig {
+                last_filter: Some(SourceFilter::Tilo),
+                last_query: Some("term".into()),
+            };
+            save_config(&cfg);
+            let back = load_config();
+            assert_eq!(back.last_filter, Some(SourceFilter::Tilo));
+            assert_eq!(back.last_query.as_deref(), Some("term"));
+        }
     }
 }

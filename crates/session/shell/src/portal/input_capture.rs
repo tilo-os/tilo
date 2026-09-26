@@ -1379,56 +1379,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v2_persistence_options_are_bounded_and_explicitly_declined() {
-        let mut options = HashMap::new();
-        assert_eq!(requested_persist_mode(&options), Ok(0));
-        insert_value(&mut options, "persist_mode", Value::U32(2));
-        assert_eq!(requested_persist_mode(&options), Ok(2));
-        insert_value(&mut options, "persist_mode", Value::U32(3));
-        assert_eq!(requested_persist_mode(&options), Err(()));
+    fn input_capture_persistence_and_clipboard_are_bound_to_active_capture() {
+        // Phase `v2_persistence_options_are_bounded_and_explicitly_declined`.
+        {
+            let mut options = HashMap::new();
+            assert_eq!(requested_persist_mode(&options), Ok(0));
+            insert_value(&mut options, "persist_mode", Value::U32(2));
+            assert_eq!(requested_persist_mode(&options), Ok(2));
+            insert_value(&mut options, "persist_mode", Value::U32(3));
+            assert_eq!(requested_persist_mode(&options), Err(()));
+        }
+        // Phase `clipboard_request_is_bound_to_an_active_capture_only`.
+        {
+            let handle = InputCaptureCompositorHandle::native(Vec::new());
+            let session = "/org/freedesktop/portal/desktop/session/tilo/clipboard".to_string();
+            let owner = ":1.7";
+            handle.state.lock().unwrap().sessions.insert(
+                session.clone(),
+                CaptureSession::new(
+                    owner.into(),
+                    "org.example.Capture".into(),
+                    PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.Capture"),
+                ),
+            );
+            let provider = InputCaptureSessionHandle {
+                state: handle.state.clone(),
+            };
+            assert!(provider.request_clipboard(&session, owner));
+            assert!(!provider.clipboard_active(&session, owner));
+            {
+                let mut state = handle.state.lock().unwrap();
+                let capture = state.sessions.get_mut(&session).unwrap();
+                capture.started = true;
+                capture.active = true;
+            }
+            assert!(provider.clipboard_active(&session, owner));
+            assert!(provider.clipboard_live(&session));
+            // v2 only permits the request before Start, so a capture cannot add
+            // clipboard access after the user has already approved it.
+            assert!(!provider.request_clipboard(&session, owner));
+        }
     }
     #[test]
-    fn edge_barrier_activates_once() {
-        let handle = InputCaptureCompositorHandle::native(vec![CaptureZone {
-            width: 100,
-            height: 100,
-            x: 0,
-            y: 0,
-        }]);
-        let mut state = handle.state.lock().unwrap();
-        let mut session = CaptureSession::new(
-            ":1.1".into(),
-            "org.example.App".into(),
-            PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.App"),
-        );
-        session.started = true;
-        session.enabled = true;
-        session.cursor = (90., 50.);
-        session.barriers = vec![PointerBarrier {
-            id: 7,
-            x1: 100,
-            y1: 0,
-            x2: 100,
-            y2: 100,
-        }];
-        state.sessions.insert(
-            "/org/freedesktop/portal/desktop/session/tilo/one".into(),
-            session,
-        );
-        drop(state);
-        assert!(handle.observe(CapturedInput::PointerMotion {
-            x: 101.,
-            y: 50.,
-            dx: 11.,
-            dy: 0.
-        }));
-        assert!(matches!(
-            handle.drain_signals().as_slice(),
-            [PortalSignal::Activated { barrier_id: 7, .. }]
-        ));
-    }
-    #[test]
-    fn interior_barrier_is_rejected() {
+    fn only_edge_barriers_activate_capture_once() {
+        // Phase `edge_barrier_activates_once`.
+        {
+            let handle = InputCaptureCompositorHandle::native(vec![CaptureZone {
+                width: 100,
+                height: 100,
+                x: 0,
+                y: 0,
+            }]);
+            let mut state = handle.state.lock().unwrap();
+            let mut session = CaptureSession::new(
+                ":1.1".into(),
+                "org.example.App".into(),
+                PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.App"),
+            );
+            session.started = true;
+            session.enabled = true;
+            session.cursor = (90., 50.);
+            session.barriers = vec![PointerBarrier {
+                id: 7,
+                x1: 100,
+                y1: 0,
+                x2: 100,
+                y2: 100,
+            }];
+            state.sessions.insert(
+                "/org/freedesktop/portal/desktop/session/tilo/one".into(),
+                session,
+            );
+            drop(state);
+            assert!(handle.observe(CapturedInput::PointerMotion {
+                x: 101.,
+                y: 50.,
+                dx: 11.,
+                dy: 0.
+            }));
+            assert!(matches!(
+                handle.drain_signals().as_slice(),
+                [PortalSignal::Activated { barrier_id: 7, .. }]
+            ));
+        }
+        // Phase `interior_barrier_is_rejected`.
         assert!(!valid_barrier(
             &PointerBarrier {
                 id: 1,
@@ -1444,36 +1478,5 @@ mod tests {
                 y: 0
             }]
         ));
-    }
-
-    #[test]
-    fn clipboard_request_is_bound_to_an_active_capture_only() {
-        let handle = InputCaptureCompositorHandle::native(Vec::new());
-        let session = "/org/freedesktop/portal/desktop/session/tilo/clipboard".to_string();
-        let owner = ":1.7";
-        handle.state.lock().unwrap().sessions.insert(
-            session.clone(),
-            CaptureSession::new(
-                owner.into(),
-                "org.example.Capture".into(),
-                PortalCaller::new(crate::shell::state::WorkspaceId(1), "org.example.Capture"),
-            ),
-        );
-        let provider = InputCaptureSessionHandle {
-            state: handle.state.clone(),
-        };
-        assert!(provider.request_clipboard(&session, owner));
-        assert!(!provider.clipboard_active(&session, owner));
-        {
-            let mut state = handle.state.lock().unwrap();
-            let capture = state.sessions.get_mut(&session).unwrap();
-            capture.started = true;
-            capture.active = true;
-        }
-        assert!(provider.clipboard_active(&session, owner));
-        assert!(provider.clipboard_live(&session));
-        // v2 only permits the request before Start, so a capture cannot add
-        // clipboard access after the user has already approved it.
-        assert!(!provider.request_clipboard(&session, owner));
     }
 }

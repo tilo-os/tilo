@@ -2126,7 +2126,8 @@ impl AppHandler {
             }
         }
 
-        // Two-finger swipe / edge pull; delivered via `on_nav_gesture`.
+        // Two-finger swipe, edge pull or mouse side button; delivered via
+        // `on_nav_gesture`.
         if !handled && !self.dispatching_touch_pointer {
             use crate::gesture::GesturePhase;
             let map_phase = |p: winit::event::TouchPhase| match p {
@@ -2153,6 +2154,7 @@ impl AppHandler {
                     map_phase(*phase),
                     true,
                 ),
+                WindowEvent::MouseInput { .. } => crate::interaction::mouse_nav_direction(&event),
                 WindowEvent::Touch(t) => {
                     let width = f64::from(window.inner_size().width);
                     app.input.nav_gestures.on_touch(
@@ -2468,6 +2470,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
                 return;
             }
+            UserEvent::DevSessionStop => {
+                self.app.autosave_flush();
+                super::checkpoint_and_exit(&self.app, event_loop);
+                return;
+            }
             other => other,
         };
         let Some(window) = self.window.clone() else {
@@ -2577,7 +2584,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
-            UserEvent::Wake(_) | UserEvent::NativeScenarioInput(_) | UserEvent::RenderReady(_) => {}
+            UserEvent::Wake(_)
+            | UserEvent::NativeScenarioInput(_)
+            | UserEvent::RenderReady(_)
+            | UserEvent::DevSessionStop => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -2821,6 +2831,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        self.poll_touch_hold(&window);
         // Conservative shared-root fallback: hidden primary work may stay at
         // 60Hz while a visible auxiliary depends on its update/sync projection.
         // Only all-known-occluded surfaces receive full idle backoff.
@@ -3061,7 +3072,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
 
         let scheduled_deadline = crate::close_admission::wake_deadline(
-            app.root_widget.next_wake_deadline(),
+            app.root_widget
+                .next_wake_deadline()
+                .into_iter()
+                .chain(self.touch_pointer.long_press_deadline())
+                .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
         );
@@ -3280,35 +3295,37 @@ impl AppHandler {
         };
         self.app
             .set_interaction_environment(self.app.input.interaction.with_touch_modality());
-        let pointer_events = self.touch_pointer.events(touch);
+        let scale = window.scale_factor();
+        let app = &self.app;
+        let pointer_events = self.touch_pointer.events(touch, |position| {
+            app.claims_raw_touch_at(vello::kurbo::Point::new(
+                position.x / scale,
+                position.y / scale,
+            ))
+        });
+        self.dispatch_touch_pointer(window, touch.device_id, pointer_events);
+    }
+
+    fn dispatch_touch_pointer(
+        &mut self,
+        window: &Arc<Window>,
+        device_id: winit::event::DeviceId,
+        events: Vec<crate::interaction::TouchPointerEvent>,
+    ) {
         self.dispatching_touch_pointer = true;
-        for pointer_event in pointer_events {
-            let pointer_event = match pointer_event {
-                crate::interaction::TouchPointerEvent::Move(position) => WindowEvent::CursorMoved {
-                    device_id: touch.device_id,
-                    position,
-                },
-                crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
-                    device_id: touch.device_id,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
-                    device_id: touch.device_id,
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
-                    WindowEvent::MouseWheel {
-                        device_id: touch.device_id,
-                        delta: winit::event::MouseScrollDelta::PixelDelta(delta),
-                        phase,
-                    }
-                }
-            };
-            self.handle_other_window_event(window, pointer_event);
+        for pointer_event in events {
+            self.handle_other_window_event(window, pointer_event.window_event(device_id));
         }
         self.dispatching_touch_pointer = false;
+    }
+
+    /// A still finger that reached the long-press delay becomes a secondary
+    /// click even though no touch event marks the moment.
+    fn poll_touch_hold(&mut self, window: &Arc<Window>) {
+        if let Some((device_id, events)) = self.touch_pointer.poll(crate::time::now()) {
+            self.dispatch_touch_pointer(window, device_id, events);
+            window.request_redraw();
+        }
     }
 }
 
@@ -3361,6 +3378,7 @@ impl App {
         }
         let event_loop = event_loop_builder.build().unwrap();
         let proxy = event_loop.create_proxy();
+        super::install_dev_session_stop(proxy.clone());
         let wake_proxy = proxy.clone();
         self.wake_scope
             .as_mut()

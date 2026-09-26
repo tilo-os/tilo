@@ -84,7 +84,8 @@ pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
 /// data leave it empty and the advertiser falls back to generic values.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputIdentity {
-    /// Connector name, e.g. `DP-2`; also the `wl_output` name.
+    /// Connector key, e.g. `DP-2` — qualified by card when two GPUs share
+    /// a connector name; also the `wl_output` name and the head name.
     pub connector: String,
     pub make: String,
     pub model: String,
@@ -221,6 +222,7 @@ pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::Ou
         .map(|o| {
             let logical = o.logical_rect();
             crate::shell::overlay_host::OutputGeometry {
+                id: o.id.0,
                 x: logical.x0,
                 y: logical.y0,
                 width: logical.width(),
@@ -338,6 +340,9 @@ pub enum BackendEvent {
         x: f64,
         y: f64,
     },
+    /// An accessibility filter rejected input (a bounce-keys press) and the
+    /// user asked to see it: flash the shell's visual alert.
+    VisualAlert,
     Redraw,
     Focus(bool),
 }
@@ -478,6 +483,15 @@ pub trait Backend {
     /// for backends with no physical panel.
     fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
 
+    /// Turn the built-in panel to `rotation` because the device was turned
+    /// (`None` restores its configured transform). External monitors never
+    /// follow. Default no-op for backends without a built-in panel.
+    fn set_device_rotation(
+        &mut self,
+        _rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+    }
+
     /// Re-establish the display after the system came back from suspend.
     ///
     /// Default no-op: a hosted backend's display is the host's problem,
@@ -528,14 +542,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combined_geometry_single_output_equals_its_size() {
-        let outs = [Output::new(OutputId(0), (1920, 1080), 1.0)];
-        assert_eq!(combined_geometry(&outs), (1920, 1080));
-    }
+    fn combined_geometry_spans_every_output_and_is_zero_for_none() {
+        let single = [Output::new(OutputId(0), (1920, 1080), 1.0)];
+        assert_eq!(
+            combined_geometry(&single),
+            (1920, 1080),
+            "single output equals its size"
+        );
 
-    #[test]
-    fn combined_geometry_side_by_side_sums_width_takes_max_height() {
-        let outs = [
+        let side_by_side = [
             Output {
                 id: OutputId(0),
                 position: (0, 0),
@@ -560,7 +575,13 @@ mod tests {
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
-        assert_eq!(combined_geometry(&outs), (3200, 1080));
+        assert_eq!(
+            combined_geometry(&side_by_side),
+            (3200, 1080),
+            "side by side"
+        );
+
+        assert_eq!(combined_geometry(&[]), (0, 0), "empty");
     }
 
     #[test]
@@ -597,11 +618,6 @@ mod tests {
             PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
             None
         );
-    }
-
-    #[test]
-    fn combined_geometry_empty_is_zero() {
-        assert_eq!(combined_geometry(&[]), (0, 0));
     }
 }
 

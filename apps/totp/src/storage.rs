@@ -296,195 +296,200 @@ mod tests {
         std::env::temp_dir().join(format!("tilo-totp-store-{}", uuid::Uuid::new_v4()))
     }
 
+    /// Windows DPAPI custody protects the key and never replaces existing or corrupt material.
     #[cfg(windows)]
     #[test]
-    fn windows_live_custody_protects_key_and_restores_vault() {
-        let dir = temp_dir();
-        let mut vault = Vault::new();
-        vault.upsert(demo_accounts().remove(0));
-        assert!(save_at_with_custody(&dir, &vault, key_custody()));
-        assert!(
-            !dir.join("vault.key").exists(),
-            "Windows must not persist a plaintext key"
-        );
-        assert!(dir.join("vault.key.dpapi").is_file());
-        assert_eq!(
-            load_at_with_custody(&dir, key_custody()).ordered(),
-            vault.ordered()
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
+    fn windows_key_custody_protects_and_never_replaces_material() {
+        // Case `windows_live_custody_protects_key_and_restores_vault`.
+        {
+            let dir = temp_dir();
+            let mut vault = Vault::new();
+            vault.upsert(demo_accounts().remove(0));
+            assert!(save_at_with_custody(&dir, &vault, key_custody()));
+            assert!(
+                !dir.join("vault.key").exists(),
+                "Windows must not persist a plaintext key"
+            );
+            assert!(dir.join("vault.key.dpapi").is_file());
+            assert_eq!(
+                load_at_with_custody(&dir, key_custody()).ordered(),
+                vault.ordered()
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_missing_key_cannot_replace_an_existing_vault() {
-        let dir = temp_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        let previous = b"existing inaccessible vault";
-        std::fs::write(dir.join("vault.enc"), previous).unwrap();
-        assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), previous);
-        assert!(!dir.join("vault.key").exists());
-        assert!(!dir.join("vault.key.dpapi").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
+        // Case `windows_missing_key_cannot_replace_an_existing_vault`.
+        {
+            let dir = temp_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            let previous = b"existing inaccessible vault";
+            std::fs::write(dir.join("vault.enc"), previous).unwrap();
+            assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), previous);
+            assert!(!dir.join("vault.key").exists());
+            assert!(!dir.join("vault.key.dpapi").exists());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_corrupt_ciphertext_is_preserved_on_save() {
-        let dir = temp_dir();
-        assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        let ciphertext = b"corrupt existing vault";
-        std::fs::write(dir.join("vault.enc"), ciphertext).unwrap();
-        assert!(load_at_checked(&dir, key_custody()).is_err());
-        assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_corrupt_protected_key_is_never_replaced() {
-        let dir = temp_dir();
-        assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        let ciphertext = std::fs::read(dir.join("vault.enc")).unwrap();
-        private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt DPAPI key").unwrap();
-        assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
-        assert_eq!(
-            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
-            b"corrupt DPAPI key"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_private_legacy_key_migrates_only_after_verified_restore() {
-        let dir = temp_dir();
-        private_fs::directory(&dir).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), &[42; KEY_LEN]).unwrap();
-        let mut vault = Vault::new();
-        vault.upsert(demo_accounts().remove(0));
-        assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
-        assert_eq!(
-            load_at_with_custody(&dir, key_custody()).ordered(),
-            vault.ordered()
-        );
-        assert!(!dir.join("vault.key").exists());
-        assert!(private_fs::read(&dir.join("vault.key.dpapi")).is_ok());
-        assert_eq!(
-            load_at_with_custody(&dir, key_custody()).ordered(),
-            vault.ordered()
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_interrupted_migration_removes_verified_plaintext_on_reopen() {
-        let dir = temp_dir();
-        private_fs::directory(&dir).unwrap();
-        let legacy_key = [42; KEY_LEN];
-        private_fs::create_atomic(&dir.join("vault.key"), &legacy_key).unwrap();
-        let mut vault = Vault::new();
-        vault.upsert(demo_accounts().remove(0));
-        assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
-        assert_eq!(
-            load_at_checked(&dir, key_custody()).unwrap().ordered(),
-            vault.ordered()
-        );
-        assert!(!dir.join("vault.key").exists());
-
-        // Reconstruct the exact durable state after DPAPI publication but before
-        // plaintext removal. The protected key and ciphertext remain unchanged.
-        let ciphertext = std::fs::read(dir.join("vault.enc")).unwrap();
-        let protected_key = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), &legacy_key).unwrap();
-        assert_eq!(
-            load_at_checked(&dir, key_custody()).unwrap().ordered(),
-            vault.ordered()
-        );
-        assert!(
-            !dir.join("vault.key").exists(),
-            "reopen must finish interrupted key migration"
-        );
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
-        assert_eq!(
-            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
-            protected_key
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_interrupted_migration_preserves_conflicting_legacy_material() {
-        for legacy in [vec![7; KEY_LEN], b"malformed key".to_vec()] {
+        // Case `windows_corrupt_ciphertext_is_preserved_on_save`.
+        {
             let dir = temp_dir();
             assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
-            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-            let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
-            private_fs::create_atomic(&dir.join("vault.key"), &legacy).unwrap();
+            let ciphertext = b"corrupt existing vault";
+            std::fs::write(dir.join("vault.enc"), ciphertext).unwrap();
             assert!(load_at_checked(&dir, key_custody()).is_err());
             assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
-            assert_eq!(std::fs::read(dir.join("vault.key")).unwrap(), legacy);
-            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        // Case `windows_corrupt_protected_key_is_never_replaced`.
+        {
+            let dir = temp_dir();
+            assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+            let ciphertext = std::fs::read(dir.join("vault.enc")).unwrap();
+            private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt DPAPI key").unwrap();
+            assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
             assert_eq!(
                 std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
-                protected
+                b"corrupt DPAPI key"
             );
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
 
+    /// Windows legacy key migration only completes after verification and recovers from interruption.
     #[cfg(windows)]
     #[test]
-    fn windows_interrupted_migration_preserves_keys_if_ciphertext_is_corrupt() {
-        let dir = temp_dir();
-        let key = load_or_create_key(&dir, key_custody()).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), key.expose_secret()).unwrap();
-        private_fs::create_atomic(&dir.join("vault.enc"), b"damaged vault").unwrap();
-        assert!(load_at_checked(&dir, key_custody()).is_err());
-        assert_eq!(
-            std::fs::read(dir.join("vault.key")).unwrap(),
-            key.expose_secret()
-        );
-        assert_eq!(
-            std::fs::read(dir.join("vault.enc")).unwrap(),
-            b"damaged vault"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn windows_legacy_key_migration_is_verified_and_recoverable() {
+        // Case `windows_private_legacy_key_migrates_only_after_verified_restore`.
+        {
+            let dir = temp_dir();
+            private_fs::directory(&dir).unwrap();
+            private_fs::create_atomic(&dir.join("vault.key"), &[42; KEY_LEN]).unwrap();
+            let mut vault = Vault::new();
+            vault.upsert(demo_accounts().remove(0));
+            assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
+            assert_eq!(
+                load_at_with_custody(&dir, key_custody()).ordered(),
+                vault.ordered()
+            );
+            assert!(!dir.join("vault.key").exists());
+            assert!(private_fs::read(&dir.join("vault.key.dpapi")).is_ok());
+            assert_eq!(
+                load_at_with_custody(&dir, key_custody()).ordered(),
+                vault.ordered()
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_interrupted_migration_retries_after_plaintext_removal_denied() {
-        use std::os::windows::fs::OpenOptionsExt;
+        // Case `windows_interrupted_migration_removes_verified_plaintext_on_reopen`.
+        {
+            let dir = temp_dir();
+            private_fs::directory(&dir).unwrap();
+            let legacy_key = [42; KEY_LEN];
+            private_fs::create_atomic(&dir.join("vault.key"), &legacy_key).unwrap();
+            let mut vault = Vault::new();
+            vault.upsert(demo_accounts().remove(0));
+            assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
+            assert_eq!(
+                load_at_checked(&dir, key_custody()).unwrap().ordered(),
+                vault.ordered()
+            );
+            assert!(!dir.join("vault.key").exists());
 
-        let dir = temp_dir();
-        assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
-        let key = load_or_create_key(&dir, key_custody()).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), key.expose_secret()).unwrap();
-        let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
-        let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-        // Allow reads but deny deletion while this owned handle is alive.
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .open(dir.join("vault.key"))
-            .unwrap();
-        assert!(load_at_checked(&dir, key_custody()).is_err());
-        assert!(dir.join("vault.key").exists());
-        drop(held);
-        assert!(load_at_checked(&dir, key_custody()).is_ok());
-        assert!(!dir.join("vault.key").exists());
-        assert_eq!(
-            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
-            protected
-        );
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
-        std::fs::remove_dir_all(dir).unwrap();
+            // Reconstruct the exact durable state after DPAPI publication but before
+            // plaintext removal. The protected key and ciphertext remain unchanged.
+            let ciphertext = std::fs::read(dir.join("vault.enc")).unwrap();
+            let protected_key = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+            private_fs::create_atomic(&dir.join("vault.key"), &legacy_key).unwrap();
+            assert_eq!(
+                load_at_checked(&dir, key_custody()).unwrap().ordered(),
+                vault.ordered()
+            );
+            assert!(
+                !dir.join("vault.key").exists(),
+                "reopen must finish interrupted key migration"
+            );
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
+            assert_eq!(
+                std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+                protected_key
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        // Case `windows_interrupted_migration_preserves_conflicting_legacy_material`.
+        {
+            for legacy in [vec![7; KEY_LEN], b"malformed key".to_vec()] {
+                let dir = temp_dir();
+                assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+                let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+                let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+                private_fs::create_atomic(&dir.join("vault.key"), &legacy).unwrap();
+                assert!(load_at_checked(&dir, key_custody()).is_err());
+                assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+                assert_eq!(std::fs::read(dir.join("vault.key")).unwrap(), legacy);
+                assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+                assert_eq!(
+                    std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+                    protected
+                );
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+
+        // Case `windows_interrupted_migration_preserves_keys_if_ciphertext_is_corrupt`.
+        {
+            let dir = temp_dir();
+            let key = load_or_create_key(&dir, key_custody()).unwrap();
+            private_fs::create_atomic(&dir.join("vault.key"), key.expose_secret()).unwrap();
+            private_fs::create_atomic(&dir.join("vault.enc"), b"damaged vault").unwrap();
+            assert!(load_at_checked(&dir, key_custody()).is_err());
+            assert_eq!(
+                std::fs::read(dir.join("vault.key")).unwrap(),
+                key.expose_secret()
+            );
+            assert_eq!(
+                std::fs::read(dir.join("vault.enc")).unwrap(),
+                b"damaged vault"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        // Case `windows_interrupted_migration_retries_after_plaintext_removal_denied`.
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            let dir = temp_dir();
+            assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+            let key = load_or_create_key(&dir, key_custody()).unwrap();
+            private_fs::create_atomic(&dir.join("vault.key"), key.expose_secret()).unwrap();
+            let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+            // Allow reads but deny deletion while this owned handle is alive.
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(dir.join("vault.key"))
+                .unwrap();
+            assert!(load_at_checked(&dir, key_custody()).is_err());
+            assert!(dir.join("vault.key").exists());
+            drop(held);
+            assert!(load_at_checked(&dir, key_custody()).is_ok());
+            assert!(!dir.join("vault.key").exists());
+            assert_eq!(
+                std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+                protected
+            );
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     // Written by the implementation that predates the shared `secret-vault` crate. The
@@ -527,274 +532,292 @@ mod tests {
         vault
     }
 
+    /// Blobs and vaults of earlier implementations open; invalid legacy vaults are preserved and plaintext is migrated.
     #[test]
-    fn known_answer_blob_from_the_previous_implementation_opens() {
-        let blob = unhex(LEGACY_BLOB);
-        assert_eq!(&blob[..5], b"QOAV\x01");
-        assert_eq!(
-            open(&VaultKey::from_bytes([0x42; KEY_LEN]), &blob)
-                .unwrap()
-                .as_slice(),
-            b"tilo authenticator known answer"
-        );
-        assert!(open(&VaultKey::from_bytes([0x43; KEY_LEN]), &blob).is_none());
-    }
+    fn legacy_formats_open_migrate_or_are_preserved() {
+        // Case `known_answer_blob_from_the_previous_implementation_opens`.
+        {
+            let blob = unhex(LEGACY_BLOB);
+            assert_eq!(&blob[..5], b"QOAV\x01");
+            assert_eq!(
+                open(&VaultKey::from_bytes([0x42; KEY_LEN]), &blob)
+                    .unwrap()
+                    .as_slice(),
+                b"tilo authenticator known answer"
+            );
+            assert!(open(&VaultKey::from_bytes([0x43; KEY_LEN]), &blob).is_none());
+        }
 
-    #[test]
-    fn vault_written_by_the_previous_implementation_loads_and_resaves() {
-        let dir = temp_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), &unhex(LEGACY_KEY)).unwrap();
-        std::fs::write(dir.join("vault.enc"), unhex(LEGACY_VAULT)).unwrap();
-        let expected = legacy_fixture_vault().ordered();
-
-        let loaded = load_at_checked(&dir, KeyCustody::LocalFile).unwrap();
-        assert_eq!(loaded.ordered(), expected);
-        assert!(save_at_with_custody(&dir, &loaded, KeyCustody::LocalFile));
-        assert!(
-            std::fs::read(dir.join("vault.enc"))
-                .unwrap()
-                .starts_with(b"TSEAL"),
-            "re-saving writes the current tilo-seal envelope"
-        );
-        assert_eq!(
-            load_at_checked(&dir, KeyCustody::LocalFile)
-                .unwrap()
-                .ordered(),
-            expected
-        );
-        assert_eq!(
-            std::fs::read(dir.join("vault.key")).unwrap(),
-            unhex(LEGACY_KEY),
-            "reopening must keep the existing key"
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unreadable_key_is_never_replaced_and_its_vault_survives() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = temp_dir();
-        let vault = legacy_fixture_vault();
-        assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
-        let key_path = dir.join("vault.key");
-        let key = std::fs::read(&key_path).unwrap();
-        let sealed = std::fs::read(dir.join("vault.enc")).unwrap();
-
-        // A directory in the key's place fails every read, whatever the
-        // caller's privileges (a mode-000 file is still readable by root).
-        std::fs::remove_file(&key_path).unwrap();
-        std::fs::create_dir(&key_path).unwrap();
-        assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
-        assert!(!save_at_with_custody(
-            &dir,
-            &Vault::new(),
-            KeyCustody::LocalFile
-        ));
-        assert!(key_path.is_dir(), "the unreadable key must not be replaced");
-        assert_eq!(std::fs::read_dir(&key_path).unwrap().count(), 0);
-        std::fs::remove_dir(&key_path).unwrap();
-        std::fs::write(&key_path, &key).unwrap();
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        assert_eq!(std::fs::read(&key_path).unwrap(), key);
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), sealed);
-        assert_eq!(
-            load_at_checked(&dir, KeyCustody::LocalFile)
-                .unwrap()
-                .ordered(),
-            vault.ordered()
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn missing_key_never_rekeys_an_existing_vault() {
-        let dir = temp_dir();
-        assert!(save_at_with_custody(
-            &dir,
-            &legacy_fixture_vault(),
-            KeyCustody::LocalFile
-        ));
-        let sealed = std::fs::read(dir.join("vault.enc")).unwrap();
-        std::fs::remove_file(dir.join("vault.key")).unwrap();
-
-        assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
-        assert!(!save_at_with_custody(
-            &dir,
-            &Vault::new(),
-            KeyCustody::LocalFile
-        ));
-        assert!(
-            !dir.join("vault.key").exists(),
-            "no replacement key is minted"
-        );
-        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), sealed);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn simultaneous_first_saves_share_one_key() {
-        for _ in 0..8 {
+        // Case `vault_written_by_the_previous_implementation_loads_and_resaves`.
+        {
             let dir = temp_dir();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
-            // Spawn every participant before joining: interleaving spawn/join
-            // would deadlock the barrier.
-            let mut workers = Vec::with_capacity(4);
-            for _ in 0..4 {
-                let dir = dir.clone();
-                let gate = std::sync::Arc::clone(&gate);
-                workers.push(std::thread::spawn(move || {
-                    gate.wait();
-                    let key = load_or_create_key(&dir, KeyCustody::LocalFile).unwrap();
-                    let saved =
-                        save_at_with_custody(&dir, &legacy_fixture_vault(), KeyCustody::LocalFile);
-                    (key, saved)
-                }));
-            }
-            let results: Vec<_> = workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap())
-                .collect();
-            let persisted = std::fs::read(dir.join("vault.key")).unwrap();
-            assert!(results.iter().all(|(key, saved)| {
-                *saved && key.expose_secret().as_slice() == persisted.as_slice()
-            }));
+            std::fs::create_dir_all(&dir).unwrap();
+            private_fs::create_atomic(&dir.join("vault.key"), &unhex(LEGACY_KEY)).unwrap();
+            std::fs::write(dir.join("vault.enc"), unhex(LEGACY_VAULT)).unwrap();
+            let expected = legacy_fixture_vault().ordered();
+
+            let loaded = load_at_checked(&dir, KeyCustody::LocalFile).unwrap();
+            assert_eq!(loaded.ordered(), expected);
+            assert!(save_at_with_custody(&dir, &loaded, KeyCustody::LocalFile));
+            assert!(
+                std::fs::read(dir.join("vault.enc"))
+                    .unwrap()
+                    .starts_with(b"TSEAL"),
+                "re-saving writes the current tilo-seal envelope"
+            );
             assert_eq!(
                 load_at_checked(&dir, KeyCustody::LocalFile)
                     .unwrap()
                     .ordered(),
-                legacy_fixture_vault().ordered()
+                expected
+            );
+            assert_eq!(
+                std::fs::read(dir.join("vault.key")).unwrap(),
+                unhex(LEGACY_KEY),
+                "reopening must keep the existing key"
             );
             std::fs::remove_dir_all(dir).unwrap();
         }
-    }
 
-    #[test]
-    fn vault_file_round_trips_through_json() {
-        let mut v = Vault::new();
-        for a in demo_accounts() {
-            v.upsert(a);
+        // Case `invalid_legacy_vault_is_reported_and_preserved`.
+        {
+            let dir = temp_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            let original = b"not a vault document";
+            std::fs::write(dir.join("vault.json"), original).unwrap();
+            assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
+            assert_eq!(std::fs::read(dir.join("vault.json")).unwrap(), original);
+            assert!(!dir.join("vault.enc").exists());
+            std::fs::remove_dir_all(dir).unwrap();
         }
-        let file = VaultFile {
-            version: VAULT_VERSION,
-            accounts: v.ordered(),
-        };
-        let json = serde_json::to_string(&file).unwrap();
-        let back = accounts_from_json(&json).unwrap();
-        assert_eq!(back.len(), v.len());
-        assert_eq!(back[0].issuer, v.ordered()[0].issuer);
-    }
 
-    #[test]
-    fn seal_open_round_trips_and_rejects_tampering() {
-        let key = VaultKey::from_bytes([7u8; KEY_LEN]);
-        let plaintext = b"secret vault bytes";
-        let blob = seal(&key, plaintext).expect("seal");
-        // The sealed blob is not the plaintext.
-        assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
-        // It is a versioned `tilo-seal` envelope bound to this vault format.
-        assert!(blob.starts_with(b"TSEAL"));
-        // Round-trips under the same key.
-        assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
-        // A different key can't open it.
-        assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
-        // A single flipped ciphertext byte fails authentication.
-        let mut tampered = blob;
-        let last = tampered.len() - 1;
-        tampered[last] ^= 0x01;
-        assert!(open(&key, &tampered).is_none());
-    }
+        // Case `plaintext_vault_is_migrated_and_removed`.
+        {
+            let dir = temp_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            // Simulate an older build's plaintext vault.
+            let mut v = Vault::new();
+            for a in demo_accounts() {
+                v.upsert(a);
+            }
+            let file = VaultFile {
+                version: VAULT_VERSION,
+                accounts: v.ordered(),
+            };
+            std::fs::write(dir.join("vault.json"), serde_json::to_vec(&file).unwrap()).unwrap();
 
-    #[test]
-    fn fresh_writes_are_never_plaintext_on_disk() {
-        let dir = temp_dir();
-        let mut v = Vault::new();
-        for a in demo_accounts() {
-            v.upsert(a);
+            let loaded = load_at(&dir);
+            assert_eq!(loaded.len(), v.len(), "migration preserves accounts");
+            assert!(dir.join("vault.enc").exists(), "vault is re-sealed");
+            assert!(
+                !dir.join("vault.json").exists(),
+                "plaintext original is removed"
+            );
+            std::fs::remove_dir_all(&dir).ok();
         }
-        save_at(&dir, &v);
-        let enc = dir.join("vault.enc");
-        assert!(enc.exists(), "an encrypted vault is written");
-        assert!(
-            !dir.join("vault.json").exists(),
-            "no plaintext vault is written"
-        );
-        let raw = std::fs::read(&enc).unwrap();
-        // The base32 secret must not appear anywhere in the ciphertext.
-        let secret = v.ordered()[0].secret.clone().into_bytes();
-        assert!(
-            !raw.windows(secret.len()).any(|w| w == secret.as_slice()),
-            "secret must not be recoverable from the sealed file"
-        );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn save_then_load_round_trips_the_vault() {
-        let dir = temp_dir();
-        let mut v = Vault::new();
-        for a in demo_accounts() {
-            v.upsert(a);
-        }
-        save_at(&dir, &v);
-        let back = load_at(&dir);
-        assert_eq!(back.len(), v.len());
-        assert_eq!(back.ordered()[0].issuer, v.ordered()[0].issuer);
-        assert_eq!(back.ordered()[0].secret, v.ordered()[0].secret);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
+    /// On Unix, the key file is owner-only and an unreadable key is never replaced.
     #[cfg(unix)]
     #[test]
-    fn key_file_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = temp_dir();
-        let v = Vault::new();
-        save_at(&dir, &v);
-        let mode = std::fs::metadata(dir.join("vault.key"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "vault key must be owner-only");
-        std::fs::remove_dir_all(&dir).ok();
-    }
+    fn unix_key_file_is_owner_only_and_never_replaced() {
+        // Case `unreadable_key_is_never_replaced_and_its_vault_survives`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = temp_dir();
+            let vault = legacy_fixture_vault();
+            assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
+            let key_path = dir.join("vault.key");
+            let key = std::fs::read(&key_path).unwrap();
+            let sealed = std::fs::read(dir.join("vault.enc")).unwrap();
 
-    #[test]
-    fn invalid_legacy_vault_is_reported_and_preserved() {
-        let dir = temp_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        let original = b"not a vault document";
-        std::fs::write(dir.join("vault.json"), original).unwrap();
-        assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
-        assert_eq!(std::fs::read(dir.join("vault.json")).unwrap(), original);
-        assert!(!dir.join("vault.enc").exists());
-        std::fs::remove_dir_all(dir).unwrap();
-    }
+            // A directory in the key's place fails every read, whatever the
+            // caller's privileges (a mode-000 file is still readable by root).
+            std::fs::remove_file(&key_path).unwrap();
+            std::fs::create_dir(&key_path).unwrap();
+            assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
+            assert!(!save_at_with_custody(
+                &dir,
+                &Vault::new(),
+                KeyCustody::LocalFile
+            ));
+            assert!(key_path.is_dir(), "the unreadable key must not be replaced");
+            assert_eq!(std::fs::read_dir(&key_path).unwrap().count(), 0);
+            std::fs::remove_dir(&key_path).unwrap();
+            std::fs::write(&key_path, &key).unwrap();
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    #[test]
-    fn plaintext_vault_is_migrated_and_removed() {
-        let dir = temp_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        // Simulate an older build's plaintext vault.
-        let mut v = Vault::new();
-        for a in demo_accounts() {
-            v.upsert(a);
+            assert_eq!(std::fs::read(&key_path).unwrap(), key);
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), sealed);
+            assert_eq!(
+                load_at_checked(&dir, KeyCustody::LocalFile)
+                    .unwrap()
+                    .ordered(),
+                vault.ordered()
+            );
+            std::fs::remove_dir_all(dir).unwrap();
         }
-        let file = VaultFile {
-            version: VAULT_VERSION,
-            accounts: v.ordered(),
-        };
-        std::fs::write(dir.join("vault.json"), serde_json::to_vec(&file).unwrap()).unwrap();
 
-        let loaded = load_at(&dir);
-        assert_eq!(loaded.len(), v.len(), "migration preserves accounts");
-        assert!(dir.join("vault.enc").exists(), "vault is re-sealed");
-        assert!(
-            !dir.join("vault.json").exists(),
-            "plaintext original is removed"
-        );
-        std::fs::remove_dir_all(&dir).ok();
+        // Case `key_file_is_owner_only`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = temp_dir();
+            let v = Vault::new();
+            save_at(&dir, &v);
+            let mode = std::fs::metadata(dir.join("vault.key"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "vault key must be owner-only");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// A missing key never rekeys an existing vault, and racing first saves share a key.
+    #[test]
+    fn key_custody_never_rekeys_and_first_saves_share_one_key() {
+        // Case `missing_key_never_rekeys_an_existing_vault`.
+        {
+            let dir = temp_dir();
+            assert!(save_at_with_custody(
+                &dir,
+                &legacy_fixture_vault(),
+                KeyCustody::LocalFile
+            ));
+            let sealed = std::fs::read(dir.join("vault.enc")).unwrap();
+            std::fs::remove_file(dir.join("vault.key")).unwrap();
+
+            assert!(load_at_checked(&dir, KeyCustody::LocalFile).is_err());
+            assert!(!save_at_with_custody(
+                &dir,
+                &Vault::new(),
+                KeyCustody::LocalFile
+            ));
+            assert!(
+                !dir.join("vault.key").exists(),
+                "no replacement key is minted"
+            );
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), sealed);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        // Case `simultaneous_first_saves_share_one_key`.
+        {
+            for _ in 0..8 {
+                let dir = temp_dir();
+                let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+                // Spawn every participant before joining: interleaving spawn/join
+                // would deadlock the barrier.
+                let mut workers = Vec::with_capacity(4);
+                for _ in 0..4 {
+                    let dir = dir.clone();
+                    let gate = std::sync::Arc::clone(&gate);
+                    workers.push(std::thread::spawn(move || {
+                        gate.wait();
+                        let key = load_or_create_key(&dir, KeyCustody::LocalFile).unwrap();
+                        let saved = save_at_with_custody(
+                            &dir,
+                            &legacy_fixture_vault(),
+                            KeyCustody::LocalFile,
+                        );
+                        (key, saved)
+                    }));
+                }
+                let results: Vec<_> = workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect();
+                let persisted = std::fs::read(dir.join("vault.key")).unwrap();
+                assert!(results.iter().all(|(key, saved)| {
+                    *saved && key.expose_secret().as_slice() == persisted.as_slice()
+                }));
+                assert_eq!(
+                    load_at_checked(&dir, KeyCustody::LocalFile)
+                        .unwrap()
+                        .ordered(),
+                    legacy_fixture_vault().ordered()
+                );
+                std::fs::remove_dir_all(dir).unwrap();
+            }
+        }
+    }
+
+    /// Vault JSON, sealing and save/load round-trips; fresh writes are never plaintext.
+    #[test]
+    fn vault_files_round_trip_sealed_and_never_plaintext() {
+        // Case `vault_file_round_trips_through_json`.
+        {
+            let mut v = Vault::new();
+            for a in demo_accounts() {
+                v.upsert(a);
+            }
+            let file = VaultFile {
+                version: VAULT_VERSION,
+                accounts: v.ordered(),
+            };
+            let json = serde_json::to_string(&file).unwrap();
+            let back = accounts_from_json(&json).unwrap();
+            assert_eq!(back.len(), v.len());
+            assert_eq!(back[0].issuer, v.ordered()[0].issuer);
+        }
+
+        // Case `seal_open_round_trips_and_rejects_tampering`.
+        {
+            let key = VaultKey::from_bytes([7u8; KEY_LEN]);
+            let plaintext = b"secret vault bytes";
+            let blob = seal(&key, plaintext).expect("seal");
+            // The sealed blob is not the plaintext.
+            assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
+            // It is a versioned `tilo-seal` envelope bound to this vault format.
+            assert!(blob.starts_with(b"TSEAL"));
+            // Round-trips under the same key.
+            assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
+            // A different key can't open it.
+            assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
+            // A single flipped ciphertext byte fails authentication.
+            let mut tampered = blob;
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0x01;
+            assert!(open(&key, &tampered).is_none());
+        }
+
+        // Case `fresh_writes_are_never_plaintext_on_disk`.
+        {
+            let dir = temp_dir();
+            let mut v = Vault::new();
+            for a in demo_accounts() {
+                v.upsert(a);
+            }
+            save_at(&dir, &v);
+            let enc = dir.join("vault.enc");
+            assert!(enc.exists(), "an encrypted vault is written");
+            assert!(
+                !dir.join("vault.json").exists(),
+                "no plaintext vault is written"
+            );
+            let raw = std::fs::read(&enc).unwrap();
+            // The base32 secret must not appear anywhere in the ciphertext.
+            let secret = v.ordered()[0].secret.clone().into_bytes();
+            assert!(
+                !raw.windows(secret.len()).any(|w| w == secret.as_slice()),
+                "secret must not be recoverable from the sealed file"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        // Case `save_then_load_round_trips_the_vault`.
+        {
+            let dir = temp_dir();
+            let mut v = Vault::new();
+            for a in demo_accounts() {
+                v.upsert(a);
+            }
+            save_at(&dir, &v);
+            let back = load_at(&dir);
+            assert_eq!(back.len(), v.len());
+            assert_eq!(back.ordered()[0].issuer, v.ordered()[0].issuer);
+            assert_eq!(back.ordered()[0].secret, v.ordered()[0].secret);
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

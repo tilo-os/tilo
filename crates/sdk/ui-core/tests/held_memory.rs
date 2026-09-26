@@ -20,6 +20,10 @@ static HEAP: ThreadCounting = ThreadCounting;
 
 const ROUNDS: i64 = 20;
 const OPS_PER_ROUND: usize = 1000;
+const SETTINGS_EVERY: usize = 10;
+const TYPED_RUN: &str = "xxxxxxxxx";
+// Every round is still 1000 ops: 100 settings writes and 900 typed characters.
+const _: () = assert!(TYPED_RUN.len() == SETTINGS_EVERY - 1);
 
 /// A peer's incremental saves, one per round, after the one that forks it from `base`.
 fn remote_rounds(base: &mut AutoCommit) -> Vec<Vec<u8>> {
@@ -30,15 +34,15 @@ fn remote_rounds(base: &mut AutoCommit) -> Vec<Vec<u8>> {
     let mut typed = 0usize;
     for round in 0..ROUNDS {
         let heads = remote.get_heads();
-        for op in 0..OPS_PER_ROUND {
-            if op % 10 == 0 {
-                remote
-                    .put(&settings, format!("k{}", op % 50), round)
-                    .unwrap();
-            } else {
-                remote.splice_text(&text, typed, 0, "x").unwrap();
-                typed += 1;
-            }
+        // Each settings write is followed by nine typed characters. One splice of the
+        // nine records the same nine single-character inserts, each after the last, as
+        // nine one-character splices do, without locating the insertion point nine times.
+        for op in (0..OPS_PER_ROUND).step_by(SETTINGS_EVERY) {
+            remote
+                .put(&settings, format!("k{}", op % 50), round)
+                .unwrap();
+            remote.splice_text(&text, typed, 0, TYPED_RUN).unwrap();
+            typed += TYPED_RUN.len();
         }
         remote.commit();
         rounds.push(remote.save_after(&heads));

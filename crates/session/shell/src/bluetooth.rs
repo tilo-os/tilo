@@ -217,70 +217,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_posted_prompt_is_readable_and_answerable() {
-        let h = PairingPromptHandle::new();
-        assert!(!h.is_prompting());
-        let (tx, rx) = PairingReplySender::channel();
-        h.post(request("A"), tx);
-        assert!(h.is_prompting());
-        assert_eq!(h.current().unwrap().device_name, "A");
-        assert!(h.answer(PairingReply::Accept));
-        assert_eq!(rx.await.unwrap(), PairingReply::Accept);
-        assert!(!h.is_prompting(), "answering clears the prompt");
-    }
-
-    /// A click with nothing on screen must not manufacture a consent.
-    #[tokio::test]
-    async fn answering_nothing_does_nothing() {
-        let h = PairingPromptHandle::new();
-        assert!(!h.answer(PairingReply::Accept));
-        assert!(!h.dismiss());
-    }
-
-    /// Two questions must not stack. The older one is declined rather than left behind a new dialog where the user might answer the wrong one.
-    #[tokio::test]
-    async fn a_second_question_declines_the_first() {
-        let h = PairingPromptHandle::new();
-        let (tx1, rx1) = PairingReplySender::channel();
-        let (tx2, _rx2) = PairingReplySender::channel();
-        h.post(request("first"), tx1);
-        h.post(request("second"), tx2);
-        assert_eq!(rx1.await.unwrap(), PairingReply::Reject);
-        assert_eq!(h.current().unwrap().device_name, "second");
-    }
-
-    /// Closing the dialog without answering must refuse, never accept.
-    #[tokio::test]
-    async fn dismissing_refuses_rather_than_accepting() {
-        let h = PairingPromptHandle::new();
-        let (tx, rx) = PairingReplySender::channel();
-        h.post(request("A"), tx);
-        assert!(h.dismiss());
-        assert_eq!(rx.await.unwrap(), PairingReply::Reject);
-    }
-
-    #[tokio::test]
-    async fn declining_is_carried_through_verbatim() {
-        let h = PairingPromptHandle::new();
-        let (tx, rx) = PairingReplySender::channel();
-        h.post(request("A"), tx);
-        assert!(h.answer(PairingReply::Reject));
-        assert_eq!(rx.await.unwrap(), PairingReply::Reject);
-    }
-
-    #[tokio::test]
-    async fn a_typed_passkey_is_carried_through_verbatim() {
-        let h = PairingPromptHandle::new();
-        let (tx, rx) = PairingReplySender::channel();
-        h.post(
-            PairingRequest {
-                device_path: "/org/bluez/hci0/dev_X".into(),
-                device_name: "X".into(),
-                prompt: PairingPrompt::RequestPasskey,
-            },
-            tx,
-        );
-        assert!(h.answer(PairingReply::Passkey(987_654)));
-        assert_eq!(rx.await.unwrap(), PairingReply::Passkey(987_654));
+    async fn pairing_prompts_carry_answers_verbatim_and_refuse_on_dismiss() {
+        // Phase `a_posted_prompt_is_readable_and_answerable`.
+        {
+            let h = PairingPromptHandle::new();
+            assert!(!h.is_prompting());
+            let (tx, rx) = PairingReplySender::channel();
+            h.post(request("A"), tx);
+            assert!(h.is_prompting());
+            assert_eq!(h.current().unwrap().device_name, "A");
+            assert!(h.answer(PairingReply::Accept));
+            assert_eq!(rx.await.unwrap(), PairingReply::Accept);
+            assert!(!h.is_prompting(), "answering clears the prompt");
+        }
+        // Phase `answering_nothing_does_nothing`.
+        // A click with nothing on screen must not manufacture a consent.
+        {
+            let h = PairingPromptHandle::new();
+            assert!(!h.answer(PairingReply::Accept));
+            assert!(!h.dismiss());
+        }
+        // Phase `a_second_question_declines_the_first`.
+        // Two questions must not stack. The older one is declined rather than left behind a new dialog where the user might answer the wrong one.
+        {
+            let h = PairingPromptHandle::new();
+            let (tx1, rx1) = PairingReplySender::channel();
+            let (tx2, _rx2) = PairingReplySender::channel();
+            h.post(request("first"), tx1);
+            h.post(request("second"), tx2);
+            assert_eq!(rx1.await.unwrap(), PairingReply::Reject);
+            assert_eq!(h.current().unwrap().device_name, "second");
+        }
+        // Phase `dismissing_refuses_rather_than_accepting`.
+        // Closing the dialog without answering must refuse, never accept.
+        {
+            let h = PairingPromptHandle::new();
+            let (tx, rx) = PairingReplySender::channel();
+            h.post(request("A"), tx);
+            assert!(h.dismiss());
+            assert_eq!(rx.await.unwrap(), PairingReply::Reject);
+        }
+        // Phase `declining_is_carried_through_verbatim`.
+        {
+            let h = PairingPromptHandle::new();
+            let (tx, rx) = PairingReplySender::channel();
+            h.post(request("A"), tx);
+            assert!(h.answer(PairingReply::Reject));
+            assert_eq!(rx.await.unwrap(), PairingReply::Reject);
+        }
+        // Phase `a_typed_passkey_is_carried_through_verbatim`.
+        {
+            let h = PairingPromptHandle::new();
+            let (tx, rx) = PairingReplySender::channel();
+            h.post(
+                PairingRequest {
+                    device_path: "/org/bluez/hci0/dev_X".into(),
+                    device_name: "X".into(),
+                    prompt: PairingPrompt::RequestPasskey,
+                },
+                tx,
+            );
+            assert!(h.answer(PairingReply::Passkey(987_654)));
+            assert_eq!(rx.await.unwrap(), PairingReply::Passkey(987_654));
+        }
     }
 }

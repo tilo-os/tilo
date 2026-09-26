@@ -538,153 +538,161 @@ mod tests {
     }
 
     #[test]
-    fn blur_commit_saves_typed_value_on_click_outside() {
-        let mut el = EditableLabel::new("Old Name");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
+    fn editable_label_commits_on_enter_or_blur_and_cancels_on_escape() {
+        fn blur_commit_saves_typed_value_on_click_outside() {
+            let mut el = EditableLabel::new("Old Name");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
 
-        el.begin_edit();
-        assert!(el.is_editing());
+            el.begin_edit();
+            assert!(el.is_editing());
 
-        // begin_edit selects-all, so the first keystroke replaces the value.
-        drive(&mut el, &mut doc, &char_key("N"), no_mods());
-        drive(&mut el, &mut doc, &char_key("e"), no_mods());
-        drive(&mut el, &mut doc, &char_key("w"), no_mods());
-        assert_eq!(
-            el.current_text(),
-            "New",
-            "typing replaced the selected value"
-        );
-        assert!(el.is_editing(), "still editing until a commit trigger");
-
-        // Move the pointer well outside the field, then press — a click away.
-        drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
-        let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
-
-        assert!(!el.is_editing(), "click outside ends the edit");
-        assert_eq!(el.value(), "New", "blur committed the typed value");
-        assert!(
-            !consumed,
-            "the outside click is not swallowed — it still reaches the host",
-        );
-        assert_eq!(el.take_outcome(), EditOutcome::Committed("New".into()));
-        assert_eq!(
-            el.take_outcome(),
-            EditOutcome::None,
-            "outcome is rising-edge"
-        );
-    }
-
-    #[test]
-    fn modal_paint_suppression_retains_title_draft_and_selection() {
-        let mut label = EditableLabel::new("Draft title");
-        label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
-        label.begin_edit();
-        let before = label.input.get_state();
-        let mut renderer = crate::TextRenderer::new();
-        let mut draw = |label: &mut EditableLabel| {
-            let mut scene = Scene::new();
-            label.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &Theme::dark(),
-                &PresenceCtx::empty(),
+            // begin_edit selects-all, so the first keystroke replaces the value.
+            drive(&mut el, &mut doc, &char_key("N"), no_mods());
+            drive(&mut el, &mut doc, &char_key("e"), no_mods());
+            drive(&mut el, &mut doc, &char_key("w"), no_mods());
+            assert_eq!(
+                el.current_text(),
+                "New",
+                "typing replaced the selected value"
             );
-            scene.encoding().draw_tags.len()
-        };
-        let visible = draw(&mut label);
-        label.suppress_caret_paint(true);
-        assert_eq!(draw(&mut label).saturating_add(1), visible);
-        assert!(label.is_editing());
-        assert_eq!(label.input.get_state(), before);
-        assert_eq!(label.current_text(), "Draft title");
-        label.suppress_caret_paint(false);
-        assert_eq!(draw(&mut label), visible);
+            assert!(el.is_editing(), "still editing until a commit trigger");
+
+            // Move the pointer well outside the field, then press — a click away.
+            drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
+            let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+
+            assert!(!el.is_editing(), "click outside ends the edit");
+            assert_eq!(el.value(), "New", "blur committed the typed value");
+            assert!(
+                !consumed,
+                "the outside click is not swallowed — it still reaches the host",
+            );
+            assert_eq!(el.take_outcome(), EditOutcome::Committed("New".into()));
+            assert_eq!(
+                el.take_outcome(),
+                EditOutcome::None,
+                "outcome is rising-edge"
+            );
+        }
+
+        fn enter_commits_and_consumes() {
+            let mut el = EditableLabel::new("first");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            drive(&mut el, &mut doc, &char_key("z"), no_mods()); // replaces selection → "z"
+            let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
+            assert!(consumed, "Enter is consumed");
+            assert!(!el.is_editing());
+            assert_eq!(el.value(), "z");
+            assert_eq!(el.take_outcome(), EditOutcome::Committed("z".into()));
+        }
+
+        fn escape_cancels_and_keeps_previous_value() {
+            let mut el = EditableLabel::new("keep me");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            drive(&mut el, &mut doc, &char_key("X"), no_mods()); // would-be new value
+            let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), no_mods());
+            assert!(consumed, "Esc is consumed");
+            assert!(!el.is_editing());
+            assert_eq!(el.value(), "keep me", "cancel restores the previous value");
+            assert_eq!(el.take_outcome(), EditOutcome::Cancelled);
+        }
+
+        fn blank_commit_keeps_previous_value() {
+            let mut el = EditableLabel::new("Original");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit(); // selects all
+            // select-all is already active; type a space then backspace to empty it.
+            drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
+            drive(
+                &mut el,
+                &mut doc,
+                &named_key(NamedKey::Backspace),
+                no_mods(),
+            ); // → ""
+            assert_eq!(el.current_text(), "", "field is empty before commit");
+            el.commit();
+            assert_eq!(el.value(), "Original", "blank commit keeps the old value");
+        }
+
+        fn focus_loss_blur_commits() {
+            let mut el = EditableLabel::new("before");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            drive(&mut el, &mut doc, &char_key("A"), no_mods()); // → "A"
+            el.set_focus(false);
+            assert!(!el.is_editing());
+            assert_eq!(el.value(), "A");
+            assert_eq!(el.take_outcome(), EditOutcome::Committed("A".into()));
+        }
+
+        blur_commit_saves_typed_value_on_click_outside();
+        enter_commits_and_consumes();
+        escape_cancels_and_keeps_previous_value();
+        blank_commit_keeps_previous_value();
+        focus_loss_blur_commits();
     }
 
     #[test]
-    fn enter_commits_and_consumes() {
-        let mut el = EditableLabel::new("first");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("z"), no_mods()); // replaces selection → "z"
-        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
-        assert!(consumed, "Enter is consumed");
-        assert!(!el.is_editing());
-        assert_eq!(el.value(), "z");
-        assert_eq!(el.take_outcome(), EditOutcome::Committed("z".into()));
-    }
+    fn editable_label_draft_survives_modal_paint_and_selects_all() {
+        fn modal_paint_suppression_retains_title_draft_and_selection() {
+            let mut label = EditableLabel::new("Draft title");
+            label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
+            label.begin_edit();
+            let before = label.input.get_state();
+            let mut renderer = crate::TextRenderer::new();
+            let mut draw = |label: &mut EditableLabel| {
+                let mut scene = Scene::new();
+                label.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut renderer,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+                scene.encoding().draw_tags.len()
+            };
+            let visible = draw(&mut label);
+            label.suppress_caret_paint(true);
+            assert_eq!(draw(&mut label).saturating_add(1), visible);
+            assert!(label.is_editing());
+            assert_eq!(label.input.get_state(), before);
+            assert_eq!(label.current_text(), "Draft title");
+            label.suppress_caret_paint(false);
+            assert_eq!(draw(&mut label), visible);
+        }
 
-    #[test]
-    fn escape_cancels_and_keeps_previous_value() {
-        let mut el = EditableLabel::new("keep me");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("X"), no_mods()); // would-be new value
-        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), no_mods());
-        assert!(consumed, "Esc is consumed");
-        assert!(!el.is_editing());
-        assert_eq!(el.value(), "keep me", "cancel restores the previous value");
-        assert_eq!(el.take_outcome(), EditOutcome::Cancelled);
-    }
+        fn ctrl_a_selects_all_through_embedded_field() {
+            let mut el = EditableLabel::new("hello world");
+            el.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 30.0));
+            let mut doc = AutoCommit::new();
+            el.begin_edit();
+            // Collapse the initial select-all by pressing Right (caret to end).
+            drive(
+                &mut el,
+                &mut doc,
+                &named_key(NamedKey::ArrowRight),
+                no_mods(),
+            );
+            // Now Ctrl+A must reselect everything, then typing replaces it all.
+            let mut ctrl = winit::keyboard::ModifiersState::empty();
+            ctrl |= winit::keyboard::ModifiersState::CONTROL;
+            drive(&mut el, &mut doc, &char_key("a"), Modifiers::from(ctrl));
+            drive(&mut el, &mut doc, &char_key("Z"), no_mods());
+            assert_eq!(
+                el.current_text(),
+                "Z",
+                "Ctrl+A selected the whole value so the next keystroke replaced it",
+            );
+        }
 
-    #[test]
-    fn blank_commit_keeps_previous_value() {
-        let mut el = EditableLabel::new("Original");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit(); // selects all
-        // select-all is already active; type a space then backspace to empty it.
-        drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
-        drive(
-            &mut el,
-            &mut doc,
-            &named_key(NamedKey::Backspace),
-            no_mods(),
-        ); // → ""
-        assert_eq!(el.current_text(), "", "field is empty before commit");
-        el.commit();
-        assert_eq!(el.value(), "Original", "blank commit keeps the old value");
-    }
-
-    #[test]
-    fn focus_loss_blur_commits() {
-        let mut el = EditableLabel::new("before");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("A"), no_mods()); // → "A"
-        el.set_focus(false);
-        assert!(!el.is_editing());
-        assert_eq!(el.value(), "A");
-        assert_eq!(el.take_outcome(), EditOutcome::Committed("A".into()));
-    }
-
-    #[test]
-    fn ctrl_a_selects_all_through_embedded_field() {
-        let mut el = EditableLabel::new("hello world");
-        el.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 30.0));
-        let mut doc = AutoCommit::new();
-        el.begin_edit();
-        // Collapse the initial select-all by pressing Right (caret to end).
-        drive(
-            &mut el,
-            &mut doc,
-            &named_key(NamedKey::ArrowRight),
-            no_mods(),
-        );
-        // Now Ctrl+A must reselect everything, then typing replaces it all.
-        let mut ctrl = winit::keyboard::ModifiersState::empty();
-        ctrl |= winit::keyboard::ModifiersState::CONTROL;
-        drive(&mut el, &mut doc, &char_key("a"), Modifiers::from(ctrl));
-        drive(&mut el, &mut doc, &char_key("Z"), no_mods());
-        assert_eq!(
-            el.current_text(),
-            "Z",
-            "Ctrl+A selected the whole value so the next keystroke replaced it",
-        );
+        modal_paint_suppression_retains_title_draft_and_selection();
+        ctrl_a_selects_all_through_embedded_field();
     }
 }

@@ -446,54 +446,6 @@ mod tests {
 
     use super::*;
 
-    fn session() -> ComponentInfo {
-        ComponentInfo::new(Scope::Session, vec![])
-    }
-
-    fn swap(
-        store: &SlotStore,
-        record: &mut SlotRecord,
-        component: &str,
-        layer: &str,
-    ) -> Option<u64> {
-        let (_, to) = store
-            .prepare_swap(record, component, layer, session())
-            .unwrap()?;
-        store.set_current(record, to.number).unwrap();
-        Some(to.number)
-    }
-
-    #[test]
-    fn create_is_idempotent_and_checks_kind() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (_, created) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        assert!(created);
-        let (_, created) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        assert!(!created);
-        assert!(matches!(
-            store.create("a", SlotKind::Headful, Owner::default(), &[]),
-            Err(DaemonError::SlotKindConflict { .. })
-        ));
-        assert!(matches!(
-            store.create("vm", SlotKind::Headless, Owner::default(), &[]),
-            Err(DaemonError::ReservedName(_))
-        ));
-        assert!(matches!(
-            store.create("Bad", SlotKind::Headless, Owner::default(), &[]),
-            Err(DaemonError::InvalidName(_))
-        ));
-        assert!(matches!(
-            store.load("nope"),
-            Err(DaemonError::SlotNotFound(_))
-        ));
-        assert_eq!(store.load("vm").unwrap().kind, SlotKind::Vm);
-    }
-
     #[test]
     fn outputs_are_fixed_at_creation_and_need_a_headful_slot() {
         let root = tempfile::tempdir().unwrap();
@@ -525,125 +477,180 @@ mod tests {
         assert_eq!(plain.connectors(), 1);
     }
 
-    #[test]
-    fn swaps_make_generations_in_order() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
-        assert_eq!(swap(&store, &mut record, "launcher", "h2"), Some(2));
-        // Same layer again: no new generation.
-        assert_eq!(swap(&store, &mut record, "shell", "h1"), None);
-        // Replacing keeps the stacking position.
-        assert_eq!(swap(&store, &mut record, "shell", "h3"), Some(3));
-        let current = store.generation("a", 3).unwrap();
-        assert_eq!(current.layers, ["h3", "h2"]);
-        assert_eq!(current.components["shell"].layer, "h3");
-        assert_eq!(store.generations("a"), [1, 2, 3]);
-        assert_eq!(store.load("a").unwrap().current, 3);
+    fn session() -> ComponentInfo {
+        ComponentInfo::new(Scope::Session, vec![])
+    }
+
+    fn swap(
+        store: &SlotStore,
+        record: &mut SlotRecord,
+        component: &str,
+        layer: &str,
+    ) -> Option<u64> {
+        let (_, to) = store
+            .prepare_swap(record, component, layer, session())
+            .unwrap()?;
+        store.set_current(record, to.number).unwrap();
+        Some(to.number)
     }
 
     #[test]
-    fn unapplied_swap_does_not_move_current() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (record, _) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        let (from, to) = store
-            .prepare_swap(&record, "shell", "h1", session())
-            .unwrap()
-            .unwrap();
-        assert_eq!(from.number, 0);
-        assert_eq!(to.number, 1);
-        assert_eq!(store.load("a").unwrap().current, 0);
-        // A retry sees the same transition again rather than "unchanged".
-        assert!(
-            store
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn slot_generations_swap_roll_back_and_mark_interruptions() {
+        // Phase `create_is_idempotent_and_checks_kind`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (_, created) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert!(created);
+            let (_, created) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert!(!created);
+            assert!(matches!(
+                store.create("a", SlotKind::Headful, Owner::default(), &[]),
+                Err(DaemonError::SlotKindConflict { .. })
+            ));
+            assert!(matches!(
+                store.create("vm", SlotKind::Headless, Owner::default(), &[]),
+                Err(DaemonError::ReservedName(_))
+            ));
+            assert!(matches!(
+                store.create("Bad", SlotKind::Headless, Owner::default(), &[]),
+                Err(DaemonError::InvalidName(_))
+            ));
+            assert!(matches!(
+                store.load("nope"),
+                Err(DaemonError::SlotNotFound(_))
+            ));
+            assert_eq!(store.load("vm").unwrap().kind, SlotKind::Vm);
+        }
+        // Phase `swaps_make_generations_in_order`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
+            assert_eq!(swap(&store, &mut record, "launcher", "h2"), Some(2));
+            // Same layer again: no new generation.
+            assert_eq!(swap(&store, &mut record, "shell", "h1"), None);
+            // Replacing keeps the stacking position.
+            assert_eq!(swap(&store, &mut record, "shell", "h3"), Some(3));
+            let current = store.generation("a", 3).unwrap();
+            assert_eq!(current.layers, ["h3", "h2"]);
+            assert_eq!(current.components["shell"].layer, "h3");
+            assert_eq!(store.generations("a"), [1, 2, 3]);
+            assert_eq!(store.load("a").unwrap().current, 3);
+        }
+        // Phase `unapplied_swap_does_not_move_current`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (record, _) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            let (from, to) = store
                 .prepare_swap(&record, "shell", "h1", session())
                 .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn rollback_walks_back_to_base() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        swap(&store, &mut record, "shell", "h1");
-        swap(&store, &mut record, "shell", "h2");
-        let (from, to) = store.rollback_target(&record, None).unwrap();
-        assert_eq!((from.number, to.number), (2, 1));
-        store.set_current(&mut record, to.number).unwrap();
-        // A swap after a rollback gets a fresh number; history is never rewritten.
-        assert_eq!(swap(&store, &mut record, "shell", "h4"), Some(3));
-        assert_eq!(store.generation("a", 3).unwrap().layers, ["h4"]);
-        let (_, to) = store.rollback_target(&record, None).unwrap();
-        assert_eq!(to.number, 2);
-        let (_, base) = store.rollback_target(&record, Some(0)).unwrap();
-        assert!(base.layers.is_empty());
-        store.set_current(&mut record, 0).unwrap();
-        assert!(matches!(
-            store.rollback_target(&record, None),
-            Err(DaemonError::NoEarlierGeneration(_))
-        ));
-        assert!(matches!(
-            store.rollback_target(&record, Some(9)),
-            Err(DaemonError::GenerationNotFound { .. })
-        ));
-    }
-
-    #[test]
-    fn prune_keeps_current_and_newest() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        for layer in ["h1", "h2", "h3", "h4"] {
-            swap(&store, &mut record, "shell", layer);
+                .unwrap();
+            assert_eq!(from.number, 0);
+            assert_eq!(to.number, 1);
+            assert_eq!(store.load("a").unwrap().current, 0);
+            // A retry sees the same transition again rather than "unchanged".
+            assert!(
+                store
+                    .prepare_swap(&record, "shell", "h1", session())
+                    .unwrap()
+                    .is_some()
+            );
         }
-        store.set_current(&mut record, 1).unwrap();
-        let (referenced, removed) = store.prune(&record, 2, true).unwrap();
-        assert_eq!(removed, [2]);
-        assert_eq!(
-            store.generations("a"),
-            [1, 2, 3, 4],
-            "dry run deletes nothing"
-        );
-        let (_, removed) = store.prune(&record, 2, false).unwrap();
-        assert_eq!(removed, [2]);
-        assert_eq!(store.generations("a"), [1, 3, 4]);
-        assert!(referenced.contains(&"h1".to_string()) && !referenced.contains(&"h2".to_string()));
+        // Phase `rollback_walks_back_to_base`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            swap(&store, &mut record, "shell", "h1");
+            swap(&store, &mut record, "shell", "h2");
+            let (from, to) = store.rollback_target(&record, None).unwrap();
+            assert_eq!((from.number, to.number), (2, 1));
+            store.set_current(&mut record, to.number).unwrap();
+            // A swap after a rollback gets a fresh number; history is never rewritten.
+            assert_eq!(swap(&store, &mut record, "shell", "h4"), Some(3));
+            assert_eq!(store.generation("a", 3).unwrap().layers, ["h4"]);
+            let (_, to) = store.rollback_target(&record, None).unwrap();
+            assert_eq!(to.number, 2);
+            let (_, base) = store.rollback_target(&record, Some(0)).unwrap();
+            assert!(base.layers.is_empty());
+            store.set_current(&mut record, 0).unwrap();
+            assert!(matches!(
+                store.rollback_target(&record, None),
+                Err(DaemonError::NoEarlierGeneration(_))
+            ));
+            assert!(matches!(
+                store.rollback_target(&record, Some(9)),
+                Err(DaemonError::GenerationNotFound { .. })
+            ));
+        }
+        // Phase `pending_marks_interrupted_transitions`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            store.mark_pending("a", 1).unwrap();
+            assert_eq!(store.pending("a"), Some(1));
+            store.set_current(&mut record, 0).unwrap();
+            assert_eq!(store.pending("a"), None);
+        }
     }
 
     #[test]
-    fn pending_marks_interrupted_transitions() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        store.mark_pending("a", 1).unwrap();
-        assert_eq!(store.pending("a"), Some(1));
-        store.set_current(&mut record, 0).unwrap();
-        assert_eq!(store.pending("a"), None);
-    }
-
-    #[test]
-    fn remove_is_idempotent() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SlotStore::new(root.path());
-        store
-            .create("a", SlotKind::Headful, Owner::default(), &[])
-            .unwrap();
-        assert!(store.remove("a").unwrap());
-        assert!(!store.remove("a").unwrap());
-        assert!(store.list().unwrap().is_empty());
+    fn slot_pruning_and_removal_keep_what_is_current() {
+        // Phase `prune_keeps_current_and_newest`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            for layer in ["h1", "h2", "h3", "h4"] {
+                swap(&store, &mut record, "shell", layer);
+            }
+            store.set_current(&mut record, 1).unwrap();
+            let (referenced, removed) = store.prune(&record, 2, true).unwrap();
+            assert_eq!(removed, [2]);
+            assert_eq!(
+                store.generations("a"),
+                [1, 2, 3, 4],
+                "dry run deletes nothing"
+            );
+            let (_, removed) = store.prune(&record, 2, false).unwrap();
+            assert_eq!(removed, [2]);
+            assert_eq!(store.generations("a"), [1, 3, 4]);
+            assert!(
+                referenced.contains(&"h1".to_string()) && !referenced.contains(&"h2".to_string())
+            );
+        }
+        // Phase `remove_is_idempotent`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SlotStore::new(root.path());
+            store
+                .create("a", SlotKind::Headful, Owner::default(), &[])
+                .unwrap();
+            assert!(store.remove("a").unwrap());
+            assert!(!store.remove("a").unwrap());
+            assert!(store.list().unwrap().is_empty());
+        }
     }
 }

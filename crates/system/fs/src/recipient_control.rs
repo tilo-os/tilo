@@ -451,167 +451,173 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admits_v2_and_returns_only_redacted_status() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
-        );
-        let server = Arc::new(RecipientControlServer::new(Arc::clone(&store)));
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let secret_uri = uri(1, workspace_id, record_id);
-        let secret = secret_uri.split_once('#').unwrap().1.to_string();
-        let request = RecipientControlRequestV1 {
-            protocol_version: RECIPIENT_CONTROL_VERSION,
-            operation: RecipientControlOperationV1::AdmitV2 {
-                uri: secret_uri.clone(),
-            },
-        };
-        let request_debug = format!("{request:?}");
-        assert!(!request_debug.contains(&secret_uri));
-        assert!(!request_debug.contains(&secret));
-
-        let response = transact(Arc::clone(&server), request).await;
-        let key = RecordSubscriptionKey {
-            workspace_id,
-            record_id,
-        };
-        assert!(matches!(
-            &response.result,
-            RecipientControlResultV1::Admitted {
-                inserted: true,
-                status: RecipientSubscriptionStatusV1 { key: got, .. }
-            } if *got == key.into()
-        ));
-        let response_debug = format!("{response:?}");
-        assert!(!response_debug.contains(&secret_uri));
-        assert!(!response_debug.contains(&secret));
-        assert!(store.get(key).is_some());
-
-        store
-            .record_error(
-                key,
-                crate::record_subscription::RecordSubscriptionFailureCode::Offline,
-                10,
-            )
-            .unwrap();
-        let status = transact(
-            server,
-            RecipientControlRequestV1 {
-                protocol_version: RECIPIENT_CONTROL_VERSION,
-                operation: RecipientControlOperationV1::Status { key: key.into() },
-            },
-        )
-        .await;
-        assert!(matches!(
-            status.result,
-            RecipientControlResultV1::Status(RecipientSubscriptionStatusV1 {
-                last_error: Some(_),
-                ..
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn invalid_collision_and_oversized_frames_are_finite() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
-        );
-        let server = Arc::new(RecipientControlServer::new(store));
-        let invalid = transact(
-            Arc::clone(&server),
-            RecipientControlRequestV1 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    async fn recipient_control_admits_v2_redacts_status_and_bounds_frames() {
+        // Phase `admits_v2_and_returns_only_redacted_status`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
+            );
+            let server = Arc::new(RecipientControlServer::new(Arc::clone(&store)));
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let secret_uri = uri(1, workspace_id, record_id);
+            let secret = secret_uri.split_once('#').unwrap().1.to_string();
+            let request = RecipientControlRequestV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 operation: RecipientControlOperationV1::AdmitV2 {
-                    uri: "tilo-file://v2/not-a-link#redacted".into(),
+                    uri: secret_uri.clone(),
                 },
-            },
-        )
-        .await;
-        assert_eq!(
-            invalid.result,
-            RecipientControlResultV1::Error {
-                code: RecipientControlErrorCode::InvalidLink
-            }
-        );
+            };
+            let request_debug = format!("{request:?}");
+            assert!(!request_debug.contains(&secret_uri));
+            assert!(!request_debug.contains(&secret));
 
-        let workspace = Uuid::new_v4();
-        let record = FileRecordId::new();
-        for (seed, expected) in [(2, false), (3, true)] {
-            let response = transact(
+            let response = transact(Arc::clone(&server), request).await;
+            let key = RecordSubscriptionKey {
+                workspace_id,
+                record_id,
+            };
+            assert!(matches!(
+                &response.result,
+                RecipientControlResultV1::Admitted {
+                    inserted: true,
+                    status: RecipientSubscriptionStatusV1 { key: got, .. }
+                } if *got == key.into()
+            ));
+            let response_debug = format!("{response:?}");
+            assert!(!response_debug.contains(&secret_uri));
+            assert!(!response_debug.contains(&secret));
+            assert!(store.get(key).is_some());
+
+            store
+                .record_error(
+                    key,
+                    crate::record_subscription::RecordSubscriptionFailureCode::Offline,
+                    10,
+                )
+                .unwrap();
+            let status = transact(
+                server,
+                RecipientControlRequestV1 {
+                    protocol_version: RECIPIENT_CONTROL_VERSION,
+                    operation: RecipientControlOperationV1::Status { key: key.into() },
+                },
+            )
+            .await;
+            assert!(matches!(
+                status.result,
+                RecipientControlResultV1::Status(RecipientSubscriptionStatusV1 {
+                    last_error: Some(_),
+                    ..
+                })
+            ));
+        }
+        // Phase `invalid_collision_and_oversized_frames_are_finite`.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
+            );
+            let server = Arc::new(RecipientControlServer::new(store));
+            let invalid = transact(
                 Arc::clone(&server),
                 RecipientControlRequestV1 {
                     protocol_version: RECIPIENT_CONTROL_VERSION,
                     operation: RecipientControlOperationV1::AdmitV2 {
-                        uri: uri(seed, workspace, record),
+                        uri: "tilo-file://v2/not-a-link#redacted".into(),
                     },
                 },
             )
             .await;
             assert_eq!(
-                matches!(
-                    response.result,
-                    RecipientControlResultV1::Error {
-                        code: RecipientControlErrorCode::Collision
-                    }
-                ),
-                expected
-            );
-        }
-
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
-        let task = tokio::spawn(Arc::clone(&server).handle_connection(server_stream));
-        client
-            .write_all(
-                &u32::try_from(MAX_RECIPIENT_CONTROL_FRAME_BYTES + 1)
-                    .unwrap()
-                    .to_be_bytes(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            read_recipient_control_response(&mut client)
-                .await
-                .unwrap()
-                .result,
-            RecipientControlResultV1::Error {
-                code: RecipientControlErrorCode::FrameTooLarge
-            }
-        );
-        drop(client);
-        task.await.unwrap().unwrap();
-
-        let (mut client, server_stream) = UnixStream::pair().unwrap();
-        let task = tokio::spawn(Arc::clone(&server).handle_connection(server_stream));
-        let mut non_canonical = collab_types::canonical_bytes(&RecipientControlRequestV1 {
-            protocol_version: RECIPIENT_CONTROL_VERSION,
-            operation: RecipientControlOperationV1::Status {
-                key: RecordSubscriptionKey {
-                    workspace_id: Uuid::new_v4(),
-                    record_id: FileRecordId::new(),
+                invalid.result,
+                RecipientControlResultV1::Error {
+                    code: RecipientControlErrorCode::InvalidLink
                 }
-                .into(),
-            },
-        })
-        .unwrap();
-        non_canonical.push(0);
-        client
-            .write_all(&u32::try_from(non_canonical.len()).unwrap().to_be_bytes())
-            .await
-            .unwrap();
-        client.write_all(&non_canonical).await.unwrap();
-        assert_eq!(
-            read_recipient_control_response(&mut client)
-                .await
-                .unwrap()
-                .result,
-            RecipientControlResultV1::Error {
-                code: RecipientControlErrorCode::InvalidRequest
+            );
+
+            let workspace = Uuid::new_v4();
+            let record = FileRecordId::new();
+            for (seed, expected) in [(2, false), (3, true)] {
+                let response = transact(
+                    Arc::clone(&server),
+                    RecipientControlRequestV1 {
+                        protocol_version: RECIPIENT_CONTROL_VERSION,
+                        operation: RecipientControlOperationV1::AdmitV2 {
+                            uri: uri(seed, workspace, record),
+                        },
+                    },
+                )
+                .await;
+                assert_eq!(
+                    matches!(
+                        response.result,
+                        RecipientControlResultV1::Error {
+                            code: RecipientControlErrorCode::Collision
+                        }
+                    ),
+                    expected
+                );
             }
-        );
-        drop(client);
-        task.await.unwrap().unwrap();
+
+            let (mut client, server_stream) = UnixStream::pair().unwrap();
+            let task = tokio::spawn(Arc::clone(&server).handle_connection(server_stream));
+            client
+                .write_all(
+                    &u32::try_from(MAX_RECIPIENT_CONTROL_FRAME_BYTES + 1)
+                        .unwrap()
+                        .to_be_bytes(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                read_recipient_control_response(&mut client)
+                    .await
+                    .unwrap()
+                    .result,
+                RecipientControlResultV1::Error {
+                    code: RecipientControlErrorCode::FrameTooLarge
+                }
+            );
+            drop(client);
+            task.await.unwrap().unwrap();
+
+            let (mut client, server_stream) = UnixStream::pair().unwrap();
+            let task = tokio::spawn(Arc::clone(&server).handle_connection(server_stream));
+            let mut non_canonical = collab_types::canonical_bytes(&RecipientControlRequestV1 {
+                protocol_version: RECIPIENT_CONTROL_VERSION,
+                operation: RecipientControlOperationV1::Status {
+                    key: RecordSubscriptionKey {
+                        workspace_id: Uuid::new_v4(),
+                        record_id: FileRecordId::new(),
+                    }
+                    .into(),
+                },
+            })
+            .unwrap();
+            non_canonical.push(0);
+            client
+                .write_all(&u32::try_from(non_canonical.len()).unwrap().to_be_bytes())
+                .await
+                .unwrap();
+            client.write_all(&non_canonical).await.unwrap();
+            assert_eq!(
+                read_recipient_control_response(&mut client)
+                    .await
+                    .unwrap()
+                    .result,
+                RecipientControlResultV1::Error {
+                    code: RecipientControlErrorCode::InvalidRequest
+                }
+            );
+            drop(client);
+            task.await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test]
@@ -661,96 +667,97 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn bound_socket_is_mode_0600_and_one_shot_client_round_trips() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let socket = temp.path().join("recipient.sock");
-        let store = Arc::new(
-            RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
-        );
-        let server = Arc::new(RecipientControlServer::new(store));
-        let listener = RecipientControlServer::bind(&socket).unwrap();
-        assert_eq!(
-            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let server_task = tokio::spawn(Arc::clone(&server).serve(listener));
-        let response = request_recipient_control(
-            &socket,
-            &RecipientControlRequestV1 {
-                protocol_version: RECIPIENT_CONTROL_VERSION,
-                operation: RecipientControlOperationV1::Status {
-                    key: RecordSubscriptionKey {
-                        workspace_id: Uuid::new_v4(),
-                        record_id: FileRecordId::new(),
-                    }
-                    .into(),
+    async fn recipient_control_socket_is_private_and_admission_isolates_the_mount() {
+        // Phase `bound_socket_is_mode_0600_and_one_shot_client_round_trips`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let temp = tempfile::tempdir().unwrap();
+            let socket = temp.path().join("recipient.sock");
+            let store = Arc::new(
+                RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
+            );
+            let server = Arc::new(RecipientControlServer::new(store));
+            let listener = RecipientControlServer::bind(&socket).unwrap();
+            assert_eq!(
+                std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let server_task = tokio::spawn(Arc::clone(&server).serve(listener));
+            let response = request_recipient_control(
+                &socket,
+                &RecipientControlRequestV1 {
+                    protocol_version: RECIPIENT_CONTROL_VERSION,
+                    operation: RecipientControlOperationV1::Status {
+                        key: RecordSubscriptionKey {
+                            workspace_id: Uuid::new_v4(),
+                            record_id: FileRecordId::new(),
+                        }
+                        .into(),
+                    },
                 },
-            },
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            response.result,
-            RecipientControlResultV1::Error {
-                code: RecipientControlErrorCode::NotFound
-            }
-        ));
-        server_task.abort();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn admission_starts_an_isolated_mount_and_reports_only_its_public_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
-        let executable = temp.path().join("fake-fs");
-        std::fs::write(
-            &executable,
-            format!(
-                "#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '{}'\nexec /bin/sleep 60\n",
-                crate::recipient_mount::RECIPIENT_MOUNT_READY_LINE
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let store = Arc::new(
-            RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
-        );
-        let mounts = Arc::new(crate::RecipientMountSupervisor::new(
-            &executable,
-            temp.path().join("mounts"),
-            temp.path().join("cache"),
-        ));
-        let server = Arc::new(RecipientControlServer::with_mounts(
-            Arc::clone(&store),
-            Arc::clone(&mounts),
-        ));
-        let workspace_id = Uuid::new_v4();
-        let record_id = FileRecordId::new();
-        let secret_uri = uri(9, workspace_id, record_id);
-        let response = transact(
-            server,
-            RecipientControlRequestV1 {
-                protocol_version: RECIPIENT_CONTROL_VERSION,
-                operation: RecipientControlOperationV1::AdmitV2 { uri: secret_uri },
-            },
-        )
-        .await;
-        let key = RecordSubscriptionKey {
-            workspace_id,
-            record_id,
-        };
-        assert!(matches!(
-            response.result,
-            RecipientControlResultV1::Admitted {
-                status: RecipientSubscriptionStatusV1 {
-                    mount: Some(RecipientMountStatusV1 { running: true, .. }),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                response.result,
+                RecipientControlResultV1::Error {
+                    code: RecipientControlErrorCode::NotFound
+                }
+            ));
+            server_task.abort();
+        }
+        // Phase `admission_starts_an_isolated_mount_and_reports_only_its_public_path`.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let temp = tempfile::tempdir().unwrap();
+            let executable = temp.path().join("fake-fs");
+            std::fs::write(
+                &executable,
+                format!(
+                    "#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '{}'\nexec /bin/sleep 60\n",
+                    crate::recipient_mount::RECIPIENT_MOUNT_READY_LINE
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let store = Arc::new(
+                RecordSubscriptionStore::open(temp.path().join("subscriptions.json")).unwrap(),
+            );
+            let mounts = Arc::new(crate::RecipientMountSupervisor::new(
+                &executable,
+                temp.path().join("mounts"),
+                temp.path().join("cache"),
+            ));
+            let server = Arc::new(RecipientControlServer::with_mounts(
+                Arc::clone(&store),
+                Arc::clone(&mounts),
+            ));
+            let workspace_id = Uuid::new_v4();
+            let record_id = FileRecordId::new();
+            let secret_uri = uri(9, workspace_id, record_id);
+            let response = transact(
+                server,
+                RecipientControlRequestV1 {
+                    protocol_version: RECIPIENT_CONTROL_VERSION,
+                    operation: RecipientControlOperationV1::AdmitV2 { uri: secret_uri },
+                },
+            )
+            .await;
+            let key = RecordSubscriptionKey {
+                workspace_id,
+                record_id,
+            };
+            assert!(matches!(
+                response.result,
+                RecipientControlResultV1::Admitted {
+                    status: RecipientSubscriptionStatusV1 {
+                        mount: Some(RecipientMountStatusV1 { running: true, .. }),
+                        ..
+                    },
                     ..
-                },
-                ..
-            }
-        ));
-        assert!(mounts.stop(key).unwrap());
+                }
+            ));
+            assert!(mounts.stop(key).unwrap());
+        }
     }
 }

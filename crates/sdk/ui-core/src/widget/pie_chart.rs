@@ -776,103 +776,112 @@ mod tests {
     }
 
     #[test]
-    fn sectors_cover_a_complete_turn() {
-        let sectors = chart().sectors_for_progress(1.0);
-        assert_eq!(sectors.len(), 2);
-        let sweep: f64 = sectors.iter().map(|sector| sector.end - sector.start).sum();
-        assert!((sweep - TAU).abs() < 1e-9);
+    fn pie_geometry_covers_a_turn_and_ignores_holes_and_invalid_values() {
+        // Case `sectors_cover_a_complete_turn`.
+        {
+            let sectors = chart().sectors_for_progress(1.0);
+            assert_eq!(sectors.len(), 2);
+            let sweep: f64 = sectors.iter().map(|sector| sector.end - sector.start).sum();
+            assert!((sweep - TAU).abs() < 1e-9);
+        }
+
+        // Case `donut_hole_is_not_interactive`.
+        {
+            let chart = chart();
+            assert_eq!(chart.hit_test(chart.rect.center()), None);
+        }
+
+        // Case `invalid_values_do_not_poison_the_total`.
+        {
+            let chart = PieChart::new(vec![
+                PieSlice::new("negative", "Negative", -9.0, Color::WHITE),
+                PieSlice::new("nan", "NaN", f64::NAN, Color::WHITE),
+                PieSlice::new("valid", "Valid", 4.0, Color::WHITE),
+            ]);
+            assert_eq!(chart.total(), 4.0);
+            assert_eq!(chart.sectors_for_progress(1.0).len(), 1);
+        }
     }
 
     #[test]
-    fn donut_hole_is_not_interactive() {
-        let chart = chart();
-        assert_eq!(chart.hit_test(chart.rect.center()), None);
+    fn pie_inspection_and_tooltips_are_configurable_and_not_actions() {
+        // Case `inspect_only_slices_are_not_accessibility_actions`.
+        {
+            let chart = PieChart::new(vec![
+                PieSlice::new("files", "Files", 4.0, Color::WHITE).non_interactive(),
+            ]);
+            let accessibility = chart
+                .accessibility()
+                .unwrap_or_else(|| AccessNode::new(Role::Canvas));
+            assert_eq!(accessibility.children[0].role, Role::StaticText);
+            assert!(!accessibility.children[0].state.focusable);
+        }
+
+        // Case `tooltip_presentation_is_fully_configurable`.
+        {
+            let style = PieStyle {
+                tooltip: false,
+                tooltip_anchor: PieTooltipAnchor::Slice,
+                tooltip_width: Some(240.0),
+                tooltip_min_width: 120.0,
+                tooltip_offset: 8.0,
+                tooltip_padding: 20.0,
+                tooltip_show_percent: false,
+                tooltip_right_inset: 180.0,
+                ..PieStyle::default()
+            };
+            assert!(!style.tooltip);
+            assert_eq!(style.tooltip_anchor, PieTooltipAnchor::Slice);
+            assert_eq!(style.tooltip_width, Some(240.0));
+            assert!(!style.tooltip_show_percent);
+            assert_eq!(style.tooltip_right_inset, 180.0);
+        }
     }
 
     #[test]
-    fn invalid_values_do_not_poison_the_total() {
-        let chart = PieChart::new(vec![
-            PieSlice::new("negative", "Negative", -9.0, Color::WHITE),
-            PieSlice::new("nan", "NaN", f64::NAN, Color::WHITE),
-            PieSlice::new("valid", "Valid", 4.0, Color::WHITE),
-        ]);
-        assert_eq!(chart.total(), 4.0);
-        assert_eq!(chart.sectors_for_progress(1.0).len(), 1);
-    }
+    fn pie_updates_interpolate_by_stable_id_or_snap() {
+        // Case `stable_slice_ids_interpolate_and_reduced_motion_snaps`.
+        {
+            let mut chart = PieChart::new(vec![
+                PieSlice::new("a", "A", 3.0, Color::WHITE),
+                PieSlice::new("b", "B", 1.0, Color::BLACK),
+            ]);
+            chart.style.animation_duration = Duration::from_millis(200);
+            chart.set_slices(vec![
+                PieSlice::new("a", "A", 1.0, Color::WHITE),
+                PieSlice::new("b", "B", 3.0, Color::BLACK),
+                PieSlice::new("c", "C", 2.0, Color::from_rgb8(1, 2, 3)),
+            ]);
+            let midpoint = crate::time::now();
+            chart.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
+            let progress = chart.animation_progress_at(midpoint);
+            assert!(chart.animated_value(0, progress) > 1.0);
+            assert!(chart.animated_value(0, progress) < 3.0);
+            assert!(chart.animated_value(2, progress) > 0.0);
+            assert!(chart.animated_value(2, progress) < 2.0);
+            let sweep: f64 = chart
+                .sectors_for_progress(progress)
+                .iter()
+                .map(|sector| sector.end - sector.start)
+                .sum();
+            assert!((sweep - TAU).abs() < 1e-9);
+            assert!(chart.needs_animation_frame());
+            chart.reduce_motion = true;
+            assert_eq!(chart.animation_progress_at(midpoint), 1.0);
+            assert!(!chart.needs_animation_frame());
+        }
 
-    #[test]
-    fn inspect_only_slices_are_not_accessibility_actions() {
-        let chart = PieChart::new(vec![
-            PieSlice::new("files", "Files", 4.0, Color::WHITE).non_interactive(),
-        ]);
-        let accessibility = chart
-            .accessibility()
-            .unwrap_or_else(|| AccessNode::new(Role::Canvas));
-        assert_eq!(accessibility.children[0].role, Role::StaticText);
-        assert!(!accessibility.children[0].state.focusable);
-    }
-
-    #[test]
-    fn tooltip_presentation_is_fully_configurable() {
-        let style = PieStyle {
-            tooltip: false,
-            tooltip_anchor: PieTooltipAnchor::Slice,
-            tooltip_width: Some(240.0),
-            tooltip_min_width: 120.0,
-            tooltip_offset: 8.0,
-            tooltip_padding: 20.0,
-            tooltip_show_percent: false,
-            tooltip_right_inset: 180.0,
-            ..PieStyle::default()
-        };
-        assert!(!style.tooltip);
-        assert_eq!(style.tooltip_anchor, PieTooltipAnchor::Slice);
-        assert_eq!(style.tooltip_width, Some(240.0));
-        assert!(!style.tooltip_show_percent);
-        assert_eq!(style.tooltip_right_inset, 180.0);
-    }
-
-    #[test]
-    fn stable_slice_ids_interpolate_and_reduced_motion_snaps() {
-        let mut chart = PieChart::new(vec![
-            PieSlice::new("a", "A", 3.0, Color::WHITE),
-            PieSlice::new("b", "B", 1.0, Color::BLACK),
-        ]);
-        chart.style.animation_duration = Duration::from_millis(200);
-        chart.set_slices(vec![
-            PieSlice::new("a", "A", 1.0, Color::WHITE),
-            PieSlice::new("b", "B", 3.0, Color::BLACK),
-            PieSlice::new("c", "C", 2.0, Color::from_rgb8(1, 2, 3)),
-        ]);
-        let midpoint = crate::time::now();
-        chart.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
-        let progress = chart.animation_progress_at(midpoint);
-        assert!(chart.animated_value(0, progress) > 1.0);
-        assert!(chart.animated_value(0, progress) < 3.0);
-        assert!(chart.animated_value(2, progress) > 0.0);
-        assert!(chart.animated_value(2, progress) < 2.0);
-        let sweep: f64 = chart
-            .sectors_for_progress(progress)
-            .iter()
-            .map(|sector| sector.end - sector.start)
-            .sum();
-        assert!((sweep - TAU).abs() < 1e-9);
-        assert!(chart.needs_animation_frame());
-        chart.reduce_motion = true;
-        assert_eq!(chart.animation_progress_at(midpoint), 1.0);
-        assert!(!chart.needs_animation_frame());
-    }
-
-    #[test]
-    fn identical_updates_do_not_restart_motion_and_immediate_updates_snap() {
-        let slices = vec![PieSlice::new("a", "A", 1.0, Color::WHITE)];
-        let mut chart = PieChart::new(slices.clone());
-        let started = chart.transition_started;
-        chart.set_slices(slices);
-        assert_eq!(chart.transition_started, started);
-        assert!(!chart.is_animating());
-        chart.set_slices_immediate(vec![PieSlice::new("a", "A", 2.0, Color::WHITE)]);
-        assert!(!chart.is_animating());
-        assert_eq!(chart.slices[0].value, 2.0);
+        // Case `identical_updates_do_not_restart_motion_and_immediate_updates_snap`.
+        {
+            let slices = vec![PieSlice::new("a", "A", 1.0, Color::WHITE)];
+            let mut chart = PieChart::new(slices.clone());
+            let started = chart.transition_started;
+            chart.set_slices(slices);
+            assert_eq!(chart.transition_started, started);
+            assert!(!chart.is_animating());
+            chart.set_slices_immediate(vec![PieSlice::new("a", "A", 2.0, Color::WHITE)]);
+            assert!(!chart.is_animating());
+            assert_eq!(chart.slices[0].value, 2.0);
+        }
     }
 }

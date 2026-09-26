@@ -435,34 +435,36 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_picker_replaces_the_previous_one_and_close_clears_state() {
-        let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
-        popovers.open(PopoverKind::StartDate, &event());
-        assert_eq!(popovers.active(), PopoverKind::StartDate);
-        popovers.open(PopoverKind::EndTime, &event());
-        assert_eq!(popovers.active(), PopoverKind::EndTime);
-        popovers.close();
-        assert!(!popovers.is_open());
-        assert!(popovers.hits.is_empty());
-    }
-
-    #[test]
-    fn calendar_rows_win_over_the_backing_guard() {
-        let target = CalTarget::Remote("work".into());
-        let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
-        popovers
-            .hits
-            .push((Rect::new(0.0, 0.0, 100.0, 100.0), Hit::Guard));
-        popovers.hits.push((
-            Rect::new(4.0, 4.0, 96.0, 38.0),
-            Hit::Calendar(target.clone()),
-        ));
-        let hit = popovers
-            .hits
-            .iter()
-            .rev()
-            .find(|(r, _)| r.contains(Point::new(20.0, 20.0)))
-            .map(|(_, h)| h);
-        assert!(matches!(hit, Some(Hit::Calendar(found)) if found == &target));
+    fn picker_lifecycle_replaces_and_clears_and_calendar_rows_win_hits() {
+        // Case `opening_a_picker_replaces_the_previous_one_and_close_clears_state`.
+        {
+            let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
+            popovers.open(PopoverKind::StartDate, &event());
+            assert_eq!(popovers.active(), PopoverKind::StartDate);
+            popovers.open(PopoverKind::EndTime, &event());
+            assert_eq!(popovers.active(), PopoverKind::EndTime);
+            popovers.close();
+            assert!(!popovers.is_open());
+            assert!(popovers.hits.is_empty());
+        }
+        // Case `calendar_rows_win_over_the_backing_guard`.
+        {
+            let target = CalTarget::Remote("work".into());
+            let mut popovers = EventPopovers::new(NaiveDate::from_ymd_opt(2026, 8, 31).unwrap());
+            popovers
+                .hits
+                .push((Rect::new(0.0, 0.0, 100.0, 100.0), Hit::Guard));
+            popovers.hits.push((
+                Rect::new(4.0, 4.0, 96.0, 38.0),
+                Hit::Calendar(target.clone()),
+            ));
+            let hit = popovers
+                .hits
+                .iter()
+                .rev()
+                .find(|(r, _)| r.contains(Point::new(20.0, 20.0)))
+                .map(|(_, h)| h);
+            assert!(matches!(hit, Some(Hit::Calendar(found)) if found == &target));
+        }
     }
 }

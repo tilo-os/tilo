@@ -196,99 +196,103 @@ mod tests {
     }
 
     #[test]
-    fn preferences_round_trip_across_a_restart_without_clobbering_other_sections() {
-        let path = test_path();
-        let initial = PlaybackPreferences {
-            autoplay: false,
-            loop_enabled: true,
-        };
-        initial.save_at(&path).expect("save preferences");
-        settings_store::update_section_at(
-            &path,
-            "appearance",
-            [("theme".to_string(), Value::String("dark".to_string()))]
-                .into_iter()
-                .collect(),
-        )
-        .expect("save unrelated section");
-
-        assert_eq!(PlaybackPreferences::load_at(&path), initial);
-        assert_eq!(
-            settings_store::str_at(&settings_store::load_at(&path), "appearance", "theme"),
-            Some("dark")
-        );
-        std::fs::remove_file(path).ok();
-    }
-
-    #[test]
-    fn malformed_or_wrong_typed_preferences_fall_back_per_key() {
-        let path = test_path();
-        std::fs::write(
-            &path,
-            r#"{"video_player":{"autoplay":"yes","loop_enabled":true}}"#,
-        )
-        .expect("write corrupt setting");
-        assert_eq!(
-            PlaybackPreferences::load_at(&path),
-            PlaybackPreferences {
-                autoplay: true,
+    fn preferences_round_trip_and_fall_back_per_key() {
+        // Case `preferences_round_trip_across_a_restart_without_clobbering_other_sections`.
+        {
+            let path = test_path();
+            let initial = PlaybackPreferences {
+                autoplay: false,
                 loop_enabled: true,
-            }
-        );
-        std::fs::write(&path, "truncated {").expect("write malformed document");
-        assert_eq!(
-            PlaybackPreferences::load_at(&path),
-            PlaybackPreferences::default()
-        );
-        std::fs::remove_file(path).ok();
+            };
+            initial.save_at(&path).expect("save preferences");
+            settings_store::update_section_at(
+                &path,
+                "appearance",
+                [("theme".to_string(), Value::String("dark".to_string()))]
+                    .into_iter()
+                    .collect(),
+            )
+            .expect("save unrelated section");
+
+            assert_eq!(PlaybackPreferences::load_at(&path), initial);
+            assert_eq!(
+                settings_store::str_at(&settings_store::load_at(&path), "appearance", "theme"),
+                Some("dark")
+            );
+            std::fs::remove_file(path).ok();
+        }
+        // Case `malformed_or_wrong_typed_preferences_fall_back_per_key`.
+        {
+            let path = test_path();
+            std::fs::write(
+                &path,
+                r#"{"video_player":{"autoplay":"yes","loop_enabled":true}}"#,
+            )
+            .expect("write corrupt setting");
+            assert_eq!(
+                PlaybackPreferences::load_at(&path),
+                PlaybackPreferences {
+                    autoplay: true,
+                    loop_enabled: true,
+                }
+            );
+            std::fs::write(&path, "truncated {").expect("write malformed document");
+            assert_eq!(
+                PlaybackPreferences::load_at(&path),
+                PlaybackPreferences::default()
+            );
+            std::fs::remove_file(path).ok();
+        }
     }
 
     #[test]
-    fn recent_history_round_trips_with_opaque_ids_without_clobbering_preferences() {
-        let path = test_path();
-        let entry = RecentMedia {
-            id: "local-queue-local-media-35ed1e2e-open-0".into(),
-            title: "Family clip.mp4".into(),
-            source: media::Source::LocalFile("/home/alice/Private/Family clip.mp4".into()),
-        };
-        PlaybackPreferences {
-            autoplay: false,
-            loop_enabled: true,
-        }
-        .save_at(&path)
-        .expect("save preferences");
-        save_recent_history_at(std::slice::from_ref(&entry), &path).expect("save history");
-        assert_eq!(load_recent_history_at(&path), vec![entry]);
-        assert_eq!(
-            PlaybackPreferences::load_at(&path),
+    fn recent_history_round_trips_bounded_and_ignores_malformed_rows() {
+        // Case `recent_history_round_trips_with_opaque_ids_without_clobbering_preferences`.
+        {
+            let path = test_path();
+            let entry = RecentMedia {
+                id: "local-queue-local-media-35ed1e2e-open-0".into(),
+                title: "Family clip.mp4".into(),
+                source: media::Source::LocalFile("/home/alice/Private/Family clip.mp4".into()),
+            };
             PlaybackPreferences {
                 autoplay: false,
                 loop_enabled: true,
             }
-        );
-        std::fs::remove_file(path).ok();
-    }
-
-    #[test]
-    fn malformed_recent_rows_are_ignored_and_history_is_bounded() {
-        let path = test_path();
-        let entries: Vec<_> = (0..RECENT_HISTORY_LIMIT.saturating_add(4))
-            .map(|index| RecentMedia {
-                id: format!("opaque-{index}"),
-                title: format!("Clip {index}"),
-                source: media::Source::Remote {
-                    url: format!("https://example.invalid/{index}.mp4"),
-                },
-            })
-            .collect();
-        save_recent_history_at(&entries, &path).expect("save bounded history");
-        assert_eq!(load_recent_history_at(&path).len(), RECENT_HISTORY_LIMIT);
-        std::fs::write(
-            &path,
-            r#"{"video_player":{"recent_history":[{"id":"","title":"bad"}]}}"#,
-        )
-        .expect("write malformed row");
-        assert!(load_recent_history_at(&path).is_empty());
-        std::fs::remove_file(path).ok();
+            .save_at(&path)
+            .expect("save preferences");
+            save_recent_history_at(std::slice::from_ref(&entry), &path).expect("save history");
+            assert_eq!(load_recent_history_at(&path), vec![entry]);
+            assert_eq!(
+                PlaybackPreferences::load_at(&path),
+                PlaybackPreferences {
+                    autoplay: false,
+                    loop_enabled: true,
+                }
+            );
+            std::fs::remove_file(path).ok();
+        }
+        // Case `malformed_recent_rows_are_ignored_and_history_is_bounded`.
+        {
+            let path = test_path();
+            let entries: Vec<_> = (0..RECENT_HISTORY_LIMIT.saturating_add(4))
+                .map(|index| RecentMedia {
+                    id: format!("opaque-{index}"),
+                    title: format!("Clip {index}"),
+                    source: media::Source::Remote {
+                        url: format!("https://example.invalid/{index}.mp4"),
+                    },
+                })
+                .collect();
+            save_recent_history_at(&entries, &path).expect("save bounded history");
+            assert_eq!(load_recent_history_at(&path).len(), RECENT_HISTORY_LIMIT);
+            std::fs::write(
+                &path,
+                r#"{"video_player":{"recent_history":[{"id":"","title":"bad"}]}}"#,
+            )
+            .expect("write malformed row");
+            assert!(load_recent_history_at(&path).is_empty());
+            std::fs::remove_file(path).ok();
+        }
     }
 }

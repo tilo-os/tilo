@@ -127,6 +127,12 @@ authorization.
   to that source and session. Leaving, deleting the group, a role change,
   the source going offline, or disabling media continuity tears sessions
   down; disabling media also withdraws the device's memberships.
+  Settings → Speakers sets groups up through a Settings-only broker command
+  (`speakerCommand`): choose outputs, play a short identify sound on each to
+  tell left from right, place room speakers, name and save. Calibration
+  measures every member with one microphone on any device and produces a
+  before/after proposal; trims change only when it is applied, and one
+  revert restores the previous ones.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never

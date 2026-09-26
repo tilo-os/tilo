@@ -129,44 +129,48 @@ pub fn space_blocker(facts: &HostFacts, requirements: Requirements) -> Option<Bl
 mod tests {
     use super::*;
 
+    /// Remedies, hard blockers and space blockers.
     #[test]
-    fn remedies_do_not_hide_the_offer_but_hard_blockers_do() {
-        let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
-        let mut facts = HostFacts {
-            basis: Some(basis),
-            bitlocker_protected: false,
-            blockers: vec![Blocker::SecureBootOn, Blocker::OnBattery],
-        };
-        assert!(facts.offers_full_os());
-        facts.block(Blocker::NotGpt);
-        facts.block(Blocker::NotGpt);
-        assert_eq!(facts.blockers.len(), 3);
-        assert!(!facts.offers_full_os());
-        assert!(!HostFacts::unsupported(Blocker::NotUefi).offers_full_os());
-    }
+    fn staging_offer_blockers_and_remedies_follow_planner_bounds() {
+        // Phase `remedies_do_not_hide_the_offer_but_hard_blockers_do`.
+        {
+            let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
+            let mut facts = HostFacts {
+                basis: Some(basis),
+                bitlocker_protected: false,
+                blockers: vec![Blocker::SecureBootOn, Blocker::OnBattery],
+            };
+            assert!(facts.offers_full_os());
+            facts.block(Blocker::NotGpt);
+            facts.block(Blocker::NotGpt);
+            assert_eq!(facts.blockers.len(), 3);
+            assert!(!facts.offers_full_os());
+            assert!(!HostFacts::unsupported(Blocker::NotUefi).offers_full_os());
+        }
 
-    #[test]
-    fn space_blocker_uses_the_planner_bounds() {
-        let small = super::super::plan::tests::linux_basis(512, 60 << 30, Vec::new());
-        let facts = HostFacts {
-            basis: Some(small),
-            bitlocker_protected: false,
-            blockers: Vec::new(),
-        };
-        let r = Requirements {
-            staging_esp_bytes: 600 << 20,
-            staging_root_bytes: 40 << 30,
-            target_bytes: 0,
-        };
-        assert_eq!(space_blocker(&facts, r), Some(Blocker::InsufficientSpace));
-        let big = HostFacts {
-            basis: Some(super::super::plan::tests::linux_basis(
-                512,
-                200 << 30,
-                Vec::new(),
-            )),
-            ..facts
-        };
-        assert_eq!(space_blocker(&big, r), None);
+        // Phase `space_blocker_uses_the_planner_bounds`.
+        {
+            let small = super::super::plan::tests::linux_basis(512, 60 << 30, Vec::new());
+            let facts = HostFacts {
+                basis: Some(small),
+                bitlocker_protected: false,
+                blockers: Vec::new(),
+            };
+            let r = Requirements {
+                staging_esp_bytes: 600 << 20,
+                staging_root_bytes: 40 << 30,
+                target_bytes: 0,
+            };
+            assert_eq!(space_blocker(&facts, r), Some(Blocker::InsufficientSpace));
+            let big = HostFacts {
+                basis: Some(super::super::plan::tests::linux_basis(
+                    512,
+                    200 << 30,
+                    Vec::new(),
+                )),
+                ..facts
+            };
+            assert_eq!(space_blocker(&big, r), None);
+        }
     }
 }

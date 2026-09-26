@@ -636,418 +636,442 @@ mod tests {
     use crate::seed;
 
     #[test]
-    fn descriptors_are_stable_and_complete() {
-        let types = all_searchable_types();
-        let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
-        assert_eq!(
-            ids,
-            [
-                SONG_TYPE_ID,
-                ALBUM_TYPE_ID,
-                ARTIST_TYPE_ID,
-                PLAYLIST_TYPE_ID
-            ]
-        );
-        assert!(types.iter().all(|t| t.has_thumbnail));
-        assert!(types.iter().all(|t| !t.display_name.is_empty()));
-    }
-
-    #[test]
-    fn deep_links_round_trip() {
-        assert_eq!(
-            DeepLink::parse(&SearchHit::track_link("dQw4w9WgXcQ")),
-            Some(DeepLink::Track("dQw4w9WgXcQ".into()))
-        );
-        assert_eq!(
-            DeepLink::parse(&SearchHit::album_link("MPREb_x")),
-            Some(DeepLink::Album("MPREb_x".into()))
-        );
-        assert_eq!(
-            DeepLink::parse(&SearchHit::artist_link("UC_abc")),
-            Some(DeepLink::Artist("UC_abc".into()))
-        );
-        assert_eq!(
-            DeepLink::parse(&SearchHit::playlist_link("PL_xyz")),
-            Some(DeepLink::Playlist("PL_xyz".into()))
-        );
-    }
-
-    #[test]
-    fn deep_link_rejects_hostile_and_malformed() {
-        assert!(DeepLink::parse("https://evil/track/x").is_none());
-        assert!(DeepLink::parse("music://track/").is_none());
-        assert!(DeepLink::parse("music://bogus/x").is_none());
-        assert!(DeepLink::parse("music://track").is_none());
-        assert!(DeepLink::parse("").is_none());
-    }
-
-    #[test]
-    fn offline_provider_contributes_nothing_but_never_errors() {
-        // The default backend is offline: real OS search over it yields no rows
-        // (the app shows the local library instead) — and crucially does not
-        // fabricate any.
-        let backend = default_backend();
-        let provider = MusicSearchProvider::new(backend.as_ref());
-        assert!(provider.query("aurora").is_empty());
-        assert!(provider.query("   ").is_empty());
-    }
-
-    #[test]
-    fn library_hits_find_songs_albums_artists_and_playlists() {
-        let lib = seed::sample_library();
-
-        // A song findable by its own title routes to a play deep-link.
-        let some = lib.tracks.values().next().unwrap().clone();
-        let hits = library_hits(&lib, &some.title);
-        assert!(
-            hits.iter().any(
-                |h| h.type_id == SONG_TYPE_ID && h.deep_link == SearchHit::track_link(&some.id)
-            ),
-            "song hit with a play deep-link"
-        );
-
-        // An artist findable by name routes to an artist-page deep-link.
-        let artist = lib.artists.values().next().unwrap().clone();
-        let ahits = library_hits(&lib, &artist.name);
-        assert!(
-            ahits.iter().any(|h| h.type_id == ARTIST_TYPE_ID
-                && h.deep_link == SearchHit::artist_link(&artist.id)),
-            "artist hit with an artist-page deep-link"
-        );
-
-        // A personal playlist findable by name routes to a playlist deep-link.
-        let pl = lib.playlists.first().unwrap().clone();
-        let phits = library_hits(&lib, &pl.name);
-        assert!(
-            phits.iter().any(|h| h.type_id == PLAYLIST_TYPE_ID
-                && h.deep_link == SearchHit::playlist_link(&pl.id)),
-            "playlist hit with a playlist deep-link"
-        );
-
-        // Every hit carries a non-empty title, subtitle and deep link.
-        for h in hits.iter().chain(&ahits).chain(&phits) {
-            assert!(!h.title.is_empty());
-            assert!(!h.subtitle.is_empty());
-            assert!(DeepLink::parse(&h.deep_link).is_some());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn search_descriptors_deep_links_and_subtitles_are_stable_and_safe() {
+        // Phase `descriptors_are_stable_and_complete`.
+        {
+            let types = all_searchable_types();
+            let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
+            assert_eq!(
+                ids,
+                [
+                    SONG_TYPE_ID,
+                    ALBUM_TYPE_ID,
+                    ARTIST_TYPE_ID,
+                    PLAYLIST_TYPE_ID
+                ]
+            );
+            assert!(types.iter().all(|t| t.has_thumbnail));
+            assert!(types.iter().all(|t| !t.display_name.is_empty()));
         }
-    }
 
-    #[test]
-    fn library_hits_empty_query_and_empty_library_are_empty() {
-        let lib = seed::sample_library();
-        assert!(library_hits(&lib, "   ").is_empty());
-        // An empty (default) library fabricates nothing.
-        assert!(library_hits(&Library::default(), "anything").is_empty());
-    }
-
-    #[test]
-    fn artist_subtitle_uses_compact_subscriber_count() {
-        // The subscriber count in an artist subtitle is abbreviated via the
-        // shared compact-count formatter (12_300 → "12.3K").
-        assert_eq!(artist_subtitle(0), "Artist");
-        assert_eq!(artist_subtitle(12_300), "Artist · 12.3K subscribers");
-        assert_eq!(artist_subtitle(4_100_000), "Artist · 4.1M subscribers");
-    }
-
-    #[test]
-    fn library_provider_registers_typed_rows_into_the_search_framework() {
-        use ui::search::SearchRegistry;
-        let lib = seed::sample_library();
-
-        // It IS a `ui::search::SearchProvider`: register it into the shared
-        // registry the global Ctrl+K palette drives, alongside every other app.
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(LibrarySearchProvider::new(&lib)));
-        assert_eq!(registry.provider_count(), 1);
-
-        // A real library track surfaces as a typed "Songs" row addressing the
-        // stable play effect exported by the track resource.
-        let track = lib.tracks.values().next().unwrap().clone();
-        let song = registry
-            .query(&track.title)
-            .into_iter()
-            .find(|r| r.title == track.title)
-            .expect("the track is findable as a framework SearchResult");
-        assert_eq!(song.kind, "Songs");
-        assert_eq!(song.title, track.title);
-        assert_eq!(song.icon, Some(Icon::Music));
-        assert_eq!(
-            song.action_address(),
-            Some(crate::actions::play_track_address(&track.id))
-        );
-
-        // All four types section under their plural kind headers.
-        let album = lib.albums.values().next().unwrap().clone();
-        assert!(registry.query_grouped(&album.title).iter().any(|g| {
-            g.kind == "Albums"
-                && g.results.iter().any(|r| {
-                    r.action_address() == Some(crate::actions::open_album_address(&album.id))
-                })
-        }));
-
-        let artist = lib.artists.values().next().unwrap().clone();
-        assert!(registry.query_grouped(&artist.name).iter().any(|g| {
-            g.kind == "Artists"
-                && g.results.iter().any(|r| {
-                    r.action_address() == Some(crate::actions::open_artist_address(&artist.id))
-                })
-        }));
-
-        let pl = lib.playlists.first().unwrap().clone();
-        assert!(registry.query_grouped(&pl.name).iter().any(|g| {
-            g.kind == "Playlists"
-                && g.results.iter().any(|r| {
-                    r.action_address() == Some(crate::actions::open_playlist_address(&pl.id))
-                })
-        }));
-    }
-
-    #[test]
-    fn library_provider_fabricates_nothing_on_empty_library_or_query() {
-        // An empty (default) library contributes zero rows for any query.
-        let empty = LibrarySearchProvider::new(&Library::default());
-        assert!(empty.search("anything").is_empty());
-        // A seeded library still browses nothing on a blank query (no catalog
-        // dump into the palette).
-        let seeded = LibrarySearchProvider::new(&seed::sample_library());
-        assert!(seeded.search("   ").is_empty());
-    }
-
-    #[test]
-    fn indexed_provider_bounds_candidate_work_before_materialising_results() {
-        let mut lib = Library::default();
-        lib.artists.insert(
-            "artist".into(),
-            crate::model::Artist {
-                id: "artist".into(),
-                name: "Bounded Artist".into(),
-                genre: "Test".into(),
-                monthly_listeners: 0,
-            },
-        );
-        lib.albums.insert(
-            "album".into(),
-            crate::model::Album {
-                id: "album".into(),
-                title: "Bounded Album".into(),
-                artist_id: "artist".into(),
-                year: 2026,
-            },
-        );
-        for n in 0..(SEARCH_CANDIDATE_LIMIT + 200) {
-            let id = format!("track-{n}");
-            lib.tracks.insert(
-                id.clone(),
-                crate::model::Track {
-                    id,
-                    title: format!("Song candidate {n}"),
-                    album_id: "album".into(),
-                    artist_id: "artist".into(),
-                    track_no: 1,
-                    duration_s: 1,
-                    yt_id: format!("video-{n}"),
-                    plays: n as u64,
-                },
+        // Phase `deep_links_round_trip`.
+        {
+            assert_eq!(
+                DeepLink::parse(&SearchHit::track_link("dQw4w9WgXcQ")),
+                Some(DeepLink::Track("dQw4w9WgXcQ".into()))
+            );
+            assert_eq!(
+                DeepLink::parse(&SearchHit::album_link("MPREb_x")),
+                Some(DeepLink::Album("MPREb_x".into()))
+            );
+            assert_eq!(
+                DeepLink::parse(&SearchHit::artist_link("UC_abc")),
+                Some(DeepLink::Artist("UC_abc".into()))
+            );
+            assert_eq!(
+                DeepLink::parse(&SearchHit::playlist_link("PL_xyz")),
+                Some(DeepLink::Playlist("PL_xyz".into()))
             );
         }
 
-        let provider = LibrarySearchProvider::new(&lib);
-        assert!(
-            provider.candidate_count_for_query("absent-token") <= SEARCH_CANDIDATE_LIMIT,
-            "a no-match query consults an index posting, never every library entity"
-        );
-        assert_eq!(provider.candidate_count_for_query("absent-token"), 0);
-        assert!(
-            provider.candidate_count_for_query("song") <= SEARCH_CANDIDATE_LIMIT,
-            "a broad query still honors the per-page inspection budget"
-        );
-        assert!(provider.search_limited("song", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+        // Phase `deep_link_rejects_hostile_and_malformed`.
+        {
+            assert!(DeepLink::parse("https://evil/track/x").is_none());
+            assert!(DeepLink::parse("music://track/").is_none());
+            assert!(DeepLink::parse("music://bogus/x").is_none());
+            assert!(DeepLink::parse("music://track").is_none());
+            assert!(DeepLink::parse("").is_none());
+        }
+
+        // Phase `artist_subtitle_uses_compact_subscriber_count`.
+        {
+            // The subscriber count in an artist subtitle is abbreviated via the
+            // shared compact-count formatter (12_300 → "12.3K").
+            assert_eq!(artist_subtitle(0), "Artist");
+            assert_eq!(artist_subtitle(12_300), "Artist · 12.3K subscribers");
+            assert_eq!(artist_subtitle(4_100_000), "Artist · 4.1M subscribers");
+        }
     }
 
     #[test]
-    fn exact_library_lookup_reaches_entities_beyond_the_old_snapshot_cutoff() {
-        let mut lib = Library::default();
-        lib.artists.insert(
-            "artist".into(),
-            crate::model::Artist {
-                id: "artist".into(),
-                name: "All Library Artist".into(),
-                genre: String::new(),
-                monthly_listeners: 0,
-            },
-        );
-        lib.albums.insert(
-            "album".into(),
-            crate::model::Album {
-                id: "album".into(),
-                title: "All Library Album".into(),
-                artist_id: "artist".into(),
-                year: 2026,
-            },
-        );
-        for n in 0..4_097 {
-            let id = format!("track-{n:04}");
-            lib.tracks.insert(
-                id.clone(),
-                crate::model::Track {
-                    id,
-                    title: if n == 4_096 {
-                        "Needle Beyond Former Cutoff".into()
-                    } else {
-                        format!("Library track {n}")
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn library_provider_registers_real_hits_and_fabricates_nothing() {
+        // Phase `offline_provider_contributes_nothing_but_never_errors`.
+        {
+            // The default backend is offline: real OS search over it yields no rows
+            // (the app shows the local library instead) — and crucially does not
+            // fabricate any.
+            let backend = default_backend();
+            let provider = MusicSearchProvider::new(backend.as_ref());
+            assert!(provider.query("aurora").is_empty());
+            assert!(provider.query("   ").is_empty());
+        }
+
+        // Phase `library_hits_find_songs_albums_artists_and_playlists`.
+        {
+            let lib = seed::sample_library();
+
+            // A song findable by its own title routes to a play deep-link.
+            let some = lib.tracks.values().next().unwrap().clone();
+            let hits = library_hits(&lib, &some.title);
+            assert!(
+                hits.iter()
+                    .any(|h| h.type_id == SONG_TYPE_ID
+                        && h.deep_link == SearchHit::track_link(&some.id)),
+                "song hit with a play deep-link"
+            );
+
+            // An artist findable by name routes to an artist-page deep-link.
+            let artist = lib.artists.values().next().unwrap().clone();
+            let ahits = library_hits(&lib, &artist.name);
+            assert!(
+                ahits.iter().any(|h| h.type_id == ARTIST_TYPE_ID
+                    && h.deep_link == SearchHit::artist_link(&artist.id)),
+                "artist hit with an artist-page deep-link"
+            );
+
+            // A personal playlist findable by name routes to a playlist deep-link.
+            let pl = lib.playlists.first().unwrap().clone();
+            let phits = library_hits(&lib, &pl.name);
+            assert!(
+                phits.iter().any(|h| h.type_id == PLAYLIST_TYPE_ID
+                    && h.deep_link == SearchHit::playlist_link(&pl.id)),
+                "playlist hit with a playlist deep-link"
+            );
+
+            // Every hit carries a non-empty title, subtitle and deep link.
+            for h in hits.iter().chain(&ahits).chain(&phits) {
+                assert!(!h.title.is_empty());
+                assert!(!h.subtitle.is_empty());
+                assert!(DeepLink::parse(&h.deep_link).is_some());
+            }
+        }
+
+        // Phase `library_hits_empty_query_and_empty_library_are_empty`.
+        {
+            let lib = seed::sample_library();
+            assert!(library_hits(&lib, "   ").is_empty());
+            // An empty (default) library fabricates nothing.
+            assert!(library_hits(&Library::default(), "anything").is_empty());
+        }
+
+        // Phase `library_provider_registers_typed_rows_into_the_search_framework`.
+        {
+            use ui::search::SearchRegistry;
+            let lib = seed::sample_library();
+
+            // It IS a `ui::search::SearchProvider`: register it into the shared
+            // registry the global Ctrl+K palette drives, alongside every other app.
+            let mut registry = SearchRegistry::new();
+            registry.register(Box::new(LibrarySearchProvider::new(&lib)));
+            assert_eq!(registry.provider_count(), 1);
+
+            // A real library track surfaces as a typed "Songs" row addressing the
+            // stable play effect exported by the track resource.
+            let track = lib.tracks.values().next().unwrap().clone();
+            let song = registry
+                .query(&track.title)
+                .into_iter()
+                .find(|r| r.title == track.title)
+                .expect("the track is findable as a framework SearchResult");
+            assert_eq!(song.kind, "Songs");
+            assert_eq!(song.title, track.title);
+            assert_eq!(song.icon, Some(Icon::Music));
+            assert_eq!(
+                song.action_address(),
+                Some(crate::actions::play_track_address(&track.id))
+            );
+
+            // All four types section under their plural kind headers.
+            let album = lib.albums.values().next().unwrap().clone();
+            assert!(registry.query_grouped(&album.title).iter().any(|g| {
+                g.kind == "Albums"
+                    && g.results.iter().any(|r| {
+                        r.action_address() == Some(crate::actions::open_album_address(&album.id))
+                    })
+            }));
+
+            let artist = lib.artists.values().next().unwrap().clone();
+            assert!(registry.query_grouped(&artist.name).iter().any(|g| {
+                g.kind == "Artists"
+                    && g.results.iter().any(|r| {
+                        r.action_address() == Some(crate::actions::open_artist_address(&artist.id))
+                    })
+            }));
+
+            let pl = lib.playlists.first().unwrap().clone();
+            assert!(registry.query_grouped(&pl.name).iter().any(|g| {
+                g.kind == "Playlists"
+                    && g.results.iter().any(|r| {
+                        r.action_address() == Some(crate::actions::open_playlist_address(&pl.id))
+                    })
+            }));
+        }
+
+        // Phase `library_provider_fabricates_nothing_on_empty_library_or_query`.
+        {
+            // An empty (default) library contributes zero rows for any query.
+            let empty = LibrarySearchProvider::new(&Library::default());
+            assert!(empty.search("anything").is_empty());
+            // A seeded library still browses nothing on a blank query (no catalog
+            // dump into the palette).
+            let seeded = LibrarySearchProvider::new(&seed::sample_library());
+            assert!(seeded.search("   ").is_empty());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn indexed_provider_bounds_work_and_reaches_late_entities() {
+        // Phase `indexed_provider_bounds_candidate_work_before_materialising_results`.
+        {
+            let mut lib = Library::default();
+            lib.artists.insert(
+                "artist".into(),
+                crate::model::Artist {
+                    id: "artist".into(),
+                    name: "Bounded Artist".into(),
+                    genre: "Test".into(),
+                    monthly_listeners: 0,
+                },
+            );
+            lib.albums.insert(
+                "album".into(),
+                crate::model::Album {
+                    id: "album".into(),
+                    title: "Bounded Album".into(),
+                    artist_id: "artist".into(),
+                    year: 2026,
+                },
+            );
+            for n in 0..(SEARCH_CANDIDATE_LIMIT + 200) {
+                let id = format!("track-{n}");
+                lib.tracks.insert(
+                    id.clone(),
+                    crate::model::Track {
+                        id,
+                        title: format!("Song candidate {n}"),
+                        album_id: "album".into(),
+                        artist_id: "artist".into(),
+                        track_no: 1,
+                        duration_s: 1,
+                        yt_id: format!("video-{n}"),
+                        plays: n as u64,
                     },
-                    album_id: "album".into(),
-                    artist_id: "artist".into(),
-                    track_no: 1,
-                    duration_s: 1,
-                    yt_id: format!("video-{n}"),
-                    plays: 0,
-                },
+                );
+            }
+
+            let provider = LibrarySearchProvider::new(&lib);
+            assert!(
+                provider.candidate_count_for_query("absent-token") <= SEARCH_CANDIDATE_LIMIT,
+                "a no-match query consults an index posting, never every library entity"
+            );
+            assert_eq!(provider.candidate_count_for_query("absent-token"), 0);
+            assert!(
+                provider.candidate_count_for_query("song") <= SEARCH_CANDIDATE_LIMIT,
+                "a broad query still honors the per-page inspection budget"
+            );
+            assert!(
+                provider.search_limited("song", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT
             );
         }
 
-        let provider = LibrarySearchProvider::new(&lib);
-        let results = provider.search("Needle Beyond Former Cutoff");
-        assert!(
-            results
-                .iter()
-                .any(|result| result.title == "Needle Beyond Former Cutoff"),
-            "an exact title remains searchable even when it falls after the former 4,096-item cap"
-        );
-        assert_eq!(
-            provider.candidate_count_for_query("Needle Beyond Former Cutoff"),
-            1
-        );
-    }
-
-    #[test]
-    fn distinctive_partial_phrase_finds_a_late_item_after_common_trigrams() {
-        let mut lib = Library::default();
-        lib.artists.insert(
-            "artist".into(),
-            crate::model::Artist {
-                id: "artist".into(),
-                name: "Common Artist".into(),
-                genre: String::new(),
-                monthly_listeners: 0,
-            },
-        );
-        lib.albums.insert(
-            "album".into(),
-            crate::model::Album {
-                id: "album".into(),
-                title: "Common Album".into(),
-                artist_id: "artist".into(),
-                year: 2026,
-            },
-        );
-        for n in 0..4_097 {
-            let id = format!("track-{n:04}");
-            lib.tracks.insert(
-                id.clone(),
-                crate::model::Track {
-                    id,
-                    title: if n == 4_096 {
-                        "Common opening distinctive moonlit signal".into()
-                    } else {
-                        format!("Common opening catalogue entry {n}")
+        // Phase `exact_library_lookup_reaches_entities_beyond_the_old_snapshot_cutoff`.
+        {
+            let mut lib = Library::default();
+            lib.artists.insert(
+                "artist".into(),
+                crate::model::Artist {
+                    id: "artist".into(),
+                    name: "All Library Artist".into(),
+                    genre: String::new(),
+                    monthly_listeners: 0,
+                },
+            );
+            lib.albums.insert(
+                "album".into(),
+                crate::model::Album {
+                    id: "album".into(),
+                    title: "All Library Album".into(),
+                    artist_id: "artist".into(),
+                    year: 2026,
+                },
+            );
+            for n in 0..4_097 {
+                let id = format!("track-{n:04}");
+                lib.tracks.insert(
+                    id.clone(),
+                    crate::model::Track {
+                        id,
+                        title: if n == 4_096 {
+                            "Needle Beyond Former Cutoff".into()
+                        } else {
+                            format!("Library track {n}")
+                        },
+                        album_id: "album".into(),
+                        artist_id: "artist".into(),
+                        track_no: 1,
+                        duration_s: 1,
+                        yt_id: format!("video-{n}"),
+                        plays: 0,
                     },
-                    album_id: "album".into(),
-                    artist_id: "artist".into(),
-                    track_no: 1,
-                    duration_s: 1,
-                    yt_id: format!("video-{n}"),
-                    plays: 0,
-                },
+                );
+            }
+
+            let provider = LibrarySearchProvider::new(&lib);
+            let results = provider.search("Needle Beyond Former Cutoff");
+            assert!(
+                results
+                    .iter()
+                    .any(|result| result.title == "Needle Beyond Former Cutoff"),
+                "an exact title remains searchable even when it falls after the former 4,096-item cap"
+            );
+            assert_eq!(
+                provider.candidate_count_for_query("Needle Beyond Former Cutoff"),
+                1
             );
         }
 
-        let provider = LibrarySearchProvider::new(&lib);
-        let results = provider.search("opening distinctive moonlit");
-        assert!(
-            results
-                .iter()
-                .any(|result| result.title == "Common opening distinctive moonlit signal"),
-            "the rarest query trigrams intersect complete postings, so a late item survives a common opening"
-        );
-        assert_eq!(
-            provider.candidate_count_for_query("opening distinctive moonlit"),
-            1
-        );
-    }
-
-    #[test]
-    fn provider_pages_unicode_results_without_scanning_the_whole_library() {
-        let mut lib = Library::default();
-        lib.artists.insert(
-            "artist".into(),
-            crate::model::Artist {
-                id: "artist".into(),
-                name: "Mañana".into(),
-                genre: "Électronica".into(),
-                monthly_listeners: 0,
-            },
-        );
-        lib.albums.insert(
-            "album".into(),
-            crate::model::Album {
-                id: "album".into(),
-                title: "Café Sessions".into(),
-                artist_id: "artist".into(),
-                year: 2026,
-            },
-        );
-        for number in 0..40 {
-            let id = format!("track-{number:03}");
-            lib.tracks.insert(
-                id.clone(),
-                crate::model::Track {
-                    id,
-                    title: if number == 39 {
-                        "Café Paged Finale 🎧".into()
-                    } else {
-                        format!("Café paged song {number:03}")
+        // Phase `distinctive_partial_phrase_finds_a_late_item_after_common_trigrams`.
+        {
+            let mut lib = Library::default();
+            lib.artists.insert(
+                "artist".into(),
+                crate::model::Artist {
+                    id: "artist".into(),
+                    name: "Common Artist".into(),
+                    genre: String::new(),
+                    monthly_listeners: 0,
+                },
+            );
+            lib.albums.insert(
+                "album".into(),
+                crate::model::Album {
+                    id: "album".into(),
+                    title: "Common Album".into(),
+                    artist_id: "artist".into(),
+                    year: 2026,
+                },
+            );
+            for n in 0..4_097 {
+                let id = format!("track-{n:04}");
+                lib.tracks.insert(
+                    id.clone(),
+                    crate::model::Track {
+                        id,
+                        title: if n == 4_096 {
+                            "Common opening distinctive moonlit signal".into()
+                        } else {
+                            format!("Common opening catalogue entry {n}")
+                        },
+                        album_id: "album".into(),
+                        artist_id: "artist".into(),
+                        track_no: 1,
+                        duration_s: 1,
+                        yt_id: format!("video-{n}"),
+                        plays: 0,
                     },
-                    album_id: "album".into(),
-                    artist_id: "artist".into(),
-                    track_no: 1,
-                    duration_s: 1,
-                    yt_id: format!("video-{number}"),
-                    plays: 0,
-                },
+                );
+            }
+
+            let provider = LibrarySearchProvider::new(&lib);
+            let results = provider.search("opening distinctive moonlit");
+            assert!(
+                results
+                    .iter()
+                    .any(|result| result.title == "Common opening distinctive moonlit signal"),
+                "the rarest query trigrams intersect complete postings, so a late item survives a common opening"
+            );
+            assert_eq!(
+                provider.candidate_count_for_query("opening distinctive moonlit"),
+                1
             );
         }
-        let provider = LibrarySearchProvider::new(&lib);
-        let first = provider.search_page("CAFÉ", None, 7, 7);
-        assert_eq!(first.inspected, 7);
-        assert_eq!(first.results.len(), 7);
-        let next = first.next.as_ref().expect("more matching rows remain");
-        let second = provider.search_page("CAFÉ", Some(next), 7, 7);
-        assert_eq!(second.inspected, 7);
-        assert!(
-            second
-                .results
-                .iter()
-                .all(|result| result.action_address().is_some())
-        );
 
-        let all = provider.search("PAGED FINALE 🎧");
-        assert!(
-            all.iter()
-                .any(|result| result.title == "Café Paged Finale 🎧")
-        );
-    }
+        // Phase `provider_pages_unicode_results_without_scanning_the_whole_library`.
+        {
+            let mut lib = Library::default();
+            lib.artists.insert(
+                "artist".into(),
+                crate::model::Artist {
+                    id: "artist".into(),
+                    name: "Mañana".into(),
+                    genre: "Électronica".into(),
+                    monthly_listeners: 0,
+                },
+            );
+            lib.albums.insert(
+                "album".into(),
+                crate::model::Album {
+                    id: "album".into(),
+                    title: "Café Sessions".into(),
+                    artist_id: "artist".into(),
+                    year: 2026,
+                },
+            );
+            for number in 0..40 {
+                let id = format!("track-{number:03}");
+                lib.tracks.insert(
+                    id.clone(),
+                    crate::model::Track {
+                        id,
+                        title: if number == 39 {
+                            "Café Paged Finale 🎧".into()
+                        } else {
+                            format!("Café paged song {number:03}")
+                        },
+                        album_id: "album".into(),
+                        artist_id: "artist".into(),
+                        track_no: 1,
+                        duration_s: 1,
+                        yt_id: format!("video-{number}"),
+                        plays: 0,
+                    },
+                );
+            }
+            let provider = LibrarySearchProvider::new(&lib);
+            let first = provider.search_page("CAFÉ", None, 7, 7);
+            assert_eq!(first.inspected, 7);
+            assert_eq!(first.results.len(), 7);
+            let next = first.next.as_ref().expect("more matching rows remain");
+            let second = provider.search_page("CAFÉ", Some(next), 7, 7);
+            assert_eq!(second.inspected, 7);
+            assert!(
+                second
+                    .results
+                    .iter()
+                    .all(|result| result.action_address().is_some())
+            );
 
-    #[test]
-    fn provider_indexes_playlist_memberships_with_safe_canonical_open_actions() {
-        let lib = seed::sample_library();
-        let playlist = lib.playlists.first().expect("seed playlist");
-        let track_id = playlist.track_ids.first().expect("seed membership");
-        let track = lib.track(track_id).expect("seed track");
-        let provider = LibrarySearchProvider::new(&lib);
-        let address = crate::actions::open_playlist_membership_address(&playlist.id, track_id);
-        assert!(provider.search(&track.title).iter().any(|result| {
-            result.action_address().as_ref() == Some(&address) && result.kind == "Playlist tracks"
-        }));
+            let all = provider.search("PAGED FINALE 🎧");
+            assert!(
+                all.iter()
+                    .any(|result| result.title == "Café Paged Finale 🎧")
+            );
+        }
+
+        // Phase `provider_indexes_playlist_memberships_with_safe_canonical_open_actions`.
+        {
+            let lib = seed::sample_library();
+            let playlist = lib.playlists.first().expect("seed playlist");
+            let track_id = playlist.track_ids.first().expect("seed membership");
+            let track = lib.track(track_id).expect("seed track");
+            let provider = LibrarySearchProvider::new(&lib);
+            let address = crate::actions::open_playlist_membership_address(&playlist.id, track_id);
+            assert!(provider.search(&track.title).iter().any(|result| {
+                result.action_address().as_ref() == Some(&address)
+                    && result.kind == "Playlist tracks"
+            }));
+        }
     }
 }

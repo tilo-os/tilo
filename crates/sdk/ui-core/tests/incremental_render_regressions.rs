@@ -27,7 +27,7 @@
 )]
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -47,6 +47,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 const ROWS_PER_PANEL: usize = 40;
+const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 
 fn leak(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
@@ -169,16 +170,34 @@ fn ensure_i18n() {
     ONCE.call_once(register_i18n);
 }
 
+/// Pixels whose RGB differs from `bg` by a summed channel distance above 12.
+///
+/// Called on every frame of 3.84-megapixel scroll walks. A run of 16 pixels
+/// that equals opaque background byte for byte (most of any frame) contains
+/// no counted pixel and is rejected with one slice comparison; every other run
+/// is measured pixel by pixel.
 fn count_non_bg(rgba: &[u8], bg: vello::peniko::Color) -> usize {
+    const RUN: usize = 16;
     let [br, bgc, bb, _] = bg.to_rgba8().to_u8_array();
-    rgba.chunks_exact(4)
-        .filter(|p| {
-            let dr = i32::from(p[0]).saturating_sub(i32::from(br));
-            let dg = i32::from(p[1]).saturating_sub(i32::from(bgc));
-            let db = i32::from(p[2]).saturating_sub(i32::from(bb));
-            dr.abs().saturating_add(dg.abs()).saturating_add(db.abs()) > 12
-        })
-        .count()
+    let (pixels, rest) = rgba.as_chunks::<4>();
+    assert!(rest.is_empty(), "RGBA8 frames are whole pixels");
+    let background_run = [[br, bgc, bb, u8::MAX]; RUN];
+    let mut count = 0_usize;
+    for run in pixels.chunks(RUN) {
+        if run == &background_run[..run.len()] {
+            continue;
+        }
+        for &[r, g, b, _] in run {
+            if u32::from(r.abs_diff(br))
+                .saturating_add(u32::from(g.abs_diff(bgc)))
+                .saturating_add(u32::from(b.abs_diff(bb)))
+                > 12
+            {
+                count = count.saturating_add(1);
+            }
+        }
+    }
+    count
 }
 
 struct Harness {
@@ -195,6 +214,7 @@ struct Harness {
     logical_w: f64,
     logical_h: f64,
     transform: Affine,
+    last_draw: Option<Instant>,
     _doc: AutoCommit,
 }
 
@@ -259,6 +279,7 @@ impl Harness {
             logical_w,
             logical_h,
             transform: Affine::scale(scale),
+            last_draw: None,
             _doc: AutoCommit::new(),
         }
     }
@@ -296,6 +317,16 @@ impl Harness {
     }
 
     fn draw_one_frame(&mut self) -> Vec<u8> {
+        // Step spinner phases — they read `Instant::now()` in `draw`, so
+        // consecutive draws must be at least one 8 ms frame apart or the
+        // animation rate doesn't accumulate. Rendering and pixel counting
+        // usually take longer than that already; sleep only for the rest.
+        if let Some(previous) = self.last_draw
+            && let Some(rest) = FRAME_INTERVAL.checked_sub(previous.elapsed())
+        {
+            std::thread::sleep(rest);
+        }
+        self.last_draw = Some(Instant::now());
         self.scene.reset();
         let vp = vello::kurbo::Rect::new(0.0, 0.0, self.logical_w, self.logical_h);
         let prev = self.presence.push_viewport(vp);
@@ -310,10 +341,6 @@ impl Harness {
         );
         self.presence.pop_viewport(prev);
         root.mark_drawn();
-        // Step spinner phases — they read `Instant::now()` in
-        // `draw`, so without a real delay between frames the
-        // animation rate doesn't accumulate.
-        std::thread::sleep(Duration::from_millis(8));
         self.renderer
             .render(&self.scene, self.theme.tokens.colors.surfaces.base)
     }
@@ -323,36 +350,66 @@ impl Harness {
 #[allow(
     clippy::cast_precision_loss,
     reason = "pixel counts are bounded by the test canvas area (at most ~2,000,000), far below \
-              f64's 2^53 exact-integer range"
+f64's 2^53 exact-integer range"
 )]
-fn column_row_subtree_cache_renders_correctly_at_dpi_scale_2() {
-    let mut h = Harness::new(1600, 1200, 2.0);
+fn cached_subtrees_stay_visible_at_scale_and_on_animation_frames() {
+    // Case `column_row_subtree_cache_renders_correctly_at_dpi_scale_2`.
+    {
+        let mut h = Harness::new(1600, 1200, 2.0);
 
-    // Frame 0 — every cache is dirty (cache_rect == Rect::ZERO),
-    // so this is the rebuild path. Frame 1 — animated leaves
-    // (Spinner/ProgressBar) are still dirty by default and force
-    // the outer Column to rebuild, but the panels Row hits the
-    // cache. Bug-on-regression: cache primitives would be built
-    // with `transform = scale(2)` baked in, then the outer
-    // append composes another `transform`, putting them at scale 4
-    // off-screen. With the fix, both frames render every widget.
-    let rebuild = h.draw_one_frame();
-    let cache_hit = h.draw_one_frame();
-    let bg = h.theme.tokens.colors.surfaces.base;
-    let n_rebuild = count_non_bg(&rebuild, bg);
-    let n_cache_hit = count_non_bg(&cache_hit, bg);
+        // Frame 0 — every cache is dirty (cache_rect == Rect::ZERO),
+        // so this is the rebuild path. Frame 1 — animated leaves
+        // (Spinner/ProgressBar) are still dirty by default and force
+        // the outer Column to rebuild, but the panels Row hits the
+        // cache. Bug-on-regression: cache primitives would be built
+        // with `transform = scale(2)` baked in, then the outer
+        // append composes another `transform`, putting them at scale 4
+        // off-screen. With the fix, both frames render every widget.
+        let rebuild = h.draw_one_frame();
+        let cache_hit = h.draw_one_frame();
+        let bg = h.theme.tokens.colors.surfaces.base;
+        let n_rebuild = count_non_bg(&rebuild, bg);
+        let n_cache_hit = count_non_bg(&cache_hit, bg);
 
-    assert!(
-        n_rebuild > 1000,
-        "rebuild frame has too few non-bg pixels ({n_rebuild}) — widget tree not rendering",
-    );
-    let ratio = n_cache_hit as f64 / n_rebuild as f64;
-    assert!(
-        ratio > 0.97,
-        "cache-hit frame lost pixels relative to rebuild \
+        assert!(
+            n_rebuild > 1000,
+            "rebuild frame has too few non-bg pixels ({n_rebuild}) — widget tree not rendering",
+        );
+        let ratio = n_cache_hit as f64 / n_rebuild as f64;
+        assert!(
+            ratio > 0.97,
+            "cache-hit frame lost pixels relative to rebuild \
          (cache_hit={n_cache_hit}, rebuild={n_rebuild}, ratio={ratio:.3}); \
          double-transform regression in Column/Row subtree cache?",
-    );
+        );
+    }
+
+    // Case `static_widgets_stay_visible_on_animation_only_frames`.
+    {
+        let mut h = Harness::new(1600, 1200, 2.0);
+
+        // Frame 0: full repaint (every leaf starts `dirty == true`).
+        // Frame 1: only spinners + progress bars remain dirty —
+        // exactly the "post-scroll steady state" the user reported
+        // broken. If a future change reintroduces an unconditional
+        // damage-region clip across the whole `draw_with_presence`,
+        // the second frame will drop all static widgets and this
+        // test will fail.
+        let _warmup = h.draw_one_frame();
+        let steady = h.draw_one_frame();
+        let bg = h.theme.tokens.colors.surfaces.base;
+        let n_steady = count_non_bg(&steady, bg);
+
+        // Hard floor — the panels alone (4 × 40 rows of Text +
+        // Buttons + Avatars + Badges) easily exceed this even after
+        // spatial culling clips the off-viewport rows.
+        assert!(
+            n_steady > 30_000,
+            "steady frame has only {n_steady} non-bg pixels; static \
+         widgets are being clipped out on animation-only frames \
+         (damage-clip regression?)",
+        );
+    }
 }
 
 #[test]
@@ -481,7 +538,9 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     // remains". The dashboard tree mirrors `examples/dashboard.rs`
     // exactly (8 panels × 40 rows + header + footer); the canvas
     // matches a HiDPI 800×600 logical window.
-    let mut h = Harness::new(1600, 1200, 2.0);
+    const CANVAS_W: u32 = 1600;
+    const CANVAS_H: u32 = 1200;
+    let mut h = Harness::new(CANVAS_W, CANVAS_H, 2.0);
 
     // Warmup + a few animation-only frames so the caches settle.
     for _ in 0..4 {
@@ -491,6 +550,7 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     let bg = h.theme.tokens.colors.surfaces.base;
     let mut min_pixels = usize::MAX;
     let mut min_offset = 0.0_f32;
+    let mut min_frame = Vec::new();
     let mut last_offset: f32 = -1.0;
 
     // 250 × 60 px = up to 15,000 px of scroll. The dashboard is
@@ -504,8 +564,7 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
         if n < min_pixels {
             min_pixels = n;
             min_offset = off;
-            h.renderer
-                .render_png(&h.scene, bg, "/tmp/dash_scroll_min.png");
+            min_frame = rgba;
         }
         if (off - last_offset).abs() < 0.5 && step > 5 {
             eprintln!("hit max scroll at step={step} offset_y={off}");
@@ -515,37 +574,12 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
     }
 
     eprintln!("min non-bg pixels across scroll: {min_pixels} at offset_y={min_offset}");
+    // Encode the worst frame once, rather than every time the minimum drops.
+    tilo_ui::png::write_rgba8("/tmp/dash_scroll_min.png", CANVAS_W, CANVAS_H, &min_frame).unwrap();
     assert!(
         min_pixels > 30_000,
         "during scroll, the worst frame (offset_y={min_offset}) \
          dropped to {min_pixels} non-bg pixels — content went blank. \
          PNG: /tmp/dash_scroll_min.png",
-    );
-}
-
-#[test]
-fn static_widgets_stay_visible_on_animation_only_frames() {
-    let mut h = Harness::new(1600, 1200, 2.0);
-
-    // Frame 0: full repaint (every leaf starts `dirty == true`).
-    // Frame 1: only spinners + progress bars remain dirty —
-    // exactly the "post-scroll steady state" the user reported
-    // broken. If a future change reintroduces an unconditional
-    // damage-region clip across the whole `draw_with_presence`,
-    // the second frame will drop all static widgets and this
-    // test will fail.
-    let _warmup = h.draw_one_frame();
-    let steady = h.draw_one_frame();
-    let bg = h.theme.tokens.colors.surfaces.base;
-    let n_steady = count_non_bg(&steady, bg);
-
-    // Hard floor — the panels alone (4 × 40 rows of Text +
-    // Buttons + Avatars + Badges) easily exceed this even after
-    // spatial culling clips the off-viewport rows.
-    assert!(
-        n_steady > 30_000,
-        "steady frame has only {n_steady} non-bg pixels; static \
-         widgets are being clipped out on animation-only frames \
-         (damage-clip regression?)",
     );
 }

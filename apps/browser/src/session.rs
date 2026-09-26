@@ -174,91 +174,102 @@ mod tests {
             clean_exit: false,
         }
     }
+    /// Disk round trip, budgets, malformed input and write policy.
     #[test]
-    fn disk_roundtrip_and_atomic_replacement_preserve_last_valid_on_failure() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SessionStore::open(root.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        store.save(&fixture()).unwrap();
-        assert_eq!(store.load().unwrap(), Some(fixture()));
-        let mut invalid = fixture();
-        invalid.active = 9;
-        assert!(store.save(&invalid).is_err());
-        assert_eq!(store.load().unwrap(), Some(fixture()));
-        std::fs::create_dir(root.path().join("session.next")).unwrap();
-        let mut next = fixture();
-        next.tabs.remove(0);
-        next.active = 0;
-        assert!(store.save(&next).is_err());
-        assert_eq!(store.load().unwrap(), Some(fixture()));
-    }
-    #[test]
-    fn serialized_budget_failure_preserves_previous_snapshot() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SessionStore::open(root.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        store.save(&fixture()).unwrap();
-        let mut large = fixture();
-        large.tabs = vec![
-            SavedTab {
-                url: format!("https://example.test/{}", "\\".repeat(8000)),
-                pinned: false
-            };
-            32
-        ];
-        assert!(store.save(&large).is_err());
-        assert_eq!(store.load().unwrap(), Some(fixture()));
-    }
-    #[test]
-    fn malformed_unsafe_and_oversized_snapshots_are_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let store = SessionStore::open(root.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        let mut cases = vec![fixture(); 5];
-        cases[0].version = 999;
-        cases[1].tabs = vec![fixture().tabs[0].clone(); 33];
-        cases[2].tabs[0].url = "javascript:alert(1)".into();
-        cases[3].tabs[0].url = "https://user:secret@host.test/".into();
-        cases[4].tabs[0].pinned = false;
-        cases[4].tabs[1].pinned = true;
-        for value in cases {
-            std::fs::write(
-                root.path().join("session.json"),
-                serde_json::to_vec(&value).unwrap(),
-            )
-            .unwrap();
-            assert!(store.load().is_err());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn session_snapshots_persist_atomically_and_refuse_unsafe_writes() {
+        // Phase `disk_roundtrip_and_atomic_replacement_preserve_last_valid_on_failure`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SessionStore::open(root.path(), SessionMode::Normal)
+                .unwrap()
+                .unwrap();
+            store.save(&fixture()).unwrap();
+            assert_eq!(store.load().unwrap(), Some(fixture()));
+            let mut invalid = fixture();
+            invalid.active = 9;
+            assert!(store.save(&invalid).is_err());
+            assert_eq!(store.load().unwrap(), Some(fixture()));
+            std::fs::create_dir(root.path().join("session.next")).unwrap();
+            let mut next = fixture();
+            next.tabs.remove(0);
+            next.active = 0;
+            assert!(store.save(&next).is_err());
+            assert_eq!(store.load().unwrap(), Some(fixture()));
         }
-        std::fs::write(root.path().join("session.json"), vec![b'x'; 300_000]).unwrap();
-        assert!(store.load().is_err());
-        assert!(safe_url("http://127.0.0.1:6111/test"));
-        assert!(safe_url("about:blank"));
-        assert!(!safe_url("file:///tmp/private"));
-        assert!(!safe_url("data:text/plain,private"));
-    }
-    #[test]
-    fn live_instance_lock_and_explicit_private_policy_prevent_writes() {
-        let root = tempfile::tempdir().unwrap();
-        let private = root.path().join("private");
-        assert!(
-            SessionStore::open(&private, SessionMode::Private)
+
+        // Phase `serialized_budget_failure_preserves_previous_snapshot`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SessionStore::open(root.path(), SessionMode::Normal)
                 .unwrap()
-                .is_none()
-        );
-        assert!(!private.exists());
-        let first = SessionStore::open(root.path(), SessionMode::Normal)
-            .unwrap()
-            .unwrap();
-        first.save(&fixture()).unwrap();
-        assert!(SessionStore::open(root.path(), SessionMode::Normal).is_err());
-        drop(first);
-        assert!(
-            SessionStore::open(root.path(), SessionMode::Normal)
+                .unwrap();
+            store.save(&fixture()).unwrap();
+            let mut large = fixture();
+            large.tabs = vec![
+                SavedTab {
+                    url: format!("https://example.test/{}", "\\".repeat(8000)),
+                    pinned: false
+                };
+                32
+            ];
+            assert!(store.save(&large).is_err());
+            assert_eq!(store.load().unwrap(), Some(fixture()));
+        }
+
+        // Phase `malformed_unsafe_and_oversized_snapshots_are_rejected`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = SessionStore::open(root.path(), SessionMode::Normal)
                 .unwrap()
-                .is_some()
-        );
+                .unwrap();
+            let mut cases = vec![fixture(); 5];
+            cases[0].version = 999;
+            cases[1].tabs = vec![fixture().tabs[0].clone(); 33];
+            cases[2].tabs[0].url = "javascript:alert(1)".into();
+            cases[3].tabs[0].url = "https://user:secret@host.test/".into();
+            cases[4].tabs[0].pinned = false;
+            cases[4].tabs[1].pinned = true;
+            for value in cases {
+                std::fs::write(
+                    root.path().join("session.json"),
+                    serde_json::to_vec(&value).unwrap(),
+                )
+                .unwrap();
+                assert!(store.load().is_err());
+            }
+            std::fs::write(root.path().join("session.json"), vec![b'x'; 300_000]).unwrap();
+            assert!(store.load().is_err());
+            assert!(safe_url("http://127.0.0.1:6111/test"));
+            assert!(safe_url("about:blank"));
+            assert!(!safe_url("file:///tmp/private"));
+            assert!(!safe_url("data:text/plain,private"));
+        }
+
+        // Phase `live_instance_lock_and_explicit_private_policy_prevent_writes`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let private = root.path().join("private");
+            assert!(
+                SessionStore::open(&private, SessionMode::Private)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!private.exists());
+            let first = SessionStore::open(root.path(), SessionMode::Normal)
+                .unwrap()
+                .unwrap();
+            first.save(&fixture()).unwrap();
+            assert!(SessionStore::open(root.path(), SessionMode::Normal).is_err());
+            drop(first);
+            assert!(
+                SessionStore::open(root.path(), SessionMode::Normal)
+                    .unwrap()
+                    .is_some()
+            );
+        }
     }
 }

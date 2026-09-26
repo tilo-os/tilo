@@ -111,8 +111,9 @@ mod tests {
     use super::*;
     use ui::search::{SearchProvider, SearchRegistry};
 
+    /// Keyword synonyms, browsing and budgeted paging over one provider.
     #[test]
-    fn provider_finds_a_pane_by_keyword() {
+    fn pane_search_finds_keywords_browses_and_pages_every_pane() {
         let provider = SettingsSearchProvider::new();
         // "night light" is a Displays keyword synonym, not in the label.
         let hits = provider.search("night light");
@@ -123,12 +124,34 @@ mod tests {
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
         assert!(hits.iter().all(|r| r.kind == SETTINGS_KIND));
-    }
 
-    #[test]
-    fn empty_query_browses_every_pane() {
-        let provider = SettingsSearchProvider::new();
+        // The empty query browses every pane.
         assert_eq!(provider.search("").len(), Category::ALL.len());
+
+        // Paging reaches the complete corpus with a hard per-page budget.
+        let mut cursor = None;
+        let mut titles = Vec::new();
+        loop {
+            let page = provider.search_page("", cursor.as_ref(), 1, 1);
+            assert!(page.inspected <= 1, "a page must respect its work budget");
+            assert!(
+                page.results.len() <= 1,
+                "a page must respect its result limit"
+            );
+            titles.extend(page.results.into_iter().map(|result| result.title));
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            titles,
+            Category::ALL
+                .iter()
+                .map(|category| category.label().to_string())
+                .collect::<Vec<_>>(),
+            "a continuation reaches late categories instead of truncating browse discovery"
+        );
     }
 
     #[test]
@@ -191,34 +214,6 @@ mod tests {
                 "the broker selected the pane named by the result"
             );
         }
-    }
-
-    #[test]
-    fn paging_reaches_the_complete_corpus_with_a_hard_per_page_budget() {
-        let provider = SettingsSearchProvider::new();
-        let mut cursor = None;
-        let mut titles = Vec::new();
-        loop {
-            let page = provider.search_page("", cursor.as_ref(), 1, 1);
-            assert!(page.inspected <= 1, "a page must respect its work budget");
-            assert!(
-                page.results.len() <= 1,
-                "a page must respect its result limit"
-            );
-            titles.extend(page.results.into_iter().map(|result| result.title));
-            cursor = page.next;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        assert_eq!(
-            titles,
-            Category::ALL
-                .iter()
-                .map(|category| category.label().to_string())
-                .collect::<Vec<_>>(),
-            "a continuation reaches late categories instead of truncating browse discovery"
-        );
     }
 
     #[test]
