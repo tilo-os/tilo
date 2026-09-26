@@ -4965,73 +4965,18 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         match event_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 watcher.observe(&event);
-                if event_requires_restart(&event, &roots) {
-                    drain_until_quiet(&event_rx, &roots, request.debounce, &mut watcher);
-                    loop {
-                        report_child_exit(&mut child);
-                        eprintln!("[tilo-app] change detected; rebuilding");
-                        let building_revision = source_revision.load(Ordering::Acquire);
-                        // The startup plan already passed preflight. Re-running it
-                        // shells out to `capnp --version` and re-reads the tree
-                        // before rustc starts. Cargo reports a broken manifest.
-                        // A newer edit during this compile cancels it instead of
-                        // waiting for a binary that will not be launched.
-                        let candidate = build_dev_candidate_interruptible(
-                            &initial,
-                            Some(&event_rx),
-                            &roots,
-                            |event| watcher.observe(event),
-                        );
-
-                        let queued_restart =
-                            drain_pending_restart_events(&event_rx, &roots, |event| {
-                                watcher.observe(event);
-                            });
-                        let superseded = queued_restart
-                            || source_revision.load(Ordering::Acquire) != building_revision;
-                        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
-                            break 'watching;
-                        }
-                        if superseded {
-                            eprintln!(
-                                "[tilo-app] newer change arrived during the build; skipping the stale candidate"
-                            );
-                            drain_until_quiet(&event_rx, &roots, request.debounce, &mut watcher);
-                            continue;
-                        }
-                        match candidate {
-                            Ok(DevCandidate::Built(executable)) => {
-                                eprintln!("[tilo-app] build succeeded; restarting");
-                                stop_dev_child(&mut child);
-                                child = spawn_dev_binary_reported(
-                                    &app_dir,
-                                    &executable,
-                                    &request.forwarded,
-                                );
-                            }
-                            Ok(DevCandidate::Superseded) => {
-                                eprintln!(
-                                    "[tilo-app] newer change arrived during the build; skipping the stale candidate"
-                                );
-                                drain_until_quiet(
-                                    &event_rx,
-                                    &roots,
-                                    request.debounce,
-                                    &mut watcher,
-                                );
-                                continue;
-                            }
-                            Err(error) => {
-                                let state = if child.is_some() {
-                                    "keeping the last good app running"
-                                } else {
-                                    "waiting for another change"
-                                };
-                                eprintln!("[tilo-app] build failed; {state}\n{error:#}");
-                            }
-                        }
-                        break;
-                    }
+                if event_requires_restart(&event, &roots)
+                    && rebuild_running_dev_app(
+                        &initial,
+                        request,
+                        &mut child,
+                        &event_rx,
+                        &roots,
+                        &mut watcher,
+                        &source_revision,
+                    )
+                {
+                    break 'watching;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -5043,6 +4988,69 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
     stop_dev_child(&mut child);
     eprintln!("[tilo-app] stopped");
     Ok(())
+}
+
+/// Rebuild until the candidate matches the newest source, or the user stops.
+/// Returns whether the watcher itself should stop.
+fn rebuild_running_dev_app(
+    plan: &CargoPlan,
+    request: &DevRequest,
+    child: &mut Option<Child>,
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    watcher: &mut DevWatcher,
+    source_revision: &AtomicU64,
+) -> bool {
+    drain_until_quiet(events, roots, request.debounce, watcher);
+    loop {
+        report_child_exit(child);
+        eprintln!("[tilo-app] change detected; rebuilding");
+        let building_revision = source_revision.load(Ordering::Acquire);
+        // The startup plan already passed preflight. Re-running it shells out
+        // to `capnp --version` before rustc starts. A newer edit cancels this
+        // compile instead of waiting for a binary that will not be launched.
+        let candidate = build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
+            watcher.observe(event);
+        });
+        let queued_restart = drain_pending_restart_events(events, roots, |event| {
+            watcher.observe(event);
+        });
+        let superseded =
+            queued_restart || source_revision.load(Ordering::Acquire) != building_revision;
+        if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
+            return true;
+        }
+        if superseded {
+            eprintln!(
+                "[tilo-app] newer change arrived during the build; skipping the stale candidate"
+            );
+            drain_until_quiet(events, roots, request.debounce, watcher);
+            continue;
+        }
+        match candidate {
+            Ok(DevCandidate::Built(executable)) => {
+                eprintln!("[tilo-app] build succeeded; restarting");
+                stop_dev_child(child);
+                *child = spawn_dev_binary_reported(&plan.app_dir, &executable, &request.forwarded);
+            }
+            Ok(DevCandidate::Superseded) => {
+                eprintln!(
+                    "[tilo-app] newer change arrived during the build; skipping the stale candidate"
+                );
+                drain_until_quiet(events, roots, request.debounce, watcher);
+                continue;
+            }
+            Err(error) => {
+                let state = if child.is_some() {
+                    "keeping the last good app running"
+                } else {
+                    "waiting for another change"
+                };
+                eprintln!("[tilo-app] build failed; {state}\n{error:#}");
+            }
+        }
+        return false;
+    }
 }
 
 /// Drain edits queued while Cargo was compiling. Returning `true` makes the
@@ -5139,14 +5147,9 @@ fn build_dev_candidate_interruptible(
             Ok(Some(status)) => {
                 // The reader thread can still be forwarding the last lines
                 // after the process has exited. Wait until it drops the sender.
-                loop {
-                    match line_rx.recv() {
-                        Ok(line) => {
-                            let line = line.context("reading Cargo development artifact stream")?;
-                            collect_cargo_message(&line, &expected_manifest, &mut artifacts);
-                        }
-                        Err(_) => break,
-                    }
+                while let Ok(line) = line_rx.recv() {
+                    let line = line.context("reading Cargo development artifact stream")?;
+                    collect_cargo_message(&line, &expected_manifest, &mut artifacts);
                 }
                 if !status.success() {
                     bail!("Cargo development build failed with {status}");

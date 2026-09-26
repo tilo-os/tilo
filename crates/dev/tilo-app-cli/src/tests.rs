@@ -3998,7 +3998,9 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     let sleeper_watch = sleeper.clone();
     let source = app.join("src/main.rs");
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+            return;
+        };
         while Instant::now() < deadline {
             if leader_watch.is_file() && sleeper_watch.is_file() {
                 break;
@@ -4086,18 +4088,17 @@ fn dev_restart_hands_the_checkpoint_to_the_next_process() {
     let executable = app.join("demo");
     std::fs::write(
         &executable,
-        r#"#!/bin/bash
-dir="${TILO_DEV_SESSION:?}"
-if [ -f "$dir/checkpoint.bin" ]; then
-  cp "$dir/checkpoint.bin" "$dir/restored"
-fi
-trap 'printf document-route-caret > "$dir/checkpoint.bin"; exit 0' TERM
-touch "$dir/ready"
-# A builtin, so SIGTERM runs the trap instead of waiting out an external command.
-while true; do
-  read -t 0.2 || true
-done
-"#,
+        "#!/bin/bash\n\
+dir=\"$TILO_DEV_SESSION\"\n\
+if [ -z \"$dir\" ]; then echo missing session >&2; exit 2; fi\n\
+if [ -f \"$dir/checkpoint.bin\" ]; then\n\
+  cp \"$dir/checkpoint.bin\" \"$dir/restored\"\n\
+fi\n\
+trap 'printf document-route-caret > \"$dir/checkpoint.bin\"; exit 0' TERM\n\
+touch \"$dir/ready\"\n\
+while true; do\n\
+  read -t 0.2 || true\n\
+done\n",
     )
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -4123,7 +4124,9 @@ fn process_is_gone(pid: &str) -> bool {
     let Ok(pid) = pid.parse::<i32>() else {
         return false;
     };
-    let deadline = Instant::now() + Duration::from_millis(500);
+    let Some(deadline) = Instant::now().checked_add(Duration::from_millis(500)) else {
+        return false;
+    };
     loop {
         let alive = std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
@@ -4151,7 +4154,9 @@ fn outcome_path(outcome: DevCandidate) -> PathBuf {
 
 #[cfg(unix)]
 fn wait_for_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+        panic!("clock cannot represent the wait deadline");
+    };
     while Instant::now() < deadline {
         if path.is_file() {
             return;
