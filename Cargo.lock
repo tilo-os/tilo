@@ -12709,6 +12709,7 @@ dependencies = [
  "threshold-identity",
  "thumbnail",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-bluez",

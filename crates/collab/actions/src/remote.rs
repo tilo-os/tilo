@@ -67,6 +67,9 @@ pub enum CallerPrincipal {
     Person(String),
     /// A delegated agent, by its agent id.
     Agent(String),
+    /// An application, by its package id, acting under its own identity
+    /// rather than borrowing the authority of the person using it.
+    App(String),
 }
 
 /// The authenticated principal behind a request.
@@ -113,6 +116,19 @@ impl Caller {
     pub fn local_agent(agent_id: impl Into<String>) -> Self {
         Self {
             principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: None,
+            device_public_key: None,
+            room: None,
+        }
+    }
+
+    /// An application on a connection the host admitted itself, by the
+    /// package id that admission established. It holds no role of its own:
+    /// it may use only what it owns and what a workspace grants it.
+    #[must_use]
+    pub fn local_app(app_id: impl Into<String>) -> Self {
+        Self {
+            principal: CallerPrincipal::App(app_id.into()),
             user_public_key: None,
             device_public_key: None,
             room: None,
