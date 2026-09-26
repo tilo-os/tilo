@@ -14,13 +14,13 @@
 //! the existing `commit_existing` reconciliation of `state.json`) before any
 //! state is usable. No other process or tool reads `state.json` directly.
 use anyhow::{Context, Result, ensure};
-use qos_session_peer::store::journal;
 use serde::{
     Deserialize,
     de::{self, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::Value;
 use std::{fmt, path::Path};
+use tilo_host::store::journal;
 
 #[cfg(test)]
 mod journal_tests;

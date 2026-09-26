@@ -41,7 +41,7 @@ uuid.workspace = true
 [dev-dependencies]
 iroh.workspace = true
 tempfile.workspace = true
-qos-session-peer = { path = "../../hosting/qos-session-peer" }
+tilo-host = { path = "../../hosting/tilo-host" }
 word-processor = { path = "../../../apps/word-processor" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true

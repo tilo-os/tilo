@@ -38,6 +38,7 @@ members = [
     "crates/collab/qos-peer-state",
     "crates/browser/qos-browser-runtime",
     "crates/hosting/qos-session-peer",
+    "crates/hosting/tilo-host",
     "crates/hosting/qos-moq",
     "crates/hosting/qos-cloud-host",
     "crates/session/qos-ntfs-helper",

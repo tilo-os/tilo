@@ -3,14 +3,14 @@
 //! with FlowCredit only after the original continuation is freshly revalidated.
 //! The final range enters the same Store admission as a complete inline item.
 use super::{data::frame, *};
-use qos_session_peer::ingress::{
-    ByteCredit, PendingCarrier, StageIdentity, StagingReservation, UploadChunk, UploadFailure,
-    UploadStage,
-};
 use std::{collections::HashMap, io::Read, sync::mpsc};
 use tilo_delivery_protocol::delivery_v3::{
     framing::{self, MessageType},
     state::{AdmissionOutcome, StateItemChunk},
+};
+use tilo_host::ingress::{
+    ByteCredit, PendingCarrier, StageIdentity, StagingReservation, UploadChunk, UploadFailure,
+    UploadStage,
 };
 
 /// Bounded concurrent disk work and idle file handles between chunks.
@@ -59,7 +59,7 @@ struct InFlight {
 enum Prepared {
     Receipt(Vec<u8>),
     Stage {
-        ticket: qos_session_peer::ingress::CarrierTicket,
+        ticket: tilo_host::ingress::CarrierTicket,
         key: Key,
         session: [u8; 16],
         stage: std::result::Result<UploadStage, StagingReservation>,

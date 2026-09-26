@@ -1,9 +1,9 @@
 //! Explicit migration of reviewed archived CONTENT into a different durable owner.
 //! This module grants no old identity, governance, effects or signature freshness.
-use crate::{CommitReceipt, SessionOwner};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{fs::File, io::Read, path::Path};
+use tilo_host::{CommitReceipt, SessionOwner};
 use ui::automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use ui::history_mode::restore::{
     HistoryMapEntries, HistoryMapField, HistoryMapOverlay, HistoryMembership, HistoryRestoreNode,
@@ -300,7 +300,7 @@ pub fn import_verified_archive(
             .context("fresh destination canonical record missing")?;
         let mut destination = AutoCommit::load(&current)?;
         destination.set_actor(ActorId::from(
-            owner.identity.native.verifying_key().to_bytes().to_vec(),
+            owner.native_signing_key().verifying_key().to_bytes().to_vec(),
         ));
         let destination_heads = destination.get_heads();
         let prepared = prepare_external_content_import(
@@ -352,7 +352,7 @@ pub fn import_verified_archive(
                     app,
                     record,
                     changes,
-                    &owner.identity.native,
+                    owner.native_signing_key(),
                     web_time::SystemTime::now(),
                 )
                 .map_err(anyhow::Error::msg)?;

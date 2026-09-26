@@ -4,15 +4,15 @@ tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{StatePeer, TransportOrigin};
-use qos_session_peer::{
-    SessionOwner,
-    host::{LocalHost, NativeSubscription, publish},
-};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
     time::{Duration, Instant},
+};
+use tilo_host::{
+    SessionOwner,
+    host::{LocalHost, NativeSubscription, publish},
 };
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{

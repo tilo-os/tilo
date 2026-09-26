@@ -1,8 +1,8 @@
 tilo_automerge_isolate::test_worker!();
 
-use qos_session_peer::SessionOwner;
 use std::{fs, process::Command};
 use tilo_automerge::ApplyIncoming as _;
+use tilo_host::SessionOwner;
 
 #[cfg(unix)]
 fn device_key_paths(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -440,7 +440,7 @@ async fn ordinary_host_restart_restores_bound_local_views() {
                 "host cycle {cycle} rejected its own view: {status}"
             );
             if status["native_peer"] == "subscribed" && status["actions"] == "ready" {
-                break serde_json::from_value::<qos_session_peer::Status>(status).unwrap();
+                break serde_json::from_value::<tilo_host::Status>(status).unwrap();
             }
             assert!(
                 Instant::now() < deadline,
@@ -678,17 +678,15 @@ async fn actual_loopback_subscription_reconnect_keeps_same_owner() {
     let path = dir.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let before = owner.status();
-    let host = qos_session_peer::host::LocalHost::start(&owner)
-        .await
-        .unwrap();
+    let host = tilo_host::host::LocalHost::start(&owner).await.unwrap();
     let mut first = host.connect(&owner).await.unwrap();
     admit_until_ready(&mut owner, &mut first).await;
-    qos_session_peer::host::publish(&owner, &first).unwrap();
+    tilo_host::host::publish(&owner, &first).unwrap();
     first.into_client().close().await;
     owner.refresh_checkpoint().unwrap();
     let mut second = host.connect(&owner).await.unwrap();
     admit_until_ready(&mut owner, &mut second).await;
-    qos_session_peer::host::publish(&owner, &second).unwrap();
+    tilo_host::host::publish(&owner, &second).unwrap();
     assert_eq!(owner.status().room, before.room);
     assert_eq!(owner.status().records, before.records);
     second.into_client().close().await;
@@ -834,8 +832,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
             {
                 last_subscription = subscription;
                 last_generation = generation;
-                last_status =
-                    Some(serde_json::from_value::<qos_session_peer::Status>(status).unwrap());
+                last_status = Some(serde_json::from_value::<tilo_host::Status>(status).unwrap());
                 subscribed = true;
                 break;
             }
@@ -856,7 +853,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
 // A status response acknowledges this cut, but the running owner can commit
 // additional worker signatures before SIGKILL. Require causal preservation of
 // every acknowledged route/head and author floor, allowing those later commits.
-fn assert_observed_state_survives(owner: &SessionOwner, observed: &qos_session_peer::Status) {
+fn assert_observed_state_survives(owner: &SessionOwner, observed: &tilo_host::Status) {
     let current = owner.status();
     assert_eq!(current.room, observed.room);
     assert_eq!(current.authority, observed.authority);
@@ -920,7 +917,7 @@ fn same_namespace_admission_cannot_roll_back_document_history_or_actor_floors() 
 
 async fn admit_until_ready(
     owner: &mut SessionOwner,
-    session: &mut qos_session_peer::host::NativeSubscription,
+    session: &mut tilo_host::host::NativeSubscription,
 ) {
     use qos_peer_state::TransportOrigin;
     use tilo_relay::Inbound;
@@ -1047,7 +1044,7 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
     use ui::automerge::{AutoCommit, ROOT, ReadDoc};
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = directory.path().join("desktop");
-    let owner = qos_session_peer::SessionOwner::initialize(&root).unwrap();
+    let owner = tilo_host::SessionOwner::initialize(&root).unwrap();
     let before = owner.status();
     assert!(
         before.records.iter().any(|r| r.app_id == "so.tilo.notes"),
@@ -1073,7 +1070,7 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
     let heads = doc.get_heads();
     drop(owner);
     for _ in 0..2 {
-        let owner = qos_session_peer::SessionOwner::open(&root).unwrap();
+        let owner = tilo_host::SessionOwner::open(&root).unwrap();
         assert_eq!(owner.status().room, before.room);
         assert_eq!(owner.status().authority, before.authority);
         assert_eq!(
@@ -1104,6 +1101,6 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
     }
 }
 
-fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+fn outgoing_bytes(owner: &tilo_host::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }

@@ -334,7 +334,7 @@ fn service(source: &CloudStoreSource, queue: PeerActionQueue) -> CloudPrivateSer
 struct HttpFixture {
     _assets: tempfile::TempDir,
     origin: String,
-    receiver: qos_session_peer::https::IngressReceiver,
+    receiver: tilo_host::https::IngressReceiver,
     stop: tokio::sync::watch::Sender<bool>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
@@ -347,11 +347,11 @@ impl HttpFixture {
             "https://localhost:{}",
             listener.local_addr().unwrap().port()
         );
-        let (ingress, receiver) = qos_session_peer::https::try_ingress_channel().unwrap();
-        let adapter = qos_session_peer::https::HttpsAdapter::new(
+        let (ingress, receiver) = tilo_host::https::try_ingress_channel().unwrap();
+        let adapter = tilo_host::https::HttpsAdapter::new(
             listener,
             &origin,
-            qos_session_peer::https_assets::AssetRoot::open(assets.path()).unwrap(),
+            tilo_host::https_assets::AssetRoot::open(assets.path()).unwrap(),
             vec![hex::decode(TLS_CERT).unwrap().into()],
             hex::decode(TLS_KEY).unwrap().try_into().unwrap(),
             ingress,

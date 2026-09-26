@@ -1,6 +1,6 @@
 //! Reconcile only signed candidates selected by the actual current Store pin.
 use super::*;
-use qos_session_peer::{ingress::RetainedAuthenticatedSnapshotPair, store::SidecarBytes};
+use tilo_host::{ingress::RetainedAuthenticatedSnapshotPair, store::SidecarBytes};
 pub(in crate::https_owner) struct RecoveryJob {
     source: CloudStoreSource,
     pool: HostBytes,
@@ -251,9 +251,7 @@ impl RecoverySelected {
     pub(in crate::https_owner) fn prepare(self) -> Result<RecoveryPrepared> {
         let stream = SnapshotStream::prepare(self.custody, &self.selection.pool).map_err(
             |error| match error {
-                qos_session_peer::ingress::SnapshotFailure::Capacity => {
-                    CloudDeliveryError::Capacity
-                }
+                tilo_host::ingress::SnapshotFailure::Capacity => CloudDeliveryError::Capacity,
                 _ => CloudDeliveryError::Unavailable,
             },
         )?;

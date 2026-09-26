@@ -527,6 +527,11 @@ impl SessionOwner {
     pub fn host_certificate(&self) -> &DeviceCert {
         &self.identity.host_cert
     }
+    /// The governing native device key. Only the device host's own recovery
+    /// import signs with it outside the owner.
+    pub fn native_signing_key(&self) -> &ed25519_dalek::SigningKey {
+        &self.identity.native
+    }
     pub(crate) fn sign_workspace_host_hint(
         &self,
         hint: &tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1,

@@ -1,7 +1,7 @@
 use super::*;
 use crate::Store;
-use qos_session_peer::ingress::MediaService;
 use std::sync::atomic::Ordering;
+use tilo_host::ingress::MediaService;
 
 #[test]
 fn cloud_media_source_uses_one_actual_store_turn_and_only_real_contention_is_busy() {

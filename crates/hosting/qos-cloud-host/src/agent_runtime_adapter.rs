@@ -1221,7 +1221,7 @@ impl RuntimeOwner {
                     || !peer.certificates().contains(certificate)
                     || peer.incomplete_reason().is_some()
                     || route.cluster_id != peer.room()
-                    || qos_session_peer::canonical_records::resolve(&route.app_id).is_none()
+                    || tilo_host::canonical_records::resolve(&route.app_id).is_none()
                     // Existence only: the heads read the same entry without
                     // serializing the whole document.
                     || peer.document_heads(&route.app_id, &route.record_id).is_none()

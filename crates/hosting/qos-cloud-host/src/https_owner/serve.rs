@@ -10,13 +10,13 @@ use super::{
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use atomic_file::{Privacy, PublishMode, StorageDirectory};
-use qos_session_peer::ingress::PreparedTransport;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
 };
 use tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1;
+use tilo_host::ingress::PreparedTransport;
 struct PreparedCloud {
     config: OperatorConfig,
     transport: PreparedTransport,
@@ -180,7 +180,7 @@ async fn media_service(source: &CloudStoreSource, origin: &str) -> Result<CloudM
 async fn live_service(
     source: &CloudStoreSource,
     origin: &str,
-    transport: &qos_session_peer::ingress::RunningTransport,
+    transport: &tilo_host::ingress::RunningTransport,
 ) -> Result<InstalledLive> {
     let mut bound = None;
     for _ in 0..500 {
@@ -332,7 +332,7 @@ async fn serve_inner(
         let private = PrivateLane::install(&source, &queue, broker, observer)
             .context("private lane install")?;
         let media = Arc::new(media_service(&source, &origin).await?);
-        let authority: Arc<dyn qos_session_peer::ingress::RelayAuthority> = media.clone();
+        let authority: Arc<dyn tilo_host::ingress::RelayAuthority> = media.clone();
         let mut transport = transport.start(authority).await?;
         ensure!(
             transport.is_live() && transport.origin() == origin,

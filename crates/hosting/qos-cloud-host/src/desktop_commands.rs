@@ -5,7 +5,7 @@
 //! Mirrors the native `SessionOwner::commit_desktop_command_current`: the
 //! caller's current membership and desktop permission, the room's topology
 //! namespace of this host, the checked canonical record factory
-//! (`qos_session_peer::canonical_records`) and one Store commit of the new
+//! (`tilo_host::canonical_records`) and one Store commit of the new
 //! record together with its desktop tab. The durable result is kept as an
 //! invocation receipt, so a repeated request is answered from it and an
 //! agent task's opened records can be recovered from it
@@ -316,10 +316,9 @@ impl Store {
             &resolved,
             &mut || qos_desktop::identity::mint_in_namespace(salt, &mut counter),
             &mut |app, id| {
-                let application =
-                    qos_session_peer::canonical_records::resolve(app).ok_or_else(|| {
-                        "application has no installed checked record factory".to_owned()
-                    })?;
+                let application = tilo_host::canonical_records::resolve(app).ok_or_else(|| {
+                    "application has no installed checked record factory".to_owned()
+                })?;
                 let definition = application.definition();
                 let prepared = application.prepare_for_tab(&candidate, caller, id, now)?;
                 let record = prepared.record().to_owned();
@@ -794,7 +793,7 @@ pub(crate) fn person_request(
 
 /// Every application with an installed checked record factory.
 pub(crate) fn openable_applications() -> Vec<(String, String)> {
-    qos_session_peer::canonical_records::installed()
+    tilo_host::canonical_records::installed()
         .map(|entry| {
             (
                 entry.app_id().to_owned(),

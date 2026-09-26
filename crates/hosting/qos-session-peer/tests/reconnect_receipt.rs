@@ -2,13 +2,13 @@
 
 tilo_automerge_isolate::test_worker!();
 
-use qos_session_peer::SessionOwner;
 use std::{
     fs,
     io::Write,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct Host(Child);

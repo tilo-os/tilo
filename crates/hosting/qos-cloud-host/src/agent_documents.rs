@@ -169,7 +169,7 @@ impl Store {
                 || certificate != candidate.authority()
                 || certificate.device_public_key != self.key().verifying_key().to_bytes()
                 || !candidate.certificates().contains(certificate)
-                || qos_session_peer::canonical_records::resolve(&route.app_id).is_none()
+                || tilo_host::canonical_records::resolve(&route.app_id).is_none()
                 || candidate.document(&route.app_id, record).is_none()
             {
                 return Err(

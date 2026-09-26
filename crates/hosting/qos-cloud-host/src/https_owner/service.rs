@@ -8,9 +8,6 @@ use super::{
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use context::Pins;
 use ed25519_dalek::{Signature, Signer, VerifyingKey};
-use qos_session_peer::ingress::{
-    BufferedRequest, CarrierRegistry, HostBytes, HostWorkInventory, Route,
-};
 use reqwest::StatusCode;
 use std::sync::Arc;
 use tilo_delivery_protocol::delivery_v3::{
@@ -20,6 +17,7 @@ use tilo_delivery_protocol::delivery_v3::{
     http_proof::{Request, RequestProof},
     media_wire::{self, BootstrapRequest, BootstrapResponse, ControlReply},
 };
+use tilo_host::ingress::{BufferedRequest, CarrierRegistry, HostBytes, HostWorkInventory, Route};
 use tokio::time::{Duration, Instant};
 
 mod context;

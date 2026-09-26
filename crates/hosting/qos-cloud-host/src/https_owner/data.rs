@@ -1,9 +1,6 @@
 //! Cloud delivery orchestration over the actual held Store turn.
 //! Shared plans are inert; only the parent performs the Store barrier/refresh.
 use super::{CloudDeliveryError, CloudStoreTurn, DeliveryOperation};
-use qos_session_peer::ingress::delivery_planning::{
-    AckPlan, ConsumerPlan, CursorCut, PlanningFailure, ReplaySelection,
-};
 use rand::TryRng as _;
 use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
@@ -11,6 +8,9 @@ use tilo_delivery_protocol::delivery_v3::{
     commit::{CommitRef, ConsumerId, MAX_CONSUMERS},
     cursor::CursorToken,
     state::ResetReason,
+};
+use tilo_host::ingress::delivery_planning::{
+    AckPlan, ConsumerPlan, CursorCut, PlanningFailure, ReplaySelection,
 };
 
 type Result<T> = std::result::Result<T, CloudDeliveryError>;
@@ -219,7 +219,7 @@ impl CloudStoreTurn {
     }
 
     fn select_replay<'a>(
-        basis: qos_session_peer::ingress::delivery_planning::DeliveryPolicyBasis<'_>,
+        basis: tilo_host::ingress::delivery_planning::DeliveryPolicyBasis<'_>,
         ledger: &'a tilo_delivery_protocol::delivery_v3::commit::DeliveryLedgerV1,
         after: Option<&CommitRef>,
         sequence: u64,

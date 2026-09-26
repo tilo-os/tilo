@@ -56,7 +56,7 @@ fn foreign_authored_item_never_enters_the_outbox_or_reaches_the_relay() {
         };
         assert_eq!(envelope.author.as_bytes(), &member);
         assert_ne!(envelope.author.as_bytes(), &host);
-        assert!(!qos_session_peer::host::relay_publishable(&host, &upload));
+        assert!(!tilo_host::host::relay_publishable(&host, &upload));
 
         let persisted = std::fs::read(dir.path().join("state.json")).unwrap();
         let generation = store.state.generation;
@@ -82,7 +82,7 @@ fn foreign_authored_item_never_enters_the_outbox_or_reaches_the_relay() {
         batch
             .publish(|publication| {
                 offered += 1;
-                assert!(qos_session_peer::host::relay_publishable(
+                assert!(tilo_host::host::relay_publishable(
                     &host,
                     &publication.message
                 ));

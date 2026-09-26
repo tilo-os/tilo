@@ -1,13 +1,13 @@
 //! Same Store transaction for native media authority; no independent owner.
 use super::{CloudStoreSource, CloudStoreTurn};
 use ed25519_dalek::Signer;
-use qos_session_peer::ingress::{
-    Denied, MediaAuthoritySource, MediaAuthorityTurn, MediaError, MediaObservation, MediaService,
-    RelayAuthority, RoomMediaPolicy, SessionAuthorization,
-};
 use std::sync::Arc;
 use tilo_delivery_protocol::delivery_v3::{
     auth::VerificationContext, http_proof::VerifiedRequest, media_wire::ControlResult,
+};
+use tilo_host::ingress::{
+    Denied, MediaAuthoritySource, MediaAuthorityTurn, MediaError, MediaObservation, MediaService,
+    RelayAuthority, RoomMediaPolicy, SessionAuthorization,
 };
 
 /// The existing shared media core, bound to one actual Cloud source. This

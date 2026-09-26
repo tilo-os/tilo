@@ -653,7 +653,7 @@ impl AgentWorkers {
             .peer
             .rows()
             .into_iter()
-            .filter(|row| qos_session_peer::canonical_records::resolve(&row.app_id).is_some())
+            .filter(|row| tilo_host::canonical_records::resolve(&row.app_id).is_some())
             .map(|row| (row.app_id, row.record_id))
             .collect();
         for key in wanted.intersection(&rows) {
@@ -761,8 +761,8 @@ impl AgentWorkers {
             // Every application with an installed checked record factory runs
             // headless here (Writer, Chat, Notes, Calculator, ...): a record a
             // person or agent opens gets its worker at the next generation.
-            let Some(definition) = qos_session_peer::canonical_records::resolve(&row.app_id)
-                .map(|entry| entry.definition())
+            let Some(definition) =
+                tilo_host::canonical_records::resolve(&row.app_id).map(|entry| entry.definition())
             else {
                 continue;
             };
@@ -870,7 +870,7 @@ impl AgentWorkers {
                 continue;
             }
             let Some(definition) =
-                qos_session_peer::canonical_records::resolve(&app).map(|entry| entry.definition())
+                tilo_host::canonical_records::resolve(&app).map(|entry| entry.definition())
             else {
                 continue;
             };
@@ -1900,8 +1900,8 @@ fn visible_records(peer: &StatePeer) -> std::collections::BTreeSet<(String, Stri
             continue;
         };
         for row in &rows {
-            let Some(definition) = qos_session_peer::canonical_records::resolve(&row.app_id)
-                .map(|entry| entry.definition())
+            let Some(definition) =
+                tilo_host::canonical_records::resolve(&row.app_id).map(|entry| entry.definition())
             else {
                 continue;
             };

@@ -2,13 +2,13 @@ tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use qos_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
-use qos_session_peer::SessionOwner;
 use std::{
     fs,
     path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 struct Host(std::process::Child);
 impl Drop for Host {
@@ -2235,7 +2235,7 @@ async fn replace_observer_after_eof(
 #[cfg(feature = "test-support")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
-    use qos_session_peer::host::{LocalHost, publish};
+    use tilo_host::host::{LocalHost, publish};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, persist};
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
@@ -3327,12 +3327,10 @@ async fn desktop_close_through_broker(
 }
 
 #[cfg(feature = "test-support")]
-fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+fn outgoing_bytes(owner: &tilo_host::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
 #[cfg(feature = "test-support")]
-fn outgoing_kinds(
-    owner: &qos_session_peer::SessionOwner,
-) -> Vec<qos_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &tilo_host::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }

@@ -14,13 +14,13 @@ mod durable_local_matrix {
         authority: Arc<CurrentHost>,
         origin: crate::peer_actions::PolicyOrigin,
         control: crate::peer_actions::PolicyClockTestControl,
-        owner_task: tokio::task::JoinHandle<qos_session_peer::SessionOwner>,
+        owner_task: tokio::task::JoinHandle<tilo_host::SessionOwner>,
     }
     impl Environment {
         fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
             let mut owner =
-                qos_session_peer::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+                tilo_host::SessionOwner::initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
             let key = tilo_user_identity::persist::read_device_key(
                 &tilo_user_identity::persist::IdentityPaths::under(
@@ -53,8 +53,7 @@ mod durable_local_matrix {
             tree.workspaces.push(workspace);
             tree.persist_path = Some(root.path().join("workspace.json"));
             let membership = tree.shared();
-            let (handle, mut mailbox) =
-                qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(8);
+            let (handle, mut mailbox) = tilo_host::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(handle));
             let owner_task = tokio::task::spawn_local(async move {

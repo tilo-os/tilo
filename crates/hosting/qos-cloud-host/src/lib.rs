@@ -116,7 +116,7 @@ impl StoredPublication {
 fn ensure_relay_publishable(host: &[u8; 32], publications: &[StoredPublication]) -> Result<()> {
     if publications
         .iter()
-        .all(|publication| qos_session_peer::host::relay_publishable(host, &publication.message))
+        .all(|publication| tilo_host::host::relay_publishable(host, &publication.message))
     {
         Ok(())
     } else {
@@ -189,7 +189,7 @@ fn durable_mutation_publications(
     now: web_time::SystemTime,
     generation: u64,
 ) -> Result<Vec<StoredPublication>> {
-    qos_session_peer::media_governance::prepare_media_governance(peer, key, now)?;
+    tilo_host::media_governance::prepare_media_governance(peer, key, now)?;
     mutation_publications(
         peer.durable_mutation_messages(before, key, now, generation)
             .map_err(anyhow::Error::msg)?,
@@ -201,7 +201,7 @@ fn durable_bootstrap_messages(
     now: web_time::SystemTime,
     generation: u64,
 ) -> Result<Vec<NeighbourMsg>> {
-    qos_session_peer::media_governance::prepare_media_governance(peer, key, now)?;
+    tilo_host::media_governance::prepare_media_governance(peer, key, now)?;
     peer.durable_bootstrap_messages(key, now, generation)
         .map_err(anyhow::Error::msg)
 }
@@ -1260,7 +1260,7 @@ impl Store {
             {
                 let generation = self.next_generation()?;
                 if peer.incomplete_reason().is_some() {
-                    qos_session_peer::media_governance::prepare_media_governance(
+                    tilo_host::media_governance::prepare_media_governance(
                         &mut peer,
                         &self.key(),
                         now_time(now),

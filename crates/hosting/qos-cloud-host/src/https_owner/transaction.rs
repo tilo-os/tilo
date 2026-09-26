@@ -1,12 +1,6 @@
 //! Cloud transaction entry: one host-byte reservation sized from the persisted
 //! aggregate BEFORE the actual Store lock/decode, then the original Store barrier.
 use super::{CloudStoreSource, CloudStoreTurn, Current};
-use qos_session_peer::ingress::ByteCredit;
-use qos_session_peer::ingress::{
-    AuthenticatedSnapshotPair, HostBytes, PublicationCustody, RetainedAuthenticatedSnapshotPair,
-    SnapshotManifestPair, SnapshotStream,
-    delivery_planning::{DeliveryPolicyBasis, PlanningFailure},
-};
 use tilo_delivery_protocol::delivery_v3::{
     auth::{self, VerifiedSession},
     commit::{
@@ -15,6 +9,12 @@ use tilo_delivery_protocol::delivery_v3::{
     },
     cursor::{CursorIssue, CursorToken, SignedCursorClaims},
     state::{ManifestIssue, ResetReason, SNAPSHOT_CHUNK_BYTES, SnapshotKind, SnapshotManifest},
+};
+use tilo_host::ingress::ByteCredit;
+use tilo_host::ingress::{
+    AuthenticatedSnapshotPair, HostBytes, PublicationCustody, RetainedAuthenticatedSnapshotPair,
+    SnapshotManifestPair, SnapshotStream,
+    delivery_planning::{DeliveryPolicyBasis, PlanningFailure},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

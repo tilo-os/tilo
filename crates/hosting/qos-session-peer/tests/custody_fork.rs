@@ -2,7 +2,7 @@
 #![cfg(unix)]
 tilo_automerge_isolate::test_worker!();
 
-use qos_session_peer::SessionOwner;
+use tilo_host::SessionOwner;
 
 struct Child {
     pid: libc::pid_t,

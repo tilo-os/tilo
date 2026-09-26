@@ -1576,7 +1576,7 @@ async fn cloud_worker_mounting_is_bounded_per_pass_and_ready_only_when_complete(
             .unwrap()
             .rows()
             .into_iter()
-            .filter(|row| qos_session_peer::canonical_records::resolve(&row.app_id).is_some())
+            .filter(|row| tilo_host::canonical_records::resolve(&row.app_id).is_some())
             .count()
     };
     assert!(rows >= 2, "the seed hosts at least two records ({rows})");

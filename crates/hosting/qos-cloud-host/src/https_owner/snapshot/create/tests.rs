@@ -1,7 +1,7 @@
 use super::super::tests::{baseline, run, snapshot_fixture};
 use super::*;
 use crate::https_owner::{DeliveryOperation, data::tests::register};
-use qos_session_peer::ingress::SnapshotManifestPair;
+use tilo_host::ingress::SnapshotManifestPair;
 #[tokio::test]
 async fn cloud_snapshot_prepared_pair_is_real_durable_inert_disk_before_owner_pin() {
     let f = snapshot_fixture().await;

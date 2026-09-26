@@ -133,7 +133,7 @@ pub(super) async fn restart_after_offline_snapshot(
         "restored projection must wait for genuine current governor freshness"
     );
 
-    let dispatcher = qos_session_peer::host::CheckpointRefreshTestOwner::new(&governor);
+    let dispatcher = tilo_host::host::CheckpointRefreshTestOwner::new(&governor);
     let (mailbox, mut requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
     relay.install_sync_refresh(topic, mailbox).await.unwrap();
     let (commands, actor) = crate::network::actor::Actor::spawn_reporting_addrs(

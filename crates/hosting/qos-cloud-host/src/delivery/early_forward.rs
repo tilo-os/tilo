@@ -1,5 +1,5 @@
 //! Live forwarding on the Cloud host: forward a verified state item before its
-//! durable Store commit (`qos_session_peer::early_forward`, which this host shares).
+//! durable Store commit (`tilo_host::early_forward`, which this host shares).
 //!
 //! The Cloud data routes run each admission synchronously inside one held
 //! Store turn on the calling thread, within [`scoped`]. `admit_delivery_item`
@@ -12,7 +12,7 @@
 //! parallel with the barrier. A failed check never reaches [`fire`]; a failed
 //! barrier leaves a forwarded, non-durable item that receivers reconcile
 //! against durable state (browser `peer_live` speculation overlay).
-pub(crate) use qos_session_peer::early_forward::*;
+pub(crate) use tilo_host::early_forward::*;
 
 #[cfg(test)]
 mod tests {

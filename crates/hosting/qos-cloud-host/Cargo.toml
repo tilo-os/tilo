@@ -38,7 +38,7 @@ iroh-base.workspace = true
 web-time = "1"
 qos-user-identity = { package = "tilo-user-identity", path = "../../collab/tilo-user-identity" }
 qos-peer-state = {path="../../collab/qos-peer-state"}
-qos-session-peer = {path="../qos-session-peer", features=["media"]}
+tilo-host = { path = "../tilo-host", features = ["media"] }
 qos-moq = {path="../qos-moq", features=["relay"]}
 qos-action-broker = {path="../../collab/qos-action-broker"}
 qos-desktop = {path="../../session/qos-desktop"}

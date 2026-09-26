@@ -1,5 +1,5 @@
 //! LIVE_V1 on the Cloud host: the same contract as the native live service
-//! (`qos-session-peer/src/live_service.rs`), with the actual Cloud Store as the
+//! (`tilo-host/src/live_service.rs`), with the actual Cloud Store as the
 //! only authority.
 //!
 //! * `POST /peer/v3/live/grant` is admitted inside a reserved Store turn with

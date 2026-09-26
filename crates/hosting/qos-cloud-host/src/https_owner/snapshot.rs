@@ -1,13 +1,13 @@
 //! Snapshot lifecycle for the actual held Cloud Store, never a second owner.
 //! The parent alone admits resource turns and commits the original Store barrier.
 use super::{CloudDeliveryError, CloudStoreSource, CloudStoreTurn, DeliveryOperation};
-use qos_session_peer::ingress::{ByteCredit, HostBytes, PublicationCustody, SnapshotStream};
 use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::{CommitRef, Digest},
     cursor::CursorIssue,
     state::{ResetReason, SnapshotKind, SnapshotOperation},
 };
+use tilo_host::ingress::{ByteCredit, HostBytes, PublicationCustody, SnapshotStream};
 type Result<T> = std::result::Result<T, CloudDeliveryError>;
 
 /// Created only by actual source-selected roots. No public or wire constructor.
@@ -32,10 +32,8 @@ pub(in crate::https_owner) struct PreparedSnapshot {
     stream: SnapshotStream,
 }
 /// Initial selection is synchronous under the parent's actual current turn.
-fn planning(
-    error: qos_session_peer::ingress::delivery_planning::PlanningFailure,
-) -> CloudDeliveryError {
-    use qos_session_peer::ingress::delivery_planning::PlanningFailure as P;
+fn planning(error: tilo_host::ingress::delivery_planning::PlanningFailure) -> CloudDeliveryError {
+    use tilo_host::ingress::delivery_planning::PlanningFailure as P;
     match error {
         P::CurrentDenied | P::UnsupportedPolicy => CloudDeliveryError::Denied,
         P::Reset(reason) => CloudDeliveryError::Reset(reason),
@@ -43,12 +41,10 @@ fn planning(
         P::Unavailable => CloudDeliveryError::Unavailable,
     }
 }
-fn capacity(error: qos_session_peer::ingress::PublicationCustodyFailure) -> CloudDeliveryError {
+fn capacity(error: tilo_host::ingress::PublicationCustodyFailure) -> CloudDeliveryError {
     match error {
-        qos_session_peer::ingress::PublicationCustodyFailure::Capacity => {
-            CloudDeliveryError::Capacity
-        }
-        qos_session_peer::ingress::PublicationCustodyFailure::InvalidPayload => {
+        tilo_host::ingress::PublicationCustodyFailure::Capacity => CloudDeliveryError::Capacity,
+        tilo_host::ingress::PublicationCustodyFailure::InvalidPayload => {
             CloudDeliveryError::Unavailable
         }
     }
@@ -91,7 +87,7 @@ fn reference_digest(custody: &PublicationCustody) -> Result<Digest> {
 /// host was reset. Best effort; returns how many were removed.
 pub(in crate::https_owner) fn remove_unpinned_sidecars(
     turn: &CloudStoreTurn,
-    work: &qos_session_peer::ingress::HostWorkInventory,
+    work: &tilo_host::ingress::HostWorkInventory,
 ) -> usize {
     let Ok(directory) = work.snapshot_directory(turn.directory(), turn.workspace()) else {
         return 0;
@@ -219,9 +215,7 @@ impl SelectedSnapshot {
     pub(in crate::https_owner) fn prepare(self) -> Result<PreparedSnapshot> {
         let stream = SnapshotStream::prepare(self.custody, &self.selection.pool).map_err(
             |error| match error {
-                qos_session_peer::ingress::SnapshotFailure::Capacity => {
-                    CloudDeliveryError::Capacity
-                }
+                tilo_host::ingress::SnapshotFailure::Capacity => CloudDeliveryError::Capacity,
                 _ => CloudDeliveryError::Unavailable,
             },
         )?;
@@ -244,7 +238,7 @@ impl PreparedSnapshot {
         &self,
         turn: &'a CloudStoreTurn,
         session: &'a VerifiedSession,
-    ) -> Result<qos_session_peer::ingress::delivery_planning::DeliveryPolicyBasis<'a>> {
+    ) -> Result<tilo_host::ingress::delivery_planning::DeliveryPolicyBasis<'a>> {
         authorize_scope(
             &self.selection.source,
             &self.selection.pool,
@@ -313,7 +307,7 @@ fn authorize_scope<'a>(
     scope: &CursorIssue,
     turn: &'a CloudStoreTurn,
     session: &'a VerifiedSession,
-) -> Result<qos_session_peer::ingress::delivery_planning::DeliveryPolicyBasis<'a>> {
+) -> Result<tilo_host::ingress::delivery_planning::DeliveryPolicyBasis<'a>> {
     require(
         source.owns_turn(turn) && pool.same_pool(turn.host_bytes()?),
         CloudDeliveryError::Denied,

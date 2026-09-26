@@ -2,7 +2,7 @@
 tilo_automerge_isolate::test_worker!();
 
 use qos_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
-use qos_session_peer::SessionOwner;
+use tilo_host::SessionOwner;
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 use web_time::SystemTime;
 
@@ -20,9 +20,7 @@ fn owner_key(owner: &SessionOwner) -> ed25519_dalek::SigningKey {
 async fn local_host_persists_exact_native_owner_authority_before_serving() {
     let temp = tempfile::tempdir().unwrap();
     let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let host = qos_session_peer::host::LocalHost::start(&owner)
-        .await
-        .unwrap();
+    let host = tilo_host::host::LocalHost::start(&owner).await.unwrap();
     let workspace = tilo_relay::room_workspace_id(owner.peer().room()).unwrap();
     let path = owner
         .root()
@@ -372,12 +370,10 @@ fn multiple_bounded_records_compact_by_aggregate_bytes_and_reconstruct_exactly()
     }
 }
 
-fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+fn outgoing_bytes(owner: &tilo_host::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
-fn outgoing_kinds(
-    owner: &qos_session_peer::SessionOwner,
-) -> Vec<qos_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &tilo_host::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 

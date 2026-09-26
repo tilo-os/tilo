@@ -2,13 +2,13 @@ tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use qos_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
-use qos_session_peer::SessionOwner;
 use std::{
     fs,
     path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use tilo_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 struct Host(std::process::Child);
 impl Drop for Host {

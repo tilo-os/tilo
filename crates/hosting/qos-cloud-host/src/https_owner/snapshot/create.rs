@@ -1,6 +1,6 @@
 //! Private create phases keep byte/disk custody separate from owner commitment.
 use super::*;
-use qos_session_peer::{
+use tilo_host::{
     ingress::{HostWorkInventory, SnapshotManifestPair},
     store::{HostWorkFailure, SnapshotReservation},
 };

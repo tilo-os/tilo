@@ -1,8 +1,8 @@
 tilo_automerge_isolate::test_worker!();
 
 use qos_peer_state::{desktop_command::*, owner_commit::*};
-use qos_session_peer::SessionOwner;
 use std::{path::Path, process::Command};
+use tilo_host::SessionOwner;
 use ui::automerge::{ROOT, ReadDoc};
 
 fn initialize(path: &Path, name: &str) -> std::process::Output {
@@ -82,7 +82,7 @@ fn named_empty_workspace_survives_reopen_and_opens_its_first_application() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        let status: qos_session_peer::Status = serde_json::from_slice(&result.stdout).unwrap();
+        let status: tilo_host::Status = serde_json::from_slice(&result.stdout).unwrap();
         assert!(status.records.is_empty());
         let owner = SessionOwner::open(&path).unwrap();
         assert_eq!(owner.status(), status);
@@ -174,7 +174,7 @@ fn separately_created_workspaces_have_independent_room_authorities() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        statuses.push(serde_json::from_slice::<qos_session_peer::Status>(&result.stdout).unwrap());
+        statuses.push(serde_json::from_slice::<tilo_host::Status>(&result.stdout).unwrap());
     }
     assert_ne!(statuses[0].room, statuses[1].room);
     assert_ne!(statuses[0].authority, statuses[1].authority);

@@ -342,7 +342,7 @@ impl Store {
             let desktop =
                 grant.app_id == qos_agent_control_protocol::DESKTOP_APP_ID && record.is_empty();
             if !desktop
-                && (qos_session_peer::canonical_records::resolve(&grant.app_id).is_none()
+                && (tilo_host::canonical_records::resolve(&grant.app_id).is_none()
                     || peer.document(&grant.app_id, record).is_none())
             {
                 return Err(rejected(

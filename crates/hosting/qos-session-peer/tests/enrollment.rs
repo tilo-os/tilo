@@ -2,7 +2,7 @@ tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
 use qos_peer_state::enrollment::{self, ChallengeRequest};
-use qos_session_peer::{
+use tilo_host::{
     SessionOwner,
     enrollment::{EnrollmentAuthority, public_bootstrap},
 };
@@ -447,7 +447,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     assert_eq!(restored.rows(), owner.peer().rows());
 }
 
-fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+fn outgoing_bytes(owner: &tilo_host::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
 
@@ -509,8 +509,6 @@ fn local_bootstrap_admits_real_governance_without_transport_sync() {
             .is_ok()
     );
 }
-fn outgoing_kinds(
-    owner: &qos_session_peer::SessionOwner,
-) -> Vec<qos_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &tilo_host::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }

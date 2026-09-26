@@ -217,7 +217,7 @@ impl Store {
                 self.state.version == crate::delivery::VERSION && peer.admission_v5_selected(),
                 "selected Cloud delivery media writer required"
             );
-            let (mut peer, result) = qos_session_peer::media_governance::prepare_media_transition(
+            let (mut peer, result) = tilo_host::media_governance::prepare_media_transition(
                 peer,
                 &self.key(),
                 &operation,

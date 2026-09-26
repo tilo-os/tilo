@@ -2,7 +2,6 @@
 //! A held poll retains only its original charged request and continuation;
 //! each resume re-derives the session, policy and page from a fresh turn.
 use super::*;
-use qos_session_peer::ingress::PendingCarrier;
 use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::{CommitRef, DeliveryId, Digest},
@@ -14,6 +13,7 @@ use tilo_delivery_protocol::delivery_v3::{
         visible_order_digest,
     },
 };
+use tilo_host::ingress::PendingCarrier;
 
 const PAGE_BYTES: usize = 1024 * 1024;
 const PAGE_FRAMES: usize = 64;
@@ -389,7 +389,7 @@ pub(super) fn replay_page(
 fn replay_group(
     turn: &CloudStoreTurn,
     session: &VerifiedSession,
-    selection: qos_session_peer::ingress::delivery_planning::ReplaySelection<'_>,
+    selection: tilo_host::ingress::delivery_planning::ReplaySelection<'_>,
 ) -> Result<(Vec<u8>, usize)> {
     let committed = selection.committed().clone();
     if selection.entry().publications.len() >= PAGE_FRAMES {
@@ -506,7 +506,7 @@ pub(super) struct Held {
     device: [u8; 32],
     session: [u8; 16],
     cursor: Option<CursorToken>,
-    ticket: qos_session_peer::ingress::CarrierTicket,
+    ticket: tilo_host::ingress::CarrierTicket,
 }
 struct Parked {
     device: [u8; 32],

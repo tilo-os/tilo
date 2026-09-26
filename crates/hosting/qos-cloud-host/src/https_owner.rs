@@ -39,7 +39,7 @@ struct Source {
     /// Validated decode of the unchanged aggregate between exclusive turns.
     retained: std::sync::Mutex<Option<Retained>>,
     /// Shared ingress pool that charges the retained decode, once known.
-    retained_pool: std::sync::OnceLock<qos_session_peer::ingress::HostBytes>,
+    retained_pool: std::sync::OnceLock<tilo_host::ingress::HostBytes>,
     /// Validated decode captured by `open_existing_store` itself (the agent
     /// owner's Store handles), reused by later opens of the identical files.
     opened: std::sync::Mutex<Option<OpenedRetained>>,
@@ -56,7 +56,7 @@ struct Source {
 struct Retained {
     state: crate::delivery::access::RetainedState,
     peer: Option<CachedPeer>,
-    _credit: qos_session_peer::ingress::ByteCredit,
+    _credit: tilo_host::ingress::ByteCredit,
 }
 /// A validated decode captured when `open_existing_store` had to read the
 /// aggregate, with the clean observation of the exact files it came from.
@@ -65,7 +65,7 @@ struct OpenedRetained {
     state: crate::State,
     tip: Option<crate::storage::Tip>,
     peer: Option<CachedPeer>,
-    _credit: qos_session_peer::ingress::ByteCredit,
+    _credit: tilo_host::ingress::ByteCredit,
 }
 /// A committed peer restored at `at_ns`; reusable only for the same Store
 /// generation and before any roster/authority/revocation time boundary.
@@ -268,7 +268,7 @@ impl CloudStoreSource {
         }
     }
     /// Charge future retained decodes to the shared ingress pool.
-    pub(crate) fn bind_retained_pool(&self, pool: &qos_session_peer::ingress::HostBytes) {
+    pub(crate) fn bind_retained_pool(&self, pool: &tilo_host::ingress::HostBytes) {
         let _ = self.0.retained_pool.set(pool.clone());
     }
     /// Whether the next turn can reuse the retained decode (a hint only; the
@@ -716,9 +716,7 @@ mod data;
 mod tests;
 
 #[cfg(test)]
-pub(crate) async fn prepared_transport_test() -> (
-    tempfile::TempDir,
-    qos_session_peer::ingress::PreparedTransport,
-) {
+pub(crate) async fn prepared_transport_test()
+-> (tempfile::TempDir, tilo_host::ingress::PreparedTransport) {
     data::tests::prepared_transport().await
 }

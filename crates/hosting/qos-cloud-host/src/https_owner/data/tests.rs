@@ -3,9 +3,9 @@ use super::*;
 use crate::storage::test_support::with_save_failure;
 use atomic_file::test_support::Checkpoint;
 use ed25519_dalek::SigningKey;
-use qos_session_peer::ingress::{HostBytes, PreparedTransport};
 use std::{os::unix::fs::PermissionsExt, path::Path};
 use tilo_delivery_protocol::delivery_v3::{auth, state::ResetReason};
+use tilo_host::ingress::{HostBytes, PreparedTransport};
 
 // Component fixture only: real selected Store and original ingress pool, with
 // explicitly unqualified test entry. No installed bounded-owner witness exists.
@@ -20,7 +20,7 @@ pub(in crate::https_owner) struct Fixture {
     pub(in crate::https_owner) device: [u8; 32],
 }
 impl Fixture {
-    pub(in crate::https_owner) fn host_work(&self) -> qos_session_peer::ingress::HostWorkInventory {
+    pub(in crate::https_owner) fn host_work(&self) -> tilo_host::ingress::HostWorkInventory {
         self._transport.host_work().unwrap()
     }
 }

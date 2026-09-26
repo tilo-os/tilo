@@ -1,8 +1,8 @@
 use anyhow::Context;
-use qos_session_peer::SessionOwner;
-use qos_session_peer::owner::sender_administration::{AdminStatus, CliResult as Result};
 use std::io::Write;
 use std::path::PathBuf;
+use tilo_host::SessionOwner;
+use tilo_host::owner::sender_administration::{AdminStatus, CliResult as Result};
 /// Diagnostics stay off unless `RUST_LOG` is set: the fixture's stdout carries
 /// status JSON, so tracing goes to stderr and never changes the protocol.
 fn install_tracing() {
@@ -59,7 +59,7 @@ async fn run() -> Result<()> {
         if args.next().is_some() {
             return Err(anyhow::anyhow!("too many sender-storage arguments").into());
         }
-        use qos_session_peer::owner::sender_administration as admin;
+        use tilo_host::owner::sender_administration as admin;
         let status = match operation.to_str() {
             Some("select") => admin::select(&state)?,
             Some("resume") => admin::resume(&state)?,
@@ -79,14 +79,14 @@ async fn run() -> Result<()> {
     }
     match command.to_str() {
         Some("init-managed") if output.is_none() && manifest_digest.is_none() => {
-            let status = qos_session_peer::owner::sender_administration::initialize(&state)?;
+            let status = tilo_host::owner::sender_administration::initialize(&state)?;
             print_admin_status(&status)?;
         }
         Some("init-managed-workspace") if manifest_digest.is_none() => {
             let name = output.context("init-managed-workspace requires a workspace name")?;
             let name = name.to_str().context("workspace name must be UTF-8")?;
             let status =
-                qos_session_peer::owner::sender_administration::initialize_workspace(&state, name)?;
+                tilo_host::owner::sender_administration::initialize_workspace(&state, name)?;
             print_admin_status(&status)?;
         }
         Some("init") if output.is_none() && manifest_digest.is_none() => {
@@ -105,7 +105,7 @@ async fn run() -> Result<()> {
         }
         Some("run") if manifest_digest.is_none() => {
             let ready = output.context("run requires ready-file path")?;
-            qos_session_peer::host::run(SessionOwner::open(&state)?, &ready).await?;
+            tilo_host::host::run(SessionOwner::open(&state)?, &ready).await?;
         }
         Some("export") if manifest_digest.is_none() => {
             SessionOwner::open(&state)?.export(&output.context("export requires output path")?)?;

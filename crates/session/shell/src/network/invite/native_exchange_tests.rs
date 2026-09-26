@@ -5,12 +5,12 @@
 use super::*;
 use qos_peer_state::NeighbourMsg;
 use qos_peer_state::join::{JoinTransportResponse, MemberRole};
-use qos_session_peer::{
+use std::sync::{Arc, Mutex};
+use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use tilo_host::{
     SessionOwner,
     collaboration::{CollaborationService, IssueInvitationRequest},
 };
-use std::sync::{Arc, Mutex};
-use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 
 #[path = "native_exchange_tests/refresh.rs"]

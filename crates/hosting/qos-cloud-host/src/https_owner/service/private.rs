@@ -11,9 +11,9 @@ use qos_action_broker::{
     agent_reads::AgentReadCustody,
     peer_actions::{PeerActionQueue, Request as QueueRequest},
 };
-use qos_session_peer::ingress::ResponseCredits;
 use std::{path::PathBuf, sync::Arc};
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
+use tilo_host::ingress::ResponseCredits;
 
 /// Active agent invocations whose later durable transitions are published to
 /// the queue's transition stream (and from there to watching sessions).
@@ -100,12 +100,9 @@ impl PrivateObserver {
 /// A private carrier refusal keeps its retryable cause: an unavailable carrier
 /// or a full, closed or late broker queue answers 503 (see `transient`);
 /// wire and policy rejections stay a closed 403.
-fn private_refusal(
-    what: &'static str,
-    error: &qos_session_peer::ingress::PrivateError,
-) -> anyhow::Error {
+fn private_refusal(what: &'static str, error: &tilo_host::ingress::PrivateError) -> anyhow::Error {
     use qos_action_broker::peer_actions::CarrierError;
-    use qos_session_peer::ingress::PrivateError;
+    use tilo_host::ingress::PrivateError;
     match error {
         PrivateError::Broker(CarrierError::Capacity) => {
             anyhow::Error::new(CloudDeliveryError::Capacity).context(format!("{what}: {error}"))
@@ -504,7 +501,7 @@ impl CommandTiming {
 /// (fix plan B6: long-poll instead of an immediate empty answer).
 struct HeldPoll {
     session: [u8; 16],
-    pending: qos_session_peer::ingress::PendingCarrier,
+    pending: tilo_host::ingress::PendingCarrier,
 }
 /// A held events poll answers idle this long before its original deadline.
 const POLL_IDLE_MARGIN: Duration = Duration::from_millis(100);
@@ -1095,7 +1092,7 @@ mod priority_lane_tests {
 mod refusal_tests {
     use super::*;
     use qos_action_broker::peer_actions::CarrierError;
-    use qos_session_peer::ingress::PrivateError;
+    use tilo_host::ingress::PrivateError;
 
     /// A full, closed or late broker queue (many agents' reads and commands
     /// in flight) is a retryable 503, never the 403 that sent clients into a

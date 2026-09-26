@@ -1,5 +1,5 @@
 //! Crash consistency of journaled Cloud Store commits (analogous to
-//! `qos-session-peer/src/store/journal_tests.rs`), through the real writer,
+//! `tilo-host/src/store/journal_tests.rs`), through the real writer,
 //! the real reconciled reader and the real Store.
 use super::test_journal::{Point, with_fault, with_journal};
 use super::*;

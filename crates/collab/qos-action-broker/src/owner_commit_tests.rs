@@ -368,7 +368,7 @@ mod owner_commit_tests {
                 .map(|_| ())
         }
     }
-    fn owner_tree(owner: &qos_session_peer::SessionOwner) -> WorkspaceTreeHandle {
+    fn owner_tree(owner: &tilo_host::SessionOwner) -> WorkspaceTreeHandle {
         let mut workspace = crate::test_support::Workspace::test_default(
             crate::test_support::WorkspaceId(72),
             "Actual owner barrier",
@@ -383,7 +383,7 @@ mod owner_commit_tests {
     }
     fn owner_config(
         root: &std::path::Path,
-        owner: &qos_session_peer::SessionOwner,
+        owner: &tilo_host::SessionOwner,
     ) -> crate::peer_actions::NativePeerBrokerConfig {
         crate::peer_actions::NativePeerBrokerConfig {
             journal_root: root.join("journal"),
@@ -392,8 +392,8 @@ mod owner_commit_tests {
     }
     struct OwnerFixture {
         membership: WorkspaceTreeHandle,
-        owner: qos_session_peer::SessionOwner,
-        mailbox: qos_session_peer::owner_commit::OwnerCommitMailbox,
+        owner: tilo_host::SessionOwner,
+        mailbox: tilo_host::owner_commit::OwnerCommitMailbox,
         state: Arc<CapnpBrokerState>,
         client: channel_handle::Client,
         route: CrdtRoute,
@@ -403,7 +403,7 @@ mod owner_commit_tests {
         owner_fixture_with_receipt_fault(root, 0)
     }
     struct AlteredReceipt {
-        inner: qos_session_peer::owner_commit::OwnerCommitHandle,
+        inner: tilo_host::owner_commit::OwnerCommitHandle,
         fault: u8,
         required_room: Option<String>,
     }
@@ -450,8 +450,8 @@ mod owner_commit_tests {
         native: bool,
         enrolled: bool,
     ) -> OwnerFixture {
-        let owner = qos_session_peer::SessionOwner::initialize(&root.join("owner")).unwrap();
-        let (handle, mailbox) = qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(2);
+        let owner = tilo_host::SessionOwner::initialize(&root.join("owner")).unwrap();
+        let (handle, mailbox) = tilo_host::owner_commit::OwnerCommitMailbox::bounded(2);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
             owner.peer().room(),
@@ -567,7 +567,7 @@ mod owner_commit_tests {
                 let after = f.owner.status();
                 drop(f);
                 let restored =
-                    qos_session_peer::SessionOwner::open(&root.path().join("owner")).unwrap();
+                    tilo_host::SessionOwner::open(&root.path().join("owner")).unwrap();
                 assert_eq!(restored.status(), after);
             })
             .await;
@@ -607,10 +607,10 @@ mod owner_commit_tests {
     async fn session_owner_commit_production_startup_has_real_owner_attachment() {
         let root = canonical_tempdir();
         let mut owner =
-            qos_session_peer::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            tilo_host::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let membership = owner_tree(&owner);
         let config = owner_config(root.path(), &owner);
-        let (handle, mut mailbox) = qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(2);
+        let (handle, mut mailbox) = tilo_host::owner_commit::OwnerCommitMailbox::bounded(2);
         let owner_task = tokio::spawn(async move {
             while let Some(pending) = mailbox.recv().await {
                 pending.apply(&mut owner).unwrap();
@@ -892,7 +892,7 @@ mod owner_commit_tests {
         }
         let root = canonical_tempdir();
         let mut owner =
-            qos_session_peer::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            tilo_host::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let initial_generation = owner.status().generation;
         let mut remote = owner.peer().clone();
         let cert = owner.peer().authority().clone();
@@ -913,7 +913,7 @@ mod owner_commit_tests {
             .unwrap();
         let committed = Arc::new(Mutex::new(Some(owner.peer().clone())));
         let authority = Arc::new(CurrentOwner(committed.clone()));
-        let (handle, mut mailbox) = qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (handle, mut mailbox) = tilo_host::owner_commit::OwnerCommitMailbox::bounded(8);
         let published = Arc::new(AtomicUsize::new(0));
         let broker = crate::collab_broker::spawn_native_peer(
             root.path().join("worker.sock"),
@@ -1157,7 +1157,7 @@ mod owner_commit_tests {
         );
         let expected = owner.status();
         drop(owner);
-        let restored = qos_session_peer::SessionOwner::open(&root.path().join("owner")).unwrap();
+        let restored = tilo_host::SessionOwner::open(&root.path().join("owner")).unwrap();
         assert_eq!(restored.status(), expected);
     }
 
@@ -1192,7 +1192,7 @@ mod owner_commit_tests {
             let membership = tree.shared();
             let fanout = Arc::new(FanoutState::new());
             let (owner_handle, _owner_mailbox) =
-                qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(8);
+                tilo_host::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
             let (state, _) = CapnpBrokerState::new(
@@ -1568,7 +1568,7 @@ mod owner_commit_tests {
                         let status = f.owner.status();
                         drop(f);
                         assert_eq!(
-                            qos_session_peer::SessionOwner::open(&root.path().join("owner"))
+                            tilo_host::SessionOwner::open(&root.path().join("owner"))
                                 .unwrap()
                                 .status(),
                             status
@@ -1585,7 +1585,7 @@ mod owner_commit_tests {
             let root = canonical_tempdir();
             let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
             let (handle, mut mailbox) =
-                qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(1);
+                tilo_host::owner_commit::OwnerCommitMailbox::bounded(1);
             let publisher = PeerPublisher::with_optional_owner_commit(None, Arc::new(handle));
             assert!(publisher.requires_owner_for(&f.route.cluster_id));
             let request = qos_peer_state::owner_commit::OwnerCommitRequest {
@@ -1617,7 +1617,7 @@ mod owner_commit_tests {
                 let status = f.owner.status();
                 drop(f);
                 assert_eq!(
-                    qos_session_peer::SessionOwner::open(&root.path().join("owner"))
+                    tilo_host::SessionOwner::open(&root.path().join("owner"))
                         .unwrap()
                         .status(),
                     status

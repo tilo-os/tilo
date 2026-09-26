@@ -113,13 +113,9 @@ fn inspect(
     }
     // Import verifies the signed aggregate and matching explicitly supplied
     // identities before exclusive destination creation. No embedded path fallback.
-    let owner = qos_session_peer::SessionOwner::import(
-        destination,
-        snapshot,
-        identity_root,
-        host_identity_root,
-    )
-    .map_err(|_| "import_failed")?;
+    let owner =
+        tilo_host::SessionOwner::import(destination, snapshot, identity_root, host_identity_root)
+            .map_err(|_| "import_failed")?;
     let doc = owner.peer().admitted_room().ok_or("room_missing")?;
     let room = uuid::Uuid::parse_str(owner.peer().room())
         .map_err(|_| "invalid_room")?
@@ -332,7 +328,7 @@ mod tests {
     fn signed_disposable_import_preserves_source_and_explicit_identities() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
-        let owner = qos_session_peer::SessionOwner::initialize(&source).unwrap();
+        let owner = tilo_host::SessionOwner::initialize(&source).unwrap();
         let expected = owner.status();
         drop(owner);
         let before = tree_digest(&source);
@@ -373,7 +369,7 @@ mod tests {
         assert!(destination.join("session.bin").is_file());
         assert_eq!(tree_digest(&source), before);
         // Inspection returned only after releasing custody; source is reopenable.
-        drop(qos_session_peer::SessionOwner::open(&source).unwrap());
+        drop(tilo_host::SessionOwner::open(&source).unwrap());
         std::fs::remove_dir_all(destination).unwrap();
     }
     #[test]

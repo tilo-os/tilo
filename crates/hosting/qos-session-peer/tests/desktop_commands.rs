@@ -1,7 +1,7 @@
 tilo_automerge_isolate::test_worker!();
 
 use qos_peer_state::{desktop_command::*, owner_commit::*};
-use qos_session_peer::SessionOwner;
+use tilo_host::SessionOwner;
 
 fn request(owner: &SessionOwner, command: DesktopCommand) -> OwnerCommitRequest {
     OwnerCommitRequest {
@@ -179,7 +179,7 @@ async fn record_effect_receipt(owner: &mut SessionOwner) {
             redacted: serde_json::to_vec(&receipt).unwrap(),
         },
     };
-    let (service, mut mailbox) = qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(1);
+    let (service, mut mailbox) = tilo_host::owner_commit::OwnerCommitMailbox::bounded(1);
     let acknowledgement = tokio::spawn(service.commit(request.clone()));
     mailbox.recv().await.unwrap().apply(owner).unwrap();
     acknowledgement
@@ -616,7 +616,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[34; 32]);
     let now = tilo_delivery_protocol::clock::now_ns();
-    let mut enrollment = qos_session_peer::enrollment::EnrollmentAuthority::default();
+    let mut enrollment = tilo_host::enrollment::EnrollmentAuthority::default();
     let challenge = enrollment
         .challenge(
             &owner,
@@ -1060,12 +1060,10 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
     assert_eq!(notice.opened, expected_opened);
 }
 
-fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+fn outgoing_bytes(owner: &tilo_host::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
-fn outgoing_kinds(
-    owner: &qos_session_peer::SessionOwner,
-) -> Vec<qos_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &tilo_host::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 

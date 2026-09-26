@@ -69,7 +69,7 @@ unsafe impl GlobalAlloc for Meter {
         result
     }
 }
-// This is qos-session-peer's first test-binary allocator. Dependency cfg(test)
+// This is tilo-host's first test-binary allocator. Dependency cfg(test)
 // meters are absent; when these TLS slots are empty every call passes through.
 #[global_allocator]
 static ALLOCATOR: Meter = Meter;

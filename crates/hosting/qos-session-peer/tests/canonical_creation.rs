@@ -3,7 +3,7 @@ tilo_automerge_isolate::test_worker!();
 
 use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
 use qos_peer_state::{NeighbourMsg, TransportOrigin, desktop_command::*, owner_commit::*};
-use qos_session_peer::SessionOwner;
+use tilo_host::SessionOwner;
 use ui::automerge::{ActorId, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
 fn opening(owner: &SessionOwner, app: &str) -> OwnerCommitRequest {
@@ -193,7 +193,7 @@ fn admitted_guest(owner: &mut SessionOwner) -> tilo_user_identity::DeviceCert {
     use qos_peer_state::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
     };
-    use qos_session_peer::collaboration::{CollaborationService, IssueInvitationRequest};
+    use tilo_host::collaboration::{CollaborationService, IssueInvitationRequest};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);

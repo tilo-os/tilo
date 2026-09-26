@@ -586,11 +586,11 @@ inputs = ["crates/browser/qos-browser-runtime/web/media-voice-profile.mjs"]
 readers = ["crates/hosting/qos-moq/tests/voice.rs"]
 
 [[cargo]]
-package = "qos-session-peer"
+package = "tilo-host"
 inputs = ["apps/settings/shots/settings.png", "crates/session/shell/src/network/native_media/protocol.rs"]
 readers = [
-  "crates/hosting/qos-session-peer/src/action_host/scoped_fixture/notes.rs",
-  "crates/hosting/qos-session-peer/src/media_service/native_control_tests.rs",
+  "crates/hosting/tilo-host/src/action_host/scoped_fixture/notes.rs",
+  "crates/hosting/tilo-host/src/media_service/native_control_tests.rs",
 ]
 
 [[cargo]]

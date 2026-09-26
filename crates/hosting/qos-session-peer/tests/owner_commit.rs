@@ -2,7 +2,7 @@
 tilo_automerge_isolate::test_worker!();
 
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
-use qos_session_peer::{SessionOwner, owner_commit::OwnerCommitMailbox};
+use tilo_host::{SessionOwner, owner_commit::OwnerCommitMailbox};
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
 fn document(owner: &SessionOwner, sequence: u64) -> OwnerCommitRequest {
@@ -459,12 +459,10 @@ async fn failed_compaction_barrier_keeps_exact_recovery_tail_and_receipts() {
     assert_eq!(outgoing_bytes(&restored), bytes);
 }
 
-fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+fn outgoing_bytes(owner: &tilo_host::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
-fn outgoing_kinds(
-    owner: &qos_session_peer::SessionOwner,
-) -> Vec<qos_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &tilo_host::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 
