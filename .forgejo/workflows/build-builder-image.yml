@@ -51,7 +51,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       reason: ${{ steps.plan.outputs.reason }}
@@ -137,7 +137,11 @@ jobs:
           key: github-assets-all-v1
 
       - name: Log in to registry.tilo.so
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # The image bakes the toolchain the workspace pins, so a job cannot
       # silently compile with a different one.
@@ -426,7 +430,11 @@ jobs:
           CANDIDATE_MATRIX: ${{ needs.images.outputs.matrix }}
         run: python3 os/dev/builder-canary-inputs.py descriptors native-children
       - name: Log in to registry.tilo.so
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install publication tools
         run: |
           ./os/dev/install-cached-cosign.sh

@@ -245,6 +245,8 @@ fn ai_shortcut(transform: AiTransform, input: Binding) -> Shortcut {
             Verb::Write,
         )],
         triggers: Vec::new(),
+        consents: Vec::new(),
+        saved_by: None,
     }
 }
 
@@ -259,6 +261,7 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
+            consents: Vec::new(),
         },
     ))
 }

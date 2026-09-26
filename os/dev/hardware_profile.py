@@ -48,10 +48,10 @@ def development_target(value, architecture=None):
     host, port, path, selector = match.groups()
     if architecture is not None and architecture not in ARCH_CONFIG:
         raise ValueError("unsupported development image architecture")
-    retained = host == "code.tilo.so" and port is None and path == "tilo/tilo-development"
-    if (host == "code.tilo.so" or path == "tilo/tilo-development") and not retained:
+    retained = host == "registry.tilo.so" and port is None and path == "tilo/tilo-development"
+    if (host in ("registry.tilo.so", "code.tilo.so") or path == "tilo/tilo-development") and not retained:
         raise ValueError("retained development repository must use its exact HTTPS registry identity")
-    if host in ("localhost", "registry.tilo.so") or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
+    if host == "localhost" or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
         raise ValueError("development registry host is invalid or a production alias")
     if retained and selector.startswith(':'):
         tag_architecture = re.fullmatch(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*-)?(x86_64|aarch64)", selector[1:])

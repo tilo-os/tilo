@@ -58,7 +58,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:
@@ -143,7 +143,11 @@ jobs:
       # refresh the layer cache.
       - name: Log in to registry.tilo.so
         if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
-        uses: ./.forgejo/actions/tilo-registry-login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign

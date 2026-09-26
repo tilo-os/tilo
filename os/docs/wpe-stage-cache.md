@@ -2,7 +2,7 @@
 
 The optional `TILO_WPE_BUILD_CACHE_REF` setting enables only the native WPE
 engine stage cache during fresh development image builds. It must name an
-untagged repository under `code.tilo.so/tilo/tilo-development-wpe-cache-`
+untagged repository under `registry.tilo.so/tilo/tilo-development-wpe-cache-`
 ending in the native architecture (`x86_64` or `aarch64`). Registry write access
 is a build trust boundary: writers can supply cached build output. Keep this
 repository restricted to authorized development CI writers.

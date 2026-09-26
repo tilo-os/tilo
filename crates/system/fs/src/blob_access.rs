@@ -163,13 +163,49 @@ impl BlobAccessIndex {
         let decoded = crate::content::Manifest::decode(&bytes).ok()?;
         let chunks: Arc<HashSet<Hash>> = Arc::new(
             decoded
-                .chunks
+                .chunks()
                 .iter()
                 .map(|chunk| Hash::from(chunk.hash))
                 .collect(),
         );
         self.manifests.insert(manifest, Arc::clone(&chunks));
         Some(chunks)
+    }
+
+    /// Whether `requester` may receive the parts of the content `root` a
+    /// `GET` names: `children` are the non-empty positions of its
+    /// `RangeSpecSeq`. The root must be a readable file version (a
+    /// manifest); its chunks are then readable with it, and a request for
+    /// any position that is not a chunk (the header or length entries of
+    /// the manifest) is refused.
+    pub(crate) async fn authorize_manifest_children(
+        &self,
+        store: &ContentStore,
+        requester: &Requester<'_>,
+        root: Hash,
+        children: &[u64],
+    ) -> bool {
+        let snapshot = self.current().await;
+        let readable = snapshot.roots.get(&root).is_some_and(|owners| {
+            owners
+                .iter()
+                .any(|owner| owner.manifest && requester.may_read(owner))
+        });
+        if !readable {
+            return false;
+        }
+        let Some(bytes) = store.local(root).await else {
+            return false;
+        };
+        if bytes.len() > MAX_AUTH_MANIFEST_BYTES {
+            return false;
+        }
+        let Ok(manifest) = crate::content::Manifest::decode(&bytes) else {
+            return false;
+        };
+        children
+            .iter()
+            .all(|offset| *offset == 0 || manifest.chunk_of_child(*offset).is_some())
     }
 
     /// Whether `requester` may receive every blob in `wanted`. `context`

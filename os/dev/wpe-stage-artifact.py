@@ -107,7 +107,7 @@ def dependency_inputs(repo, assets, architecture, epoch, buildroot):
 
 def repository(architecture):
     require(architecture in ARCHES, 'unsupported architecture')
-    return 'code.tilo.so/tilo/tilo-development-wpe-stage-' + architecture
+    return 'registry.tilo.so/tilo/tilo-development-wpe-stage-' + architecture
 
 
 def validate_receipt(receipt, inputs):

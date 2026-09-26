@@ -348,14 +348,13 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong
   in Authorized Integrations. OIDC jobs use `enable-openid-connect: true`.
 - Container images live on `registry.tilo.so/tilo/<image>`. Anyone may pull
-  them, so job containers and pulls carry no credentials (a forge token there
-  is refused and fails the pull). A job that pushes sets
-  `enable-openid-connect: true` and runs `.forgejo/actions/tilo-registry-login`,
-  which gives docker, buildx, podman, skopeo and cosign a fresh ID token for
-  every request, so long builds never outlive their credential. Board
-  (Lenovo) images and firmware carry private firmware and stay on the forge's
-  private registry at `code.tilo.so`, as does the `tilo-development*`
-  pipeline those board builds share.
+  them, so job containers and pulls carry no credentials. A job that pushes
+  logs in the way GitHub workflows log in to ghcr: `docker/login-action` with
+  `registry: registry.tilo.so`, `username: ${{ github.actor }}` and
+  `password: ${{ secrets.GITHUB_TOKEN }}` (or `podman`/`skopeo login` with the
+  same values). The registry's token service checks the job token against the
+  forge. Board (Lenovo) images and firmware carry private firmware and stay on
+  the forge's private registry at `code.tilo.so`.
 - App publication uses two narrowly restricted Forgejo Actions (Local)
   integrations: app release tags and manual dispatches from `main`. Their
   audiences are stored in `TILO_APP_RELEASE_TAG_AUDIENCE` and
@@ -377,7 +376,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - Dev VM disks are development artifacts, never release-signed, so
   `os/dev/publish-dev-disk.sh` (in the OS lane and in `dev-disk.yml`) uploads them with the CI account's package token
   (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an
-  Authorized Integration; their job's ID token only pushes the dev image to
+  Authorized Integration; the job token pushes the dev image to
   `registry.tilo.so`. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the
   in-cluster Forgejo service.
