@@ -948,13 +948,52 @@ pub mod room {
         str_at,
     };
 
-    /// `None` only if `put_object` on the document root itself fails, which
-    /// does not happen for a document this call has exclusive access to.
-    fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-        match doc.get(&ROOT, INDEX) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
+    /// The actor that makes every room's index map. Never a device's: no
+    /// one writes as it, it only ever makes the one change in
+    /// [`index_genesis`].
+    const INDEX_GENESIS_ACTOR: [u8; 16] = *b"tilo-room-index\0";
+
+    /// The change that makes a room's index map — byte for byte the same on
+    /// every peer, so it hashes the same. Two members who each bring the
+    /// first record into an empty room both apply this one change and end up
+    /// holding one index; had each made its own map under the same key, one
+    /// map would win and the other's entries would be hidden behind it.
+    fn index_genesis() -> automerge::Change {
+        thread_local! {
+            static GENESIS: automerge::Change = {
+                let mut genesis = AutoCommit::new()
+                    .with_actor(automerge::ActorId::from(INDEX_GENESIS_ACTOR.as_slice()));
+                let made = genesis.put_object(&ROOT, INDEX, ObjType::Map);
+                debug_assert!(made.is_ok(), "an empty document takes a root map");
+                genesis.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+                genesis
+                    .get_changes(&[])
+                    .into_iter()
+                    .next()
+                    .expect("the genesis document holds its one change")
+            };
         }
+        GENESIS.with(Clone::clone)
+    }
+
+    /// Whether `change` is [`index_genesis`], which every room shares and
+    /// anyone may bring: it holds nothing but the empty index.
+    pub(super) fn is_index_genesis(change: &automerge::Change) -> bool {
+        change.hash() == index_genesis().hash()
+    }
+
+    fn made_by_genesis(index: &ObjId) -> bool {
+        matches!(index, ObjId::Id(_, actor, _) if actor.to_bytes() == INDEX_GENESIS_ACTOR.as_slice())
+    }
+
+    /// The room's index map, made by [`index_genesis`] when the room has
+    /// none yet. `None` only if the document refuses the genesis change.
+    fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
+        if let Some(id) = index_ro(doc) {
+            return Some(id);
+        }
+        doc.apply_changes([index_genesis()]).ok()?;
+        index_ro(doc)
     }
 
     fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
@@ -1130,17 +1169,20 @@ pub mod room {
     /// delete, a change whose dependencies are missing — is refused. `index`
     /// is left untouched.
     pub fn comment_references_only(index: &AutoCommit, delta: &[u8], author: &[u8; 32]) -> bool {
-        let Some(index_obj) = index_ro(index) else {
-            // Commenters never create the index: two concurrent creations
-            // would conflict and one would hide the other's entries.
-            return false;
-        };
         let mut after = index.clone();
         let before_heads = after.get_heads();
         let missing_before = after.get_missing_deps(&[]).len();
         if tilo_automerge::ApplyIncoming::load_incoming(&mut after, delta).is_err()
             || after.get_missing_deps(&[]).len() != missing_before
         {
+            return false;
+        }
+        // A change may bring the index only as the shared genesis: any
+        // other creation would sit beside the room's and hide one of them.
+        let Some(index_obj) = index_ro(&after) else {
+            return false;
+        };
+        if index_ro(index).is_none() && !made_by_genesis(&index_obj) {
             return false;
         }
         changes_are_comment_references(&index_obj, &after.get_changes(&before_heads), author)
@@ -1176,6 +1218,9 @@ pub mod room {
             return false;
         }
         for change in changes {
+            if is_index_genesis(change) {
+                continue;
+            }
             let change = change.decode();
             let start = change.start_op.get();
             let mut made_entries: Vec<u64> = Vec::new();
@@ -3301,19 +3346,59 @@ mod tests {
     }
 
     #[test]
-    fn a_commenter_cannot_create_the_room_index() {
+    fn a_commenter_may_bring_only_the_shared_room_index() {
         let me = [3; 32];
         let mut empty = AutoCommit::new();
-        let mut replica = empty.fork();
         let parent = RecordId::minted();
         let mine = RecordId::for_comment(me, "m1", &parent).unwrap();
-        assert!(room::reference(
-            &mut replica,
-            &mine,
-            &RecordKind::new("chat.message")
-        ));
+        let kind = RecordKind::new("chat.message");
+
+        // The index every room shares, with the Commenter's own reference.
+        let mut replica = empty.fork();
+        assert!(room::reference(&mut replica, &mine, &kind));
+        let delta = delta_since(&mut empty, &mut replica);
+        assert!(room::comment_references_only(&empty, &delta, &me));
+
+        // An index map of the Commenter's own making would sit beside the
+        // room's and hide one of them.
+        let mut replica = empty.fork();
+        let own = replica.put_object(ROOT, INDEX, ObjType::Map).unwrap();
+        let entry = replica
+            .put_object(&own, mine.as_str(), ObjType::Map)
+            .unwrap();
+        replica.put(&entry, "kind", kind.as_str()).unwrap();
         let delta = delta_since(&mut empty, &mut replica);
         assert!(!room::comment_references_only(&empty, &delta, &me));
+    }
+
+    #[test]
+    fn two_members_bringing_the_first_records_into_a_room_share_one_index() {
+        let mut ada = AutoCommit::new();
+        let mut bo = AutoCommit::new();
+        let from_ada = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let from_bo = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.channel"));
+        assert!(room::reference(&mut ada, &from_ada.id, &from_ada.kind));
+        assert!(room::reference(&mut bo, &from_bo.id, &from_bo.kind));
+
+        let ada_changes = ada.save();
+        let bo_changes = bo.save();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut ada, &bo_changes).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut bo, &ada_changes).unwrap();
+
+        let mut both = vec![from_ada, from_bo];
+        both.sort();
+        for peer in [&ada, &bo] {
+            assert_eq!(
+                peer.get_all(ROOT, INDEX).unwrap().len(),
+                1,
+                "one index, not one per member"
+            );
+            assert_eq!(
+                room::references(peer),
+                both,
+                "every member's records listed"
+            );
+        }
     }
 
     fn text(doc: &AutoCommit, key: &str) -> Option<String> {
