@@ -5400,7 +5400,20 @@ impl BackupsApp {
 mod tests {
     use super::*;
 
+    /// The live app fabricates nothing, the demo seeds an indexed sample catalog,
+    /// and repository state (unreadable, first run, configured but empty) decides
+    /// which effects and controls are offered; each case builds its own app.
     #[test]
+    fn catalog_and_repository_state_decide_the_offered_controls() {
+        live_constructor_starts_with_an_empty_catalog();
+        demo_constructor_seeds_the_sample_catalog();
+        the_sample_catalog_indexes_every_snapshot();
+        unreadable_saved_repository_blocks_effects_until_reselected();
+        first_run_has_a_reachable_setup_action();
+        configured_empty_repository_has_no_phantom_snapshot_controls();
+    }
+
+    /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn live_constructor_starts_with_an_empty_catalog() {
         // The live app must not fabricate sources / snapshots / destinations.
         let app = BackupsApp::with_catalog(Catalog::empty());
@@ -5412,7 +5425,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn unreadable_saved_repository_blocks_effects_until_reselected() {
         let mut app = BackupsApp::with_catalog(Catalog::empty());
         app.source_path = Some(PathBuf::from("/documents"));
@@ -5436,7 +5449,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn demo_constructor_seeds_the_sample_catalog() {
         // The --shots/demo builder keeps the populated sample dashboard.
         let app = BackupsApp::new_demo();
@@ -5448,7 +5461,17 @@ mod tests {
         );
     }
 
+    /// The source/destination rail is not painted while closed off-screen, scrolls
+    /// under a fixed header when short, and does not scroll when tall; each case
+    /// builds its own frame.
     #[test]
+    fn rail_paints_and_scrolls_only_when_needed() {
+        closed_overlay_rail_is_not_painted_from_its_offscreen_tail();
+        short_rail_scrolls_its_rows_under_a_fixed_header();
+        tall_rail_does_not_scroll();
+    }
+
+    /// Case of `rail_paints_and_scrolls_only_when_needed`.
     fn closed_overlay_rail_is_not_painted_from_its_offscreen_tail() {
         let mut drawer = SidebarDrawer::new()
             .left()
@@ -5466,7 +5489,7 @@ mod tests {
     /// A short window's rail cannot show the whole catalog: its rows scroll
     /// under the fixed header band by the wheel, the band's toggle stays put,
     /// and a row that slid under the band is no longer a hit target.
-    #[test]
+    /// Case of `rail_paints_and_scrolls_only_when_needed`.
     fn short_rail_scrolls_its_rows_under_a_fixed_header() {
         let mut f = Frame::demo_sized(1280.0, 480.0);
         assert!(f.app.drawer.is_docked());
@@ -5517,7 +5540,7 @@ mod tests {
     }
 
     /// At 1280×800 the whole catalog fits the rail: nothing scrolls.
-    #[test]
+    /// Case of `rail_paints_and_scrolls_only_when_needed`.
     fn tall_rail_does_not_scroll() {
         let f = Frame::demo();
         assert!(f.app.rail_scroll_max.abs() < f64::EPSILON);
@@ -5679,11 +5702,21 @@ mod tests {
         }
     }
 
+    /// At phone width (and 200% text) the view tabs stay clear of the backup
+    /// action and keep their full semantic names; each case builds its own frame.
+    #[test]
+    fn phone_chrome_keeps_tabs_clear_and_fully_named() {
+        phone_width_keeps_every_tab_clear_of_the_primary_action();
+        phone_tabs_do_not_overlap_the_compact_backup_action();
+        phone_200_percent_icon_tabs_keep_full_semantic_names();
+        compact_phone_chrome_keeps_full_semantic_names();
+    }
+
     /// At phone width the four view tabs and the primary action share a 390px
     /// bar. Every tab must stay a distinct, reachable target that ends before
     /// the action begins; with the full-width label the Schedules tab used to
     /// be painted underneath "Back up now".
-    #[test]
+    /// Case of `phone_chrome_keeps_tabs_clear_and_fully_named`.
     fn phone_width_keeps_every_tab_clear_of_the_primary_action() {
         for width in [390.0, 340.0] {
             let f = Frame::demo_sized(width, 844.0);
@@ -5716,7 +5749,18 @@ mod tests {
         }
     }
 
+    /// Pointer, keyboard and accessibility activation all switch views through the
+    /// production dispatcher, and navigation and modal state never touch the
+    /// collaborative document; each case builds its own frame.
     #[test]
+    fn view_navigation_is_device_local_through_pointer_keyboard_and_accessibility() {
+        clicking_a_view_tab_switches_the_dashboard_view();
+        configured_repositories_keep_the_retention_view_reachable();
+        accessibility_tab_activation_reuses_the_hit_dispatcher();
+        navigation_and_modal_state_do_not_mutate_the_collaborative_document();
+    }
+
+    /// Case of `view_navigation_is_device_local_through_pointer_keyboard_and_accessibility`.
     fn clicking_a_view_tab_switches_the_dashboard_view() {
         let mut f = Frame::demo();
         assert_eq!(f.view(), View::Timeline, "demo opens on the timeline");
@@ -5732,7 +5776,7 @@ mod tests {
         assert_eq!(f.view(), View::Schedules);
     }
 
-    #[test]
+    /// Case of `view_navigation_is_device_local_through_pointer_keyboard_and_accessibility`.
     fn configured_repositories_keep_the_retention_view_reachable() {
         let mut f = Frame::demo();
         // A real repository sets this after reading its local configuration.
@@ -5745,7 +5789,16 @@ mod tests {
         assert_eq!(f.view(), View::Schedules);
     }
 
+    /// Retention steppers stay reachable and dispatch the durable action on wide
+    /// and phone layouts, and stack before colliding at 200% text; each case
+    /// builds its own frame.
     #[test]
+    fn retention_steppers_stay_reachable_and_stack_at_large_text() {
+        retention_steppers_stay_reachable_and_dispatch_on_wide_and_phone_layouts();
+        large_text_retention_editor_stacks_before_controls_collide();
+    }
+
+    /// Case of `retention_steppers_stay_reachable_and_stack_at_large_text`.
     fn retention_steppers_stay_reachable_and_dispatch_on_wide_and_phone_layouts() {
         let mut f = Frame::demo();
         f.click_hit(|hit| matches!(hit, Hit::Tab(View::Schedules)));
@@ -5781,7 +5834,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `retention_steppers_stay_reachable_and_stack_at_large_text`.
     fn large_text_retention_editor_stacks_before_controls_collide() {
         let mut f = Frame::demo();
         f.app.rect = Rect::new(0.0, 0.0, 880.0, 800.0);
@@ -5803,7 +5856,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `phone_chrome_keeps_tabs_clear_and_fully_named`.
     fn phone_tabs_do_not_overlap_the_compact_backup_action() {
         let mut f = Frame::demo();
         f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -5823,7 +5876,18 @@ mod tests {
         }
     }
 
+    /// Recovery points, timeline rows, unavailable-repository copy and narrow
+    /// restore metadata reflow with the text scale without overlap, elision or
+    /// leaking local paths; each case builds its own frame.
     #[test]
+    fn recovery_surfaces_reflow_with_text_scale_without_overlap_or_elision() {
+        phone_200_percent_text_reflows_every_recovery_point();
+        timeline_rows_follow_the_text_scale_without_overlapping();
+        unavailable_recovery_copy_reflows_without_elision_at_phone_large_text();
+        narrow_restore_metadata_never_exposes_or_depends_on_a_long_local_path();
+    }
+
+    /// Case of `recovery_surfaces_reflow_with_text_scale_without_overlap_or_elision`.
     fn phone_200_percent_text_reflows_every_recovery_point() {
         let mut f = Frame::demo();
         f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -5889,7 +5953,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `phone_chrome_keeps_tabs_clear_and_fully_named`.
     fn phone_200_percent_icon_tabs_keep_full_semantic_names() {
         let mut f = Frame::demo();
         f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -5918,7 +5982,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `phone_chrome_keeps_tabs_clear_and_fully_named`.
     fn compact_phone_chrome_keeps_full_semantic_names() {
         let mut f = Frame::demo();
         f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -5935,7 +5999,7 @@ mod tests {
         assert!(names.contains(&"Schedules view"));
     }
 
-    #[test]
+    /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn configured_empty_repository_has_no_phantom_snapshot_controls() {
         let mut f = Frame::demo();
         f.app.catalog.snapshots.clear();
@@ -5946,7 +6010,7 @@ mod tests {
         assert!(f.has_hit(|hit| matches!(hit, Hit::BackupNow)));
     }
 
-    #[test]
+    /// Case of `view_navigation_is_device_local_through_pointer_keyboard_and_accessibility`.
     fn navigation_and_modal_state_do_not_mutate_the_collaborative_document() {
         let mut f = Frame::demo();
         f.state.doc.commit();
@@ -5963,7 +6027,7 @@ mod tests {
         assert_eq!(f.state.doc.get_heads(), before, "modal is device-local");
     }
 
-    #[test]
+    /// Case of `view_navigation_is_device_local_through_pointer_keyboard_and_accessibility`.
     fn accessibility_tab_activation_reuses_the_hit_dispatcher() {
         let mut f = Frame::demo();
         let tree = f.app.accessibility().expect("backups exports a window");
@@ -5980,7 +6044,7 @@ mod tests {
     /// Snapshot rows, day headers and the expanded detail keep their 1× bands
     /// exactly and grow with the text scale, and the hit rect of every row is
     /// the rect it was painted at: consecutive rows never overlap.
-    #[test]
+    /// Case of `recovery_surfaces_reflow_with_text_scale_without_overlap_or_elision`.
     fn timeline_rows_follow_the_text_scale_without_overlapping() {
         let rows_of = |f: &Frame| -> Vec<Rect> {
             let mut rows: Vec<Rect> = f
@@ -6014,10 +6078,19 @@ mod tests {
         assert!(two[0].y0 >= f.app.bar_h + 14.0);
     }
 
+    /// Real storage effects are reachable from the timeline, and the restore
+    /// sheet uses the shared modal frame, swallows the scrim and exposes only its
+    /// truthful controls; each case builds its own frame.
+    #[test]
+    fn restore_sheet_offers_only_truthful_modal_storage_controls() {
+        real_storage_effects_are_reachable_from_the_timeline();
+        restore_sheet_uses_the_shared_modal_frame_and_swallows_the_scrim();
+    }
+
     /// The restore sheet is framed by the shared modal chrome: its two
     /// controls sit on one action line inside the window, and while it is
     /// open nothing behind the scrim can activate.
-    #[test]
+    /// Case of `restore_sheet_offers_only_truthful_modal_storage_controls`.
     fn restore_sheet_uses_the_shared_modal_frame_and_swallows_the_scrim() {
         let mut f = Frame::demo();
         // Where the Sources tab is painted; the sheet does not move it.
@@ -6058,7 +6131,7 @@ mod tests {
         assert!(!f.app.ui.restore_open);
     }
 
-    #[test]
+    /// Case of `restore_sheet_offers_only_truthful_modal_storage_controls`.
     fn real_storage_effects_are_reachable_from_the_timeline() {
         let mut f = Frame::demo();
         assert!(f.has_hit(|hit| matches!(hit, Hit::BackupNow)));
@@ -6107,7 +6180,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn first_run_has_a_reachable_setup_action() {
         let mut app = BackupsApp::with_catalog(Catalog::empty());
         app.rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
@@ -6123,7 +6196,7 @@ mod tests {
         assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Setup)));
     }
 
-    #[test]
+    /// Case of `recovery_surfaces_reflow_with_text_scale_without_overlap_or_elision`.
     fn unavailable_recovery_copy_reflows_without_elision_at_phone_large_text() {
         const ERROR: &str = "Couldn’t read the saved backup location: the drive is unavailable.";
         let mut f = Frame::demo();
@@ -6180,7 +6253,7 @@ mod tests {
         assert!(!recovery_name.contains('…'));
     }
 
-    #[test]
+    /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn the_sample_catalog_indexes_every_snapshot() {
         // Demo/shots data is populated; the live catalog stays empty.
         let demo = Catalog::sample();
@@ -6194,7 +6267,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `recovery_surfaces_reflow_with_text_scale_without_overlap_or_elision`.
     fn narrow_restore_metadata_never_exposes_or_depends_on_a_long_local_path() {
         let mut catalog = Catalog::sample();
         let source = catalog.sources.first_mut().expect("sample source");

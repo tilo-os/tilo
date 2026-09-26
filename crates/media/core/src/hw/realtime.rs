@@ -420,113 +420,110 @@ mod tests {
     }
 
     #[test]
-    fn wire_labels_round_trip_and_keep_the_legacy_spellings() {
-        // "h264" and "hevc-main10" are what older peers already send.
-        assert_eq!(StreamCodec::H264.wire_label(), "h264");
-        assert_eq!(StreamCodec::HevcMain10.wire_label(), "hevc-main10");
-        for c in StreamCodec::ALL {
-            assert_eq!(StreamCodec::from_wire_label(c.wire_label()), Some(c));
+    fn realtime_encoder_tables_and_candidate_order() {
+        // Phase `wire_labels_round_trip_and_keep_the_legacy_spellings`.
+        {
+            // "h264" and "hevc-main10" are what older peers already send.
+            assert_eq!(StreamCodec::H264.wire_label(), "h264");
+            assert_eq!(StreamCodec::HevcMain10.wire_label(), "hevc-main10");
+            for c in StreamCodec::ALL {
+                assert_eq!(StreamCodec::from_wire_label(c.wire_label()), Some(c));
+            }
+            assert_eq!(StreamCodec::from_wire_label("h266"), None);
         }
-        assert_eq!(StreamCodec::from_wire_label("h266"), None);
-    }
-
-    #[test]
-    fn every_table_lists_hardware_before_software() {
-        for codec in StreamCodec::ALL {
-            for table in [realtime_encoders(codec), realtime_decoders(codec)] {
-                let first_sw = table.iter().position(|e| !e.is_hardware());
-                if let Some(i) = first_sw {
-                    assert!(
-                        table[i..].iter().all(|e| !e.is_hardware()),
-                        "{codec:?}: hardware listed after software in {:?}",
-                        table.iter().map(|e| e.element).collect::<Vec<_>>()
-                    );
+        // Phase `every_table_lists_hardware_before_software`.
+        {
+            for codec in StreamCodec::ALL {
+                for table in [realtime_encoders(codec), realtime_decoders(codec)] {
+                    let first_sw = table.iter().position(|e| !e.is_hardware());
+                    if let Some(i) = first_sw {
+                        assert!(
+                            table[i..].iter().all(|e| !e.is_hardware()),
+                            "{codec:?}: hardware listed after software in {:?}",
+                            table.iter().map(|e| e.element).collect::<Vec<_>>()
+                        );
+                    }
                 }
             }
         }
-    }
-
-    #[test]
-    fn no_patented_software_encoder_is_ever_a_candidate() {
-        for codec in StreamCodec::ALL {
-            for e in realtime_encoders(codec) {
-                assert_ne!(e.tier, CodecTier::SystemProvided, "{}", e.element);
-                if !e.is_hardware() && !codec.is_royalty_free() {
-                    // The only software encoder for a patented codec is
-                    // Cisco's separately distributed binary.
-                    assert_eq!(e.tier, CodecTier::CiscoOpenH264, "{}", e.element);
+        // Phase `no_patented_software_encoder_is_ever_a_candidate`.
+        {
+            for codec in StreamCodec::ALL {
+                for e in realtime_encoders(codec) {
+                    assert_ne!(e.tier, CodecTier::SystemProvided, "{}", e.element);
+                    if !e.is_hardware() && !codec.is_royalty_free() {
+                        // The only software encoder for a patented codec is
+                        // Cisco's separately distributed binary.
+                        assert_eq!(e.tier, CodecTier::CiscoOpenH264, "{}", e.element);
+                    }
                 }
+                assert!(
+                    !realtime_encoders(codec)
+                        .iter()
+                        .any(|e| e.element == "x264enc" || e.element == "x265enc"),
+                    "x264/x265 must never be selected"
+                );
             }
             assert!(
-                !realtime_encoders(codec)
+                realtime_encoders(StreamCodec::HevcMain10)
                     .iter()
-                    .any(|e| e.element == "x264enc" || e.element == "x265enc"),
-                "x264/x265 must never be selected"
+                    .all(CodecElement::is_hardware),
+                "HEVC encode is hardware-only"
             );
         }
-        assert!(
-            realtime_encoders(StreamCodec::HevcMain10)
-                .iter()
-                .all(CodecElement::is_hardware),
-            "HEVC encode is hardware-only"
-        );
-    }
-
-    #[test]
-    fn auto_prefers_hardware_then_royalty_free_then_cisco() {
-        let got = realtime_candidates(
-            realtime_decoders(StreamCodec::Av1),
-            RealtimePolicy::Auto,
-            registry(&["av1dec", "dav1ddec", "vaav1dec"]),
-        );
-        assert_eq!(names(&got), ["vaav1dec", "dav1ddec", "av1dec"]);
-
-        let got = realtime_candidates(
-            realtime_decoders(StreamCodec::H264),
-            RealtimePolicy::Auto,
-            registry(&["avdec_h264", "openh264dec", "nvh264dec"]),
-        );
-        assert_eq!(names(&got), ["nvh264dec", "openh264dec", "avdec_h264"]);
-
-        let got = realtime_candidates(
-            realtime_encoders(StreamCodec::Av1),
-            RealtimePolicy::Auto,
-            registry(&["rav1enc", "svtav1enc", "av1enc"]),
-        );
-        assert_eq!(
-            names(&got),
-            ["av1enc", "rav1enc"],
-            "libaom's real-time profile first; SVT-AV1 has no working low-delay mode"
-        );
-    }
-
-    #[test]
-    fn software_only_never_offers_hardware() {
-        let got = realtime_candidates(
-            realtime_encoders(StreamCodec::Vp9),
-            RealtimePolicy::SoftwareOnly,
-            registry(&["vavp9enc", "vp9enc"]),
-        );
-        assert_eq!(names(&got), ["vp9enc"]);
-    }
-
-    #[test]
-    fn a_preferred_family_leads_and_other_hardware_trails_software() {
-        let got = realtime_candidates(
-            realtime_encoders(StreamCodec::H264),
-            RealtimePolicy::Prefer(CodecFamily::NvCodec),
-            registry(&["vah264enc", "nvh264enc", "openh264enc"]),
-        );
-        assert_eq!(names(&got), ["nvh264enc", "openh264enc", "vah264enc"]);
-    }
-
-    #[test]
-    fn an_empty_registry_yields_no_candidates_rather_than_a_guess() {
-        for codec in StreamCodec::ALL {
-            assert!(
-                realtime_candidates(realtime_encoders(codec), RealtimePolicy::Auto, |_| false)
-                    .is_empty()
+        // Phase `auto_prefers_hardware_then_royalty_free_then_cisco`.
+        {
+            let got = realtime_candidates(
+                realtime_decoders(StreamCodec::Av1),
+                RealtimePolicy::Auto,
+                registry(&["av1dec", "dav1ddec", "vaav1dec"]),
             );
+            assert_eq!(names(&got), ["vaav1dec", "dav1ddec", "av1dec"]);
+
+            let got = realtime_candidates(
+                realtime_decoders(StreamCodec::H264),
+                RealtimePolicy::Auto,
+                registry(&["avdec_h264", "openh264dec", "nvh264dec"]),
+            );
+            assert_eq!(names(&got), ["nvh264dec", "openh264dec", "avdec_h264"]);
+
+            let got = realtime_candidates(
+                realtime_encoders(StreamCodec::Av1),
+                RealtimePolicy::Auto,
+                registry(&["rav1enc", "svtav1enc", "av1enc"]),
+            );
+            assert_eq!(
+                names(&got),
+                ["av1enc", "rav1enc"],
+                "libaom's real-time profile first; SVT-AV1 has no working low-delay mode"
+            );
+        }
+        // Phase `software_only_never_offers_hardware`.
+        {
+            let got = realtime_candidates(
+                realtime_encoders(StreamCodec::Vp9),
+                RealtimePolicy::SoftwareOnly,
+                registry(&["vavp9enc", "vp9enc"]),
+            );
+            assert_eq!(names(&got), ["vp9enc"]);
+        }
+        // Phase `a_preferred_family_leads_and_other_hardware_trails_software`.
+        {
+            let got = realtime_candidates(
+                realtime_encoders(StreamCodec::H264),
+                RealtimePolicy::Prefer(CodecFamily::NvCodec),
+                registry(&["vah264enc", "nvh264enc", "openh264enc"]),
+            );
+            assert_eq!(names(&got), ["nvh264enc", "openh264enc", "vah264enc"]);
+        }
+        // Phase `an_empty_registry_yields_no_candidates_rather_than_a_guess`.
+        {
+            for codec in StreamCodec::ALL {
+                assert!(
+                    realtime_candidates(realtime_encoders(codec), RealtimePolicy::Auto, |_| false)
+                        .is_empty()
+                );
+            }
         }
     }
 }

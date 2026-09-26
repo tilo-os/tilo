@@ -118,7 +118,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_language_resolves_to_its_grammar() {
+    fn languages_resolve_to_grammars_that_classify_tokens() {
+        // Every language resolves to its grammar.
         for language in [
             Language::Rust,
             Language::Toml,
@@ -142,23 +143,25 @@ mod tests {
             );
         }
         assert_eq!(highlighter(Language::PlainText).name(), "Plain Text");
-    }
 
-    #[test]
-    fn keyword_and_string_classified() {
+        // Rust: keyword and string are classified.
         let mut state = highlighter(Language::Rust).start();
         let spans = state.highlight_line("let s = \"hello\";");
         let first = &spans[0];
-        assert_eq!(first.range.start, 0);
-        assert_eq!(first.kind, TokenKind::Keyword);
-        assert!(spans.iter().any(|s| s.kind == TokenKind::StringLit));
-    }
+        assert_eq!(first.range.start, 0, "rust keyword start");
+        assert_eq!(first.kind, TokenKind::Keyword, "rust keyword kind");
+        assert!(
+            spans.iter().any(|s| s.kind == TokenKind::StringLit),
+            "rust string literal"
+        );
 
-    #[test]
-    fn plain_text_is_one_text_run() {
+        // Plain text is one text run.
         let mut state = highlighter(Language::PlainText).start();
         let spans = state.highlight_line("just words here");
-        assert!(spans.iter().all(|s| s.kind == TokenKind::Text));
+        assert!(
+            spans.iter().all(|s| s.kind == TokenKind::Text),
+            "plain text is all Text"
+        );
     }
 }
 

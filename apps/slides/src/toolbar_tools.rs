@@ -348,56 +348,60 @@ mod tests {
         (buttons, layout)
     }
 
+    /// Narrow layouts keep hidden tools reachable and the pointer policy owns selection/click-away.
     #[test]
-    fn narrow_layout_keeps_hidden_tools_reachable() {
-        let mut component = ToolbarTools::default();
-        component.toggle();
-        let (buttons, layout) = narrow_layout(&component);
-        assert!(
-            buttons
-                .iter()
-                .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
-        );
-        assert!(layout.menu_bg.is_some());
-        for kind in [
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
-        ] {
+    fn toolbar_tools_stay_reachable_and_own_pointer_policy() {
+        // Case `narrow_layout_keeps_hidden_tools_reachable`.
+        {
+            let mut component = ToolbarTools::default();
+            component.toggle();
+            let (buttons, layout) = narrow_layout(&component);
             assert!(
                 buttons
                     .iter()
-                    .chain(&layout.menu_buttons)
-                    .any(|b| matches!(&b.hit, Hit::Insert(candidate) if *candidate == kind))
+                    .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
             );
+            assert!(layout.menu_bg.is_some());
+            for kind in [
+                ElementKind::Rect,
+                ElementKind::Ellipse,
+                ElementKind::Line,
+                ElementKind::Image,
+            ] {
+                assert!(
+                    buttons
+                        .iter()
+                        .chain(&layout.menu_buttons)
+                        .any(|b| matches!(&b.hit, Hit::Insert(candidate) if *candidate == kind))
+                );
+            }
         }
-    }
 
-    #[test]
-    fn pointer_policy_owns_row_selection_padding_and_click_away() {
-        let mut component = ToolbarTools::default();
-        component.toggle();
-        let (buttons, layout) = narrow_layout(&component);
-        let row = layout.menu_buttons.last().expect("narrow menu has rows");
-        assert!(matches!(
-            component.on_press(&layout, &buttons, row.rect.center()),
-            MenuPress::Action(_)
-        ));
-        assert!(!component.is_open());
+        // Case `pointer_policy_owns_row_selection_padding_and_click_away`.
+        {
+            let mut component = ToolbarTools::default();
+            component.toggle();
+            let (buttons, layout) = narrow_layout(&component);
+            let row = layout.menu_buttons.last().expect("narrow menu has rows");
+            assert!(matches!(
+                component.on_press(&layout, &buttons, row.rect.center()),
+                MenuPress::Action(_)
+            ));
+            assert!(!component.is_open());
 
-        component.toggle();
-        let (buttons, layout) = narrow_layout(&component);
-        let padding = layout.menu_bg.expect("open panel").origin() + (2.0, 2.0);
-        assert!(matches!(
-            component.on_press(&layout, &buttons, padding),
-            MenuPress::Consumed
-        ));
-        assert!(component.is_open());
-        assert!(matches!(
-            component.on_press(&layout, &buttons, Point::new(10.0, 200.0)),
-            MenuPress::Consumed
-        ));
-        assert!(!component.is_open());
+            component.toggle();
+            let (buttons, layout) = narrow_layout(&component);
+            let padding = layout.menu_bg.expect("open panel").origin() + (2.0, 2.0);
+            assert!(matches!(
+                component.on_press(&layout, &buttons, padding),
+                MenuPress::Consumed
+            ));
+            assert!(component.is_open());
+            assert!(matches!(
+                component.on_press(&layout, &buttons, Point::new(10.0, 200.0)),
+                MenuPress::Consumed
+            ));
+            assert!(!component.is_open());
+        }
     }
 }

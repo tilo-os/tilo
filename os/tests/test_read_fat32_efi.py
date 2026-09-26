@@ -74,34 +74,33 @@ def image():
 
 
 class FatReadbackTests(unittest.TestCase):
-    def test_exact_long_name_file_hash(self):
-        with tempfile.TemporaryFile() as stream:
-            stream.write(image())
-            reader = fat.Fat32(stream, 0, 32 * 512)
-            self.assertEqual(reader.file_sha256("EFI/Linux/bootc/" + NAME),
-                             fat.hashlib.sha256(DATA).hexdigest())
-
-    def test_wrong_lfn_checksum_and_missing_file_refused(self):
-        raw = image()
-        raw[5 * 512 + 13] ^= 1
-        with tempfile.TemporaryFile() as stream:
-            stream.write(raw)
-            reader = fat.Fat32(stream, 0, 32 * 512)
-            with self.assertRaisesRegex(fat.FatError, "checksum"):
-                reader.file_sha256("EFI/Linux/bootc/" + NAME)
-
-    def test_cycle_and_out_of_partition_chain_refused(self):
-        raw = image()
-        struct.pack_into("<I", raw, 512 + 4 * 6, 6)
-        with tempfile.TemporaryFile() as stream:
-            stream.write(raw)
-            reader = fat.Fat32(stream, 0, 32 * 512)
-            with self.assertRaisesRegex(fat.FatError, "loops or exceeds"):
-                reader.file_sha256("EFI/Linux/bootc/" + NAME)
-        with tempfile.TemporaryFile() as stream:
-            stream.write(image())
-            with self.assertRaisesRegex(fat.FatError, "outside the raw image"):
-                fat.Fat32(stream, 512, 32 * 512)
+    def test_fat32_readback(self):
+        with self.subTest(phase="exact_long_name_file_hash"):
+            with tempfile.TemporaryFile() as stream:
+                stream.write(image())
+                reader = fat.Fat32(stream, 0, 32 * 512)
+                self.assertEqual(reader.file_sha256("EFI/Linux/bootc/" + NAME),
+                                 fat.hashlib.sha256(DATA).hexdigest())
+        with self.subTest(phase="wrong_lfn_checksum_and_missing_file_refused"):
+            raw = image()
+            raw[5 * 512 + 13] ^= 1
+            with tempfile.TemporaryFile() as stream:
+                stream.write(raw)
+                reader = fat.Fat32(stream, 0, 32 * 512)
+                with self.assertRaisesRegex(fat.FatError, "checksum"):
+                    reader.file_sha256("EFI/Linux/bootc/" + NAME)
+        with self.subTest(phase="cycle_and_out_of_partition_chain_refused"):
+            raw = image()
+            struct.pack_into("<I", raw, 512 + 4 * 6, 6)
+            with tempfile.TemporaryFile() as stream:
+                stream.write(raw)
+                reader = fat.Fat32(stream, 0, 32 * 512)
+                with self.assertRaisesRegex(fat.FatError, "loops or exceeds"):
+                    reader.file_sha256("EFI/Linux/bootc/" + NAME)
+            with tempfile.TemporaryFile() as stream:
+                stream.write(image())
+                with self.assertRaisesRegex(fat.FatError, "outside the raw image"):
+                    fat.Fat32(stream, 512, 32 * 512)
 
 
 if __name__ == "__main__":

@@ -634,62 +634,66 @@ mod tests {
         }
     }
 
+    /// The note composer uses shared selection editing and submit; hit testing keeps the card modal and tap-away saves.
     #[test]
-    fn note_composer_uses_shared_selection_editing_and_submit() {
-        let mut composer = NoteComposer::default();
-        composer.open(Uuid::new_v4(), "hello");
-        composer.input.select_all();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::new();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let (changed, submitted) = composer.handle_event(&mut InputEventCtx {
-            event: &key(Key::Character("world".into())),
-            scale_factor: 1.0,
-            modifiers,
-            state: &mut doc,
-            root: &root,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-            handled: &mut handled,
-        });
-        assert_eq!(changed.as_deref(), Some("world"));
-        assert!(!submitted);
-        let (_, submitted) = composer.handle_event(&mut InputEventCtx {
-            event: &key(Key::Named(NamedKey::Enter)),
-            scale_factor: 1.0,
-            modifiers,
-            state: &mut doc,
-            root: &root,
-            node_id: NodeId::new(0),
-            taffy: &taffy,
-            handled: &mut handled,
-        });
-        assert!(submitted);
-    }
+    fn note_composer_edits_through_shared_input_and_keeps_its_card_modal() {
+        // --- phase: note_composer_uses_shared_selection_editing_and_submit ---
+        {
+            let mut composer = NoteComposer::default();
+            composer.open(Uuid::new_v4(), "hello");
+            composer.input.select_all();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let taffy = TaffyTree::new();
+            let modifiers = Modifiers::default();
+            let mut handled = false;
+            let (changed, submitted) = composer.handle_event(&mut InputEventCtx {
+                event: &key(Key::Character("world".into())),
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut doc,
+                root: &root,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+                handled: &mut handled,
+            });
+            assert_eq!(changed.as_deref(), Some("world"));
+            assert!(!submitted);
+            let (_, submitted) = composer.handle_event(&mut InputEventCtx {
+                event: &key(Key::Named(NamedKey::Enter)),
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut doc,
+                root: &root,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+                handled: &mut handled,
+            });
+            assert!(submitted);
+        }
 
-    #[test]
-    fn note_hit_testing_keeps_card_modal_and_tap_away_saves() {
-        let id = Uuid::new_v4();
-        let mut composer = NoteComposer::default();
-        composer.open(id, "");
-        composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
-        composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
-        composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
-        assert_eq!(
-            composer.hit_test(Point::new(40.0, 120.0)),
-            Some(NoteAction::Delete(id))
-        );
-        assert_eq!(
-            composer.hit_test(Point::new(140.0, 120.0)),
-            Some(NoteAction::Save)
-        );
-        assert_eq!(
-            composer.hit_test(Point::new(90.0, 60.0)),
-            Some(NoteAction::Swallow)
-        );
-        assert_eq!(composer.hit_test(Point::ZERO), Some(NoteAction::Save));
+        // --- phase: note_hit_testing_keeps_card_modal_and_tap_away_saves ---
+        {
+            let id = Uuid::new_v4();
+            let mut composer = NoteComposer::default();
+            composer.open(id, "");
+            composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
+            composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
+            composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
+            assert_eq!(
+                composer.hit_test(Point::new(40.0, 120.0)),
+                Some(NoteAction::Delete(id))
+            );
+            assert_eq!(
+                composer.hit_test(Point::new(140.0, 120.0)),
+                Some(NoteAction::Save)
+            );
+            assert_eq!(
+                composer.hit_test(Point::new(90.0, 60.0)),
+                Some(NoteAction::Swallow)
+            );
+            assert_eq!(composer.hit_test(Point::ZERO), Some(NoteAction::Save));
+        }
     }
 }
 

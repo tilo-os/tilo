@@ -600,173 +600,180 @@ mod tests {
     use crate::namespace::ROOT_INO;
 
     #[test]
-    fn only_explicit_app_namespaces_are_attributed() {
-        assert_eq!(
-            app_from_path("/apps/org.tilo.Notes/a"),
-            Some("org.tilo.Notes".into())
-        );
-        assert_eq!(app_from_path("/personal/notes"), None);
-        assert_eq!(app_from_path("/apps"), None);
-    }
-
-    #[test]
-    fn broken_or_cyclic_policy_ancestry_is_pinned_fail_closed() {
-        let record = collab_types::FileRecordId::new();
-        let missing_parent = collab_types::FileRecordId::new();
-        let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
-        row.parent = Some(missing_parent);
-        assert!(effective_pinned(&[row], record));
-    }
-
-    #[test]
-    fn snapshot_selection_carries_all_race_tokens() {
-        let file = SyncedFileState {
-            workspace: "work".into(),
-            app: None,
-            logical_path: "/a".into(),
-            identity: "stable-node".into(),
-            inode: 9,
-            version: "version-a".into(),
-            logical_bytes: 1,
-            hydrated_bytes: 1,
-            remote_only: false,
-            dirty: false,
-            pinned: false,
-            in_flight: false,
-            remotely_durable: true,
-            reclaimable_bytes: 1,
-        };
-        let selection = EvictionSelection::from(&file);
-        assert_eq!(selection.identity, file.identity);
-        assert_eq!(selection.inode, file.inode);
-        assert_eq!(selection.version, file.version);
-    }
-
-    #[test]
-    fn final_live_token_rejects_a_namespace_or_dirty_change() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
-        let dirty = Arc::new(Mutex::new(HashMap::new()));
-        let expected = Hash::from([7; 32]);
-        let inode = namespace
-            .lock()
-            .unwrap()
-            .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
-            .unwrap();
-        let (identity, record_id) = {
-            let namespace = namespace.lock().unwrap();
-            (
-                namespace.id_for_ino(inode).unwrap().to_owned(),
-                namespace.record_id_for(inode).unwrap(),
-            )
-        };
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace.lock().unwrap(),
-                &dirty.lock().unwrap(),
-                &identity,
-                inode,
+    fn storage_attribution_and_candidates_fail_closed() {
+        // Phase `only_explicit_app_namespaces_are_attributed`.
+        {
+            assert_eq!(
+                app_from_path("/apps/org.tilo.Notes/a"),
+                Some("org.tilo.Notes".into())
+            );
+            assert_eq!(app_from_path("/personal/notes"), None);
+            assert_eq!(app_from_path("/apps"), None);
+        }
+        // Phase `broken_or_cyclic_policy_ancestry_is_pinned_fail_closed`.
+        {
+            let record = collab_types::FileRecordId::new();
+            let missing_parent = collab_types::FileRecordId::new();
+            let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
+            row.parent = Some(missing_parent);
+            assert!(effective_pinned(&[row], record));
+        }
+        // Phase `snapshot_candidates_skip_rows_that_cannot_be_reclaimed`.
+        {
+            let record_id = collab_types::FileRecordId::new();
+            let logical = vec![LogicalFile {
+                identity: "candidate".into(),
+                inode: 7,
+                path: "/candidate".into(),
+                logical_bytes: 1,
+                hash: Some(Hash::from([1; 32])),
                 record_id,
-                expected,
-            )
-            .is_ok()
-        );
+                mtime: 0,
+            }];
+            let mut dirty = HashSet::new();
+            dirty.insert(7);
+            let mut record =
+                RecordAvailability::new(record_id, crate::availability::RecordKind::File);
+            record.current_version = Some(collab_types::FileVersionId::new());
+            assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
+        }
+    }
 
-        let replacement = Hash::from([8; 32]);
-        assert!(
-            namespace
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn reclamation_tokens_and_leases_block_racing_mutation() {
+        // Phase `snapshot_selection_carries_all_race_tokens`.
+        {
+            let file = SyncedFileState {
+                workspace: "work".into(),
+                app: None,
+                logical_path: "/a".into(),
+                identity: "stable-node".into(),
+                inode: 9,
+                version: "version-a".into(),
+                logical_bytes: 1,
+                hydrated_bytes: 1,
+                remote_only: false,
+                dirty: false,
+                pinned: false,
+                in_flight: false,
+                remotely_durable: true,
+                reclaimable_bytes: 1,
+            };
+            let selection = EvictionSelection::from(&file);
+            assert_eq!(selection.identity, file.identity);
+            assert_eq!(selection.inode, file.inode);
+            assert_eq!(selection.version, file.version);
+        }
+        // Phase `final_live_token_rejects_a_namespace_or_dirty_change`.
+        {
+            let namespace = Arc::new(Mutex::new(Namespace::new("storage-token").unwrap()));
+            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let expected = Hash::from([7; 32]);
+            let inode = namespace
                 .lock()
                 .unwrap()
-                .set_content(inode, Some(&replacement), 1, 2)
-        );
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace.lock().unwrap(),
-                &dirty.lock().unwrap(),
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_err()
-        );
+                .create_file(ROOT_INO, "report.txt", Some(&expected), 1, 1)
+                .unwrap();
+            let (identity, record_id) = {
+                let namespace = namespace.lock().unwrap();
+                (
+                    namespace.id_for_ino(inode).unwrap().to_owned(),
+                    namespace.record_id_for(inode).unwrap(),
+                )
+            };
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace.lock().unwrap(),
+                    &dirty.lock().unwrap(),
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_ok()
+            );
 
-        assert!(
-            namespace
+            let replacement = Hash::from([8; 32]);
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .set_content(inode, Some(&replacement), 1, 2)
+            );
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace.lock().unwrap(),
+                    &dirty.lock().unwrap(),
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_err()
+            );
+
+            assert!(
+                namespace
+                    .lock()
+                    .unwrap()
+                    .set_content(inode, Some(&expected), 1, 3)
+            );
+            dirty.lock().unwrap().insert(inode, Vec::new());
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace.lock().unwrap(),
+                    &dirty.lock().unwrap(),
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_err()
+            );
+        }
+        // Phase `live_authorization_lease_blocks_mutation_after_validation`.
+        {
+            let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
+            let dirty = Arc::new(Mutex::new(HashMap::new()));
+            let expected = Hash::from([9; 32]);
+            let inode = namespace
                 .lock()
                 .unwrap()
-                .set_content(inode, Some(&expected), 1, 3)
-        );
-        dirty.lock().unwrap().insert(inode, Vec::new());
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace.lock().unwrap(),
-                &dirty.lock().unwrap(),
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_err()
-        );
-    }
+                .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
+                .unwrap();
+            let (identity, record_id) = {
+                let namespace = namespace.lock().unwrap();
+                (
+                    namespace.id_for_ino(inode).unwrap().to_owned(),
+                    namespace.record_id_for(inode).unwrap(),
+                )
+            };
 
-    #[test]
-    fn live_authorization_lease_blocks_mutation_after_validation() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("storage-lease").unwrap()));
-        let dirty = Arc::new(Mutex::new(HashMap::new()));
-        let expected = Hash::from([9; 32]);
-        let inode = namespace
-            .lock()
-            .unwrap()
-            .create_file(ROOT_INO, "lease.txt", Some(&expected), 1, 1)
-            .unwrap();
-        let (identity, record_id) = {
-            let namespace = namespace.lock().unwrap();
-            (
-                namespace.id_for_ino(inode).unwrap().to_owned(),
-                namespace.record_id_for(inode).unwrap(),
-            )
-        };
-
-        // This is the exact lease held by `prepare_with_handoff` while it
-        // persists the request and performs backend tag release.
-        let dirty_lease = dirty.lock().unwrap();
-        let mut namespace_lease = namespace.lock().unwrap();
-        assert!(
-            validate_live_eviction_token(
-                &mut namespace_lease,
-                &dirty_lease,
-                &identity,
-                inode,
-                record_id,
-                expected,
-            )
-            .is_ok()
-        );
-        assert!(namespace.try_lock().is_err());
-        assert!(dirty.try_lock().is_err());
-        drop(namespace_lease);
-        drop(dirty_lease);
-        assert!(namespace.try_lock().is_ok());
-        assert!(dirty.try_lock().is_ok());
-    }
-
-    #[test]
-    fn snapshot_candidates_skip_rows_that_cannot_be_reclaimed() {
-        let record_id = collab_types::FileRecordId::new();
-        let logical = vec![LogicalFile {
-            identity: "candidate".into(),
-            inode: 7,
-            path: "/candidate".into(),
-            logical_bytes: 1,
-            hash: Some(Hash::from([1; 32])),
-            record_id,
-            mtime: 0,
-        }];
-        let mut dirty = HashSet::new();
-        dirty.insert(7);
-        let mut record = RecordAvailability::new(record_id, crate::availability::RecordKind::File);
-        record.current_version = Some(collab_types::FileVersionId::new());
-        assert!(snapshot_candidate_ids(&logical, &dirty, &[record], unix_now_ms()).is_empty());
+            // This is the exact lease held by `prepare_with_handoff` while it
+            // persists the request and performs backend tag release.
+            let dirty_lease = dirty.lock().unwrap();
+            let mut namespace_lease = namespace.lock().unwrap();
+            assert!(
+                validate_live_eviction_token(
+                    &mut namespace_lease,
+                    &dirty_lease,
+                    &identity,
+                    inode,
+                    record_id,
+                    expected,
+                )
+                .is_ok()
+            );
+            assert!(namespace.try_lock().is_err());
+            assert!(dirty.try_lock().is_err());
+            drop(namespace_lease);
+            drop(dirty_lease);
+            assert!(namespace.try_lock().is_ok());
+            assert!(dirty.try_lock().is_ok());
+        }
     }
 }

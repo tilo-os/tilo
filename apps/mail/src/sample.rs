@@ -482,80 +482,87 @@ mod tests {
     use crate::util::minutes_of;
 
     #[test]
-    fn sample_now_matches_civil_date() {
-        assert_eq!(SAMPLE_NOW_MIN, minutes_of(2026, 6, 30, 14, 5));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn sample_corpus_is_populated_threaded_and_hydrated() {
+        // Phase `sample_now_matches_civil_date`.
+        {
+            assert_eq!(SAMPLE_NOW_MIN, minutes_of(2026, 6, 30, 14, 5));
+        }
 
-    #[test]
-    fn corpus_is_populated_across_folders() {
-        let mb = sample_mailbox();
-        assert!(
-            mb.count(Folder::Inbox) >= 8,
-            "inbox: {}",
-            mb.count(Folder::Inbox)
-        );
-        assert!(mb.count(Folder::Sent) >= 2);
-        assert!(mb.count(Folder::Archive) >= 1);
-        assert!(mb.count(Folder::Junk) >= 1);
-        assert!(mb.unread_count(Folder::Inbox) > 0);
-    }
+        // Phase `corpus_is_populated_across_folders`.
+        {
+            let mb = sample_mailbox();
+            assert!(
+                mb.count(Folder::Inbox) >= 8,
+                "inbox: {}",
+                mb.count(Folder::Inbox)
+            );
+            assert!(mb.count(Folder::Sent) >= 2);
+            assert!(mb.count(Folder::Archive) >= 1);
+            assert!(mb.count(Folder::Junk) >= 1);
+            assert!(mb.unread_count(Folder::Inbox) > 0);
+        }
 
-    #[test]
-    fn parsed_messages_are_present_with_attachment() {
-        let mb = sample_mailbox();
-        // The Radia Perlman message was parsed from raw MIME and must carry
-        // its PDF attachment.
-        let radia = mb
-            .messages
-            .values()
-            .find(|m| m.from.email == "radia@spanning.example")
-            .expect("parsed Radia message present");
-        assert_eq!(radia.attachments.len(), 1);
-        assert_eq!(radia.attachments[0].filename, "spanning-tree.pdf");
-        // The Margaret message was parsed from plain MIME.
-        assert!(
-            mb.messages
+        // Phase `parsed_messages_are_present_with_attachment`.
+        {
+            let mb = sample_mailbox();
+            // The Radia Perlman message was parsed from raw MIME and must carry
+            // its PDF attachment.
+            let radia = mb
+                .messages
                 .values()
-                .any(|m| m.from.email == "margaret@apollo.example")
-        );
-    }
+                .find(|m| m.from.email == "radia@spanning.example")
+                .expect("parsed Radia message present");
+            assert_eq!(radia.attachments.len(), 1);
+            assert_eq!(radia.attachments[0].filename, "spanning-tree.pdf");
+            // The Margaret message was parsed from plain MIME.
+            assert!(
+                mb.messages
+                    .values()
+                    .any(|m| m.from.email == "margaret@apollo.example")
+            );
+        }
 
-    #[test]
-    fn parsed_attachment_is_hydrated_projected_ones_are_not() {
-        let mb = sample_mailbox();
-        // The Radia message was parsed from raw MIME → real bytes present.
-        let radia = mb
-            .messages
-            .values()
-            .find(|m| m.from.email == "radia@spanning.example")
-            .unwrap();
-        assert!(
-            radia.attachments[0].is_downloadable(),
-            "parsed attachment carries bytes"
-        );
-        assert!(!radia.attachments[0].content.is_empty());
-        // A hand-built projected attachment has metadata only (not downloaded).
-        let gantt = mb
-            .messages
-            .values()
-            .flat_map(|m| m.attachments.iter())
-            .find(|a| a.filename == "rollout-gantt.pdf")
-            .unwrap();
-        assert!(
-            !gantt.is_downloadable(),
-            "projected attachment has no bytes yet"
-        );
-    }
+        // Phase `parsed_attachment_is_hydrated_projected_ones_are_not`.
+        {
+            let mb = sample_mailbox();
+            // The Radia message was parsed from raw MIME → real bytes present.
+            let radia = mb
+                .messages
+                .values()
+                .find(|m| m.from.email == "radia@spanning.example")
+                .unwrap();
+            assert!(
+                radia.attachments[0].is_downloadable(),
+                "parsed attachment carries bytes"
+            );
+            assert!(!radia.attachments[0].content.is_empty());
+            // A hand-built projected attachment has metadata only (not downloaded).
+            let gantt = mb
+                .messages
+                .values()
+                .flat_map(|m| m.attachments.iter())
+                .find(|a| a.filename == "rollout-gantt.pdf")
+                .unwrap();
+            assert!(
+                !gantt.is_downloadable(),
+                "projected attachment has no bytes yet"
+            );
+        }
 
-    #[test]
-    fn threads_collapse_replies() {
-        let mb = sample_mailbox();
-        let threads = mb.threads_in(Folder::Inbox);
-        // The "Launch plan" thread has 3 messages collapsed into one row.
-        let launch = threads
-            .iter()
-            .find(|t| t.subject == "Launch plan for the spatial shell")
-            .expect("launch thread present");
-        assert_eq!(launch.message_ids.len(), 3);
+        // Phase `threads_collapse_replies`.
+        {
+            let mb = sample_mailbox();
+            let threads = mb.threads_in(Folder::Inbox);
+            // The "Launch plan" thread has 3 messages collapsed into one row.
+            let launch = threads
+                .iter()
+                .find(|t| t.subject == "Launch plan for the spatial shell")
+                .expect("launch thread present");
+            assert_eq!(launch.message_ids.len(), 3);
+        }
     }
 }

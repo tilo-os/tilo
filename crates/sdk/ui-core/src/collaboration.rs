@@ -31,7 +31,9 @@ mod history;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(feature = "broker-transport")]
-pub use broker::{CertifiedEndpointIdentity, HostSessionConnector, wifi_continuity_command};
+pub use broker::{
+    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+};
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -41,6 +43,12 @@ pub use loopback::{LoopbackPeer, LoopbackTransport};
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::{
+    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
+    MAX_SPEAKER_NAME_CHARS, SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo,
+    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply,
+    SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+};
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
@@ -64,6 +72,19 @@ pub fn wifi_continuity_command(
     _command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
     Err("Wi-Fi continuity requires the certified collaboration service".to_string())
+}
+
+/// Ask the shell's speaker-group authority. Without the broker transport
+/// there is no certified collaboration service to carry it.
+///
+/// # Errors
+///
+/// Always returns an unavailable message in this build.
+#[cfg(not(feature = "broker-transport"))]
+pub fn speaker_command(
+    _command: runtime_collab::SpeakerCommand,
+) -> Result<runtime_collab::SpeakerReply, String> {
+    Err("speakers need the certified collaboration service".to_string())
 }
 
 pub use crate::host::ContinuationMetadata;
@@ -1287,46 +1308,49 @@ pub mod channel_key {
         use super::*;
 
         #[test]
-        fn round_trips_every_combination_of_present_fields() {
-            for (app, cluster, record) in [
-                ("", "c", ""),
-                ("app", "c", ""),
-                ("", "c", "rec"),
-                ("app", "c", "rec"),
-            ] {
-                let key = format(app, cluster, record);
+        fn channel_keys_round_trip_every_field_combination_and_legacy_form() {
+            // Case `round_trips_every_combination_of_present_fields`.
+            {
+                for (app, cluster, record) in [
+                    ("", "c", ""),
+                    ("app", "c", ""),
+                    ("", "c", "rec"),
+                    ("app", "c", "rec"),
+                ] {
+                    let key = format(app, cluster, record);
+                    assert_eq!(
+                        parse(&key),
+                        (app.to_string(), cluster.to_string(), record.to_string()),
+                        "key {key:?} did not round-trip",
+                    );
+                }
+            }
+
+            // Case `keys_written_before_the_app_segment_still_parse`.
+            {
+                // Both must decode to a cluster-scoped address rather than
+                // nothing, or an app that hasn't been rebuilt stops routing.
                 assert_eq!(
-                    parse(&key),
-                    (app.to_string(), cluster.to_string(), record.to_string()),
-                    "key {key:?} did not round-trip",
+                    parse("cluster-1"),
+                    (String::new(), "cluster-1".into(), String::new()),
+                );
+                assert_eq!(
+                    parse("cluster-1#record:/notes/a.md"),
+                    (String::new(), "cluster-1".into(), "/notes/a.md".into()),
                 );
             }
-        }
 
-        #[test]
-        fn keys_written_before_the_app_segment_still_parse() {
-            // Both must decode to a cluster-scoped address rather than
-            // nothing, or an app that hasn't been rebuilt stops routing.
-            assert_eq!(
-                parse("cluster-1"),
-                (String::new(), "cluster-1".into(), String::new()),
-            );
-            assert_eq!(
-                parse("cluster-1#record:/notes/a.md"),
-                (String::new(), "cluster-1".into(), "/notes/a.md".into()),
-            );
-        }
-
-        #[test]
-        fn a_record_id_containing_a_hash_survives() {
-            // Record ids are file paths and a path may contain `#`.
-            // Stripping `#record:` first and keeping the whole tail is
-            // what makes that safe.
-            let key = format("app", "c", "/notes/draft#2.md");
-            assert_eq!(
-                parse(&key),
-                ("app".into(), "c".into(), "/notes/draft#2.md".into()),
-            );
+            // Case `a_record_id_containing_a_hash_survives`.
+            {
+                // Record ids are file paths and a path may contain `#`.
+                // Stripping `#record:` first and keeping the whole tail is
+                // what makes that safe.
+                let key = format("app", "c", "/notes/draft#2.md");
+                assert_eq!(
+                    parse(&key),
+                    ("app".into(), "c".into(), "/notes/draft#2.md".into()),
+                );
+            }
         }
     }
 }

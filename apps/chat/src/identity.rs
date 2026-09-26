@@ -205,14 +205,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn demo_identity_is_the_seeded_local_user() {
+    fn identity_derivation_is_stable_distinct_and_tidy() {
+        // Demo identity is the seeded local user.
         let me = LocalIdentity::demo();
-        assert_eq!(me.id, model::ME);
-        assert_eq!(me.name, "You");
-    }
+        assert_eq!(me.id, model::ME, "case demo: id");
+        assert_eq!(me.name, "You", "case demo: name");
 
-    #[test]
-    fn user_host_ids_are_distinct_per_peer_and_stable() {
         // Two different peers (different user@host) must never share an id, and
         // the same peer must resolve the same id twice — that stability + that
         // distinctness is exactly what genuine multi-participant chat needs.
@@ -221,19 +219,23 @@ mod tests {
         let b = format!("u_{:016x}", fnv1a(b"bob@banana"));
         assert_eq!(a, a2, "same peer resolves the same id");
         assert_ne!(a, b, "different peers get different ids");
-    }
 
-    #[test]
-    fn initials_and_display_are_tidy() {
-        assert_eq!(initials_of("Ada Lovelace"), "AL");
-        assert_eq!(initials_of("mononym"), "M");
-        assert_eq!(ui::format::capitalize_first("ada"), "Ada");
-    }
+        // Initials and display are tidy.
+        assert_eq!(
+            initials_of("Ada Lovelace"),
+            "AL",
+            "case initials: two words"
+        );
+        assert_eq!(initials_of("mononym"), "M", "case initials: mononym");
+        assert_eq!(
+            ui::format::capitalize_first("ada"),
+            "Ada",
+            "case capitalize_first"
+        );
 
-    #[test]
-    fn hex8_and_color_are_stable() {
+        // hex8 and colour are stable.
         let pk = [0xABu8; 32];
-        assert_eq!(hex8(&pk), "abababababababab");
-        assert_eq!(color_from_bytes(&pk), 5);
+        assert_eq!(hex8(&pk), "abababababababab", "case hex8");
+        assert_eq!(color_from_bytes(&pk), 5, "case color_from_bytes");
     }
 }

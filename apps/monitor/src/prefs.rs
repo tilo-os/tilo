@@ -64,30 +64,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_favor_safe_periodic_sampling() {
+    fn defaults_favor_safe_periodic_sampling_and_interval_cycles() {
         let prefs = Prefs::default();
 
         assert_eq!(prefs.interval_ms, 1500);
         assert!(prefs.auto_refresh);
         assert!(!prefs.show_kernel_threads);
         assert!(prefs.confirm_kill);
-    }
 
-    #[test]
-    fn interval_cycles() {
+        // The interval cycles 1000 → 1500 → 2000 → 3000 → 5000 → 1000.
         let mut p = Prefs {
             interval_ms: 1000,
             ..Prefs::default()
         };
-        p.cycle_interval();
-        assert_eq!(p.interval_ms, 1500);
-        p.cycle_interval();
-        assert_eq!(p.interval_ms, 2000);
-        p.cycle_interval();
-        assert_eq!(p.interval_ms, 3000);
-        p.cycle_interval();
-        assert_eq!(p.interval_ms, 5000);
-        p.cycle_interval();
-        assert_eq!(p.interval_ms, 1000);
+        for want in [1500, 2000, 3000, 5000, 1000] {
+            p.cycle_interval();
+            assert_eq!(p.interval_ms, want, "case cycle to {want}");
+        }
     }
 }

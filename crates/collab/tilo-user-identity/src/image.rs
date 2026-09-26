@@ -416,171 +416,186 @@ mod tests {
         )
     }
 
+    /// A complete chain verifies and digest tampering fails; generation zero is rejected on both
+    /// ends; signing refuses an invalid or not-yet-valid device certificate; old endorsements cannot
+    /// extend a registry freeze; a revoked signer is rejected even when it backdates.
     #[test]
-    fn complete_chain_verifies_and_digest_tampering_fails() {
-        let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
-        sign_image_endorsement(&mut image, &device).unwrap();
-        verify_image_endorsement_at(&image, &root, 50).unwrap();
-        image.image_manifest_sha256[0] ^= 1;
-        assert_eq!(
-            verify_image_endorsement_at(&image, &root, 50),
-            Err(ImageEndorsementError::BadSignature)
-        );
-        assert_eq!(
-            verify_image_endorsement_at(&image, &[99; 32], 50),
-            Err(ImageEndorsementError::WrongUserRoot)
-        );
-        image.issued_at_ns = 11;
-        assert_eq!(
-            verify_image_endorsement_at(&image, &root, 50),
-            Err(ImageEndorsementError::IssuedBeforeDeviceCertificate)
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn image_trust_chains_verify_only_valid_current_signers() {
+        // Phase: complete_chain_verifies_and_digest_tampering_fails.
+        {
+            let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+            sign_image_endorsement(&mut image, &device).unwrap();
+            verify_image_endorsement_at(&image, &root, 50).unwrap();
+            image.image_manifest_sha256[0] ^= 1;
+            assert_eq!(
+                verify_image_endorsement_at(&image, &root, 50),
+                Err(ImageEndorsementError::BadSignature)
+            );
+            assert_eq!(
+                verify_image_endorsement_at(&image, &[99; 32], 50),
+                Err(ImageEndorsementError::WrongUserRoot)
+            );
+            image.issued_at_ns = 11;
+            assert_eq!(
+                verify_image_endorsement_at(&image, &root, 50),
+                Err(ImageEndorsementError::IssuedBeforeDeviceCertificate)
+            );
+        }
+
+        // Phase: generation_zero_is_rejected_before_signing_and_when_received.
+        {
+            let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+            image.generation = 0;
+            assert_eq!(
+                sign_image_endorsement(&mut image, &device),
+                Err(ImageEndorsementError::InvalidGeneration)
+            );
+            assert_eq!(
+                verify_image_endorsement_at(&image, &root, 50),
+                Err(ImageEndorsementError::InvalidGeneration)
+            );
+        }
+
+        // Phase: signing_refuses_an_invalid_or_not_yet_valid_device_certificate.
+        {
+            let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+            image.device_certificate.signature[0] ^= 1;
+            assert!(matches!(
+                sign_image_endorsement(&mut image, &device),
+                Err(ImageEndorsementError::DeviceCertificate(_))
+            ));
+
+            let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+            image.issued_at_ns = image.device_certificate.issued_at_ns - 1;
+            assert_eq!(
+                sign_image_endorsement(&mut image, &device),
+                Err(ImageEndorsementError::DeviceCertificate(
+                    DeviceCertError::NotYetValid
+                ))
+            );
+        }
+
+        // Phase: old_endorsements_cannot_extend_a_registry_freeze.
+        {
+            let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+            sign_image_endorsement(&mut image, &device).unwrap();
+            assert_eq!(
+                verify_image_endorsement_at(
+                    &image,
+                    &root,
+                    image.issued_at_ns + MAX_IMAGE_ENDORSEMENT_AGE_NS + 1,
+                ),
+                Err(ImageEndorsementError::TooOld)
+            );
+        }
+
+        // Phase: revoked_signer_is_rejected_even_if_it_backdates_an_endorsement.
+        {
+            use crate::{RevocationEntry, RevocationReason, sign_revocation_entry};
+
+            let (root_key, user) = crate::UserIdentity::generate("root", 1);
+            let (device_key, identity) = crate::DeviceIdentity::generate("builder", 2);
+            let mut cert = DeviceCert {
+                user_public_key: user.public_key,
+                device_public_key: identity.public_key,
+                device_label: identity.label,
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 3,
+                expires_at_ns: Some(100),
+                signature: [0; 64],
+            };
+            crate::sign_device_cert(&mut cert, &root_key).unwrap();
+            let mut authorization = ImageSigningAuthorization {
+                user_public_key: user.public_key,
+                device_public_key: identity.public_key,
+                issued_at_ns: 4,
+                expires_at_ns: 90,
+                signature: [0; 64],
+            };
+            sign_image_signing_authorization(&mut authorization, &root_key).unwrap();
+            let mut image = ImageEndorsement {
+                image_manifest_sha256: [9; 32],
+                generation: 1,
+                issued_at_ns: 10,
+                device_certificate: cert,
+                signing_authorization: authorization,
+                signature: [0; 64],
+            };
+            sign_image_endorsement(&mut image, &device_key).unwrap();
+            let mut revocation = RevocationEntry {
+                user_public_key: user.public_key,
+                revoked_device_public_key: identity.public_key,
+                revoked_at_ns: 60,
+                reason: RevocationReason::Compromised,
+                signature: [0; 64],
+            };
+            sign_revocation_entry(&mut revocation, &root_key).unwrap();
+            let mut revocations = RevocationList::new();
+            revocations.insert(revocation).unwrap();
+            assert_eq!(
+                verify_image_endorsement_with_revocations_at(
+                    &image,
+                    &user.public_key,
+                    &revocations,
+                    50
+                ),
+                Err(ImageEndorsementError::DeviceRevoked)
+            );
+        }
     }
 
+    /// Device admission does not imply image signing; a dedicated grant authorises an ordinary member
+    /// and expires; grants cannot encode effectively unbounded authority.
     #[test]
-    fn generation_zero_is_rejected_before_signing_and_when_received() {
-        let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
-        image.generation = 0;
-        assert_eq!(
-            sign_image_endorsement(&mut image, &device),
-            Err(ImageEndorsementError::InvalidGeneration)
-        );
-        assert_eq!(
-            verify_image_endorsement_at(&image, &root, 50),
-            Err(ImageEndorsementError::InvalidGeneration)
-        );
-    }
+    fn image_signing_authority_is_granted_explicitly_and_bounded() {
+        // Phase: device_admission_authority_does_not_imply_image_signing_authority.
+        {
+            let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), false);
+            assert!(matches!(
+                sign_image_endorsement(&mut image, &device),
+                Err(ImageEndorsementError::SigningAuthorization(_))
+            ));
+        }
 
-    #[test]
-    fn signing_refuses_an_invalid_or_not_yet_valid_device_certificate() {
-        let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
-        image.device_certificate.signature[0] ^= 1;
-        assert!(matches!(
-            sign_image_endorsement(&mut image, &device),
-            Err(ImageEndorsementError::DeviceCertificate(_))
-        ));
+        // Phase: dedicated_grant_can_authorize_an_ordinary_member_and_expires.
+        {
+            let (root, device, mut image) = endorsement(DeviceCapabilities::member(), true);
+            sign_image_endorsement(&mut image, &device).unwrap();
+            verify_image_endorsement_at(&image, &root, 50).unwrap();
+            assert!(matches!(
+                verify_image_endorsement_at(&image, &root, 80),
+                Err(ImageEndorsementError::SigningAuthorization(
+                    ImageSigningAuthorizationError::NotValid
+                ))
+            ));
+        }
 
-        let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
-        image.issued_at_ns = image.device_certificate.issued_at_ns - 1;
-        assert_eq!(
-            sign_image_endorsement(&mut image, &device),
-            Err(ImageEndorsementError::DeviceCertificate(
-                DeviceCertError::NotYetValid
-            ))
-        );
-    }
+        // Phase: image_signing_grants_cannot_encode_effectively_unbounded_authority.
+        {
+            let (root, user) = UserIdentity::generate("root", 1);
+            let (_device, identity) = DeviceIdentity::generate("builder", 2);
+            let mut authorization = ImageSigningAuthorization {
+                user_public_key: user.public_key,
+                device_public_key: identity.public_key,
+                issued_at_ns: 10,
+                expires_at_ns: 10 + MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS + 1,
+                signature: [0; 64],
+            };
+            assert_eq!(
+                sign_image_signing_authorization(&mut authorization, &root),
+                Err(ImageSigningAuthorizationError::ValidityTooLong)
+            );
 
-    #[test]
-    fn old_endorsements_cannot_extend_a_registry_freeze() {
-        let (root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
-        sign_image_endorsement(&mut image, &device).unwrap();
-        assert_eq!(
-            verify_image_endorsement_at(
-                &image,
-                &root,
-                image.issued_at_ns + MAX_IMAGE_ENDORSEMENT_AGE_NS + 1,
-            ),
-            Err(ImageEndorsementError::TooOld)
-        );
-    }
-
-    #[test]
-    fn device_admission_authority_does_not_imply_image_signing_authority() {
-        let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), false);
-        assert!(matches!(
-            sign_image_endorsement(&mut image, &device),
-            Err(ImageEndorsementError::SigningAuthorization(_))
-        ));
-    }
-
-    #[test]
-    fn dedicated_grant_can_authorize_an_ordinary_member_and_expires() {
-        let (root, device, mut image) = endorsement(DeviceCapabilities::member(), true);
-        sign_image_endorsement(&mut image, &device).unwrap();
-        verify_image_endorsement_at(&image, &root, 50).unwrap();
-        assert!(matches!(
-            verify_image_endorsement_at(&image, &root, 80),
-            Err(ImageEndorsementError::SigningAuthorization(
-                ImageSigningAuthorizationError::NotValid
-            ))
-        ));
-    }
-
-    #[test]
-    fn image_signing_grants_cannot_encode_effectively_unbounded_authority() {
-        let (root, user) = UserIdentity::generate("root", 1);
-        let (_device, identity) = DeviceIdentity::generate("builder", 2);
-        let mut authorization = ImageSigningAuthorization {
-            user_public_key: user.public_key,
-            device_public_key: identity.public_key,
-            issued_at_ns: 10,
-            expires_at_ns: 10 + MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS + 1,
-            signature: [0; 64],
-        };
-        assert_eq!(
-            sign_image_signing_authorization(&mut authorization, &root),
-            Err(ImageSigningAuthorizationError::ValidityTooLong)
-        );
-
-        // A malicious serializer cannot bypass the signing-side check: the
-        // verifier rejects the same interval before considering its signature.
-        assert_eq!(
-            verify_image_signing_authorization_at(&authorization, &user.public_key, 11),
-            Err(ImageSigningAuthorizationError::ValidityTooLong)
-        );
-    }
-
-    #[test]
-    fn revoked_signer_is_rejected_even_if_it_backdates_an_endorsement() {
-        use crate::{RevocationEntry, RevocationReason, sign_revocation_entry};
-
-        let (root_key, user) = crate::UserIdentity::generate("root", 1);
-        let (device_key, identity) = crate::DeviceIdentity::generate("builder", 2);
-        let mut cert = DeviceCert {
-            user_public_key: user.public_key,
-            device_public_key: identity.public_key,
-            device_label: identity.label,
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 3,
-            expires_at_ns: Some(100),
-            signature: [0; 64],
-        };
-        crate::sign_device_cert(&mut cert, &root_key).unwrap();
-        let mut authorization = ImageSigningAuthorization {
-            user_public_key: user.public_key,
-            device_public_key: identity.public_key,
-            issued_at_ns: 4,
-            expires_at_ns: 90,
-            signature: [0; 64],
-        };
-        sign_image_signing_authorization(&mut authorization, &root_key).unwrap();
-        let mut image = ImageEndorsement {
-            image_manifest_sha256: [9; 32],
-            generation: 1,
-            issued_at_ns: 10,
-            device_certificate: cert,
-            signing_authorization: authorization,
-            signature: [0; 64],
-        };
-        sign_image_endorsement(&mut image, &device_key).unwrap();
-        let mut revocation = RevocationEntry {
-            user_public_key: user.public_key,
-            revoked_device_public_key: identity.public_key,
-            revoked_at_ns: 60,
-            reason: RevocationReason::Compromised,
-            signature: [0; 64],
-        };
-        sign_revocation_entry(&mut revocation, &root_key).unwrap();
-        let mut revocations = RevocationList::new();
-        revocations.insert(revocation).unwrap();
-        assert_eq!(
-            verify_image_endorsement_with_revocations_at(
-                &image,
-                &user.public_key,
-                &revocations,
-                50
-            ),
-            Err(ImageEndorsementError::DeviceRevoked)
-        );
+            // A malicious serializer cannot bypass the signing-side check: the
+            // verifier rejects the same interval before considering its signature.
+            assert_eq!(
+                verify_image_signing_authorization_at(&authorization, &user.public_key, 11),
+                Err(ImageSigningAuthorizationError::ValidityTooLong)
+            );
+        }
     }
 }

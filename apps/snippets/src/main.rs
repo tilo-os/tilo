@@ -71,16 +71,17 @@ fn launch_spec() -> LaunchSpec {
         .configure_app(|app| snippets::actions::register(app.action_registry_mut()))
 }
 
+/// Production launch registers history and installs the body editor and action labels.
 #[test]
-fn production_launch_registers_history() {
-    launch_spec().validate_history_declaration().unwrap();
-}
+fn startup_registers_history_body_editor_and_action_labels() {
+    // Case `production_launch_registers_history`.
+    {
+        launch_spec().validate_history_declaration().unwrap();
+    }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn startup_installs_the_body_editor_and_action_labels() {
-        super::install_locales().unwrap();
+    // Case `startup_installs_the_body_editor_and_action_labels`.
+    {
+        install_locales().unwrap();
         let locale = ui::i18n::I18nManager::current_locale();
         let expected = if locale.starts_with("de") {
             ("Snippet-Inhalt", "Inhalt bearbeiten")

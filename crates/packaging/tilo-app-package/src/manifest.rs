@@ -33,6 +33,10 @@ pub struct Manifest {
     /// image gate must drive the exact manifest/payload pair that was packed.
     #[serde(default, skip_serializing_if = "Accessibility::is_empty")]
     pub accessibility: Accessibility,
+    /// `[actions]` block — what the app may do on the session's action door
+    /// under its own identity, beyond the actions it publishes itself.
+    #[serde(default, skip_serializing_if = "ActionAccess::is_empty")]
+    pub actions: ActionAccess,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
@@ -451,6 +455,30 @@ impl TrustAttestation {
         let mut out = [0u8; 64];
         out.copy_from_slice(&bytes);
         Ok(Some(out))
+    }
+}
+
+/// `[actions]` — an application's own standing on the session's action door.
+///
+/// An app always reaches the actions it publishes. Everything else is
+/// declared here, signed with the manifest, and is only a ceiling: invoking
+/// another app's action additionally needs the workspace to grant it to
+/// this app, exactly as it grants a collaborator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionAccess {
+    /// Read the catalogue of actions the person using the app is offered:
+    /// labels, typed parameters and contracts, never their data.
+    #[serde(default)]
+    pub query: bool,
+    /// Invoke actions other apps publish, as this app.
+    #[serde(default)]
+    pub invoke: bool,
+}
+
+impl ActionAccess {
+    /// Whether nothing beyond the app's own actions is declared.
+    pub fn is_empty(&self) -> bool {
+        !self.query && !self.invoke
     }
 }
 
@@ -935,6 +963,43 @@ after_action = ["Close"]
         let recovered = Manifest::from_toml_str(&encoded).unwrap();
         assert_eq!(recovered.accessibility, manifest.accessibility);
         assert!(encoded.contains("[accessibility.atspi_acceptance]"));
+    }
+
+    #[test]
+    fn declared_action_access_survives_the_signed_manifest_round_trip() {
+        let bare = r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#;
+        let undeclared = Manifest::from_toml_str(bare).unwrap();
+        assert_eq!(undeclared.actions, ActionAccess::default());
+        assert!(!undeclared.to_toml_string().unwrap().contains("[actions]"));
+
+        let declared =
+            Manifest::from_toml_str(&format!("{bare}\n[actions]\nquery = true\n")).unwrap();
+        assert_eq!(
+            declared.actions,
+            ActionAccess {
+                query: true,
+                invoke: false
+            }
+        );
+        let recovered = Manifest::from_toml_str(&declared.to_toml_string().unwrap()).unwrap();
+        assert_eq!(recovered.actions, declared.actions);
     }
 }
 

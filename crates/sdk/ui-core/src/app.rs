@@ -54,6 +54,7 @@ use runtime::{
     WindowRuntime,
 };
 include!("app/continuation.rs");
+include!("app/dev_session.rs");
 include!("app/actions.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
@@ -162,6 +163,10 @@ pub enum UserEvent {
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
+    /// `tilo-app dev` is replacing this process. Flush the document and write
+    /// the route and caret, then leave the event loop so the next process can
+    /// read them.
+    DevSessionStop,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
@@ -224,34 +229,37 @@ mod animation_pump_tests {
     use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
-    fn reduced_motion_does_not_keep_the_idle_loop_awake() {
-        assert!(animation_pump_needed(true, false));
-        assert!(!animation_pump_needed(true, true));
-        assert!(!animation_pump_needed(false, false));
-    }
+    fn animation_pump_sleeps_for_reduced_motion_and_clears_vanished_continuations() {
+        // Case `reduced_motion_does_not_keep_the_idle_loop_awake`.
+        {
+            assert!(animation_pump_needed(true, false));
+            assert!(!animation_pump_needed(true, true));
+            assert!(!animation_pump_needed(false, false));
+        }
 
-    #[test]
-    fn continuation_disappearance_clears_the_durable_projection() {
-        let request = continuation_publication("ebook".into(), None, true);
-        assert!(matches!(
-            request,
-            Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
-        ));
+        // Case `continuation_disappearance_clears_the_durable_projection`.
+        {
+            let request = continuation_publication("ebook".into(), None, true);
+            assert!(matches!(
+                request,
+                Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
+            ));
 
-        assert!(continuation_publication("ebook".into(), None, false).is_none());
+            assert!(continuation_publication("ebook".into(), None, false).is_none());
 
-        let metadata = ContinuationMetadata {
-            schema_version: 3,
-            bytes: vec![1, 2, 3],
-        };
-        assert!(matches!(
-            continuation_publication("ebook".into(), Some(&metadata), false),
-            Some(CollabRequest::ReportContinuation {
-                app_id,
+            let metadata = ContinuationMetadata {
                 schema_version: 3,
-                metadata,
-            }) if app_id == "ebook" && metadata == vec![1, 2, 3]
-        ));
+                bytes: vec![1, 2, 3],
+            };
+            assert!(matches!(
+                continuation_publication("ebook".into(), Some(&metadata), false),
+                Some(CollabRequest::ReportContinuation {
+                    app_id,
+                    schema_version: 3,
+                    metadata,
+                }) if app_id == "ebook" && metadata == vec![1, 2, 3]
+            ));
+        }
     }
 }
 
@@ -523,6 +531,9 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<crate::time::SystemTime>,
     last_theme_store_check: Instant,
+    /// The schedule an "Automatic" theme follows and whether it was night
+    /// when last applied: sunrise and sunset re-theme without a file change.
+    theme_schedule: Option<(settings_store::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
     focus_history: HistoryRuntime,
@@ -1266,6 +1277,7 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: crate::time::now(),
+            theme_schedule: None,
             focus_history: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
@@ -1681,6 +1693,21 @@ impl App {
 
     #[cfg(feature = "native")]
     fn reconcile_configured_theme(&mut self) -> bool {
+        let now = crate::time::now();
+        if self.watch_system_settings
+            && now.saturating_duration_since(self.last_theme_store_check)
+                >= Duration::from_millis(750)
+            && self.theme_schedule.is_some_and(|(schedule, night)| {
+                schedule.is_night(crate::theme::local_moment()) != night
+            })
+        {
+            self.last_theme_store_check = now;
+            self.apply_configured_theme();
+            self.rebuild_theme();
+            self.layout.layout_dirty = true;
+            self.layout.structure_dirty = true;
+            return true;
+        }
         self.reconcile_configured_theme_with(
             crate::time::now(),
             || {
@@ -1721,6 +1748,9 @@ impl App {
     #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
         self.accessibility.base_theme = Theme::configured();
+        self.theme_schedule =
+            Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
+                .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
@@ -1756,6 +1786,18 @@ impl App {
             }
         }
         best.map(|(_, icon)| icon)
+    }
+
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    #[cfg(feature = "native")]
+    fn claims_raw_touch_at(&self, point: Point) -> bool {
+        self.layout.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
     }
 
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
@@ -1931,6 +1973,13 @@ impl App {
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        let dev_view = self.consume_dev_checkpoint();
+        self.init_layout_with_dev_view(dev_view);
+    }
+
+    /// Headless and dev-reload startup. `dev_view` is the presentation captured
+    /// from the previous process; shell continuation still wins when both exist.
+    pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
         self.component_close_reports
@@ -1940,6 +1989,8 @@ impl App {
         self.build_history_presentation();
         self.update_focusable_order();
         if let Some(view) = self.continuation.pending_view.take() {
+            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
+        } else if let Some(view) = dev_view {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first
@@ -2276,57 +2327,60 @@ mod generic_floating_activity_tests {
     use vello::kurbo::Rect;
 
     #[test]
-    fn primary_surface_pumps_only_until_its_first_presented_frame() {
-        assert!(!primary_startup_pump_needed(0, 0));
-        assert!(primary_startup_pump_needed(1, 0));
-        assert!(primary_startup_pump_needed(3, 0));
-        assert!(!primary_startup_pump_needed(3, 1));
-    }
+    fn floating_activity_pumps_and_proxies_until_the_exact_primary_frame() {
+        // Case `primary_surface_pumps_only_until_its_first_presented_frame`.
+        {
+            assert!(!primary_startup_pump_needed(0, 0));
+            assert!(primary_startup_pump_needed(1, 0));
+            assert!(primary_startup_pump_needed(3, 0));
+            assert!(!primary_startup_pump_needed(3, 1));
+        }
 
-    #[test]
-    fn generic_pip_activity_edge_dismisses_without_touching_native_surfaces() {
-        let previous = HashSet::from([
-            "browser.media-pip".to_string(),
-            "chat-call:huddle".to_string(),
-            "navigation:route".to_string(),
-        ]);
-        let current = HashSet::new();
-        let native = HashMap::from([(
-            "chat-call:huddle".to_string(),
-            FloatingSurfacePresentation {
-                id: "chat-call:huddle".into(),
-                content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
-                window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
-                returning_to_app: false,
-            },
-        )]);
-        let suspended = HashSet::from(["navigation:route".to_string()]);
-        assert_eq!(
-            generic_floating_ids_to_dismiss(&previous, &current, &native, &suspended),
-            vec!["browser.media-pip".to_string()]
-        );
-    }
+        // Case `generic_pip_activity_edge_dismisses_without_touching_native_surfaces`.
+        {
+            let previous = HashSet::from([
+                "browser.media-pip".to_string(),
+                "chat-call:huddle".to_string(),
+                "navigation:route".to_string(),
+            ]);
+            let current = HashSet::new();
+            let native = HashMap::from([(
+                "chat-call:huddle".to_string(),
+                FloatingSurfacePresentation {
+                    id: "chat-call:huddle".into(),
+                    content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
+                    window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
+                    returning_to_app: false,
+                },
+            )]);
+            let suspended = HashSet::from(["navigation:route".to_string()]);
+            assert_eq!(
+                generic_floating_ids_to_dismiss(&previous, &current, &native, &suspended),
+                vec!["browser.media-pip".to_string()]
+            );
+        }
 
-    #[test]
-    fn native_float_allocation_follows_the_complete_soft_chrome() {
-        let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
-        let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
-        assert_eq!((compact.width, compact.height), (376.0, 252.0));
-        assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
-    }
+        // Case `native_float_allocation_follows_the_complete_soft_chrome`.
+        {
+            let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
+            let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
+            assert_eq!((compact.width, compact.height), (376.0, 252.0));
+            assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
+        }
 
-    #[test]
-    fn ownership_proxy_waits_for_the_exact_primary_frame_to_present() {
-        let gates = HashMap::from([
-            ("waiting".to_string(), None),
-            ("next".to_string(), Some(12)),
-            ("later".to_string(), Some(13)),
-        ]);
-        assert!(completed_primary_frame_gates(&gates, 11).is_empty());
-        assert_eq!(
-            completed_primary_frame_gates(&gates, 12),
-            vec!["next".to_string()]
-        );
+        // Case `ownership_proxy_waits_for_the_exact_primary_frame_to_present`.
+        {
+            let gates = HashMap::from([
+                ("waiting".to_string(), None),
+                ("next".to_string(), Some(12)),
+                ("later".to_string(), Some(13)),
+            ]);
+            assert!(completed_primary_frame_gates(&gates, 11).is_empty());
+            assert_eq!(
+                completed_primary_frame_gates(&gates, 12),
+                vec!["next".to_string()]
+            );
+        }
     }
 }
 
@@ -2651,63 +2705,95 @@ mod legacy_owner_routing_tests {
     }
 
     #[test]
-    fn semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots() {
-        let store = crate::record::RecordStore::in_memory();
-        let first = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(9901),
-            crate::record::RecordKind::new("note"),
-        );
-        let second = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(9902),
-            crate::record::RecordKind::new("note"),
-        );
-        store.create_record(&first).unwrap();
-        store.create_record(&second).unwrap();
-        let root = crate::widget::Column::new()
-            .push(Box::new(tile(&store, &first, "first")))
-            .push(Box::new(tile(&store, &second, "second")));
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-        app.enable_document_history_chrome();
-        app.init_layout();
-        app.refresh_semantic_tree();
-        let named = app
-            .semantic_tree()
-            .find_by_name("first named")
-            .unwrap()
-            .clone();
-        let keyed = app
-            .semantic_tree()
-            .find_by_name("second keyed")
-            .unwrap()
-            .id
-            .clone();
-        let alias = named.widget_taffy_id.unwrap();
-        assert!(
-            alias >= (1 << 47),
-            "fixture must exercise a legacy lifetime alias"
-        );
-        assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
-        assert!(
-            app.invoke_semantic_action(&named.id, "activate", None)
+    fn legacy_owner_routing_resolves_current_aliases_and_rejects_drained_errors() {
+        // Case `semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots`.
+        {
+            let store = crate::record::RecordStore::in_memory();
+            let first = crate::record::RecordCheckout::new(
+                crate::record::RecordId::for_tab(9901),
+                crate::record::RecordKind::new("note"),
+            );
+            let second = crate::record::RecordCheckout::new(
+                crate::record::RecordId::for_tab(9902),
+                crate::record::RecordKind::new("note"),
+            );
+            store.create_record(&first).unwrap();
+            store.create_record(&second).unwrap();
+            let root = crate::widget::Column::new()
+                .push(Box::new(tile(&store, &first, "first")))
+                .push(Box::new(tile(&store, &second, "second")));
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            app.enable_document_history_chrome();
+            app.init_layout();
+            app.refresh_semantic_tree();
+            let named = app
+                .semantic_tree()
+                .find_by_name("first named")
                 .unwrap()
-        );
-        assert!(
-            app.invoke_semantic_action(&named.id, "focus", None)
+                .clone();
+            let keyed = app
+                .semantic_tree()
+                .find_by_name("second keyed")
                 .unwrap()
-        );
-        let focused = app
-            .focused_node
-            .expect("focus uses the actual admitted owner");
-        assert!(app.layout.node_map.contains_key(&focused));
-        assert_ne!(u64::from(focused), alias);
-        assert!(
-            app.invoke_semantic_action(&keyed, "activate", None)
-                .unwrap()
-        );
-        for (checkout, expected) in [(&first, "first named"), (&second, "second keyed")] {
+                .id
+                .clone();
+            let alias = named.widget_taffy_id.unwrap();
+            assert!(
+                alias >= (1 << 47),
+                "fixture must exercise a legacy lifetime alias"
+            );
+            assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
+            assert!(
+                app.invoke_semantic_action(&named.id, "activate", None)
+                    .unwrap()
+            );
+            assert!(
+                app.invoke_semantic_action(&named.id, "focus", None)
+                    .unwrap()
+            );
+            let focused = app
+                .focused_node
+                .expect("focus uses the actual admitted owner");
+            assert!(app.layout.node_map.contains_key(&focused));
+            assert_ne!(u64::from(focused), alias);
+            assert!(
+                app.invoke_semantic_action(&keyed, "activate", None)
+                    .unwrap()
+            );
+            for (checkout, expected) in [(&first, "first named"), (&second, "second keyed")] {
+                assert_eq!(
+                    store
+                        .read_checked(&checkout.id, |doc| {
+                            doc.get(ROOT, "selected")
+                                .unwrap()
+                                .unwrap()
+                                .0
+                                .as_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                        .unwrap(),
+                    expected
+                );
+            }
+            assert!(app.state.doc.get(ROOT, "selected").unwrap().is_none());
+
+            // Retain the old semantic tree while replacing the owners. Current
+            // admission must refuse both stale targets instead of retargeting them.
+            app.close_components();
+            app.root_widget = Box::new(tile(&store, &first, "replacement"));
+            app.init_layout();
+            assert!(
+                !app.invoke_semantic_action(&named.id, "activate", None)
+                    .unwrap()
+            );
+            assert!(
+                !app.invoke_semantic_action(&keyed, "activate", None)
+                    .unwrap()
+            );
             assert_eq!(
                 store
-                    .read_checked(&checkout.id, |doc| {
+                    .read_checked(&first.id, |doc| {
                         doc.get(ROOT, "selected")
                             .unwrap()
                             .unwrap()
@@ -2717,66 +2803,37 @@ mod legacy_owner_routing_tests {
                             .to_owned()
                     })
                     .unwrap(),
-                expected
+                "first named"
             );
         }
-        assert!(app.state.doc.get(ROOT, "selected").unwrap().is_none());
 
-        // Retain the old semantic tree while replacing the owners. Current
-        // admission must refuse both stale targets instead of retargeting them.
-        app.close_components();
-        app.root_widget = Box::new(tile(&store, &first, "replacement"));
-        app.init_layout();
-        assert!(
-            !app.invoke_semantic_action(&named.id, "activate", None)
-                .unwrap()
-        );
-        assert!(
-            !app.invoke_semantic_action(&keyed, "activate", None)
-                .unwrap()
-        );
-        assert_eq!(
-            store
-                .read_checked(&first.id, |doc| {
-                    doc.get(ROOT, "selected")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .as_str()
-                        .unwrap()
-                        .to_owned()
-                })
-                .unwrap(),
-            "first named"
-        );
-    }
-
-    #[test]
-    fn widget_owned_runner_rejects_outgoing_error_drained_before_final_flush() {
-        let flushes = Rc::new(Cell::new(0));
-        let probe = OwnerProbe {
-            label: "current owner",
-            flushes: Rc::clone(&flushes),
-            report: Some(crate::application::ComponentCloseReport {
-                recovery: None,
-                view_error: None,
-                view_retry: None,
-                record_error: Some("outgoing owner could not persist".into()),
-                record_retry: None,
-                record_retry_target: None,
-                teardown_error: None,
-            }),
-        };
-        let inputs = crate::launch::LegacyLaunchInputs::new(
-            State::new(),
-            Box::new(probe),
-            crate::persist::DocWriter::disabled("fixture owns storage"),
-        )
-        .with_widget_owned_persistence();
-        assert_eq!(
-            crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
-            3
-        );
-        assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
+        // Case `widget_owned_runner_rejects_outgoing_error_drained_before_final_flush`.
+        {
+            let flushes = Rc::new(Cell::new(0));
+            let probe = OwnerProbe {
+                label: "current owner",
+                flushes: Rc::clone(&flushes),
+                report: Some(crate::application::ComponentCloseReport {
+                    recovery: None,
+                    view_error: None,
+                    view_retry: None,
+                    record_error: Some("outgoing owner could not persist".into()),
+                    record_retry: None,
+                    record_retry_target: None,
+                    teardown_error: None,
+                }),
+            };
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(probe),
+                crate::persist::DocWriter::disabled("fixture owns storage"),
+            )
+            .with_widget_owned_persistence();
+            assert_eq!(
+                crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
+                3
+            );
+            assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
+        }
     }
 }

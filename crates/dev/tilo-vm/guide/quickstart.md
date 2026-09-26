@@ -65,7 +65,8 @@ What each picture is:
   `slot = "<name>"` in the worktree's `.tilo-vm` names another.
 - Every command that works on a slot accepts `--slot <name>`: `status`,
   `swap`, `input`, `control`, `rollback`, `logs`, `shot`,
-  `seat claim|release` and `slot create|show|exec|restart|rm`. All but
+  `seat claim|release`, `slot create|show|exec|restart|rm` and
+  `slot apps install`. All but
   `status`, `swap`, `input` and `control` also take the name as a
   positional argument (`tilo-vm logs review-a`).
 - After a command on a slot other than your default one, its `next:` hints
