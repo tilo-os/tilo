@@ -9525,6 +9525,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn presenter_backpressure_and_deadlines_schedule_work() {
         // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
