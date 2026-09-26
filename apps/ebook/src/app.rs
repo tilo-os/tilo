@@ -42,7 +42,7 @@ use vello::peniko::{
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
@@ -149,6 +149,13 @@ struct SearchWorker {
 impl SearchWorker {
     /// `prior` is the published provider; its chapter-prose index is reused
     /// when the book set has not changed.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "only a native thread spawn can fail; both targets share the caller"
+        )
+    )]
     fn spawn(
         prior: crate::search_provider::BookSearchProvider,
         books: Arc<Vec<Arc<Book>>>,
@@ -158,24 +165,31 @@ impl SearchWorker {
         generation: u64,
     ) -> Result<Self, String> {
         let (send, results) = mpsc::sync_channel(1);
+        let build = move || {
+            let provider = crate::search_provider::BookSearchProvider::new_shared_after(
+                &prior,
+                books,
+                annotations,
+                registry,
+                generation,
+            );
+            // The receiver is intentionally allowed to disappear during
+            // shutdown; publication has no side effect outside the app.
+            let _ = send.send(SearchBuild {
+                fingerprint,
+                generation,
+                provider,
+            });
+        };
+        // The browser has no threads. Without an index the library's book,
+        // chapter and annotation resources are unresolvable, so build it on
+        // the UI thread there; the one slot means the send never blocks.
+        #[cfg(target_arch = "wasm32")]
+        build();
+        #[cfg(not(target_arch = "wasm32"))]
         thread::Builder::new()
             .name("ebook-search-builder".into())
-            .spawn(move || {
-                let provider = crate::search_provider::BookSearchProvider::new_shared_after(
-                    &prior,
-                    books,
-                    annotations,
-                    registry,
-                    generation,
-                );
-                // The receiver is intentionally allowed to disappear during
-                // shutdown; publication has no side effect outside the app.
-                let _ = send.send(SearchBuild {
-                    fingerprint,
-                    generation,
-                    provider,
-                });
-            })
+            .spawn(build)
             .map_err(|error| error.to_string())?;
         Ok(Self { results })
     }
@@ -785,6 +799,8 @@ pub struct BooksApp {
     /// A book handed to the app by the OS (file association) to open + import
     /// on the first `sync`.
     pending_open_path: Option<PathBuf>,
+    /// A shelf book, by content id, to open on the first `sync`.
+    pending_open_book: Option<String>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
@@ -1138,6 +1154,7 @@ impl BooksApp {
             // `new()` clears this so the document load runs.
             library_loaded: true,
             pending_open_path: None,
+            pending_open_book: None,
             portal_rx: None,
             resource_invocation: None,
             resource_lifecycle: None,
@@ -1276,6 +1293,13 @@ impl BooksApp {
         app.pending_open_path = Some(path.to_path_buf());
         app.view = View::Reader;
         app
+    }
+
+    /// Open the shelf book with content id `book_id` in the reader, at its
+    /// recorded position, once the library loads. The shelf stays home when
+    /// the library does not hold it.
+    pub fn open_book_on_load(&mut self, book_id: &str) {
+        self.pending_open_book = Some(book_id.into());
     }
 
     /// Screenshot-only: force the floating page bubble hover-pinned open so
@@ -2235,10 +2259,16 @@ impl BooksApp {
             Arc::make_mut(&mut self.library).push(Arc::new(lb.book));
         }
 
+        let pending_book = self
+            .pending_open_book
+            .take()
+            .and_then(|id| self.library.iter().position(|book| book.id == id));
         if let Some(path) = pending_open {
             if let Err(error) = self.begin_import(path, ImportKind::Open) {
                 self.settle_import_failure(error, "ebook.importer_unavailable");
             }
+        } else if let Some(index) = pending_book {
+            self.open_book_at(doc, index);
         } else {
             self.view = View::Library;
         }
@@ -5736,8 +5766,8 @@ impl Widget for BooksApp {
         // easing in, or the floating page bubble is lingering/fading.
         !self.reduce_motion
             && (self.flaps_animating()
-                || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
-                || self.reader_bubble.needs_frame(Instant::now()))
+                || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
+                || self.reader_bubble.needs_frame(ui::time::now()))
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -8526,7 +8556,7 @@ impl BooksApp {
             self.page_turn = None;
             return (false, t, 1.0);
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         let turning = match self.page_turn {
             Some(pt) if !pt.done(now) && !mode.is_continuous() => true,
             Some(_) => {
