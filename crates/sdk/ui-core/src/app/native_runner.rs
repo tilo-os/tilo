@@ -2126,7 +2126,8 @@ impl AppHandler {
             }
         }
 
-        // Two-finger swipe / edge pull; delivered via `on_nav_gesture`.
+        // Two-finger swipe, edge pull or mouse side button; delivered via
+        // `on_nav_gesture`.
         if !handled && !self.dispatching_touch_pointer {
             use crate::gesture::GesturePhase;
             let map_phase = |p: winit::event::TouchPhase| match p {
@@ -2153,6 +2154,7 @@ impl AppHandler {
                     map_phase(*phase),
                     true,
                 ),
+                WindowEvent::MouseInput { .. } => crate::interaction::mouse_nav_direction(&event),
                 WindowEvent::Touch(t) => {
                     let width = f64::from(window.inner_size().width);
                     app.input.nav_gestures.on_touch(
