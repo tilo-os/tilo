@@ -52,21 +52,18 @@ fn package_primary(fixture: &mut LocalDirectoryFixture, request: &mut CallerInvo
 
 fn device(seed: u8, host: bool) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
-    let root = SigningKey::from_bytes(&[51; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "private test device".into(),
-        capabilities: if host {
-            DeviceCapabilities::host()
-        } else {
-            DeviceCapabilities::primary()
-        },
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
+    let capabilities = if host {
+        DeviceCapabilities::host()
+    } else {
+        DeviceCapabilities::primary()
     };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = super::super::signed_worker::signed_device(
+        &SigningKey::from_bytes(&[51; 32]),
+        &key,
+        "private test device",
+        capabilities,
+        None,
+    );
     (key, cert)
 }
 async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {

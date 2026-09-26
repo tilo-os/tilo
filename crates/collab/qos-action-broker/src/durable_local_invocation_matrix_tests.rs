@@ -1,151 +1,9 @@
 mod durable_local_matrix {
+    use super::signed_worker::{
+        Connection, CurrentHost, DurableDirectory, directory_state, join_worker, presentation,
+        rpc_pair,
+    };
     use super::*;
-    use std::sync::atomic::AtomicUsize;
-    struct CurrentHost {
-        route: CrdtRoute,
-        certificate: Mutex<Option<tilo_user_identity::DeviceCert>>,
-        additional_certificates: Mutex<Vec<tilo_user_identity::DeviceCert>>,
-        checks: AtomicUsize,
-        time: crate::peer_actions::PolicyTime,
-    }
-    impl crate::peer_actions::CertificateAuthority for CurrentHost {
-        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
-            Ok(Some(self.time.clone()))
-        }
-        fn authorize(
-            &self,
-            room: uuid::Uuid,
-            cert: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            if room.to_string() != self.route.cluster_id
-                || (self.certificate.lock().unwrap().as_ref() != Some(cert)
-                    && !self.additional_certificates.lock().unwrap().contains(cert))
-            {
-                return Err("host certificate changed or revoked".into());
-            }
-            Ok(())
-        }
-        // A permissive ordinary provider still cannot create descriptor provenance.
-        fn authorize_join(
-            &self,
-            room: uuid::Uuid,
-            cert: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            self.authorize(room, cert)
-        }
-        fn authorize_host_worker(
-            &self,
-            route: &CrdtRoute,
-            cert: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            self.checks.fetch_add(1, Ordering::SeqCst);
-            if route != &self.route || !cert.capabilities.can_act_as_host {
-                return Err("wrong host worker route or role".into());
-            }
-            self.authorize(route.cluster_id.parse().unwrap(), cert)
-        }
-    }
-    fn presentation(
-        room: &str,
-        cert: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
-    ) -> Vec<u8> {
-        runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.into(),
-            device_certificate: serde_json::to_vec(cert).unwrap(),
-            proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(room))
-                .to_bytes()
-                .to_vec(),
-        }
-        .encode()
-        .unwrap()
-    }
-    fn rpc_pair(
-        state: Arc<CapnpBrokerState>,
-        peer: u64,
-        server: std::os::unix::net::UnixStream,
-        client: std::os::unix::net::UnixStream,
-        worker: Option<WorkerBinding>,
-        directories: Rc<LocalActionDirectoryRegistry>,
-    ) -> (
-        runtime_collab::CollabClient,
-        tokio::task::JoinHandle<Result<(), capnp::Error>>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        server.set_nonblocking(true).unwrap();
-        client.set_nonblocking(true).unwrap();
-        let server_task = tokio::task::spawn_local(drive_connection(
-            tokio::net::UnixStream::from_std(server).unwrap(),
-            state,
-            directories,
-            peer,
-            worker,
-        ));
-        let (r, w) = tokio::net::UnixStream::from_std(client)
-            .unwrap()
-            .into_split();
-        let network = Box::new(twoparty::VatNetwork::new(
-            futures::io::BufReader::new(r.compat()),
-            futures::io::BufWriter::new(w.compat_write()),
-            rpc_twoparty_capnp::Side::Client,
-            capnp::message::ReaderOptions::default(),
-        ));
-        let mut rpc = RpcSystem::new(network, None);
-        let client = rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
-        let client_task = tokio::task::spawn_local(async move {
-            let _ = rpc.await;
-        });
-        (
-            runtime_collab::CollabClient::from_raw(client),
-            server_task,
-            client_task,
-        )
-    }
-
-    struct DurableDirectory {
-        state: Rc<RefCell<TestActionDirectory>>,
-    }
-    impl action_directory::Server for DurableDirectory {
-        fn resolve(
-            self: Rc<Self>,
-            params: action_directory::ResolveParams,
-            mut results: action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
-            let request = match params.get() {
-                Ok(request) => request,
-                Err(error) => return Promise::err(error),
-            };
-            let revision = match request
-                .get_revision()
-                .and_then(|text| text.to_str().map_err(capnp::Error::from))
-            {
-                Ok(value) => value,
-                Err(error) => return Promise::err(error),
-            };
-            let mut state = self.state.borrow_mut();
-            state.resolve_count += 1;
-            if revision != state.revision {
-                results.get().init_resolution().set_stale_revision(());
-                return Promise::ok(());
-            }
-            let mut row = state.row();
-            let contract = tilo_actions::ActionContract {
-                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                result: tilo_actions::ResultSpec::Job,
-                ..tilo_actions::ActionContract::default()
-            };
-            assert!(contract.validate_declaration().is_empty());
-            let encoded = serde_json::to_string(&contract).unwrap();
-            let descriptor = row.descriptor.as_mut().unwrap();
-            descriptor.operation_kind = "effect".into();
-            descriptor.contract_json.clone_from(&encoded);
-            row.visibility_contract_json = encoded;
-            write_directory_row(results.get().init_resolution().init_found(), &row);
-            Promise::ok(())
-        }
-    }
-
     struct Environment {
         root: tempfile::TempDir,
         cert: tilo_user_identity::DeviceCert,
@@ -205,13 +63,7 @@ mod durable_local_matrix {
                 }
                 owner
             });
-            let authority = Arc::new(CurrentHost {
-                route: route.clone(),
-                certificate: Mutex::new(Some(cert.clone())),
-                additional_certificates: Mutex::new(vec![]),
-                checks: AtomicUsize::new(0),
-                time: origin.capture().unwrap(),
-            });
+            let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
             Self {
                 root,
                 cert,
@@ -229,17 +81,6 @@ mod durable_local_matrix {
     impl Drop for Environment {
         fn drop(&mut self) {
             self.owner_task.abort();
-        }
-    }
-    struct Connection {
-        handle: runtime_collab::ChannelHandle,
-        server: tokio::task::JoinHandle<Result<(), capnp::Error>>,
-        client: tokio::task::JoinHandle<()>,
-    }
-    impl Drop for Connection {
-        fn drop(&mut self) {
-            self.server.abort();
-            self.client.abort();
         }
     }
     struct Rig {
@@ -269,28 +110,11 @@ mod durable_local_matrix {
             state
                 .invocation_host()
                 .expect("actual broker journal available after normal stop/open");
-            let (_, rx) = std::sync::mpsc::channel();
-            let directories = Rc::new(LocalActionDirectoryRegistry::new(rx));
-            let (socket, authorize) = state
-                .connect_local_worker_with_authorizer(env.route.clone(), &env.cert)
-                .unwrap();
-            let pending = state.workers.lock().unwrap().pop().unwrap();
-            let (rpc, server, client) = rpc_pair(
-                state.clone(),
-                903,
-                pending.stream,
-                socket,
-                Some(pending.binding),
-                directories.clone(),
-            );
-            let handle = rpc
-                .join_channel(
-                    &env.route.channel_key(),
-                    &presentation(&env.route.cluster_id, &env.cert, &env.key),
-                )
-                .await
-                .unwrap();
-            publish(&handle).await;
+            let directories = super::signed_worker::empty_directories();
+            let (worker, authorize) =
+                join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
+            let handle = &worker.handle;
+            publish(handle).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -304,11 +128,7 @@ mod durable_local_matrix {
             Self {
                 state,
                 directories,
-                worker: Connection {
-                    handle,
-                    server,
-                    client,
-                },
+                worker,
                 stream: Some(stream),
                 binding,
                 authorize,
@@ -371,14 +191,7 @@ mod durable_local_matrix {
         }
     }
     async fn publish(handle: &runtime_collab::ChannelHandle) -> Rc<RefCell<TestActionDirectory>> {
-        let state = Rc::new(RefCell::new(TestActionDirectory {
-            revision: "original-r1".into(),
-            resolve_mode: DirectoryResolveMode::Found,
-            result: tilo_actions::ResultSpec::None,
-            confirmation_required: false,
-            query_count: 0,
-            resolve_count: 0,
-        }));
+        let state = directory_state("original-r1");
         handle
             .publish_action_directory(
                 "so.tilo.word-processor",
@@ -420,6 +233,50 @@ mod durable_local_matrix {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_local_rpc_exact_uuid_duplicate_cancel_and_retained_observation() {
+        tokio::task::LocalSet::new().run_until(async {
+            let env=Environment::new();let rig=Rig::new(&env).await;
+            let handle=&rig.worker.handle;let binding=&rig.binding;let stream=rig.stream.as_ref().unwrap();let authorize=&rig.authorize;
+            let invocation=id(0xabcd_ef00_0000_0000_0000_0000_0000_0001);
+            let (first,duplicate)=tokio::join!(
+                handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),binding,"original-r1","workspace:atlas","open",Some("original"),"{}"),
+                handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),binding,"original-r1","workspace:atlas","open",Some("original"),"{}")
+            );
+            let first=first.expect("genuine local caller UUID reaches existing durable dispatch");let duplicate=duplicate.unwrap();assert_eq!(first,duplicate);
+            assert_eq!(first.invocation,*invocation.0.as_bytes());assert_eq!(first.host,binding.host);
+            let accepted=first.result.unwrap();assert!(matches!(serde_json::from_str::<tilo_actions::InvocationUpdate>(&accepted.update_json).unwrap(),tilo_actions::InvocationUpdate::Accepted{invocation:id} if id==invocation));
+            let delivered=stream.read().await.unwrap();assert_eq!(delivered.id,accepted.id);assert_eq!(delivered.invocation_uuid,Some(*invocation.0.as_bytes()));
+            let request=ui::invocation_scope::PublishedInvocationRequest{wire_id:delivered.id,invocation,address:tilo_actions::ActionAddress{resource:delivered.resource.clone(),action:delivered.action.clone()},argument:delivered.argument.clone(),actor:delivered.actor.clone(),participant:None};
+            let lease=authorize(&request).unwrap();lease.check().unwrap();
+            let cancelled=handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap();assert!(cancelled.result.as_ref().unwrap().cancellation_requested);
+            assert_eq!(cancelled,handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap());
+            assert!(handle.invocation_cancellation(delivered.id).await.unwrap());
+            lease.check().unwrap();std::fs::write(env.root.path().join("effect-count"),"1").unwrap();
+            let completed=tilo_actions::InvocationUpdate::Succeeded{invocation,output:tilo_actions::ActionOutput::default()};
+            handle.update_invocation(delivered.id,&serde_json::to_string(&completed).unwrap()).await.unwrap();
+            let observed=handle.published_invocation_observation(&binding.host,invocation.0.as_bytes()).await.unwrap();assert_eq!(serde_json::from_str::<tilo_actions::InvocationUpdate>(&observed.result.as_ref().unwrap().update_json).unwrap(),completed);
+            assert_eq!(observed,handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap());
+            rig.directories.remove(903);
+            assert_eq!(observed,handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),binding,"original-r1","workspace:atlas","open",Some("original"),"{}").await.unwrap(),"retained UUID lookup precedes missing live target");
+            assert!(handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),binding,"original-r1","workspace:atlas","open",Some("changed"),"{}").await.is_err());
+            for changed in ["peer", "app", "record", "root", "device", "registration", "host"] {
+                let mut altered=binding.clone();
+                match changed {"peer"=>altered.peer_id+=1,"app"=>altered.app_id.push('x'),"record"=>altered.record_id.push('x'),"root"=>altered.root[0]^=1,"device"=>altered.device[0]^=1,"registration"=>altered.target_binding[0]^=1,"host"=>altered.host[0]^=1,_=>unreachable!()}
+                assert!(handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),&altered,"original-r1","workspace:atlas","open",Some("original"),"{}").await.is_err(),"immutable {changed} binding cannot change on retained UUID");
+            }
+            for (revision,resource,action,argument) in [("changed-r","workspace:atlas","open",Some("original")),("original-r1","changed-resource","open",Some("original")),("original-r1","workspace:atlas","changed-action",Some("original")),("original-r1","workspace:atlas","open",None),("original-r1","workspace:atlas","open",Some(""))] {
+                assert!(handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),binding,revision,resource,action,argument,"{}").await.is_err());
+            }
+            assert_eq!(std::fs::read_to_string(env.root.path().join("effect-count")).unwrap(),"1");
+            assert_eq!(rig.state.journal.lock().unwrap().as_ref().unwrap().as_ref().unwrap().next_wire_id(),accepted.id+1);
+            assert!(tokio::time::timeout(Duration::from_millis(25),stream.read()).await.is_err(),"concurrent duplicate causes one delivery");
+            env.control.set_wall_ns(10_000_000_000);env.control.advance_monotonic(Duration::from_secs(80));
+            assert!(handle.published_invocation_observation(&binding.host,invocation.0.as_bytes()).await.is_err(),"terminal observation still requires current original caller permission");
+            env.origin.invalidate();rig.stop().await;
+        }).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -836,31 +693,16 @@ mod durable_local_matrix {
                             let _ = (&mut rig.worker.server).await;
                             let _ = (&mut rig.worker.client).await;
 
-                            let (socket, _) = rig
-                                .state
-                                .connect_local_worker_with_authorizer(env.route.clone(), &env.cert)
-                                .unwrap();
-                            let worker = rig.state.workers.lock().unwrap().pop().unwrap();
-                            let (rpc, server, client) = rpc_pair(
-                                rig.state.clone(),
+                            rig.worker = join_worker(
+                                &rig.state,
+                                &rig.directories,
+                                &env.route,
+                                &env.cert,
+                                &env.key,
                                 903,
-                                worker.stream,
-                                socket,
-                                Some(worker.binding),
-                                rig.directories.clone(),
-                            );
-                            let handle = rpc
-                                .join_channel(
-                                    &env.route.channel_key(),
-                                    &presentation(&env.route.cluster_id, &env.cert, &env.key),
-                                )
-                                .await
-                                .unwrap();
-                            rig.worker = Connection {
-                                handle,
-                                server,
-                                client,
-                            };
+                            )
+                            .await
+                            .0;
                         }
                         "stream" => {
                             drop(rig.stream.take());

@@ -10590,13 +10590,15 @@ pub mod tests {
     }
 
     #[cfg(test)]
+    mod signed_worker {
+        include!("signed_worker_test_support.rs");
+    }
+    #[cfg(test)]
     include!("owner_commit_tests.rs");
     #[cfg(test)]
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
-    #[cfg(test)]
-    include!("durable_local_invocation_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
 

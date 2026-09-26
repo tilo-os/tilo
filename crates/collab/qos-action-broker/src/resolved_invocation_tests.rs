@@ -1,232 +1,28 @@
 // Genuine signed RPC and original worker custody for revision-bound lazy invocation.
 #[tokio::test(flavor = "current_thread")]
 async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
-    use std::sync::atomic::AtomicUsize;
-    struct CurrentHost {
-        route: CrdtRoute,
-        certificate: Mutex<Option<tilo_user_identity::DeviceCert>>,
-        checks: AtomicUsize,
-        time: crate::peer_actions::PolicyTime,
-    }
-    impl crate::peer_actions::CertificateAuthority for CurrentHost {
-        fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
-            Ok(Some(self.time.clone()))
-        }
-        fn authorize(
-            &self,
-            room: uuid::Uuid,
-            cert: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            if room.to_string() != self.route.cluster_id
-                || self.certificate.lock().unwrap().as_ref() != Some(cert)
-            {
-                return Err("host certificate changed or revoked".into());
-            }
-            Ok(())
-        }
-        // A permissive ordinary provider still cannot create descriptor provenance.
-        fn authorize_join(
-            &self,
-            room: uuid::Uuid,
-            cert: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            self.authorize(room, cert)
-        }
-        fn authorize_host_worker(
-            &self,
-            route: &CrdtRoute,
-            cert: &tilo_user_identity::DeviceCert,
-        ) -> Result<(), String> {
-            self.checks.fetch_add(1, Ordering::SeqCst);
-            if route != &self.route || !cert.capabilities.can_act_as_host {
-                return Err("wrong host worker route or role".into());
-            }
-            self.authorize(route.cluster_id.parse().unwrap(), cert)
-        }
-    }
-    struct HeldHostDirectory {
-        entered: mpsc::UnboundedSender<&'static str>,
-        release: Rc<tokio::sync::Notify>,
-        row: runtime_collab::ActionDirectoryRow,
-    }
-    impl action_directory::Server for HeldHostDirectory {
-        fn query(
-            self: Rc<Self>,
-            _params: action_directory::QueryParams,
-            mut results: action_directory::QueryResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::from_future(async move {
-                self.entered.send("query").unwrap();
-                self.release.notified().await;
-                write_directory_page(
-                    results.get().init_page(),
-                    &runtime_collab::ActionDirectoryPage {
-                        revision: "directory-r1".into(),
-                        rows: vec![self.row.clone()],
-                        next_cursor: vec![],
-                        exhausted: true,
-                        stale_cursor: false,
-                        budget_exhausted: false,
-                    },
-                )
-            })
-        }
-        fn resolve(
-            self: Rc<Self>,
-            _params: action_directory::ResolveParams,
-            mut results: action_directory::ResolveResults,
-        ) -> Promise<(), capnp::Error> {
-            Promise::from_future(async move {
-                self.entered.send("resolve").unwrap();
-                self.release.notified().await;
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
-            })
-        }
-    }
-    fn presentation(
-        room: &str,
-        cert: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
-    ) -> Vec<u8> {
-        runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.into(),
-            device_certificate: serde_json::to_vec(cert).unwrap(),
-            proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(room))
-                .to_bytes()
-                .to_vec(),
-        }
-        .encode()
-        .unwrap()
-    }
-    fn rpc_pair(
-        state: Arc<CapnpBrokerState>,
-        peer: u64,
-        server: std::os::unix::net::UnixStream,
-        client: std::os::unix::net::UnixStream,
-        worker: Option<WorkerBinding>,
-        directories: Rc<LocalActionDirectoryRegistry>,
-    ) -> (
-        runtime_collab::CollabClient,
-        tokio::task::JoinHandle<Result<(), capnp::Error>>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        server.set_nonblocking(true).unwrap();
-        client.set_nonblocking(true).unwrap();
-        let server_task = tokio::task::spawn_local(drive_connection(
-            tokio::net::UnixStream::from_std(server).unwrap(),
-            state,
-            directories,
-            peer,
-            worker,
-        ));
-        let (r, w) = tokio::net::UnixStream::from_std(client)
-            .unwrap()
-            .into_split();
-        let network = Box::new(twoparty::VatNetwork::new(
-            futures::io::BufReader::new(r.compat()),
-            futures::io::BufWriter::new(w.compat_write()),
-            rpc_twoparty_capnp::Side::Client,
-            capnp::message::ReaderOptions::default(),
-        ));
-        let mut rpc = RpcSystem::new(network, None);
-        let client = rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
-        let client_task = tokio::task::spawn_local(async move {
-            let _ = rpc.await;
-        });
-        (
-            runtime_collab::CollabClient::from_raw(client),
-            server_task,
-            client_task,
-        )
-    }
+    use signed_worker::{HeldHostDirectory, OriginalRoom, directory_server, directory_state};
     async fn scenario(capabilities: tilo_user_identity::DeviceCapabilities, final_case: &str) {
-        let root = SigningKey::from_bytes(&[83; 32]);
-        let key = SigningKey::from_bytes(&[84; 32]);
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "original worker".into(),
+        let room = OriginalRoom::new(
             capabilities,
-            issued_at_ns: 1,
-            expires_at_ns: (final_case == "certificate").then_some(75_000_000_000),
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(50_000_000_000);
-        let origin = clock.new_origin();
-        let time = origin.capture().unwrap();
-        let mut workspace = crate::test_support::Workspace::test_default(
-            crate::test_support::WorkspaceId(83),
-            "Original room",
-        );
-        workspace.set_owner(principal_id_for_root(cert.user_public_key));
-        workspace.owner = None;
-        workspace.capabilities = workspace
-            .capabilities
-            .into_iter()
-            .map(|cap| cap.with_expiry(100))
-            .collect();
-        let route = CrdtRoute::record(
-            "so.tilo.word-processor",
-            workspace.room.to_string(),
-            "document-1",
-        );
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let membership = tree.shared();
-        let fanout = Arc::new(FanoutState::new());
-        let (owner_handle, _owner_mailbox) =
-            qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(8);
-        let publisher =
-            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-        let (state, _) = CapnpBrokerState::new(
-            &fanout,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            publisher,
-            Some(membership.clone()),
+            (final_case == "certificate").then_some(75_000_000_000),
             None,
         );
-        let authority = Arc::new(CurrentHost {
-            route: route.clone(),
-            certificate: Mutex::new(Some(cert.clone())),
-            checks: AtomicUsize::new(0),
-            time,
-        });
-        assert!(state.certificate_authority.set(authority.clone()).is_ok());
-        let bytes = presentation(&route.cluster_id, &cert, &key);
-        let (socket, authorize) = state
-            .connect_local_worker_with_authorizer(route.clone(), &cert)
-            .unwrap();
-        let pending = state.workers.lock().unwrap().pop().unwrap();
-        let (_, directory_rx) = std::sync::mpsc::channel();
-        let directories = Rc::new(LocalActionDirectoryRegistry::new(directory_rx));
-        let (rpc, server, client) = rpc_pair(
-            state.clone(),
-            903,
-            pending.stream,
-            socket,
-            Some(pending.binding),
-            directories.clone(),
-        );
-        let handle = rpc
-            .join_channel(&route.channel_key(), &bytes)
-            .await
-            .unwrap();
-        let directory_state = Rc::new(RefCell::new(TestActionDirectory {
-            revision: "original-r1".into(),
-            resolve_mode: DirectoryResolveMode::Found,
-            result: tilo_actions::ResultSpec::None,
-            confirmation_required: false,
-            query_count: 0,
-            resolve_count: 0,
-        }));
-        let directory = capnp_rpc::new_client(TestActionDirectoryServer {
-            state: directory_state.clone(),
-        });
+        let OriginalRoom {
+            cert,
+            origin,
+            time_control,
+            route,
+            membership,
+            state,
+            authority,
+            ..
+        } = &room;
+        let (worker, authorize) = room.join_worker(903).await;
+        let handle = &worker.handle;
+        let directory_state = directory_state("original-r1");
         handle
-            .publish_action_directory(&route.app_id, directory)
+            .publish_action_directory(&route.app_id, directory_server(&directory_state))
             .await
             .unwrap();
         assert!(
@@ -350,12 +146,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             }
             if case == "directory replacement" {
                 handle
-                    .publish_action_directory(
-                        &route.app_id,
-                        capnp_rpc::new_client(TestActionDirectoryServer {
-                            state: directory_state.clone(),
-                        }),
-                    )
+                    .publish_action_directory(&route.app_id, directory_server(&directory_state))
                     .await
                     .unwrap();
             }
@@ -378,12 +169,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
                 *authority.certificate.lock().unwrap() = Some(cert.clone());
             }
             handle
-                .publish_action_directory(
-                    &route.app_id,
-                    capnp_rpc::new_client(TestActionDirectoryServer {
-                        state: directory_state.clone(),
-                    }),
-                )
+                .publish_action_directory(&route.app_id, directory_server(&directory_state))
                 .await
                 .unwrap();
         }
@@ -409,22 +195,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             .unwrap()
             .remove(&control)
             .unwrap();
-        let (socket2, authorize2) = state
-            .connect_local_worker_with_authorizer(route.clone(), &cert)
-            .unwrap();
-        let pending2 = state.workers.lock().unwrap().pop().unwrap();
-        let (rpc2, server2, client2) = rpc_pair(
-            state.clone(),
-            904,
-            pending2.stream,
-            socket2,
-            Some(pending2.binding),
-            directories.clone(),
-        );
-        let _handle2 = rpc2
-            .join_channel(&route.channel_key(), &bytes)
-            .await
-            .unwrap();
+        let (second, authorize2) = room.join_worker(904).await;
         assert_eq!(
             state.is_current_host_worker(904, &route, &cert).unwrap(),
             cert.capabilities.can_act_as_host,
@@ -434,6 +205,57 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             authorize2(&request).is_err(),
             "same route and cert on a second actual socket is not the original worker"
         );
+        // The eager path on the second worker binds its lease to the exact
+        // original request as well.
+        let mut descriptor = directory_state.borrow().row().descriptor.unwrap();
+        let mut contract: tilo_actions::ActionContract =
+            serde_json::from_str(&descriptor.contract_json).unwrap();
+        contract.permission = tilo_actions::PermissionRequirement::Write;
+        descriptor.contract_json = serde_json::to_string(&contract).unwrap();
+        second
+            .handle
+            .publish_actions(&route.app_id, &[descriptor])
+            .await
+            .unwrap();
+        let eager_invocations = second.handle.subscribe_stable_invocations().await.unwrap();
+        let (eager_id, _) = second
+            .handle
+            .invoke_published_action(
+                904,
+                "workspace:atlas",
+                "open",
+                Some("original argument"),
+                "{}",
+            )
+            .await
+            .unwrap();
+        let delivered = eager_invocations.read().await.unwrap();
+        assert_eq!(delivered.id, eager_id);
+        let eager_request = ui::invocation_scope::PublishedInvocationRequest {
+            wire_id: eager_id,
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                delivered.invocation_uuid.unwrap(),
+            )),
+            address: tilo_actions::ActionAddress {
+                resource: delivered.resource,
+                action: delivered.action,
+            },
+            argument: delivered.argument,
+            actor: delivered.actor,
+            participant: None,
+        };
+        let eager_lease = authorize2(&eager_request)
+            .expect("actual signed worker and original eager caller must mint the exact lease");
+        eager_lease.check().unwrap();
+        let mut altered = eager_request.clone();
+        altered.argument = Some("substituted".into());
+        assert!(authorize2(&altered).is_err());
+        state
+            .pending_invocations
+            .lock()
+            .unwrap()
+            .remove(&eager_id)
+            .unwrap();
         // Captured immutable facts survive terminal registry removal; a later
         // unrelated pending invocation cannot overwrite their origin.
         state
@@ -461,7 +283,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             .await
             .unwrap();
         let pending_handle = if final_case == "target" {
-            _handle2.clone()
+            second.handle.clone()
         } else {
             handle.clone()
         };
@@ -481,7 +303,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
         if final_case == "origin" {
             origin.invalidate();
         } else if final_case == "target" {
-            server.abort();
+            worker.server.abort();
             tokio::task::yield_now().await;
         } else {
             time_control.set_wall_ns(10_000_000_000);
@@ -499,12 +321,14 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             lease.check().is_err(),
             "original {final_case} cannot be revived by wall rollback"
         );
+        if matches!(final_case, "grant" | "certificate") {
+            assert!(
+                eager_lease.check().is_err(),
+                "eager original {final_case} expiry cannot be revived by wall rollback"
+            );
+        }
         origin.invalidate();
         assert!(lease.check().is_err());
-        server.abort();
-        client.abort();
-        server2.abort();
-        client2.abort();
     }
     tokio::task::LocalSet::new()
         .run_until(async {
