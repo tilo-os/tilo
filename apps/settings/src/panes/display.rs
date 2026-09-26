@@ -2770,13 +2770,26 @@ mod tests {
         let _guard = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = laptop_with_monitor_pane();
         assert!(settings_store::display_identify::IdentifyRequest::load().is_none());
+        let before = unix_now_ms();
         pane.execute_local_command(
             &mut AutoCommit::new(),
             crate::actions::DisplayOperation::Identify,
         );
+        let after = unix_now_ms();
         let request = settings_store::display_identify::IdentifyRequest::load()
             .expect("Identify writes the request the compositor polls");
-        assert!(request.remaining_ms(unix_now_ms()).is_some());
+        // Judge the request against the moment it was issued, not against a
+        // clock read after the command returned: a loaded machine can take
+        // longer than the identify window just to run the command.
+        assert!(
+            (before..=after).contains(&request.requested_unix_ms),
+            "the request is stamped with the time Identify ran"
+        );
+        assert_eq!(
+            request.remaining_ms(request.requested_unix_ms),
+            Some(settings_store::display_identify::IDENTIFY_MS),
+            "a fresh request shows the numbers for the whole identify window"
+        );
     }
 
     #[test]
