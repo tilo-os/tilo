@@ -134,6 +134,7 @@ pub fn check(
         inputs: BTreeMap::new(),
         step_ids: HashSet::new(),
         errors: Vec::new(),
+        probe: None,
     };
     checker.header();
     let mut scope = Scope::default();
@@ -241,6 +242,8 @@ struct Checker<'a> {
     inputs: BTreeMap<String, &'a ActionParam>,
     step_ids: HashSet<String>,
     errors: Vec<CheckError>,
+    /// A position to record the scope at, and the scope once reached.
+    probe: Option<(StepPath, Option<Scope>)>,
 }
 
 impl Checker<'_> {
@@ -291,9 +294,18 @@ impl Checker<'_> {
         }
     }
 
+    fn observe(&mut self, at: &StepPath, scope: &Scope) {
+        if let Some((target, seen @ None)) = &mut self.probe
+            && target == at
+        {
+            *seen = Some(scope.clone());
+        }
+    }
+
     fn block(&mut self, steps: &[Step], path: &StepPath, scope: &mut Scope) {
         for (index, step) in steps.iter().enumerate() {
             let path = path.child(index);
+            self.observe(&path, scope);
             if !is_identifier(&step.id) {
                 self.fail(
                     &path,
@@ -309,6 +321,7 @@ impl Checker<'_> {
             let output = self.step(step, &path, scope);
             scope.steps.insert(step.id.clone(), output);
         }
+        self.observe(&path.child(steps.len()), scope);
     }
 
     fn step(&mut self, step: &Step, path: &StepPath, scope: &mut Scope) -> Output {
@@ -642,6 +655,102 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+/// A value available to bind at one point of a shortcut, with what the
+/// checker knows about its type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BindingOption {
+    pub binding: Binding,
+    /// The value's type in words: "text", "an array", "a `notes.note`
+    /// resource".
+    pub describes: String,
+}
+
+/// The inputs, variables and earlier step outputs in scope just before the
+/// step at `at` runs that could satisfy `param` — exactly the bindings the
+/// checker accepts there. A step's output is offered whole and, where its
+/// declared schema names them, field by field. `at` may also be the
+/// position just past a block's last step, where a new step would go.
+#[must_use]
+pub fn binding_options(
+    shortcut: &Shortcut,
+    catalog: &ActionCatalog,
+    at: &StepPath,
+    param: &ActionParam,
+) -> Vec<BindingOption> {
+    values_in_scope(shortcut, catalog, at)
+        .into_iter()
+        .filter(|(_, ty)| assignable(ty, param).is_ok())
+        .map(|(binding, ty)| BindingOption {
+            binding,
+            describes: ty.to_string(),
+        })
+        .collect()
+}
+
+/// Every input, variable and earlier step output in scope just before the
+/// step at `at` runs, whatever its type.
+#[must_use]
+pub fn values_at(
+    shortcut: &Shortcut,
+    catalog: &ActionCatalog,
+    at: &StepPath,
+) -> Vec<BindingOption> {
+    values_in_scope(shortcut, catalog, at)
+        .into_iter()
+        .map(|(binding, ty)| BindingOption {
+            binding,
+            describes: ty.to_string(),
+        })
+        .collect()
+}
+
+fn values_in_scope(
+    shortcut: &Shortcut,
+    catalog: &ActionCatalog,
+    at: &StepPath,
+) -> Vec<(Binding, Ty)> {
+    let mut checker = Checker {
+        shortcut,
+        catalog,
+        inputs: BTreeMap::new(),
+        step_ids: HashSet::new(),
+        errors: Vec::new(),
+        probe: Some((at.clone(), None)),
+    };
+    checker.header();
+    let mut scope = Scope::default();
+    checker.block(&shortcut.steps, &StepPath::root(), &mut scope);
+    let Some((_, Some(seen))) = checker.probe.take() else {
+        return Vec::new();
+    };
+    let mut values: Vec<(Binding, Ty)> = checker
+        .inputs
+        .iter()
+        .map(|(name, param)| (Binding::Input(name.clone()), Ty::of_param(param)))
+        .collect();
+    values.extend(
+        seen.vars
+            .iter()
+            .map(|(name, ty)| (Binding::Var(name.clone()), ty.clone())),
+    );
+    for (step, output) in &seen.steps {
+        let Some((ty, schema)) = output else { continue };
+        values.push((Binding::step(step.clone(), ""), ty.clone()));
+        let properties = schema
+            .as_ref()
+            .and_then(|schema| schema.get("properties"))
+            .and_then(Value::as_object);
+        for (field, property) in properties.into_iter().flatten() {
+            let pointer = format!("/{}", field.replace('~', "~0").replace('/', "~1"));
+            values.push((
+                Binding::step(step.clone(), pointer),
+                Ty::of_schema(property),
+            ));
+        }
+    }
+    values
 }
 
 fn literal_ty(value: &Value) -> Ty {

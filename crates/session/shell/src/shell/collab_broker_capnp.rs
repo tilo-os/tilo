@@ -634,6 +634,20 @@ impl BrokerActor {
             is_agent: true,
         }
     }
+
+    /// Who this actor is to `workspace`'s capability policy. An application
+    /// (`app:<package id>`) holds no role there: only what the workspace
+    /// grants that application.
+    pub(crate) fn policy_in(&self, workspace: &crate::shell::state::Workspace) -> Actor {
+        if let Some(app) = self.id.strip_prefix("app:") {
+            return Actor::app(app).in_room(workspace.room.to_string());
+        }
+        if self.is_agent {
+            workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
+        } else {
+            workspace.actor_for_person(&self.id)
+        }
+    }
 }
 
 impl AdmittedJoinIdentity {
@@ -1827,6 +1841,9 @@ pub struct CapnpBrokerState {
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
     /// Shortcut runs the door finished, until history records them.
     shortcut_runs: crate::shell::automation_host::ShortcutRuns,
+    /// What each application declared it may do on the action door under
+    /// its own identity.
+    app_action_access: std::sync::RwLock<crate::shell::app_action_access::AccessResolver>,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
@@ -2779,6 +2796,9 @@ impl CapnpBrokerState {
                 invocation_id: AtomicU64::new(1),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 shortcut_runs: crate::shell::automation_host::ShortcutRuns::default(),
+                app_action_access: std::sync::RwLock::new(
+                    crate::shell::app_action_access::installed_resolver(),
+                ),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
@@ -3239,11 +3259,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| {
                 capnp::Error::failed("the application workspace is no longer hosted".into())
             })?;
-        let caller = if actor.is_agent {
-            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            workspace.actor_for_person(&actor.id)
-        };
+        let caller = actor.policy_in(workspace);
         let allowed = workspace.decide(
             &caller,
             &ResourceRef::Action {
@@ -3287,12 +3303,7 @@ impl CapnpBrokerState {
             .iter()
             .position(|workspace| workspace.room.to_string() == cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = if actor.is_agent {
-            tree.desktop.workspaces[workspace_index]
-                .actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            tree.desktop.workspaces[workspace_index].actor_for_person(&actor.id)
-        };
+        let caller = actor.policy_in(&tree.desktop.workspaces[workspace_index]);
         let surface = crate::shell::workspace_settings::permission_profile_resource_with_access(
             &tree.desktop.workspaces[workspace_index],
             true,
@@ -3597,11 +3608,7 @@ impl CapnpBrokerState {
             .iter()
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = if actor.is_agent {
-            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            workspace.actor_for_person(&actor.id)
-        };
+        let caller = actor.policy_in(workspace);
         let target = ResourceRef::Action {
             app: offered.0.app_id.clone(),
             action: offered.1.action.clone(),
@@ -5055,7 +5062,31 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request,
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
-        let caller = current.caller(&self.route().cluster_id);
+        let route = self.route();
+        let person = current.caller(&route.cluster_id);
+        // A delegated agent is its own principal already; any other
+        // connection is an application, which acts as itself.
+        let caller = if current.agent_id.is_some() {
+            person
+        } else {
+            let app_id = self
+                .launch
+                .as_ref()
+                .map_or(route.app_id.as_str(), |launch| launch.app_id.as_str());
+            match self.state.app_door(&person, app_id, &request.message) {
+                Ok(caller) => caller,
+                Err(refusal) => {
+                    let bytes = match RemoteActionFrame::new(*refusal).encode() {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
+                    };
+                    results.get().set_frame(&bytes);
+                    return Promise::ok(());
+                }
+            }
+        };
         let host = crate::shell::remote_actions::BrokerActionHost::for_connection(
             crate::shell::collab_broker::AppActionBroker::from_state(Arc::clone(&self.state)),
             self.peer_id,

@@ -505,6 +505,12 @@ impl AppActionBroker {
     }
 
     /// The broker state behind this facade, for the action host.
+    /// Read what each application declared on the action door from
+    /// `resolver` instead of the installed manifests.
+    pub fn set_app_action_access(&self, resolver: crate::shell::app_action_access::AccessResolver) {
+        self.state.set_app_action_access(resolver);
+    }
+
     pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
         &self.state
     }
