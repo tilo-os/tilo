@@ -68,6 +68,7 @@ impl App {
         }
     }
 
+    #[cfg(any(feature = "native", test))]
     fn dev_checkpoint_bytes(&self) -> Vec<u8> {
         let checkpoint = DevCheckpoint {
             version: DEV_CHECKPOINT_VERSION,
@@ -80,6 +81,7 @@ impl App {
 
 /// Write the running session next to `dir`. A bad path leaves the previous
 /// checkpoint in place.
+#[cfg(any(feature = "native", test))]
 pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     let bytes = app.dev_checkpoint_bytes();
     if bytes.is_empty() {
