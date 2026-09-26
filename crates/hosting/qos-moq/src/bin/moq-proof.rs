@@ -2,6 +2,8 @@
 //! workspace, document, microphone, native app, or production relay.
 
 use std::io::Read as _;
+
+use rustls::pki_types::pem::PemObject as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -182,21 +184,15 @@ async fn main() {
 async fn run() -> Result<(), &'static str> {
     let options = Options::parse()?;
     let authority = Arc::new(ProofAuthority::load(&options.identities)?);
-    let mut config = moq_native::ServerConfig::default();
-    config.bind = Some(options.bind.to_string());
-    config.version = vec![
-        "moq-transport-21"
-            .parse()
-            .map_err(|_| "Draft 21 unavailable")?,
-    ];
-    config.quic.max_streams = Some(32);
-    config.quic.idle_timeout = Some(Duration::from_secs(5));
-    config.tls.cert = vec![options.cert];
-    config.tls.key = vec![options.key];
-    let server = config
-        .init()
+    let chain = rustls::pki_types::CertificateDer::pem_file_iter(&options.cert)
+        .map_err(|_| "cannot read pinned TLS certificate")?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "cannot read pinned TLS certificate")?;
+    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(&options.key)
+        .map_err(|_| "cannot read pinned TLS key")?;
+    let endpoint = qos_moq::carrier::listener(options.bind, chain, key)
         .map_err(|_| "cannot initialize pinned TLS WebTransport listener")?;
-    let address = server
+    let address = endpoint
         .local_addr()
         .map_err(|_| "cannot obtain listener address")?;
     let relay = Relay::new(authority);
@@ -204,13 +200,13 @@ async fn run() -> Result<(), &'static str> {
         "READY {}",
         serde_json::json!({
             "url":format!("https://{address}{VOICE_PATH}"),
-            "protocol":"moqt-21",
+            "protocol":qos_moq::carrier::PROTOCOL,
             "identityMode":"isolated-proof-only",
         })
     );
     let mut counters = tokio::time::interval(Duration::from_secs(1));
     counters.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let serving = relay.clone().serve(server);
+    let serving = relay.clone().serve(endpoint);
     tokio::pin!(serving);
     loop {
         tokio::select! {

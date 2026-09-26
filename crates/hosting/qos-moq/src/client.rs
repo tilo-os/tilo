@@ -1,7 +1,8 @@
 //! Bounded native voice transport. Connection values are inert; the privileged
 //! native owner retains keys, grants, descriptor custody and current policy.
 use crate::{
-    relay::Direction,
+    carrier,
+    relay::{Direction, VOICE_TRACK},
     voice::{self, VoiceObject},
 };
 use std::{
@@ -13,9 +14,11 @@ use std::{
 const SEND_AGE: Duration = Duration::from_millis(100);
 const RECEIVE_AGE: Duration = Duration::from_millis(200);
 const TICK: Duration = Duration::from_millis(10);
-/// Transport + WebTransport + admission (relay SETUP) budget. High-RTT links
+/// Transport + WebTransport + admission preface + SETUP budget. High-RTT links
 /// (satellite, ~600 ms) need several round trips plus a loss recovery.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bytes either local origin may cache.
+const ORIGIN_BYTES: u64 = 64 * 1024;
 const RECEIVE_FRAMES: usize = 10;
 
 /// Exact immutable carrier scope checked against the actual native owner.
@@ -104,7 +107,7 @@ struct State {
     status: Status,
     muted: bool,
     sequence: u64,
-    session: Option<moq_net::Session>,
+    session: Option<carrier::Connected>,
     broadcast: Option<moq_net::broadcast::Producer>,
     track: Option<moq_net::track::Producer>,
     groups: VecDeque<SentGroup>,
@@ -131,8 +134,8 @@ impl State {
         self.status = status;
         self.clear_publication();
         self.received.clear();
-        if let Some(session) = self.session.take() {
-            session.abort(moq_net::Error::Cancel);
+        if let Some(connected) = self.session.take() {
+            connected.session.abort(moq_net::Error::Cancel);
         }
         if let Some(track) = self.track.take() {
             let _ = track.abort(moq_net::Error::Cancel);
@@ -167,6 +170,7 @@ struct Shared {
     state: Mutex<State>,
     outgoing: moq_net::origin::Producer,
     incoming: moq_net::origin::Producer,
+    _origins: [carrier::OriginTask; 2],
 }
 impl Shared {
     fn current(&self) -> bool {
@@ -214,13 +218,16 @@ impl Client {
         let url = validate(&connection)?;
         let runtime =
             tokio::runtime::Handle::try_current().map_err(|_| ClientError::Unavailable)?;
-        let outgoing = origin(SEND_AGE);
-        let incoming = origin(RECEIVE_AGE);
+        let (outgoing, outgoing_task) =
+            carrier::OriginTask::produce(carrier::origin_config(ORIGIN_BYTES, SEND_AGE));
+        let (incoming, incoming_task) =
+            carrier::OriginTask::produce(carrier::origin_config(ORIGIN_BYTES, RECEIVE_AGE));
         let shared = Arc::new(Shared {
             scope: connection.scope,
             authority,
             outgoing,
             incoming,
+            _origins: [outgoing_task, incoming_task],
             state: Mutex::new(State {
                 status: Status::Connecting,
                 muted: true,
@@ -234,64 +241,59 @@ impl Client {
             }),
         });
         shared.check()?;
-        let mut config = moq_native::ClientConfig::default();
-        config.version = vec![
-            "moq-transport-21"
-                .parse()
-                .map_err(|_| ClientError::Invalid)?,
-        ];
-        config.timeout = Some(CONNECT_TIMEOUT);
-        config
-            .tls
-            .fingerprint
-            .clone_from(&shared.scope.fingerprints);
-        let mut native = config
-            .init()
-            .map_err(|_| ClientError::Unavailable)?
-            .with_authorization(connection.authorization)
-            .map_err(|_| ClientError::Invalid)?;
+        let trust = if shared.scope.fingerprints.is_empty() {
+            carrier::Trust::System
+        } else {
+            carrier::Trust::Fingerprints(shared.scope.fingerprints.clone())
+        };
+        let mut publish = None;
         if let Some(name) = &shared.scope.publication {
-            let mut broadcast = shared
+            let broadcast = shared
                 .outgoing
-                .create_broadcast(
-                    name.as_str(),
-                    moq_net::broadcast::Route::new().with_announce(true),
-                )
+                .create_broadcast(name.as_str())
                 .map_err(|_| ClientError::Unavailable)?;
             let track = broadcast
                 .create_track(
-                    "audio",
-                    moq_net::track::Info::default().with_latency_max(SEND_AGE),
+                    VOICE_TRACK,
+                    moq_net::track::Info::default().with_max_age(SEND_AGE),
                 )
+                .map_err(|_| ClientError::Unavailable)?;
+            broadcast
+                .announce(moq_net::origin::Route::default())
                 .map_err(|_| ClientError::Unavailable)?;
             let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.track = Some(track);
             state.broadcast = Some(broadcast);
             drop(state);
-            let scoped = shared
-                .outgoing
-                .consume()
-                .scope_exact(&[name.as_str().into()])
-                .ok_or(ClientError::Invalid)?;
-            native = native.with_publisher(scoped);
+            let names = crate::relay::exact(&[name.as_str()]).ok_or(ClientError::Invalid)?;
+            publish = Some(
+                shared
+                    .outgoing
+                    .consume()
+                    .scope("", &names)
+                    .map_err(|_| ClientError::Invalid)?,
+            );
         }
+        let mut subscribe = None;
         if !shared.scope.subscriptions.is_empty() {
-            let paths: Vec<_> = shared
+            let names: Vec<&str> = shared
                 .scope
                 .subscriptions
                 .iter()
-                .map(|name| name.as_str().into())
+                .map(String::as_str)
                 .collect();
-            native = native.with_subscriber(
+            let names = crate::relay::exact(&names).ok_or(ClientError::Invalid)?;
+            subscribe = Some(
                 shared
                     .incoming
-                    .scope_exact(&paths)
-                    .ok_or(ClientError::Invalid)?,
+                    .scope("", &names)
+                    .map_err(|_| ClientError::Invalid)?,
             );
         }
         let run_shared = shared.clone();
+        let grant = connection.authorization;
         let task = runtime.spawn(async move {
-            run(run_shared, native, url).await;
+            run(run_shared, url, trust, grant, publish, subscribe).await;
         });
         Ok(Self {
             shared,
@@ -382,9 +384,9 @@ impl Client {
                 .track
                 .as_mut()
                 .ok_or(ClientError::Unavailable)?
-                .create_group(moq_net::group::Info {
-                    sequence: sequence / voice::FRAMES_PER_GROUP,
-                })
+                .create_group(moq_net::group::Info::from(
+                    sequence / voice::FRAMES_PER_GROUP,
+                ))
                 .map_err(|_| ClientError::Capacity)?;
             state.groups.push_back(SentGroup {
                 expires: crate::later(frame.captured_at, SEND_AGE),
@@ -466,16 +468,6 @@ impl Drop for Client {
     }
 }
 
-fn origin(age: Duration) -> moq_net::origin::Producer {
-    moq_net::origin::Info::new(moq_net::Origin::random())
-        .with_limits(
-            moq_net::origin::Limits::voice()
-                .with_frame_validator(|bytes| voice::validate_bundle(bytes).is_ok()),
-        )
-        .with_cache_duration(age)
-        .with_latency_default(age)
-        .produce()
-}
 fn valid_namespace(name: &str) -> bool {
     let hex = |part: &str| {
         part.bytes()
@@ -543,8 +535,20 @@ fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
     }
     Ok(url)
 }
-async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
-    let Ok(session) = native.connect(url).await else {
+async fn run(
+    shared: Arc<Shared>,
+    url: url::Url,
+    trust: carrier::Trust,
+    grant: Vec<u8>,
+    publish: Option<moq_net::origin::Consumer>,
+    subscribe: Option<moq_net::origin::Producer>,
+) {
+    // The relay answers the admission preface only after host admission;
+    // until then the transport is merely open, not live.
+    let connected =
+        carrier::connect(&url, &trust, &grant, publish, subscribe, CONNECT_TIMEOUT).await;
+    drop(grant);
+    let Ok(connected) = connected else {
         shared
             .state
             .lock()
@@ -552,26 +556,7 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
             .end(Status::Failed);
         return;
     };
-    if session.version().as_str() != "moq-transport-21" || shared.check().is_err() {
-        session.abort(moq_net::Error::Cancel);
-        return;
-    }
-    // The relay sends its SETUP only after host admission; until then the
-    // transport is merely open, not live.
-    let admitted = tokio::select! {
-        () = session.setup_received() => true,
-        _ = session.closed() => false,
-        () = tokio::time::sleep(CONNECT_TIMEOUT) => false,
-    };
-    if !admitted {
-        shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .end(Status::Failed);
-        session.abort(moq_net::Error::Cancel);
-        return;
-    }
+    let session = connected.session.clone();
     if shared.check().is_err() {
         session.abort(moq_net::Error::Cancel);
         return;
@@ -582,7 +567,7 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
             session.abort(moq_net::Error::Cancel);
             return;
         }
-        state.session = Some(session.clone());
+        state.session = Some(connected);
         state.status = Status::Live;
     }
     let mut readers = tokio::task::JoinSet::new();
@@ -602,8 +587,6 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
                 let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state.status != Status::Live { break; }
                 state.expire(Instant::now());
-                drop(state);
-                shared.outgoing.expire(); shared.incoming.expire();
             }
             _ = readers.join_next(), if !readers.is_empty() => {
                 // A closed remote publication can return under the same exact
@@ -618,29 +601,29 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
     session.abort(moq_net::Error::Cancel);
 }
 async fn receive(shared: Arc<Shared>, name: String) {
-    let Some(broadcast) = shared
+    let Ok(broadcast) = shared
         .incoming
         .consume()
-        .announced_broadcast(name.as_str())
+        .routed_broadcast(name.as_str())
         .await
     else {
         return;
     };
-    let Ok(track) = broadcast.track("audio") else {
+    let Ok(track) = broadcast.track(VOICE_TRACK) else {
         return;
     };
-    // Browser publishers send each object as a Draft 21 OBJECT_DATAGRAM bundle
-    // (newest first, then redundant earlier objects); a separate local
-    // subscription drains that best-effort channel alongside the groups.
-    let datagrams = match broadcast.track("audio") {
+    // Browser publishers send each object as a datagram bundle (newest first,
+    // then redundant earlier objects); a separate local subscription drains
+    // that best-effort channel alongside the groups.
+    let datagrams = match broadcast.track(VOICE_TRACK) {
         Ok(track) => track
-            .subscribe(moq_net::track::Subscription::default().with_latency_max(RECEIVE_AGE))
+            .subscribe(moq_net::track::Subscription::default().with_max_age(RECEIVE_AGE))
             .await
             .ok(),
         Err(_) => None,
     };
     let Ok(track) = track
-        .subscribe(moq_net::track::Subscription::default().with_latency_max(RECEIVE_AGE))
+        .subscribe(moq_net::track::Subscription::default().with_max_age(RECEIVE_AGE))
         .await
     else {
         return;

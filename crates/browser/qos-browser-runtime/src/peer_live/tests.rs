@@ -83,7 +83,7 @@ fn verified_grant_projects_endpoint_expiry_and_renewal() {
     let b = binding(&host, [9; 32], both());
     let bytes = issue(&host, &b, NOW, GRANT_LIFETIME_NS);
     let verified = verify_grant(&b, &bytes, NOW + 1_000_000_000).unwrap();
-    assert_eq!(verified.endpoint, format!("{ORIGIN}/moq/v21/live"));
+    assert_eq!(verified.endpoint, format!("{ORIGIN}/moq/live"));
     assert_eq!(verified.bytes, bytes);
     assert_eq!(verified.expires_in_ns, GRANT_LIFETIME_NS - 1_000_000_000);
     // Renews with a third of the remaining lifetime (>= 10 s) left.

@@ -4,9 +4,9 @@
 //! does not accept). No WebSockets.
 //!
 //! * `POST /peer/v3/live/fallback/open`, body = the exact `SignedLiveGrant`
-//!   bytes (the MoQ Authorization Token): admitted by the same
-//!   [`LiveAuthority::try_admit`] and lease/roster [`LiveSession::status`]
-//!   observations as `/moq/v21/live`. The response body is a stream of
+//!   bytes (the grant a WebTransport client presents in the admission
+//!   preface): admitted by the same [`LiveAuthority::try_admit`] and
+//!   lease/roster [`LiveSession::status`] observations as `/moq/live`. The response body is a stream of
 //!   server frames; the first is `HELLO` with a random 128-bit session id.
 //! * `POST /peer/v3/live/fallback/send`, header `x-tilo-live-session`, body =
 //!   client frames (presence, ops, ops subscriptions). Answered `204`.
@@ -15,9 +15,10 @@
 //!   session survives a detached stream for [`RESUME_GRACE`].
 //!
 //! Bridging. A fallback publisher is attached to its namespace slot exactly
-//! like a WebTransport publisher: an in-process broadcast with a `presence`
-//! datagram track and on-demand `ops/<record>` tracks, pumped by the same
-//! validated, rate-limited relay pumps into the shared egress. A fallback
+//! like a WebTransport publisher: a private in-process ingress origin with the
+//! namespace broadcast (a `presence` datagram track) and one record broadcast
+//! per record it writes, pumped by the same validated, rate-limited relay
+//! pumps into the shared egress. A fallback
 //! subscriber reads the same egress origin (room scope) as a MoQ subscriber.
 //! So MoQ and fallback members see each other in both directions, with the
 //! same frame bytes, limits and latest-value presence.
@@ -31,11 +32,11 @@
 )]
 use super::*;
 use super::{
-    AUTHORITY_INTERVAL, Arc, AuthorizationStatus, Duration, HashMap, INGRESS_POOL_BYTES, Inner,
-    Instant, LiveRelay, LiveSession, MAX_DATAGRAM_FRAME_BYTES, MAX_EGRESS_OPS_TRACKS,
-    MAX_LIVE_SESSIONS, MAX_OPEN_RECORDS, MAX_STREAM_FRAME_BYTES, Mutex, NAMESPACE_ROOT, OPS_PREFIX,
-    OPS_WINDOW, Ordering, PRESENCE_RETRY, PRESENCE_TRACK, REANNOUNCE_AFTER, Task, Weak, hex64,
-    ops_record,
+    AUTHORITY_INTERVAL, Arc, AuthorizationStatus, Duration, HashMap, Ingress, Inner, Instant,
+    LiveRelay, LiveSession, MAX_DATAGRAM_FRAME_BYTES, MAX_LIVE_SESSIONS, MAX_OPEN_RECORDS,
+    MAX_STREAM_FRAME_BYTES, Mutex, NAMESPACE_ROOT, OPS_PREFIX, Ordering, PRESENCE_RETRY,
+    PRESENCE_TRACK, REANNOUNCE_AFTER, RECORD_TRACK, Task, Weak, hex64, ingress_origin, record_path,
+    subtree,
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -214,19 +215,27 @@ struct Outbox {
     end: Option<u8>,
 }
 
+/// One record this client writes: its record broadcast and ordered track.
 struct OpsTrack {
+    broadcast: moq_net::broadcast::Producer,
     track: moq_net::track::Producer,
     used: Instant,
+}
+impl OpsTrack {
+    /// Close the record: the relay stops its pump when the broadcast ends.
+    fn close(self) {
+        let _ = self.track.finish();
+        self.broadcast.finish();
+    }
 }
 
 #[derive(Default)]
 struct Publish {
+    ingress: Option<Ingress>,
     broadcast: Option<moq_net::broadcast::Producer>,
     presence: Option<moq_net::track::Producer>,
     /// Records this client writes (<= [`MAX_OPEN_RECORDS`], LRU).
     writing: HashMap<String, OpsTrack>,
-    /// Tracks the relay requested on demand (<= [`MAX_EGRESS_OPS_TRACKS`]).
-    served: HashMap<String, moq_net::track::Producer>,
 }
 
 #[derive(Default)]
@@ -366,15 +375,7 @@ impl LiveRelay {
             inner.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return Err(FallbackError::Busy);
         };
-        let Some(scopes) = self
-            .scopes(
-                "moq-transport-21"
-                    .parse()
-                    .map_err(|_| FallbackError::Invalid)?,
-                Some(token),
-            )
-            .await
-        else {
+        let Some(scopes) = self.scopes(token).await else {
             inner.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return Err(FallbackError::Denied);
         };
@@ -465,7 +466,7 @@ impl LiveRelay {
         let result = frames.into_iter().try_for_each(|(kind, payload)| {
             Self::fallback_frame(&session, kind, payload, &mut groups)
         });
-        for (_, mut group) in groups {
+        for (_, group) in groups {
             let _ = group.finish();
         }
         result
@@ -511,7 +512,7 @@ impl LiveRelay {
                         .publish
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
-                    let Some(track) = ops_writer(&mut publish, &name) else {
+                    let Some(track) = ops_writer(&mut publish, &session.path, &name) else {
                         return Ok(());
                     };
                     let Ok(group) = track.append_group() else {
@@ -528,19 +529,17 @@ impl LiveRelay {
             FRAME_SEND_OPS_CLOSE => {
                 let record = key32(payload).ok_or(FallbackError::Invalid)?;
                 let name = ops_name(&record);
-                if let Some(mut group) = groups.remove(&name) {
+                if let Some(group) = groups.remove(&name) {
                     let _ = group.finish();
                 }
                 let mut publish = session
                     .publish
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
-                if let Some(entry) = publish.writing.remove(&name) {
-                    let mut track = entry.track;
-                    let _ = track.finish();
-                    if let Some(broadcast) = publish.broadcast.as_mut() {
-                        let _ = broadcast.remove_track(&name);
-                    }
+                let closed = publish.writing.remove(&name);
+                drop(publish);
+                if let Some(entry) = closed {
+                    entry.close();
                 }
                 Ok(())
             }
@@ -599,58 +598,32 @@ impl LiveRelay {
         subscribe.ops.insert((publisher, record), task);
     }
 
-    /// Attach the session's in-process broadcast to its namespace slot, exactly
-    /// where a WebTransport publisher's announced broadcast would attach.
+    /// Attach the session's in-process ingress origin to its namespace slot,
+    /// exactly where a WebTransport publisher's ingress would attach.
     fn fallback_attach(&self, session: &Arc<Fallback>) {
-        let mut info = moq_net::broadcast::Info::new();
-        info.origin = moq_net::origin::Info::new(moq_net::Origin::random())
-            .with_pool(moq_net::cache::Pool::new(INGRESS_POOL_BYTES))
-            .with_cache_duration(OPS_WINDOW)
-            .with_latency_default(OPS_WINDOW);
-        let mut broadcast = info.produce();
-        let presence = broadcast
-            .create_track(
-                PRESENCE_TRACK,
-                moq_net::track::Info::default()
-                    .with_ordered(false)
-                    .with_latency_max(PRESENCE_LATENCY),
-            )
-            .ok();
-        let mut dynamic = broadcast.dynamic();
-        let consumer = broadcast.consume();
+        let ingress = ingress_origin();
+        let broadcast = ingress.origin.create_broadcast(session.path.as_str()).ok();
+        let presence = broadcast.as_ref().and_then(|broadcast| {
+            broadcast
+                .create_track(
+                    PRESENCE_TRACK,
+                    moq_net::track::Info::default().with_max_age(PRESENCE_LATENCY),
+                )
+                .ok()
+        });
+        if let Some(broadcast) = &broadcast {
+            let _ = broadcast.announce(moq_net::origin::Route::default());
+        }
+        let consumer = ingress.origin.consume();
         {
             let mut publish = session
                 .publish
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            publish.broadcast = Some(broadcast);
+            publish.ingress = Some(ingress);
+            publish.broadcast = broadcast;
             publish.presence = presence;
         }
-        // Serve the relay's on-demand ops track requests (subscriber demand).
-        let weak = Arc::downgrade(session);
-        let serve = Task::spawn(async move {
-            while let Ok(request) = dynamic.requested_track().await {
-                let Some(session) = weak.upgrade() else { break };
-                let name = request.name().to_owned();
-                let mut publish = session
-                    .publish
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                publish.served.retain(|_, track| !track.is_closed());
-                if ops_record(&name).is_none() || publish.served.len() >= MAX_EGRESS_OPS_TRACKS {
-                    request.reject(moq_net::Error::NotFound);
-                    continue;
-                }
-                let track = request.accept(ops_info());
-                if let Some(entry) = publish.writing.get_mut(&name) {
-                    entry.track = track;
-                } else {
-                    publish.served.insert(name, track);
-                }
-            }
-        });
-        // The serving task ends with the broadcast (dropped at session end).
-        serve.detach();
         self.0.attach_client(&session.path, session.relay, consumer);
     }
 
@@ -714,16 +687,21 @@ impl LiveRelay {
             subscribe.ops.clear();
             subscribe.members.clear();
         }
-        let broadcast = {
+        let (broadcast, writing, ingress) = {
             let mut publish = session
                 .publish
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            publish.writing.clear();
-            publish.served.clear();
             publish.presence = None;
-            publish.broadcast.take()
+            (
+                publish.broadcast.take(),
+                std::mem::take(&mut publish.writing),
+                publish.ingress.take(),
+            )
         };
+        for (_, entry) in writing {
+            entry.close();
+        }
         if revoked {
             inner.counters.revoked.fetch_add(1, Ordering::Relaxed);
             let host_fed =
@@ -747,23 +725,24 @@ impl LiveRelay {
         } else if session.publish_allowed {
             inner.detach_client(&session.path, session.relay);
         }
-        if let Some(mut broadcast) = broadcast {
+        if let Some(broadcast) = broadcast {
             broadcast.finish();
         }
+        drop(ingress);
         inner.counters.active.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
 fn ops_info() -> moq_net::track::Info {
-    moq_net::track::Info::default()
-        .with_ordered(true)
-        .with_latency_max(Duration::from_millis(2000))
+    moq_net::track::Info::default().with_max_age(Duration::from_millis(2000))
 }
 
-/// The track this client writes `name` on: a relay-requested track if one is
-/// served, else a new one (evicting the least recently written record).
+/// The track this client writes `name` on, opening its record broadcast when
+/// needed (and closing the least recently written record beyond
+/// [`MAX_OPEN_RECORDS`]).
 fn ops_writer<'a>(
     publish: &'a mut Publish,
+    namespace: &str,
     name: &str,
 ) -> Option<&'a mut moq_net::track::Producer> {
     let usable = publish
@@ -771,36 +750,33 @@ fn ops_writer<'a>(
         .get(name)
         .is_some_and(|entry| !entry.track.is_closed());
     if !usable {
-        publish.writing.remove(name);
+        if let Some(entry) = publish.writing.remove(name) {
+            entry.close();
+        }
         if publish.writing.len() >= MAX_OPEN_RECORDS
             && let Some(oldest) = publish
                 .writing
                 .iter()
                 .min_by_key(|(_, entry)| entry.used)
                 .map(|(name, _)| name.clone())
+            && let Some(entry) = publish.writing.remove(&oldest)
         {
-            if let Some(entry) = publish.writing.remove(&oldest) {
-                let mut track = entry.track;
-                let _ = track.finish();
-            }
-            if let Some(broadcast) = publish.broadcast.as_mut() {
-                let _ = broadcast.remove_track(&oldest);
-            }
+            entry.close();
         }
-        let track = if let Some(track) = publish
-            .served
-            .remove(name)
-            .filter(|track| !track.is_closed())
-        {
-            track
-        } else {
-            let broadcast = publish.broadcast.as_mut()?;
-            let _ = broadcast.remove_track(name);
-            broadcast.create_track(name.to_owned(), ops_info()).ok()?
-        };
+        let record = name.strip_prefix(OPS_PREFIX)?;
+        let path = record_path(namespace, record)?;
+        let broadcast = publish
+            .ingress
+            .as_ref()?
+            .origin
+            .create_broadcast(path.as_str())
+            .ok()?;
+        let track = broadcast.create_track(RECORD_TRACK, ops_info()).ok()?;
+        broadcast.announce(moq_net::origin::Route::default()).ok()?;
         publish.writing.insert(
             name.to_owned(),
             OpsTrack {
+                broadcast,
                 track,
                 used: Instant::now(),
             },
@@ -879,17 +855,17 @@ async fn watch_members(inner: Weak<Inner>, session: Weak<Fallback>) {
             return;
         };
         let room = format!("{NAMESPACE_ROOT}/{}", session.room);
-        let Some(egress) = inner.egress.consume().scope(&[room.as_str().into()]) else {
+        let Some(scope) = subtree(&room) else {
+            return;
+        };
+        let Ok(egress) = inner.egress.consume().scope("", &scope) else {
             return;
         };
         (egress, room, session.publisher)
     };
     let mut announced = egress.announced();
     while let Some(announce) = announced.next().await {
-        let Some(session) = session.upgrade() else {
-            return;
-        };
-        let path = announce.path.as_str();
+        let path = announce.prefix.as_str();
         let rest = path
             .strip_prefix(room.as_str())
             .map_or(path, |rest| rest.trim_start_matches('/'));
@@ -899,7 +875,15 @@ async fn watch_members(inner: Weak<Inner>, session: Weak<Fallback>) {
         if publisher == own {
             continue;
         }
-        if let Some(broadcast) = announce.broadcast {
+        let broadcast = if announce.kind.is_active() {
+            egress.routed_broadcast(path).await.ok()
+        } else {
+            None
+        };
+        let Some(session) = session.upgrade() else {
+            return;
+        };
+        if let Some(broadcast) = broadcast {
             let mut subscribe = session
                 .subscribe
                 .lock()
@@ -942,8 +926,7 @@ async fn pump_presence(
     publisher: [u8; 32],
 ) {
     loop {
-        let mut subscription = moq_net::track::Subscription::default();
-        subscription.latency_max = PRESENCE_LATENCY;
+        let subscription = moq_net::track::Subscription::default().with_max_age(PRESENCE_LATENCY);
         let subscriber = match broadcast.track(PRESENCE_TRACK) {
             Ok(track) => track.subscribe(subscription).await.ok(),
             Err(_) => None,
@@ -970,10 +953,9 @@ async fn pump_ops(
     record: [u8; 32],
 ) {
     let name = ops_name(&record);
-    let mut subscription = moq_net::track::Subscription::default();
-    subscription.ordered = true;
-    subscription.priority = 1;
-    subscription.latency_max = OPS_LATENCY;
+    let subscription = moq_net::track::Subscription::default()
+        .with_priority(1)
+        .with_max_age(OPS_LATENCY);
     let subscriber = match broadcast.track(&name) {
         Ok(track) => track.subscribe(subscription).await.ok(),
         Err(_) => None,
@@ -981,6 +963,10 @@ async fn pump_ops(
     if let Some(mut subscriber) = subscriber {
         'groups: while let Ok(Some(mut group)) = subscriber.recv_group().await {
             while let Ok(Some(frame)) = group.read_frame().await {
+                // Seal groups carry one empty frame; no ops frame is empty.
+                if frame.payload.is_empty() {
+                    continue;
+                }
                 let Some(session) = session.upgrade() else {
                     return;
                 };

@@ -426,23 +426,25 @@ async fn webtransport_connect_on_the_shared_endpoint_is_handed_over_unchanged() 
         .with_server_certificates(vec![fixture.certificate.clone()])
         .unwrap();
     // `localhost` may resolve to ::1 first; the test endpoint is IPv4.
-    let url: url::Url = format!("https://127.0.0.1:{}/moq/v21/voice", fixture.port)
+    let url: url::Url = format!("https://127.0.0.1:{}/moq/voice", fixture.port)
         .parse()
         .unwrap();
     let connect = tokio::spawn(async move {
         client
-            .connect(web_transport_quinn::proto::ConnectRequest::new(url).with_protocol("moqt-21"))
+            .connect(
+                web_transport_quinn::proto::ConnectRequest::new(url).with_protocol("moq-lite-06"),
+            )
             .await
     });
     let request = timeout(T, fixture.wt.recv()).await.unwrap().unwrap();
-    assert_eq!(request.raw_target(), Some("/moq/v21/voice"));
-    assert!(request.protocols.iter().any(|p| p == "moqt-21"));
+    assert_eq!(request.raw_target(), Some("/moq/voice"));
+    assert!(request.protocols.iter().any(|p| p == "moq-lite-06"));
     let _session = request
-        .respond(web_transport_quinn::proto::ConnectResponse::OK.with_protocol("moqt-21"))
+        .respond(web_transport_quinn::proto::ConnectResponse::OK.with_protocol("moq-lite-06"))
         .await
         .unwrap();
     let session = timeout(T, connect).await.unwrap().unwrap().unwrap();
-    assert_eq!(session.protocol(), Some("moqt-21"));
+    assert_eq!(session.protocol(), Some("moq-lite-06"));
     fixture.finish().await;
 }
 

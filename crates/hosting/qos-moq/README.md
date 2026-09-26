@@ -1,53 +1,79 @@
-# Native MoQ voice adapter
+# Native MoQ voice and live adapter
 
 `qos-moq` carries the `tilo-voice/1` object profile and, behind `relay`, the
-source-pinned `moq-dev/moq` Draft 21 WebTransport relay. Default builds only
-compile the codec. This crate does not own room policy, identity keys, capture
-consent, the workspace document transport, or the native action registry.
+Tilo voice and `LIVE_V1` relays and native clients. They speak `moq-lite`
+(draft 06) using the published `moq-net` crate, driven directly over
+`web-transport-quinn`, the WebTransport implementation the host's shared
+HTTP/3 endpoint already uses. Default builds only compile the codec. This
+crate does not own room policy, identity keys, capture consent, the
+workspace document transport, or the native action registry.
+
+## Carrier
+
+Every route (`/moq/voice`, `/moq/live`) is an HTTP/3 extended CONNECT that
+negotiates the WebTransport subprotocol `moq-lite-06`. Before any MoQ stream,
+the client opens one bidirectional stream and presents its grant there (the
+admission preface): `version u8 = 1 | length u16 BE (1..=8192) | grant`. The
+host checks version and length before allocating, reads the grant within
+five seconds, admits or refuses it, and answers one status byte (`0`
+admitted, `1` denied). Only after `ADMITTED` does the client start
+`moq-lite`. The stream then stays open as the host's control channel: a
+later `2` (revoked) or its end tells the client to close. A session that
+skips or botches the preface is closed with WebTransport code `0x7400` and
+never reaches MoQ or the host authority.
+
+Grants never travel in URLs: URLs reach access logs, browser history and
+developer tools, and browsers cannot attach headers to a WebTransport
+CONNECT. `src/carrier.rs` is the normative description; the browser side is
+`crates/browser/qos-browser-runtime/web/moq-carrier.mjs`.
+
+## Voice relay
 
 The host implements `RelayAuthority`. Its admission method consumes the
-standard SETUP authorization bytes and returns its own private
-`SessionAuthorization` implementation after verifying the native authority's
-grant and fresh device challenge proof. It must supply exact opaque namespace
-paths and recheck current permission, expiry, revocation, call epoch, host boot,
-and participation generation through `current`. No remote request may construct
+preface grant and returns its own private `SessionAuthorization`
+implementation after verifying the native authority's grant and fresh device
+challenge proof. It must supply exact opaque namespace paths and recheck
+current permission, expiry, revocation, call epoch, host boot, and
+participation generation through `current`. No remote request may construct
 that implementation. The callback must use current committed local authority
 and must not block on network I/O.
 
-The intended native adapter wraps the private `RelaySession` from
-`qos-session-peer::media_authority`; no dependency on session-peer is introduced
-here, avoiding a host/transport dependency cycle. A successful isolated proof
-does not establish this production integration.
+`Relay::serve_session` lets the host's shared QUIC router hand over a
+WebTransport session it answered with `moq-lite-06` on an exactly validated
+route (`Relay::validate_route` on the raw CONNECT fields). It runs the
+preface, the shared eight-session budget and the authority loop; the MoQ
+driver stays in that future. `Relay::serve` is the standalone listener: at
+most 16 pending handshakes, each bounded by `HANDSHAKE_BUDGET`.
 
-`VOICE_PATH` is `/moq/v21/voice`; the relay rejects other paths and query
-strings. `Relay::serve_request` allows a shared host QUIC router to dispatch
-an already parsed MoQ request while retaining the same admission checks,
-shared eight-session budget and expiry maintenance. The host must bound
-transport/SETUP handshakes before dispatch and cancel its retained request
-tasks at shutdown. `Relay::serve` is the standalone listener helper.
+Every admitted publisher writes into a private ingress origin scoped to its
+exact namespace. The relay copies its `audio` track into the shared origin
+and is the only path to subscribers: each datagram bundle and each object is
+validated (`voice::validate_bundle`, `voice::validate`), a group holds at most
+five objects, at most three groups are copied at once (a newer group evicts
+the oldest instead of failing the session), and retention is 200 ms, so late
+audio is dropped rather than queued. Caches are byte-bounded (64 KiB per
+publisher, 512 KiB shared).
 
-Exact subscription scopes are fixed at admission. A later participant join
-requires an authorized reconnect with a freshly computed exact namespace set.
-Production integration should observe a host-owned roster revision and refresh
-the connection while preserving local mute state. A call prefix alone is not
-authority to receive every namespace below it. The eventual public ingress
-must route both MoQ and delivery-v3 on the shared host listener; this isolated
-endpoint does not install that router.
+Exact subscription scopes are fixed at admission; a prefix-scoped subscriber
+(`subscription_prefix`) is offered every publisher of its call and observed
+against exactly those namespaces every 100 ms. Established sessions tolerate
+`Unavailable` for at most 900 ms since the last confirmed observation, capped
+by the verified grant deadline; explicit denial ends the session on the next
+observation. On revocation the relay stops forwarding the session's
+publication at once, sends the revocation notice, and closes the transport
+when the client has closed or after `GOAWAY_GRACE` (1 s).
 
 ## Datagram delivery and redundancy bundles
 
-Browser publishers send each 20 ms object as one Draft 21 OBJECT_DATAGRAM
-(single-object group, Object ID 0) instead of five-object group streams: no
+Browser publishers send each 20 ms object as one `moq-lite` datagram
+(single-object group) instead of five-object group streams: no
 retransmission and no head-of-line blocking. The datagram payload is a
 *bundle*: the newest `tilo-voice/1` object followed by up to two earlier
-objects (`MAX_BUNDLE_OBJECTS` = 3), each byte-identical to its stream form and
-self-delimited by its payload length. A receiver that lost the datagram
-carrying object N recovers it from the next datagram 20 ms later. The relay
-validates every bundle (`voice::validate_bundle`) before any subscriber can
-observe it and forwards per datagram with a 50 ms / 8-entry send buffer, so
-late audio is dropped rather than queued. Group streams remain the fallback
-and are still accepted everywhere; the native client drains both channels and
-deduplicates by object sequence.
+objects (`MAX_BUNDLE_OBJECTS` = 3), each byte-identical to its stream form
+and self-delimited by its payload length. A receiver that lost the datagram
+carrying object N recovers it from the next datagram 20 ms later. Group
+streams remain the fallback and are still accepted everywhere; the native
+client drains both channels and deduplicates by object sequence.
 
 ## Voice wire layout
 
@@ -71,13 +97,24 @@ The native integration test invokes the existing browser JavaScript codec and
 compares actual encoded/decoded bytes, including values beyond JavaScript's
 safe integer range. Missing Node fails that qualification test explicitly.
 
+## Live relay
+
+`live::LiveRelay` carries ephemeral presence and ordered ops for
+`tilo-live/<room>/<publisher>`. A publisher announces its namespace broadcast
+(`presence` datagrams) and one broadcast per record it writes,
+`<namespace>/ops/<record>`, with one ordered track `ops` (at most 16 open).
+The relay re-publishes each member as one egress broadcast with `presence`
+and on-demand `ops/<record>` tracks, validating and rate-limiting every
+frame. A quiet ops track is sealed with a group holding one empty frame so a
+late subscriber is not replayed delivered frames; readers skip empty frames.
+`live::peer::Peer` is the native participant; `live::fallback` bridges the
+same relay over plain HTTPS.
+
 ## Validation
 
-Run plain Cargo in the native checkout, using its existing target directory:
-
 ```sh
-cargo test -p qos-moq --test voice
-cargo test -p qos-moq --features relay --test relay
+rcargo test -p qos-moq --test voice
+rcargo test -p qos-moq --features relay
 ```
 
 The real network tests use localhost WebTransport and pin the generated leaf
@@ -101,27 +138,9 @@ startup and at most 60 seconds away. A listening-only identity uses `null` for
 `publish`. These exact secret fixtures are local protocol-test credentials;
 they do not implement the native production grant and device challenge proof.
 
-The process rejects nonloopback binds. It serves `/moq/v21/voice` and prints `READY` followed by JSON with
-`url`, `protocol: "moqt-21"` and `identityMode: "isolated-proof-only"`. The
-protocol field declares the configured version; tests additionally assert the
-actual negotiated session version. `COUNTERS` JSON reports only `accepted`,
-`rejected`, `expired`, and `active` session counts. Ctrl-C closes the listener
-and all session tasks. Neither credentials nor media objects are printed.
-
-The relay uses the opt-in upstream hard voice model limits, exact directional
-scopes and the complete-frame profile validator. Idle model expiry runs every
-20 ms; host authorization is rechecked every 100 ms and before attaching
-origins. The admission queue is capped at 16 pending handshakes with an
-eight-second handshake budget (`HANDSHAKE_BUDGET`) and a five-second SETUP
-budget (`SETUP_BUDGET`), sized so a 600 ms RTT satellite path can complete
-after one loss recovery; eight session tasks can run concurrently. Production
-host listeners should also restrict the QUIC stream count, as the proof
-endpoint does (32), and supply their own certified TLS identity.
-
-An authority may distinguish temporary observation contention from denial with
-`AuthorizationStatus`. Admission always requires current authority. Established
-sessions may tolerate `Unavailable` for at most 900 ms since the last confirmed
-current observation, capped by the verified monotonic grant deadline. Repeated
-unavailable observations cannot extend that deadline. Explicit denial closes on
-the next observation. This bounds revocation delay during an owner commit without
-treating an ordinary short commit as a disconnected call.
+The process rejects nonloopback binds. It serves `/moq/voice` and prints
+`READY` followed by JSON with `url`, `protocol: "moq-lite-06"` and
+`identityMode: "isolated-proof-only"`. `COUNTERS` JSON reports content-free
+session and forwarding counts. Ctrl-C closes the listener and all session
+tasks. Neither credentials nor media objects are printed. The listener allows
+32 concurrent streams per direction and supplies its own TLS identity.

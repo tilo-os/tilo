@@ -530,12 +530,7 @@ impl PeerMedia {
             ChallengeTranscript::Relay(v) => &v.audience,
             ChallengeTranscript::Refresh(v) => &v.audience,
         };
-        if audience
-            != &format!(
-                "{}/moq/v21/voice",
-                self.authority.borrow().descriptor.origin()
-            )
-        {
+        if audience != &format!("{}/moq/voice", self.authority.borrow().descriptor.origin()) {
             return Err("media audience mismatch".into());
         }
         Ok(())
@@ -655,10 +650,7 @@ impl PeerMedia {
                     || m.epoch != c.epoch
                     || m.membership_generation != c.membership_generation
                     || m.audience
-                        != format!(
-                            "{}/moq/v21/voice",
-                            self.authority.borrow().descriptor.origin()
-                        )
+                        != format!("{}/moq/voice", self.authority.borrow().descriptor.origin())
                     || m.issued_at_ns < c.issued_at_ns
                     || m.issued_at_ns > view.now_ns.saturating_add(CLOCK_SKEW_NS)
                     || m.expires_at_ns <= view.now_ns

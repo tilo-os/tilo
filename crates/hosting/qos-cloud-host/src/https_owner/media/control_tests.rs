@@ -198,7 +198,7 @@ impl Fixture {
         let source = CloudStoreSource::bind(&store).unwrap();
         drop(store);
         let service =
-            CloudMediaService::new_unqualified(source.clone(), &format!("{ORIGIN}/moq/v21/voice"))
+            CloudMediaService::new_unqualified(source.clone(), &format!("{ORIGIN}/moq/voice"))
                 .unwrap();
         let browser = Session::new(&source, SigningKey::from_bytes(&[8; 32]));
         let host = Session::new(&source, host_key);

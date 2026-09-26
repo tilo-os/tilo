@@ -10,7 +10,7 @@ import {
 
 const ROOM = 'a'.repeat(64);
 const ORIGIN = 'https://host.test:19343';
-const ENDPOINT = `${ORIGIN}/moq/v21/live`;
+const ENDPOINT = `${ORIGIN}/moq/live`;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -50,7 +50,7 @@ function createFallbackHost(relay) {
     let transport;
     try {
       const publisher = decoder.decode(grant);
-      transport = await createLiveTransport({library: relay.library}).connect({
+      transport = await createLiveTransport({library: relay.library, carrier: relay.carrier}).connect({
         endpoint: ENDPOINT, authorization: grant, namespace: ['tilo-live', ROOM, publisher],
         directions: {publish: true, subscribe: true},
       });
@@ -167,7 +167,7 @@ function setup() {
   const relay = createFakeRelay({authorize: bytes => ({namespace: `tilo-live/${ROOM}/${decoder.decode(bytes)}`})});
   const host = createFallbackHost(relay);
   const fallback = () => createFallbackTransport({fetch: host.fetch, clock: fastClock});
-  const moq = () => createLiveTransport({library: relay.library});
+  const moq = () => createLiveTransport({library: relay.library, carrier: relay.carrier});
   return {relay, host, fallback, moq};
 }
 const B = 'b'.repeat(64);

@@ -9,7 +9,7 @@ pub struct RunningTransport {
     pub(super) failed: bool,
     pub(super) origin: String,
     pub(super) registrations: Arc<AtomicU8>,
-    /// LIVE_V1 relay on this endpoint's `/moq/v21/live`, once installed.
+    /// LIVE_V1 relay on this endpoint's `/moq/live`, once installed.
     pub(super) live: LiveSlot,
 }
 /// Shared, install-once handle to the live relay served by `serve_h3`.
@@ -105,7 +105,7 @@ impl RunningTransport {
     pub fn install_live(&self, relay: qos_moq::live::LiveRelay) -> bool {
         self.live.set(relay).is_ok()
     }
-    /// Whether `/moq/v21/live` is served on this endpoint.
+    /// Whether `/moq/live` is served on this endpoint.
     pub fn live_installed(&self) -> bool {
         self.is_live() && self.live.get().is_some()
     }

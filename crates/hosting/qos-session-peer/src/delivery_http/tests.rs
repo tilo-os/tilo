@@ -357,7 +357,7 @@ fn authenticated_native_control_grant_setup_presence_refresh_close_and_leave() {
     let service = MediaService::for_owner(
         &f.owner,
         f.current.clone(),
-        "https://localhost:9443/moq/v21/voice",
+        "https://localhost:9443/moq/voice",
     )
     .unwrap();
     let mut registry = HttpSessions::new(&f.owner, &f.current, f.now).unwrap();

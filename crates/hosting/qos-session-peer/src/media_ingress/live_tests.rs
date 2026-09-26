@@ -152,27 +152,13 @@ async fn live_grant_route_refuses_unproved_foreign_device_wrong_room_and_malform
     assert_eq!(grant(&mut h, &wanted).await.0, StatusCode::OK);
 }
 
-pub(super) struct LiveClient {
-    pub(super) session: moq_net::Session,
-    _driver: tokio::task::JoinHandle<()>,
-    pub(super) incoming: moq_net::origin::Producer,
-    _outgoing: moq_net::origin::Producer,
-    _broadcast: moq_net::broadcast::Producer,
-    presence: moq_net::track::Producer,
-}
+pub(super) type LiveClient = qos_moq::live::peer::Peer;
 pub(super) async fn live_connect(h: &Harness, token: Vec<u8>) -> anyhow::Result<LiveClient> {
     let path = format!(
         "tilo-live/{}/{}",
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(h.f.owner.identity.native_cert.device_public_key)
     );
-    let outgoing = moq_net::Origin::random().produce();
-    let incoming = moq_net::Origin::random().produce();
-    let mut broadcast = outgoing.create_broadcast(
-        path.as_str(),
-        moq_net::broadcast::Route::new().with_announce(true),
-    )?;
-    let presence = broadcast.create_track(PRESENCE_TRACK, None)?;
     let wt = web_transport_quinn::ClientBuilder::new()
         .with_server_certificates(vec![h.certificate.clone()])?;
     let transport = timeout(
@@ -185,32 +171,13 @@ pub(super) async fn live_connect(h: &Harness, token: Vec<u8>) -> anyhow::Result<
         ),
     )
     .await??;
-    let (session, driver) = timeout(
+    let client = timeout(
         Duration::from_secs(5),
-        moq_net::Client::new()
-            .with_versions(
-                "moq-transport-21"
-                    .parse::<moq_net::Version>()
-                    .map_err(anyhow::Error::msg)?
-                    .into(),
-            )
-            .with_authorization(token)?
-            .with_publisher(&outgoing)
-            .with_subscriber(incoming.clone())
-            .connect(transport),
+        LiveClient::start(transport, &token, Some(&path)),
     )
-    .await??;
-    let driver = tokio::spawn(async move {
-        let _ = driver.await;
-    });
-    Ok(LiveClient {
-        session,
-        _driver: driver,
-        incoming,
-        _outgoing: outgoing,
-        _broadcast: broadcast,
-        presence,
-    })
+    .await?
+    .map_err(anyhow::Error::from)?;
+    Ok(client)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -221,7 +188,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
     assert_eq!(status, StatusCode::OK);
     // A forged token is refused before any origin is attached.
     if let Ok(forged) = live_connect(&h, b"forged-token".to_vec()).await {
-        timeout(Duration::from_secs(5), forged.session.closed())
+        timeout(Duration::from_secs(5), forged.session().closed())
             .await
             .expect("forged token closes");
     }
@@ -231,13 +198,10 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(
-        Duration::from_secs(5),
-        client.incoming.consume().announced_broadcast(path.as_str()),
-    )
-    .await
-    .unwrap()
-    .expect("own namespace is relayed back to the room scope");
+    let own = timeout(Duration::from_secs(5), client.member(&path))
+        .await
+        .unwrap()
+        .expect("own namespace is relayed back to the room scope");
     // Presence with the real codec, relayed through the host relay.
     let mut presence = own
         .track(PRESENCE_TRACK)
@@ -261,15 +225,9 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         let mut seq = 0;
         loop {
             seq += 1;
-            client
-                .presence
-                .append_datagram(moq_net::Timestamp::ZERO, frame(seq))
-                .unwrap();
+            assert!(client.publish_presence(&frame(seq)));
             // An invalid frame is dropped at the relay, never forwarded.
-            client
-                .presence
-                .append_datagram(moq_net::Timestamp::ZERO, vec![0xff; 40])
-                .unwrap();
+            assert!(client.publish_presence(&vec![0xff; 40]));
             if let Ok(Ok(Some(datagram))) =
                 timeout(Duration::from_millis(50), presence.recv_datagram()).await
             {
@@ -289,10 +247,8 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         app: WP.into(),
         record: TAB.into(),
     };
-    let mut subscription = moq_net::track::Subscription::default();
-    subscription.ordered = true;
     // Receivers keep late groups (stream reordering) for the relay window.
-    subscription.latency_max = Duration::from_secs(2);
+    let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
     let mut ops = own
         .track(&ops_track(&record))
         .unwrap()
@@ -335,7 +291,10 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
             let Ok(Some(mut group)) = ops.recv_group().await else {
                 return None;
             };
-            if let Ok(Some(frame)) = group.read_frame().await {
+            // Seal groups hold one empty frame.
+            if let Ok(Some(frame)) = group.read_frame().await
+                && !frame.payload.is_empty()
+            {
                 return Some(frame.payload.to_vec());
             }
         }
@@ -345,7 +304,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         !matches!(again, Ok(Some(_))),
         "duplicates are not re-forwarded"
     );
-    client.session.abort(moq_net::Error::Cancel);
+    drop(client);
 }
 
 #[test]
@@ -405,21 +364,16 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(
-        Duration::from_secs(5),
-        client.incoming.consume().announced_broadcast(path.as_str()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let own = timeout(Duration::from_secs(5), client.member(&path))
+        .await
+        .unwrap()
+        .unwrap();
     let record = LiveRecord {
         app: WP.into(),
         record: TAB.into(),
     };
-    let mut subscription = moq_net::track::Subscription::default();
-    subscription.ordered = true;
     // Receivers keep late groups (stream reordering) for the relay window.
-    subscription.latency_max = Duration::from_secs(2);
+    let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
     let mut ops = own
         .track(&ops_track(&record))
         .unwrap()
@@ -481,11 +435,11 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
     );
     assert_eq!(counters.injected_dropped, 0, "{counters:?}");
     assert!(
-        timeout(Duration::from_millis(50), client.session.closed())
+        timeout(Duration::from_millis(50), client.session().closed())
             .await
             .is_err(),
         "the author's live session stays open"
     );
     reader.abort();
-    client.session.abort(moq_net::Error::Cancel);
+    drop(client);
 }

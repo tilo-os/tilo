@@ -25,6 +25,9 @@ cargo build --locked --profile "$profile" -j2 -p qos-browser-runtime --target wa
 mkdir -p "$out/pkg" "$out/fonts"
 "${WASM_BINDGEN:-wasm-bindgen}" "$artifact_target_dir/wasm32-unknown-unknown/$artifact_profile/qos_browser_runtime.wasm" --target web --out-dir "$out/pkg"
 cp crates/browser/qos-browser-runtime/web/*.mjs crates/browser/qos-browser-runtime/web/*.d.ts "$out/"
+# The MoQ library is bundled from the published @moq/net pinned in bun.lock,
+# never committed; this replaces any local development copy just copied.
+(cd scripts/moq-browser && bun install --frozen-lockfile && bun build.mjs "$out/media-moq-library.mjs")
 cp crates/browser/qos-browser-runtime/web/proof.html "$out/index.html"
 cp crates/browser/qos-browser-runtime/web/peer-proof.html "$out/peer-proof.html"
 python3 - "$repo" "$out" <<'PY'

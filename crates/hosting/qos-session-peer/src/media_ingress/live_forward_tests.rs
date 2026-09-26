@@ -382,15 +382,11 @@ async fn subscribe_ops(
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(wanted.device)
     );
-    let own = timeout(
-        Duration::from_secs(5),
-        client.incoming.consume().announced_broadcast(path.as_str()),
-    )
-    .await
-    .unwrap()
-    .expect("own namespace relayed");
-    let mut subscription = moq_net::track::Subscription::default();
-    subscription.ordered = true;
+    let own = timeout(Duration::from_secs(5), client.member(&path))
+        .await
+        .unwrap()
+        .expect("own namespace relayed");
+    let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
     let mut ops = own
         .track(&ops_track(record))
         .unwrap()
@@ -401,7 +397,10 @@ async fn subscribe_ops(
     let listener = tokio::spawn(async move {
         let _own = own;
         while let Ok(Some(mut group)) = ops.recv_group().await {
-            if let Ok(Some(frame)) = group.read_frame().await {
+            // Seal groups hold one empty frame.
+            if let Ok(Some(frame)) = group.read_frame().await
+                && !frame.payload.is_empty()
+            {
                 let _ = frames.send((frame.payload.to_vec(), Instant::now()));
             }
         }
@@ -411,8 +410,8 @@ async fn subscribe_ops(
 }
 
 /// End to end on loopback: TLS HTTPS upload of a record-less chat change on
-/// the installed native host, a native MoQ Draft 21 live subscriber on the
-/// same host's `/moq/v21/live`, and a held durable poll opened beforehand.
+/// the installed native host, a native moq-lite live subscriber on the
+/// same host's `/moq/live`, and a held durable poll opened beforehand.
 /// Each sample times, from the upload request start: the forwarded
 /// `SignedChange` arriving at the subscriber, the upload's durable receipt,
 /// and the durable replay page. `LIVE_FORWARD_SAMPLES` sets the sample count
@@ -551,7 +550,7 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
             live_before_ack += usize::from(live_at <= acked_at);
         }
         listener.abort();
-        client.session.abort(moq_net::Error::Cancel);
+        drop(client);
         if (batch + 1) * BATCH < samples {
             // Let the relay withdraw this namespace's egress ops track before
             // the next session subscribes (see the batching note above).

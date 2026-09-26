@@ -84,7 +84,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
         let binding = request.session().binding();
         if binding.workspace != turn.workspace()
             || binding.workspace_root != turn.peer().authority().user_public_key
-            || format!("{}/moq/v21/voice", binding.origin) != self.0.audience
+            || format!("{}/moq/voice", binding.origin) != self.0.audience
         {
             return Err(MediaError::Unauthorized);
         }

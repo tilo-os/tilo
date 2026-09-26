@@ -18,8 +18,7 @@ use web_transport_quinn::proto::{
     ConnectError, ConnectRequest, ConnectResponse, Frame, VarInt, http::StatusCode,
 };
 
-const MOQ_PROTOCOL: &str = "moqt-21";
-const MOQ_VERSION: &str = "moq-transport-21";
+const MOQ_PROTOCOL: &str = qos_moq::carrier::PROTOCOL;
 const DEADLINE: Duration = Duration::from_secs(3);
 
 struct H3Pair {
@@ -131,15 +130,15 @@ fn activated_proto_rejects_duplicate_pseudoheaders_from_qpack_wire() -> Result<(
 async fn activated_proto_preserves_raw_connect_fields_before_url_normalization() -> Result<()> {
     for (authority, target) in [
         ("media.example.test:443", VOICE_PATH),
-        ("media.example.test:443", "/moq/v21/./voice"),
-        ("media.example.test:443", "/moq/v21/%2e/voice"),
-        ("media.example.test:443", "/moq/other/../v21/voice"),
-        ("media.example.test:443", "/moq/v21/voice?alias=1"),
-        ("media.example.test:443", "/moq/v21/voice#fragment"),
+        ("media.example.test:443", "/moq/./voice"),
+        ("media.example.test:443", "/moq/%2e/voice"),
+        ("media.example.test:443", "/moq/other/../voice"),
+        ("media.example.test:443", "/moq/voice?alias=1"),
+        ("media.example.test:443", "/moq/voice#fragment"),
         ("MEDIA.example.test:443", VOICE_PATH),
     ] {
         let outgoing = request(
-            "https://media.example.test/moq/v21/voice".parse()?,
+            "https://media.example.test/moq/voice".parse()?,
             authority,
             target,
         );
@@ -166,12 +165,12 @@ async fn actual_h3_rejects_raw_aliases_before_moq_setup_parsing() -> Result<()> 
         LocalhostAuthority,
     }
     let cases = [
-        Malformed::Target("/moq/v21/voice/"),
-        Malformed::Target("/moq/v21/./voice"),
-        Malformed::Target("/moq/v21/%2e/voice"),
-        Malformed::Target("/moq/other/../v21/voice"),
-        Malformed::Target("/moq/v21/voice?alias=1"),
-        Malformed::Target("/moq/v21/voice#fragment"),
+        Malformed::Target("/moq/voice/"),
+        Malformed::Target("/moq/./voice"),
+        Malformed::Target("/moq/%2e/voice"),
+        Malformed::Target("/moq/other/../voice"),
+        Malformed::Target("/moq/voice?alias=1"),
+        Malformed::Target("/moq/voice#fragment"),
         Malformed::Target("/peer/v3/connect"),
         Malformed::AuthorityPrefix("user@"),
         Malformed::LocalhostAuthority,
@@ -272,10 +271,6 @@ impl RelayAuthority for Authority {
     }
 }
 
-fn draft21() -> moq_net::Version {
-    MOQ_VERSION.parse().expect("known Draft 21 version")
-}
-
 #[tokio::test]
 async fn canonical_raw_connect_reaches_generic_relay_and_cancellation_owns_driver() -> Result<()> {
     let H3Pair {
@@ -311,22 +306,14 @@ async fn canonical_raw_connect_reaches_generic_relay_and_cancellation_owns_drive
         let transport = incoming
             .respond(ConnectResponse::OK.with_protocol(MOQ_PROTOCOL))
             .await?;
-        let pending = moq_net::Server::new()
-            .with_versions(draft21().into())
-            .accept_request(transport)
-            .await?;
-        serving.serve_accepted(route, pending).await;
+        serving.serve_session(route, transport).await;
         anyhow::Ok(())
     });
 
     let transport = client
         .connect(request(url, &expected_authority, VOICE_PATH))
         .await?;
-    let moq = moq_net::Client::new()
-        .with_versions(draft21().into())
-        .with_authorization(b"canonical-proof".to_vec())?;
-    let (session, driver) = moq.connect(transport).await?;
-    let client_driver = tokio::spawn(driver);
+    let connected = qos_moq::carrier::start(transport, b"canonical-proof", None, None).await?;
 
     tokio::time::timeout(DEADLINE, async {
         while relay.counters().active != 1 {
@@ -342,18 +329,19 @@ async fn canonical_raw_connect_reaches_generic_relay_and_cancellation_owns_drive
     // protocol driver. The client must observe closure without a detached task.
     server_task.abort();
     assert!(server_task.await.is_err());
-    tokio::time::timeout(DEADLINE, session.closed())
+    tokio::time::timeout(DEADLINE, connected.closed())
         .await
         .context("client stayed open after generic relay task cancellation")?;
     assert_eq!(relay.counters().active, 0);
-    let _ = tokio::time::timeout(DEADLINE, client_driver).await;
     Ok(())
 }
 
-/// Product ingress order: CONNECT is answered before MoQ SETUP and host
-/// admission, so an open transport is not an admitted session. The client's
-/// setup-received signal (relay SETUP) resolves only after admission.
-async fn setup_signal_after(proof: &'static [u8]) -> Result<(bool, bool)> {
+/// Product ingress order: CONNECT is answered before the admission preface,
+/// so an open transport is not an admitted session. The client learns of its
+/// admission only from the host's reply on the admission stream.
+async fn admission_after(
+    proof: &'static [u8],
+) -> Result<Result<(), qos_moq::carrier::AdmissionError>> {
     let H3Pair {
         mut server,
         client,
@@ -376,38 +364,29 @@ async fn setup_signal_after(proof: &'static [u8]) -> Result<(bool, bool)> {
         let transport = incoming
             .respond(ConnectResponse::OK.with_protocol(MOQ_PROTOCOL))
             .await?;
-        let pending = moq_net::Server::new()
-            .with_versions(draft21().into())
-            .accept_request(transport)
-            .await?;
-        relay.serve_accepted(route, pending).await;
+        relay.serve_session(route, transport).await;
         anyhow::Ok(())
     });
     let transport = client
         .connect(request(url, &expected_authority, VOICE_PATH))
         .await?;
-    let moq = moq_net::Client::new()
-        .with_versions(draft21().into())
-        .with_authorization(proof.to_vec())?;
-    let (session, driver) = moq.connect(transport).await?;
-    let client_driver = tokio::spawn(driver);
-    let outcome = tokio::time::timeout(DEADLINE, async {
-        tokio::select! {
-            biased;
-            _ = session.setup_received() => (true, false),
-            _ = session.closed() => (false, true),
-        }
-    })
+    let outcome = tokio::time::timeout(
+        DEADLINE,
+        qos_moq::carrier::start(transport, proof, None, None),
+    )
     .await
-    .context("neither admission nor closure observed")?;
+    .context("neither admission nor refusal observed")?
+    .map(drop);
     server_task.abort();
-    client_driver.abort();
     Ok(outcome)
 }
 
 #[tokio::test]
-async fn setup_received_resolves_only_after_relay_admission() -> Result<()> {
-    assert_eq!(setup_signal_after(b"canonical-proof").await?, (true, false));
-    assert_eq!(setup_signal_after(b"refused-proof").await?, (false, true));
+async fn admission_resolves_only_after_relay_admission() -> Result<()> {
+    assert_eq!(admission_after(b"canonical-proof").await?, Ok(()));
+    assert_eq!(
+        admission_after(b"refused-proof").await?,
+        Err(qos_moq::carrier::AdmissionError::Denied)
+    );
     Ok(())
 }

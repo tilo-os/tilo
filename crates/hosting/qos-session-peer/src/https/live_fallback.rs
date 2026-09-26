@@ -1,8 +1,8 @@
 //! LIVE_V1 HTTPS fallback carrier routes (`qos_moq::live::fallback`), served
 //! directly beside the owner queues on HTTP/1.1, HTTP/2 and HTTP/3.
 //!
-//! Authorization is the live grant itself (exactly as the WebTransport
-//! Authorization Token): `open` admits the grant bytes through the installed
+//! Authorization is the live grant itself (exactly as in the WebTransport
+//! admission preface): `open` admits the grant bytes through the installed
 //! live relay's authority (signature, lifetime, audience, host boot, lease,
 //! current roster). `send`/`resume` carry the session's random 128-bit id,
 //! generated here from OS randomness. The ordinary origin checks of every

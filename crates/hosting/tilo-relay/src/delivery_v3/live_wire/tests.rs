@@ -79,7 +79,7 @@ fn live_grant_rejects_scope_substitution_and_overlong_lifetime() {
     m.expires_at_ns = m.issued_at_ns + GRANT_LIFETIME_NS + 1;
     assert!(SignedLiveGrant::sign(m, &host).is_err());
     let mut m = metadata(&host);
-    m.audience = "https://127.0.0.1:19343/moq/v21/voice".into();
+    m.audience = "https://127.0.0.1:19343/moq/voice".into();
     assert!(
         SignedLiveGrant::sign(m, &host).is_err(),
         "grant is only for the live relay"

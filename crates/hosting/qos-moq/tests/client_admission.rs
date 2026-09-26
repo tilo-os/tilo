@@ -1,5 +1,6 @@
 //! The native client reports Live only after the relay admitted the session
-//! (the relay sends its Draft 21 SETUP only after host admission).
+//! (the relay answers the admission preface only after host admission), and
+//! hears a replacement publisher on the same namespace.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -111,4 +112,110 @@ async fn refused_admission_never_reports_live() {
 async fn admitted_session_reports_live() {
     let seen = observe(true).await;
     assert_eq!(seen.last(), Some(&Status::Live), "{seen:?}");
+}
+
+/// Grants by proof: `pub-b` publishes `b`, `sub` listens to `b`.
+struct Roles;
+impl RelayAuthority for Roles {
+    fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
+        let (publish, subscribe) = match proof {
+            b"pub-b" => (name('b'), vec![]),
+            b"sub" => (name('c'), vec![name('b')]),
+            _ => return Err(Denied),
+        };
+        Ok(Arc::new(Permit { publish, subscribe }))
+    }
+}
+
+fn start(relay: &LoopbackRelay, proof: &[u8], generation: u64) -> Client {
+    let (publication, subscriptions) = if proof == b"pub-b" {
+        (Some(name('b')), vec![])
+    } else {
+        (Some(name('c')), vec![name('b')])
+    };
+    Client::start(
+        Connection {
+            scope: ConnectionScope {
+                endpoint: relay.endpoint.clone(),
+                fingerprints: relay.fingerprints.clone(),
+                owner_epoch: [1; 32],
+                carrier_generation: generation,
+                publication,
+                subscriptions,
+            },
+            authorization: proof.to_vec(),
+        },
+        Arc::new(Owner),
+    )
+    .unwrap()
+}
+
+async fn until_live(client: &Client) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while client.status() != Status::Live {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("live");
+}
+
+fn opus(timestamp_48k: u64) -> qos_moq::client::CapturedOpus {
+    qos_moq::client::CapturedOpus {
+        timestamp_48k,
+        duration_samples: qos_moq::voice::FRAME_SAMPLES,
+        payload: vec![0xf8, 0xff, 0xfe],
+        captured_at: Instant::now(),
+    }
+}
+
+async fn received(client: &Client) -> qos_moq::client::ReceivedOpus {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(value) = client.try_recv() {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("object received")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_publisher_is_heard_from_its_first_object() {
+    let relay = LoopbackRelay::start(Arc::new(Roles)).unwrap();
+    let listener = start(&relay, b"sub", 1);
+    let publisher = start(&relay, b"pub-b", 1);
+    until_live(&listener).await;
+    until_live(&publisher).await;
+    publisher.enable_publication().unwrap();
+    publisher.try_send(opus(0)).unwrap();
+    assert_eq!(received(&listener).await.object.timestamp, 0);
+    publisher.close();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while listener.status() == Status::Live {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("publisher loss observed");
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let replacement = start(&relay, b"pub-b", 2);
+    let fresh = start(&relay, b"sub", 2);
+    until_live(&replacement).await;
+    until_live(&fresh).await;
+    replacement.enable_publication().unwrap();
+    replacement.try_send(opus(10 * 960)).unwrap();
+    let object = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(value) = fresh.try_recv() {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("replacement not heard: relay {:?}", relay.counters()));
+    assert_eq!(object.object.timestamp, 10 * 960);
 }

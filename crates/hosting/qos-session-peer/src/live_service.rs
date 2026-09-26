@@ -1,6 +1,6 @@
 //! LIVE_V1 host authority: issues host-signed live grants on the proof-required
-//! `POST /peer/v3/live/grant` route, admits them as the MoQ Draft 21
-//! Authorization Token on `/moq/v21/live`, rechecks current roster permission
+//! `POST /peer/v3/live/grant` route, admits them from the carrier's admission
+//! preface on `/moq/live`, rechecks current roster permission
 //! on every relay observation, validates live frames with the canonical wire
 //! codec, and forwards admitted signed changes to `ops/<record>` tracks.
 //!

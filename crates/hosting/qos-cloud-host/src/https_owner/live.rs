@@ -8,7 +8,7 @@
 //!   user key, lifetime <= 60 s (capped by the device certificate), `host_boot`
 //!   is random per process, and directions are the authorized subset of the
 //!   request (viewers: subscribe only; none permitted refuses).
-//! * `/moq/v21/live` is served by the shared `qos-moq` live relay on the Cloud
+//! * `/moq/live` is served by the shared `qos-moq` live relay on the Cloud
 //!   host's QUIC endpoint. Admission verifies signature, lifetime, audience,
 //!   host boot, room and namespace, then the current lease and roster
 //!   permission. Every relay observation (100 ms) re-checks the lease and

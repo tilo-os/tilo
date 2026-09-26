@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 [features]
 test-support = ["qos-action-broker/test-support", "tilo-relay/test-support"]
-media = ["dep:qos-moq", "dep:moq-native", "dep:moq-net", "dep:url", "dep:quinn", "dep:web-transport-quinn"]
+media = ["dep:qos-moq", "dep:url", "dep:quinn", "dep:web-transport-quinn"]
 [dependencies]
 tempfile.workspace = true
 anyhow.workspace = true
@@ -52,12 +52,11 @@ tilo-actions = { path = "../../collab/actions" }
 runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 qos-moq = { path = "../qos-moq", features = ["relay"], optional = true }
-moq-native = { path = "../../../vendor/moq/rs/moq-native", default-features = false, features = ["quinn", "ring"], optional = true }
-moq-net = { path = "../../../vendor/moq/rs/moq-net", optional = true }
 url = { workspace = true, optional = true }
 quinn = { version = "0.11.9", default-features = false, features = ["platform-verifier", "runtime-tokio", "bloom", "rustls-ring"], optional = true }
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"], optional = true }
 [dev-dependencies]
+moq-net.workspace = true
 atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 hyper = { version = "1.8.1", features = ["client"] }

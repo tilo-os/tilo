@@ -63,7 +63,7 @@ fn native_media_offered_scopes_share_one_current_turn_and_remote_leave_lapses_on
     let service = MediaService::for_owner(
         &owner,
         CommittedAuthority::new(&owner),
-        "https://relay.test/moq/v21/voice",
+        "https://relay.test/moq/voice",
     )
     .unwrap();
     let f = Fixture {
@@ -164,7 +164,7 @@ impl Fixture {
         activate(&mut owner);
         let authority = CommittedAuthority::new(&owner);
         let service =
-            MediaService::for_owner(&owner, authority, "https://relay.test/moq/v21/voice").unwrap();
+            MediaService::for_owner(&owner, authority, "https://relay.test/moq/voice").unwrap();
         Self {
             _dir: dir,
             owner,
@@ -401,7 +401,7 @@ fn live_handle_capacity_is_bounded_and_dropped_handles_are_reclaimed() {
 #[tokio::test]
 async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation() {
     use qos_moq::{
-        relay::{Relay, VOICE_PATH},
+        relay::LoopbackRelay,
         voice::{FRAME_SAMPLES, VoiceObject},
     };
     let mut f = Fixture::new();
@@ -461,41 +461,41 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     .unwrap();
     let (_, publisher_proof) = f.proof(&grant);
     let namespace = namespace(grant.metadata.namespace);
-    let draft: moq_net::Version = "moq-transport-21".parse().unwrap();
-    let mut config = moq_native::ServerConfig::default();
-    config.bind = Some("127.0.0.1:0".into());
-    config.version = vec![draft];
-    config.tls.generate = vec!["localhost".into()];
-    let server = config.init().unwrap();
-    let url: url::Url = format!(
-        "https://localhost:{}{VOICE_PATH}",
-        server.local_addr().unwrap().port()
-    )
-    .parse()
-    .unwrap();
-    let mut config = moq_native::ClientConfig::default();
-    config.version = vec![draft];
-    config.tls.fingerprint = server.certificates().fingerprints();
-    let client = config.init().unwrap();
-    let relay = Relay::new(Arc::new(f.service.clone()));
-    let task = tokio::spawn(relay.serve(server));
-    let incoming = moq_net::Origin::random().produce();
-    let outgoing = moq_net::Origin::random().produce();
-    let subscriber = client
-        .clone()
-        .with_authorization(subscriber_proof)
-        .unwrap()
-        .with_subscriber(incoming.clone())
-        .connect(url.clone())
+    let relay = LoopbackRelay::start(Arc::new(f.service.clone())).unwrap();
+    let url: url::Url = relay.endpoint.parse().unwrap();
+    let trust = qos_moq::carrier::Trust::Fingerprints(relay.fingerprints.clone());
+    let origin = || {
+        qos_moq::carrier::OriginTask::produce(qos_moq::carrier::origin_config(
+            1024 * 1024,
+            Duration::from_secs(2),
+        ))
+    };
+    let (incoming, _incoming_task) = origin();
+    let (outgoing, _outgoing_task) = origin();
+    let connect = |proof: Vec<u8>,
+                   publish: Option<moq_net::origin::Consumer>,
+                   subscribe: Option<moq_net::origin::Producer>| {
+        let (url, trust) = (url.clone(), trust.clone());
+        async move {
+            qos_moq::carrier::connect(
+                &url,
+                &trust,
+                &proof,
+                publish,
+                subscribe,
+                Duration::from_secs(5),
+            )
+            .await
+        }
+    };
+    let subscriber = connect(subscriber_proof, None, Some(incoming.clone()))
         .await
         .unwrap();
-    let mut broadcast = outgoing
-        .create_broadcast(
-            namespace.as_str(),
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
+    let broadcast = outgoing.create_broadcast(namespace.as_str()).unwrap();
     let mut track = broadcast.create_track("audio", None).unwrap();
+    broadcast
+        .announce(moq_net::origin::Route::default())
+        .unwrap();
     let expected = VoiceObject {
         sequence: 0,
         timestamp: 0,
@@ -507,18 +507,13 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     track
         .write_frame(moq_net::Timestamp::ZERO, expected.clone())
         .unwrap();
-    let publisher = client
-        .clone()
-        .with_authorization(publisher_proof.clone())
-        .unwrap()
-        .with_publisher(&outgoing)
-        .connect(url.clone())
+    let publisher = connect(publisher_proof.clone(), Some(outgoing.consume()), None)
         .await
         .unwrap();
     let actual = tokio::time::timeout(Duration::from_secs(5), async {
         let b = incoming
             .consume()
-            .announced_broadcast(namespace.as_str())
+            .routed_broadcast(namespace.as_str())
             .await
             .unwrap();
         let mut t = b.track("audio").unwrap().subscribe(None).await.unwrap();
@@ -528,17 +523,12 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     .await
     .unwrap();
     assert_eq!(actual, expected);
-    assert_eq!(publisher.version().as_str(), "moq-transport-21");
-    if let Ok(replayed) = client
-        .with_authorization(publisher_proof)
-        .unwrap()
-        .connect(url)
-        .await
-    {
-        let _ = tokio::time::timeout(Duration::from_secs(1), replayed.closed())
-            .await
-            .expect("proof replay closes");
-    }
+    assert_eq!(
+        publisher.session.version(),
+        qos_moq::carrier::version().unwrap()
+    );
+    // A replayed proof is refused in the admission preface.
+    assert!(connect(publisher_proof, None, None).await.is_err());
     f.service.invalidate();
     let _ = tokio::time::timeout(Duration::from_secs(1), publisher.closed())
         .await
@@ -546,7 +536,7 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     let _ = tokio::time::timeout(Duration::from_secs(1), subscriber.closed())
         .await
         .expect("subscriber revocation deadline");
-    task.abort();
+    drop(broadcast);
 }
 
 #[test]
@@ -1238,7 +1228,7 @@ fn room_media_policy_signed_owner_restart_rebuilds_policy_and_fences_old_boot() 
     let owner = SessionOwner::open(&root).unwrap();
     let committed = CommittedAuthority::new(&owner);
     let service =
-        MediaService::for_owner(&owner, committed, "https://relay.test/moq/v21/voice").unwrap();
+        MediaService::for_owner(&owner, committed, "https://relay.test/moq/voice").unwrap();
     assert!(service.relay_challenge(old.as_bytes()).is_err());
     let challenge = service.challenge(request, GrantOperation::Join).unwrap();
     let GrantCompletion::Granted(fresh) = service

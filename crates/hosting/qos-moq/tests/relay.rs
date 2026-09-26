@@ -17,13 +17,18 @@
     reason = "scenario-shaped test code"
 )]
 
-use qos_moq::relay::{Denied, Direction, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH};
+mod support;
+
+use qos_moq::relay::{
+    Denied, Direction, LoopbackRelay, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
+};
 use qos_moq::voice::{FRAME_SAMPLES, VoiceObject};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
+use support::{Dialer, Origin};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -33,12 +38,12 @@ fn shared_ingress_route_requires_exact_raw_authority_and_target() {
     assert!(Relay::validate_route(expected, expected, VOICE_PATH).is_some());
 
     for target in [
-        "/moq/v21/voice/",
-        "/moq/v21/./voice",
-        "/moq/v21/%2e/voice",
-        "/moq/v21/other/../voice",
-        "/moq/v21/voice?alias=1",
-        "/moq/v21/voice#fragment",
+        "/moq/voice/",
+        "/moq/./voice",
+        "/moq/%2e/voice",
+        "/moq/other/../voice",
+        "/moq/voice?alias=1",
+        "/moq/voice#fragment",
         "/peer/v3/connect",
         "/voice",
     ] {
@@ -128,73 +133,46 @@ impl RelayAuthority for Authority {
     }
 }
 
-fn draft() -> moq_net::Version {
-    "moq-transport-21".parse().unwrap()
-}
-
-async fn setup() -> (
-    url::Url,
-    moq_native::Client,
-    Arc<AtomicBool>,
-    tokio::task::JoinHandle<()>,
-) {
-    let mut config = moq_native::ServerConfig::default();
-    config.bind = Some("127.0.0.1:0".into());
-    config.version = vec![draft()];
-    config.tls.generate = vec!["localhost".into()];
-    let server = config.init().unwrap();
-    let url = format!(
-        "https://localhost:{}{VOICE_PATH}",
-        server.local_addr().unwrap().port()
-    )
-    .parse()
-    .unwrap();
-    let mut config = moq_native::ClientConfig::default();
-    config.version = vec![draft()];
-    config.tls.fingerprint = server.certificates().fingerprints();
-    let client = config.init().unwrap();
+fn setup() -> (Dialer, Arc<AtomicBool>, LoopbackRelay) {
     let active = Arc::new(AtomicBool::new(true));
-    let relay = Relay::new(Arc::new(Authority {
+    let relay = LoopbackRelay::start(Arc::new(Authority {
         active: active.clone(),
-    }));
-    let task = tokio::spawn(relay.serve(server));
-    (url, client, active, task)
+    }))
+    .unwrap();
+    let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
+    (dialer, active, relay)
 }
 
 #[tokio::test]
 async fn exact_voice_route_accepts_and_rejects_other_routes_and_queries() {
-    let (url, client, _active, server) = setup().await;
-    let client = client.with_authorization(b"isolated-a".to_vec()).unwrap();
-    let admitted = client.clone().connect(url.clone()).await.unwrap();
+    let (dialer, _active, _relay) = setup();
+    let admitted = dialer.connect(b"isolated-a", None, None).await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), admitted.closed())
             .await
             .is_err()
     );
-    admitted.abort(moq_net::Error::Cancel);
+    drop(admitted);
     for path in [
         "/moq",
-        "/moq/v21/voice/",
-        "/moq/v20/voice",
-        "/moq/v21/voice?token=invalid",
+        "/moq/voice/",
+        "/moq/v21/voice",
+        "/moq/voice?token=invalid",
     ] {
-        let changed = url.join(path).unwrap();
-        if let Ok(session) = client.clone().connect(changed).await {
-            let _ = tokio::time::timeout(TIMEOUT, session.closed())
+        let changed = dialer.url.join(path).unwrap();
+        assert!(
+            dialer
+                .connect_to(&changed, b"isolated-a", None, None)
                 .await
-                .expect("wrong route closes");
-        }
+                .is_err(),
+            "{path}"
+        );
     }
-    server.abort();
 }
 
-async fn read(origin: &moq_net::origin::Producer, path: &str) -> Vec<u8> {
+async fn read(origin: &Origin, path: &str) -> Vec<u8> {
     tokio::time::timeout(TIMEOUT, async {
-        let broadcast = origin
-            .consume()
-            .announced_broadcast(path)
-            .await
-            .expect("authorized announce");
+        let broadcast = origin.broadcast(path).await;
         let mut track = broadcast
             .track("audio")
             .unwrap()
@@ -227,85 +205,58 @@ fn voice(sequence: u64) -> Vec<u8> {
 
 #[tokio::test]
 async fn real_webtransport_relays_bidirectional_exact_voice_objects_and_reconnects() {
-    let (url, client, _active, server) = setup().await;
-    let a_pub = moq_net::Origin::random().produce();
-    let a_sub = moq_net::Origin::random().produce();
-    let b_pub = moq_net::Origin::random().produce();
-    let b_sub = moq_net::Origin::random().produce();
-    let mut ab = a_pub
-        .create_broadcast(
-            "opaque-call/a",
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let mut at = ab.create_track("audio", None).unwrap();
-    let mut bb = b_pub
-        .create_broadcast(
-            "opaque-call/b",
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let mut bt = bb.create_track("audio", None).unwrap();
-    let a = client
-        .clone()
-        .with_authorization(b"isolated-a".to_vec())
-        .unwrap()
-        .with_publisher(&a_pub)
-        .with_subscriber(a_sub.clone());
-    let b = client
-        .clone()
-        .with_authorization(b"isolated-b".to_vec())
-        .unwrap()
-        .with_publisher(&b_pub)
-        .with_subscriber(b_sub.clone());
-    let a_session = tokio::time::timeout(TIMEOUT, a.connect(url.clone()))
-        .await
-        .unwrap()
-        .unwrap();
-    let b_session = tokio::time::timeout(TIMEOUT, b.connect(url.clone()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(a_session.version(), draft());
-    assert_eq!(b_session.version(), draft());
+    let (dialer, _active, _relay) = setup();
+    let (a_pub, a_sub, b_pub, b_sub) = (Origin::new(), Origin::new(), Origin::new(), Origin::new());
+    let (_ab, mut at) = a_pub.publish("opaque-call/a");
+    let (_bb, mut bt) = b_pub.publish("opaque-call/b");
+    let a_session = tokio::time::timeout(
+        TIMEOUT,
+        dialer.connect(b"isolated-a", Some(&a_pub), Some(&a_sub)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let b_session = tokio::time::timeout(
+        TIMEOUT,
+        dialer.connect(b"isolated-b", Some(&b_pub), Some(&b_sub)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let lite = qos_moq::carrier::version().unwrap();
+    assert_eq!(a_session.session.version(), lite);
+    assert_eq!(b_session.session.version(), lite);
     at.write_frame(moq_net::Timestamp::ZERO, voice(0)).unwrap();
     bt.write_frame(moq_net::Timestamp::ZERO, voice(1)).unwrap();
     let (a_rx, b_rx) = tokio::join!(read(&a_sub, "opaque-call/b"), read(&b_sub, "opaque-call/a"));
     assert_eq!(a_rx, voice(1));
     assert_eq!(b_rx, voice(0));
-    a_session.abort(moq_net::Error::Cancel);
     drop(a_session);
-    let again = tokio::time::timeout(TIMEOUT, a.connect(url))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(again.version(), draft());
+    let again = tokio::time::timeout(
+        TIMEOUT,
+        dialer.connect(b"isolated-a", Some(&a_pub), Some(&a_sub)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(again.session.version(), lite);
     at.write_frame(moq_net::Timestamp::ZERO, voice(5)).unwrap();
-    assert_eq!(read(&b_sub, "opaque-call/a").await, voice(5));
-    again.abort(moq_net::Error::Cancel);
-    b_session.abort(moq_net::Error::Cancel);
-    server.abort();
+    tokio::time::timeout(TIMEOUT, async {
+        while read(&b_sub, "opaque-call/a").await != voice(5) {
+            at.write_frame(moq_net::Timestamp::ZERO, voice(5)).unwrap();
+        }
+    })
+    .await
+    .expect("reconnected publisher relayed");
+    drop((again, b_session));
 }
 
 #[tokio::test]
 async fn denied_proof_expiry_and_active_revocation_close_real_sessions() {
-    let (url, client, active, server) = setup().await;
-    let denied = client
-        .clone()
-        .with_authorization(b"wrong-proof".to_vec())
-        .unwrap()
-        .connect(url.clone())
-        .await;
-    if let Ok(session) = denied {
-        let _ = tokio::time::timeout(TIMEOUT, session.closed())
-            .await
-            .expect("denied before origin attachment");
-    }
-    let expired = client
-        .clone()
-        .with_authorization(b"isolated-expiry".to_vec())
-        .unwrap()
-        .connect(url.clone())
+    let (dialer, active, _relay) = setup();
+    assert!(dialer.connect(b"wrong-proof", None, None).await.is_err());
+    let expired = dialer
+        .connect(b"isolated-expiry", None, None)
         .await
         .unwrap();
     assert!(
@@ -317,15 +268,7 @@ async fn denied_proof_expiry_and_active_revocation_close_real_sessions() {
     let _ = tokio::time::timeout(Duration::from_secs(2), expired.closed())
         .await
         .expect("expired forwarding stops");
-    let admitted = client
-        .clone()
-        .with_authorization(b"isolated-a".to_vec())
-        .unwrap()
-        .connect(url)
-        .await
-        .unwrap();
-    // Authentication may finish just after the peer sees SETUP. Keep authority
-    // valid until the session has had a chance to enter its forwarding loop.
+    let admitted = dialer.connect(b"isolated-a", None, None).await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), admitted.closed())
             .await
@@ -336,127 +279,108 @@ async fn denied_proof_expiry_and_active_revocation_close_real_sessions() {
     let _ = tokio::time::timeout(Duration::from_secs(1), admitted.closed())
         .await
         .expect("revocation stops established forwarding within one second");
-    server.abort();
 }
 
 #[tokio::test]
 async fn a_publish_grant_does_not_authorize_descendants_or_changed_namespaces() {
-    let (url, client, _active, server) = setup().await;
-    let incoming = moq_net::Origin::random().produce();
-    let outgoing = moq_net::Origin::random().produce();
+    let (dialer, _active, _relay) = setup();
+    let (incoming, outgoing) = (Origin::new(), Origin::new());
     let mut publications = Vec::new();
     {
-        let path = "opaque-call/a";
-        let mut broadcast = outgoing
-            .create_broadcast(path, moq_net::broadcast::Route::new().with_announce(true))
-            .unwrap();
-        let mut track = broadcast.create_track("audio", None).unwrap();
+        let (broadcast, mut track) = outgoing.publish("opaque-call/a");
         track
             .write_frame(moq_net::Timestamp::ZERO, voice(0))
             .unwrap();
         publications.push((broadcast, track));
     }
-    let subscriber = client
-        .clone()
-        .with_authorization(b"isolated-b".to_vec())
-        .unwrap()
-        .with_subscriber(incoming.clone())
-        .connect(url.clone())
+    let subscriber = dialer
+        .connect(b"isolated-b", None, Some(&incoming))
         .await
         .unwrap();
-    let publisher = client
-        .clone()
-        .with_authorization(b"isolated-a".to_vec())
-        .unwrap()
-        .with_publisher(&outgoing)
-        .connect(url)
+    let publisher = dialer
+        .connect(b"isolated-a", Some(&outgoing), None)
         .await
         .unwrap();
     assert_eq!(read(&incoming, "opaque-call/a").await, voice(0));
-    // Establish the authorized path before injecting malformed publications:
-    // rejecting those is permitted to close the whole publisher session.
+    let mut announced = incoming.producer.consume().announced();
     for path in ["opaque-call/a/child", "opaque-call/a-other"] {
-        let mut broadcast = outgoing
-            .create_broadcast(path, moq_net::broadcast::Route::new().with_announce(true))
-            .unwrap();
-        let mut track = broadcast.create_track("audio", None).unwrap();
+        let (broadcast, mut track) = outgoing.publish(path);
         track
-            .write_frame(moq_net::Timestamp::ZERO, voice(0))
+            .write_frame(moq_net::Timestamp::ZERO, voice(99))
             .unwrap();
         publications.push((broadcast, track));
     }
-    for path in ["opaque-call/a/child", "opaque-call/a-other"] {
+    // Only the exact granted namespace is ever announced to the subscriber...
+    let seen = tokio::time::timeout(Duration::from_millis(250), async {
+        let mut seen = Vec::new();
+        while let Some(update) = announced.next().await {
+            seen.push(update.prefix.as_str().to_owned());
+        }
+        seen
+    })
+    .await;
+    if let Ok(seen) = seen {
+        assert!(seen.iter().all(|path| path == "opaque-call/a"), "{seen:?}");
+    }
+    // ...and nothing published below or beside it reaches the subscriber.
+    let child = incoming.broadcast("opaque-call/a/child").await;
+    if let Ok(mut track) = child.track("audio").unwrap().subscribe(None).await {
+        let delivered = tokio::time::timeout(Duration::from_millis(250), async {
+            let mut group = track.recv_group().await.ok()??;
+            group.read_frame().await.ok()?
+        })
+        .await;
         assert!(
-            tokio::time::timeout(
-                Duration::from_millis(250),
-                incoming.consume().announced_broadcast(path)
-            )
-            .await
-            .is_err(),
+            !matches!(delivered, Ok(Some(frame)) if frame.payload.as_ref() == voice(99)),
             "changed namespace was relayed"
         );
-    }
-    publisher.abort(moq_net::Error::Cancel);
-    subscriber.abort(moq_net::Error::Cancel);
-    server.abort();
-}
-
-#[tokio::test]
-async fn unauthorized_publisher_cannot_attach_media_before_admission() {
-    let (url, client, _active, server) = setup().await;
-    let outgoing = moq_net::Origin::random().produce();
-    let incoming = moq_net::Origin::random().produce();
-    let mut broadcast = outgoing
-        .create_broadcast(
-            "opaque-call/a",
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let mut track = broadcast.create_track("audio", None).unwrap();
-    track
-        .write_frame(moq_net::Timestamp::ZERO, voice(0))
-        .unwrap();
-    let subscriber = client
-        .clone()
-        .with_authorization(b"isolated-b".to_vec())
-        .unwrap()
-        .with_subscriber(incoming.clone())
-        .connect(url.clone())
-        .await
-        .unwrap();
-    let denied = client
-        .clone()
-        .with_authorization(b"wrong-proof".to_vec())
-        .unwrap()
-        .with_publisher(&outgoing)
-        .connect(url.clone())
-        .await;
-    if let Ok(session) = denied {
-        let _ = tokio::time::timeout(TIMEOUT, session.closed())
-            .await
-            .expect("unauthorized publisher closes");
     }
     assert!(
         tokio::time::timeout(
             Duration::from_millis(250),
-            incoming.consume().announced_broadcast("opaque-call/a")
+            incoming.broadcast("opaque-call/a-other")
+        )
+        .await
+        .is_err(),
+        "changed namespace was relayed"
+    );
+    drop((publisher, subscriber));
+}
+
+#[tokio::test]
+async fn unauthorized_publisher_cannot_attach_media_before_admission() {
+    let (dialer, _active, _relay) = setup();
+    let (incoming, outgoing) = (Origin::new(), Origin::new());
+    let (_broadcast, mut track) = outgoing.publish("opaque-call/a");
+    track
+        .write_frame(moq_net::Timestamp::ZERO, voice(0))
+        .unwrap();
+    let subscriber = dialer
+        .connect(b"isolated-b", None, Some(&incoming))
+        .await
+        .unwrap();
+    assert!(
+        dialer
+            .connect(b"wrong-proof", Some(&outgoing), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            incoming.broadcast("opaque-call/a")
         )
         .await
         .is_err(),
         "unauthorized media reached the relay origin"
     );
     // An authorized publication subsequently proves the observer and carrier.
-    let admitted = client
-        .with_authorization(b"isolated-a".to_vec())
-        .unwrap()
-        .with_publisher(&outgoing)
-        .connect(url)
+    let admitted = dialer
+        .connect(b"isolated-a", Some(&outgoing), None)
         .await
         .unwrap();
     assert_eq!(read(&incoming, "opaque-call/a").await, voice(0));
-    admitted.abort(moq_net::Error::Cancel);
-    subscriber.abort(moq_net::Error::Cancel);
-    server.abort();
+    drop((admitted, subscriber));
 }
 
 #[tokio::test]
@@ -492,28 +416,14 @@ async fn admitted_transient_authority_contention_survives_but_new_admission_deni
             Ok(self.0.clone())
         }
     }
-    let mut config = moq_native::ServerConfig::default();
-    config.bind = Some("127.0.0.1:0".into());
-    config.version = vec![draft()];
-    config.tls.generate = vec!["localhost".into()];
-    let server = config.init().unwrap();
-    let url: url::Url = format!(
-        "https://localhost:{}{VOICE_PATH}",
-        server.local_addr().unwrap().port()
-    )
-    .parse()
-    .unwrap();
-    let mut config = moq_native::ClientConfig::default();
-    config.version = vec![draft()];
-    config.tls.fingerprint = server.certificates().fingerprints();
-    let client = config.init().unwrap().with_authorization(vec![1]).unwrap();
     let busy = Arc::new(AtomicBool::new(false));
-    let relay = Relay::new(Arc::new(Auth(Arc::new(Evidence {
+    let relay = LoopbackRelay::start(Arc::new(Auth(Arc::new(Evidence {
         busy: busy.clone(),
         expires: Instant::now() + Duration::from_secs(30),
-    }))));
-    let task = tokio::spawn(relay.serve(server));
-    let session = client.clone().connect(url.clone()).await.unwrap();
+    }))))
+    .unwrap();
+    let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
+    let session = dialer.connect(&[1], None, None).await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), session.closed())
             .await
@@ -528,11 +438,10 @@ async fn admitted_transient_authority_contention_survives_but_new_admission_deni
     );
     // Contention that outlasts the bounded admission wait never admits
     // (total contention here stays below the admitted session's 900 ms fence).
-    if let Ok(denied) = client.clone().connect(url.clone()).await {
-        let _ = tokio::time::timeout(TIMEOUT, denied.closed())
-            .await
-            .expect("contention never admits");
-    }
+    assert!(
+        dialer.connect(&[1], None, None).await.is_err(),
+        "contention never admits"
+    );
     busy.store(false, Ordering::SeqCst);
     assert!(
         tokio::time::timeout(Duration::from_millis(100), session.closed())
@@ -549,7 +458,10 @@ async fn admitted_transient_authority_contention_survives_but_new_admission_deni
             busy.store(false, Ordering::SeqCst);
         })
     };
-    let joined = client.connect(url).await.expect("brief contention admits");
+    let joined = dialer
+        .connect(&[1], None, None)
+        .await
+        .expect("brief contention admits");
     release.await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(300), joined.closed())
@@ -557,15 +469,14 @@ async fn admitted_transient_authority_contention_survives_but_new_admission_deni
             .is_err(),
         "session admitted after contention cleared must stay open"
     );
-    task.abort();
 }
 
 async fn status_session(
     lease: Duration,
 ) -> (
-    moq_net::Session,
+    qos_moq::carrier::Connected,
     Arc<std::sync::atomic::AtomicU8>,
-    tokio::task::JoinHandle<()>,
+    LoopbackRelay,
 ) {
     use qos_moq::relay::AuthorizationStatus;
     struct Evidence {
@@ -608,41 +519,27 @@ async fn status_session(
             Ok(self.0.clone())
         }
     }
-    let mut config = moq_native::ServerConfig::default();
-    config.bind = Some("127.0.0.1:0".into());
-    config.version = vec![draft()];
-    config.tls.generate = vec!["localhost".into()];
-    let server = config.init().unwrap();
-    let url: url::Url = format!(
-        "https://localhost:{}{VOICE_PATH}",
-        server.local_addr().unwrap().port()
-    )
-    .parse()
-    .unwrap();
-    let mut config = moq_native::ClientConfig::default();
-    config.version = vec![draft()];
-    config.tls.fingerprint = server.certificates().fingerprints();
-    let client = config.init().unwrap().with_authorization(vec![1]).unwrap();
     let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
-    let relay = Relay::new(Arc::new(Auth(
+    let relay: Arc<dyn RelayAuthority> = Arc::new(Auth(
         Arc::new(Evidence {
             state: state.clone(),
             expires: std::sync::Mutex::new(Instant::now()),
         }),
         lease,
-    )));
-    let task = tokio::spawn(relay.serve(server));
-    let session = client.connect(url).await.unwrap();
+    ));
+    let relay = LoopbackRelay::start(relay).unwrap();
+    let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
+    let session = dialer.connect(&[1], None, None).await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), session.closed())
             .await
             .is_err()
     );
-    (session, state, task)
+    (session, state, relay)
 }
 #[tokio::test]
 async fn repeated_unavailable_cannot_renew_the_last_confirmed_authority_deadline() {
-    let (session, state, task) = status_session(Duration::from_secs(30)).await;
+    let (session, state, _relay) = status_session(Duration::from_secs(30)).await;
     state.store(1, Ordering::SeqCst);
     assert!(
         tokio::time::timeout(Duration::from_millis(350), session.closed())
@@ -652,11 +549,10 @@ async fn repeated_unavailable_cannot_renew_the_last_confirmed_authority_deadline
     let _ = tokio::time::timeout(Duration::from_millis(650), session.closed())
         .await
         .expect("repeated pending must close within900ms since last confirmed authority");
-    task.abort();
 }
 #[tokio::test]
 async fn unavailable_never_outlives_the_verified_short_grant() {
-    let (session, state, task) = status_session(Duration::from_millis(400)).await;
+    let (session, state, _relay) = status_session(Duration::from_millis(400)).await;
     state.store(1, Ordering::SeqCst);
     assert!(
         tokio::time::timeout(Duration::from_millis(100), session.closed())
@@ -666,11 +562,10 @@ async fn unavailable_never_outlives_the_verified_short_grant() {
     let _ = tokio::time::timeout(Duration::from_millis(300), session.closed())
         .await
         .expect("grant expiry precedes900ms grace");
-    task.abort();
 }
 #[tokio::test]
 async fn revocation_observed_after_contention_closes_without_another_grace_period() {
-    let (session, state, task) = status_session(Duration::from_secs(30)).await;
+    let (session, state, _relay) = status_session(Duration::from_secs(30)).await;
     state.store(1, Ordering::SeqCst);
     assert!(
         tokio::time::timeout(Duration::from_millis(250), session.closed())
@@ -681,7 +576,6 @@ async fn revocation_observed_after_contention_closes_without_another_grace_perio
     let _ = tokio::time::timeout(Duration::from_millis(200), session.closed())
         .await
         .expect("explicit deny closes on next observation");
-    task.abort();
 }
 
 #[tokio::test]
@@ -690,20 +584,19 @@ async fn expired_unavailable_deadline_is_terminal_even_when_revalidation_returns
         (Duration::from_millis(450), Duration::from_millis(150)),
         (Duration::from_secs(30), Duration::from_millis(650)),
     ] {
-        let (session, state, task) = status_session(lease).await;
+        let (session, state, _relay) = status_session(lease).await;
         state.store(1, Ordering::SeqCst);
         assert!(tokio::time::timeout(wait, session.closed()).await.is_err());
         state.store(3, Ordering::SeqCst);
         let _ = tokio::time::timeout(Duration::from_millis(700), session.closed())
             .await
             .expect("a late Current must not revive an expired unavailable deadline");
-        task.abort();
     }
 }
 
 #[tokio::test]
 async fn current_observed_before_the_terminal_deadline_keeps_the_session_alive() {
-    let (session, state, task) = status_session(Duration::from_secs(30)).await;
+    let (session, state, _relay) = status_session(Duration::from_secs(30)).await;
     state.store(1, Ordering::SeqCst);
     assert!(
         tokio::time::timeout(Duration::from_millis(350), session.closed())
@@ -718,47 +611,27 @@ async fn current_observed_before_the_terminal_deadline_keeps_the_session_alive()
             .await
             .is_err()
     );
-    task.abort();
 }
 
 #[tokio::test]
 async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones() {
-    let (url, client, _active, server) = setup().await;
-    let a_pub = moq_net::Origin::random().produce();
-    let b_sub = moq_net::Origin::random().produce();
-    let mut ab = a_pub
-        .create_broadcast(
-            "opaque-call/a",
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let mut at = ab.create_track("audio", None).unwrap();
-    let a = client
-        .clone()
-        .with_authorization(b"isolated-a".to_vec())
-        .unwrap()
-        .with_publisher(&a_pub);
-    let b = client
-        .clone()
-        .with_authorization(b"isolated-b".to_vec())
-        .unwrap()
-        .with_subscriber(b_sub.clone());
-    let a_session = tokio::time::timeout(TIMEOUT, a.connect(url.clone()))
-        .await
-        .unwrap()
-        .unwrap();
-    let b_session = tokio::time::timeout(TIMEOUT, b.connect(url.clone()))
-        .await
-        .unwrap()
-        .unwrap();
+    let (dialer, _active, relay) = setup();
+    let (a_pub, b_sub) = (Origin::new(), Origin::new());
+    let (_ab, mut at) = a_pub.publish("opaque-call/a");
+    let a_session =
+        tokio::time::timeout(TIMEOUT, dialer.connect(b"isolated-a", Some(&a_pub), None))
+            .await
+            .unwrap()
+            .unwrap();
+    let b_session =
+        tokio::time::timeout(TIMEOUT, dialer.connect(b"isolated-b", None, Some(&b_sub)))
+            .await
+            .unwrap()
+            .unwrap();
     let mut bundle = voice(2);
     bundle.extend_from_slice(&voice(1));
     let received = tokio::time::timeout(TIMEOUT, async {
-        let broadcast = b_sub
-            .consume()
-            .announced_broadcast("opaque-call/a")
-            .await
-            .expect("authorized announce");
+        let broadcast = b_sub.broadcast("opaque-call/a").await;
         let mut track = broadcast
             .track("audio")
             .unwrap()
@@ -783,12 +656,14 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
     .expect("real WebTransport datagram delivery deadline");
     assert_eq!(received, bundle);
     assert!(
+        relay.counters().dropped > 0,
+        "invalid datagram was not refused"
+    );
+    assert!(
         tokio::time::timeout(Duration::from_millis(100), a_session.closed())
             .await
             .is_err(),
         "an invalid datagram must not close the publisher session"
     );
-    a_session.abort(moq_net::Error::Cancel);
-    b_session.abort(moq_net::Error::Cancel);
-    server.abort();
+    drop((a_session, b_session));
 }

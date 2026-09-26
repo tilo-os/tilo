@@ -133,13 +133,10 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
         hex::encode(room_digest(h.f.owner.peer().room())),
         hex::encode(h.f.owner.identity.native_cert.device_public_key)
     );
-    let own = timeout(
-        Duration::from_secs(5),
-        client.incoming.consume().announced_broadcast(path.as_str()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let own = timeout(Duration::from_secs(5), client.member(&path))
+        .await
+        .unwrap()
+        .unwrap();
     let mut from_relay = own
         .track(PRESENCE_TRACK)
         .unwrap()
@@ -190,5 +187,5 @@ async fn fallback_carrier_admits_grants_streams_and_bridges_into_the_relay() {
     let (status, resumed, _) = post(&h, FALLBACK_RESUME_PATH, Vec::new(), Some(id)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(resumed.unwrap().frame().await.0, FRAME_HELLO);
-    client.session.abort(moq_net::Error::Cancel);
+    drop(client);
 }

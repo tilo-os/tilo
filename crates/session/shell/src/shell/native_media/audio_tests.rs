@@ -2,7 +2,7 @@
 //! actions emit: Join, `SetMuted`, Leave) driven through the real service
 //! lifecycle owner, the real local consent prompt queue and the real capture
 //! lease broker, into a backend that produces actual call audio: real libopus
-//! (shell `GStreamer` codec) over the real native `MoQ` Draft 21 client and relay
+//! (shell `GStreamer` codec) over the real native `moq-lite` client and relay
 //! on loopback, decoded and tone-checked by a second native participant.
 //! SYNTHETIC device: the capture lease hands a generated tone source to the
 //! backend instead of a `PipeWire` microphone (no audio device on this host).
@@ -430,7 +430,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     println!(
         "SEMANTIC_CALL_AUDIO_REPORT {}",
         serde_json::json!({
-            "evidenceClass": "synthetic capture source; real consent prompt queue, capture lease broker and service lifecycle; real libopus and native MoQ Draft 21 client/relay on loopback",
+            "evidenceClass": "synthetic capture source; real consent prompt queue, capture lease broker and service lifecycle; real libopus and native moq-lite client/relay on loopback",
             "joinedMutedFramesReceived": 0,
             "declinedConsentFramesReceived": 0,
             "afterConsent": {"framesReceived": audible.0, "toneFrames": audible.1, "firstToneMsAfterConsent": first_audio_ms, "packetsSent": sent_at_mute},

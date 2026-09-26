@@ -17,7 +17,9 @@
     clippy::items_after_statements,
     reason = "scenario-shaped test code"
 )]
+use super::super::peer::Peer;
 use super::*;
+use crate::carrier;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const ROOM: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -78,18 +80,15 @@ impl LiveAuthority for Authority {
 }
 
 struct Fixture {
-    live: LoopbackLive,
-    client: moq_native::Client,
+    live: super::super::LoopbackLive,
+    trust: carrier::Trust,
     b: Arc<AtomicBool>,
 }
 fn fixture() -> Fixture {
     let b = Arc::new(AtomicBool::new(true));
-    let live = LoopbackLive::start(Arc::new(Authority { b: b.clone() })).unwrap();
-    let mut config = moq_native::ClientConfig::default();
-    config.version = vec!["moq-transport-21".parse().unwrap()];
-    config.tls.fingerprint = live.fingerprints.clone();
-    let client = config.init().unwrap();
-    Fixture { live, client, b }
+    let live = super::super::LoopbackLive::start(Arc::new(Authority { b: b.clone() })).unwrap();
+    let trust = carrier::Trust::Fingerprints(live.fingerprints.clone());
+    Fixture { live, trust, b }
 }
 fn path(publisher: &str) -> String {
     namespace_path(ROOM, publisher).unwrap()
@@ -103,44 +102,15 @@ fn presence(seq: u64, tail: &[u8]) -> Vec<u8> {
     frame
 }
 
-struct Peer {
-    session: moq_net::Session,
-    incoming: moq_net::origin::Producer,
-    _outgoing: moq_net::origin::Producer,
-    presence: moq_net::track::Producer,
-    broadcast: moq_net::broadcast::Producer,
-}
 async fn connect(f: &Fixture, token: &[u8], publish_as: &str) -> Peer {
-    let outgoing = moq_net::Origin::random().produce();
-    let incoming = moq_net::Origin::random().produce();
-    let mut broadcast = outgoing
-        .create_broadcast(
-            path(publish_as).as_str(),
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let presence = broadcast.create_track(PRESENCE_TRACK, None).unwrap();
     let url: url::Url = f.live.endpoint.parse().unwrap();
-    let session = tokio::time::timeout(
+    tokio::time::timeout(
         TIMEOUT,
-        f.client
-            .clone()
-            .with_authorization(token.to_vec())
-            .unwrap()
-            .with_publisher(&outgoing)
-            .with_subscriber(incoming.clone())
-            .connect(url),
+        Peer::connect(&url, &f.trust, token, Some(&path(publish_as))),
     )
     .await
     .unwrap()
-    .unwrap();
-    Peer {
-        session,
-        incoming,
-        _outgoing: outgoing,
-        presence,
-        broadcast,
-    }
+    .unwrap()
 }
 
 /// Parsed server stream.
@@ -259,9 +229,7 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
         let mut seq = 10;
         loop {
             seq += 1;
-            a.presence
-                .append_datagram(moq_net::Timestamp::ZERO, presence(seq, b"from-a"))
-                .unwrap();
+            assert!(a.publish_presence(&presence(seq, b"from-a")));
             let next =
                 tokio::time::timeout(Duration::from_millis(50), stream.until(FRAME_PRESENCE)).await;
             if let Ok(payload) = next {
@@ -275,13 +243,10 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
     assert!(received[32..].ends_with(b"from-a"));
 
     // The MoQ member sees the fallback member announced and receives its presence.
-    let from_b = tokio::time::timeout(
-        TIMEOUT,
-        a.incoming.consume().announced_broadcast(path(B).as_str()),
-    )
-    .await
-    .unwrap()
-    .expect("fallback publisher announced");
+    let from_b = tokio::time::timeout(TIMEOUT, a.member(&path(B)))
+        .await
+        .unwrap()
+        .expect("fallback publisher announced");
     let mut subscriber = from_b
         .track(PRESENCE_TRACK)
         .unwrap()
@@ -335,18 +300,14 @@ async fn presence_bridges_both_ways_between_webtransport_and_fallback() {
     .await
     .unwrap();
     assert!(next.ends_with(b"fresh"), "stale fallback presence relayed");
-    a.session.abort(moq_net::Error::Cancel);
+    drop(a);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
     let f = fixture();
-    let a = connect(&f, b"grant-a", A).await;
-    let mut a_ops = a
-        .broadcast
-        .clone()
-        .create_track(format!("ops/{RECORD}"), None)
-        .unwrap();
+    let mut a = connect(&f, b"grant-a", A).await;
+    let a_ops = a.record(RECORD).unwrap().clone();
     let (id, mut stream) = open(&f, b"grant-b", 4).await;
     stream.until(FRAME_MEMBER).await;
     let subscribe = encode_frame(FRAME_SUBSCRIBE_OPS, &[&bytes32(A), &bytes32(RECORD)]);
@@ -392,17 +353,12 @@ async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
             .collect::<Vec<_>>()
     );
 
-    // fallback -> MoQ: the relay requests B's track on demand.
-    let from_b = tokio::time::timeout(
-        TIMEOUT,
-        a.incoming.consume().announced_broadcast(path(B).as_str()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let mut subscription = moq_net::track::Subscription::default();
-    subscription.ordered = true;
-    subscription.latency_max = Duration::from_secs(2);
+    // fallback -> MoQ: B's record broadcast feeds the egress track on demand.
+    let from_b = tokio::time::timeout(TIMEOUT, a.member(&path(B)))
+        .await
+        .unwrap()
+        .unwrap();
+    let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
     let mut subscriber = tokio::time::timeout(TIMEOUT, async {
         loop {
             if let Ok(subscriber) = from_b
@@ -482,7 +438,7 @@ async fn ops_bridge_both_ways_in_order_and_invalid_frames_are_not_relayed() {
     .await
     .unwrap();
     assert!(after);
-    a.session.abort(moq_net::Error::Cancel);
+    drop(a);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -502,13 +458,10 @@ async fn resume_keeps_the_session_and_revocation_ends_it() {
     };
     assert_eq!(resumed.frame().await.0, FRAME_HELLO);
     // A MoQ subscriber sees the fallback publisher; revocation withdraws it.
-    let from_b = tokio::time::timeout(
-        TIMEOUT,
-        a.incoming.consume().announced_broadcast(path(B).as_str()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let from_b = tokio::time::timeout(TIMEOUT, a.member(&path(B)))
+        .await
+        .unwrap()
+        .unwrap();
     f.b.store(false, Ordering::SeqCst);
     assert_eq!(resumed.until(FRAME_END).await, [END_REVOKED]);
     tokio::time::timeout(TIMEOUT, from_b.closed())
@@ -519,7 +472,7 @@ async fn resume_keeps_the_session_and_revocation_ends_it() {
         Some(FallbackError::Gone)
     );
     assert!(f.live.relay.counters().revoked >= 1);
-    a.session.abort(moq_net::Error::Cancel);
+    drop(a);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

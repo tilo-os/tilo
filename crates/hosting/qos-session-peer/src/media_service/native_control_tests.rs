@@ -61,7 +61,7 @@ impl Fixture {
         .unwrap();
         let registry = HttpSessions::new(&owner, &current, tilo_relay::clock::now_ns()).unwrap();
         let service =
-            MediaService::for_owner(&owner, current.clone(), &format!("{origin}/moq/v21/voice"))
+            MediaService::for_owner(&owner, current.clone(), &format!("{origin}/moq/voice"))
                 .unwrap();
         Self {
             _dir: dir,

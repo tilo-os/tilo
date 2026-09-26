@@ -3,7 +3,7 @@ use super::*;
 fn connection() -> Connection {
     Connection {
         scope: ConnectionScope {
-            endpoint: "https://example.test/moq/v21/voice".into(),
+            endpoint: "https://example.test/moq/voice".into(),
             fingerprints: vec![],
             owner_epoch: [1; 32],
             carrier_generation: 1,
@@ -17,16 +17,16 @@ fn connection() -> Connection {
 fn inert_connection_validates_raw_endpoint_and_closed_voice_scope_only() {
     assert!(validate(&connection()).is_ok()); // Structural validity confers no readiness.
     for endpoint in [
-        "http://example.test/moq/v21/voice",
-        "wss://example.test/moq/v21/voice",
-        "moqt://example.test/moq/v21/voice",
-        "https://example.test:443/moq/v21/voice",
-        "https://EXAMPLE.test/moq/v21/voice",
-        "https://example.test/moq/v21/../v21/voice",
-        "https://example.test/moq/v21/%76oice",
-        "https://user@example.test/moq/v21/voice",
-        "https://example.test/moq/v21/voice?q=1",
-        "https://example.test/moq/v21/voice#x",
+        "http://example.test/moq/voice",
+        "wss://example.test/moq/voice",
+        "moqt://example.test/moq/voice",
+        "https://example.test:443/moq/voice",
+        "https://EXAMPLE.test/moq/voice",
+        "https://example.test/moq/../moq/voice",
+        "https://example.test/moq/%76oice",
+        "https://user@example.test/moq/voice",
+        "https://example.test/moq/voice?q=1",
+        "https://example.test/moq/voice#x",
     ] {
         let mut connection = connection();
         connection.scope.endpoint = endpoint.into();

@@ -2,7 +2,7 @@
 //! generated tone-burst signal replaces the microphone and the decoded PCM is
 //! analysed instead of being played (no `PipeWire` device on this host). Real
 //! libopus encode/decode through the shell's `GStreamer` codec, and the real
-//! native `MoQ` Draft 21 client over real loopback WebTransport through the
+//! native `moq-lite` client over real loopback WebTransport through the
 //! host relay implementation; the relay authority here is a test identity map
 //! (product grants are covered by qos-session-peer `media_service` tests).
 #![allow(
@@ -175,7 +175,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         .expect("native client connected");
         assert_eq!(side.client.status(), Status::Live);
     }
-    // Admission by the relay (a Draft 21 client is Live once SETUP is sent).
+    // The relay counts a session once its SETUP completed after admission.
     tokio::time::timeout(Duration::from_secs(5), async {
         while relay.counters().accepted < 2 {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -288,7 +288,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         "relayCounters".into(),
         serde_json::json!(format!("{:?}", relay.counters())),
     );
-    report.insert("evidenceClass".into(), serde_json::json!("synthetic tone, device-free; real libopus via GStreamer; real native MoQ Draft 21 WebTransport client and relay on loopback; test relay identities"));
+    report.insert("evidenceClass".into(), serde_json::json!("synthetic tone, device-free; real libopus via GStreamer; real native moq-lite WebTransport client and relay on loopback; test relay identities"));
     println!("NATIVE_AUDIO_REPORT {}", serde_json::Value::Object(report));
     for side in &sides {
         side.client.close();

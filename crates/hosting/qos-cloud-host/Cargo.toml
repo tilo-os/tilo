@@ -55,6 +55,6 @@ tilo-automerge.workspace = true
 qos-action-broker = {path="../../collab/qos-action-broker", features=["test-support"]}
 atomic-file = {path="../../system/atomic-file", features=["test-support"]}
 tempfile.workspace = true
-moq-net = { path = "../../../vendor/moq/rs/moq-net" }
+moq-net.workspace = true
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rustls.workspace = true

@@ -1,6 +1,6 @@
 //! Bounded inert `LIVE_V1` wire values: ephemeral multiplayer state (presence,
 //! cursors, selections, drags, text previews) and early forwarding of signed
-//! durable changes, carried as `MoQ` Draft 21 tracks beside voice.
+//! durable changes, carried as `moq-lite` tracks beside voice.
 //!
 //! Live frames are never durable and never authority. The durable delivery
 //! carrier (state upload, replay, cursors) stays the only source of truth; a
@@ -13,12 +13,12 @@ use tilo_user_identity::canonical::signing_digest;
 /// Signed media-capability bit advertising the installed live service.
 pub const MEDIA_LIVE_V1: u64 = 2;
 /// Exact WebTransport path of the live relay on the host's QUIC endpoint.
-pub const LIVE_WEBTRANSPORT_PATH: &str = "/moq/v21/live";
-/// WebTransport subprotocol; identical to voice (`MoQ` Draft 21).
-pub const LIVE_PROTOCOL: &str = "moqt-21";
+pub const LIVE_WEBTRANSPORT_PATH: &str = "/moq/live";
+/// WebTransport subprotocol; identical to voice (`moq-lite` draft 06).
+pub const LIVE_PROTOCOL: &str = "moq-lite-06";
 /// Proof-required HTTPS route that issues a [`SignedLiveGrant`] to a data session.
 pub const LIVE_GRANT_TARGET: &str = "/peer/v3/live/grant";
-/// First `MoQ` namespace tuple component of every live track.
+/// First path component of every live broadcast.
 pub const LIVE_NAMESPACE_ROOT: &str = "tilo-live";
 /// Latest-value datagram track for presence, cursors, selections and drags.
 pub const PRESENCE_TRACK: &str = "presence";
@@ -108,7 +108,7 @@ impl LiveNamespace {
             publisher,
         }
     }
-    /// `MoQ` namespace tuple components in order.
+    /// Broadcast path components in order (joined with `/`).
     pub fn components(&self) -> [String; 3] {
         [
             LIVE_NAMESPACE_ROOT.into(),

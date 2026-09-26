@@ -240,12 +240,8 @@ fn committed_authority_recovery_requires_fresh_media_grant_proof_and_session() {
     let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
     crate::room_media_policy::tests::activate(&mut owner);
     let committed = CommittedAuthority::new(&owner);
-    let service = MediaService::for_owner(
-        &owner,
-        committed.clone(),
-        "https://relay.test/moq/v21/voice",
-    )
-    .unwrap();
+    let service =
+        MediaService::for_owner(&owner, committed.clone(), "https://relay.test/moq/voice").unwrap();
     let request = GrantRequest {
         device: owner.identity.native.verifying_key().to_bytes(),
         room: owner.peer().room().into(),

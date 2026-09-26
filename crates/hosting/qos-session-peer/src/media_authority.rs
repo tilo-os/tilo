@@ -2720,7 +2720,7 @@ mod tests {
         let mut f = Fixture::new(Verb::Write);
         f.service = MediaAuthority::new(
             f.host.verifying_key().to_bytes(),
-            "https://localhost:9443/moq/v21/voice",
+            "https://localhost:9443/moq/voice",
         )
         .unwrap();
         let mut intent = f.request();

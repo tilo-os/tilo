@@ -26,7 +26,7 @@ fn cloud_media_source_uses_one_actual_store_turn_and_only_real_contention_is_bus
     assert_ne!(workspace, 0);
     assert_eq!(source.0.turns.load(Ordering::Relaxed) - before, 1);
     let _service =
-        MediaService::from_source(source.clone(), "https://localhost:9443/moq/v21/voice").unwrap();
+        MediaService::from_source(source.clone(), "https://localhost:9443/moq/voice").unwrap();
     let held = Store::open(dir.path(), "agent-admission").unwrap();
     assert!(matches!(
         MediaAuthoritySource::with_current(&source, |_| ()),

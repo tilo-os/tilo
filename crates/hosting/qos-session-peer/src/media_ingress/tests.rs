@@ -389,33 +389,21 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         Duration::from_secs(5),
         wt.connect(
             web_transport_quinn::proto::ConnectRequest::new(
-                format!("{origin}/moq/v21/voice")
-                    .parse::<url::Url>()
-                    .unwrap(),
+                format!("{origin}/moq/voice").parse::<url::Url>().unwrap(),
             )
-            .with_protocol("moqt-21"),
+            .with_protocol(qos_moq::carrier::PROTOCOL),
         ),
     )
     .await
     .unwrap()
     .unwrap();
-    let (session, driver) = timeout(
+    let connected = timeout(
         Duration::from_secs(5),
-        moq_net::Client::new()
-            .with_versions(
-                "moq-transport-21"
-                    .parse::<moq_net::Version>()
-                    .unwrap()
-                    .into(),
-            )
-            .with_authorization(setup)
-            .unwrap()
-            .connect(transport),
+        qos_moq::carrier::start(transport, &setup, None, None),
     )
     .await
     .unwrap()
     .unwrap();
-    let driver = tokio::spawn(driver);
     let ControlResult::Present(presence) = command(
         &mut ingress,
         &mut f,
@@ -441,10 +429,10 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         .await,
         ControlResult::Closed
     ));
-    timeout(Duration::from_secs(5), session.closed())
+    timeout(Duration::from_secs(5), connected.closed())
         .await
         .unwrap();
-    let _ = timeout(Duration::from_secs(5), driver).await;
+    drop(connected);
     let result = client
         .request("/peer/v3/media/presence/", vec![], None)
         .await;

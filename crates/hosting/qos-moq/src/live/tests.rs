@@ -18,6 +18,7 @@
     clippy::items_after_statements,
     reason = "scenario-shaped test code"
 )]
+use super::peer::Peer;
 use super::*;
 use std::sync::atomic::AtomicBool;
 
@@ -95,7 +96,7 @@ impl LiveAuthority for Authority {
 
 struct Fixture {
     live: LoopbackLive,
-    client: moq_native::Client,
+    trust: carrier::Trust,
     a: Arc<AtomicBool>,
     b: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
@@ -110,13 +111,10 @@ fn fixture() -> Fixture {
         busy: busy.clone(),
     }))
     .unwrap();
-    let mut config = moq_native::ClientConfig::default();
-    config.version = vec!["moq-transport-21".parse().unwrap()];
-    config.tls.fingerprint = live.fingerprints.clone();
-    let client = config.init().unwrap();
+    let trust = carrier::Trust::Fingerprints(live.fingerprints.clone());
     Fixture {
         live,
-        client,
+        trust,
         a,
         b,
         busy,
@@ -129,52 +127,21 @@ fn url(f: &Fixture) -> url::Url {
     f.live.endpoint.parse().unwrap()
 }
 
-struct Peer {
-    session: moq_net::Session,
-    incoming: moq_net::origin::Producer,
-    _outgoing: moq_net::origin::Producer,
-    presence: moq_net::track::Producer,
-    outgoing_broadcast: moq_net::broadcast::Producer,
-}
-async fn connect(f: &Fixture, token: &[u8], publish_as: &str) -> Peer {
-    let outgoing = moq_net::Origin::random().produce();
-    let incoming = moq_net::Origin::random().produce();
-    let mut broadcast = outgoing
-        .create_broadcast(
-            path(publish_as).as_str(),
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let presence = broadcast.create_track(PRESENCE_TRACK, None).unwrap();
-    let session = tokio::time::timeout(
+async fn try_connect(f: &Fixture, token: &[u8], publish_as: &str) -> Option<Peer> {
+    tokio::time::timeout(
         TIMEOUT,
-        f.client
-            .clone()
-            .with_authorization(token.to_vec())
-            .unwrap()
-            .with_publisher(&outgoing)
-            .with_subscriber(incoming.clone())
-            .connect(url(f)),
+        Peer::connect(&url(f), &f.trust, token, Some(&path(publish_as))),
     )
     .await
     .unwrap()
-    .unwrap();
-    Peer {
-        session,
-        incoming,
-        _outgoing: outgoing,
-        presence,
-        outgoing_broadcast: broadcast,
-    }
+    .ok()
+}
+async fn connect(f: &Fixture, token: &[u8], publish_as: &str) -> Peer {
+    try_connect(f, token, publish_as).await.expect("admitted")
 }
 async fn presence_subscriber(peer: &Peer, from: &str) -> moq_net::track::Subscriber {
     tokio::time::timeout(TIMEOUT, async {
-        let broadcast = peer
-            .incoming
-            .consume()
-            .announced_broadcast(path(from).as_str())
-            .await
-            .expect("announce");
+        let broadcast = peer.member(&path(from)).await.expect("announce");
         broadcast
             .track(PRESENCE_TRACK)
             .unwrap()
@@ -200,10 +167,7 @@ async fn first_presence(
     tokio::time::timeout(TIMEOUT, async {
         loop {
             *seq += 1;
-            publisher
-                .presence
-                .append_datagram(moq_net::Timestamp::ZERO, presence(*seq, b"hello"))
-                .unwrap();
+            assert!(publisher.publish_presence(&presence(*seq, b"hello")));
             if let Ok(Ok(Some(datagram))) =
                 tokio::time::timeout(Duration::from_millis(50), subscriber.recv_datagram()).await
             {
@@ -219,12 +183,7 @@ async fn first_presence(
 fn route_is_exact_and_namespaces_are_canonical_hex() {
     let expected = "host.example:443";
     assert!(LiveRelay::validate_route(expected, expected, LIVE_PATH).is_some());
-    for target in [
-        "/moq/v21/live/",
-        "/moq/v21/voice",
-        "/moq/v21/live?x=1",
-        "/moq/v21/%6cive",
-    ] {
+    for target in ["/moq/live/", "/moq/voice", "/moq/live?x=1", "/moq/%6cive"] {
         assert!(LiveRelay::validate_route(expected, expected, target).is_none());
     }
     assert!(LiveRelay::validate_route("HOST.example:443", expected, LIVE_PATH).is_none());
@@ -233,6 +192,11 @@ fn route_is_exact_and_namespaces_are_canonical_hex() {
     assert!(namespace_path("room", A).is_none());
     assert_eq!(ops_record(&format!("ops/{RECORD}")), Some(RECORD));
     assert!(ops_record("ops/xyz").is_none() && ops_record(PRESENCE_TRACK).is_none());
+    assert_eq!(
+        record_path(&path(A), RECORD),
+        Some(format!("tilo-live/{ROOM}/{A}/ops/{RECORD}"))
+    );
+    assert!(record_path(&path(A), "xyz").is_none());
 }
 
 #[test]
@@ -253,24 +217,11 @@ fn token_bucket_bounds_sustained_rate_and_burst() {
 async fn grant_is_required_and_refused_tokens_close_before_attachment() {
     let f = fixture();
     for token in [&b"forged"[..], b""] {
-        let attempt = f.client.clone().with_authorization(token.to_vec());
-        let Ok(attempt) = attempt else { continue };
-        if let Ok(session) = attempt.connect(url(&f)).await {
-            tokio::time::timeout(TIMEOUT, session.closed())
-                .await
-                .expect("refused grant closes");
-        }
+        assert!(try_connect(&f, token, A).await.is_none());
     }
-    let admitted = f
-        .client
-        .clone()
-        .with_authorization(b"grant-a".to_vec())
-        .unwrap()
-        .connect(url(&f))
-        .await
-        .unwrap();
+    let admitted = connect(&f, b"grant-a", A).await;
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), admitted.closed())
+        tokio::time::timeout(Duration::from_millis(200), admitted.session().closed())
             .await
             .is_err()
     );
@@ -279,7 +230,6 @@ async fn grant_is_required_and_refused_tokens_close_before_attachment() {
         counters.rejected >= 1 && counters.accepted == 1,
         "{counters:?}"
     );
-    admitted.abort(moq_net::Error::Cancel);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -295,22 +245,12 @@ async fn presence_is_relayed_latest_value_and_foreign_namespaces_are_refused() {
     assert_eq!(first[..8], presence(seq, b"")[..8]);
     // Forged frames with a higher sequence under A's name never arrive.
     for extra in 0..20 {
-        forged
-            .presence
-            .append_datagram(
-                moq_net::Timestamp::ZERO,
-                presence(10_000 + extra, b"forged"),
-            )
-            .unwrap();
+        assert!(forged.publish_presence(&presence(10_000 + extra, b"forged")));
     }
     // Stale (lower) sequence numbers from A are dropped; a newer one passes.
-    a.presence
-        .append_datagram(moq_net::Timestamp::ZERO, presence(seq - 50, b"stale"))
-        .unwrap();
+    assert!(a.publish_presence(&presence(seq - 50, b"stale")));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    a.presence
-        .append_datagram(moq_net::Timestamp::ZERO, presence(seq + 1, b"fresh"))
-        .unwrap();
+    assert!(a.publish_presence(&presence(seq + 1, b"fresh")));
     let next = tokio::time::timeout(TIMEOUT, async {
         loop {
             let datagram = from_a.recv_datagram().await.unwrap().unwrap();
@@ -326,9 +266,7 @@ async fn presence_is_relayed_latest_value_and_foreign_namespaces_are_refused() {
         presence(seq + 1, b"fresh"),
         "stale or forged frame was relayed"
     );
-    for peer in [a.session, forged.session, b.session] {
-        peer.abort(moq_net::Error::Cancel);
-    }
+    drop((a, forged, b));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -340,22 +278,16 @@ async fn viewer_may_subscribe_but_never_publish() {
     let mut seq = 0;
     first_presence(&mut a, &mut from_a, &mut seq).await;
     for i in 0..20 {
-        viewer
-            .presence
-            .append_datagram(moq_net::Timestamp::ZERO, presence(i, b"viewer"))
-            .unwrap();
+        assert!(viewer.publish_presence(&presence(i, b"viewer")));
     }
     assert!(
-        tokio::time::timeout(
-            Duration::from_millis(300),
-            a.incoming.consume().announced_broadcast(path(C).as_str())
-        )
-        .await
-        .is_err(),
+        tokio::time::timeout(Duration::from_millis(300), a.member(&path(C)))
+            .await
+            .is_err(),
         "a subscribe-only grant published a namespace"
     );
-    a.session.abort(moq_net::Error::Cancel);
-    viewer.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(viewer);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -372,9 +304,7 @@ async fn presence_rate_limit_drops_excess_frames() {
     // 400 frames over ~200 ms: the ceiling admits the 30-frame burst plus
     // 120/s for the time actually elapsed (sleeps stretch under load).
     for i in 0..400u64 {
-        a.presence
-            .append_datagram(moq_net::Timestamp::ZERO, presence(seq + 1 + i, b"burst"))
-            .unwrap();
+        assert!(a.publish_presence(&presence(seq + 1 + i, b"burst")));
         if i % 2 == 1 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -389,23 +319,17 @@ async fn presence_rate_limit_drops_excess_frames() {
     );
     assert!(forwarded < 400, "nothing was rate limited");
     assert!(after.presence_dropped > before.presence_dropped);
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(b);
 }
 
 async fn ops_subscriber(peer: &Peer, from: &str) -> moq_net::track::Subscriber {
     tokio::time::timeout(TIMEOUT, async {
         loop {
-            let broadcast = peer
-                .incoming
-                .consume()
-                .announced_broadcast(path(from).as_str())
-                .await
-                .expect("announce");
-            let mut subscription = moq_net::track::Subscription::default();
-            subscription.ordered = true;
+            let broadcast = peer.member(&path(from)).await.expect("announce");
             // Receivers keep late groups (stream reordering) for the relay window.
-            subscription.latency_max = Duration::from_secs(2);
+            let subscription =
+                moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
             if let Ok(subscriber) = broadcast
                 .track(&format!("ops/{RECORD}"))
                 .unwrap()
@@ -424,12 +348,8 @@ async fn ops_subscriber(peer: &Peer, from: &str) -> moq_net::track::Subscriber {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ops_frames_stay_ordered_and_invalid_frames_reset_only_their_group() {
     let f = fixture();
-    let a = connect(&f, b"grant-a", A).await;
-    let mut ops = a
-        .outgoing_broadcast
-        .clone()
-        .create_track(format!("ops/{RECORD}"), None)
-        .unwrap();
+    let mut a = connect(&f, b"grant-a", A).await;
+    let ops = a.record(RECORD).unwrap().clone();
     let b = connect(&f, b"grant-b", B).await;
     let mut from_a = ops_subscriber(&b, A).await;
     let mut group = ops.append_group().unwrap();
@@ -488,8 +408,8 @@ async fn ops_frames_stay_ordered_and_invalid_frames_reset_only_their_group() {
     .unwrap();
     assert!(after);
     assert!(f.live.relay.counters().ops_dropped >= 1);
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(b);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -520,7 +440,7 @@ async fn host_injection_reaches_current_subscribers_without_a_client() {
     .unwrap();
     assert_eq!(payload, b"ok-signed-change");
     assert!(!f.live.relay.inject_ops(ROOM, C, "not-hex", b"ok"));
-    b.session.abort(moq_net::Error::Cancel);
+    drop(b);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -534,12 +454,7 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     let (mut sa, mut sb) = (0, 1000);
     first_presence(&mut a, &mut a_at_viewer, &mut sa).await;
     first_presence(&mut b, &mut b_at_viewer, &mut sb).await;
-    let a_announced = viewer
-        .incoming
-        .consume()
-        .announced_broadcast(path(A).as_str())
-        .await
-        .unwrap();
+    let a_announced = viewer.member(&path(A)).await.unwrap();
     f.a.store(false, Ordering::SeqCst);
     // A's namespace is withdrawn at the viewer (its tracks end or reset); the
     // viewer's own session stays connected.
@@ -554,11 +469,11 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     .await;
     ended.expect("revoked publisher's namespace ends at the viewer");
     // A's own session is told to go away and closes.
-    tokio::time::timeout(Duration::from_secs(3), a.session.closed())
+    tokio::time::timeout(Duration::from_secs(3), a.session().closed())
         .await
         .expect("revoked session closes");
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), viewer.session.closed())
+        tokio::time::timeout(Duration::from_millis(100), viewer.session().closed())
             .await
             .is_err()
     );
@@ -566,60 +481,32 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     first_presence(&mut b, &mut b_at_viewer, &mut sb).await;
     assert_eq!(f.live.relay.counters().revoked, 1);
     assert!(f.b.load(Ordering::SeqCst));
-    b.session.abort(moq_net::Error::Cancel);
-    viewer.session.abort(moq_net::Error::Cancel);
+    drop(b);
+    drop(viewer);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn open_records_per_publisher_are_bounded() {
     let f = fixture();
-    let a = connect(&f, b"grant-a", A).await;
-    let b = connect(&f, b"grant-b", B).await;
-    let broadcast = tokio::time::timeout(
-        TIMEOUT,
-        b.incoming.consume().announced_broadcast(path(A).as_str()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let mut tracks = Vec::new();
-    let mut subscribers = Vec::new();
+    let mut a = connect(&f, b"grant-a", A).await;
     for i in 0..(MAX_OPEN_RECORDS + 2) {
-        let record = format!("{:064x}", i + 1);
-        tracks.push(
-            a.outgoing_broadcast
-                .clone()
-                .create_track(format!("ops/{record}"), None)
-                .unwrap(),
-        );
-        let subscriber = tokio::time::timeout(
-            TIMEOUT,
-            broadcast
-                .track(&format!("ops/{record}"))
-                .unwrap()
-                .subscribe(None),
-        )
-        .await
-        .unwrap();
-        subscribers.push(subscriber);
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(a.record(&format!("{:064x}", i + 1)).is_some());
     }
+    tokio::time::timeout(TIMEOUT, async {
+        while f.live.relay.counters().records_refused < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("records beyond the bound are refused");
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let slot = f
-        .live
-        .relay
-        .0
-        .slots
-        .lock()
-        .unwrap()
-        .get(&path(A))
-        .cloned()
-        .unwrap();
-    let open = slot.state.lock().unwrap().open_records();
-    assert_eq!(open, MAX_OPEN_RECORDS);
-    assert!(f.live.relay.counters().records_refused >= 2);
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    assert_eq!(f.live.relay.counters().records_refused, 2);
+    // Closing a record frees its place for another.
+    a.close_record(&format!("{:064x}", 1));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(a.record(&format!("{:064x}", 100)).is_some());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(f.live.relay.counters().records_refused, 2);
 }
 
 /// Two native clients exchange presence both ways over loopback; records
@@ -663,12 +550,8 @@ async fn loopback_presence_exchange_is_under_ten_milliseconds() {
     for _ in 0..FRAMES {
         sa += 1;
         sb += 1;
-        a.presence
-            .append_datagram(moq_net::Timestamp::ZERO, stamp(sa))
-            .unwrap();
-        b.presence
-            .append_datagram(moq_net::Timestamp::ZERO, stamp(sb))
-            .unwrap();
+        assert!(a.publish_presence(&stamp(sa)));
+        assert!(b.publish_presence(&stamp(sb)));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let mut samples = rx_b.await.unwrap();
@@ -699,8 +582,8 @@ async fn loopback_presence_exchange_is_under_ten_milliseconds() {
         "p90 one-way {:?}",
         pct(90)
     );
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(b);
 }
 
 /// Inject until the egress track accepts (a fresh subscription may briefly
@@ -767,13 +650,13 @@ async fn sustained_owner_contention_never_revokes_and_injection_keeps_flowing() 
     );
     assert_eq!(counters.injected_dropped, 0, "{counters:?}");
     assert!(
-        tokio::time::timeout(Duration::from_millis(50), a.session.closed())
+        tokio::time::timeout(Duration::from_millis(50), a.session().closed())
             .await
             .is_err()
     );
     first_presence(&mut a, &mut presence_a, &mut seq).await;
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(b);
 }
 
 /// After an actual revocation the namespace is withdrawn; host injection must
@@ -786,14 +669,9 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
     let b = connect(&f, b"grant-b", B).await;
     let mut from_a = ops_subscriber(&b, A).await;
     assert_eq!(inject_and_read(&f, &mut from_a, A, b"ok-1").await, b"ok-1");
-    let old = b
-        .incoming
-        .consume()
-        .announced_broadcast(path(A).as_str())
-        .await
-        .unwrap();
+    let old = b.member(&path(A)).await.unwrap();
     f.a.store(false, Ordering::SeqCst);
-    tokio::time::timeout(Duration::from_secs(3), a.session.closed())
+    tokio::time::timeout(Duration::from_secs(3), a.session().closed())
         .await
         .expect("revoked");
     // The withdrawn namespace closes at the subscriber (clients must watch
@@ -812,8 +690,8 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
     first_presence(&mut a, &mut presence_a, &mut seq).await;
     let mut from_a = ops_subscriber(&b, A).await;
     assert_eq!(inject_and_read(&f, &mut from_a, A, b"ok-3").await, b"ok-3");
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(b);
 }
 
 /// A late subscriber is not replayed an already delivered group: once a track
@@ -837,7 +715,10 @@ async fn late_subscriber_is_not_replayed_stale_groups() {
             let Ok(Some(mut group)) = late.recv_group().await else {
                 return None;
             };
-            if let Ok(Some(frame)) = group.read_frame().await {
+            // Seal groups hold one empty frame.
+            if let Ok(Some(frame)) = group.read_frame().await
+                && !frame.payload.is_empty()
+            {
                 return Some(frame.payload.to_vec());
             }
         }
@@ -851,8 +732,8 @@ async fn late_subscriber_is_not_replayed_stale_groups() {
         inject_and_read(&f, &mut late, A, b"ok-new").await,
         b"ok-new"
     );
-    b.session.abort(moq_net::Error::Cancel);
-    viewer.session.abort(moq_net::Error::Cancel);
+    drop(b);
+    drop(viewer);
 }
 
 /// A final withdrawal (revoked author, no host-fed replacement) is announced
@@ -864,26 +745,25 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     let a = connect(&f, b"grant-a", A).await;
     let b = connect(&f, b"grant-b", B).await;
     let viewer = connect(&f, b"grant-viewer", C).await;
-    let mut announces = viewer.incoming.consume().announced();
-    let member = tokio::time::timeout(TIMEOUT, async {
+    let mut announces = viewer.announced();
+    tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = announces.next().await.expect("announce stream");
-            if update.path.as_str() == path(A)
-                && let Some(broadcast) = update.broadcast
-            {
-                return broadcast;
+            if update.prefix.as_str() == path(A) && update.kind.is_active() {
+                return;
             }
         }
     })
     .await
     .expect("member announced active");
+    let member = viewer.member(&path(A)).await.unwrap();
     f.a.store(false, Ordering::SeqCst);
     // Inactive announcement for exactly this member, and its broadcast closes.
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = announces.next().await.expect("announce stream");
-            if update.path.as_str() == path(A) {
-                assert!(update.broadcast.is_none(), "revoked member re-announced");
+            if update.prefix.as_str() == path(A) {
+                assert!(!update.kind.is_active(), "revoked member re-announced");
                 return;
             }
         }
@@ -897,8 +777,8 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     let again = tokio::time::timeout(Duration::from_millis(600), async {
         loop {
             let update = announces.next().await.expect("announce stream");
-            if update.path.as_str() == path(A) {
-                return update.broadcast.is_some();
+            if update.prefix.as_str() == path(A) {
+                return update.kind.is_active();
             }
         }
     })
@@ -908,18 +788,18 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
         "final withdrawal was re-announced"
     );
     // A clean disconnect of B is a final withdrawal as well.
-    b.session.abort(moq_net::Error::Cancel);
+    drop(b);
     tokio::time::timeout(TIMEOUT, async {
         loop {
             let update = announces.next().await.expect("announce stream");
-            if update.path.as_str() == path(B) && update.broadcast.is_none() {
+            if update.prefix.as_str() == path(B) && !update.kind.is_active() {
                 return;
             }
         }
     })
     .await
     .expect("disconnected member announced inactive");
-    viewer.session.abort(moq_net::Error::Cancel);
+    drop(viewer);
     drop(a);
 }
 
@@ -1006,12 +886,7 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
     );
     // The refused injection did not raise the namespace's sequence floor.
     client_seq += 1;
-    a.presence
-        .append_datagram(
-            moq_net::Timestamp::ZERO,
-            presence(client_seq, b"client-next"),
-        )
-        .unwrap();
+    assert!(a.publish_presence(&presence(client_seq, b"client-next")));
     let after = tokio::time::timeout(TIMEOUT, async {
         loop {
             let datagram = from_a.recv_datagram().await.unwrap().unwrap();
@@ -1033,6 +908,77 @@ async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_clie
         counters.injected_dropped >= before.injected_dropped + 6,
         "{counters:?}"
     );
-    a.session.abort(moq_net::Error::Cancel);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(b);
+}
+
+/// A revoked member stops receiving the room at once: nothing reaches it once
+/// the relay observed the lapse, while the other members keep flowing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revoked_member_receives_nothing_after_revocation() {
+    let f = fixture();
+    let a = connect(&f, b"grant-a", A).await;
+    let mut b = connect(&f, b"grant-b", B).await;
+    let viewer = connect(&f, b"grant-viewer", C).await;
+    let mut b_at_a = presence_subscriber(&a, B).await;
+    let mut b_at_viewer = presence_subscriber(&viewer, B).await;
+    let mut seq = 0;
+    first_presence(&mut b, &mut b_at_a, &mut seq).await;
+    first_presence(&mut b, &mut b_at_viewer, &mut seq).await;
+    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = received.clone();
+    let reader = tokio::spawn(async move {
+        while let Ok(Some(_)) = b_at_a.recv_datagram().await {
+            log.lock().unwrap().push(Instant::now());
+        }
+    });
+    let publisher = tokio::spawn(async move {
+        let mut seq = 10_000;
+        loop {
+            seq += 1;
+            if !b.publish_presence(&presence(seq, b"b")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !received.lock().unwrap().is_empty(),
+        "b reaches a before revocation"
+    );
+    f.a.store(false, Ordering::SeqCst);
+    tokio::time::timeout(TIMEOUT, async {
+        while f.live.relay.counters().revoked == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("revocation observed");
+    let observed = Instant::now();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let late = received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|at| **at > observed + Duration::from_millis(20))
+        .count();
+    assert_eq!(
+        late, 0,
+        "the revoked member received {late} frames after revocation"
+    );
+    // The other members are untouched.
+    let mut still = 0;
+    tokio::time::timeout(TIMEOUT, async {
+        while still < 3 {
+            if let Ok(Some(_)) = b_at_viewer.recv_datagram().await {
+                still += 1;
+            }
+        }
+    })
+    .await
+    .expect("b keeps reaching the viewer");
+    publisher.abort();
+    reader.abort();
+    drop((a, viewer));
 }

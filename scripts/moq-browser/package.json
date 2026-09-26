@@ -1,23 +1,14 @@
 {
-  "name": "qos-moq-browser-bundle",
+  "name": "tilo-moq-browser-bundle",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
-    "test": "node --test authorization.test.mjs cache.test.mjs && node --test bundle.test.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "bun build.mjs",
+    "test": "bun test bundle.test.mjs"
   },
   "dependencies": {
-    "@moq/qmux": "0.3.3",
-    "@moq/signals": "file:../../vendor/moq/js/signals",
+    "@moq/net": "0.4.0",
     "@zod/mini": "4.5.0",
-    "async-mutex": "0.5.0",
-    "bowser": "2.14.1"
-  },
-  "devDependencies": {
-    "@types/bun": "1.4.1",
-    "es-module-lexer": "3.0.2",
-    "esbuild": "0.28.2",
-    "typescript": "7.0.2"
+    "zod": "4.5.0"
   }
 }

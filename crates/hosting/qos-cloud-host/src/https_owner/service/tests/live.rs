@@ -172,25 +172,13 @@ async fn administer(
     .unwrap();
 }
 
-struct LiveClient {
-    session: moq_net::Session,
-    _driver: tokio::task::JoinHandle<()>,
-    incoming: moq_net::origin::Producer,
-    _outgoing: moq_net::origin::Producer,
-    _broadcast: moq_net::broadcast::Producer,
-    presence: moq_net::track::Producer,
-}
+type LiveClient = qos_moq::live::peer::Peer;
 async fn live_connect(
     origin: &str,
     certificate: &CertificateDer<'static>,
     own: &str,
     token: Vec<u8>,
 ) -> anyhow::Result<LiveClient> {
-    let outgoing = moq_net::Origin::random().produce();
-    let incoming = moq_net::Origin::random().produce();
-    let mut broadcast =
-        outgoing.create_broadcast(own, moq_net::broadcast::Route::new().with_announce(true))?;
-    let presence = broadcast.create_track(PRESENCE_TRACK, None)?;
     let wt = web_transport_quinn::ClientBuilder::new()
         .with_server_certificates(vec![certificate.clone()])?;
     let transport = timeout(
@@ -203,35 +191,12 @@ async fn live_connect(
         ),
     )
     .await??;
-    let (session, driver) = timeout(
-        T,
-        moq_net::Client::new()
-            .with_versions(
-                "moq-transport-21"
-                    .parse::<moq_net::Version>()
-                    .map_err(anyhow::Error::msg)?
-                    .into(),
-            )
-            .with_authorization(token)?
-            .with_publisher(&outgoing)
-            .with_subscriber(incoming.clone())
-            .connect(transport),
-    )
-    .await??;
-    let driver = tokio::spawn(async move {
-        let _ = driver.await;
-    });
-    Ok(LiveClient {
-        session,
-        _driver: driver,
-        incoming,
-        _outgoing: outgoing,
-        _broadcast: broadcast,
-        presence,
-    })
+    Ok(timeout(T, LiveClient::start(transport, &token, Some(own)))
+        .await?
+        .map_err(anyhow::Error::from)?)
 }
 async fn announced(client: &LiveClient, path: &str) -> moq_net::broadcast::Consumer {
-    timeout(T, client.incoming.consume().announced_broadcast(path))
+    timeout(T, client.member(path))
         .await
         .expect("announce deadline")
         .expect("announced")
@@ -250,8 +215,7 @@ async fn ops_of(
     path: &str,
     record: &LiveRecord,
 ) -> moq_net::track::Subscriber {
-    let mut subscription = moq_net::track::Subscription::default();
-    subscription.ordered = true;
+    let subscription = moq_net::track::Subscription::default().with_max_age(Duration::from_secs(2));
     announced(client, path)
         .await
         .track(&ops_track(record))
@@ -282,9 +246,7 @@ async fn first_presence(
     timeout(T, async {
         loop {
             *seq += 1;
-            from.presence
-                .append_datagram(moq_net::Timestamp::ZERO, presence(*seq))
-                .unwrap();
+            assert!(from.publish_presence(&presence(*seq)));
             if let Ok(Ok(Some(datagram))) =
                 timeout(Duration::from_millis(50), at.recv_datagram()).await
             {
@@ -366,6 +328,7 @@ async fn forwarded(
             if let Ok(Ok(Some(mut group))) =
                 timeout(Duration::from_millis(300), ops.recv_group()).await
                 && let Ok(Some(frame)) = group.read_frame().await
+                && !frame.payload.is_empty()
             {
                 return frame.payload.to_vec();
             }
@@ -474,7 +437,7 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
 
     // Forged tokens are refused before any origin is attached.
     if let Ok(forged) = live_connect(&origin, &certificate, &owner_path, b"forged".to_vec()).await {
-        timeout(T, forged.session.closed())
+        timeout(T, forged.session().closed())
             .await
             .expect("forged token closes");
     }
@@ -529,13 +492,9 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
         sb += 1;
         let (fa, fb) = (presence(sa), presence(sb));
         sent.lock().unwrap().insert((0, sa), Instant::now());
-        a.presence
-            .append_datagram(moq_net::Timestamp::ZERO, fa)
-            .unwrap();
+        assert!(a.publish_presence(&fa));
         sent.lock().unwrap().insert((1, sb), Instant::now());
-        b.presence
-            .append_datagram(moq_net::Timestamp::ZERO, fb)
-            .unwrap();
+        assert!(b.publish_presence(&fb));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let mut samples = rx_b.await.unwrap();
@@ -601,7 +560,10 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
         // a re-forward.
         let reforwarded = timeout(Duration::from_millis(300), async {
             while let Ok(Some(mut group)) = ops.recv_group().await {
-                if let Ok(Some(frame)) = group.read_frame().await {
+                // Seal groups hold one empty frame.
+                if let Ok(Some(frame)) = group.read_frame().await
+                    && !frame.payload.is_empty()
+                {
                     return frame.payload.to_vec();
                 }
             }
@@ -615,7 +577,7 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
     // edits make the host announce and feed the guest's namespace itself.
     let guest_at_a = announced(&a, &guest_path).await;
     drop(ops);
-    b.session.abort(moq_net::Error::Cancel);
+    drop(b);
     timeout(T, guest_at_a.closed())
         .await
         .expect("guest namespace withdrawn");
@@ -630,7 +592,7 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
         uploaded.contains(&canonical),
         "host-fed exact canonical bytes"
     );
-    a.session.abort(moq_net::Error::Cancel);
+    drop(a);
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
 }
@@ -693,9 +655,7 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
     if let Ok(subscriber) = v_at_a.as_mut() {
         for _ in 0..10 {
             sv += 1;
-            v.presence
-                .append_datagram(moq_net::Timestamp::ZERO, presence(sv))
-                .unwrap();
+            assert!(v.publish_presence(&presence(sv)));
         }
         assert!(
             !matches!(
@@ -749,7 +709,7 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
             .directions
             .publish
     );
-    d.session.abort(moq_net::Error::Cancel);
+    drop(d);
     // The other publishers were not affected.
     first_presence(&mut e, &mut e_at_v, &mut se).await;
 
@@ -777,11 +737,11 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
         "CLOUD_LIVE_REVOCATION commit={committed:?} tracks_ended={:?}",
         removed.elapsed()
     );
-    timeout(T, e.session.closed())
+    timeout(T, e.session().closed())
         .await
         .expect("revoked session closes");
     assert!(
-        timeout(Duration::from_millis(100), v.session.closed())
+        timeout(Duration::from_millis(100), v.session().closed())
             .await
             .is_err(),
         "the viewer's session stays open"
@@ -796,8 +756,8 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
         ),
         "removed member refused: {status}"
     );
-    a.session.abort(moq_net::Error::Cancel);
-    v.session.abort(moq_net::Error::Cancel);
+    drop(a);
+    drop(v);
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
 }

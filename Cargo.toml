@@ -40,9 +40,6 @@ members = [
     "crates/hosting/qos-session-peer",
     "crates/hosting/qos-moq",
     "crates/hosting/qos-cloud-host",
-    "vendor/moq/rs/kio",
-    "vendor/moq/rs/moq-net",
-    "vendor/moq/rs/moq-native",
     "crates/session/qos-ntfs-helper",
     "crates/session/qos-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -358,6 +355,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = "0.14"
 rustls-native-certs = "0.8"
 url = "2"
+# Media over QUIC networking (moq-lite); driven over web-transport-quinn.
+moq-net = "0.3.3"
 
 # ---------------------------------------------------------------------------
 # Serialisation and encoding
@@ -600,9 +599,6 @@ web-transport-proto = { path = "vendor/web-transport-proto" }
 # Adds `Request::from_parts` so one QUIC endpoint serves plain HTTP/3 delivery
 # requests and WebTransport. See vendor/web-transport-quinn/PROVENANCE.md.
 web-transport-quinn = { path = "vendor/web-transport-quinn" }
-# One kio: the vendored MoQ copy is a workspace member, so the registry copy
-# web-transport-quinn names would make `-p kio` ambiguous for CI selection.
-kio = { path = "vendor/moq/rs/kio" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream

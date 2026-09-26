@@ -1,16 +1,22 @@
+/**
+ * Voice over `moq-lite` at `/moq/voice`: the host-verified media grant is
+ * presented in the carrier's admission preface (web/moq-carrier.mjs) and
+ * `@moq/net` is used through its public API only. This member publishes
+ * `<call>/<publisher>` with one `audio` track and hears every publisher the
+ * relay offers under its call.
+ */
 import {createMediaQueue} from './media-buffers.mjs';
+import {MOQ_PROTOCOL, openCarrier, requestBroadcast} from './moq-carrier.mjs';
 import {decodeVoiceBundle, decodeVoiceObject, encodeVoiceBundle, encodeVoiceObject} from './media-voice-profile.mjs';
 
-const DRAFT_VERSION = 'moq-transport-21';
-const DRAFT_PROTOCOL = 'moqt-21';
 const AUDIO_TRACK = 'audio';
 const FRAME_DURATION_MS = 20;
 const MAX_REMOTE_PUBLISHERS = 7;
 const MAX_AUTHORIZATION_BYTES = 8192;
 const MAX_REFRESH_MS = 60_000;
 const OPAQUE_COMPONENT = /^[0-9a-f]{64}$/;
-// Datagram delivery: each 20 ms object leaves as one Draft 21 OBJECT_DATAGRAM
-// (no retransmission, no head-of-line blocking) carrying the newest object plus
+// Datagram delivery: each 20 ms object leaves as one moq-lite datagram (no
+// retransmission, no head-of-line blocking) carrying the newest object plus
 // REDUNDANCY earlier objects, so an isolated loss is repaired by the next
 // datagram 20 ms later instead of a QUIC retransmission one RTT later. The
 // depth rises to 2 while loss is sustained: from transport stats where the
@@ -31,7 +37,7 @@ function validateEndpoint(value) {
     || endpoint.password !== ''
     || endpoint.search !== ''
     || endpoint.hash !== ''
-    || endpoint.pathname !== '/moq/v21/voice') {
+    || endpoint.pathname !== '/moq/voice') {
     throw new TypeError('media endpoint must be an exact credential-free HTTPS URL');
   }
   return endpoint;
@@ -99,6 +105,7 @@ export function createMoqTransport({
   authorize,
   refreshAuthorization,
   library,
+  carrier = openCarrier,
   clock = {},
   onReport = () => {},
   datagrams = true,
@@ -130,21 +137,36 @@ export function createMoqTransport({
     const authorized = validateAuthorization(await authorize({grant, signal}));
     signal?.throwIfAborted?.();
     const moq = await libraryPromise;
-    const webtransport = {protocols: [DRAFT_PROTOCOL]};
-    if (certificateHashes) webtransport.serverCertificateHashes = certificateHashes;
-    const connection = await moq.Connection.connect(endpoint, {
-      authorization: authorized.authorization,
-      websocket: {enabled: false},
-      webtransport,
+    const outgoing = new moq.Origin.Producer();
+    const incoming = new moq.Origin.Producer();
+    const opened = await carrier({
+      url: endpoint,
+      grant: authorized.authorization,
+      serverCertificateHashes: certificateHashes,
       signal,
     });
+    let connection;
+    try {
+      connection = await moq.Connection.connect({
+        url: endpoint,
+        transport: opened.transport,
+        publish: authorized.directions.publish ? outgoing.consume() : undefined,
+        consume: incoming,
+        signal,
+      });
+    } catch (error) {
+      opened.close();
+      throw error;
+    }
     if (signal?.aborted) {
       connection.close();
+      opened.close();
       throw signal.reason;
     }
-    if (connection.version !== DRAFT_VERSION || connection.transport !== 'webtransport') {
+    if (connection.version !== MOQ_PROTOCOL || connection.transport !== 'webtransport') {
       connection.close();
-      throw new Error('MoQ connection did not negotiate moq-transport-21 over WebTransport');
+      opened.close();
+      throw new Error(`MoQ connection did not negotiate ${MOQ_PROTOCOL} over WebTransport`);
     }
 
     let closed = false;
@@ -194,23 +216,23 @@ export function createMoqTransport({
       safeClose(audioTrack);
       safeClose(broadcast);
       safeClose(connection);
+      safeClose(outgoing);
+      safeClose(incoming);
+      opened.close();
     };
     signal?.addEventListener?.('abort', close, {once: true});
-    void Promise.resolve(connection.closed).then(close, close);
+    const closedPromise = Promise.race([Promise.resolve(connection.closed), opened.revoked]);
+    void closedPromise.then(close, close);
 
     try {
       if (authorized.directions.publish) {
-        broadcast = new moq.Broadcast.Producer();
+        broadcast = outgoing.createBroadcast(moq.Path.from(authorized.publishNamespace));
+        // Late audio is dropped, never queued: 100 ms retention.
         audioTrack = broadcast.createTrack(AUDIO_TRACK, {
           timescale: moq.Time.Timescale.MICRO,
-          latencyMax: 100,
-          ordered: false,
-        }, {
-          maxGroups: 1,
-          maxFrames: 5,
-          maxAgeMs: 100,
+          maxAge: 100,
         });
-        connection.publish(moq.Path.from(authorized.publishNamespace), broadcast);
+        broadcast.announce();
         useDatagrams = datagrams === true && connection.transport === 'webtransport'
           && typeof audioTrack.appendDatagram === 'function';
         if (useDatagrams) transportStats.mode = 'datagrams';
@@ -360,7 +382,8 @@ export function createMoqTransport({
       let active = true;
       let generation = 0;
       const remotes = new Map();
-      const announcements = connection.announced(moq.Path.from(authorized.subscribePrefix));
+      const callPath = moq.Path.from(authorized.subscribePrefix);
+      const announcements = incoming.announced(moq.Path.Pattern.subtree(callPath));
       const ownPublisherId = authorized.publishNamespace.split('/')[1];
 
       const notifyEnded = publisherId => {
@@ -373,8 +396,8 @@ export function createMoqTransport({
         remote.active = false;
         if (remotes.get(remote.publisherId) === remote) remotes.delete(remote.publisherId);
         remote.queue.clear();
-        try { remote.track.close(); } catch {}
-        try { remote.broadcast.close(); } catch {}
+        try { remote.track?.close(); } catch {}
+        try { remote.request?.close(); } catch {}
         if (notify) notifyEnded(remote.publisherId);
       };
       const pump = async remote => {
@@ -539,29 +562,10 @@ export function createMoqTransport({
           report({type: 'media-publisher-limit'});
           return;
         }
-        let remoteBroadcast;
-        let remoteTrack;
-        try {
-          remoteBroadcast = connection.consume(moq.Path.from(authorized.subscribePrefix, publisherId));
-          remoteTrack = remoteBroadcast.track(AUDIO_TRACK).subscribe({
-            priority: 0,
-            ordered: false,
-            latencyMax: 200,
-            maxGroups: 2,
-            maxFrames: 10,
-            maxAgeMs: 200,
-          });
-        } catch (error) {
-          try { remoteTrack?.close(); } catch {}
-          try { remoteBroadcast?.close(); } catch {}
-          report({type: 'media-subscription-error', publisherId, error});
-          notifyEnded(publisherId);
-          return;
-        }
         const remote = {
           publisherId,
-          broadcast: remoteBroadcast,
-          track: remoteTrack,
+          request: undefined,
+          track: undefined,
           generation,
           active: true,
           queue: createMediaQueue({
@@ -574,8 +578,20 @@ export function createMoqTransport({
           }),
         };
         remotes.set(publisherId, remote);
-        void pump(remote);
-        void pumpDatagrams(remote);
+        void (async () => {
+          try {
+            const resolved = await requestBroadcast(incoming, moq.Path.from(authorized.subscribePrefix, publisherId));
+            remote.request = resolved.request;
+            if (!remote.active) { resolved.request.close(); return; }
+            remote.track = resolved.broadcast.track(AUDIO_TRACK).subscribe({priority: 0, maxAge: 200});
+          } catch (error) {
+            report({type: 'media-subscription-error', publisherId, error});
+            stopRemote(remote);
+            return;
+          }
+          void pump(remote);
+          void pumpDatagrams(remote);
+        })();
       };
 
       const cleanup = () => {
@@ -595,13 +611,14 @@ export function createMoqTransport({
           while (active) {
             const event = await announcements.next();
             if (!event) break;
-            if (!OPAQUE_COMPONENT.test(event.path) || event.path === ownPublisherId) continue;
+            const publisherId = moq.Path.stripPrefix(callPath, event.prefix);
+            if (!publisherId || !OPAQUE_COMPONENT.test(publisherId) || publisherId === ownPublisherId) continue;
             // The host relay scopes this session to its own call and
             // re-authorizes every offered namespace, so a publisher that
             // joins after admission is heard in place (bounded by startRemote).
-            if (event.active === true) startRemote(event.path);
-            else if (event.active === false) {
-              const remote = remotes.get(event.path);
+            if (event.kind !== 'retracted') startRemote(publisherId);
+            else {
+              const remote = remotes.get(publisherId);
               if (remote) stopRemote(remote);
             }
           }
@@ -645,7 +662,7 @@ export function createMoqTransport({
       publish,
       subscribe,
       close,
-      closed: connection.closed,
+      closed: closedPromise,
       refreshAuthorization: refreshSessionAuthorization,
     };
     return session;

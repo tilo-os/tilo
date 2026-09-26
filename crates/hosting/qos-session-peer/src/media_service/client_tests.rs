@@ -68,16 +68,13 @@ impl Fixture {
         Self::with_secondary(false)
     }
     fn with_secondary(include: bool) -> Self {
-        let mut config = moq_native::ServerConfig::default();
-        config.bind = Some("127.0.0.1:0".into());
-        config.version = vec!["moq-transport-21".parse().unwrap()];
-        config.tls.generate = vec!["localhost".into()];
-        let server = config.init().unwrap();
+        let listener = qos_moq::carrier::loopback().unwrap();
         let endpoint = format!(
-            "https://localhost:{}/moq/v21/voice",
-            server.local_addr().unwrap().port()
+            "https://127.0.0.1:{}{}",
+            listener.port,
+            qos_moq::relay::VOICE_PATH
         );
-        let fingerprints = server.certificates().fingerprints();
+        let fingerprints = listener.fingerprints.clone();
         let dir = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
         activate(&mut owner);
@@ -153,7 +150,7 @@ impl Fixture {
             (key, value)
         });
         let relay = qos_moq::relay::Relay::new(Arc::new(service.clone()));
-        let server = tokio::spawn(relay.clone().serve(server));
+        let server = tokio::spawn(relay.clone().serve(listener.endpoint));
         Self {
             _dir: dir,
             owner,
@@ -308,7 +305,7 @@ async fn native_client_rejects_scope_substitution_and_single_use_proof_replay() 
             0 => connection.scope.owner_epoch = [9; 32],
             1 => connection.scope.carrier_generation += 1,
             2 => connection.scope.fingerprints = vec!["ab".repeat(32)],
-            3 => connection.scope.endpoint = "https://other.test/moq/v21/voice".into(),
+            3 => connection.scope.endpoint = "https://other.test/moq/voice".into(),
             _ => connection
                 .scope
                 .publication
@@ -328,11 +325,9 @@ async fn native_client_rejects_scope_substitution_and_single_use_proof_replay() 
     };
     let sender = Client::start(connection, custody.clone()).unwrap();
     live(&sender).await;
-    // Root cause of the former flake: a Draft 21 client connection resolves
-    // once CLIENT_SETUP is sent, before the relay has admitted (consumed) the
-    // proof. Client `Live` therefore did not order the original admission
-    // before the replay; whichever CONNECT the relay admitted first won. Wait
-    // for the relay's actual admission of the original before replaying.
+    // Client `Live` follows the relay's ADMITTED reply, but the relay counts
+    // the session as accepted only once SETUP completes. Wait for that before
+    // replaying so the original's admission is ordered first.
     tokio::time::timeout(Duration::from_secs(5), async {
         while fixture.relay.counters().accepted < 1 {
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -342,8 +337,8 @@ async fn native_client_rejects_scope_substitution_and_single_use_proof_replay() 
     .expect("original proof admitted by the relay");
     let before = fixture.relay.counters();
     let replayed = Client::start(replay, custody).unwrap();
-    // The replay may briefly report transport-level Live (SETUP sent) until
-    // the relay's refusal closes it; it must end Failed and never be admitted.
+    // The replay is refused in the admission preface: it ends Failed and is
+    // never admitted.
     tokio::time::timeout(Duration::from_secs(5), async {
         while replayed.status() != Status::Failed {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -500,22 +495,29 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     assert!(fresh.try_recv().is_none());
     assert_eq!(replacement.try_send(frame(10)), Err(ClientError::Muted));
     replacement.enable_publication().unwrap();
-    replacement.try_send(frame(10)).unwrap();
-    unaffected.try_send(frame(20)).unwrap();
+    // Live audio is continuous: keep sending until the relay's fresh
+    // subscriptions carry both publishers (a single object sent before they
+    // attach may expire at the sender first).
     let mut received = std::collections::BTreeSet::new();
+    let mut next = 0u64;
     tokio::time::timeout(Duration::from_secs(5), async {
         while received.len() != 2 {
+            if next % 10 == 0 {
+                let step = next / 10;
+                let _ = replacement.try_send(frame(10 + step));
+                let _ = unaffected.try_send(frame(1000 + step));
+            }
+            next += 1;
             if let Some(value) = fresh.try_recv() {
                 assert_eq!(value.publisher.carrier_generation, 2);
                 assert!(names.contains(&value.publisher.namespace));
-                let expected = if value.publisher.namespace == names[0] {
+                let floor = if value.publisher.namespace == names[0] {
                     10
                 } else {
-                    20
+                    1000
                 };
-                assert_eq!(
-                    value.object.timestamp,
-                    expected * 960,
+                assert!(
+                    value.object.timestamp >= floor * 960,
                     "old carrier packets must not replay"
                 );
                 received.insert(value.publisher.namespace);

@@ -1,6 +1,7 @@
-//! Revocation drains a real localhost WebTransport session: forwarding stops when
-//! authority is lost, and GOAWAY makes the client close before the relay does. The
-//! transport stays open for at most `GOAWAY_GRACE`, carrying no media.
+//! Revocation drains a real localhost WebTransport session: forwarding of the
+//! revoked publication stops when authority is lost, and the revocation notice
+//! on the admission stream makes the client close before the relay does. The
+//! transport stays open for at most `GOAWAY_GRACE`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,8 +20,10 @@
     reason = "scenario-shaped test code"
 )]
 
+mod support;
+
 use qos_moq::relay::{
-    Denied, Direction, GOAWAY_GRACE, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,
+    Denied, Direction, GOAWAY_GRACE, LoopbackRelay, RelayAuthority, SessionAuthorization,
 };
 use qos_moq::voice::{FRAME_SAMPLES, VoiceObject};
 use std::sync::{
@@ -28,10 +31,13 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
+use support::{Dialer, Origin};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// The relay's existing revocation bound (see tests/relay.rs).
 const REVOCATION_BOUND: Duration = Duration::from_secs(1);
+/// Objects already on the wire when the relay cuts a session off.
+const IN_FLIGHT: Duration = Duration::from_millis(20);
 
 struct Permit {
     publish: String,
@@ -110,17 +116,9 @@ fn publish(mut track: moq_net::track::Producer, sent: Log) -> tokio::task::JoinH
 }
 
 /// Log every voice datagram received on `path`.
-fn receive(
-    origin: moq_net::origin::Producer,
-    path: &'static str,
-    got: Log,
-) -> tokio::task::JoinHandle<()> {
+fn receive(origin: Arc<Origin>, path: &'static str, got: Log) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let broadcast = origin
-            .consume()
-            .announced_broadcast(path)
-            .await
-            .expect("authorized announce");
+        let broadcast = origin.broadcast(path).await;
         let mut track = broadcast
             .track("audio")
             .unwrap()
@@ -145,76 +143,34 @@ fn sent_at(sent: &Log, sequence: u64) -> Instant {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn revocation_stops_media_at_once_and_lets_the_client_close_first() {
-    let mut config = moq_native::ServerConfig::default();
-    config.bind = Some("127.0.0.1:0".into());
-    config.version = vec!["moq-transport-21".parse().unwrap()];
-    config.tls.generate = vec!["localhost".into()];
-    let server = config.init().unwrap();
-    let url: url::Url = format!(
-        "https://localhost:{}{VOICE_PATH}",
-        server.local_addr().unwrap().port()
-    )
-    .parse()
-    .unwrap();
-    let mut client = moq_native::ClientConfig::default();
-    client.version = vec!["moq-transport-21".parse().unwrap()];
-    client.tls.fingerprint = server.certificates().fingerprints();
-    let client = client.init().unwrap();
     let a_active = Arc::new(AtomicBool::new(true));
-    let relay = Relay::new(Arc::new(Authority {
+    let relay = LoopbackRelay::start(Arc::new(Authority {
         a: a_active.clone(),
-    }));
-    let serving = tokio::spawn(relay.clone().serve(server));
-
-    let (a_pub, a_sub) = (
-        moq_net::Origin::random().produce(),
-        moq_net::Origin::random().produce(),
-    );
-    let (b_pub, b_sub) = (
-        moq_net::Origin::random().produce(),
-        moq_net::Origin::random().produce(),
-    );
-    let mut ab = a_pub
-        .create_broadcast(
-            "drain-call/a",
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
-    let mut bb = b_pub
-        .create_broadcast(
-            "drain-call/b",
-            moq_net::broadcast::Route::new().with_announce(true),
-        )
-        .unwrap();
+    }))
+    .unwrap();
+    let dialer = Dialer::new(&relay.endpoint, &relay.fingerprints);
+    let (a_pub, a_sub) = (Origin::new(), Arc::new(Origin::new()));
+    let (b_pub, b_sub) = (Origin::new(), Arc::new(Origin::new()));
+    let (_ab, a_track) = a_pub.publish("drain-call/a");
+    let (_bb, b_track) = b_pub.publish("drain-call/b");
     let (a_sent, b_sent, a_got, b_got): (Log, Log, Log, Log) = Default::default();
     let a_session = tokio::time::timeout(
         TIMEOUT,
-        client
-            .clone()
-            .with_authorization(b"drain-a".to_vec())
-            .unwrap()
-            .with_publisher(&a_pub)
-            .with_subscriber(a_sub.clone())
-            .connect(url.clone()),
+        dialer.connect(b"drain-a", Some(&a_pub), Some(&a_sub)),
     )
     .await
     .unwrap()
     .unwrap();
     let b_session = tokio::time::timeout(
         TIMEOUT,
-        client
-            .with_authorization(b"drain-b".to_vec())
-            .unwrap()
-            .with_publisher(&b_pub)
-            .with_subscriber(b_sub.clone())
-            .connect(url),
+        dialer.connect(b"drain-b", Some(&b_pub), Some(&b_sub)),
     )
     .await
     .unwrap()
     .unwrap();
     let tasks = [
-        publish(ab.create_track("audio", None).unwrap(), a_sent.clone()),
-        publish(bb.create_track("audio", None).unwrap(), b_sent.clone()),
+        publish(a_track, a_sent.clone()),
+        publish(b_track, b_sent.clone()),
         receive(b_sub, "drain-call/a", b_got.clone()),
         receive(a_sub, "drain-call/b", a_got.clone()),
     ];
@@ -230,6 +186,15 @@ async fn revocation_stops_media_at_once_and_lets_the_client_close_first() {
 
     let revoked = Instant::now();
     a_active.store(false, Ordering::SeqCst);
+    // The moment the relay observes the lapse, A is cut off.
+    tokio::time::timeout(REVOCATION_BOUND, async {
+        while relay.counters().expired == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("revocation observed");
+    let observed = Instant::now();
     let closed = tokio::time::timeout(REVOCATION_BOUND + GOAWAY_GRACE, a_session.closed())
         .await
         .expect("a revoked session closes");
@@ -271,7 +236,19 @@ async fn revocation_stops_media_at_once_and_lets_the_client_close_first() {
         "revoked subscriber received {b_to_a_after:?} after revocation"
     );
     assert!(a_offered_after > 0 && b_heard_after == 0);
-    // The client closed on GOAWAY, well before the relay's hard close.
+    // Nothing reaches the revoked session once the relay observed the lapse
+    // (allowing for objects already in flight on the loopback path).
+    let late = a_got
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, t)| *t > observed + IN_FLIGHT)
+        .count();
+    assert_eq!(
+        late, 0,
+        "the revoked session received {late} objects after revocation"
+    );
+    // The client closed on the revocation notice, well before the relay's hard close.
     assert!(
         closed_after < GOAWAY_GRACE,
         "client did not close before the grace: {closed_after:?}"
@@ -286,6 +263,5 @@ async fn revocation_stops_media_at_once_and_lets_the_client_close_first() {
     for task in tasks {
         task.abort();
     }
-    b_session.abort(moq_net::Error::Cancel);
-    serving.abort();
+    drop(b_session);
 }

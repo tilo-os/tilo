@@ -41,7 +41,7 @@ function fakeRuntime(publisher, {supported = true, renewInMs = 40000, authorized
       calls.completes++;
       assert.deepEqual([...bytes], [9]);
       return JSON.stringify({
-        kind: 'grant', authorization: [...encoder.encode(publisher)], endpoint: `${ORIGIN}/moq/v21/live`,
+        kind: 'grant', authorization: [...encoder.encode(publisher)], endpoint: `${ORIGIN}/moq/live`,
         namespace: ['tilo-live', ROOM, publisher], directions: authorized,
         expiresInMs: 60000, renewInMs: this.options.renewInMs, membershipGeneration: '4',
       });
@@ -87,7 +87,7 @@ function client(fake, publisher, options = {}) {
   const errors = [];
   const live = createLiveClient({
     runtime, peerId: 1, fetch: http.fetch, codec,
-    transport: options.transport ?? createLiveTransport({library: fake.library}),
+    transport: options.transport ?? createLiveTransport({library: fake.library, carrier: fake.carrier}),
     clock: options.clock ?? fastClock, onError: error => errors.push(error),
     automergeGate: options.automergeGate ?? acceptingGate,
   });
@@ -179,8 +179,8 @@ test('forwarded signed changes are admitted once through the runtime and snap pr
   const record = {app: 'so.tilo.notes', record: 'n1'};
   b.api.watchRecord(record);
   // The host forwards admitted changes on its own live namespace.
-  const host = await createLiveTransport({library: fake.library}).connect({
-    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode('d'.repeat(64)),
+  const host = await createLiveTransport({library: fake.library, carrier: fake.carrier}).connect({
+    endpoint: `${ORIGIN}/moq/live`, authorization: encoder.encode('d'.repeat(64)),
     namespace: ['tilo-live', ROOM, 'd'.repeat(64)], directions: {publish: true, subscribe: false},
   });
   await until(() => b.api.stats().remotes === 1, 'host member');
@@ -302,8 +302,8 @@ test('a deferred signed change is retried in order until the runtime admits it',
   await until(() => b.api.state === 'live', 'live');
   const record = {app: 'so.tilo.word-processor', record: 'doc-1'};
   b.api.watchRecord(record);
-  const author = await createLiveTransport({library: fake.library}).connect({
-    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode('d'.repeat(64)),
+  const author = await createLiveTransport({library: fake.library, carrier: fake.carrier}).connect({
+    endpoint: `${ORIGIN}/moq/live`, authorization: encoder.encode('d'.repeat(64)),
     namespace: ['tilo-live', ROOM, 'd'.repeat(64)], directions: {publish: true, subscribe: false},
   });
   await until(() => b.api.stats().remotes === 1, 'author member');
@@ -340,8 +340,8 @@ test('speculative forwarded changes are reconciled at their confirmation deadlin
   await until(() => b.api.state === 'live', 'live');
   const record = {app: 'so.tilo.chat', record: '@qos:package-primary'};
   b.api.watchRecord(record);
-  const host = await createLiveTransport({library: fake.library}).connect({
-    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode('d'.repeat(64)),
+  const host = await createLiveTransport({library: fake.library, carrier: fake.carrier}).connect({
+    endpoint: `${ORIGIN}/moq/live`, authorization: encoder.encode('d'.repeat(64)),
     namespace: ['tilo-live', ROOM, 'd'.repeat(64)], directions: {publish: true, subscribe: false},
   });
   await until(() => b.api.stats().remotes === 1, 'host member');
@@ -512,13 +512,11 @@ test('presence resumes after the relay withdraws and re-announces a member names
   await until(() => a.api.state === 'live' && b.api.state === 'live' && b.api.stats().remotes === 1, 'live');
   a.api.publishPresence({pointer: [1, 0]});
   await until(() => received.includes(1), 'first');
-  // Revocation-style withdraw (no inactive announcement, tracks left open),
-  // then the relay re-announces the namespace ~100 ms later.
+  // Revocation-style withdraw, then the relay re-announces the namespace
+  // (host-fed) as a fresh announcement ~100 ms later.
   const path = `tilo-live/${ROOM}/${'b'.repeat(64)}`;
-  const entry = fake.published.get(path);
   fake.withdraw(path);
   await new Promise(resolve => setTimeout(resolve, 5));
-  fake.published.set(path, {...entry, closed: new Promise(() => {}), end() {}});
   fake.reannounce(path);
   await tick();
   a.api.publishPresence({pointer: [2, 0]});
@@ -541,8 +539,8 @@ function agentRuntime(publisher) {
   return runtime;
 }
 async function publisherSession(fake, namespace) {
-  return createLiveTransport({library: fake.library}).connect({
-    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode(namespace),
+  return createLiveTransport({library: fake.library, carrier: fake.carrier}).connect({
+    endpoint: `${ORIGIN}/moq/live`, authorization: encoder.encode(namespace),
     namespace: ['tilo-live', ROOM, namespace], directions: {publish: true, subscribe: false},
   });
 }

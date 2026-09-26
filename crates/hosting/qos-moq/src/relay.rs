@@ -1,42 +1,62 @@
-//! Host-injected authority for a Draft 21 WebTransport voice relay.
+//! Host-injected authority for the `moq-lite` voice relay.
 //!
 //! The protocol does not mint workspace permissions. The native host supplies
 //! an implementation whose private session evidence comes from its verified
-//! grant/challenge service and current committed room authority.
+//! grant/challenge service and current committed room authority. The grant
+//! arrives in the carrier's admission preface ([`crate::carrier`]).
+//!
+//! Every admitted publisher writes into a private ingress origin scoped to its
+//! exact namespace. The relay copies its `audio` track into the shared origin,
+//! validating every object and datagram bundle and bounding the groups in
+//! flight, so subscribers only ever observe validated tilo-voice/1 objects.
+//! Every session is served from its own host-owned view of the shared origin
+//! ([`crate::mirror`]), which revocation drops before anything else.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicU64, Ordering},
 };
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
+use crate::carrier;
+pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
+use crate::voice;
+
 pub const MAX_SESSIONS: usize = 8;
-pub const MAX_AUTHORIZATION_BYTES: usize = 8192;
-pub const VOICE_PATH: &str = "/moq/v21/voice";
+pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
+/// Exact WebTransport path of the voice relay.
+pub const VOICE_PATH: &str = "/moq/voice";
+/// The one track a voice broadcast carries.
+pub const VOICE_TRACK: &str = "audio";
 const AUTHORITY_INTERVAL: Duration = Duration::from_millis(100);
 /// Longest continuous authority outage (owner contention) a live session may
 /// ride through, and the longest an offered namespace whose publisher
 /// authority lapsed may stay present before the subscriber fails closed.
 const AUTHORITY_FENCE: Duration = Duration::from_millis(900);
-/// Budget for the QUIC + WebTransport handshake of one pending session. A
-/// satellite path (600 ms RTT) needs ~4 round trips plus a loss recovery
-/// (PTO ~1 s), so the former 3 s bound refused honest joins on such links.
-pub const HANDSHAKE_BUDGET: Duration = Duration::from_secs(8);
-/// Budget for the `MoQ` SETUP exchange after the CONNECT response.
-pub const SETUP_BUDGET: Duration = Duration::from_secs(5);
-const EXPIRE_INTERVAL: Duration = Duration::from_millis(20);
-/// How long a revoked or expired session may stay open, carrying no media, after
-/// GOAWAY so the client closes first. Chromium can crash its renderer when the
-/// server closes a WebTransport session with streams in flight. Forwarding stops
-/// when authority is lost, not when this grace ends.
+/// How long a revoked or expired session may stay open after the revocation
+/// notice so the client closes first. Chromium can crash its renderer when the
+/// server closes a WebTransport session with streams in flight. No media flows
+/// to or from the session during this grace: its view and its publication are
+/// dropped when authority is lost.
 pub const GOAWAY_GRACE: Duration = Duration::from_secs(1);
+/// Voice retention: late audio is dropped, never queued.
+const VOICE_RETAIN: Duration = Duration::from_millis(200);
+/// Bytes one publisher may have cached at the relay's ingress.
+const INGRESS_BYTES: u64 = 64 * 1024;
+/// Bytes cached across every forwarded voice track.
+const SHARED_BYTES: u64 = 512 * 1024;
+/// Bytes one subscriber's own view may cache.
+const VIEW_BYTES: u64 = 64 * 1024;
+/// Groups copied concurrently per publisher; a newer group evicts the oldest.
+const MAX_GROUPS_IN_FLIGHT: usize = 3;
 
 /// Host-internal marker for a fresh per-request exact raw route comparison.
 ///
 /// This marker is neither authentication nor independent authority evidence.
 /// Its private field only requires callers to use [`Relay::validate_route`]
-/// before URL normalization or `MoQ` SETUP parsing for each accepted request.
+/// before URL normalization for each accepted request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceRoute(());
 
@@ -146,6 +166,8 @@ struct Counters {
     active: AtomicU64,
     fenced: AtomicU64,
     lapsed: AtomicU64,
+    forwarded: AtomicU64,
+    dropped: AtomicU64,
     max_tick_gap_ms: AtomicU64,
     max_observe_ms: AtomicU64,
 }
@@ -154,8 +176,9 @@ struct Counters {
 /// measurements, and never expose the proof or participant namespace.
 /// `fenced` counts sessions closed because authority stayed unobservable past
 /// the fence; `lapsed` counts publications closed because a subscriber
-/// observed their publisher authority lapse. The two maxima (milliseconds)
-/// diagnose scheduler stalls versus slow owner observations.
+/// observed their publisher authority lapse. `forwarded` and `dropped` count
+/// objects and bundles the relay copied or refused. The two maxima
+/// (milliseconds) diagnose scheduler stalls versus slow owner observations.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct CounterSnapshot {
     pub accepted: u64,
@@ -164,6 +187,8 @@ pub struct CounterSnapshot {
     pub active: u64,
     pub fenced: u64,
     pub lapsed: u64,
+    pub forwarded: u64,
+    pub dropped: u64,
     pub max_tick_gap_ms: u64,
     pub max_observe_ms: u64,
 }
@@ -205,6 +230,7 @@ pub struct Relay {
     counters: Arc<Counters>,
     sessions: Arc<tokio::sync::Semaphore>,
     publications: Publications,
+    _origin: Arc<carrier::OriginTask>,
 }
 
 struct Active(Arc<Counters>);
@@ -214,10 +240,19 @@ impl Drop for Active {
     }
 }
 
+/// A publisher's private ingress origin: the session writes into it, the
+/// relay's forwarder reads from it.
+struct Ingress {
+    origin: moq_net::origin::Producer,
+    _task: carrier::OriginTask,
+}
+
 struct RelayScopes {
     authorization: Arc<dyn SessionAuthorization>,
-    publish: Option<moq_net::origin::Producer>,
+    ingress: Option<Ingress>,
     subscribe: Option<moq_net::origin::Consumer>,
+    /// The session's own view of `subscribe`, the only thing it is served from.
+    view: Option<crate::mirror::Mirror>,
     offered: Option<Offered>,
 }
 
@@ -232,8 +267,8 @@ struct Offered {
 impl Offered {
     fn drain(&mut self) {
         while let Some(update) = self.cursor.try_next() {
-            let name = update.path.as_str().to_owned();
-            if update.broadcast.is_some() {
+            let name = update.prefix.as_str().to_owned();
+            if update.kind.is_active() {
                 self.present.insert(name);
             } else {
                 self.present.remove(&name);
@@ -242,31 +277,44 @@ impl Offered {
     }
 }
 
+/// Exact-path patterns, or `None` when a name cannot be spelled as a path.
+pub(crate) fn exact(names: &[&str]) -> Option<moq_net::Patterns> {
+    names
+        .iter()
+        .map(|name| moq_net::Pattern::literal(name).ok())
+        .collect()
+}
+
 impl Relay {
+    /// Must be called inside a Tokio runtime: the shared origin's driver runs
+    /// on it for as long as any clone of the relay lives.
     pub fn new(authority: Arc<dyn RelayAuthority>) -> Self {
-        let limits = moq_net::origin::Limits::voice()
-            .with_frame_validator(|bytes| crate::voice::validate_bundle(bytes).is_ok());
+        let (origin, task) =
+            carrier::OriginTask::produce(carrier::origin_config(SHARED_BYTES, VOICE_RETAIN));
         Self {
             authority,
-            origin: moq_net::origin::Info::new(moq_net::Origin::random())
-                .with_limits(limits)
-                .produce(),
+            origin,
             counters: Arc::default(),
             sessions: Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS)),
             publications: Arc::default(),
+            _origin: Arc::new(task),
         }
     }
 
     pub fn counters(&self) -> CounterSnapshot {
+        let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
+        let c = &self.counters;
         CounterSnapshot {
-            accepted: self.counters.accepted.load(Ordering::Relaxed),
-            rejected: self.counters.rejected.load(Ordering::Relaxed),
-            expired: self.counters.expired.load(Ordering::Relaxed),
-            active: self.counters.active.load(Ordering::Relaxed),
-            fenced: self.counters.fenced.load(Ordering::Relaxed),
-            lapsed: self.counters.lapsed.load(Ordering::Relaxed),
-            max_tick_gap_ms: self.counters.max_tick_gap_ms.load(Ordering::Relaxed),
-            max_observe_ms: self.counters.max_observe_ms.load(Ordering::Relaxed),
+            accepted: load(&c.accepted),
+            rejected: load(&c.rejected),
+            expired: load(&c.expired),
+            active: load(&c.active),
+            fenced: load(&c.fenced),
+            lapsed: load(&c.lapsed),
+            forwarded: load(&c.forwarded),
+            dropped: load(&c.dropped),
+            max_tick_gap_ms: load(&c.max_tick_gap_ms),
+            max_observe_ms: load(&c.max_observe_ms),
         }
     }
 
@@ -284,119 +332,57 @@ impl Relay {
         (raw_authority == expected_authority && raw_target == VOICE_PATH).then_some(VoiceRoute(()))
     }
 
-    /// Serve an already configured Draft 21-only listener. At most eight
-    /// admitted/authorizing tasks exist. Dropping this future aborts all tasks
-    /// and their protocol sessions; no detached session survives shutdown.
-    pub async fn serve(self, server: moq_native::Server) {
-        let Ok(mut server) = server.with_accept_limits(16, HANDSHAKE_BUDGET) else {
-            return;
-        };
-        let mut sessions = tokio::task::JoinSet::new();
-        let mut expiry = tokio::time::interval(EXPIRE_INTERVAL);
-        expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! {
-                request = server.accept() => {
-                    let Some(request) = request else { break; };
-                    if sessions.len() >= MAX_SESSIONS {
-                        self.counters.rejected.fetch_add(1, Ordering::Relaxed);
-                        let _ = tokio::time::timeout(Duration::from_millis(20), request.close(429)).await;
-                    } else {
-                        let relay = self.clone();
-                        sessions.spawn(async move { relay.serve_request(request).await });
-                    }
-                }
-                _ = sessions.join_next(), if !sessions.is_empty() => {}
-                _ = expiry.tick() => self.origin.expire(),
-            }
-        }
-        sessions.abort_all();
-        while sessions.join_next().await.is_some() {}
-        server.close().await;
+    /// Serve a standalone listener for [`VOICE_PATH`]. At most eight admitted
+    /// or authorizing sessions exist. Dropping this future aborts every task
+    /// and its protocol session; no detached session survives shutdown.
+    pub async fn serve(self, endpoint: quinn::Endpoint) {
+        carrier::serve_endpoint(endpoint, VOICE_PATH, move |session| {
+            let relay = self.clone();
+            async move { relay.serve_session(VoiceRoute(()), session).await }
+        })
+        .await;
     }
 
-    /// Handle a request from the existing dedicated [`moq_native`] listener.
+    /// Serve one WebTransport session answered with [`carrier::PROTOCOL`] on
+    /// an exactly validated route.
     ///
-    /// This path preserves the isolated proof server. A shared raw H3 listener
-    /// must validate the unnormalized route and call [`serve_accepted`](Self::serve_accepted)
-    /// so its `MoQ` driver remains in the host-owned task.
-    pub async fn serve_request(&self, mut request: moq_native::Request) {
+    /// This runs the admission preface, attaches only host-owned scopes, and
+    /// keeps the `MoQ` driver in this future: it is cancelled on any
+    /// authorization failure or caller cancellation and never detached.
+    pub async fn serve_session(&self, _route: VoiceRoute, transport: web_transport_quinn::Session) {
         let Ok(_permit) = self.sessions.clone().try_acquire_owned() else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
-            let _ = tokio::time::timeout(Duration::from_millis(20), request.close(429)).await;
+            transport.close(carrier::CLOSE_DENIED, b"relay busy");
             return;
         };
-        // This endpoint is the WebTransport binding only. URL components carry
-        // routing, never credentials. Raw QUIC and every other draft fail closed.
-        let webtransport = request.url().is_some_and(|url| url.scheme() == "https")
-            && request.path() == VOICE_PATH
-            && request.query().is_none()
-            && request.version().as_str() == "moq-transport-21";
-        if !webtransport {
-            self.reject(request).await;
-            return;
-        }
-        let proof = request.authorization().map(<[u8]>::to_vec);
-        let Some(scopes) = self.scopes(request.version(), proof.as_deref()).await else {
-            self.reject(request).await;
-            return;
-        };
-
-        // Only host-owned scopes select the shared origin. The client has not
-        // been attached to any producer/consumer until admission is complete.
-        if let Some(publish) = scopes.publish {
-            request = request.with_subscriber(publish);
-        }
-        if let Some(subscribe) = scopes.subscribe {
-            request = request.with_publisher(subscribe);
-        }
-        let Ok(Ok(session)) = tokio::time::timeout(SETUP_BUDGET, request.ok()).await else {
+        let accepted = carrier::accept(transport, |proof| async move {
+            let mut scopes = self.scopes(&proof).await?;
+            let mut server = moq_net::Server::new();
+            if let Some(ingress) = &scopes.ingress {
+                let name = scopes.authorization.publication()?;
+                let own = ingress.origin.scope("", &exact(&[name])?).ok()?;
+                server = server.with_subscriber(own);
+            }
+            if let Some(subscribe) = &scopes.subscribe {
+                let view =
+                    crate::mirror::Mirror::start(subscribe.clone(), VIEW_BYTES, VOICE_RETAIN);
+                server = server.with_publisher(view.consume());
+                scopes.view = Some(view);
+            }
+            Some((server, scopes))
+        })
+        .await;
+        let Ok((accepted, scopes)) = accepted else {
+            self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        self.run_session(session, None, scopes.authorization, scopes.offered)
-            .await;
+        self.run_session(accepted, scopes).await;
     }
 
-    /// Serve a Draft 21 `MoQ` request produced by a shared, H3-only WebTransport
-    /// listener after exact raw route validation.
-    ///
-    /// This uses the same admission, exact namespace scoping, eight-session
-    /// budget, 900 ms authority fence and cache expiry loop as [`serve_request`].
-    /// The `MoQ` protocol driver is retained in this future and cancelled on any
-    /// authorization failure or caller cancellation; it is never detached.
-    pub async fn serve_accepted<S>(&self, _route: VoiceRoute, mut request: moq_net::Request<S>)
-    where
-        S: moq_net::web_transport_trait::Session,
-    {
-        let Ok(_permit) = self.sessions.clone().try_acquire_owned() else {
-            self.reject_accepted(request);
-            return;
-        };
-        let proof = request.authorization().map(<[u8]>::to_vec);
-        let Some(scopes) = self.scopes(request.version(), proof.as_deref()).await else {
-            self.reject_accepted(request);
-            return;
-        };
-        if let Some(publish) = scopes.publish {
-            request = request.with_subscriber(publish);
-        }
-        if let Some(subscribe) = scopes.subscribe {
-            request = request.with_publisher(subscribe);
-        }
-        let Ok(Ok((session, driver))) = tokio::time::timeout(SETUP_BUDGET, request.ok()).await
-        else {
-            return;
-        };
-        self.run_session(session, Some(driver), scopes.authorization, scopes.offered)
-            .await;
-    }
-
-    async fn scopes(&self, version: moq_net::Version, proof: Option<&[u8]>) -> Option<RelayScopes> {
-        if version.as_str() != "moq-transport-21" {
+    async fn scopes(&self, proof: &[u8]) -> Option<RelayScopes> {
+        if proof.is_empty() || proof.len() > MAX_AUTHORIZATION_BYTES {
             return None;
         }
-        let proof =
-            proof.filter(|proof| !proof.is_empty() && proof.len() <= MAX_AUTHORIZATION_BYTES)?;
         // Transient contention (an owner commit in progress, or another
         // session's periodic check holding the authority) is waited out for a
         // short bound instead of turning an honest join into a denial. Only a
@@ -418,7 +404,12 @@ impl Relay {
         // observation, so admission observes exactly what will be offered.
         let (subscribe, mut offered) = match authorization.subscription_prefix() {
             Some(prefix) => {
-                let consumer = self.origin.consume().scope(&[prefix.into()])?;
+                let subtree = moq_net::Pattern::subtree(prefix).ok()?;
+                let consumer = self
+                    .origin
+                    .consume()
+                    .scope("", &moq_net::Patterns::from(subtree))
+                    .ok()?;
                 let offered = Offered {
                     cursor: consumer.announced(),
                     present: BTreeSet::new(),
@@ -428,12 +419,13 @@ impl Relay {
             }
             None if authorization.subscriptions().is_empty() => (None, None),
             None => {
-                let names: Vec<moq_net::Path<'_>> = authorization
+                let names: Vec<&str> = authorization
                     .subscriptions()
                     .iter()
-                    .map(|name| name.as_str().into())
+                    .map(String::as_str)
                     .collect();
-                (Some(self.origin.consume().scope_exact(&names)?), None)
+                let consumer = self.origin.consume().scope("", &exact(&names)?).ok()?;
+                (Some(consumer), None)
             }
         };
         loop {
@@ -447,14 +439,19 @@ impl Relay {
                 _ => return None,
             }
         }
-        let publish = match authorization.publication() {
-            Some(namespace) => Some(self.origin.scope_exact(&[namespace.into()])?),
-            None => None,
-        };
+        let ingress = authorization.publication().map(|_| {
+            let (origin, task) =
+                carrier::OriginTask::produce(carrier::origin_config(INGRESS_BYTES, VOICE_RETAIN));
+            Ingress {
+                origin,
+                _task: task,
+            }
+        });
         Some(RelayScopes {
             authorization,
-            publish,
+            ingress,
             subscribe,
+            view: None,
             offered,
         })
     }
@@ -540,18 +537,27 @@ impl Relay {
         }
     }
 
-    async fn run_session(
-        &self,
-        session: moq_net::Session,
-        driver: Option<moq_net::Driver>,
-        authorization: Arc<dyn SessionAuthorization>,
-        mut offered: Option<Offered>,
-    ) {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one select loop owns the session's authority, revocation and driver"
+    )]
+    async fn run_session(&self, accepted: carrier::Accepted, scopes: RelayScopes) {
+        let carrier::Accepted {
+            session,
+            driver,
+            mut admission,
+            transport,
+        } = accepted;
+        let RelayScopes {
+            authorization,
+            ingress,
+            subscribe: _subscribe,
+            mut view,
+            mut offered,
+        } = scopes;
         // Scopes were observed Current during admission; the validity loop
         // below re-observes every 100 ms with the bounded outage fence.
-        if session.version().as_str() != "moq-transport-21"
-            || !scopes_well_formed(authorization.as_ref())
-        {
+        if !scopes_well_formed(authorization.as_ref()) {
             session.abort(moq_net::Error::Unauthorized);
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return;
@@ -562,6 +568,16 @@ impl Relay {
         let publication = authorization
             .publication()
             .map(|name| self.register_publication(name));
+        // The forwarder is the only path from this publisher to subscribers.
+        let mut forwarder = match (&ingress, authorization.publication()) {
+            (Some(ingress), Some(name)) => Some(crate::Task::spawn(forward(
+                self.origin.clone(),
+                ingress.origin.consume(),
+                name.to_owned(),
+                self.counters.clone(),
+            ))),
+            _ => None,
+        };
         let revoked = async {
             match &publication {
                 Some(publication) => publication.revocation.0.notified().await,
@@ -569,32 +585,21 @@ impl Relay {
             }
         };
         tokio::pin!(revoked);
-        let retained_driver = async move {
-            match driver {
-                Some(driver) => {
-                    let _ = driver.await;
-                }
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::pin!(retained_driver);
+        let driver = moq_net::time::run(driver);
+        tokio::pin!(driver);
         let mut validity = tokio::time::interval(AUTHORITY_INTERVAL);
         validity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut expiry = tokio::time::interval(EXPIRE_INTERVAL);
-        expiry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_current = Instant::now();
         let mut last_tick = last_current;
         let mut unavailable_deadline: Option<Instant> = None;
-        loop {
+        let lapsed = loop {
             tokio::select! {
-                _ = session.closed() => break,
-                () = &mut retained_driver => break,
+                _ = session.closed() => break false,
+                _ = &mut driver => break false,
                 // Another session observed this publication's authority lapse.
                 () = &mut revoked => {
                     self.counters.lapsed.fetch_add(1, Ordering::Relaxed);
-                    self.counters.expired.fetch_add(1, Ordering::Relaxed);
-                    revoke(&session, retained_driver.as_mut()).await;
-                    break;
+                    break true;
                 },
                 () = async {
                     if let Some(deadline) = unavailable_deadline {
@@ -604,11 +609,8 @@ impl Relay {
                     }
                 } => {
                     self.counters.fenced.fetch_add(1, Ordering::Relaxed);
-                    self.counters.expired.fetch_add(1, Ordering::Relaxed);
-                    revoke(&session, retained_driver.as_mut()).await;
-                    break;
+                    break true;
                 },
-                _ = expiry.tick() => self.origin.expire(),
                 _ = validity.tick() => {
                     let ticked = Instant::now();
                     let gap = ticked.duration_since(last_tick).as_millis().try_into().unwrap_or(u64::MAX);
@@ -634,33 +636,36 @@ impl Relay {
                             let deadline = crate::later(last_current, AUTHORITY_FENCE).min(expires_at);
                             unavailable_deadline = Some(unavailable_deadline.map_or(deadline, |old| old.min(deadline)));
                         }
-                        AuthorizationStatus::Denied => {
-                            self.counters.expired.fetch_add(1, Ordering::Relaxed);
-                            revoke(&session, retained_driver.as_mut()).await;
-                            break;
-                        }
+                        AuthorizationStatus::Denied => break true,
                     }
                 }
             }
+        };
+        if lapsed {
+            self.counters.expired.fetch_add(1, Ordering::Relaxed);
+            // Media stops at once in both directions: the session's own view
+            // (every track it is served) and its publication are dropped
+            // before the client is told to close. The grace below only
+            // covers the transport teardown.
+            view.take();
+            forwarder.take();
+            admission.revoke().await;
+            tokio::select! {
+                _ = session.closed() => {}
+                _ = &mut driver => {}
+                () = tokio::time::sleep(GOAWAY_GRACE) => {}
+            }
+            session.abort(moq_net::Error::Unauthorized);
+            transport.close(carrier::CLOSE_REVOKED, b"authority lapsed");
+        } else {
+            session.abort(moq_net::Error::Cancel);
         }
-    }
-
-    fn reject_accepted<S>(&self, request: moq_net::Request<S>)
-    where
-        S: moq_net::web_transport_trait::Session,
-    {
-        self.counters.rejected.fetch_add(1, Ordering::Relaxed);
-        request.close(moq_net::Error::Unauthorized);
-    }
-
-    async fn reject(&self, request: moq_native::Request) {
-        self.counters.rejected.fetch_add(1, Ordering::Relaxed);
-        let _ = tokio::time::timeout(Duration::from_secs(1), request.close(403)).await;
+        drop(forwarder);
     }
 }
 
-/// Isolated loopback Draft 21 endpoint with a generated short-lived localhost
-/// certificate, for device-free native pipeline tests and proofs. It never
+/// Isolated loopback voice relay with a generated short-lived certificate,
+/// for device-free native pipeline tests and proofs. It never
 /// binds a non-loopback address and advertises no production authorization:
 /// the caller supplies the complete (test) authority.
 pub struct LoopbackRelay {
@@ -676,21 +681,12 @@ impl LoopbackRelay {
     ///
     /// Returns a message when the loopback server cannot be configured or bound.
     pub fn start(authority: Arc<dyn RelayAuthority>) -> Result<Self, String> {
-        let mut config = moq_native::ServerConfig::default();
-        config.bind = Some("127.0.0.1:0".into());
-        config.version = vec!["moq-transport-21".parse().map_err(|_| "draft 21")?];
-        config.tls.generate = vec!["localhost".into()];
-        let server = config.init().map_err(|error| error.to_string())?;
-        let port = server
-            .local_addr()
-            .map_err(|error| error.to_string())?
-            .port();
-        let fingerprints = server.certificates().fingerprints();
+        let listener = carrier::loopback()?;
         let relay = Relay::new(authority);
-        let task = tokio::spawn(relay.clone().serve(server));
+        let task = tokio::spawn(relay.clone().serve(listener.endpoint));
         Ok(Self {
-            endpoint: format!("https://localhost:{port}{VOICE_PATH}"),
-            fingerprints,
+            endpoint: format!("https://127.0.0.1:{}{VOICE_PATH}", listener.port),
+            fingerprints: listener.fingerprints,
             relay,
             task,
         })
@@ -705,22 +701,150 @@ impl Drop for LoopbackRelay {
     }
 }
 
-/// End a session whose authority is gone. Forwarding stops at once (the drain
-/// gate drops every datagram and cuts every stream), then GOAWAY lets the client
-/// close first; the relay closes after [`GOAWAY_GRACE`] at the latest. The driver
-/// keeps running meanwhile so GOAWAY is written and the client's close observed.
-async fn revoke(
-    session: &moq_net::Session,
-    driver: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+/// The next datagram or group of a subscribed track.
+enum Next {
+    Datagram(moq_net::Datagram),
+    Group(Box<moq_net::group::Consumer>),
+    End,
+}
+
+async fn next(track: &mut moq_net::track::Subscriber) -> Next {
+    moq_net::kio::wait(|waiter| {
+        if let Poll::Ready(datagram) = track.poll_recv_datagram(waiter) {
+            return Poll::Ready(match datagram {
+                Ok(Some(datagram)) => Next::Datagram(datagram),
+                _ => Next::End,
+            });
+        }
+        if let Poll::Ready(group) = track.poll_recv_group(waiter) {
+            return Poll::Ready(match group {
+                Ok(Some(group)) => Next::Group(Box::new(group)),
+                _ => Next::End,
+            });
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Copy one publisher's voice broadcast from its private ingress into the
+/// shared origin for as long as it is announced there. Every datagram bundle
+/// and object is validated before any subscriber can observe it.
+async fn forward(
+    shared: moq_net::origin::Producer,
+    ingress: moq_net::origin::Consumer,
+    name: String,
+    counters: Arc<Counters>,
 ) {
-    if session.go_away(GOAWAY_GRACE) {
-        tokio::select! {
-            _ = session.closed() => {}
-            () = driver => {}
-            () = tokio::time::sleep(GOAWAY_GRACE) => {}
+    loop {
+        let Ok(source) = ingress.routed_broadcast(name.as_str()).await else {
+            return;
+        };
+        let Ok(out) = shared.create_broadcast(name.as_str()) else {
+            return;
+        };
+        let Ok(track) = out.create_track(
+            VOICE_TRACK,
+            moq_net::track::Info::default().with_max_age(VOICE_RETAIN),
+        ) else {
+            return;
+        };
+        if out.announce(moq_net::origin::Route::default()).is_err() {
+            return;
+        }
+        let subscription = moq_net::track::Subscription::default().with_max_age(VOICE_RETAIN);
+        let input = match source.track(VOICE_TRACK) {
+            Ok(input) => input.subscribe(subscription).await.ok(),
+            Err(_) => None,
+        };
+        if let Some(input) = input {
+            copy_voice(input, track, &counters).await;
+        } else {
+            let _ = source.closed().await;
+            let _ = track.abort(moq_net::Error::Cancel);
+        }
+        out.finish();
+        // A publisher that ends and re-announces is picked up afresh.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn copy_voice(
+    mut input: moq_net::track::Subscriber,
+    mut output: moq_net::track::Producer,
+    counters: &Arc<Counters>,
+) {
+    let mut groups: VecDeque<crate::Task> = VecDeque::new();
+    loop {
+        match next(&mut input).await {
+            Next::Datagram(datagram) => {
+                let valid = voice::validate_bundle(&datagram.payload).is_ok()
+                    && output
+                        .insert_datagram(datagram.sequence, datagram.timestamp, datagram.payload)
+                        .is_ok();
+                let counter = if valid {
+                    &counters.forwarded
+                } else {
+                    &counters.dropped
+                };
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+            Next::Group(group) => {
+                groups.retain(|task| !task.is_finished());
+                if groups.len() >= MAX_GROUPS_IN_FLIGHT {
+                    // A lossy publisher keeps earlier streams open while newer
+                    // ones arrive: the oldest yields, the session stays up.
+                    groups.pop_front();
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence))
+                else {
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                groups.push_back(crate::Task::spawn(copy_voice_group(
+                    *group,
+                    out,
+                    counters.clone(),
+                )));
+            }
+            Next::End => break,
         }
     }
-    session.abort(moq_net::Error::Unauthorized);
+    drop(groups);
+    let _ = output.abort(moq_net::Error::Cancel);
+}
+
+async fn copy_voice_group(
+    mut input: moq_net::group::Consumer,
+    mut output: moq_net::group::Producer,
+    counters: Arc<Counters>,
+) {
+    let mut count: u64 = 0;
+    loop {
+        match input.read_frame().await {
+            Ok(Some(frame)) => {
+                count = count.saturating_add(1);
+                if count > voice::FRAMES_PER_GROUP
+                    || voice::validate(&frame.payload).is_err()
+                    || output.write_frame(frame.timestamp, frame.payload).is_err()
+                {
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    let _ = output.abort(moq_net::Error::ProtocolViolation);
+                    return;
+                }
+                counters.forwarded.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(None) => {
+                let _ = output.finish();
+                return;
+            }
+            Err(_) => {
+                let _ = output.abort(moq_net::Error::Cancel);
+                return;
+            }
+        }
+    }
 }
 
 fn valid_namespace(namespace: &str) -> bool {

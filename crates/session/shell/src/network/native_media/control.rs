@@ -473,7 +473,7 @@ impl NativeControl {
             ChallengeTranscript::Relay(v) => &v.audience,
             ChallengeTranscript::Refresh(v) => &v.audience,
         };
-        if audience != &format!("{}/moq/v21/voice", self.descriptor.origin()) {
+        if audience != &format!("{}/moq/voice", self.descriptor.origin()) {
             return Err("media audience mismatch".into());
         }
         Ok(())
@@ -608,7 +608,7 @@ impl NativeControl {
                     || m.host_boot != c.media_boot
                     || m.epoch != c.epoch
                     || m.membership_generation != c.membership_generation
-                    || m.audience != format!("{}/moq/v21/voice", self.descriptor.origin())
+                    || m.audience != format!("{}/moq/voice", self.descriptor.origin())
                     || m.issued_at_ns < c.issued_at_ns
                     || m.issued_at_ns > view.now_ns.saturating_add(CLOCK_SKEW_NS)
                     || m.expires_at_ns <= view.now_ns

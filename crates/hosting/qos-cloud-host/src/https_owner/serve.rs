@@ -160,7 +160,7 @@ fn current<R>(
 /// The media core binds under a current turn; another Cloud component may
 /// briefly hold the Store lock at startup, which is not a denial.
 async fn media_service(source: &CloudStoreSource, origin: &str) -> Result<CloudMediaService> {
-    let audience = format!("{origin}/moq/v21/voice");
+    let audience = format!("{origin}/moq/voice");
     for _ in 0..500 {
         match CloudMediaService::new_unqualified(source.clone(), &audience) {
             Ok(service) => return Ok(service),

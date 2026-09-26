@@ -1,7 +1,7 @@
 /**
  * LIVE_V1 fallback carrier and carrier selection.
  *
- * The live path prefers MoQ Draft 21 over WebTransport (live-transport.mjs).
+ * The live path prefers moq-lite over WebTransport (live-transport.mjs).
  * Browsers or networks without a working WebTransport (no API, UDP blocked,
  * or a certificate WebTransport does not accept, e.g. a locally trusted page
  * that was clicked through) use the same host relay over plain HTTPS instead:

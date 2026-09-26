@@ -2,8 +2,8 @@
 //! JSON projections of the frozen live wire values for the JavaScript client.
 //!
 //! Live frames never carry authority. The grant is host-signed and verified
-//! here against the pinned host key before its bytes are handed to the relay
-//! connection as the MoQ Authorization Token. Forwarded signed changes are
+//! here against the pinned host key before its bytes are presented to the
+//! relay in the carrier's admission preface. Forwarded signed changes are
 //! admitted by the Peer's checked replay path (see `peer_live/wasm.rs`), never
 //! from these projections, and stay speculative (in memory, outside durable
 //! cuts and the persisted journal) until durable state covers them

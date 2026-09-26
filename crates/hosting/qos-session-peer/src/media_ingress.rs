@@ -254,7 +254,7 @@ impl InstalledIngress {
         let media = MediaService::for_owner(
             owner,
             current.clone(),
-            &format!("{}/moq/v21/voice", config.origin),
+            &format!("{}{}", config.origin, qos_moq::relay::VOICE_PATH),
         )?;
         let relay = qos_moq::relay::Relay::new(Arc::new(media.clone()));
         let live_origin = config.origin.clone();
@@ -760,31 +760,28 @@ async fn serve_h3(
             }
             _=>return,
            };
-           // Fresh comparison for this exact CONNECT, before response or MoQ decoding.
+           // Fresh comparison for this exact CONNECT, before the response.
            let route=request.raw_authority().zip(request.raw_target()).and_then(|(raw,target)|qos_moq::relay::Relay::validate_route(raw,&authority,target));
            // LIVE_V1 shares this endpoint at its own exact route, once installed.
            let live_route=request.raw_authority().zip(request.raw_target()).and_then(|(raw,target)|qos_moq::live::LiveRelay::validate_route(raw,&authority,target)).zip(live.get().cloned());
-           if (route.is_none() && live_route.is_none()) || request.headers.get("origin").is_some_and(|v|v!=&origin) || !request.protocols.iter().any(|v|v=="moqt-21") {
+           if (route.is_none() && live_route.is_none()) || request.headers.get("origin").is_some_and(|v|v!=&origin) || !request.protocols.iter().any(|v|v==qos_moq::carrier::PROTOCOL) {
             let _=timeout(Duration::from_millis(100),request.reject(web_transport_quinn::proto::http::StatusCode::NOT_FOUND)).await;return;
            }
            let kind=if live_route.is_some(){limits::Kind::Live}else{limits::Kind::Media};
            let Some(_kind)=limits.classify(handshake,kind) else{
             let _=timeout(Duration::from_millis(100),request.reject(web_transport_quinn::proto::http::StatusCode::SERVICE_UNAVAILABLE)).await;return;
            };
-           // SETUP needs at least one round trip after the CONNECT response; high-RTT
-           // links (satellite) plus one loss recovery exceed the former 900 ms.
-           let accepted=timeout(qos_moq::relay::SETUP_BUDGET,async{
-            let session=request.respond(web_transport_quinn::proto::ConnectResponse::OK.with_protocol("moqt-21")).await?;
-            moq_net::Server::new().with_versions("moq-transport-21".parse::<moq_net::Version>().expect("fixed version").into()).accept_request(session).await.map_err(anyhow::Error::from)
-           }).await;
-           match accepted {
-            Ok(Ok(request))=>match (route,live_route) {
-             (_,Some((route,live)))=>{live.serve_accepted(route,request).await;tracing::debug!(counters=?live.counters(),"live relay session ended");}
-             (Some(route),None)=>{relay.serve_accepted(route,request).await;tracing::debug!(counters=?relay.counters(),"media relay session ended");}
-             (None,None)=>{}
-            },
-            Ok(Err(error))=>tracing::debug!(%error,"media relay setup failed"),
-            Err(_)=>tracing::debug!("media relay setup timed out"),
+           let session=match timeout(qos_moq::relay::HANDSHAKE_BUDGET,request.respond(web_transport_quinn::proto::ConnectResponse::OK.with_protocol(qos_moq::carrier::PROTOCOL))).await{
+            Ok(Ok(session))=>session,
+            Ok(Err(error))=>{tracing::debug!(%error,"media relay connect failed");return}
+            Err(_)=>{tracing::debug!("media relay connect timed out");return}
+           };
+           // The relay runs the admission preface (bounded by the carrier's
+           // preface budget) before any MoQ stream is read.
+           match (route,live_route) {
+            (_,Some((route,live)))=>{live.serve_session(route,session).await;tracing::debug!(counters=?live.counters(),"live relay session ended");}
+            (Some(route),None)=>{relay.serve_session(route,session).await;tracing::debug!(counters=?relay.counters(),"media relay session ended");}
+            (None,None)=>{}
            }
           });
          }
