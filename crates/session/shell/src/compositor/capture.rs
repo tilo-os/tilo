@@ -1193,11 +1193,19 @@ impl CaptureExecutor {
                     Err("the clipboard refused image data".into())
                 }
             }
-            CaptureDestination::File => {
+            CaptureDestination::File | CaptureDestination::FileAndClipboard => {
                 let path = next_screenshot_path(self.sequence);
                 self.sequence = self.sequence.saturating_add(1);
                 write_png(&path, width, height, &rgba)?;
                 self.last_screenshot = Some(path.clone());
+                // The saved file is the durable result; a clipboard that
+                // refuses the pixels leaves it in place, so it is logged
+                // rather than failing the capture.
+                if intent.destination == CaptureDestination::FileAndClipboard
+                    && !ui::clipboard_copy_image(width as usize, height as usize, &rgba)
+                {
+                    tracing::warn!(path = %path.display(), "screenshot saved but not copied");
+                }
                 frame_builder.set_capture_screenshot_finished(false, width, height, preview);
                 Ok(CaptureOutcome::Saved(path))
             }

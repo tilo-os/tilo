@@ -32,7 +32,15 @@ strip changes context; switching a window or tab changes focus within it.
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
+| Capture Studio (choose what to capture) | Print | Capture action |
+| Screenshot the whole screen now | Shift+Print | — |
+| Screenshot the focused window now | Alt+Print | — |
 | Dismiss top transient surface | Escape | Scrim/close action |
+
+Shift+Print and Alt+Print skip the chooser: the capture is saved to
+`Pictures/Screenshots`, copied to the clipboard and announced by the same
+receipt a chooser capture leaves. Alt+Print with no focused window opens the
+chooser.
 
 Ctrl+Left/Right is deliberately never captured: text fields and editors retain
 word-wise movement. Ctrl+Up/Down likewise remains application-owned. Escape is

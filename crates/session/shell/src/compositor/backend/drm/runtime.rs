@@ -3341,7 +3341,9 @@ fn keysym_to_winit_key(raw: u32) -> Key {
         keysyms::KEY_ISO_Prev_Group => Some(NamedKey::GroupPrevious),
         keysyms::KEY_Pause => Some(NamedKey::Pause),
         keysyms::KEY_Help => Some(NamedKey::Help),
-        keysyms::KEY_Print => Some(NamedKey::PrintScreen),
+        // The stock `pc` keymap turns Alt+Print into Sys_Req; it is still
+        // the Print Screen key, and Alt+Print is the focused-window capture.
+        keysyms::KEY_Print | keysyms::KEY_Sys_Req => Some(NamedKey::PrintScreen),
         keysyms::KEY_Shift_L | keysyms::KEY_Shift_R => Some(NamedKey::Shift),
         keysyms::KEY_Control_L | keysyms::KEY_Control_R => Some(NamedKey::Control),
         keysyms::KEY_Alt_L | keysyms::KEY_Alt_R => Some(NamedKey::Alt),
@@ -3738,6 +3740,20 @@ mod tests {
                 keysym_to_winit_key(raw),
                 Key::Named(want),
                 "keysym {raw:#x} must map to {want:?}"
+            );
+        }
+    }
+
+    /// Alt+Print arrives as `Sys_Req` under the stock keymap; it must still
+    /// reach the Print Screen handler, as it does under winit.
+    #[test]
+    fn alt_print_is_still_print_screen() {
+        use smithay::input::keyboard::keysyms as ks;
+        for raw in [ks::KEY_Print, ks::KEY_Sys_Req] {
+            assert_eq!(
+                keysym_to_winit_key(raw),
+                Key::Named(NamedKey::PrintScreen),
+                "keysym {raw:#x}"
             );
         }
     }
