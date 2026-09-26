@@ -1,0 +1,723 @@
+#!/usr/bin/env python3
+"""feedback-dev — a local Tilo community for testing feedback end to end.
+
+Stands up, on production paths, what `docs/architecture/feedback.md` calls the
+acceptance setup:
+
+  * two identities, "team" and "reporter", each provisioned by
+    `shell --provision-identity` into its own home;
+  * a `tilo-relay` enrolled into the team's identity through the real
+    `tilo-enroll pair` / `tilo-enroll approve` ceremony;
+  * the Tilo Community public room, created by the team's shell, hosted by the
+    relay under the team's signed delegation (`tilo-relay-admin community`),
+    with its standing invitation minted by the team and registered at the
+    relay;
+  * a community config (`TILO_COMMUNITY_CONFIG`) both shells read, naming the
+    standing invitation and the team principal;
+  * the reporter joined through the standing invitation.
+
+Two modes: `--headless` (automation; both shells run `--backend headless`) and
+`--nested` (two `--backend winit` windows inside your session, with the apps
+installed on this machine). Every step is idempotent: `up` again resumes.
+
+Nothing here builds. Build with rcargo (the command `doctor` prints), then run.
+
+Subcommands: guide | doctor | up | status | ctl | down.   `feedback-dev guide`
+explains the whole flow; every error names its fix.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+TARGET = REPO / "target" / "debug"
+DATA = REPO / "target" / "feedback-dev"
+# Unix sockets are capped near 108 bytes, so everything with a socket lives
+# under the short per-user runtime directory, not the worktree.
+RUNTIME = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "tilo-feedback-dev"
+STATE = DATA / "state.json"
+SESSIONS = ("team", "reporter")
+RELAY_PORT = int(os.environ.get("FEEDBACK_DEV_RELAY_PORT", "47831"))
+MIN_AVAILABLE_MIB = int(os.environ.get("FEEDBACK_DEV_MIN_MIB", "3072"))
+
+BINARIES = (
+    "shell", "tilo-control", "tilo-launcher", "tilo-relay", "tilo-relay-admin",
+    "tilo-enroll", "tilo-app", "tilo-app-package", "tilo-install",
+)
+BUILD = (
+    "rcargo build -p shell --bin shell --bin tilo-control -p launcher --bin tilo-launcher "
+    "-p tilo-relay --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll "
+    "-p tilo-app-cli --bin tilo-app -p tilo-app-package-cli --bin tilo-app-package "
+    "-p install --bin tilo-install"
+)
+# Apps this checkout's feedback work changes, packaged from the worktree and
+# installed into each session's own store the way `tilo-vm swap app:<dir>`
+# does. Every other app (Notes, Files, …) comes from the machine's store.
+WORKTREE_APPS = ("chat",)
+
+GUIDE = f"""\
+feedback-dev: a local Tilo community for testing feedback
+
+  1. Build (remotely; never build locally here):
+       {BUILD}
+  2. Check the machine:            feedback-dev doctor
+  3. Stand it up:                  feedback-dev up --headless     (automation)
+                                   feedback-dev up --nested       (two windows)
+  4. See what runs and where:      feedback-dev status
+  5. Drive a shell semantically:   feedback-dev ctl team -- community status
+                                   feedback-dev ctl reporter -- community team-room
+     (any `tilo-control` arguments after `--`; see `tilo-control --help`)
+  6. Tear it down:                 feedback-dev down            (keeps identities)
+                                   feedback-dev down --purge    (forgets everything)
+
+What `up` does, each step skipped when already done:
+  identities   `shell --provision-identity` for team and reporter, each in
+               {DATA}/<name>/home
+  relay        `tilo-enroll pair-room-host` (relay) + `approve-room-host` (team)
+               over the LAN pairing port: the relay gets a room-host certificate
+               from the team's root (no Files, never a home peer), then runs
+               with trust_policy allow_any
+  room         team shell: `tilo-control public-room create "Tilo Community"`
+  delegation   `tilo-relay-admin community host --owner-identity-dir …`
+  invite       team shell: `public-room invite`; relay: `community add-invite`
+  config       {DATA}/community.toml, read by both shells via TILO_COMMUNITY_CONFIG
+  join         reporter shell: `tilo-control community join`, until it holds
+               Commenter in the public room
+  private      reporter: `community team-room`; team: `community direct-room
+               <reporter>` — the private feedback room, carried by the relay
+
+Logs: {DATA}/<name>/log (shells), {DATA}/relay/log. State: {STATE}.
+"""
+
+
+class Fix(Exception):
+    """A failure with the one thing to do about it."""
+
+    def __init__(self, problem: str, fix: str):
+        super().__init__(problem)
+        self.problem = problem
+        self.fix = fix
+
+
+def say(message: str) -> None:
+    print(f"feedback-dev: {message}", flush=True)
+
+
+# ---------------------------------------------------------------- state ----
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    DATA.mkdir(parents=True, exist_ok=True)
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    tmp.replace(STATE)
+
+
+def pid_file(name: str) -> pathlib.Path:
+    return RUNTIME / f"{name}.pid"
+
+
+def running(name: str) -> int | None:
+    try:
+        pid = int(pid_file(name).read_text())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def stop(name: str) -> None:
+    pid = running(name)
+    if pid is not None:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        for _ in range(50):
+            if running(name) is None:
+                break
+            time.sleep(0.1)
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    pid_file(name).unlink(missing_ok=True)
+
+
+def spawn(name: str, argv: list[str], env: dict, log: pathlib.Path) -> int:
+    RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "ab") as out:
+        proc = subprocess.Popen(
+            argv, env=env, stdout=out, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    pid_file(name).write_text(str(proc.pid))
+    return proc.pid
+
+
+def tail(log: pathlib.Path, lines: int = 15) -> str:
+    try:
+        return "\n".join(log.read_text(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return "(no log)"
+
+
+# ------------------------------------------------------------ binaries -----
+
+def binary(name: str) -> str:
+    path = TARGET / name
+    if not path.is_file():
+        raise Fix(f"{name} is not built at {path}", BUILD)
+    return str(path)
+
+
+# ------------------------------------------------------------- sessions ----
+
+def session_dir(name: str) -> pathlib.Path:
+    return DATA / name
+
+
+def session_env(name: str, headless: bool) -> dict:
+    root = session_dir(name)
+    home = root / "home"
+    runtime = RUNTIME / name
+    for path in (home, root / "config", root / "data", root / "cache", root / "state"):
+        path.mkdir(parents=True, exist_ok=True)
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(home),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_DATA_HOME": str(root / "data"),
+        "XDG_CACHE_HOME": str(root / "cache"),
+        "XDG_STATE_HOME": str(root / "state"),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "TILO_IDENTITY_ROOT": str(root / "identity-root"),
+        "TILO_STATE_PATH": str(root / "config" / "state.json"),
+        "TILO_TEST_CONTROL": str(runtime / "control.sock"),
+        "TILO_COMMUNITY_CONFIG": str(DATA / "community.toml"),
+        "RUST_LOG": os.environ.get("FEEDBACK_DEV_LOG", "info"),
+        # The worktree's launcher, which knows this branch's app contract.
+        "TILO_LAUNCHER_BIN": str(TARGET / "tilo-launcher"),
+        # Two dev identities never belong in the desktop's keyring: without
+        # a session bus the identity service keeps them in its file custody.
+        "DBUS_SESSION_BUS_ADDRESS": "disabled:",
+    }
+    endpoint = load_state().get("relay_endpoint")
+    if endpoint:
+        env["TILO_COLLAB_HOSTS"] = json.dumps([endpoint])
+    if headless:
+        env["TILO_HEADLESS_SIZE"] = "1280x800"
+    else:
+        for key in ("WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        # The nested window must reach the host compositor's socket, which
+        # lives in the real runtime directory.
+        host_runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if host_runtime and "WAYLAND_DISPLAY" in env and not env["WAYLAND_DISPLAY"].startswith("/"):
+            env["WAYLAND_DISPLAY"] = str(pathlib.Path(host_runtime) / env["WAYLAND_DISPLAY"])
+    return env
+
+
+def identity_dir(name: str) -> pathlib.Path:
+    return session_dir(name) / "config" / "tilo" / "identity"
+
+
+def person_id(name: str) -> str:
+    pubkey = session_dir(name) / "identity-root" / "user-identity" / "pubkey.bin"
+    try:
+        data = pubkey.read_bytes()
+    except OSError as error:
+        raise Fix(f"{name} has no identity ({error})", "feedback-dev up") from None
+    return data.hex()
+
+
+def provision(name: str) -> None:
+    if (identity_dir(name) / "primary.json").exists() and (
+        session_dir(name) / "identity-root" / "device" / "cert.bin"
+    ).exists():
+        return
+    say(f"provisioning the {name} identity")
+    env = session_env(name, headless=True)
+    result = subprocess.run(
+        [binary("shell"), "--provision-identity", "--disable-peer-sync"],
+        env=env, capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise Fix(
+            f"`shell --provision-identity` failed for {name}:\n{result.stdout}{result.stderr}",
+            f"inspect the output above; remove {session_dir(name)} to start this identity over",
+        )
+
+
+def control(name: str, payload: dict, timeout: float = 60.0) -> dict:
+    path = RUNTIME / name / "control.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(str(path))
+    except OSError:
+        raise Fix(f"the {name} shell is not answering at {path}", "feedback-dev up") from None
+    try:
+        sock.sendall((json.dumps(payload) + "\n").encode())
+        buffer = b""
+        while not buffer.endswith(b"\n"):
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+    finally:
+        sock.close()
+    return json.loads(buffer.decode() or "{}")
+
+
+def answer(name: str, payload: dict, timeout: float = 60.0) -> dict:
+    response = control(name, payload, timeout)
+    if "err" in response:
+        err = response["err"]
+        raise Fix(
+            f"{name}: {payload['op']} refused: [{err.get('code')}] {err.get('message')}",
+            f"see {session_dir(name) / 'log'}",
+        )
+    return response.get("answer", response)
+
+
+def start_shell(name: str, headless: bool) -> None:
+    if running(name) and (RUNTIME / name / "control.sock").exists():
+        return
+    stop(name)
+    env = session_env(name, headless)
+    sock = RUNTIME / name / "control.sock"
+    sock.unlink(missing_ok=True)
+    backend = "headless" if headless else "winit"
+    say(f"starting the {name} shell ({backend})")
+    log = session_dir(name) / "log"
+    spawn(name, [binary("shell"), "--backend", backend], env, log)
+    for _ in range(240):
+        if sock.exists():
+            return
+        if running(name) is None:
+            raise Fix(f"the {name} shell exited while starting:\n{tail(log)}", f"see {log}")
+        time.sleep(0.5)
+    raise Fix(f"the {name} shell did not open its control socket in 120 s", f"see {log}")
+
+
+# ----------------------------------------------------------------- apps ----
+
+def package_apps(rebuild: bool) -> list[pathlib.Path]:
+    packages = []
+    for app in WORKTREE_APPS:
+        out = DATA / "apps" / f"{app}.tapp"
+        packages.append(out)
+        if out.exists() and not rebuild:
+            continue
+        say(f"packaging apps/{app} from this worktree (built by rcargo)")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        log = DATA / "apps" / f"{app}.log"
+        with open(log, "wb") as output:
+            result = subprocess.run(
+                [binary("tilo-app"), "package", str(REPO / "apps" / app),
+                 "--output", str(out), "--force"],
+                env={**os.environ, "CARGO": "rcargo", "TILO_PKG": binary("tilo-app-package")},
+                cwd=REPO, stdout=output, stderr=subprocess.STDOUT, timeout=3600,
+            )
+        if result.returncode != 0:
+            raise Fix(f"packaging apps/{app} failed:\n{tail(log)}", f"see {log}")
+    return packages
+
+
+def install_apps(name: str, packages: list[pathlib.Path]) -> None:
+    marker = session_dir(name) / "apps-installed"
+    stamp = "\n".join(f"{p}:{p.stat().st_mtime_ns}" for p in packages)
+    if marker.exists() and marker.read_text() == stamp:
+        return
+    env = session_env(name, headless=True)
+    for package in packages:
+        say(f"installing {package.name} into the {name} session's app store")
+        result = subprocess.run(
+            [binary("tilo-install"), "install", "--allow-self-signed", "--force", str(package)],
+            env=env, capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            raise Fix(f"installing {package.name} for {name} failed:\n{result.stdout}{result.stderr}",
+                      "see the message above")
+    marker.write_text(stamp)
+
+
+# ---------------------------------------------------------------- relay ----
+
+def relay_dir() -> pathlib.Path:
+    return DATA / "relay"
+
+
+def relay_config() -> pathlib.Path:
+    return relay_dir() / "relay.toml"
+
+
+def relay_admin(*args: str) -> str:
+    result = subprocess.run(
+        [binary("tilo-relay-admin"), "--config", str(relay_config()), *args],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise Fix(
+            f"tilo-relay-admin {' '.join(args[:2])} failed:\n{result.stdout}{result.stderr}",
+            "see the message above",
+        )
+    return result.stdout
+
+
+def enrol_relay() -> None:
+    root = relay_dir() / "identity-root"
+    if (root / "device" / "cert.bin").exists():
+        return
+    say("enrolling the relay as the team's room host (tilo-enroll pair-room-host + approve-room-host)")
+    root.mkdir(parents=True, exist_ok=True)
+    log = relay_dir() / "enroll.log"
+    team_env = session_env("team", headless=True)
+    with open(log, "ab") as out:
+        pair = subprocess.Popen(
+            [binary("tilo-enroll"), "pair-room-host", "--identity-root", str(root),
+             "--label", "Tilo community host", "--timeout", "90"],
+            stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+        )
+        time.sleep(1.0)
+        approve = subprocess.run(
+            [binary("tilo-enroll"), "approve-room-host",
+             "--identity-root", str(session_dir("team") / "identity-root"),
+             "--identity-dir", str(identity_dir("team")),
+             "--timeout", "60"],
+            env=team_env, stdout=out, stderr=subprocess.STDOUT, timeout=120,
+        )
+        try:
+            pair.wait(timeout=90)
+        except subprocess.TimeoutExpired:
+            pair.kill()
+    if approve.returncode != 0 or pair.returncode != 0 or not (root / "device" / "cert.bin").exists():
+        raise Fix(
+            f"relay enrollment did not complete (approve={approve.returncode}, "
+            f"pair={pair.returncode}):\n{tail(log)}",
+            f"see {log}; the pairing port {45831}/udp must be free (`ss -ulpn | grep 45831`)",
+        )
+
+
+def write_relay_config() -> None:
+    path = relay_config()
+    state = relay_dir() / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    wanted = {
+        "identity_root": str(relay_dir() / "identity-root"),
+        "state_root": str(state),
+        "iroh_listen": f"127.0.0.1:{RELAY_PORT}",
+        # A community host is not this identity's Files home peer: it carries
+        # no home-peer bundle and admits any certified device to connect,
+        # each room gated by its own membership.
+        "home_peer_bundle": str(relay_dir() / "no-home-peer.toml"),
+        "full_replica_status": str(state / "full-replica-status.json"),
+    }
+    if not path.exists():
+        subprocess.run([binary("tilo-relay"), "--config", str(path), "init"],
+                       check=True, capture_output=True, timeout=30)
+    text = path.read_text()
+    lines = []
+    seen = set()
+    in_trust_table = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_trust_table = stripped == "[trust_policy]"
+            if in_trust_table:
+                continue
+        elif in_trust_table:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in wanted and not stripped.startswith("["):
+            lines.append(f'{key} = "{wanted[key]}"')
+            seen.add(key)
+        elif key == "trust_policy":
+            continue
+        else:
+            lines.append(line)
+    header = [f'{key} = "{value}"' for key, value in wanted.items() if key not in seen]
+    header.append('trust_policy = { kind = "allow_any" }')
+    # Top-level keys must precede any table.
+    first_table = next((i for i, line in enumerate(lines) if line.startswith("[")), len(lines))
+    lines[first_table:first_table] = header
+    path.write_text("\n".join(lines) + "\n")
+
+
+def start_relay(restart: bool = False) -> dict:
+    if restart:
+        stop("relay")
+    endpoint_file = relay_dir() / "state" / "endpoint.json"
+    if not running("relay"):
+        endpoint_file.unlink(missing_ok=True)
+        say("starting the relay")
+        spawn("relay", [binary("tilo-relay"), "--config", str(relay_config()), "run"],
+              {**os.environ, "TILO_RELAY_LOG": "tilo_relay=info,warn"}, relay_dir() / "log")
+    for _ in range(120):
+        if endpoint_file.exists():
+            endpoint = json.loads(endpoint_file.read_text())
+            state = load_state()
+            if state.get("relay_endpoint") != endpoint:
+                state["relay_endpoint"] = endpoint
+                save_state(state)
+            return endpoint
+        if running("relay") is None:
+            raise Fix(f"the relay exited while starting:\n{tail(relay_dir() / 'log')}",
+                      f"see {relay_dir() / 'log'}")
+        time.sleep(0.5)
+    raise Fix("the relay did not publish its endpoint in 60 s", f"see {relay_dir() / 'log'}")
+
+
+# ------------------------------------------------------------ community ----
+
+def ensure_room() -> str:
+    state = load_state()
+    room = state.get("room")
+    if room:
+        status = control("team", {"op": "room_status", "room": room})
+        if "err" not in status:
+            return room
+    say("creating the Tilo Community public room in the team shell")
+    created = answer("team", {"op": "public_room_create", "name": "Tilo Community"})
+    room = created["room"]
+    if created.get("channel_class") != "public":
+        raise Fix(f"the new room is {created.get('channel_class')}, not public", "report this as a bug")
+    state["room"] = room
+    save_state(state)
+    return room
+
+
+def ensure_hosting(room: str) -> None:
+    state = load_state()
+    if state.get("hosted_room") == room:
+        return
+    say("delegating Commenter admission for the room to the relay")
+    relay_admin("community", "host", "--room", room,
+                "--owner-identity-dir", str(identity_dir("team")))
+    state["hosted_room"] = room
+    save_state(state)
+    start_relay(restart=True)
+
+
+def ensure_invite(room: str) -> str:
+    state = load_state()
+    invite = state.get("invite")
+    if invite and state.get("invite_room") == room and (
+        f"invite {state.get('invite_id')}\tlive" in relay_admin("community", "status", "--room", room)
+    ):
+        return invite
+    say("minting the standing invitation and registering it at the relay")
+    minted = answer("team", {"op": "standing_invite", "room": room, "role": "commenter"})
+    invite = minted["invite"]
+    relay_admin("community", "add-invite", "--room", room, invite)
+    state.update(invite=invite, invite_id=minted["invite_id"], invite_room=room)
+    save_state(state)
+    return invite
+
+
+def write_community_config(invite: str) -> None:
+    path = DATA / "community.toml"
+    text = (
+        "# Written by scripts/feedback-dev/feedback-dev; read by both shells.\n"
+        "[community]\n"
+        f'invite = "{invite}"\n\n'
+        "[team]\n"
+        f'user_public_key = "{person_id("team")}"\n'
+        'label = "Tilo team"\n'
+    )
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+
+
+def join_reporter(room: str) -> dict:
+    status = answer("reporter", {"op": "community_status"})
+    if status.get("room") != room:
+        say("the reporter redeems the standing invitation")
+        answer("reporter", {"op": "community_join"})
+    for _ in range(120):
+        status = answer("reporter", {"op": "community_status"})
+        if status.get("role") and status.get("governed") and status.get("channel_class") == "public":
+            return status
+        time.sleep(1.0)
+    raise Fix(
+        f"the reporter did not become a member of the public room: {status}",
+        f"see {session_dir('reporter') / 'log'} and {relay_dir() / 'log'}",
+    )
+
+
+def open_private_room() -> dict:
+    """The reporter's private feedback room with the team, from both ends."""
+    reporter_side = answer("reporter", {"op": "community_team_room"})
+    answer("team", {"op": "community_direct_room", "person": person_id("reporter"),
+                    "label": "Reporter"})
+    for _ in range(60):
+        team_side = answer("team", {"op": "room_status", "room": reporter_side["room"]})
+        if team_side.get("governed") and team_side.get("role"):
+            return team_side
+        time.sleep(1.0)
+    raise Fix(
+        f"the team did not join the reporter's private room: {team_side}",
+        f"see {session_dir('team') / 'log'} and {relay_dir() / 'log'}",
+    )
+
+
+# ------------------------------------------------------------- commands ----
+
+def available_mib() -> int:
+    for line in pathlib.Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) // 1024
+    return 0
+
+
+def doctor(quiet: bool = False) -> list[Fix]:
+    problems: list[Fix] = []
+    for name in BINARIES:
+        if not (TARGET / name).is_file():
+            problems.append(Fix(f"{name} is not built at {TARGET / name}", BUILD))
+            break
+    mib = available_mib()
+    if mib < MIN_AVAILABLE_MIB:
+        problems.append(Fix(
+            f"only {mib} MiB of memory is available; two shells and a relay need "
+            f"about {MIN_AVAILABLE_MIB} MiB",
+            "stop other builds or sessions, or set FEEDBACK_DEV_MIN_MIB to accept the risk",
+        ))
+    busy = subprocess.run(["ss", "-ulpn"], capture_output=True, text=True).stdout
+    if ":45831 " in busy and not running("relay"):
+        problems.append(Fix("the LAN pairing port 45831/udp is in use",
+                            "close the other pairing (`ss -ulpn | grep 45831`)"))
+    if not quiet:
+        for problem in problems:
+            print(f"  FAIL  {problem.problem}\n        fix: {problem.fix}")
+        if not problems:
+            print("  ok    binaries built, memory available, pairing port free")
+    return problems
+
+
+def cmd_up(args: argparse.Namespace) -> None:
+    problems = doctor(quiet=True)
+    if problems:
+        raise problems[0]
+    headless = not args.nested
+    packages = package_apps(args.rebuild_apps) if args.worktree_apps else []
+    for name in SESSIONS:
+        provision(name)
+        install_apps(name, packages)
+    enrol_relay()
+    write_relay_config()
+    start_relay()
+    start_shell("team", headless)
+    room = ensure_room()
+    ensure_hosting(room)
+    invite = ensure_invite(room)
+    write_community_config(invite)
+    start_shell("reporter", headless)
+    status = join_reporter(room)
+    private = open_private_room()
+    state = load_state()
+    state["private_room"] = private["room"]
+    state["mode"] = "headless" if headless else "nested"
+    save_state(state)
+    say(f"up: room {room} is public; the reporter holds {status['role']}")
+    say(f"up: private room {private['room']}: the team holds {private['role']}")
+    say("next: feedback-dev ctl reporter -- community team-room   |   feedback-dev status")
+
+
+def cmd_status(_: argparse.Namespace) -> None:
+    state = load_state()
+    print(f"data:    {DATA}")
+    print(f"runtime: {RUNTIME}")
+    for name in ("relay", *SESSIONS):
+        pid = running(name)
+        print(f"{name:9} {'running pid ' + str(pid) if pid else 'stopped'}")
+    for key in ("mode", "room", "private_room", "invite_id", "relay_endpoint"):
+        if key in state:
+            print(f"{key}: {json.dumps(state[key]) if not isinstance(state[key], str) else state[key]}")
+    for name in SESSIONS:
+        if running(name):
+            try:
+                print(f"{name} community: {json.dumps(answer(name, {'op': 'community_status'}, 10))}")
+            except Fix as problem:
+                print(f"{name} community: {problem.problem}")
+
+
+def cmd_ctl(args: argparse.Namespace) -> None:
+    rest = [arg for arg in args.rest if arg != "--"]
+    env = {**os.environ, "TILO_TEST_CONTROL": str(RUNTIME / args.session / "control.sock")}
+    sys.exit(subprocess.call([binary("tilo-control"), *rest], env=env))
+
+
+def cmd_down(args: argparse.Namespace) -> None:
+    for name in (*SESSIONS, "relay"):
+        stop(name)
+    shutil.rmtree(RUNTIME, ignore_errors=True)
+    if args.purge:
+        shutil.rmtree(DATA, ignore_errors=True)
+        say(f"stopped and removed {DATA}")
+    else:
+        say("stopped; identities and the room are kept (`down --purge` forgets them)")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="feedback-dev", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("guide", help="explain the whole flow")
+    sub.add_parser("doctor", help="check binaries, memory and ports; print each fix")
+    up = sub.add_parser("up", help="stand everything up (idempotent)")
+    mode = up.add_mutually_exclusive_group()
+    mode.add_argument("--headless", action="store_true", help="both shells headless (default)")
+    mode.add_argument("--nested", action="store_true", help="both shells as windows in this session")
+    up.add_argument("--worktree-apps", action="store_true",
+                    help="package and install this worktree's chat into both sessions")
+    up.add_argument("--rebuild-apps", action="store_true",
+                    help="repackage this worktree's apps (chat) even if a package exists")
+    sub.add_parser("status", help="what runs, the room, each shell's community status")
+    ctl = sub.add_parser("ctl", help="run tilo-control against one shell")
+    ctl.add_argument("session", choices=SESSIONS)
+    ctl.add_argument("rest", nargs=argparse.REMAINDER)
+    down = sub.add_parser("down", help="stop shells and relay, remove runtime dirs")
+    down.add_argument("--purge", action="store_true", help="also remove identities and state")
+    args = parser.parse_args()
+    try:
+        if args.command == "guide":
+            print(GUIDE)
+        elif args.command == "doctor":
+            return 1 if doctor() else 0
+        elif args.command == "up":
+            cmd_up(args)
+        elif args.command == "status":
+            cmd_status(args)
+        elif args.command == "ctl":
+            cmd_ctl(args)
+        elif args.command == "down":
+            cmd_down(args)
+    except Fix as problem:
+        print(f"feedback-dev: {problem.problem}\n  fix: {problem.fix}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
