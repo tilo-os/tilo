@@ -16,9 +16,9 @@
 //! effects against real block devices: each dispatches a udisks2 D-Bus call (or
 //! the `udisksctl` / `mount` / `mkfs` CLI fallback) through [`crate::ops`], the
 //! app's external side-effect boundary. The live event path runs them off the UI
-//! thread — [`DisksApp`](crate::app::DisksApp)'s worker calls [`ops::run`], which
+//! thread — [`DisksApp`](crate::app::DisksApp)'s worker calls `ops::run`, which
 //! takes device leaf names and returns a device-level `Result<String, String>`;
-//! it is handed **no** [`AutoCommit`] and can no more mutate the shared document
+//! it is handed **no** `AutoCommit` and can no more mutate the shared document
 //! than `mount(8)` can. By the recipe's rule none of this is an action.
 //!
 //! Modelling any of these as a replicated [`Action`](tilo_actions::Action) would

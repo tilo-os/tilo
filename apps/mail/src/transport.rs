@@ -30,7 +30,7 @@
 //!
 //! Those crates pull a TLS + async stack we deliberately keep out of the
 //! headless build; the seam is this module, and the data types
-//! ([`AccountConfig`], [`Draft`], [`Message`]) match those libraries' inputs
+//! ([`AccountConfig`](crate::model::AccountConfig), [`Draft`], [`Message`]) match those libraries' inputs
 //! and outputs.
 
 use mail_builder::MessageBuilder;

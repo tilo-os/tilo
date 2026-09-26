@@ -5,7 +5,7 @@
 //! `--shots` renderer use, so it must be deterministic and never touch the
 //! network. It simply replays the sample model's pure query helpers
 //! (`search`, `related`, `channel_videos`, …) and clones the results into
-//! owned [`Video`] / [`Channel`] structs.
+//! owned [`Video`](crate::model::Video) / [`Channel`](crate::model::Channel) structs.
 
 use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
 use crate::model::TubeModel;

@@ -21,7 +21,7 @@
 //!   `openvpn`, see [`crate::config`] + [`crate::net`]), the reconciled live
 //!   `status`, the byte counters, the last-handshake age. Those are external
 //!   side effects and OS-projected live state *driven by* the configuration,
-//!   never part of [`Action::apply`], which only mutates the CRDT
+//!   never part of `Action::apply`, which only mutates the CRDT
 //!   deterministically.
 //! * **Importing a system config** — the XDG-portal file pick, validation and
 //!   privileged `NetworkManager` import are a typed host effect. Only the safe,
@@ -35,7 +35,7 @@
 //! `NetworkManager` import, then carried with its secret-free metadata in the
 //! [`VpnAction::AddConnection`] payload. It is never the local `NetworkManager`
 //! UUID; that association is persisted only on the provisioning device.
-//! [`Action::apply`] never touches the RNG or the wall-clock. It reads the
+//! `Action::apply` never touches the RNG or the wall-clock. It reads the
 //! current fleet from the document and applies a targeted, change-guarded write,
 //! so two replicas at the same heads land on the byte-identical result. A
 //! payload that names a connection that isn't there — or a toggle already in the
@@ -65,7 +65,7 @@ pub const VPN_PROVISION_TYPE: &str = "vpn.provision-profile";
 /// Each variant is a deterministic transform of the secret-free stored metadata: the
 /// executor loads the current fleet from the document, this transform applies a
 /// targeted write, and the diff replicates + replays for free (see
-/// [`Action::apply`]). The connection CRUD carries a pre-minted [`Connection`]
+/// `Action::apply`). The connection CRUD carries a pre-minted [`Connection`]
 /// (id and all) so replay reproduces it exactly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VpnAction {

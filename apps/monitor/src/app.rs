@@ -9,7 +9,7 @@
 //! The widget owns its own geometry: `build_layout` is a single
 //! full-bleed leaf, and `draw` lays out every region by hand and renders
 //! it into the Vello scene. Hit rectangles computed during `draw` are
-//! cached in [`Hit`] and consulted by `handle_event` on the next input —
+//! cached in `Hit` and consulted by `handle_event` on the next input —
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
 use std::collections::{HashMap, HashSet};

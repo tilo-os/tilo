@@ -247,7 +247,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
 ];
 
 /// Pose the document for one named `--shots` scenario. Sample content is seeded
-/// here via [`ImagerDoc::seed_demo`] — never by the live app — so a screenshot
+/// here via `ImagerDoc::seed_demo` — never by the live app — so a screenshot
 /// is the only place this state is set. Unknown names fall back to the source
 /// step.
 pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {

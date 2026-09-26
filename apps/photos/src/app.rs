@@ -3612,7 +3612,7 @@ impl PhotosApp {
     /// the whole image when the viewer has not been laid out yet.
     ///
     /// `ImageViewer` exposes no direct query for this either, so it is derived
-    /// in [`visible_image_rect`] from the same "contain fit, then zoom and
+    /// in `visible_image_rect` from the same "contain fit, then zoom and
     /// pan" transform `ImageViewer::draw` applies — using only the widget's
     /// already-public `zoom()` / `pan()` / rect, and this app's own knowledge
     /// of the original image's pixel size.

@@ -1,7 +1,7 @@
 //! File-explorer places as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the file explorer declares
-//! its searchable type by implementing [`SearchProvider`] over the user's
+//! Mirrors the reference wiring in `apps/contacts`: the file explorer declares
+//! its searchable type by implementing `SearchProvider` over the user's
 //! curated **Favourites / Places** list, so a pinned location is findable from
 //! the unified Ctrl+K palette by its label or path. Activating a row navigates
 //! there.

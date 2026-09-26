@@ -5,7 +5,7 @@
 //! blocking `reqwest` client — the `--shots` path never spawns it, so the
 //! screenshot is populated purely from `sample.rs`. The app spawns the
 //! worker lazily on the first real interaction and folds results in
-//! through [`crate::app::TubeApp::pump`].
+//! through `crate::app::TubeApp::pump`.
 //!
 //! Endpoints (researched, current as of 2026):
 //! - Invidious: `GET {instance}/api/v1/search?q=&type=video`,
