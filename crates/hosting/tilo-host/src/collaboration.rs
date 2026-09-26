@@ -269,9 +269,8 @@ pub(crate) struct JoinCompletionRecord {
     pub(crate) remote_endpoint: [u8; 32],
     pub(crate) request_id: [u8; 32],
     pub(crate) proof_digest: [u8; 32],
-    /// The delivered bootstrap without its governance messages (see
-    /// [`JoinCompletionRecord::receipt`]). Records committed before receipts
-    /// carry the complete reply instead.
+    /// The delivered bootstrap with its governance messages replaced by one
+    /// digest entry (see [`JoinCompletionRecord::receipt`]).
     pub(crate) bootstrap: JoinBootstrap,
 }
 
@@ -324,27 +323,29 @@ impl JoinCompletionRecord {
         }
     }
 
-    /// The exact reply this completion delivered. A receipt rebuilds it from
-    /// committed state and answers only when the rebuilt reply is identical
-    /// to the delivered one; once the workspace has moved on, the member
-    /// refreshes through the membership challenge instead.
+    /// The exact reply this completion delivered. The receipt keeps every
+    /// field but the governance messages, which are the owner's committed
+    /// publication; the reply is rebuilt with the current publication and
+    /// answered only when it is identical to the delivered one. Owner commits
+    /// that leave the publication alone (challenges, invitations) keep the
+    /// retry answerable; once governance has moved on, the member refreshes
+    /// through the membership challenge instead.
     fn replay(&self, owner: &SessionOwner) -> Result<JoinBootstrap, CollaborationError> {
-        let Some(delivered) = self.delivered_digest() else {
-            return Ok(self.bootstrap.clone());
+        let delivered = self
+            .delivered_digest()
+            .ok_or_else(|| CollaborationError::new("join completion receipt is malformed"))?;
+        let rebuilt = JoinBootstrap {
+            governance_messages: owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect(),
+            ..self.bootstrap.clone()
         };
-        let current = owner.current_join_bootstrap(
-            self.bootstrap.invite_id,
-            self.bootstrap.device_cert.clone(),
-            self.bootstrap.role,
-        );
-        let digest = bootstrap_digest(&current)
+        let digest = bootstrap_digest(&rebuilt)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if digest.as_slice() != delivered {
             return Err(CollaborationError::new(
                 "join request ID already completed; refresh membership for the current workspace",
             ));
         }
-        Ok(current)
+        Ok(rebuilt)
     }
 }
 
@@ -1570,11 +1571,40 @@ mod tests {
             .bootstrap;
         assert_eq!(reopened, joined, "the receipt survives reopening the owner");
 
+        // An owner commit that leaves governance alone keeps the retry
+        // answerable with the identical reply.
+        let generation = owner.committed_generation();
         service
             .issue(&mut owner, administrator, invitation(87, now_ns), now_ns)
             .unwrap();
+        assert!(owner.committed_generation() > generation);
+        let unchanged = service
+            .complete(
+                &mut owner,
+                guest.device_public_key,
+                complete.clone(),
+                now_ns + 4,
+            )
+            .unwrap()
+            .bootstrap;
+        assert_eq!(unchanged, joined);
+
+        // Once governance moves on, the retry refuses instead of answering
+        // a reply the member was never sent.
+        service
+            .set_member_role(
+                &mut owner,
+                administrator,
+                SetMemberRoleRequest {
+                    request_id: [88; 32],
+                    user_public_key: guest.user_public_key,
+                    role: MemberRole::Viewer,
+                },
+                now_ns + 5,
+            )
+            .unwrap();
         let error = service
-            .complete(&mut owner, guest.device_public_key, complete, now_ns + 4)
+            .complete(&mut owner, guest.device_public_key, complete, now_ns + 6)
             .unwrap_err();
         assert!(error.to_string().contains("refresh membership"), "{error}");
     }
