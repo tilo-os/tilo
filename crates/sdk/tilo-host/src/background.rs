@@ -343,6 +343,10 @@ impl Executor for ThreadPool {
         clippy::disallowed_methods,
         reason = "the native executor is where toolkit background threads are created"
     )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the pool's lock stays held across the spawn so the thread count and queue agree"
+    )]
     fn spawn(&self, name: &'static str, job: Job) -> Result<(), Unsupported> {
         let mut state = lock(&self.shared.state);
         state.queue.push_back((name, job));
@@ -465,11 +469,8 @@ impl Pumped {
     /// Move the virtual clock forward by `by`, firing every timer that falls
     /// due in deadline order and running the work each one releases.
     pub fn advance(&self, by: Duration) {
-        let target = {
-            let state = lock(&self.state);
-            let now = state.now.unwrap_or_else(crate::time::now);
-            now.checked_add(by).unwrap_or(now)
-        };
+        let now = lock(&self.state).now.unwrap_or_else(crate::time::now);
+        let target = now.checked_add(by).unwrap_or(now);
         self.advance_to(target);
     }
 

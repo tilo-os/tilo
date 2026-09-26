@@ -162,21 +162,14 @@ impl Drop for WakeScopeGuard {
 
 /// A weak identity for a queued wake; it never owns an app or its scope.
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 pub struct WakeEvent {
     route: Weak<Route>,
     requires_sync: bool,
 }
 
 impl WakeEvent {
-    #[cfg(feature = "native")]
-    pub(crate) const fn requires_sync(&self) -> bool {
+    #[doc(hidden)]
+    pub const fn requires_sync(&self) -> bool {
         self.requires_sync
     }
 }
@@ -195,7 +188,8 @@ impl Default for WakeHandle {
 }
 
 impl WakeHandle {
-    pub(crate) fn accepts(&self, event: &WakeEvent) -> bool {
+    #[doc(hidden)]
+    pub fn accepts(&self, event: &WakeEvent) -> bool {
         self.is_active()
             && self
                 .route
@@ -203,7 +197,8 @@ impl WakeHandle {
                 .is_some_and(|route| Weak::ptr_eq(route, &event.route))
     }
 
-    pub(crate) fn enter_if_open(&self) -> Result<WakeScopeGuard, WakeBindError> {
+    #[doc(hidden)]
+    pub fn enter_if_open(&self) -> Result<WakeScopeGuard, WakeBindError> {
         let route = self.route.as_ref().ok_or(WakeBindError::Closed)?;
         if !route
             .upgrade()
@@ -238,7 +233,8 @@ impl WakeHandle {
     }
 
     /// Authorize one publication. A prior freshness check is not authorization.
-    pub(crate) fn authorize_publication(&self) -> bool {
+    #[doc(hidden)]
+    pub fn authorize_publication(&self) -> bool {
         match &self.route {
             None => true,
             Some(route) => route.upgrade().is_some_and(|route| {
@@ -256,7 +252,8 @@ impl WakeHandle {
 
     /// Wake the owner to drain an event queue. The queue consumer determines
     /// whether the model changed; receiving a notification alone does not.
-    pub(crate) fn notify_events(&self) {
+    #[doc(hidden)]
+    pub fn notify_events(&self) {
         self.send_wake(false);
     }
 

@@ -296,7 +296,7 @@ impl MediaSessionFactory for HostRecorder {
 impl LocationProvider for HostRecorder {
     fn locate(&self) -> LocationChannel {
         let mut log = self.log();
-        log.location_requests += 1;
+        log.location_requests = log.location_requests.saturating_add(1);
         answered(
             log.location_outcomes
                 .pop_front()
@@ -320,38 +320,6 @@ impl ScreenCaptureProvider for HostRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn toolkit_entry_points_reach_the_recording_host() {
-        let (services, recorder) = HostServices::recording();
-        recorder.respond_to_pick(PortalOutcome::Opened("/tmp/picked.txt".into()));
-        super::super::scoped(&services, || {
-            crate::text_selection::clipboard_copy("copied");
-            assert_eq!(
-                crate::text_selection::clipboard_paste().as_deref(),
-                Some("copied")
-            );
-            assert!(crate::widget::try_open_external_url("https://tilo.so").is_ok());
-            let picked = PickRequest::open("Open", "Open").send().recv();
-            assert_eq!(picked, Ok(PortalOutcome::Opened("/tmp/picked.txt".into())));
-            let mut reader = crate::screen_reader::ScreenReader::new();
-            reader.announce_focus(
-                &crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name("Save"),
-            );
-        });
-        assert_eq!(
-            recorder.copies(),
-            [(ClipboardTarget::Clipboard, "copied".to_string())]
-        );
-        assert_eq!(recorder.opened_uris(), ["https://tilo.so"]);
-        assert_eq!(recorder.pick_requests().len(), 1);
-        assert!(
-            recorder
-                .utterances()
-                .iter()
-                .any(|utterance| utterance.text.contains("Save"))
-        );
-    }
 
     #[test]
     fn media_sessions_record_published_state() {

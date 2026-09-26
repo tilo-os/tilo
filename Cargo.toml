@@ -102,6 +102,7 @@ members = [
     "crates/sdk/font-catalog",
     "crates/sdk/rt",
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
 
@@ -439,7 +440,7 @@ wayland-client = "0.31.14"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
-# through smithay-clipboard (see crates/sdk/ui-core/src/clipboard.rs).
+# through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.17.0"
 notify = { version = "8", default-features = false }
