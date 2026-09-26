@@ -511,6 +511,15 @@ impl AppActionBroker {
         self.state.set_app_action_access(resolver);
     }
 
+    /// Ask `prompter` before an application uses another application's
+    /// action it holds no grant for. Without one, such a request is refused.
+    pub fn set_app_action_consent(
+        &self,
+        prompter: Arc<dyn crate::shell::app_action_consent::AppActionConsentPrompter>,
+    ) {
+        self.state.set_app_action_consent(prompter);
+    }
+
     pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
         &self.state
     }

@@ -376,6 +376,7 @@ fn nearby_source_from_grants(
 }
 
 mod action_host;
+mod app_consent;
 mod launchable;
 
 pub(crate) use launchable::launchable_provider;
@@ -1844,6 +1845,15 @@ pub struct CapnpBrokerState {
     /// What each application declared it may do on the action door under
     /// its own identity.
     app_action_access: std::sync::RwLock<crate::shell::app_action_access::AccessResolver>,
+    /// Who is asked before an application uses another application's
+    /// action it holds no grant for. Nobody, until the compositor installs
+    /// its sheet: such a request is then refused.
+    app_action_consent: std::sync::RwLock<
+        Option<Arc<dyn crate::shell::app_action_consent::AppActionConsentPrompter>>,
+    >,
+    /// Applications with a grant question on screen, by room: one at a
+    /// time each, so an app cannot bury the person in sheets.
+    app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
@@ -2312,6 +2322,19 @@ fn apply_permission_profile_operation(
             for capability in capabilities {
                 tree.doc_insert_capability(workspace_id, &capability);
             }
+        }
+        operation @ (crate::shell::workspace_settings::PermissionProfileOperation::GrantAppAction {
+            ..
+        }
+        | crate::shell::workspace_settings::PermissionProfileOperation::RevokeAppAction {
+            ..
+        }) => {
+            crate::shell::workspace_settings::apply_app_action_operation(
+                tree,
+                workspace_id,
+                caller,
+                &operation,
+            )?;
         }
     }
     Ok(())
@@ -2799,6 +2822,8 @@ impl CapnpBrokerState {
                 app_action_access: std::sync::RwLock::new(
                     crate::shell::app_action_access::installed_resolver(),
                 ),
+                app_action_consent: std::sync::RwLock::new(None),
+                app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
@@ -5035,6 +5060,51 @@ fn nearby_transfer_reply(
     Promise::ok(())
 }
 
+impl CapnpChannelHandle {
+    /// Answer an application's invocation once the person has answered
+    /// whether it may: denied, refused; allowed, recorded and served, and a
+    /// grant given once removed as soon as the call is decided.
+    fn serve_after_consent(
+        &self,
+        consent: app_consent::PendingConsent,
+        host: crate::shell::remote_actions::BrokerActionHost,
+        caller: tilo_actions::remote::Caller,
+        message: tilo_actions::remote::RemoteActionMessage,
+        mut results: channel_handle::RemoteActionResults,
+    ) -> Promise<(), capnp::Error> {
+        use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse, serve};
+        let state = Arc::clone(&self.state);
+        Promise::from_future(async move {
+            let mut consent = consent;
+            let answer = (&mut consent.answer)
+                .await
+                .unwrap_or(crate::shell::app_action_consent::AppActionConsent::Deny);
+            state.finish_app_action_consent(&consent);
+            let reply = match state.record_app_action_grant(&consent, answer) {
+                None => refuse(&message, ActionHostError::NotPermitted),
+                Some(grant) => {
+                    let answered = match serve(&host, &caller, message) {
+                        Some(answer) => answer.await,
+                        None => None,
+                    };
+                    if grant.consumed_on_use {
+                        state.consume_app_action_grant(&grant);
+                    }
+                    answered
+                }
+            };
+            let reply = reply.ok_or_else(|| {
+                capnp::Error::failed("the action host dropped the request".into())
+            })?;
+            let bytes = RemoteActionFrame::new(reply)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_frame(&bytes);
+            Ok(())
+        })
+    }
+}
+
 impl channel_handle::Server for CapnpChannelHandle {
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
@@ -5043,7 +5113,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::RemoteActionParams,
         mut results: channel_handle::RemoteActionResults,
     ) -> Promise<(), capnp::Error> {
-        use tilo_actions::remote::{RemoteActionFrame, serve};
+        use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage, serve};
         let current = match self
             .state
             .revalidate_admission(&self.route(), &self.verified_identity)
@@ -5064,6 +5134,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
+        let person_caller = person.clone();
         // A delegated agent is its own principal already; any other
         // connection is an application, which acts as itself.
         let caller = if current.agent_id.is_some() {
@@ -5092,6 +5163,45 @@ impl channel_handle::Server for CapnpChannelHandle {
             self.peer_id,
             self.launch.clone(),
         );
+        // An application reaching for another app's action it holds no
+        // grant for: the person using it is asked first, or it is refused.
+        if let (
+            tilo_actions::remote::CallerPrincipal::App(app_id),
+            RemoteActionMessage::Invoke(invoke),
+        ) = (caller.principal(), &request.message)
+        {
+            match self
+                .state
+                .app_action_consent(&person_caller, app_id, invoke)
+            {
+                app_consent::ConsentStep::Serve => {}
+                app_consent::ConsentStep::Refuse => {
+                    let refused =
+                        RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                            invocation: invoke.invocation,
+                            status: tilo_actions::remote::ReceiptStatus::Rejected {
+                                error: tilo_actions::remote::ActionHostError::NotPermitted,
+                            },
+                        });
+                    return match RemoteActionFrame::new(refused).encode() {
+                        Ok(bytes) => {
+                            results.get().set_frame(&bytes);
+                            Promise::ok(())
+                        }
+                        Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
+                    };
+                }
+                app_consent::ConsentStep::Ask(consent) => {
+                    return self.serve_after_consent(
+                        consent,
+                        host,
+                        caller,
+                        request.message,
+                        results,
+                    );
+                }
+            }
+        }
         let Some(answer) = serve(&host, &caller, request.message) else {
             return Promise::err(capnp::Error::failed(
                 "only remote-action requests are answered".into(),
