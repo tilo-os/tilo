@@ -47,10 +47,11 @@ jobs:
           sparse-checkout: |
             os/Containerfile.release-tools
             os/tests/release_tools_image.sh
+            .forgejo/actions/setup-buildx
           sparse-checkout-cone-mode: false
 
       - name: Set up native BuildKit
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: ./.forgejo/actions/setup-buildx
 
       - name: Build the compiler-free publication environment
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
