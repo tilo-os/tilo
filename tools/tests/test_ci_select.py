@@ -849,7 +849,7 @@ class SelectorTests(unittest.TestCase):
 
     def test_checked_in_test_seconds_are_valid(self) -> None:
         seconds = ci_select.recorded_test_seconds()
-        self.assertTrue(seconds, "tools/ci/test_seconds.json should carry recorded timings")
+        self.assertTrue(seconds, "tools/ci/recorded_test_time.json should carry recorded timings")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "seconds.json"
             self.assertEqual(ci_select.recorded_test_seconds(path), {})
