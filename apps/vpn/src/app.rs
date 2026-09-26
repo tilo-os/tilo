@@ -4558,7 +4558,8 @@ mod tests {
     }
 
     #[test]
-    fn control_custody_vpn_unreachable_private_route_seals_e_suppresses_h_and_confirms_f() {
+    fn control_custody_vpn_unreachable_private_route_saves_the_armed_import_and_confirms_a_fresh_one()
+     {
         let (mut app, doc) = demo_with_doc();
         let arm = Rc::new(Cell::new(None));
         app.history_control_arm = Some(arm.clone());
@@ -4593,7 +4594,7 @@ mod tests {
         assert_eq!(
             sealed.len(),
             1,
-            "mounted custody seals WireGuard E without traversal"
+            "mounted custody saves the armed WireGuard import without traversal"
         );
         assert_eq!(sealed[0].invocation.address.resource, "vpn.vault");
         assert_eq!(sealed[0].invocation.address.action, "import-wireguard");
@@ -4606,15 +4607,15 @@ mod tests {
         driver.send(&WindowEvent::Focused(true));
         assert!(
             portal_attempts.borrow().is_empty(),
-            "E capture and hidden H start no portal"
+            "the saved import and the hidden OpenVPN import start no portal"
         );
         assert_eq!(
             driver.pending_history_controls().len(),
             1,
-            "OpenVPN H is absent"
+            "the hidden OpenVPN import is not saved"
         );
 
-        // F: the published import sheet, opened and committed semantically.
+        // The published import sheet, opened and committed semantically.
         driver
             .perform_semantic_named(
                 "vpn_app",
@@ -4631,7 +4632,7 @@ mod tests {
             .unwrap();
         assert!(
             portal_attempts.borrow().is_empty(),
-            "fresh F waits for ordinary confirmation"
+            "the fresh import waits for ordinary confirmation"
         );
         let (field, instruction) = palette_control(&driver, "Confirmation");
         let value = instruction
@@ -4658,7 +4659,7 @@ mod tests {
         assert_eq!(
             portal_attempts.borrow().as_slice(),
             &[vec!["WireGuard (.conf)".to_owned(), "All files".to_owned()]],
-            "confirmed WireGuard F opens the actual typed portal request once",
+            "the confirmed fresh WireGuard import opens the typed portal request once",
         );
         assert_eq!(driver.control_coverage().registered, 1);
     }

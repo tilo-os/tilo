@@ -3713,7 +3713,7 @@ pub(crate) mod ordinary_confirmation_tests {
         }
     }
     #[test]
-    fn ordinary_confirmation_round1_native_events_keep_bounded_measured_tree() {
+    fn ordinary_confirmation_native_events_keep_bounded_measured_tree() {
         let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
         let mut host = Host::new(true, root);
         let expected_rect = match &host {
@@ -3821,11 +3821,11 @@ pub(crate) mod ordinary_confirmation_tests {
         }
     }
     #[test]
-    fn ordinary_confirmation_round1_native_instruction_is_independently_operable() {
+    fn ordinary_confirmation_native_instruction_is_independently_operable() {
         confirm_using_published_instruction(true);
     }
     #[test]
-    fn ordinary_confirmation_round1_driver_instruction_is_independently_operable() {
+    fn ordinary_confirmation_driver_instruction_is_independently_operable() {
         confirm_using_published_instruction(false);
     }
 
