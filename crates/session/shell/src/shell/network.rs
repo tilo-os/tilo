@@ -1253,6 +1253,9 @@ pub struct ShellNetwork {
     /// so a room's governance may precede its author's `IdentityHello`; it is
     /// held here, bounded, and dispatched once the identity is accepted.
     unidentified_host_messages: Mutex<UnidentifiedHostMessages>,
+    /// Retained shell-room messages sent or received per room topic, so a
+    /// room checkpoint names exactly the ones it holds.
+    retained_coverage: Mutex<std::collections::HashMap<u64, crate::network::coverage::CoverageLog>>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -1654,6 +1657,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             room_admissions: Mutex::new(std::collections::HashMap::new()),
             unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
+            retained_coverage: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -2010,7 +2014,43 @@ impl ShellNetwork {
             *invite_id = Some(redemption);
         }
         let ws = self.topic_for_message(&msg);
+        self.record_retained_room_message(ws, &msg);
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+    }
+
+    /// Log a shell-room `SyncResp` on room topic `ws` — sent or received —
+    /// with the changes it carries, for [`Self::room_checkpoint_covers`].
+    fn record_retained_room_message(&self, ws: u64, msg: &NeighbourMsg) {
+        let NeighbourMsg::SyncResp { changes, .. } = msg else {
+            return;
+        };
+        let Some(required) = crate::network::coverage::room_changes(changes) else {
+            return;
+        };
+        if let Ok(mut logs) = self.retained_coverage.lock() {
+            logs.entry(ws)
+                .or_default()
+                .record(crate::network::actor::retained_entry_id(msg), required);
+        }
+    }
+
+    /// The logged shell-room messages on `ws` whose every change the
+    /// complete room history `changes` holds.
+    fn room_checkpoint_covers(&self, ws: u64, changes: &[Vec<u8>]) -> Vec<[u8; 32]> {
+        let held: std::collections::HashSet<automerge::ChangeHash> =
+            crate::network::coverage::room_changes(changes)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+        self.retained_coverage
+            .lock()
+            .ok()
+            .and_then(|logs| {
+                logs.get(&ws).map(|log| {
+                    log.covered(|required| required.iter().all(|hash| held.contains(hash)))
+                })
+            })
+            .unwrap_or_default()
     }
 
     /// Publish live legacy-app traffic on an explicit authenticated room
@@ -2135,11 +2175,19 @@ impl ShellNetwork {
             return false;
         }
         let ws = self.topic_for_message(&msg);
-        self.join_topic(ws)
-            && self
-                .cmd_tx
-                .try_send(NetCmd::PublishCheckpoint { ws, msg })
-                .is_ok()
+        if !self.join_topic(ws) {
+            return false;
+        }
+        let command = match &msg {
+            NeighbourMsg::SyncResp { changes, .. } => NetCmd::PublishCovered {
+                ws,
+                covers: self.room_checkpoint_covers(ws, changes),
+                msg,
+                shell_checkpoint: true,
+            },
+            _ => NetCmd::PublishCheckpoint { ws, msg },
+        };
+        self.cmd_tx.try_send(command).is_ok()
     }
 
     /// Shared handle to the inbound-presence buffer. The shell's
@@ -2294,6 +2342,21 @@ impl ShellNetwork {
         record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        self.publish_document_covering(app_id, cluster_id, record_id, envelope, Vec::new());
+    }
+
+    /// [`Self::publish_document`] for a complete snapshot that names the
+    /// retained entries whose changes it holds, as its app read them from
+    /// the snapshot's bytes. A durable host trims the document's retained
+    /// history only by these.
+    pub fn publish_document_covering(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: &str,
+        envelope: collab_types::SignedOp,
+        covers: Vec<[u8; 32]>,
+    ) {
         let record_id = self.register_local_record(&app_id, &cluster_id, record_id);
         let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
@@ -2302,7 +2365,21 @@ impl ShellNetwork {
             record_id,
             envelope: Box::new(envelope),
         };
-        let _ = self.publish_message(msg);
+        if covers.is_empty() {
+            let _ = self.publish_message(msg);
+            return;
+        }
+        let ws = self.topic_for_message(&msg);
+        let _ = self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::PublishCovered {
+                    ws,
+                    msg,
+                    covers,
+                    shell_checkpoint: false,
+                })
+                .is_ok();
     }
 
     /// Remember that a local app holds `record_id`, so peers' traffic for
@@ -5566,6 +5643,7 @@ impl ShellNetwork {
         {
             pending.remove(&room);
         }
+        self.record_retained_room_message(ws, &msg);
         self.dispatch_authorized_neighbour_msg(ws, peer, msg);
         if let Some(room) = governance_room {
             self.apply_room_admissions(room);
@@ -6677,6 +6755,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         room_admissions: Mutex::new(std::collections::HashMap::new()),
         unidentified_host_messages: Mutex::new(UnidentifiedHostMessages::default()),
+        retained_coverage: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -10251,6 +10330,34 @@ mod tests {
         net.tick();
         while cmd_rx.try_recv().is_ok() {}
 
+        // A room change this machine published is held by its checkpoint; a
+        // change from a document this room never took is not.
+        let held_changes = net
+            .replica
+            .lock()
+            .unwrap()
+            .tree
+            .write()
+            .export_room_changes_since(room_id, &[])
+            .unwrap();
+        let held = NeighbourMsg::SyncResp {
+            changes: held_changes,
+            room: room_id.to_string(),
+        };
+        let mut foreign_doc = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put(&mut foreign_doc, automerge::ROOT, "x", 1)
+            .unwrap();
+        let foreign = NeighbourMsg::SyncResp {
+            changes: foreign_doc
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+            room: room_id.to_string(),
+        };
+        net.record_retained_room_message(topic, &held);
+        net.record_retained_room_message(topic, &foreign);
+
         net.event_tx
             .try_send(NetEvent::HostReady {
                 ws: topic,
@@ -10259,13 +10366,22 @@ mod tests {
             .unwrap();
         net.tick();
 
-        assert!(matches!(
-            cmd_rx.try_recv(),
-            Ok(NetCmd::PublishCheckpoint {
-                ws,
-                msg: NeighbourMsg::SyncResp { ref room, .. },
-            }) if ws == topic && room == &room_id.to_string()
-        ));
+        let Ok(NetCmd::PublishCovered {
+            ws,
+            msg: NeighbourMsg::SyncResp { ref room, .. },
+            covers,
+            shell_checkpoint: true,
+        }) = cmd_rx.try_recv()
+        else {
+            panic!("host ready publishes a covering shell checkpoint");
+        };
+        assert_eq!(ws, topic);
+        assert_eq!(room, &room_id.to_string());
+        assert_eq!(
+            covers,
+            vec![crate::network::actor::retained_entry_id(&held)],
+            "the checkpoint names exactly the retained message it holds"
+        );
         let app_events = net.inbound_app_presence.lock().unwrap().clone();
         assert_eq!(
             app_events.len(),

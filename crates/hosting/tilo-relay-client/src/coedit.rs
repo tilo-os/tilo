@@ -54,12 +54,17 @@ use tilo_relay_protocol::transport::Envelope;
 /// body remains opaque.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoeditPayload {
-    /// A complete, idempotent state checkpoint for one logical document.
-    /// The host replaces the previous checkpoint and its older tail for the
-    /// same channel, allowing a device with no prior queue to bootstrap.
+    /// A complete state checkpoint for one logical document, allowing a
+    /// device with no prior queue to bootstrap. What it replaces on the host
+    /// is stated by `coverage`, never inferred.
     Checkpoint {
         /// Stable digest of the logical document route.
         channel: [u8; 32],
+        /// Publisher-chosen identity of this message, the same on every host
+        /// and for every receiver (see [`Self::RetainedDelta::entry`]).
+        entry: [u8; 32],
+        /// Which retained messages this checkpoint holds.
+        coverage: Coverage,
         /// Opaque collaboration message.
         body: Vec<u8>,
     },
@@ -69,9 +74,30 @@ pub enum CoeditPayload {
     RetainedDelta {
         /// Stable digest of the logical document route.
         channel: [u8; 32],
+        /// Publisher-chosen identity of this message. A later checkpoint
+        /// names it in [`Coverage::Entries`] once its content is in that
+        /// checkpoint. Opaque to the host, so it works on encrypted channels.
+        entry: [u8; 32],
         /// Opaque collaboration message.
         body: Vec<u8>,
     },
+}
+
+/// Most entry ids one [`Coverage::Entries`] may name. A host rejects a
+/// checkpoint naming more.
+pub const MAX_COVERED_ENTRIES: usize = 65_536;
+
+/// Which retained messages a [`CoeditPayload::Checkpoint`] holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Coverage {
+    /// A whole-state baseline whose newest version wins (governance frames,
+    /// continuity checkpoints): it replaces the retained base and its tail.
+    Supersedes,
+    /// A merge of the document whose content contains exactly these
+    /// retained entries, as the publisher read from the bytes it saved. The
+    /// host replaces its base only when the base is among them, then trims
+    /// its tail from the front while each entry is among them.
+    Entries(Vec<[u8; 32]>),
 }
 
 impl CoeditPayload {
@@ -270,8 +296,19 @@ impl RelayCoeditSession {
     /// Returns [`CoeditError::Disconnected`] if the relay connection is
     /// gone, or [`CoeditError::Encode`] if the payload can't be
     /// postcard-encoded.
-    pub fn publish_checkpoint(&self, channel: [u8; 32], body: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(&CoeditPayload::Checkpoint { channel, body })
+    pub fn publish_checkpoint(
+        &self,
+        channel: [u8; 32],
+        entry: [u8; 32],
+        coverage: Coverage,
+        body: Vec<u8>,
+    ) -> Result<(), CoeditError> {
+        self.publish_payload(&CoeditPayload::Checkpoint {
+            channel,
+            entry,
+            coverage,
+            body,
+        })
     }
 
     /// Publish an incremental update and retain it after the current channel
@@ -285,9 +322,14 @@ impl RelayCoeditSession {
     pub fn publish_retained_delta(
         &self,
         channel: [u8; 32],
+        entry: [u8; 32],
         body: Vec<u8>,
     ) -> Result<(), CoeditError> {
-        self.publish_payload(&CoeditPayload::RetainedDelta { channel, body })
+        self.publish_payload(&CoeditPayload::RetainedDelta {
+            channel,
+            entry,
+            body,
+        })
     }
 
     fn publish_payload(&self, payload: &CoeditPayload) -> Result<(), CoeditError> {
@@ -441,14 +483,23 @@ mod tests {
     fn coedit_payload_round_trips_all_variants() {
         let checkpoint = CoeditPayload::Checkpoint {
             channel: [3; 32],
+            entry: [7; 32],
+            coverage: Coverage::Entries(vec![[8; 32], [9; 32]]),
             body: vec![6, 5],
+        };
+        let baseline = CoeditPayload::Checkpoint {
+            channel: [3; 32],
+            entry: [1; 32],
+            coverage: Coverage::Supersedes,
+            body: vec![6],
         };
         let retained = CoeditPayload::RetainedDelta {
             channel: [4; 32],
+            entry: [5; 32],
             body: vec![2, 1],
         };
 
-        for payload in [checkpoint, retained] {
+        for payload in [checkpoint, baseline, retained] {
             assert_eq!(
                 CoeditPayload::decode(&payload.encode().unwrap()),
                 Some(payload)

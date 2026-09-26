@@ -340,7 +340,13 @@ pub fn admission_envelope(
     let body = postcard::to_allocvec(&message)?;
     let channel =
         neighbour_wire::retention(&message, false).map_or([0; 32], |(channel, _)| channel);
-    let payload = crate::coedit::CoeditPayload::Checkpoint { channel, body }.encode()?;
+    let payload = crate::coedit::CoeditPayload::Checkpoint {
+        channel,
+        entry: *blake3::hash(&body).as_bytes(),
+        coverage: crate::coedit::Coverage::Supersedes,
+        body,
+    }
+    .encode()?;
     let envelope = crate::transport::Envelope::Delta {
         workspace_id,
         author_device_public_key: relay_device,

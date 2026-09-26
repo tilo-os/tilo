@@ -6089,17 +6089,26 @@ impl channel_handle::Server for CapnpChannelHandle {
         let route = self.route();
         let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
-            let op_bytes = params.get()?.get_op()?.to_vec();
+            let params = params.get()?;
+            let op_bytes = params.get_op()?.to_vec();
             let envelope: SignedOp = postcard::from_bytes(&op_bytes).map_err(|e| {
                 capnp::Error::failed(format!(
                     "capnp send: op is not a postcard-encoded SignedOp: {e}"
                 ))
             })?;
+            let covers = decode_covers(params.get_covers()?)?;
             let current_identity = state.revalidate_admission(&route, &verified_identity)?;
             verify_session_author(&current_identity, envelope.author)
                 .map_err(|error| capnp::Error::failed(format!("capnp send: {error}")))?;
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
-            handle_signed_op_send(&state, peer_id, &route, &current_identity, envelope);
+            handle_signed_op_send_covering(
+                &state,
+                peer_id,
+                &route,
+                &current_identity,
+                envelope,
+                covers,
+            );
             Ok(())
         })
     }
@@ -7813,12 +7822,50 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
 /// Apply a signed op arriving via capnp `send`: same validation /
 /// audit / redaction / compaction pipeline, then
 /// fans out via the shared [`FanoutState`].
+/// The retained entry ids a snapshot names as covered, each exactly 32
+/// bytes, at most `tilo_relay_client::MAX_COVERED_ENTRIES` of them.
+fn decode_covers(list: capnp::data_list::Reader<'_>) -> Result<Vec<[u8; 32]>, capnp::Error> {
+    if list.len() as usize > tilo_relay_client::MAX_COVERED_ENTRIES {
+        return Err(capnp::Error::failed(
+            "capnp send: snapshot names more covered entries than the limit".into(),
+        ));
+    }
+    list.iter()
+        .map(|entry| {
+            <[u8; 32]>::try_from(entry?).map_err(|_| {
+                capnp::Error::failed("capnp send: a covered entry id is not 32 bytes".into())
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn handle_signed_op_send(
     state: &Arc<CapnpBrokerState>,
     peer_id: u64,
     route: &CrdtRoute,
     verified_identity: &AdmittedJoinIdentity,
     envelope: SignedOp,
+) {
+    handle_signed_op_send_covering(
+        state,
+        peer_id,
+        route,
+        verified_identity,
+        envelope,
+        Vec::new(),
+    );
+}
+
+/// [`handle_signed_op_send`] for an op that names the retained entries it
+/// covers — a complete document snapshot; see the schema's `send`.
+fn handle_signed_op_send_covering(
+    state: &Arc<CapnpBrokerState>,
+    peer_id: u64,
+    route: &CrdtRoute,
+    verified_identity: &AdmittedJoinIdentity,
+    envelope: SignedOp,
+    covers: Vec<[u8; 32]>,
 ) {
     let artifact = envelope.artifact;
     let validation = {
@@ -7863,7 +7910,9 @@ fn handle_signed_op_send(
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
-            state.publisher().signed_document(route, envelope.clone());
+            state
+                .publisher()
+                .signed_document_covering(route, envelope.clone(), covers);
             let from_user_id = CapnpBrokerState::participant_id(verified_identity);
             let event = CollabEvent::Document {
                 envelope: Box::new(envelope),

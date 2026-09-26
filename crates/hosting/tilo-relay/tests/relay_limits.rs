@@ -195,6 +195,7 @@ async fn an_offline_member_receives_a_retained_message_without_a_pending_copy() 
     let body = b"a remark posted to #feedback".to_vec();
     let payload = CoeditPayload::RetainedDelta {
         channel,
+        entry: *blake3::hash(&body).as_bytes(),
         body: body.clone(),
     }
     .encode()

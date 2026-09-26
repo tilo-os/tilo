@@ -63,7 +63,12 @@ async fn first_time_home_device_bootstraps_from_retained_checkpoint() {
         Ok(Some(tilo_relay::Inbound::Ready { pending: 0 }))
     ));
     a_session
-        .publish_checkpoint([7u8; 32], b"baseline-before-phone".to_vec())
+        .publish_checkpoint(
+            [7u8; 32],
+            [8u8; 32],
+            tilo_relay::Coverage::Entries(Vec::new()),
+            b"baseline-before-phone".to_vec(),
+        )
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 

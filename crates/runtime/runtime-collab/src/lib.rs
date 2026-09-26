@@ -1018,8 +1018,25 @@ impl ChannelHandle {
     /// Returns [`NotAvailable`] if the broker connection is unavailable or
     /// drops during the call.
     pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
+        self.send_covering(op, &[]).await
+    }
+
+    /// [`Self::send`] for a complete document snapshot, naming the retained
+    /// entries whose changes the snapshot holds (see the schema's `send`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn send_covering(&self, op: &[u8], covers: &[[u8; 32]]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_request();
-        req.get().set_op(op);
+        let mut params = req.get();
+        params.set_op(op);
+        let len = u32::try_from(covers.len()).unwrap_or(u32::MAX);
+        let mut list = params.init_covers(len);
+        for (index, entry) in (0..len).zip(covers) {
+            list.set(index, entry);
+        }
         req.send().promise.await?;
         Ok(())
     }

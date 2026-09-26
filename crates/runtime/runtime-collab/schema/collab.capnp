@@ -39,7 +39,13 @@ interface ChannelHandle {
   # Submit a single signed op. `op` is a collab-types SignedOp
   # (postcard-encoded). The broker validates, fan-outs to other
   # subscribers, and persists.
-  send @0 (op :Data) -> ();
+  #
+  # `covers` accompanies a complete document snapshot: the retained entry
+  # ids (`SignedOp::retained_entry_id`, 32 bytes each) of the ops this app
+  # sent or received whose changes the snapshot's own bytes contain. A
+  # durable host trims its retained history of the document only by these.
+  # Empty for every other op.
+  send @0 (op :Data, covers :List(Data)) -> ();
 
   # Open a subscription. Returned `Stream` capability yields signed
   # ops one per `read` call, each annotated with the broker's view

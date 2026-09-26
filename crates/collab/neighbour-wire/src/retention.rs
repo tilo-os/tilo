@@ -10,8 +10,10 @@ use crate::NeighbourMsg;
 /// How a retained message relates to the others on its channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retention {
-    /// A complete, idempotent state baseline: the host replaces the previous
-    /// checkpoint and its older tail on the same channel.
+    /// A complete state baseline. What it replaces on the host is stated by
+    /// the publisher (`tilo_relay_client::Coverage`): a merged document names
+    /// the retained entries it holds; any other baseline supersedes its
+    /// channel.
     Checkpoint,
     /// An incremental change appended after the channel's checkpoint.
     Delta,

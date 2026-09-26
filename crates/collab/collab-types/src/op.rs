@@ -528,6 +528,19 @@ pub struct SignedOp {
 }
 
 impl SignedOp {
+    /// This exact signed op's identity as a durable host's retained entry:
+    /// what its publisher names it by, and what a later snapshot lists as
+    /// covered once the op's content is in that snapshot. Every holder of the
+    /// same signed bytes computes the same id, and a host compares ids
+    /// without reading content, so it works on encrypted routes too.
+    #[must_use]
+    pub fn retained_entry_id(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"tilo-retained-entry-v1\0");
+        hash.update(postcard::to_allocvec(self).unwrap_or_default());
+        hash.finalize().into()
+    }
+
     /// Build a fresh op envelope with a placeholder signature; pass to
     /// [`crate::crypto::sign_op`] to stamp the real one in-place. Defaults
     /// `encryption` to `None` — see

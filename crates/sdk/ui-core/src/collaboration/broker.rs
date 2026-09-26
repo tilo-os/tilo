@@ -2570,6 +2570,68 @@ struct SdkRoute {
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    retained: std::sync::Arc<std::sync::Mutex<RetainedLog>>,
+}
+
+/// The document ops this route sent or received, each with the changes it
+/// carries, so a snapshot can name exactly the ones its saved bytes hold
+/// (the schema's `send` `covers`). A durable host trims the document's
+/// retained history only by those names, never by delivery order.
+#[derive(Debug, Default)]
+pub(crate) struct RetainedLog {
+    entries: std::collections::VecDeque<([u8; 32], Vec<automerge::ChangeHash>)>,
+    /// Ids of the segments of a mutation still being reassembled; they are
+    /// held exactly when the whole mutation is.
+    segments: Vec<[u8; 32]>,
+}
+
+impl RetainedLog {
+    /// As many as one snapshot may name.
+    const MAX_ENTRIES: usize = 65_536;
+
+    /// Log the ops `entries` (a mutation and any segments it arrived in)
+    /// as carrying the Automerge bytes `mutation`. Bytes this cannot read
+    /// are never claimed as held.
+    pub(crate) fn record(&mut self, entries: &[[u8; 32]], mutation: &[u8]) {
+        let Some(required) = tilo_automerge::coverage::required_changes(mutation) else {
+            return;
+        };
+        for entry in entries {
+            if self.entries.len() >= Self::MAX_ENTRIES {
+                self.entries.pop_front();
+            }
+            self.entries.push_back((*entry, required.clone()));
+        }
+    }
+
+    /// Hold a segment's id until its mutation completes.
+    pub(crate) fn segment(&mut self, entry: [u8; 32]) {
+        self.segments.push(entry);
+    }
+
+    /// The segment ids gathered for the mutation that just completed, plus
+    /// `last`.
+    pub(crate) fn complete(&mut self, last: [u8; 32]) -> Vec<[u8; 32]> {
+        let mut entries = std::mem::take(&mut self.segments);
+        entries.push(last);
+        entries
+    }
+
+    /// The logged ops whose every change the saved document `snapshot`
+    /// holds.
+    pub(crate) fn covered_by(&self, snapshot: &[u8]) -> Vec<[u8; 32]> {
+        let Ok(doc) = automerge::AutoCommit::load(snapshot) else {
+            return Vec::new();
+        };
+        let mut covered: Vec<[u8; 32]> = self
+            .entries
+            .iter()
+            .filter(|(_, required)| tilo_automerge::coverage::holds_all(&doc, required))
+            .map(|(entry, _)| *entry)
+            .collect();
+        covered.dedup();
+        covered
+    }
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -2612,7 +2674,14 @@ async fn ensure_sdk_route(
     };
 
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
-    spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
+    let retained = std::sync::Arc::new(std::sync::Mutex::new(RetainedLog::default()));
+    spawn_op_stream(
+        &channel,
+        inbound_tx,
+        std::sync::Arc::clone(&encryption),
+        std::sync::Arc::clone(&retained),
+    )
+    .await;
     spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
@@ -2637,6 +2706,7 @@ async fn ensure_sdk_route(
             presence,
             workspace_controls: std::collections::HashMap::new(),
             encryption,
+            retained,
         },
     );
     Ok(())
@@ -2653,13 +2723,16 @@ async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
     encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
+    retained: std::sync::Arc<std::sync::Mutex<RetainedLog>>,
 ) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(event) = stream.read().await {
+                let entry;
                 let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
                     Ok(envelope) => {
+                        entry = envelope.retained_entry_id();
                         match signed_document_event(envelope, event.from_user_id, &encryption) {
                             Ok(event) => event,
                             Err(error) => {
@@ -2680,13 +2753,30 @@ async fn spawn_op_stream(
                 };
                 let Some(complete) = complete_document_event(translated, &tx.reassembly.live)
                 else {
+                    if let Ok(mut log) = retained.lock() {
+                        log.segment(entry);
+                    }
                     continue;
                 };
+                if let (Some(Ok(mutation)), Ok(mut log)) =
+                    (complete.document_mutation(), retained.lock())
+                {
+                    let entries = log.complete(entry);
+                    log.record(&entries, mutation_bytes(&mutation));
+                }
                 if !tx.send_document(complete).await {
                     break;
                 }
             }
         });
+    }
+}
+
+/// The Automerge bytes a typed document mutation carries.
+fn mutation_bytes(mutation: &collab_types::DocumentMutation) -> &[u8] {
+    match mutation {
+        collab_types::DocumentMutation::Snapshot(data)
+        | collab_types::DocumentMutation::Incremental(data) => data,
     }
 }
 
@@ -3001,9 +3091,25 @@ async fn send_document_mutation(
             return false;
         }
     };
+    // A complete snapshot names every logged op its own bytes hold, so a
+    // durable host may drop exactly those from its retained history. The
+    // names ride on the first frame, which the host retains as the
+    // document's checkpoint.
+    let covers = match &mutation {
+        collab_types::DocumentMutation::Snapshot(data) => route
+            .retained
+            .lock()
+            .map(|log| log.covered_by(data))
+            .unwrap_or_default(),
+        collab_types::DocumentMutation::Incremental(_) => Vec::new(),
+    };
     let count = frames.len();
+    let mut sent = Vec::with_capacity(count);
     for (index, frame) in frames.into_iter().enumerate() {
-        if !send_document_frame(route, signer, frame, op_class, bridge_state).await {
+        let covering: &[[u8; 32]] = if index == 0 { &covers } else { &[] };
+        let Some(entry) =
+            send_document_frame(route, signer, frame, op_class, covering, bridge_state).await
+        else {
             if count > 1 {
                 tracing::warn!(
                     segment = index,
@@ -3012,13 +3118,20 @@ async fn send_document_mutation(
                 );
             }
             return false;
-        }
+        };
+        sent.push(entry);
+    }
+    // What this route sent is held by any later snapshot that holds its
+    // changes, like what it received.
+    if let Ok(mut log) = route.retained.lock() {
+        log.record(&sent, mutation_bytes(&mutation));
     }
     true
 }
 
 /// Encrypt (on MLS routes), sign as `op_class` and send one typed document
-/// frame. Returns whether the broker accepted it.
+/// frame, naming `covers` as the retained entries it holds. Returns the
+/// sent op's retained entry id when the broker accepted it.
 #[allow(
     clippy::future_not_send,
     reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
@@ -3028,16 +3141,14 @@ async fn send_document_frame(
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
     op_class: collab_types::OpClass,
+    covers: &[[u8; 32]],
     bridge_state: &BridgeState,
-) -> bool {
+) -> Option<[u8; 32]> {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
-    let Some((payload, encryption_metadata)) =
-        prepare_document_payload(&route.encryption, artifact, cleartext)
-    else {
-        return false;
-    };
+    let (payload, encryption_metadata) =
+        prepare_document_payload(&route.encryption, artifact, cleartext)?;
     let now = crate::time::wall();
     let author = collab_types::Ed25519PublicKey::from_bytes(signer_public_key(signer));
     let attestation =
@@ -3060,7 +3171,7 @@ async fn send_document_frame(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            return false;
+            return None;
         }
     };
     let signature = match signer {
@@ -3073,7 +3184,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
-                return false;
+                return None;
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
@@ -3089,7 +3200,7 @@ async fn send_document_frame(
                     ?error,
                     "collab: host identity service denied document operation; dropping"
                 );
-                return false;
+                return None;
             }
         },
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
@@ -3098,7 +3209,7 @@ async fn send_document_frame(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
-                    return false;
+                    return None;
                 }
             };
             key.sign(&signing_bytes).to_bytes()
@@ -3106,16 +3217,16 @@ async fn send_document_frame(
     };
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
-        Ok(bytes) => match route.channel.send(&bytes).await {
-            Ok(()) => true,
+        Ok(bytes) => match route.channel.send_covering(&bytes, covers).await {
+            Ok(()) => Some(op.retained_entry_id()),
             Err(error) => {
                 tracing::warn!(%error, "collab: broker refused document operation");
-                false
+                None
             }
         },
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
-            false
+            None
         }
     }
 }
@@ -6604,5 +6715,32 @@ mod tests {
         assert_eq!(parse_invocation_context(7, &json), Some(context));
         assert_eq!(parse_invocation_context(8, "  "), None);
         assert_eq!(parse_invocation_context(9, "{not-json"), None);
+    }
+
+    /// A snapshot names exactly the logged ops its saved bytes hold — not
+    /// the ones that arrived after it was saved, and not a segmented
+    /// mutation's segments until the whole mutation is held.
+    #[test]
+    fn a_snapshot_names_exactly_the_logged_ops_it_holds() {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        let mut log = RetainedLog::default();
+        doc.put(automerge::ROOT, "a", 1).unwrap();
+        log.record(&[[1; 32]], &doc.save_incremental());
+        log.segment([2; 32]);
+        doc.put(automerge::ROOT, "b", 2).unwrap();
+        let second = doc.save_incremental();
+        let entries = log.complete([3; 32]);
+        log.record(&entries, &second);
+        let saved = doc.save();
+        doc.put(automerge::ROOT, "c", 3).unwrap();
+        log.record(&[[4; 32]], &doc.save_incremental());
+        log.record(&[[5; 32]], b"not automerge");
+
+        assert_eq!(log.covered_by(&saved), vec![[1; 32], [2; 32], [3; 32]]);
+        assert_eq!(
+            log.covered_by(&doc.save()),
+            vec![[1; 32], [2; 32], [3; 32], [4; 32]]
+        );
     }
 }

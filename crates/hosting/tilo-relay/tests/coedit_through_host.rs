@@ -134,7 +134,9 @@ async fn live_coedit_fans_out_through_host() {
     // A produces a real co-edit delta and publishes it via the bridge.
     let mut doc_a = doc_with_text(b"alice", "hello");
     let delta = doc_a.save_incremental();
-    a_session.publish_retained_delta([1; 32], delta).unwrap();
+    a_session
+        .publish_retained_delta([1; 32], *blake3::hash(&delta).as_bytes(), delta)
+        .unwrap();
 
     // B converges by applying the fanned-out delta.
     let mut doc_b = AutoCommit::new();
@@ -184,7 +186,9 @@ async fn publish_offline_coedit(
 
     let mut doc_a = doc_with_text(b"alice", "offline-note");
     let delta = doc_a.save_incremental();
-    a_session.publish_retained_delta([2; 32], delta).unwrap();
+    a_session
+        .publish_retained_delta([2; 32], *blake3::hash(&delta).as_bytes(), delta)
+        .unwrap();
 
     let mut queued = 0;
     for _ in 0..40 {

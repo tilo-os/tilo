@@ -30,6 +30,20 @@ pub trait PeerPublishSink: Send + Sync {
         envelope: SignedOp,
     );
 
+    /// [`Self::app_document`] for a complete snapshot naming the retained
+    /// entries whose changes it holds.
+    fn app_document_covering(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        envelope: SignedOp,
+        covers: Vec<[u8; 32]>,
+    ) {
+        let _ = covers;
+        self.app_document(app_id, cluster_id, record_id, envelope);
+    }
+
     /// Republish typed presence independently of the local app transport.
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence);
 
@@ -50,6 +64,17 @@ impl PeerPublishSink for ShellNetwork {
         envelope: SignedOp,
     ) {
         self.publish_document(app_id, cluster_id, &record_id, envelope);
+    }
+
+    fn app_document_covering(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        envelope: SignedOp,
+        covers: Vec<[u8; 32]>,
+    ) {
+        self.publish_document_covering(app_id, cluster_id, &record_id, envelope, covers);
     }
 
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence) {
@@ -133,15 +158,36 @@ impl PeerPublisher {
     /// The remote broker validates against its own channel state before
     /// showing it to anyone — publishing is not vouching.
     pub fn signed_document(&self, route: &CrdtRoute, envelope: SignedOp) -> bool {
+        self.signed_document_covering(route, envelope, Vec::new())
+    }
+
+    /// [`Self::signed_document`] naming the retained entries a complete
+    /// snapshot holds; empty for any other op.
+    pub fn signed_document_covering(
+        &self,
+        route: &CrdtRoute,
+        envelope: SignedOp,
+        covers: Vec<[u8; 32]>,
+    ) -> bool {
         let Some(sink) = self.ready(route, "signed document") else {
             return false;
         };
-        sink.app_document(
-            route.app_id.clone(),
-            route.cluster_id.clone(),
-            route.record_id.clone(),
-            envelope,
-        );
+        if covers.is_empty() {
+            sink.app_document(
+                route.app_id.clone(),
+                route.cluster_id.clone(),
+                route.record_id.clone(),
+                envelope,
+            );
+        } else {
+            sink.app_document_covering(
+                route.app_id.clone(),
+                route.cluster_id.clone(),
+                route.record_id.clone(),
+                envelope,
+                covers,
+            );
+        }
         true
     }
 

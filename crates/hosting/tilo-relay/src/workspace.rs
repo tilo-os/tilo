@@ -147,24 +147,21 @@ pub struct WorkspaceRuntime {
     last_seq: u64,
     /// What is retained per document channel; see [`RetainedTail`].
     tails: HashMap<[u8; 32], RetainedTail>,
-    /// For each live subscriber, the sequence of the last retained entry it
-    /// had been handed when it was last sent `Ready` — on subscribe, after its
-    /// complete replay, or as a checkpoint request. A shell answers every
-    /// `Ready` with a full checkpoint of each document it holds, so any
-    /// checkpoint it publishes afterwards covers every entry up to here.
-    checkpoint_covers: HashMap<[u8; 32], u64>,
     /// When a retained tail asks for a checkpoint and when it disconnects.
     pub tail_bounds: TailBounds,
 }
 
 /// Bounds on one channel's retained tail.
 ///
-/// A tail is trimmed only from its front, and only up to what a newer
-/// checkpoint covers: dropping any other entry would hand a joiner changes
-/// whose dependencies never arrive. Past the soft bound the relay asks a
-/// connected member for a fresh checkpoint; past the hard bound it
-/// disconnects the connected member that retained the most bytes, whose
-/// reconnect publishes the covering checkpoint.
+/// A tail is trimmed only from its front, and only while each entry is
+/// named by a newer checkpoint's [`Coverage::Entries`] — what its publisher
+/// read from the bytes it saved. Dropping any other entry would hand a
+/// joiner changes whose dependencies never arrive. Past the soft bound the
+/// relay asks a connected member for a fresh checkpoint; past the hard bound
+/// it disconnects the connected member that retained the most bytes, whose
+/// reconnect publishes a checkpoint.
+///
+/// [`Coverage::Entries`]: crate::coedit::Coverage::Entries
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TailBounds {
     /// Entries after which a checkpoint is requested.
@@ -197,6 +194,18 @@ struct TailEntry {
     seq: u64,
     bytes: u64,
     author: [u8; 32],
+    /// The publisher's identity for this message.
+    entry: [u8; 32],
+}
+
+/// The retained base checkpoint of a channel.
+#[derive(Clone, Copy, Debug)]
+struct RetainedBase {
+    entry: [u8; 32],
+    /// Digest of the body. Members re-publish their whole document whenever
+    /// they attach; a byte-identical republish is not fanned out or
+    /// retained again.
+    digest: [u8; 32],
 }
 
 /// The retained state of one document channel: a base checkpoint plus the
@@ -205,15 +214,7 @@ struct TailEntry {
 struct RetainedTail {
     entries: std::collections::VecDeque<TailEntry>,
     bytes: u64,
-    /// Whether a base checkpoint is retained.
-    has_checkpoint: bool,
-    /// Sequence at which the base checkpoint was retained (0 for one found
-    /// on disk at start, which every later subscriber is handed).
-    checkpoint_seq: u64,
-    /// Digest of the base checkpoint's body. Members re-publish their whole
-    /// document whenever they attach; a byte-identical republish changes
-    /// nothing and is neither fanned out nor retained again.
-    checkpoint_digest: Option<[u8; 32]>,
+    base: Option<RetainedBase>,
     last_request: Option<std::time::Instant>,
 }
 
@@ -223,23 +224,41 @@ impl RetainedTail {
         self.entries.push_back(entry);
     }
 
-    /// Forget the front entries with a sequence at most `through`.
-    fn trim_front(&mut self, through: u64) -> bool {
-        let mut trimmed = false;
+    /// Forget front entries while `covered` names them; returns the
+    /// sequence of the last one forgotten.
+    fn trim_front(&mut self, covered: &HashSet<[u8; 32]>) -> Option<u64> {
+        let mut through = None;
         while let Some(front) = self.entries.front().copied() {
-            if front.seq > through {
+            if !covered.contains(&front.entry) {
                 break;
             }
             self.entries.pop_front();
             self.bytes = self.bytes.saturating_sub(front.bytes);
-            trimmed = true;
+            through = Some(front.seq);
         }
-        trimmed
+        through
     }
 }
 
-/// The author and checkpoint body digest of an encoded retained envelope.
-fn retained_frame_parts(frame: &[u8]) -> Option<([u8; 32], Option<[u8; 32]>)> {
+/// What an arriving checkpoint does to its channel's retained state.
+struct CheckpointPlan {
+    base: RetainedBase,
+    /// Whether it may replace the base: there is none, it supersedes
+    /// everything, or it names the base as covered.
+    replaces_base: bool,
+    /// The entries it names as covered; `None` for a whole-state baseline.
+    covered: Option<HashSet<[u8; 32]>>,
+}
+
+/// A retained envelope as the tail accounts it.
+struct RetainedParts {
+    author: [u8; 32],
+    entry: [u8; 32],
+    /// Body digest, for a checkpoint.
+    checkpoint_digest: Option<[u8; 32]>,
+}
+
+fn retained_frame_parts(frame: &[u8]) -> Option<RetainedParts> {
     let Envelope::Delta {
         author_device_public_key,
         delta,
@@ -248,13 +267,18 @@ fn retained_frame_parts(frame: &[u8]) -> Option<([u8; 32], Option<[u8; 32]>)> {
     else {
         return None;
     };
-    let digest = match crate::coedit::CoeditPayload::decode(&delta)? {
-        crate::coedit::CoeditPayload::Checkpoint { body, .. } => {
-            Some(*blake3::hash(&body).as_bytes())
-        }
-        crate::coedit::CoeditPayload::RetainedDelta { .. } => None,
-    };
-    Some((author_device_public_key, digest))
+    Some(match crate::coedit::CoeditPayload::decode(&delta)? {
+        crate::coedit::CoeditPayload::Checkpoint { entry, body, .. } => RetainedParts {
+            author: author_device_public_key,
+            entry,
+            checkpoint_digest: Some(*blake3::hash(&body).as_bytes()),
+        },
+        crate::coedit::CoeditPayload::RetainedDelta { entry, .. } => RetainedParts {
+            author: author_device_public_key,
+            entry,
+            checkpoint_digest: None,
+        },
+    })
 }
 
 impl WorkspaceRuntime {
@@ -294,20 +318,26 @@ impl WorkspaceRuntime {
         let mut tails = HashMap::new();
         for retained in store.load_retained_channels()? {
             let mut tail = RetainedTail {
-                has_checkpoint: retained.checkpoint.is_some(),
-                checkpoint_digest: retained
+                base: retained
                     .checkpoint
                     .as_deref()
                     .and_then(retained_frame_parts)
-                    .and_then(|(_, digest)| digest),
+                    .and_then(|parts| {
+                        Some(RetainedBase {
+                            entry: parts.entry,
+                            digest: parts.checkpoint_digest?,
+                        })
+                    }),
                 ..RetainedTail::default()
             };
             for (seq, frame) in retained.tail {
                 last_seq = last_seq.max(seq);
+                let parts = retained_frame_parts(&frame);
                 tail.push(TailEntry {
                     seq,
                     bytes: frame.len() as u64,
-                    author: retained_frame_parts(&frame).map_or([0; 32], |(author, _)| author),
+                    author: parts.as_ref().map_or([0; 32], |parts| parts.author),
+                    entry: parts.as_ref().map_or([0; 32], |parts| parts.entry),
                 });
             }
             tails.insert(retained.channel, tail);
@@ -324,7 +354,6 @@ impl WorkspaceRuntime {
             membership_stamp: None,
             last_seq,
             tails,
-            checkpoint_covers: HashMap::new(),
             tail_bounds: TailBounds::default(),
         })
     }
@@ -365,12 +394,8 @@ impl WorkspaceRuntime {
     }
 
     /// Register a subscription. Replaces any prior subscription
-    /// from the same device. Call it under the same lock that loaded the
-    /// subscriber's retained replay, just before answering `Ready`: the
-    /// subscriber then holds every retained entry up to now.
+    /// from the same device.
     pub fn add_subscriber(&mut self, sub: Subscriber) {
-        self.checkpoint_covers
-            .insert(sub.device_public_key, self.last_seq);
         self.subscribers.insert(sub.device_public_key, sub);
     }
 
@@ -390,7 +415,6 @@ impl WorkspaceRuntime {
     /// Drop a subscription for `device`. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         self.subscribers.remove(device);
-        self.checkpoint_covers.remove(device);
     }
 
     /// Whether `device` currently holds a subscription here.
@@ -425,30 +449,18 @@ impl WorkspaceRuntime {
     ) -> Result<Fanout, crate::store::StoreError> {
         let seq = self.next_seq(seq);
         let payload = crate::coedit::CoeditPayload::decode(raw_delta_bytes);
-        // What a checkpoint covers: everything its author had been handed
-        // before its last `Ready`, when the author is a live subscriber here
-        // speaking for itself. A checkpoint forwarded by a peer relay, or
-        // from a device that is not subscribed, covers nothing known.
-        let mut checkpoint = None;
-        if let Some(crate::coedit::CoeditPayload::Checkpoint { channel, body }) = &payload {
-            let digest = *blake3::hash(body).as_bytes();
-            let covers = (from_role == PeerRole::Device && self.subscribers.contains_key(author))
-                .then(|| self.checkpoint_covers.get(author).copied())
-                .flatten();
-            let tail = self.tails.entry(*channel).or_default();
-            let replaces_base =
-                !tail.has_checkpoint || covers.is_some_and(|covers| covers >= tail.checkpoint_seq);
-            if tail.checkpoint_digest == Some(digest) {
-                // The exact checkpoint already retained (every member
-                // republishes on attach): every subscriber holds it or gets
-                // it in its replay. It still proves what its author covers.
-                if replaces_base && let Some(covers) = covers {
-                    self.trim_tail(channel, covers)?;
-                }
-                return Ok(Fanout::default());
-            }
-            checkpoint = Some((*channel, digest, replaces_base, covers));
-        }
+        let checkpoint = match &payload {
+            Some(crate::coedit::CoeditPayload::Checkpoint {
+                channel,
+                entry,
+                coverage,
+                body,
+            }) => match self.plan_checkpoint(channel, *entry, coverage, body)? {
+                Some(plan) => Some(plan),
+                None => return Ok(Fanout::default()),
+            },
+            _ => None,
+        };
         // One encode and one allocation for every recipient below.
         let frame = encode_frame(envelope).map_err(|error| {
             crate::store::StoreError::Io(std::io::Error::new(
@@ -468,23 +480,25 @@ impl WorkspaceRuntime {
             match (payload, checkpoint) {
                 (
                     crate::coedit::CoeditPayload::Checkpoint { channel, .. },
-                    Some((_, digest, true, covers)),
+                    Some(CheckpointPlan {
+                        base,
+                        replaces_base: true,
+                        covered,
+                    }),
                 ) => {
                     self.store.retain_checkpoint(channel, &frame)?;
-                    let tail = self.tails.entry(*channel).or_default();
-                    tail.has_checkpoint = true;
-                    tail.checkpoint_seq = seq;
-                    tail.checkpoint_digest = Some(digest);
-                    if let Some(covers) = covers {
-                        self.trim_tail(channel, covers)?;
+                    self.tails.entry(*channel).or_default().base = Some(base);
+                    match covered {
+                        Some(covered) => self.trim_tail(channel, &covered)?,
+                        None => self.clear_tail(channel)?,
                     }
                 }
-                // A checkpoint not known to cover the retained base would
+                // A checkpoint that does not name the retained base would
                 // lose whatever of the base it lacks if it replaced it. As a
                 // tail entry it adds its state without removing any.
                 (
-                    crate::coedit::CoeditPayload::Checkpoint { channel, .. }
-                    | crate::coedit::CoeditPayload::RetainedDelta { channel, .. },
+                    crate::coedit::CoeditPayload::Checkpoint { channel, entry, .. }
+                    | crate::coedit::CoeditPayload::RetainedDelta { channel, entry, .. },
                     _,
                 ) => {
                     self.store.retain_delta(channel, seq, &frame)?;
@@ -492,6 +506,7 @@ impl WorkspaceRuntime {
                         seq,
                         bytes: frame.len() as u64,
                         author: *author,
+                        entry: *entry,
                     });
                     self.enforce_tail_bounds(channel, author);
                 }
@@ -581,19 +596,68 @@ impl WorkspaceRuntime {
         Ok(())
     }
 
-    /// Drop the front of `channel`'s tail through `through`, which the
-    /// channel's base checkpoint covers.
+    /// Decide what an arriving checkpoint does. What it covers is only ever
+    /// what it says: a whole-state baseline supersedes everything retained;
+    /// a document merge names the retained entries its publisher read from
+    /// the bytes it saved. `None` for the exact checkpoint already retained
+    /// (every member republishes on attach), which is neither fanned out nor
+    /// retained again — though what it names as covered still holds.
+    fn plan_checkpoint(
+        &mut self,
+        channel: &[u8; 32],
+        entry: [u8; 32],
+        coverage: &crate::coedit::Coverage,
+        body: &[u8],
+    ) -> Result<Option<CheckpointPlan>, crate::store::StoreError> {
+        let digest = *blake3::hash(body).as_bytes();
+        let covered: Option<HashSet<[u8; 32]>> = match coverage {
+            crate::coedit::Coverage::Supersedes => None,
+            crate::coedit::Coverage::Entries(entries) => Some(entries.iter().copied().collect()),
+        };
+        let tail = self.tails.entry(*channel).or_default();
+        let replaces_base = match (&tail.base, &covered) {
+            (None, _) | (_, None) => true,
+            (Some(base), Some(covered)) => covered.contains(&base.entry),
+        };
+        if tail.base.is_some_and(|base| base.digest == digest) {
+            if replaces_base && let Some(covered) = &covered {
+                self.trim_tail(channel, covered)?;
+            }
+            return Ok(None);
+        }
+        Ok(Some(CheckpointPlan {
+            base: RetainedBase { entry, digest },
+            replaces_base,
+            covered,
+        }))
+    }
+
+    /// Drop the front of `channel`'s tail while the base checkpoint just
+    /// retained names each entry as covered.
     fn trim_tail(
         &mut self,
         channel: &[u8; 32],
-        through: u64,
+        covered: &HashSet<[u8; 32]>,
     ) -> Result<(), crate::store::StoreError> {
         let Some(tail) = self.tails.get_mut(channel) else {
             return Ok(());
         };
-        if tail.trim_front(through) {
+        if let Some(through) = tail.trim_front(covered) {
             self.store.trim_tail(channel, through)?;
             tail.last_request = None;
+        }
+        Ok(())
+    }
+
+    /// Drop all of `channel`'s tail: a whole-state baseline superseded it.
+    fn clear_tail(&mut self, channel: &[u8; 32]) -> Result<(), crate::store::StoreError> {
+        let Some(tail) = self.tails.get_mut(channel) else {
+            return Ok(());
+        };
+        if let Some(last) = tail.entries.back().map(|entry| entry.seq) {
+            tail.entries.clear();
+            tail.bytes = 0;
+            self.store.trim_tail(channel, last)?;
         }
         Ok(())
     }
@@ -703,7 +767,6 @@ impl WorkspaceRuntime {
         if sub.tx.try_send(frame).is_err() {
             return;
         }
-        self.checkpoint_covers.insert(target, self.last_seq);
         if let Some(tail) = self.tails.get_mut(channel) {
             tail.last_request = Some(std::time::Instant::now());
         }
@@ -965,14 +1028,7 @@ mod tests {
         }
         let author = members[0];
         let channel = [0x5C; 32];
-        let (env, raw) = coedit_delta(
-            90,
-            author,
-            &crate::coedit::CoeditPayload::RetainedDelta {
-                channel,
-                body: vec![0xEE; 4096],
-            },
-        );
+        let (env, raw) = coedit_delta(90, author, &retained(channel, vec![0xEE; 4096]));
         let fanout = rt
             .fanout_delta(&author, PeerRole::Device, &env, &raw, 10)
             .unwrap();
@@ -1019,11 +1075,8 @@ mod tests {
         let (sub, mut rx) = subscriber(device(7), 8);
         rt.add_subscriber(sub);
         let channel = [0x11; 32];
-        let checkpoint = crate::coedit::CoeditPayload::Checkpoint {
-            channel,
-            body: b"state-1".to_vec(),
-        };
-        let (first, raw) = coedit_delta(91, device(1), &checkpoint);
+        let state = checkpoint(channel, b"state-1".to_vec(), Vec::new());
+        let (first, raw) = coedit_delta(91, device(1), &state);
         assert_eq!(
             rt.fanout_delta(&device(1), PeerRole::Device, &first, &raw, 1)
                 .unwrap()
@@ -1031,19 +1084,12 @@ mod tests {
             1
         );
         rx.try_recv().unwrap();
-        let (tail, tail_raw) = coedit_delta(
-            91,
-            device(1),
-            &crate::coedit::CoeditPayload::RetainedDelta {
-                channel,
-                body: b"after".to_vec(),
-            },
-        );
+        let (tail, tail_raw) = coedit_delta(91, device(1), &retained(channel, b"after".to_vec()));
         rt.fanout_delta(&device(1), PeerRole::Device, &tail, &tail_raw, 2)
             .unwrap();
         rx.try_recv().unwrap();
 
-        let (again, again_raw) = coedit_delta(91, device(2), &checkpoint);
+        let (again, again_raw) = coedit_delta(91, device(2), &state);
         let fanout = rt
             .fanout_delta(&device(2), PeerRole::Device, &again, &again_raw, 3)
             .unwrap();
@@ -1058,10 +1104,7 @@ mod tests {
         let (changed, changed_raw) = coedit_delta(
             91,
             device(2),
-            &crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                body: b"state-2".to_vec(),
-            },
+            &checkpoint(channel, b"state-2".to_vec(), Vec::new()),
         );
         assert_eq!(
             rt.fanout_delta(&device(2), PeerRole::Device, &changed, &changed_raw, 4)
@@ -1069,9 +1112,8 @@ mod tests {
                 .delivered,
             1
         );
-        // device(2) is not subscribed here, so nothing proves its checkpoint
-        // holds the retained base and tail: it is kept after them instead of
-        // replacing either.
+        // The new checkpoint names nothing as covered — not the retained base
+        // either — so it is kept after them instead of replacing either.
         assert_eq!(rt.store.load_retained().unwrap().len(), 3);
     }
 
@@ -1109,11 +1151,38 @@ mod tests {
         doc.save_incremental()
     }
 
-    /// A tail past its soft bound is never cut in the middle. The relay asks
-    /// the most recent connected sender for a checkpoint and trims only the
-    /// front that checkpoint covers, so a member joining at any point —
-    /// before the answer, after it, or after a restart — converges with no
-    /// change left waiting for a dependency.
+    fn entry_of(body: &[u8]) -> [u8; 32] {
+        *blake3::hash(body).as_bytes()
+    }
+
+    fn retained(channel: [u8; 32], body: Vec<u8>) -> crate::coedit::CoeditPayload {
+        crate::coedit::CoeditPayload::RetainedDelta {
+            channel,
+            entry: entry_of(&body),
+            body,
+        }
+    }
+
+    fn checkpoint(
+        channel: [u8; 32],
+        body: Vec<u8>,
+        covers: Vec<[u8; 32]>,
+    ) -> crate::coedit::CoeditPayload {
+        crate::coedit::CoeditPayload::Checkpoint {
+            channel,
+            entry: entry_of(&body),
+            coverage: crate::coedit::Coverage::Entries(covers),
+            body,
+        }
+    }
+
+    /// A tail past its soft bound is never cut in the middle, and is
+    /// trimmed only by what a checkpoint names as covered — never by when it
+    /// arrived. Here the answer to the relay's checkpoint request was saved
+    /// before two later edits reached the relay (the race a sequence would
+    /// over-credit): it names only what it holds, those two stay, and a
+    /// member joining at any point converges with no change left waiting for
+    /// a dependency.
     #[test]
     fn a_joiner_after_tail_trimming_converges_with_no_parked_changes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1131,21 +1200,13 @@ mod tests {
         let mut doc = AutoCommit::new();
         doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
         edit(&mut doc, 0);
-        publish(
-            &mut rt,
-            writer,
-            &crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                body: doc.save(),
-            },
-        );
+        let base_body = doc.save();
+        let mut ids = vec![entry_of(&base_body)];
+        publish(&mut rt, writer, &checkpoint(channel, base_body, Vec::new()));
         for n in 1..=7 {
             let body = edit(&mut doc, n);
-            publish(
-                &mut rt,
-                writer,
-                &crate::coedit::CoeditPayload::RetainedDelta { channel, body },
-            );
+            ids.push(entry_of(&body));
+            publish(&mut rt, writer, &retained(channel, body));
         }
 
         // Over the soft bound: one checkpoint request reached the writer,
@@ -1165,28 +1226,20 @@ mod tests {
         assert!(early.get_missing_deps(&[]).is_empty());
         assert_eq!(early.get_heads(), doc.get_heads());
 
-        // Two more edits cross the request before its answer arrives: they
-        // are not covered by it and must stay.
+        // The member saves its answer now, holding the base and seven edits.
+        let answer = doc.save();
+        let answer_covers = ids.clone();
+        // Two more edits reach the relay before the answer does.
         for n in 8..=9 {
             let body = edit(&mut doc, n);
-            publish(
-                &mut rt,
-                writer,
-                &crate::coedit::CoeditPayload::RetainedDelta { channel, body },
-            );
+            publish(&mut rt, writer, &retained(channel, body));
         }
-        let answer = doc.save();
-        publish(
-            &mut rt,
-            writer,
-            &crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                body: answer,
-            },
+        publish(&mut rt, writer, &checkpoint(channel, answer, answer_covers));
+        assert_eq!(
+            rt.store.load_retained().unwrap().len(),
+            1 + 2,
+            "the answer replaced the base and the seven edits it holds; the two it lacks stay"
         );
-        // Checkpoint, then the entries after the fifth, whose request the
-        // checkpoint answered.
-        assert_eq!(rt.store.load_retained().unwrap().len(), 1 + 4);
         let mut joiner = join(&rt);
         assert!(
             joiner.get_missing_deps(&[]).is_empty(),
@@ -1198,9 +1251,42 @@ mod tests {
         drop(rt);
         let reopened =
             WorkspaceRuntime::open(tmp.path(), 94, false, Membership::default()).unwrap();
-        assert_eq!(reopened.tails[&channel].entries.len(), 4);
-        assert!(reopened.tails[&channel].has_checkpoint);
+        assert_eq!(reopened.tails[&channel].entries.len(), 2);
+        assert!(reopened.tails[&channel].base.is_some());
         assert_eq!(join(&reopened).get_heads(), doc.get_heads());
+    }
+
+    /// Coverage that skips the oldest tail entry trims nothing — the tail is
+    /// cut only from its front.
+    #[test]
+    fn coverage_with_a_hole_at_the_front_trims_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 98, false, Membership::default()).unwrap();
+        let channel = [0x7A; 32];
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
+        edit(&mut doc, 0);
+        let base_body = doc.save();
+        let base = entry_of(&base_body);
+        publish(
+            &mut rt,
+            device(1),
+            &checkpoint(channel, base_body, Vec::new()),
+        );
+        let first = edit(&mut doc, 1);
+        publish(&mut rt, device(1), &retained(channel, first));
+        let second = edit(&mut doc, 2);
+        let second_id = entry_of(&second);
+        publish(&mut rt, device(1), &retained(channel, second));
+        publish(
+            &mut rt,
+            device(1),
+            &checkpoint(channel, doc.save(), vec![base, second_id]),
+        );
+        assert_eq!(rt.store.load_retained().unwrap().len(), 3);
+        let mut joiner = join(&rt);
+        assert!(joiner.get_missing_deps(&[]).is_empty());
+        assert_eq!(joiner.get_heads(), doc.get_heads());
     }
 
     /// An offline device's pending queue that overflows in a pinned
@@ -1246,9 +1332,8 @@ mod tests {
         assert_eq!(returning.get_heads(), doc.get_heads());
     }
 
-    /// A checkpoint whose author is not a live subscriber here (forwarded,
-    /// or from a stale session) may lack part of the retained base, so it
-    /// neither replaces the base nor trims the tail.
+    /// A checkpoint that does not name the retained base as covered may
+    /// lack part of it, so it neither replaces the base nor trims the tail.
     #[test]
     fn an_uncovered_checkpoint_replaces_nothing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1260,10 +1345,7 @@ mod tests {
         publish(
             &mut rt,
             device(1),
-            &crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                body: base.save(),
-            },
+            &checkpoint(channel, base.save(), Vec::new()),
         );
         let mut other = AutoCommit::new();
         other.set_actor(automerge::ActorId::from(b"other".as_slice()));
@@ -1271,10 +1353,7 @@ mod tests {
         let (env, raw) = coedit_delta(
             95,
             device(2),
-            &crate::coedit::CoeditPayload::Checkpoint {
-                channel,
-                body: other.save(),
-            },
+            &checkpoint(channel, other.save(), Vec::new()),
         );
         rt.fanout_delta(&device(2), PeerRole::PeerRelay, &env, &raw, 1)
             .unwrap();
@@ -1314,24 +1393,10 @@ mod tests {
         rt.add_subscriber(sub);
         let channel = [0x79; 32];
         for (author, size) in [(light, 8), (heavy, 512), (heavy, 512), (light, 8)] {
-            publish(
-                &mut rt,
-                author,
-                &crate::coedit::CoeditPayload::RetainedDelta {
-                    channel,
-                    body: vec![0; size],
-                },
-            );
+            publish(&mut rt, author, &retained(channel, vec![0; size]));
         }
         assert!(rt.has_subscriber(&heavy), "at the hard bound, not over it");
-        publish(
-            &mut rt,
-            light,
-            &crate::coedit::CoeditPayload::RetainedDelta {
-                channel,
-                body: vec![0; 8],
-            },
-        );
+        publish(&mut rt, light, &retained(channel, vec![0; 8]));
         assert_eq!(
             rt.store.load_retained().unwrap().len(),
             5,

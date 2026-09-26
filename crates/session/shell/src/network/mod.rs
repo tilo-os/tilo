@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod behaviour;
+pub mod coverage;
 pub mod decoder;
 pub mod encoder;
 pub mod hub;

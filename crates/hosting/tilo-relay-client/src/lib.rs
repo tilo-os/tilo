@@ -27,5 +27,8 @@ pub mod coedit;
 pub mod frame;
 
 pub use client::{ClientError, RelayClient};
-pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+pub use coedit::{
+    AttributedPresence, CoeditError, CoeditPayload, Coverage, Inbound, MAX_COVERED_ENTRIES,
+    RelayCoeditSession,
+};
 pub use tilo_relay_protocol::transport::{ContentPeerRegistration, Envelope};

@@ -209,6 +209,17 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
+    /// Publish a document checkpoint together with the retained entries it
+    /// holds, as read from the bytes it was saved from (see
+    /// [`retained_entry_id`]). A durable host trims its retained history
+    /// only by these. `shell_checkpoint` marks a complete shell-room
+    /// baseline, as [`Self::PublishCheckpoint`] does.
+    PublishCovered {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        covers: Vec<[u8; 32]>,
+        shell_checkpoint: bool,
+    },
     /// Publish live workspace-control traffic over the route selected by the
     /// canonical device mesh. Direct input uses the authenticated exact-target
     /// QUIC surface/control plane. Workspace-wide relay publication is refused
@@ -962,6 +973,22 @@ impl ActorState {
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
+            }
+            Some(NetCmd::PublishCovered {
+                ws,
+                msg,
+                covers,
+                shell_checkpoint,
+            }) => {
+                publish_covered(
+                    &self.topics,
+                    &self.host_sessions,
+                    ws,
+                    msg,
+                    &covers,
+                    shell_checkpoint,
+                )
+                .await;
             }
             Some(NetCmd::PublishPersonalFabric {
                 ws,
@@ -2312,7 +2339,12 @@ impl ActorState {
         let Some((channel, _)) = retention(&hello, false) else {
             return;
         };
-        if let Err(error) = runtime.session.publish_checkpoint(channel, bytes) {
+        if let Err(error) = runtime.session.publish_checkpoint(
+            channel,
+            retained_entry_id(&hello),
+            tilo_relay_client::Coverage::Supersedes,
+            bytes,
+        ) {
             tracing::warn!(ws, %error, "could not retain this device's identity at the host");
         }
     }
@@ -2796,6 +2828,84 @@ async fn publish(
     broadcast_gossip: bool,
     publish_hosts: bool,
 ) {
+    publish_with(
+        topics,
+        host_sessions,
+        ws,
+        msg,
+        HostPublish {
+            shell_checkpoint,
+            covers: &[],
+        },
+        broadcast_gossip,
+        publish_hosts,
+    )
+    .await;
+}
+
+/// [`publish`] for a checkpoint that names the retained entries it holds.
+async fn publish_covered(
+    topics: &HashMap<WorkspaceId, TopicRuntime>,
+    host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    ws: WorkspaceId,
+    msg: NeighbourMsg,
+    covers: &[[u8; 32]],
+    shell_checkpoint: bool,
+) {
+    publish_with(
+        topics,
+        host_sessions,
+        ws,
+        msg,
+        HostPublish {
+            shell_checkpoint,
+            covers,
+        },
+        true,
+        true,
+    )
+    .await;
+}
+
+/// How a message is retained by a durable host.
+struct HostPublish<'a> {
+    /// A shell-tree `SyncResp` holding the complete room history.
+    shell_checkpoint: bool,
+    /// The retained entries a document checkpoint holds.
+    covers: &'a [[u8; 32]],
+}
+
+/// A retained message's identity on every durable host: the signed op's own
+/// id for an app document (the same id its app computes), a digest of the
+/// encoded message for everything else.
+pub fn retained_entry_id(msg: &NeighbourMsg) -> [u8; 32] {
+    if let NeighbourMsg::AppDocument { envelope, .. } = msg {
+        return envelope.retained_entry_id();
+    }
+    *blake3::hash(&postcard::to_allocvec(msg).unwrap_or_default()).as_bytes()
+}
+
+/// What a checkpoint of `msg` replaces on a host: a merged document names
+/// what it holds; any other retained message is a whole-state baseline whose
+/// newest version wins.
+fn host_coverage(msg: &NeighbourMsg, covers: &[[u8; 32]]) -> tilo_relay_client::Coverage {
+    match msg {
+        NeighbourMsg::AppDocument { .. } | NeighbourMsg::SyncResp { .. } => {
+            tilo_relay_client::Coverage::Entries(covers.to_vec())
+        }
+        _ => tilo_relay_client::Coverage::Supersedes,
+    }
+}
+
+async fn publish_with(
+    topics: &HashMap<WorkspaceId, TopicRuntime>,
+    host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    ws: WorkspaceId,
+    msg: NeighbourMsg,
+    host: HostPublish<'_>,
+    broadcast_gossip: bool,
+    publish_hosts: bool,
+) {
     if let NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. } = &msg
         && snapshot.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES
     {
@@ -2813,7 +2923,8 @@ async fn publish(
             return;
         }
     };
-    let retention = retention(&msg, shell_checkpoint);
+    let retention = retention(&msg, host.shell_checkpoint);
+    let entry = retention.is_some().then(|| retained_entry_id(&msg));
 
     // Host clients enqueue synchronously into their already-authenticated
     // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
@@ -2825,14 +2936,19 @@ async fn publish(
             if *session_ws != ws {
                 continue;
             }
-            let result = match retention {
-                Some((channel, Retention::Checkpoint)) => {
-                    runtime.session.publish_checkpoint(channel, bytes.clone())
+            let result = match (retention, entry) {
+                (Some((channel, Retention::Checkpoint)), Some(entry)) => {
+                    runtime.session.publish_checkpoint(
+                        channel,
+                        entry,
+                        host_coverage(&msg, host.covers),
+                        bytes.clone(),
+                    )
                 }
-                Some((channel, Retention::Delta)) => runtime
+                (Some((channel, Retention::Delta)), Some(entry)) => runtime
                     .session
-                    .publish_retained_delta(channel, bytes.clone()),
-                None => runtime.session.publish_presence(bytes.clone()),
+                    .publish_retained_delta(channel, entry, bytes.clone()),
+                _ => runtime.session.publish_presence(bytes.clone()),
             };
             if let Err(error) = result {
                 tracing::warn!(ws, %error, "workspace host publish failed");
@@ -4392,6 +4508,198 @@ mod tests {
                 break;
             }
         }
+    }
+
+    /// A chat record in a feedback room: remarks retained on the host, then
+    /// the app's snapshot naming the remarks its bytes hold. The host trims
+    /// exactly those from the front of the record's retained tail and keeps a
+    /// remark that crossed the snapshot; a member joining afterwards replays
+    /// the retained state and holds every remark with no change parked.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transcript: remarks, the covering snapshot, then the joiner's replay"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_app_snapshot_trims_the_retained_remarks_it_holds() {
+        use automerge::transaction::Transactable;
+        use tilo_automerge::ApplyIncoming;
+        let user_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&user_root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&user_root, DeviceCapabilities::member(), "b");
+        let (relay, state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &user_root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity = |key: ed25519_dalek::SigningKey, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key.clone(), a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+            HEARTBEAT_INTERVAL,
+        )
+        .await;
+
+        let author = collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes());
+        let (app, room, record) = ("so.tilo.chat", "feedback-room", "fb-channel");
+        let document_message = |mutation: collab_types::DocumentMutation, seq: u64| {
+            let frames = mutation.encode_frames().unwrap();
+            assert_eq!(frames.len(), 1);
+            NeighbourMsg::AppDocument {
+                peer: 7,
+                app_id: app.into(),
+                cluster_id: room.into(),
+                record_id: record.into(),
+                envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                    frames.into_iter().next().unwrap(),
+                    collab_types::document_artifact_id(app, room, record),
+                    author,
+                    collab_types::document_attestation_id(app, room, record),
+                    collab_types::OpClass::Comment,
+                    std::time::SystemTime::UNIX_EPOCH,
+                    seq,
+                )),
+            }
+        };
+        let mut chat = automerge::AutoCommit::new();
+        chat.put(automerge::ROOT, "remarks", 0).unwrap();
+        let base = document_message(collab_types::DocumentMutation::Snapshot(chat.save()), 1);
+        let base_id = retained_entry_id(&base);
+        cmd_a
+            .send(NetCmd::PublishCovered {
+                ws: 42,
+                msg: base,
+                covers: Vec::new(),
+                shell_checkpoint: false,
+            })
+            .await
+            .unwrap();
+        let mut remark_ids = Vec::new();
+        for n in 1..=4u64 {
+            chat.put(automerge::ROOT, format!("remark-{n}"), n).unwrap();
+            let remark = document_message(
+                collab_types::DocumentMutation::Incremental(chat.save_incremental()),
+                n.saturating_add(1),
+            );
+            remark_ids.push(retained_entry_id(&remark));
+            cmd_a
+                .send(NetCmd::Publish {
+                    ws: 42,
+                    msg: remark,
+                })
+                .await
+                .unwrap();
+        }
+        // The app saves its snapshot now; one more remark crosses it.
+        let saved = chat.save();
+        chat.put(automerge::ROOT, "remark-5", 5).unwrap();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: document_message(
+                    collab_types::DocumentMutation::Incremental(chat.save_incremental()),
+                    6,
+                ),
+            })
+            .await
+            .unwrap();
+        let mut covers = vec![base_id];
+        covers.extend(&remark_ids);
+        let snapshot = document_message(collab_types::DocumentMutation::Snapshot(saved), 7);
+        let snapshot_id = retained_entry_id(&snapshot);
+        cmd_a
+            .send(NetCmd::PublishCovered {
+                ws: 42,
+                msg: snapshot,
+                covers,
+                shell_checkpoint: false,
+            })
+            .await
+            .unwrap();
+
+        let route = format!("app\0{app}\0{record}");
+        let channel = hex::encode(blake3::hash(route.as_bytes()).as_bytes());
+        let retained = state.path().join("workspaces/42/retained");
+        let tail = retained.join("tails").join(&channel);
+        let checkpoint = retained.join("checkpoints").join(&channel);
+        let trimmed = timeout(Duration::from_secs(30), async {
+            loop {
+                let entries = std::fs::read_dir(&tail).map_or(usize::MAX, Iterator::count);
+                let checkpoint_holds_snapshot = std::fs::read(&checkpoint).is_ok_and(|frame| {
+                    matches!(
+                        tilo_relay::frame::decode(&frame[4..]),
+                        Ok(tilo_relay::Envelope::Delta { delta, .. })
+                            if matches!(
+                                tilo_relay::CoeditPayload::decode(&delta),
+                                Some(tilo_relay::CoeditPayload::Checkpoint { entry, .. })
+                                    if entry == snapshot_id
+                            )
+                    )
+                }) && entries == 1;
+                if checkpoint_holds_snapshot {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        let retained_now: Vec<_> = std::fs::read_dir(&tail)
+            .map(|entries| entries.flatten().map(|entry| entry.file_name()).collect())
+            .unwrap_or_default();
+        assert!(
+            trimmed.is_ok(),
+            "the four held remarks are trimmed; only the one that crossed the snapshot stays \
+             (tail now {retained_now:?}, checkpoint present: {})",
+            checkpoint.exists()
+        );
+
+        // A joiner replays the retained state: the snapshot, then the tail.
+        let mut frames = vec![std::fs::read(&checkpoint).unwrap()];
+        for entry in std::fs::read_dir(&tail).unwrap() {
+            frames.push(std::fs::read(entry.unwrap().path()).unwrap());
+        }
+        let mut joiner = automerge::AutoCommit::new();
+        for frame in frames {
+            let tilo_relay::Envelope::Delta { delta, .. } =
+                tilo_relay::frame::decode(&frame[4..]).unwrap()
+            else {
+                panic!("retained frames are deltas");
+            };
+            let body = match tilo_relay::CoeditPayload::decode(&delta).unwrap() {
+                tilo_relay::CoeditPayload::Checkpoint { body, .. }
+                | tilo_relay::CoeditPayload::RetainedDelta { body, .. } => body,
+            };
+            let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(&body).unwrap()
+            else {
+                panic!("retained chat traffic is app documents");
+            };
+            let collab_types::DocumentFrame::Whole(mutation) =
+                collab_types::DocumentFrame::decode(&envelope.payload).unwrap()
+            else {
+                panic!("single-frame mutations");
+            };
+            let (collab_types::DocumentMutation::Snapshot(bytes)
+            | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
+            joiner.load_incoming(&bytes).unwrap();
+        }
+        assert!(
+            joiner.get_missing_deps(&[]).is_empty(),
+            "no remark waits for a dependency"
+        );
+        assert_eq!(joiner.get_heads(), chat.get_heads(), "every remark is held");
     }
 
     /// Two devices that share only a workspace host, with no direct route,

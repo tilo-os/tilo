@@ -92,7 +92,10 @@ pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, sen
 pub use app_serving::{ActionHostPlane, AppServingPlane};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
-pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
+pub use coedit::{
+    AttributedPresence, CoeditError, CoeditPayload, Coverage, Inbound, MAX_COVERED_ENTRIES,
+    RelayCoeditSession,
+};
 pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
     ComputeJobResult, ComputeJobSpec, ComputePackageCatalogue, ComputeResourceLimits,

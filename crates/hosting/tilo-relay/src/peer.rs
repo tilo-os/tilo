@@ -795,6 +795,16 @@ async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
+    if let Some(crate::coedit::CoeditPayload::Checkpoint {
+        coverage: crate::coedit::Coverage::Entries(entries),
+        ..
+    }) = crate::coedit::CoeditPayload::decode(delta)
+        && entries.len() > crate::coedit::MAX_COVERED_ENTRIES
+    {
+        return Err(PeerError::Protocol(
+            "checkpoint names more covered entries than the limit".into(),
+        ));
+    }
     let seq = unix_now_ns();
     let raw_bytes = delta.clone();
     let author = *author_device_public_key;
