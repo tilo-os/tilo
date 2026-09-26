@@ -927,7 +927,7 @@ fn transformed(
     let value = value.ok_or_else(|| contract("the agent returned nothing".into()))?;
     match transform {
         AiTransform::Extract { schema } => {
-            validate_json_schema(&value, schema).map_err(contract)?
+            validate_json_schema(&value, schema).map_err(contract)?;
         }
         AiTransform::Classify { choices } => {
             if !value
