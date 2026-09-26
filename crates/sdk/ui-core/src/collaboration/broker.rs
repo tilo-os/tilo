@@ -4702,7 +4702,7 @@ mod tests {
     fn host_identity_fixture_with_keys(
         certificate: Option<Vec<u8>>,
         replies: Vec<runtime_identity::wire::Response>,
-        keys: Option<runtime_identity::wire::Response>,
+        keys: Option<(u64, Vec<u8>)>,
     ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
         use runtime_identity::wire::Response;
         let mut responses = vec![Response::Metadata {
@@ -4735,11 +4735,18 @@ mod tests {
                     Ok(runtime_identity::wire::Request::ChannelKeys { .. })
                 );
                 let response = if asks_keys {
-                    keys.clone().unwrap_or(Response::ChannelKeys {
-                        access: runtime_identity::wire::ChannelAccess::Unavailable,
-                        generation: 0,
-                        keys: Vec::new(),
-                    })
+                    match &keys {
+                        Some((generation, keys)) => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Ready,
+                            generation: *generation,
+                            keys: keys.clone(),
+                        },
+                        None => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Unavailable,
+                            generation: 0,
+                            keys: Vec::new(),
+                        },
+                    }
                 } else {
                     let Some(response) = responses.next() else {
                         return;
@@ -4946,11 +4953,7 @@ mod tests {
                     runtime_identity::wire::Response::Signature(vec![7; 64]),
                     runtime_identity::wire::Response::Denied("fixture role revoked".into()),
                 ],
-                Some(runtime_identity::wire::Response::ChannelKeys {
-                    access: runtime_identity::wire::ChannelAccess::Ready,
-                    generation: 1,
-                    keys,
-                }),
+                Some((1, keys)),
             );
             requests_tx.send(requests).unwrap();
             let broker = FakeBroker {
