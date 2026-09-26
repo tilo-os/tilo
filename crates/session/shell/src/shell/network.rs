@@ -7371,6 +7371,8 @@ mod tests {
                     session_id: audio_session,
                     authorization: [6; 16],
                     sequence,
+                    media_ts: 0,
+                    presentation_ns: 0,
                     pcm_s16le: vec![0, 0],
                 }
             } else {
@@ -7405,6 +7407,8 @@ mod tests {
                 session_id: audio_session,
                 authorization: [6; 16],
                 sequence: 0,
+                media_ts: 0,
+                presentation_ns: 0,
                 pcm_s16le: vec![9, 9],
             },
         );
@@ -7420,6 +7424,8 @@ mod tests {
                 session_id: audio_session,
                 authorization: [6; 16],
                 sequence: 1_000,
+                media_ts: 0,
+                presentation_ns: 0,
                 pcm_s16le: vec![0, 0],
             },
         );
@@ -7531,6 +7537,8 @@ mod tests {
                 session_id,
                 authorization: [26; 16],
                 sequence: index as u64,
+                media_ts: 0,
+                presentation_ns: 0,
                 pcm_s16le: vec![0, 0],
             };
             let capture = PersonalFabricAction::RemoteCaptureChunk {

@@ -35,7 +35,7 @@ pub const MAX_DISPLAY_SESSIONS: usize = 4;
 pub const MAX_DISPLAY_STREAM_AGE_MS: u64 = 15_000;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
-pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 1;
+pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 2;
 pub const REMOTE_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const REMOTE_AUDIO_CHANNELS: u8 = 2;
 pub const REMOTE_AUDIO_FRAME_SAMPLES: u16 = 960;
@@ -44,6 +44,22 @@ pub const REMOTE_AUDIO_SAMPLE_FRAME_BYTES: usize = REMOTE_AUDIO_CHANNELS as usiz
 pub const MAX_REMOTE_AUDIO_FRAME_BYTES: usize =
     REMOTE_AUDIO_FRAME_SAMPLES as usize * REMOTE_AUDIO_CHANNELS as usize * 2;
 pub const MAX_REMOTE_AUDIO_SESSIONS: usize = 4;
+/// Delay from a sample's capture on the source to its playout on every
+/// member: covers capture, the network and its jitter, and the members'
+/// device latency.
+pub const REMOTE_AUDIO_GROUP_LATENCY_NS: u64 = 120_000_000;
+/// Longest group latency a frame may ask for.
+pub const MAX_REMOTE_AUDIO_GROUP_LATENCY_NS: u64 = 1_000_000_000;
+
+/// `media_ts` (frames at [`REMOTE_AUDIO_SAMPLE_RATE_HZ`]) as nanoseconds on the
+/// source's clock, or `None` past the representable range.
+#[must_use]
+pub fn remote_audio_media_ns(media_ts: u64) -> Option<u64> {
+    let ns = u128::from(media_ts)
+        .checked_mul(1_000_000_000)?
+        .checked_div(u128::from(REMOTE_AUDIO_SAMPLE_RATE_HZ))?;
+    u64::try_from(ns).ok()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -402,6 +418,13 @@ pub enum PersonalFabricAction {
         session_id: [u8; 16],
         authorization: [u8; 16],
         sequence: u64,
+        /// Index of the frame's first sample on the source's
+        /// `CLOCK_MONOTONIC`, in frames at the stream rate. Consecutive frames
+        /// continue exactly; a gap is audio the source never captured.
+        media_ts: u64,
+        /// Source `CLOCK_MONOTONIC` nanoseconds at which the frame's first
+        /// sample plays on every member of the group.
+        presentation_ns: u64,
         pcm_s16le: Vec<u8>,
     },
     RemoteAudioStop {
@@ -791,11 +814,16 @@ impl PersonalFabricActionEnvelope {
                 session_id,
                 authorization,
                 sequence,
+                media_ts,
+                presentation_ns,
                 pcm_s16le,
             } => {
+                let latency = remote_audio_media_ns(*media_ts)
+                    .and_then(|media_ns| presentation_ns.checked_sub(media_ns));
                 if session_id == &[0; 16]
                     || authorization == &[0; 16]
                     || *sequence == 0
+                    || latency.is_none_or(|latency| latency > MAX_REMOTE_AUDIO_GROUP_LATENCY_NS)
                     || pcm_s16le.is_empty()
                     || pcm_s16le.len() > MAX_REMOTE_AUDIO_FRAME_BYTES
                     || !pcm_s16le
@@ -2562,6 +2590,34 @@ mod tests {
     }
 
     #[test]
+    fn remote_audio_frames_play_after_capture_within_the_latency_bound() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        for presentation_ns in [999_999_999, 2_000_000_001] {
+            assert_eq!(
+                envelope(PersonalFabricAction::RemoteAudioFrame {
+                    session_id: [4; 16],
+                    authorization: [5; 16],
+                    sequence: 1,
+                    media_ts: 48_000,
+                    presentation_ns,
+                    pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction),
+                "a frame played before its capture or beyond the latency bound"
+            );
+        }
+    }
+
+    #[test]
     fn remote_audio_wire_is_versioned_bounded_and_capability_bearing() {
         let source = id("source");
         let target = id("target");
@@ -2609,6 +2665,8 @@ mod tests {
                 session_id: [4; 16],
                 authorization: [5; 16],
                 sequence: 1,
+                media_ts: 48_000,
+                presentation_ns: 1_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS,
                 pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
             })
             .validate_at(&source, &target, 10_100),
@@ -2619,6 +2677,8 @@ mod tests {
                 session_id: [4; 16],
                 authorization: [5; 16],
                 sequence: 2,
+                media_ts: 0,
+                presentation_ns: REMOTE_AUDIO_GROUP_LATENCY_NS,
                 pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
             })
             .validate_at(&source, &target, 10_100),

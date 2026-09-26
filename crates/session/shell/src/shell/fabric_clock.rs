@@ -208,6 +208,63 @@ impl ClockEstimate {
     }
 }
 
+/// A peer's clock model as the mapping a synchronized playout renders
+/// against, with the peer as the group leader. Continuous in nanoseconds, so
+/// the playout's drift loop sees a smooth line rather than microsecond steps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeerPlayoutClock {
+    reference_local_ns: i64,
+    /// How far the peer clock is ahead at the reference.
+    offset_at_reference_ns: f64,
+    /// Peer clock rate minus one, relative to this device.
+    skew: f64,
+}
+
+impl PeerPlayoutClock {
+    /// A peer clock `offset_ns` ahead of this one at local time
+    /// `reference_local_ns`, running `skew_ppm` parts per million faster.
+    #[must_use]
+    pub fn new(reference_local_ns: i64, offset_ns: i64, skew_ppm: f64) -> Self {
+        Self {
+            reference_local_ns,
+            offset_at_reference_ns: to_f64(offset_ns),
+            skew: skew_ppm * 1e-6,
+        }
+    }
+}
+
+impl media::sync_playout::ClockMapping for PeerPlayoutClock {
+    fn leader_to_local_ns(&self, leader_ns: i64) -> i64 {
+        // peer = local + offset + skew * (local - reference), solved for local.
+        let peer_since = to_f64(leader_ns.saturating_sub(self.reference_local_ns));
+        let since = (peer_since - self.offset_at_reference_ns) / (1.0 + self.skew);
+        self.reference_local_ns
+            .saturating_add(round_us(since).unwrap_or(0))
+    }
+
+    fn local_to_leader_ns(&self, local_ns: i64) -> i64 {
+        let since = local_ns.saturating_sub(self.reference_local_ns);
+        let offset = self
+            .skew
+            .mul_add(to_f64(since), self.offset_at_reference_ns);
+        local_ns.saturating_add(round_us(offset).unwrap_or(0))
+    }
+}
+
+impl ClockEstimate {
+    /// This model as a playout clock mapping. Skew is trusted only once the
+    /// estimate is synchronised; before that the fit spans too little time
+    /// and only its offset is used.
+    #[must_use]
+    pub fn playout_clock(&self) -> PeerPlayoutClock {
+        PeerPlayoutClock {
+            reference_local_ns: self.reference_local_us.saturating_mul(1_000),
+            offset_at_reference_ns: self.offset_at_reference_us * 1_000.0,
+            skew: if self.synced { self.skew } else { 0.0 },
+        }
+    }
+}
+
 /// Sliding-window offset and skew estimator for one peer.
 #[derive(Clone, Debug, Default)]
 pub struct PeerClockEstimator {
@@ -589,5 +646,39 @@ mod tests {
         let estimate = estimator.estimate(now as u64).expect("estimate");
         let offset = estimate.offset_us(now as u64).expect("offset") as f64;
         assert!((offset - (net.true_offset(now) - 40_000_000.0)).abs() < 500.0);
+    }
+
+    #[test]
+    fn a_playout_clock_maps_both_ways_on_one_continuous_line() {
+        use media::sync_playout::ClockMapping;
+        // The peer booted an hour earlier and runs 40 ppm fast.
+        let clock = PeerPlayoutClock::new(10_000_000_000, 3_600_000_000_000, 40.0);
+        let local = 10_500_000_123;
+        let leader = clock.local_to_leader_ns(local);
+        assert_eq!(leader, local + 3_600_000_000_000 + 20_000);
+        assert_eq!(clock.leader_to_local_ns(leader), local);
+        // One local second is a second and 40 µs on the peer.
+        assert_eq!(
+            clock.local_to_leader_ns(local + 1_000_000_000) - leader,
+            1_000_040_000
+        );
+    }
+
+    #[test]
+    fn an_unsynchronised_estimate_contributes_only_its_offset() {
+        use media::sync_playout::ClockMapping;
+        let mut estimator = PeerClockEstimator::default();
+        // One round trip: the peer is 2 s ahead, symmetric 1 ms delay.
+        assert!(estimator.observe(ClockSample {
+            t1: 5_000_000,
+            t2: 7_000_500,
+            t3: 7_000_600,
+            t4: 5_001_100,
+        }));
+        let estimate = estimator.estimate(5_001_100).unwrap();
+        assert!(!estimate.synced);
+        let clock = estimate.playout_clock();
+        let leader = clock.local_to_leader_ns(6_000_000_000);
+        assert_eq!(leader, 6_000_000_000 + 2_000_000_000);
     }
 }
