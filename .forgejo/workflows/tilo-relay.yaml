@@ -254,7 +254,7 @@ jobs:
             case "$value" in *$'\n'*|*$'\r'*) available=0 ;; esac
           done
           case "${SCCACHE_ENDPOINT:-}" in https://s3.*.amazonaws.com) ;; *) available=0 ;; esac
-          case "${SCCACHE_BUCKET:-}" in podesta-agent-sccache-*) ;; *) available=0 ;; esac
+          case "${SCCACHE_BUCKET:-}" in tilo-ci-sccache-*) ;; *) available=0 ;; esac
           case "${SCCACHE_S3_KEY_PREFIX:-}" in forgejo-runners/v[0-9]*) ;; *) available=0 ;; esac
           test "${SCCACHE_S3_USE_SSL:-}" = true || available=0
           printf 'configured=%s\n' "$available" >> "$GITHUB_OUTPUT"
