@@ -11,7 +11,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_user_identity::RevocationList;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use wire_frame::{FrameError, Framing};
 
 use crate::identity::PeerCredentials;
 use crate::peer_auth::{
@@ -147,9 +148,10 @@ where
 ///
 /// Returns an error under the same fail-closed conditions as
 /// [`authenticate_fs_peer_at`].
-// The split-stream entry point keeps the two I/O halves and the six
-// independently authenticated handshake inputs explicit at this trust boundary.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the split-stream entry point keeps the two I/O halves and the six independently authenticated handshake inputs explicit at this trust boundary"
+)]
 pub async fn authenticate_fs_peer_parts_at<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -244,6 +246,22 @@ where
     Ok(incoming)
 }
 
+/// Each handshake frame: a big-endian `u32` length, then the postcard-encoded
+/// [`AuthFrame`], bounded by the configured frame limit.
+const AUTH_FRAMING: Framing = Framing::big_endian(MAX_AUTH_FRAME_BYTES);
+
+fn frame_error(error: FrameError, maximum: usize) -> AuthenticatedTransportError {
+    match error {
+        FrameError::TooLarge(announced) | FrameError::PayloadTooLarge(announced) => {
+            AuthenticatedTransportError::FrameTooLarge { announced, maximum }
+        }
+        FrameError::Encode(error) | FrameError::Decode(error) => {
+            AuthenticatedTransportError::Codec(error)
+        }
+        other => AuthenticatedTransportError::Io(other.into()),
+    }
+}
+
 async fn write_frame<W>(
     writer: &mut W,
     frame: &AuthFrame,
@@ -252,20 +270,11 @@ async fn write_frame<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = postcard::to_stdvec(frame)?;
-    if payload.len() > maximum {
-        return Err(AuthenticatedTransportError::FrameTooLarge {
-            announced: payload.len(),
-            maximum,
-        });
-    }
-    let length =
-        u32::try_from(payload.len()).map_err(|_| AuthenticatedTransportError::FrameTooLarge {
-            announced: payload.len(),
-            maximum,
-        })?;
-    writer.write_all(&length.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
+    AUTH_FRAMING
+        .with_max_len(maximum)
+        .write_value_async(writer, frame)
+        .await
+        .map_err(|error| frame_error(error, maximum))?;
     writer.flush().await?;
     Ok(())
 }
@@ -277,15 +286,12 @@ async fn read_frame<R>(
 where
     R: AsyncRead + Unpin,
 {
-    let mut prefix = [0u8; 4];
-    reader.read_exact(&mut prefix).await?;
-    let announced = u32::from_be_bytes(prefix) as usize;
-    if announced > maximum {
-        return Err(AuthenticatedTransportError::FrameTooLarge { announced, maximum });
-    }
-    let mut payload = vec![0u8; announced];
-    reader.read_exact(&mut payload).await?;
-    postcard::from_bytes(&payload).map_err(AuthenticatedTransportError::from)
+    AUTH_FRAMING
+        .with_max_len(maximum)
+        .read_value_async(reader)
+        .await
+        .and_then(|frame| frame.ok_or(FrameError::Closed))
+        .map_err(|error| frame_error(error, maximum))
 }
 
 #[cfg(test)]
@@ -298,6 +304,67 @@ mod tests {
     };
 
     const NOW: u64 = 5_000_000;
+
+    #[tokio::test]
+    async fn auth_frames_are_big_endian_length_then_postcard() {
+        let challenge = AuthFrame::Challenge(PeerAuthChallenge {
+            verifier_endpoint: [1; 32],
+            nonce: [2; 32],
+            expires_at_ns: 300,
+        });
+        let mut expected = vec![0, 0, 0, 67, 0];
+        expected.extend_from_slice(&[1; 32]);
+        expected.extend_from_slice(&[2; 32]);
+        expected.extend_from_slice(&[0xac, 0x02]);
+
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &challenge, MAX_AUTH_FRAME_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(wire, expected);
+
+        let AuthFrame::Challenge(decoded) = read_frame(&mut expected.as_slice(), 67).await.unwrap()
+        else {
+            panic!("expected a challenge");
+        };
+        assert_eq!(decoded.nonce, [2; 32]);
+        assert_eq!(decoded.expires_at_ns, 300);
+
+        // The configured limit bounds both directions.
+        assert!(matches!(
+            write_frame(&mut Vec::new(), &challenge, 66).await,
+            Err(AuthenticatedTransportError::FrameTooLarge {
+                announced: 67,
+                maximum: 66
+            })
+        ));
+        assert!(matches!(
+            read_frame(&mut expected.as_slice(), 66).await,
+            Err(AuthenticatedTransportError::FrameTooLarge {
+                announced: 67,
+                maximum: 66
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn closed_and_truncated_auth_streams_are_io_errors() {
+        let mut truncated = vec![0, 0, 0, 67, 0];
+        truncated.extend_from_slice(&[1; 10]);
+        for wire in [&[][..], &[0, 0][..], &truncated[..]] {
+            assert!(
+                matches!(
+                    read_frame(&mut &wire[..], MAX_AUTH_FRAME_BYTES).await,
+                    Err(AuthenticatedTransportError::Io(ref error)) if error.kind() == io::ErrorKind::UnexpectedEof
+                ),
+                "{wire:?}"
+            );
+        }
+        assert!(matches!(
+            read_frame(&mut &[0, 0, 0, 1, 9][..], MAX_AUTH_FRAME_BYTES).await,
+            Err(AuthenticatedTransportError::Codec(_))
+        ));
+    }
 
     struct Party {
         root: SigningKey,
