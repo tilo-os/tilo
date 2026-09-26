@@ -34,6 +34,8 @@ struct Cell {
     returned: Condvar,
     /// Set once the owning handle is gone: a returning turn drops its Store.
     retired: std::sync::atomic::AtomicBool,
+    /// Set once the relay-retained room state has been merged since open.
+    governance_reconciled: std::sync::atomic::AtomicBool,
 }
 
 static CELLS: Mutex<Vec<Arc<Cell>>> = Mutex::new(Vec::new());
@@ -89,6 +91,7 @@ impl StoreGuard {
             slot: Mutex::new(Slot::Lent),
             returned: Condvar::new(),
             retired: std::sync::atomic::AtomicBool::new(false),
+            governance_reconciled: std::sync::atomic::AtomicBool::new(false),
         });
         cells.push(cell.clone());
         self.cell = Some(cell.clone());
@@ -220,6 +223,38 @@ impl Installed {
             return Err(AccessError::Denied(anyhow::anyhow!("cloud owner retired")));
         }
         lend(self.cell.clone(), &self.cell.machine, wait)
+    }
+}
+
+impl Installed {
+    /// Whether grants may be issued: this owner has merged everything the
+    /// relay retains for the room since it opened. A state restored from an
+    /// older copy while the host was stopped can still hold members, roles or
+    /// invitations that were since revoked; the relay retains the newer,
+    /// owner-signed governance and replays it before its first `Ready`.
+    pub(crate) fn governance_reconciled(&self) -> bool {
+        self.cell
+            .governance_reconciled
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Whether `root`'s long-lived owner may issue grants (see
+/// [`Installed::governance_reconciled`]). Without a long-lived owner in this
+/// process nothing issues grants.
+pub(crate) fn governance_reconciled(root: &Path) -> bool {
+    find(root).is_some_and(|cell| {
+        cell.governance_reconciled
+            .load(std::sync::atomic::Ordering::Acquire)
+    })
+}
+
+/// Record that the relay-retained room state has been merged: the host calls
+/// this once its relay subscription reports `Ready`.
+pub(crate) fn mark_governance_reconciled(root: &Path) {
+    if let Some(cell) = find(root) {
+        cell.governance_reconciled
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 

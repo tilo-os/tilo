@@ -119,18 +119,32 @@ impl Harness {
     /// and reopen the owner, then install a fresh ingress (new process-local
     /// registry, host work inventory and sessions) and authenticate again.
     pub(super) async fn restart(self) -> Self {
+        self.restart_restoring(|_| {}, true).await
+    }
+    /// Stop, let `restore` rewrite the owner's files while it is stopped,
+    /// then reopen. With `reconciled` false the ingress stands for a host
+    /// whose relay has not replayed its retained room state yet.
+    pub(super) async fn restart_restoring(
+        self,
+        restore: impl FnOnce(&std::path::Path),
+        reconciled: bool,
+    ) -> Self {
         let Harness { mut f, ingress, .. } = self;
         ingress.shutdown().await.unwrap();
         let path = f.owner.root().to_owned();
         let placeholder_root = tempfile::tempdir().unwrap();
         let placeholder = SessionOwner::initialize(&placeholder_root.path().join("owner")).unwrap();
         drop(std::mem::replace(&mut f.owner, placeholder));
+        restore(&path);
         f.owner = SessionOwner::open(&path).unwrap();
         f.current = crate::committed_authority::CommittedAuthority::new(&f.owner);
         f.now = tilo_delivery_protocol::clock::now_ns();
-        Self::serve(f).await
+        Self::serve_reconciled(f, reconciled).await
     }
-    async fn serve(mut f: Fixture) -> Self {
+    async fn serve(f: Fixture) -> Self {
+        Self::serve_reconciled(f, true).await
+    }
+    async fn serve_reconciled(mut f: Fixture, reconciled: bool) -> Self {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
@@ -186,6 +200,10 @@ impl Harness {
         )
         .await
         .unwrap();
+        // No relay here: the fixture stands for a host whose relay replay completed.
+        if reconciled {
+            f.current.mark_governance_reconciled();
+        }
         let mut harness = Self {
             f,
             ingress,

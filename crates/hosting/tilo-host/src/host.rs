@@ -1813,6 +1813,14 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             }
             command = collaboration_commands.recv() => {
                 if let Some(command) = command {
+                    // Join grants wait for the relay-retained room state.
+                    if !committed.governance_reconciled() {
+                        let _ = command.reply.send(qos_peer_state::join::JoinTransportResponse::Error {
+                            code: 503,
+                            message: "workspace authority is reconciling retained state".into(),
+                        });
+                        continue;
+                    }
                     let before = owner.committed_generation();
                     let response = handle_collaboration_exchange(
                         &mut owner,
@@ -2061,6 +2069,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 match inbound {
                     Some(Inbound::Ready { pending }) => {
                         replaying = false;
+                        // Everything the relay retains for the room is merged.
+                        committed.mark_governance_reconciled();
                         reconnect_policy.ready(std::time::Instant::now());
                         let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;

@@ -206,6 +206,10 @@ impl CloudStoreSource {
         ensure!(!self.0.denied.load(Ordering::Acquire), "source denied");
         Ok(self.0.clock.now_ns()?)
     }
+    /// Whether grants may be issued (see `owner_cell::governance_reconciled`).
+    pub(crate) fn governance_reconciled(&self) -> bool {
+        self.0.owner.governance_reconciled()
+    }
     pub(crate) fn owns_turn(&self, turn: &CloudStoreTurn) -> bool {
         Arc::ptr_eq(&self.0, &turn.source.0)
     }

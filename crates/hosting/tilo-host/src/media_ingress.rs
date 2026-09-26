@@ -366,6 +366,17 @@ impl InstalledIngress {
             self.maintain(owner);
             return;
         }
+        // No grant until the relay-retained room state has been merged: a
+        // restored older state must not issue one to a since-revoked member.
+        if matches!(request.route(), Route::Media(_) | Route::LiveGrant)
+            && !self.current.governance_reconciled()
+        {
+            let _ = request.respond(
+                hyper::StatusCode::SERVICE_UNAVAILABLE,
+                b"temporarily-unavailable".to_vec(),
+            );
+            return;
+        }
         let result = self.dispatch(owner, &request);
         let (status, body) = match result {
             Ok(body) => (hyper::StatusCode::OK, body),
@@ -422,6 +433,14 @@ impl InstalledIngress {
             let _ = request.respond(hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec());
         };
         if request.is_cancelled() {
+            return;
+        }
+        // Join grants wait for the relay-retained room state too.
+        if !self.current.governance_reconciled() {
+            let _ = request.respond(
+                hyper::StatusCode::SERVICE_UNAVAILABLE,
+                b"temporarily-unavailable".to_vec(),
+            );
             return;
         }
         let Some((registry, service)) = self.onboarding.as_mut().filter(|_| !self.transport.failed)

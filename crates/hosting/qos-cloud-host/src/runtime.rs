@@ -414,7 +414,8 @@ where
                      },
                      incoming=session.recv()=>match incoming {
                       None=>bail!("native relay connection closed"),
-                      Some(Inbound::Ready{..})=>{},
+                      // Everything the relay retains for the room is merged.
+                      Some(Inbound::Ready{..})=>crate::owner_cell::mark_governance_reconciled(root),
                       Some(incoming)=>{
                        let (origin,body)=match incoming {Inbound::Delta{author,data}=>(TransportOrigin::RelayDelta(author),data),Inbound::Presence{author,payload}=>(TransportOrigin::UntrustedPresence(author),payload),_=>continue};
                        if body.len()>8*1024*1024 {continue}

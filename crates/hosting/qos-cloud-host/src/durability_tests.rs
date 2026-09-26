@@ -249,6 +249,19 @@ fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
     let (updates, _receiver) = tokio::sync::mpsc::channel(1);
     let service = crate::collaboration::CloudJoinService::new(dir.path(), "durability", updates);
     let runtime = runtime();
+    // As `serve` runs it: one long-lived owner, and no join grant until the
+    // relay-retained room state has been merged.
+    let _owner = crate::owner_cell::install(dir.path(), "durability").unwrap();
+    assert!(matches!(
+        runtime.block_on(service.handle(
+            [9; 32],
+            JoinTransportRequest::Inspect {
+                signed_invitation: vec![],
+            },
+        )),
+        JoinTransportResponse::Error { code: 503, .. }
+    ));
+    crate::owner_cell::mark_governance_reconciled(dir.path());
     // Issuing a membership challenge is process-local: no commit.
     let challenge = with_failure(Checkpoint::BeforeCommit, || {
         runtime.block_on(service.handle(

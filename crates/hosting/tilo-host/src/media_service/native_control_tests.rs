@@ -59,6 +59,8 @@ impl Fixture {
         )
         .await
         .unwrap();
+        // No relay here: the fixture stands for a host whose relay replay completed.
+        current.mark_governance_reconciled();
         let registry =
             HttpSessions::new(&owner, &current, tilo_delivery_protocol::clock::now_ns()).unwrap();
         let service =

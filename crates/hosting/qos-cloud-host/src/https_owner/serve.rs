@@ -445,6 +445,8 @@ pub(crate) async fn serve_until(
     let config = OperatorConfig::load(config_path)?;
     let (root, machine) = (config.state_root.clone(), config.machine_id.clone());
     let https = Https::prepare(config_path, ready_path, &root, &machine).await?;
+    // No relay here: this component stands for a host whose relay replay completed.
+    crate::owner_cell::mark_governance_reconciled(&root);
     let mut agents = crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
         &root,
         &machine,
@@ -494,6 +496,8 @@ pub(in crate::https_owner) async fn serve_broker_only_until(
         &config.machine_id,
     )
     .await?;
+    // No relay here: this component stands for a host whose relay replay completed.
+    crate::owner_cell::mark_governance_reconciled(&config.state_root);
     let source = https.source().clone();
     let served = https.run(AgentLane::BrokerOnly, shutdown).await;
     source.retire();

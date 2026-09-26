@@ -638,6 +638,17 @@ impl CloudService {
             Route::Sessions => self.respond(request, |service, request| {
                 service.sessions(request.body()).map(Some)
             }),
+            // No grant until the relay-retained room state has been merged: a
+            // restored older state must not issue one to a since-revoked member.
+            Route::Media(_) | Route::LiveGrant | Route::Onboarding(_) | Route::OnboardingChunk
+                if !self.source.governance_reconciled() =>
+            {
+                let _ = request.respond(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    b"temporarily-unavailable".to_vec(),
+                );
+                None
+            }
             Route::Media(_) => {
                 self.respond(request, |service, request| service.media(request).map(Some))
             }

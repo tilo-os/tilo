@@ -168,6 +168,8 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     let mut ingress = InstalledIngress::start(&mut f.owner, f.current.clone(), listener, config)
         .await
         .unwrap();
+    // No relay here: the fixture stands for a host whose relay replay completed.
+    f.current.mark_governance_reconciled();
     {
         let guard = f.current.read().unwrap();
         let descriptor = f
@@ -633,6 +635,8 @@ async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
     )
     .await
     .unwrap();
+    // No relay here: the fixture stands for a host whose relay replay completed.
+    f.current.mark_governance_reconciled();
     let old = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
         &ingress.discovery_hint(&f.owner).unwrap(),
         f.owner.host_certificate(),

@@ -939,6 +939,13 @@ impl WorkspaceJoinService for CloudJoinService {
         request: JoinTransportRequest,
     ) -> JoinTransportResponse {
         let now = tilo_delivery_protocol::clock::now_ns();
+        // Join grants wait for the relay-retained room state.
+        if !crate::owner_cell::governance_reconciled(&self.root) {
+            return JoinTransportResponse::Error {
+                code: 503,
+                message: "workspace authority is reconciling retained state".into(),
+            };
+        }
         match request {
             JoinTransportRequest::Inspect { signed_invitation } => {
                 match Store::open(&self.root, &self.machine)

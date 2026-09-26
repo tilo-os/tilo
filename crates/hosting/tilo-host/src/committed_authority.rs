@@ -109,6 +109,9 @@ struct Shared {
     state: Mutex<State>,
     terminal: Arc<AtomicBool>,
     recovering: AtomicBool,
+    /// Whether this process has merged the relay-retained room state since
+    /// the owner opened (see [`CommittedAuthority::governance_reconciled`]).
+    governance_reconciled: AtomicBool,
 }
 #[derive(Clone)]
 pub(crate) struct CommittedAuthority(Arc<Shared>);
@@ -237,8 +240,25 @@ impl CommittedAuthority {
             host: owner.peer().authority().device_public_key,
             terminal: policy_origin,
             recovering: AtomicBool::new(!owner.permits_publication() || capture_failed),
+            governance_reconciled: AtomicBool::new(false),
             state: Mutex::new(state),
         }))
+    }
+    /// Whether grants may be issued: the owner has merged everything the
+    /// relay retains for the room since it opened.
+    ///
+    /// A state restored from an older copy while the host was stopped can
+    /// still hold members, roles or invitations that were since revoked. The
+    /// relay (and any peer syncing through it) retains the newer, owner-signed
+    /// governance and replays it before its first `Ready`, so no live, media
+    /// or join grant is issued until that replay has been merged.
+    pub(crate) fn governance_reconciled(&self) -> bool {
+        self.0.governance_reconciled.load(Ordering::Acquire)
+    }
+    /// Record that the relay-retained room state has been merged: the host
+    /// calls this once its first relay subscription reports `Ready`.
+    pub(crate) fn mark_governance_reconciled(&self) {
+        self.0.governance_reconciled.store(true, Ordering::Release);
     }
     pub(crate) fn policy_clock(
         &self,

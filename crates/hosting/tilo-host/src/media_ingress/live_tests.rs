@@ -443,3 +443,169 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
     reader.abort();
     drop(client);
 }
+
+/// A state restored from an older copy while the host was stopped still
+/// lists a member the owner has since removed, while the relay retains the
+/// owner-signed removal. No grant is issued before that retained state is
+/// merged, and once it is merged the removed member holds no permission.
+#[tokio::test]
+async fn rolled_back_state_issues_no_grant_before_retained_governance_is_merged() {
+    use crate::collaboration::{CollaborationService, IssueInvitationRequest, RemoveMemberRequest};
+    use qos_peer_state::join::{
+        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
+    };
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    let mut h = Harness::start().await;
+    let root_key = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+    let device_key = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
+    let now = tilo_delivery_protocol::clock::now_ns();
+    let mut guest = DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: device_key.verifying_key().to_bytes(),
+        device_label: "Rolled-back guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now - 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest, &root_key).unwrap();
+    let service = CollaborationService::new(vec![]);
+    let administrator = h.f.owner.peer().authority().device_public_key;
+    h.f.current
+        .with_owner(&mut h.f.owner, |owner| {
+            let issued = service
+                .issue(
+                    owner,
+                    administrator,
+                    IssueInvitationRequest {
+                        request_id: [71; 32],
+                        role: MemberRole::Editor,
+                        recipient_user_public_key: Some(guest.user_public_key),
+                        invitee_name: Some("Guest".into()),
+                        expires_at_ns: now + 120_000_000_000,
+                    },
+                    now,
+                )
+                .unwrap();
+            let challenge = service
+                .challenge(
+                    owner,
+                    guest.device_public_key,
+                    JoinChallengeRequest {
+                        signed_invitation: issued.signed_invitation,
+                        device_cert: guest.clone(),
+                        request_id: [72; 32],
+                    },
+                    now,
+                )
+                .unwrap();
+            service
+                .complete(
+                    owner,
+                    guest.device_public_key,
+                    JoinCompleteRequest {
+                        proof: sign_join_proof(challenge.challenge, &device_key).unwrap(),
+                    },
+                    now,
+                )
+                .unwrap();
+        })
+        .unwrap();
+    let at = web_time::SystemTime::now();
+    assert!(
+        h.f.owner
+            .peer()
+            .permissions(guest.device_public_key, at)
+            .is_ok()
+    );
+    // The copy an attacker later restores: the guest is still a member.
+    let root = h.f.owner.root().to_owned();
+    let saved = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .map(|path| (path.clone(), std::fs::read(&path).unwrap()))
+        .collect::<Vec<_>>();
+    h.f.current
+        .with_owner(&mut h.f.owner, |owner| {
+            service
+                .remove_member(
+                    owner,
+                    administrator,
+                    RemoveMemberRequest {
+                        request_id: [73; 32],
+                        user_public_key: guest.user_public_key,
+                    },
+                    tilo_delivery_protocol::clock::now_ns(),
+                )
+                .unwrap();
+        })
+        .unwrap();
+    // What the relay retains: every owner publication after the removal.
+    let retained =
+        h.f.owner
+            .outgoing()
+            .iter()
+            .map(|publication| publication.bytes.to_vec())
+            .collect::<Vec<_>>();
+    let mut h = h
+        .restart_restoring(
+            |root| {
+                for entry in std::fs::read_dir(root).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_file() && !saved.iter().any(|(saved, _)| saved == &path) {
+                        std::fs::remove_file(&path).unwrap();
+                    }
+                }
+                for (path, bytes) in &saved {
+                    std::fs::write(path, bytes).unwrap();
+                }
+            },
+            false,
+        )
+        .await;
+    assert!(
+        h.f.owner
+            .peer()
+            .permissions(guest.device_public_key, web_time::SystemTime::now())
+            .is_ok(),
+        "the restored state really predates the removal"
+    );
+    let wanted = request(&h, 9, false);
+    let (status, _) = grant(&mut h, &wanted).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no grant before the relay-retained state is merged"
+    );
+    // The relay replays its retained state before Ready; the host merges it.
+    let authority = h.f.owner.peer().authority().device_public_key;
+    h.f.owner.permit_unscoped_legacy_commits().unwrap();
+    for bytes in retained {
+        let message = postcard::from_bytes(&bytes).unwrap();
+        h.f.current
+            .with_owner(&mut h.f.owner, |owner| {
+                owner.receive(
+                    qos_peer_state::TransportOrigin::RetainedRelayDelta(authority),
+                    message,
+                )
+            })
+            .unwrap()
+            .unwrap();
+    }
+    h.f.current.mark_governance_reconciled();
+    assert!(
+        h.f.owner
+            .peer()
+            .permissions(guest.device_public_key, web_time::SystemTime::now())
+            .is_err(),
+        "the retained removal is merged before any grant"
+    );
+    let (status, bytes) = grant(&mut h, &wanted).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
