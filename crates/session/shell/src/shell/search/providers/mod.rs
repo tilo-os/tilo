@@ -14,6 +14,7 @@ pub mod notes;
 pub mod records;
 pub mod session_actions;
 pub mod text_app;
+pub mod tray_items;
 
 pub use actions::ActionsProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
