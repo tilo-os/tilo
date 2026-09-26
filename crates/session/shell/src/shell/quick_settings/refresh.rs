@@ -21,6 +21,8 @@ use os_actions as qs;
 #[derive(Debug)]
 pub struct FastReading {
     pub brightness: Option<f32>,
+    /// Every monitor whose brightness can be set, named for display.
+    pub displays: Vec<crate::shell::chrome_state::DisplayBrightness>,
     pub volume: Option<f32>,
     pub wifi: Option<bool>,
     pub bluetooth: Option<bool>,
@@ -157,6 +159,10 @@ impl QsRefresh {
             let bluetooth = qs::log_get("get_bluetooth", qs::get_bluetooth());
             QsReading::Fast(Box::new(FastReading {
                 brightness: qs::log_get("get_brightness", qs::get_brightness()),
+                displays: display_brightness(
+                    qs::BrightnessService::global().rescan_blocking(),
+                    settings_store::hardware::DisplayHardwareSnapshot::load(),
+                ),
                 volume: qs::log_get("get_volume", qs::get_volume()),
                 wifi: qs::log_get("get_wifi", qs::get_wifi()),
                 bluetooth_available: bluetooth.is_some(),
@@ -268,14 +274,114 @@ impl QsRefresh {
     }
 }
 
+/// Name each controllable monitor from the compositor's display snapshot:
+/// its EDID model, "Built-in display" for the laptop panel, else its
+/// connector.
+fn display_brightness(
+    levels: Vec<qs::MonitorLevel>,
+    snapshot: Option<settings_store::hardware::DisplayHardwareSnapshot>,
+) -> Vec<crate::shell::chrome_state::DisplayBrightness> {
+    let outputs = snapshot
+        .map(|snapshot| snapshot.outputs)
+        .unwrap_or_default();
+    levels
+        .into_iter()
+        .map(|level| {
+            let output = outputs
+                .iter()
+                .find(|output| output.descriptor.label() == level.connector);
+            let name = match output {
+                Some(output) if output.builtin => "Built-in display".to_owned(),
+                Some(output) => output
+                    .descriptor
+                    .monitor
+                    .as_ref()
+                    .map(settings_store::hardware::MonitorIdentity::display_name)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| level.connector.clone()),
+                None if qs::brightness::is_builtin_connector(&level.connector) => {
+                    "Built-in display".to_owned()
+                }
+                None => level.connector.clone(),
+            };
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: level.connector,
+                name,
+                level: level.level,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn monitors_are_named_by_edid_model_or_else_connector() {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, MonitorIdentity, OutputDescriptor,
+            OutputMode,
+        };
+        let output = |connector: &str, builtin: bool, monitor: Option<MonitorIdentity>| {
+            let mode = OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            };
+            DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector: connector.into(),
+                    connector_label: connector.into(),
+                    modes: vec![mode],
+                    hdr: false,
+                    vrr: false,
+                    color_profiles: Vec::new(),
+                    monitor,
+                },
+                current_mode: mode,
+                builtin,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                color_profile_labels: std::collections::BTreeMap::new(),
+            }
+        };
+        let snapshot = DisplayHardwareSnapshot {
+            outputs: vec![
+                output("eDP-1", true, None),
+                output(
+                    "DP-2",
+                    false,
+                    Some(MonitorIdentity {
+                        make: "Dell".into(),
+                        model: "DELL U2720Q".into(),
+                        ..MonitorIdentity::default()
+                    }),
+                ),
+            ],
+            ..DisplayHardwareSnapshot::default()
+        };
+        let level = |connector: &str| qs::MonitorLevel {
+            connector: connector.into(),
+            level: 0.5,
+        };
+        let names: Vec<String> = display_brightness(
+            vec![level("eDP-1"), level("DP-2"), level("HDMI-A-1")],
+            Some(snapshot),
+        )
+        .into_iter()
+        .map(|display| display.name)
+        .collect();
+        assert_eq!(names, ["Built-in display", "Dell U2720Q", "HDMI-A-1"]);
+    }
+
     fn empty_fast() -> QsReading {
         QsReading::Fast(Box::new(FastReading {
             brightness: None,
+            displays: Vec::new(),
             volume: None,
             wifi: None,
             bluetooth: None,
@@ -371,6 +477,7 @@ mod tests {
         r.kick_fast_with(|| {
             QsReading::Fast(Box::new(FastReading {
                 brightness: Some(0.42),
+                displays: Vec::new(),
                 volume: None,
                 wifi: Some(true),
                 bluetooth: None,

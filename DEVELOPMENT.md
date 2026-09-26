@@ -1139,6 +1139,25 @@ sets the first two when llvmpipe and pulseaudio are installed. Existing
 `eprintln!("skipping …"); return;` sites move to the macro when their file is
 next changed.
 
+**The native data plane (Tier 1).** `fs --test native_tier1` and
+`fs-native --test it` need root, two dedicated Btrfs volumes and a kernel with
+pre-content fanotify events (6.14 or later, `CONFIG_FANOTIFY_ACCESS_PERMISSIONS`).
+`tools/native-tier1.sh` builds both as you (remotely with `TILO_CARGO=rcargo`),
+makes two loop-mounted Btrfs stores, runs every test once as root through
+`sudo -n` with `TILO_REQUIRE_FANOTIFY=1`, and removes the stores and mounts
+again:
+
+```bash
+TILO_CARGO=rcargo tools/native-tier1.sh                      # both suites
+TILO_CARGO=rcargo TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
+    tools/native-tier1.sh sqlite --nocapture                 # one scenario
+```
+
+`rcargo test --local` cannot run them: its distrobox is a rootless user
+namespace, which gets neither a filesystem mark on a Btrfs store nor a
+pre-content group. `sqlite3` and `git` must be on your `PATH`, which the root
+run inherits.
+
 Full OS image, which needs rootless `podman` for the container step and `sudo`
 for the disk-image step:
 

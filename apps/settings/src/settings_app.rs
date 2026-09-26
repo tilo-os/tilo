@@ -1057,6 +1057,13 @@ impl SettingsApp {
                         }
                         Ok(())
                     }
+                    crate::actions::DisplayOperation::SetOutputBrightness { connector, value } => {
+                        let _ = output(&connector)?;
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("monitor brightness must be between 0 and 1".into());
+                        }
+                        Ok(())
+                    }
                     crate::actions::DisplayOperation::SetEnabled { connector, .. }
                     | crate::actions::DisplayOperation::SetPrimary { connector, .. } => {
                         let _ = output(&connector)?;

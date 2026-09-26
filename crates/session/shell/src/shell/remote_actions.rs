@@ -263,6 +263,8 @@ mod tests {
                 ("7", "rename"),
                 ("workspace", "profile.save"),
                 ("workspace", "profile.assign"),
+                ("workspace", "app-action.grant"),
+                ("workspace", "app-action.revoke"),
                 ("workspace", "create"),
                 ("workspace", "update"),
                 ("workspace", "delete"),

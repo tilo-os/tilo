@@ -3,7 +3,8 @@
 //! After a swipe it shows the ranked decode candidates; after a word commits
 //! it shows next-word predictions. The top chip is the "auto" pick (the one
 //! already inserted, after a swipe); tapping any chip replaces the current
-//! word with it.
+//! word with it. A word that names an emoji ("pizza") also gets emoji chips,
+//! which insert the emoji after the word.
 //!
 //! This module holds the **pure geometry** + the data model, mirroring
 //! [`crate::toolbar`]: [`suggestion_rects`] splits a row into evenly-spaced
@@ -19,6 +20,8 @@ pub struct Suggestion {
     pub word: String,
     /// Decode/prediction score in `0.0..=1.0` (for ordering / future styling).
     pub score: f32,
+    /// The chip inserts an emoji the word stands for rather than a word.
+    pub emoji: bool,
 }
 
 impl Suggestion {
@@ -26,6 +29,16 @@ impl Suggestion {
         Self {
             word: word.into(),
             score,
+            emoji: false,
+        }
+    }
+
+    /// A chip inserting `emoji` for the word being typed.
+    pub fn emoji(emoji: impl Into<String>) -> Self {
+        Self {
+            word: emoji.into(),
+            score: 0.0,
+            emoji: true,
         }
     }
 }

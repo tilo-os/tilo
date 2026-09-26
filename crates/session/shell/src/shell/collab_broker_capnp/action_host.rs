@@ -302,7 +302,7 @@ impl CapnpBrokerState {
             .collect()
     }
 
-    fn allowed(
+    pub(super) fn allowed(
         workspace: &crate::shell::state::Workspace,
         policy: &crate::shell::state::Actor,
         app: &str,
@@ -337,7 +337,7 @@ impl CapnpBrokerState {
     /// caller on this machine — launching an application it may open. An
     /// action the caller may not use is absent. Alongside them, the
     /// publishers the caller may browse or invoke.
-    fn eager_catalogue(
+    pub(super) fn eager_catalogue(
         &self,
         caller: &Caller,
         with_rows: bool,
@@ -1291,11 +1291,7 @@ impl CapnpBrokerState {
         if address.resource == automation_host::LIBRARY_RESOURCE {
             return self.start_shortcut_library(caller, actor, room, &address.action, argument);
         }
-        if matches!(
-            address.action.as_str(),
-            crate::shell::state::PROFILE_SAVE_ACTION_ID
-                | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
-        ) {
+        if crate::shell::workspace_settings::is_governance_action(&address.action) {
             return self
                 .invoke_workspace_profile_action(
                     room,

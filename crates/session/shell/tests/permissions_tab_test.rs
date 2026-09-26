@@ -737,3 +737,69 @@ fn the_draft_survives_a_tab_round_trip() {
 
     assert_eq!(chrome.borrow().ws_grant_draft, composed);
 }
+
+#[test]
+fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable() {
+    let mut tree = WorkspaceTree::default();
+    let id = WorkspaceId::from(1);
+    let mut ws = Workspace::new(id, "perm-test");
+    let owner = shell::shell::state::local_user_id_for_room(&ws.room);
+    ws.set_owner(owner.clone());
+    let freeform = Scope::Action {
+        app: "so.tilo.agent".into(),
+        action: "freeform".into(),
+    };
+    let granted = ws
+        .grant_as(
+            &owner,
+            CapOverride::grant(Subject::app("so.tilo.shortcuts"), freeform, Verb::Write),
+        )
+        .expect("the owner may grant");
+    let room = ws.room.to_string();
+    tree.desktop.workspaces.push(ws);
+    tree.set_active(id);
+
+    let pane = vello::kurbo::Rect::new(0.0, 0.0, 660.0, 480.0);
+    let listed = workspace_settings::permissions_pane_layout(&tree.desktop.workspaces[0], pane);
+    let row = listed
+        .rows
+        .iter()
+        .find(|row| row.cap_id == granted)
+        .expect("the grant is listed");
+    assert_eq!(row.subject.kind, SubjectKind::AppAction);
+    assert_eq!(row.subject.kind.section_label(), "App actions");
+    assert!(row.allows.contains("freeform"), "{}", row.allows);
+
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
+    let (_, revoke) = host
+        .permissions_revoke_rects()
+        .iter()
+        .find(|(cap, _)| *cap == granted)
+        .cloned()
+        .expect("the grant has a revoke button");
+    click(&mut host, revoke);
+    repaint(&mut host);
+    let confirm = host.member_sheet_option_rects_for_tests()[2];
+    click(&mut host, confirm);
+
+    assert!(
+        !capabilities(&chrome).iter().any(|c| c.id == granted),
+        "revoking in Settings removes the grant"
+    );
+    let still_allowed = chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .is_some_and(|ws| {
+            ws.allows(
+                &shell::shell::state::Actor::app("so.tilo.shortcuts").in_room(room),
+                &ResourceRef::Action {
+                    app: "so.tilo.agent".into(),
+                    action: "freeform".into(),
+                },
+                Verb::Write,
+            )
+        });
+    assert!(!still_allowed, "the app may no longer use the action");
+}

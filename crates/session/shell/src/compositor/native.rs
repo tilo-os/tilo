@@ -4618,6 +4618,11 @@ fn attach_collab_broker_bridges(
             dispatcher.set(&room.to_string(), peer_id);
         }));
     if let Some(action_broker) = broker.app_action_broker() {
+        // An app reaching for another app's action is asked about on this
+        // session's own sheet, which the overlay host draws and answers.
+        action_broker.set_app_action_consent(std::sync::Arc::new(
+            crate::shell::app_action_consent::SheetPrompter::session(),
+        ));
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
@@ -6739,6 +6744,18 @@ pub fn run() {
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
                         let settings = settings_store::settings_path();
+                        let displays = if matches!(
+                            mk,
+                            crate::shell::media_keys::MediaKey::BrightnessUp
+                                | crate::shell::media_keys::MediaKey::BrightnessDown
+                        ) {
+                            os_actions::BrightnessService::global().levels()
+                        } else {
+                            Vec::new()
+                        };
+                        let pointer = frame_builder.host().pointer_position();
+                        let under_pointer = pointer
+                            .and_then(|p| output_connector_at(backend.outputs(), (p.x, p.y)));
                         let response = crate::shell::media_keys::apply(
                             mk,
                             &crate::shell::media_keys::Context {
@@ -6747,6 +6764,10 @@ pub fn run() {
                                 transport_osd: &transport_osd,
                                 airplane_mode,
                                 settings: settings.as_deref(),
+                                brightness: crate::shell::media_keys::BrightnessKeys {
+                                    displays: &displays,
+                                    under_pointer,
+                                },
                             },
                         );
                         match response {
@@ -7470,6 +7491,7 @@ pub fn run() {
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
+        crate::shell::app_action_consent::set_session_attended(!session.is_locked());
         let device_sounds = frame_builder.host().drain_audio_device_sounds();
         frame_builder.with_chrome(|st| {
             for event in device_sounds {
@@ -9219,6 +9241,24 @@ mod media_osd_publication_tests {
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
 /// Settings exits. Missing sensors/backlights simply produce no write.
+/// Connector of the output containing `point` in compositor coordinates.
+fn output_connector_at(
+    outputs: &[crate::compositor::backend::Output],
+    point: (f64, f64),
+) -> Option<&str> {
+    outputs
+        .iter()
+        .find(|output| {
+            let (x, y) = (f64::from(output.position.0), f64::from(output.position.1));
+            point.0 >= x
+                && point.1 >= y
+                && point.0 < x + f64::from(output.size.0)
+                && point.1 < y + f64::from(output.size.1)
+        })
+        .map(|output| output.identity.connector.as_str())
+        .filter(|connector| !connector.is_empty())
+}
+
 fn spawn_auto_brightness_worker() {
     let _ = std::thread::Builder::new()
         .name("tilo-auto-brightness".into())

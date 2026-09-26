@@ -408,6 +408,12 @@ pub enum DisplayOperation {
         connector: String,
         label: String,
     },
+    /// One monitor's brightness, `0.0..=1.0`: the external monitor on
+    /// `connector`, over DDC/CI.
+    SetOutputBrightness {
+        connector: String,
+        value: f64,
+    },
     SetEnabled {
         connector: String,
         enabled: bool,
@@ -2734,6 +2740,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
                 "settings.display-output",
                 descriptor.label().to_string(),
             );
+            resource = resource.with_action(output_brightness_spec(connector.clone()));
             let operation_connector = connector.clone();
             resource = resource.with_action(local_bool_spec(
                 "enabled",
@@ -3285,6 +3292,37 @@ pub fn display_output_bool_binding(
         &display_output_control_resource(&connector, action),
         action_id,
     )
+}
+
+fn output_brightness_spec(connector: String) -> ActionSpec {
+    local_number_spec(
+        "brightness",
+        "Set monitor brightness",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        move |value| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetOutputBrightness {
+                    connector: connector.clone(),
+                    value,
+                },
+            )
+        },
+    )
+}
+
+/// The brightness slider of one monitor's card.
+pub fn display_output_brightness_binding(
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    let resource =
+        display_output_control_resource(&connector, output_brightness_spec(connector.clone()));
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::json!(value))])
+    })
+    .ok()
 }
 
 pub fn display_output_choice_binding(
