@@ -12,7 +12,6 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
-use ui::widget::TextInput;
 
 use crate::actions;
 use crate::app::{
@@ -77,7 +76,7 @@ impl<'a> EventDispatch<'a> {
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
 /// to report a focus target, which the composer host ignores.
 fn drive_text_input(
-    ti: &mut TextInput,
+    ti: &mut impl Widget,
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
@@ -158,6 +157,12 @@ impl ChatApp {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale,
                 };
+                if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
+                    // Clamped against the content height when painted.
+                    self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
+                    *handled = true;
+                    return;
+                }
                 self.scroll += dy;
                 // A positive offset moves away from the live edge. Do this at
                 // event time rather than waiting for paint: `sync` may run
@@ -374,7 +379,11 @@ impl ChatApp {
             Some(hit) => {
                 let text_input_hit = matches!(
                     hit,
-                    Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
+                    Hit::FocusMain
+                        | Hit::FocusThread
+                        | Hit::FocusRename
+                        | Hit::FocusEdit
+                        | Hit::FocusEmojiSearch
                 );
                 self.on_hit(hit, doc);
                 // A click in a composer focuses it (via `on_hit`) and
@@ -477,6 +486,16 @@ impl ChatApp {
             return;
         }
 
+        if self.emoji_open && !matches!(logical_key, Key::Named(NamedKey::Escape)) {
+            if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                self.pick_first_emoji_result(doc);
+            } else {
+                self.route_emoji_search(event, scale, modifiers, doc);
+            }
+            *handled = true;
+            return;
+        }
+
         let composer_owns = self.can_participate()
             && self.menu.is_none()
             && !self.emoji_open
@@ -507,6 +526,9 @@ impl ChatApp {
         } else if self.editing.is_some() {
             self.route_edit_input(event, scale, modifiers, doc);
             true
+        } else if self.emoji_open {
+            self.route_emoji_search(event, scale, modifiers, doc);
+            true
         } else if self.can_participate()
             && self.menu.is_none()
             && !self.emoji_open
@@ -532,6 +554,30 @@ impl ChatApp {
             self.commit_rename(doc);
         } else {
             let _ = self.rename_input.take_dirty();
+        }
+    }
+
+    fn route_emoji_search(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
+        if self.emoji_search.take_dirty().is_some() {
+            self.emoji_scroll = 0.0;
+        }
+    }
+
+    /// Enter in the picker's search field picks the best match.
+    fn pick_first_emoji_result(&mut self, doc: &mut AutoCommit) {
+        let first = emoji::Catalogue::english()
+            .search(self.emoji_search.value(), 1)
+            .first()
+            .map(|e| e.text());
+        if let Some(first) = first {
+            self.on_hit_emoji_choice(first, doc);
         }
     }
 
@@ -603,6 +649,9 @@ impl ChatApp {
         drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
         drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
         drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+        if self.emoji_open {
+            drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
+        }
     }
 
     /// Forward a mouse release to every text input so drag-selection ends.
@@ -617,6 +666,9 @@ impl ChatApp {
         drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
         drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
         drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+        if self.emoji_open {
+            drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
+        }
     }
 
     /// Forward a press to the focused composer so it places the caret at the
@@ -628,7 +680,14 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
-        if self.rename.is_some() {
+        if self.emoji_open {
+            drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
+            if self.emoji_search.take_dirty().is_some() {
+                self.emoji_scroll = 0.0;
+            }
+            // A press elsewhere on the panel leaves typing in the query.
+            self.emoji_search.set_focused(true);
+        } else if self.rename.is_some() {
             drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
         } else if self.editing.is_some() {
             drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
@@ -724,11 +783,7 @@ impl ChatApp {
             Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_category(&ws, doc),
             Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
-            Hit::AddReaction { msg, anchor } => {
-                self.emoji_open = true;
-                self.emoji_target = Some(msg);
-                self.emoji_anchor = anchor;
-            }
+            Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
             Hit::OpenThread(id) => self.on_hit_open_thread(id),
             Hit::EditHistory { msg, anchor } => {
                 self.history_open = Some(msg);
@@ -746,10 +801,14 @@ impl ChatApp {
             Hit::Send => self.send_focused(doc),
             Hit::JumpToLatest => self.jump_to_latest(),
             Hit::ComposerEmoji(anchor) if self.can_participate() => {
-                self.emoji_open = true;
-                self.emoji_target = None;
-                self.emoji_anchor = anchor;
+                self.open_emoji_picker(None, anchor);
             }
+            Hit::EmojiGroup(group) => {
+                self.emoji_group = group;
+                self.emoji_scroll = 0.0;
+                self.emoji_search.set_query("");
+            }
+            Hit::FocusEmojiSearch => self.emoji_search.set_focused(true),
             Hit::Attach if self.can_participate() => self.open_attach_picker(),
             Hit::AttachPick(path) => {
                 self.attach_file(doc, std::path::Path::new(&path));
@@ -872,7 +931,23 @@ impl ChatApp {
         }
     }
 
+    /// Open the picker fresh: an empty query on the first group, with the
+    /// search field taking the keyboard so typing filters at once.
+    fn open_emoji_picker(&mut self, target: Option<Id>, anchor: Point) {
+        self.emoji_open = true;
+        self.emoji_target = target;
+        self.emoji_anchor = anchor;
+        self.emoji_search.set_query("");
+        let _ = self.emoji_search.take_dirty();
+        self.emoji_search.set_focused(true);
+        self.emoji_scroll = 0.0;
+        // Space and Enter now type into the query rather than re-activating
+        // the control that opened the picker.
+        self.keyboard_target = None;
+    }
+
     fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut AutoCommit) {
+        self.emoji_recents.record(e);
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
                 let action = self.reaction_toggle_action(&target, e);
@@ -3954,6 +4029,22 @@ mod tests {
             app.draft_main, "🎉",
             "the emoji was typed into the composer draft"
         );
+        assert_eq!(app.emoji_recents.items(), ["🎉"], "picks are remembered");
+    }
+
+    #[test]
+    fn emoji_search_enter_picks_the_best_match() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
+        app.emoji_search.set_query("pizza");
+        app.pick_first_emoji_result(&mut doc);
+        assert_eq!(app.draft_main, "🍕");
+        assert!(!app.emoji_open);
+        assert_eq!(app.emoji_recents.items()[0], "🍕");
+        // Reopening starts from an empty query.
+        app.on_hit(Hit::ComposerEmoji(Point::ZERO), &mut doc);
+        assert!(app.emoji_search.value().is_empty());
     }
 
     // --- swipe-to-delete gesture through the raw input path (test gap) --
