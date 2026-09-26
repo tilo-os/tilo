@@ -1554,298 +1554,299 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn model_round_trips_through_crdt() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
+    fn document_round_trips_model_sync_identity_and_addressable_notes() {
+        // Case `model_round_trips_through_crdt`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
 
-        let back = CalDoc::read_model(&doc);
-        assert_eq!(back.projects.len(), model.projects.len());
-        assert_eq!(back.events.len(), model.events.len());
-        assert_eq!(back.tasks.len(), model.tasks.len());
+            let back = CalDoc::read_model(&doc);
+            assert_eq!(back.projects.len(), model.projects.len());
+            assert_eq!(back.events.len(), model.events.len());
+            assert_eq!(back.tasks.len(), model.tasks.len());
 
-        // Spot-check a known event survives the round trip.
-        let standup = back
-            .events
-            .iter()
-            .find(|e| e.title == "Team standup")
-            .unwrap();
-        assert_eq!(standup.recurrence, Recurrence::Weekdays);
-        assert_eq!(standup.reminder_min, Some(10));
+            // Spot-check a known event survives the round trip.
+            let standup = back
+                .events
+                .iter()
+                .find(|e| e.title == "Team standup")
+                .unwrap();
+            assert_eq!(standup.recurrence, Recurrence::Weekdays);
+            assert_eq!(standup.reminder_min, Some(10));
 
-        // A done task stays done.
-        assert!(back.tasks.iter().any(|t| t.done));
-    }
-
-    #[test]
-    fn outbox_enqueues_dedupes_and_dequeues() {
-        let mut doc = AutoCommit::new();
-        let a = crate::model::Id::new_v4();
-        let b = crate::model::Id::new_v4();
-        CalDoc::enqueue_push(&mut doc, a);
-        CalDoc::enqueue_push(&mut doc, a); // dup — ignored
-        CalDoc::enqueue_push(&mut doc, b);
-        assert_eq!(CalDoc::outbox(&doc), vec![a, b]);
-        CalDoc::dequeue_push(&mut doc, a);
-        assert_eq!(CalDoc::outbox(&doc), vec![b]);
-    }
-
-    #[test]
-    fn delete_event_removes_it_from_the_document() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let victim = model.events[0].id;
-        let before = CalDoc::read_model(&doc).events.len();
-        CalDoc::delete_event(&mut doc, victim);
-        let after = CalDoc::read_model(&doc);
-        assert_eq!(after.events.len(), before - 1);
-        assert!(
-            !after.events.iter().any(|e| e.id == victim),
-            "deleted event is gone"
-        );
-        // Idempotent.
-        CalDoc::delete_event(&mut doc, victim);
-        assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
-    }
-
-    #[test]
-    fn delete_task_removes_it_from_the_document() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let victim = model.tasks[0].id;
-        let before = CalDoc::read_model(&doc).tasks.len();
-        CalDoc::delete_task(&mut doc, victim);
-        let after = CalDoc::read_model(&doc);
-        assert_eq!(after.tasks.len(), before - 1);
-        assert!(
-            !after.tasks.iter().any(|t| t.id == victim),
-            "deleted task is gone"
-        );
-    }
-
-    #[test]
-    fn tombstones_make_delete_win_over_a_concurrent_stale_upsert() {
-        // A map delete alone is not a durable semantic delete: a peer that
-        // still has a whole object snapshot can put the same key while
-        // offline. Tombstones keep the raw CRDT merge auditable while making
-        // every model projection converge on the deleted result.
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let event = model.events[0].clone();
-        let task = model.tasks[0].clone();
-        let mut deleted = AutoCommit::new();
-        CalDoc::seed(&mut deleted, &model);
-        deleted.commit();
-        let mut stale = AutoCommit::load(&deleted.save()).unwrap();
-
-        CalDoc::delete_event(&mut deleted, event.id);
-        CalDoc::delete_task(&mut deleted, task.id);
-
-        let mut stale_event = event.clone();
-        stale_event.title = "Late stale event snapshot".into();
-        let mut stale_task = task.clone();
-        stale_task.title = "Late stale task snapshot".into();
-        CalDoc::update_event(&mut stale, &stale_event);
-        CalDoc::update_task(&mut stale, &stale_task);
-
-        deleted.commit();
-        stale.commit();
-        deleted.merge_incoming(&mut stale).unwrap();
-        let merged = CalDoc::read_model(&deleted);
-        assert!(CalDoc::event_tombstoned(&deleted, event.id));
-        assert!(CalDoc::task_tombstoned(&deleted, task.id));
-        assert!(merged.event(event.id).is_none());
-        assert!(merged.task(task.id).is_none());
-
-        // A newly joined replica observes the same outcome, even if the
-        // underlying map still contains a concurrently-written object.
-        let joined = AutoCommit::load(&deleted.save()).unwrap();
-        let joined_model = CalDoc::read_model(&joined);
-        assert!(joined_model.event(event.id).is_none());
-        assert!(joined_model.task(task.id).is_none());
-    }
-
-    #[test]
-    fn delete_outbox_enqueues_dedupes_and_dequeues() {
-        let mut doc = AutoCommit::new();
-        let a = crate::model::Id::new_v4();
-        let b = crate::model::Id::new_v4();
-        CalDoc::enqueue_delete(&mut doc, "work/default", a);
-        CalDoc::enqueue_delete(&mut doc, "work/default", a); // dup — ignored
-        CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
-        assert_eq!(
-            CalDoc::delete_outbox(&doc),
-            vec![
-                ("work/default".to_string(), a),
-                ("icloud/personal".to_string(), b)
-            ]
-        );
-        CalDoc::dequeue_delete(&mut doc, a);
-        assert_eq!(
-            CalDoc::delete_outbox(&doc),
-            vec![("icloud/personal".to_string(), b)]
-        );
-    }
-
-    #[test]
-    fn caldav_identity_etag_and_checkpoint_survive_document_restart() {
-        let mut doc = AutoCommit::new();
-        let id = crate::model::Id::new_v4();
-        CalDoc::set_remote_binding(
-            &mut doc,
-            id,
-            "work/default",
-            "/dav/work/a.ics",
-            Some("\"etag-7\""),
-        );
-        CalDoc::set_sync_token(&mut doc, "work/default", "token-8");
-        let bytes = doc.save();
-        let restored = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            CalDoc::remote_binding(&restored, id),
-            Some((
-                "work/default".into(),
-                "/dav/work/a.ics".into(),
-                Some("\"etag-7\"".into())
-            ))
-        );
-        assert_eq!(
-            CalDoc::sync_tokens(&restored),
-            vec![("work/default".into(), "token-8".into())]
-        );
-    }
-
-    #[test]
-    fn notes_list_is_addressable_per_event() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let eid = model.events[0].id;
-        let list = CalDoc::event_notes(&mut doc, eid).unwrap();
-        CalDoc::seed_notes_if_empty(&mut doc, &list, &["# Agenda", "Discuss roadmap"]);
-        assert_eq!(doc.length(&list), 2);
-        // Idempotent: second seed is a no-op.
-        CalDoc::seed_notes_if_empty(&mut doc, &list, &["should not appear"]);
-        assert_eq!(doc.length(&list), 2);
-    }
-
-    #[test]
-    fn event_time_patch_cannot_persist_end_before_its_stored_start() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let event = &model.events[0];
-        let before = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
-        CalDoc::patch_event(
-            &mut doc,
-            event.id,
-            &crate::actions::EventPatch {
-                end: Some(
-                    (before.start - chrono::Duration::minutes(1))
-                        .format(DT_FMT)
-                        .to_string(),
-                ),
-                ..crate::actions::EventPatch::default()
-            },
-        );
-        let after_model = CalDoc::read_model(&doc);
-        let after = after_model.event(event.id).unwrap();
-        assert_eq!(after.start, before.start);
-        assert_eq!(
-            after.end, before.end,
-            "invalid sparse end patch is rejected as a pair"
-        );
-    }
-
-    #[test]
-    fn patches_reject_unknown_project_relationships() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let unknown = Id::new_v4().to_string();
-        let event_id = model.events[0].id;
-        let task_id = model.tasks[0].id;
-        CalDoc::patch_event(
-            &mut doc,
-            event_id,
-            &crate::actions::EventPatch {
-                project: Some(unknown.clone()),
-                ..crate::actions::EventPatch::default()
-            },
-        );
-        CalDoc::patch_task(
-            &mut doc,
-            task_id,
-            &crate::actions::TaskPatch {
-                project: Some(unknown),
-                ..crate::actions::TaskPatch::default()
-            },
-        );
-        let back = CalDoc::read_model(&doc);
-        assert_eq!(
-            back.event(event_id).unwrap().project,
-            model.events[0].project
-        );
-        assert_eq!(back.task(task_id).unwrap().project, model.tasks[0].project);
-    }
-
-    #[test]
-    fn note_ops_are_uuid_addressed_unicode_safe_and_refuse_stale_blocks() {
-        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
-        let id = model.events[0].id;
-        let mut doc = AutoCommit::new();
-        CalDoc::seed(&mut doc, &model);
-        let block = uuid::Uuid::new_v4().to_string();
-        CalDoc::apply_note_ops(
-            &mut doc,
-            true,
-            id,
-            &[BlockEditOp::Insert {
-                block_id: block.clone(),
-                after: None,
-                kind: "paragraph".into(),
-                text: "café".into(),
-            }],
-        )
-        .unwrap();
-        CalDoc::apply_note_ops(
-            &mut doc,
-            true,
-            id,
-            &[BlockEditOp::TextSplice {
-                block_id: block.clone(),
-                start: 3,
-                end: 5,
-                text: "e".into(),
-            }],
-        )
-        .unwrap();
-        assert_eq!(CalDoc::note_text(&doc, true, id), "cafe");
-        assert!(
+            // A done task stays done.
+            assert!(back.tasks.iter().any(|t| t.done));
+        }
+        // Case `caldav_identity_etag_and_checkpoint_survive_document_restart`.
+        {
+            let mut doc = AutoCommit::new();
+            let id = crate::model::Id::new_v4();
+            CalDoc::set_remote_binding(
+                &mut doc,
+                id,
+                "work/default",
+                "/dav/work/a.ics",
+                Some("\"etag-7\""),
+            );
+            CalDoc::set_sync_token(&mut doc, "work/default", "token-8");
+            let bytes = doc.save();
+            let restored = AutoCommit::load(&bytes).unwrap();
+            assert_eq!(
+                CalDoc::remote_binding(&restored, id),
+                Some((
+                    "work/default".into(),
+                    "/dav/work/a.ics".into(),
+                    Some("\"etag-7\"".into())
+                ))
+            );
+            assert_eq!(
+                CalDoc::sync_tokens(&restored),
+                vec![("work/default".into(), "token-8".into())]
+            );
+        }
+        // Case `notes_list_is_addressable_per_event`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let eid = model.events[0].id;
+            let list = CalDoc::event_notes(&mut doc, eid).unwrap();
+            CalDoc::seed_notes_if_empty(&mut doc, &list, &["# Agenda", "Discuss roadmap"]);
+            assert_eq!(doc.length(&list), 2);
+            // Idempotent: second seed is a no-op.
+            CalDoc::seed_notes_if_empty(&mut doc, &list, &["should not appear"]);
+            assert_eq!(doc.length(&list), 2);
+        }
+        // Case `note_ops_are_uuid_addressed_unicode_safe_and_refuse_stale_blocks`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let id = model.events[0].id;
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let block = uuid::Uuid::new_v4().to_string();
             CalDoc::apply_note_ops(
                 &mut doc,
                 true,
                 id,
-                &[BlockEditOp::Delete {
-                    block_id: block.clone()
+                &[BlockEditOp::Insert {
+                    block_id: block.clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "café".into(),
                 }],
             )
-            .is_ok()
-        );
-        assert!(
+            .unwrap();
             CalDoc::apply_note_ops(
                 &mut doc,
                 true,
                 id,
                 &[BlockEditOp::TextSplice {
-                    block_id: block,
-                    start: 0,
-                    end: 0,
-                    text: "x".into()
+                    block_id: block.clone(),
+                    start: 3,
+                    end: 5,
+                    text: "e".into(),
                 }],
             )
-            .is_err()
-        );
+            .unwrap();
+            assert_eq!(CalDoc::note_text(&doc, true, id), "cafe");
+            assert!(
+                CalDoc::apply_note_ops(
+                    &mut doc,
+                    true,
+                    id,
+                    &[BlockEditOp::Delete {
+                        block_id: block.clone()
+                    }],
+                )
+                .is_ok()
+            );
+            assert!(
+                CalDoc::apply_note_ops(
+                    &mut doc,
+                    true,
+                    id,
+                    &[BlockEditOp::TextSplice {
+                        block_id: block,
+                        start: 0,
+                        end: 0,
+                        text: "x".into()
+                    }],
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn deletes_and_outboxes_dedupe_dequeue_and_win_over_stale_upserts() {
+        // Case `outbox_enqueues_dedupes_and_dequeues`.
+        {
+            let mut doc = AutoCommit::new();
+            let a = crate::model::Id::new_v4();
+            let b = crate::model::Id::new_v4();
+            CalDoc::enqueue_push(&mut doc, a);
+            CalDoc::enqueue_push(&mut doc, a); // dup — ignored
+            CalDoc::enqueue_push(&mut doc, b);
+            assert_eq!(CalDoc::outbox(&doc), vec![a, b]);
+            CalDoc::dequeue_push(&mut doc, a);
+            assert_eq!(CalDoc::outbox(&doc), vec![b]);
+        }
+        // Case `delete_event_removes_it_from_the_document`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let victim = model.events[0].id;
+            let before = CalDoc::read_model(&doc).events.len();
+            CalDoc::delete_event(&mut doc, victim);
+            let after = CalDoc::read_model(&doc);
+            assert_eq!(after.events.len(), before - 1);
+            assert!(
+                !after.events.iter().any(|e| e.id == victim),
+                "deleted event is gone"
+            );
+            // Idempotent.
+            CalDoc::delete_event(&mut doc, victim);
+            assert_eq!(CalDoc::read_model(&doc).events.len(), before - 1);
+        }
+        // Case `delete_task_removes_it_from_the_document`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let victim = model.tasks[0].id;
+            let before = CalDoc::read_model(&doc).tasks.len();
+            CalDoc::delete_task(&mut doc, victim);
+            let after = CalDoc::read_model(&doc);
+            assert_eq!(after.tasks.len(), before - 1);
+            assert!(
+                !after.tasks.iter().any(|t| t.id == victim),
+                "deleted task is gone"
+            );
+        }
+        // Case `tombstones_make_delete_win_over_a_concurrent_stale_upsert`.
+        {
+            // A map delete alone is not a durable semantic delete: a peer that
+            // still has a whole object snapshot can put the same key while
+            // offline. Tombstones keep the raw CRDT merge auditable while making
+            // every model projection converge on the deleted result.
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let event = model.events[0].clone();
+            let task = model.tasks[0].clone();
+            let mut deleted = AutoCommit::new();
+            CalDoc::seed(&mut deleted, &model);
+            deleted.commit();
+            let mut stale = AutoCommit::load(&deleted.save()).unwrap();
+
+            CalDoc::delete_event(&mut deleted, event.id);
+            CalDoc::delete_task(&mut deleted, task.id);
+
+            let mut stale_event = event.clone();
+            stale_event.title = "Late stale event snapshot".into();
+            let mut stale_task = task.clone();
+            stale_task.title = "Late stale task snapshot".into();
+            CalDoc::update_event(&mut stale, &stale_event);
+            CalDoc::update_task(&mut stale, &stale_task);
+
+            deleted.commit();
+            stale.commit();
+            deleted.merge_incoming(&mut stale).unwrap();
+            let merged = CalDoc::read_model(&deleted);
+            assert!(CalDoc::event_tombstoned(&deleted, event.id));
+            assert!(CalDoc::task_tombstoned(&deleted, task.id));
+            assert!(merged.event(event.id).is_none());
+            assert!(merged.task(task.id).is_none());
+
+            // A newly joined replica observes the same outcome, even if the
+            // underlying map still contains a concurrently-written object.
+            let joined = AutoCommit::load(&deleted.save()).unwrap();
+            let joined_model = CalDoc::read_model(&joined);
+            assert!(joined_model.event(event.id).is_none());
+            assert!(joined_model.task(task.id).is_none());
+        }
+        // Case `delete_outbox_enqueues_dedupes_and_dequeues`.
+        {
+            let mut doc = AutoCommit::new();
+            let a = crate::model::Id::new_v4();
+            let b = crate::model::Id::new_v4();
+            CalDoc::enqueue_delete(&mut doc, "work/default", a);
+            CalDoc::enqueue_delete(&mut doc, "work/default", a); // dup — ignored
+            CalDoc::enqueue_delete(&mut doc, "icloud/personal", b);
+            assert_eq!(
+                CalDoc::delete_outbox(&doc),
+                vec![
+                    ("work/default".to_string(), a),
+                    ("icloud/personal".to_string(), b)
+                ]
+            );
+            CalDoc::dequeue_delete(&mut doc, a);
+            assert_eq!(
+                CalDoc::delete_outbox(&doc),
+                vec![("icloud/personal".to_string(), b)]
+            );
+        }
+    }
+
+    #[test]
+    fn patches_reject_inverted_times_and_unknown_projects() {
+        // Case `event_time_patch_cannot_persist_end_before_its_stored_start`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let event = &model.events[0];
+            let before = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
+            CalDoc::patch_event(
+                &mut doc,
+                event.id,
+                &crate::actions::EventPatch {
+                    end: Some(
+                        (before.start - chrono::Duration::minutes(1))
+                            .format(DT_FMT)
+                            .to_string(),
+                    ),
+                    ..crate::actions::EventPatch::default()
+                },
+            );
+            let after_model = CalDoc::read_model(&doc);
+            let after = after_model.event(event.id).unwrap();
+            assert_eq!(after.start, before.start);
+            assert_eq!(
+                after.end, before.end,
+                "invalid sparse end patch is rejected as a pair"
+            );
+        }
+        // Case `patches_reject_unknown_project_relationships`.
+        {
+            let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+            let mut doc = AutoCommit::new();
+            CalDoc::seed(&mut doc, &model);
+            let unknown = Id::new_v4().to_string();
+            let event_id = model.events[0].id;
+            let task_id = model.tasks[0].id;
+            CalDoc::patch_event(
+                &mut doc,
+                event_id,
+                &crate::actions::EventPatch {
+                    project: Some(unknown.clone()),
+                    ..crate::actions::EventPatch::default()
+                },
+            );
+            CalDoc::patch_task(
+                &mut doc,
+                task_id,
+                &crate::actions::TaskPatch {
+                    project: Some(unknown),
+                    ..crate::actions::TaskPatch::default()
+                },
+            );
+            let back = CalDoc::read_model(&doc);
+            assert_eq!(
+                back.event(event_id).unwrap().project,
+                model.events[0].project
+            );
+            assert_eq!(back.task(task_id).unwrap().project, model.tasks[0].project);
+        }
     }
 }

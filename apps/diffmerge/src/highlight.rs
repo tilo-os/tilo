@@ -111,7 +111,16 @@ mod tests {
             .collect()
     }
 
+    /// Syntax highlighting: the grammar follows the file a label names, token kinds
+    /// cover a line, and a side is highlighted as one document. Each phase is a
+    /// former test with its own inputs.
     #[test]
+    fn highlighting_picks_grammar_by_label_and_spans_whole_documents() {
+        the_grammar_follows_the_file_a_label_names();
+        keywords_strings_and_comments_take_their_kinds();
+        a_side_is_one_document_so_block_comments_span_rows();
+    }
+
     fn the_grammar_follows_the_file_a_label_names() {
         assert_eq!(grammar_for_label("rate_limiter.rs · HEAD").name(), "Rust");
         assert_eq!(grammar_for_label("config.toml · ours").name(), "TOML");
@@ -123,7 +132,6 @@ mod tests {
         assert_eq!(grammar_for_label("").name(), "Plain Text");
     }
 
-    #[test]
     fn keywords_strings_and_comments_take_their_kinds() {
         let grammar = grammar_for_label("a.rs");
         let line = "pub fn f() { let s = \"hi\"; } // done";
@@ -135,7 +143,6 @@ mod tests {
         assert_eq!(covered, line.len(), "spans cover the whole line");
     }
 
-    #[test]
     fn a_side_is_one_document_so_block_comments_span_rows() {
         let grammar = grammar_for_label("a.rs");
         let lines = ["/* opened", "still inside", "*/ let x = 1;"];

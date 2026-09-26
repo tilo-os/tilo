@@ -1059,50 +1059,113 @@ mod tests {
     use super::*;
     use vello::kurbo::Point;
 
+    /// Tile addressing (zoom, parent, visible set, bounds), indexed-PNG decoding, and
+    /// the label-free, theme-tracking basemap style.
     #[test]
-    fn tile_zoom_rounds_and_clamps() {
-        assert_eq!(TileLayer::tile_zoom(14.4), 14);
-        assert_eq!(TileLayer::tile_zoom(14.6), 15);
-        assert_eq!(TileLayer::tile_zoom(-3.0), 0);
-        assert_eq!(TileLayer::tile_zoom(99.0), 19);
-    }
-
-    #[test]
-    fn parent_walks_up_the_pyramid() {
-        let t = TileId::new(14, 8800, 5680);
-        let p = t.parent().unwrap();
-        assert_eq!(p, TileId::new(13, 4400, 2840));
-        assert!(TileId::new(0, 0, 0).parent().is_none());
-    }
-
-    #[test]
-    fn visible_tiles_cover_viewport_and_are_in_range() {
-        let center = LatLon::new(48.1371, 11.5754);
-        let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let vc = Point::new(640.0, 400.0);
-        let tiles = TileLayer::visible_tiles(center, 14.0, vc, vp);
-        assert!(!tiles.is_empty());
-        // A 1280×800 viewport needs at least a 6×4 tile block.
-        assert!(tiles.len() >= 20, "got {}", tiles.len());
-        let n = 1u32 << 14;
-        for (id, rect) in &tiles {
-            assert_eq!(id.z, 14);
-            assert!(id.x < n && id.y < n);
-            assert!(rect.width() > 200.0 && rect.width() < 320.0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tile_addressing_decoding_and_label_free_styles() {
+        // Phase `tile_zoom_rounds_and_clamps`.
+        {
+            assert_eq!(TileLayer::tile_zoom(14.4), 14);
+            assert_eq!(TileLayer::tile_zoom(14.6), 15);
+            assert_eq!(TileLayer::tile_zoom(-3.0), 0);
+            assert_eq!(TileLayer::tile_zoom(99.0), 19);
         }
-        // The tile under the viewport centre must contain the centre point.
-        let covers_center = tiles.iter().any(|(_, r)| r.contains(vc));
-        assert!(covers_center);
-    }
 
-    #[test]
-    fn geobounds_tile_count_grows_with_zoom() {
-        let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
-        let small = b.tiles_in_range(12, 12).len();
-        let big = b.tiles_in_range(12, 14).len();
-        assert!(big > small);
-        // Range is inclusive and non-empty.
-        assert!(small >= 1);
+        // Phase `parent_walks_up_the_pyramid`.
+        {
+            let t = TileId::new(14, 8800, 5680);
+            let p = t.parent().unwrap();
+            assert_eq!(p, TileId::new(13, 4400, 2840));
+            assert!(TileId::new(0, 0, 0).parent().is_none());
+        }
+
+        // Phase `visible_tiles_cover_viewport_and_are_in_range`.
+        {
+            let center = LatLon::new(48.1371, 11.5754);
+            let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let vc = Point::new(640.0, 400.0);
+            let tiles = TileLayer::visible_tiles(center, 14.0, vc, vp);
+            assert!(!tiles.is_empty());
+            // A 1280×800 viewport needs at least a 6×4 tile block.
+            assert!(tiles.len() >= 20, "got {}", tiles.len());
+            let n = 1u32 << 14;
+            for (id, rect) in &tiles {
+                assert_eq!(id.z, 14);
+                assert!(id.x < n && id.y < n);
+                assert!(rect.width() > 200.0 && rect.width() < 320.0);
+            }
+            // The tile under the viewport centre must contain the centre point.
+            let covers_center = tiles.iter().any(|(_, r)| r.contains(vc));
+            assert!(covers_center);
+        }
+
+        // Phase `geobounds_tile_count_grows_with_zoom`.
+        {
+            let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
+            let small = b.tiles_in_range(12, 12).len();
+            let big = b.tiles_in_range(12, 14).len();
+            assert!(big > small);
+            // Range is inclusive and non-empty.
+            assert!(small >= 1);
+        }
+
+        // Phase `decode_png_expands_indexed_palette`.
+        // Indexed PNGs must decode to RGBA rather than erroring — the hermetic
+        // guard for the bug where every (indexed) OSM tile silently failed to
+        // decode and the map read as "imagery unavailable".
+        {
+            let (rgba, w, h) =
+                decode_png(&INDEXED_PNG_2X2).expect("indexed PNG must decode, not error");
+            assert_eq!((w, h), (2, 2));
+            assert_eq!(rgba.len(), 2 * 2 * 4, "expanded to RGBA8");
+            // Index 0 → red, fully opaque.
+            assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+            // Index 1 → green.
+            assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
+        }
+
+        // Phase `base_tile_urls_are_label_free_per_theme`.
+        // The base raster style the worker fetches must be **label-free**, so the
+        // app's own themed marker layer is the *only* source of POI/place labels
+        // (no duplicate, mismatched names baked into the tiles). This asserts on
+        // the exact constant the live worker uses, not a copy.
+        {
+            for style in [TileStyle::Light, TileStyle::Dark] {
+                let url = style.base_url();
+                assert!(
+                    url.contains("nolabels"),
+                    "base tiles must be a label-free style so only the app draws POIs: {url}"
+                );
+                assert!(
+                    !url.contains("tile.openstreetmap.org"),
+                    "the standard OSM raster bakes labels into the tiles: {url}"
+                );
+            }
+            // Light and dark are distinct endpoints, so a single view is never a mix
+            // of the two tones (the reported light-centre/dark-edge bug).
+            assert_ne!(TileStyle::Light.base_url(), TileStyle::Dark.base_url());
+            // A well-formed z/x/y URL is produced for a sample tile.
+            let id = TileId::new(14, 8800, 5680);
+            let url = TileStyle::Dark.base_url();
+            assert!(
+                id.url(url).ends_with("/14/8800/5680.png"),
+                "{}",
+                id.url(url)
+            );
+        }
+
+        // Phase `style_tracks_theme`.
+        // The basemap style tracks the theme: a dark chrome theme resolves to the
+        // dark basemap, a light theme to the light one — the wiring that kills the
+        // mixed-tone view.
+        {
+            assert_eq!(TileStyle::from_theme(&Theme::dark()), TileStyle::Dark);
+            assert_eq!(TileStyle::from_theme(&Theme::light()), TileStyle::Light);
+        }
     }
 
     // --- Non-blocking guarantees -------------------------------------------
@@ -1125,21 +1188,6 @@ mod tests {
         0x36, 0xf9, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
-    /// Indexed PNGs must decode to RGBA rather than erroring — the hermetic
-    /// guard for the bug where every (indexed) OSM tile silently failed to
-    /// decode and the map read as "imagery unavailable".
-    #[test]
-    fn decode_png_expands_indexed_palette() {
-        let (rgba, w, h) =
-            decode_png(&INDEXED_PNG_2X2).expect("indexed PNG must decode, not error");
-        assert_eq!((w, h), (2, 2));
-        assert_eq!(rgba.len(), 2 * 2 * 4, "expanded to RGBA8");
-        // Index 0 → red, fully opaque.
-        assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
-        // Index 1 → green.
-        assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
-    }
-
     fn temp_cache() -> PathBuf {
         let mut dir = std::env::temp_dir();
         let uniq = format!(
@@ -1154,156 +1202,286 @@ mod tests {
         dir
     }
 
-    /// `request()` must return *immediately* (no blocking on I/O or decode) and
-    /// the decoded tile must arrive asynchronously via `drain()`. This is the
-    /// core non-blocking guarantee that makes zoom/pan smooth.
+    /// Non-blocking guarantees: requests return at once and arrive via drain,
+    /// duplicates are no-ops, the offline layer never requests, and LRU bounds memory.
     #[test]
-    fn request_returns_immediately_results_arrive_via_channel() {
-        let cache = temp_cache();
-        let id = TileId::new(14, 8800, 5680);
-        // Seed the on-disk cache so the worker never needs the network.
-        let path = cache.join(id.cache_rel());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, solid_png(256, 256, [10, 20, 30, 255])).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn tile_requests_never_block_and_the_resident_set_is_bounded() {
+        // Phase `request_returns_immediately_results_arrive_via_channel`.
+        // `request()` must return *immediately* (no blocking on I/O or decode) and
+        // the decoded tile must arrive asynchronously via `drain()`. This is the
+        // core non-blocking guarantee that makes zoom/pan smooth.
+        {
+            let cache = temp_cache();
+            let id = TileId::new(14, 8800, 5680);
+            // Seed the on-disk cache so the worker never needs the network.
+            let path = cache.join(id.cache_rel());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, solid_png(256, 256, [10, 20, 30, 255])).unwrap();
 
-        let mut layer = TileLayer::with_cache_dir(cache.clone());
+            let mut layer = TileLayer::with_cache_dir(cache.clone());
 
-        // The request call itself must be effectively instant — assert it does
-        // not perform the (slow) decode synchronously.
-        let t0 = std::time::Instant::now();
-        layer.request(id);
-        assert!(
-            t0.elapsed() < std::time::Duration::from_millis(20),
-            "request() blocked for {:?} — it must not fetch/decode on the caller",
-            t0.elapsed()
-        );
-        // Immediately after requesting, the tile is in-flight, NOT resident.
-        assert!(layer.is_inflight(id));
-        assert!(layer.get(id).is_none());
+            // The request call itself must be effectively instant — assert it does
+            // not perform the (slow) decode synchronously.
+            let t0 = std::time::Instant::now();
+            layer.request(id);
+            assert!(
+                t0.elapsed() < std::time::Duration::from_millis(20),
+                "request() blocked for {:?} — it must not fetch/decode on the caller",
+                t0.elapsed()
+            );
+            // Immediately after requesting, the tile is in-flight, NOT resident.
+            assert!(layer.is_inflight(id));
+            assert!(layer.get(id).is_none());
 
-        // Poll drain() until the worker delivers the decoded tile.
-        let mut got = false;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            layer.drain();
-            if layer.get(id).is_some() {
-                got = true;
-                break;
+            // Poll drain() until the worker delivers the decoded tile.
+            let mut got = false;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                layer.drain();
+                if layer.get(id).is_some() {
+                    got = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(got, "decoded tile never arrived via the channel");
+            // And it is no longer in-flight once delivered.
+            assert!(!layer.is_inflight(id));
+
+            let _ = std::fs::remove_dir_all(&cache);
         }
-        assert!(got, "decoded tile never arrived via the channel");
-        // And it is no longer in-flight once delivered.
-        assert!(!layer.is_inflight(id));
 
-        let _ = std::fs::remove_dir_all(&cache);
-    }
+        // Phase `duplicate_request_is_a_noop`.
+        // A second `request()` for an already-in-flight or resident tile must be a
+        // no-op — it must not enqueue duplicate work or block.
+        {
+            let cache = temp_cache();
+            let id = TileId::new(12, 2200, 1420);
+            let path = cache.join(id.cache_rel());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, solid_png(64, 64, [1, 2, 3, 255])).unwrap();
 
-    /// A second `request()` for an already-in-flight or resident tile must be a
-    /// no-op — it must not enqueue duplicate work or block.
-    #[test]
-    fn duplicate_request_is_a_noop() {
-        let cache = temp_cache();
-        let id = TileId::new(12, 2200, 1420);
-        let path = cache.join(id.cache_rel());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, solid_png(64, 64, [1, 2, 3, 255])).unwrap();
+            let mut layer = TileLayer::with_cache_dir(cache.clone());
+            layer.request(id);
+            assert!(layer.is_inflight(id));
+            // Requesting again while in-flight changes nothing and does not block.
+            let t0 = std::time::Instant::now();
+            layer.request(id);
+            assert!(t0.elapsed() < std::time::Duration::from_millis(20));
 
-        let mut layer = TileLayer::with_cache_dir(cache.clone());
-        layer.request(id);
-        assert!(layer.is_inflight(id));
-        // Requesting again while in-flight changes nothing and does not block.
-        let t0 = std::time::Instant::now();
-        layer.request(id);
-        assert!(t0.elapsed() < std::time::Duration::from_millis(20));
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline && layer.get(id).is_none() {
-            layer.drain();
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(layer.get(id).is_some());
-        // Now resident: a fresh request must stay a no-op (not re-enqueue).
-        layer.request(id);
-        assert!(!layer.is_inflight(id));
-
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
-    /// The offline layer (no worker) must never block or enqueue anything, so
-    /// `--shots` and tests are hermetic.
-    #[test]
-    fn offline_layer_never_requests() {
-        let mut layer = TileLayer::offline();
-        let id = TileId::new(14, 100, 100);
-        let t0 = std::time::Instant::now();
-        layer.request(id);
-        layer.drain();
-        assert!(t0.elapsed() < std::time::Duration::from_millis(20));
-        assert!(!layer.is_inflight(id));
-        assert!(layer.get(id).is_none());
-        assert!(!layer.has_inflight());
-    }
-
-    /// LRU eviction keeps the resident set bounded so memory can't grow without
-    /// limit during a long pan.
-    #[test]
-    fn mem_cache_evicts_beyond_capacity() {
-        let mut layer = TileLayer::offline();
-        let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
-        for i in 0..(MEM_CACHE_CAP as u32 + 50) {
-            layer.insert(TileId::new(14, i, 0), DecodedTile { image: img.clone() });
-        }
-        assert!(layer.mem_len() <= MEM_CACHE_CAP);
-        // The most-recently-inserted tile must still be resident.
-        assert!(
-            layer
-                .mem
-                .contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0))
-        );
-    }
-
-    /// Starting an offline download enqueues exactly the estimated number of
-    /// tiles and the worker streams progress back via `drain()` — never
-    /// blocking the caller. Seeds the cache so no network is needed.
-    #[test]
-    fn offline_download_streams_progress_without_blocking() {
-        let cache = temp_cache();
-        let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
-        let (z0, z1) = (13u8, 14u8);
-        // Pre-seed every tile in range so the worker hits disk, not the wire.
-        for id in bounds.tiles_in_range(z0, z1) {
-            let p = cache.join(id.cache_rel());
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, solid_png(32, 32, [9, 9, 9, 255])).unwrap();
-        }
-        let mut layer = TileLayer::with_cache_dir(cache.clone());
-
-        let est = TileLayer::estimate_download(bounds, z0, z1);
-        let t0 = std::time::Instant::now();
-        let queued = layer.start_download(bounds, z0, z1);
-        assert!(
-            t0.elapsed() < std::time::Duration::from_millis(50),
-            "start_download blocked for {:?}",
-            t0.elapsed()
-        );
-        assert_eq!(queued, est);
-        assert!(queued > 1);
-        assert!(layer.progress().is_active() || est == 0);
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            layer.drain();
-            if !layer.progress().is_active() && layer.progress().done >= queued {
-                break;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline && layer.get(id).is_none() {
+                layer.drain();
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let prog = layer.progress();
-        assert_eq!(prog.done, queued, "download did not complete via channel");
-        assert_eq!(prog.failed, 0, "cached tiles should not fail");
+            assert!(layer.get(id).is_some());
+            // Now resident: a fresh request must stay a no-op (not re-enqueue).
+            layer.request(id);
+            assert!(!layer.is_inflight(id));
 
-        let _ = std::fs::remove_dir_all(&cache);
+            let _ = std::fs::remove_dir_all(&cache);
+        }
+
+        // Phase `offline_layer_never_requests`.
+        // The offline layer (no worker) must never block or enqueue anything, so
+        // `--shots` and tests are hermetic.
+        {
+            let mut layer = TileLayer::offline();
+            let id = TileId::new(14, 100, 100);
+            let t0 = std::time::Instant::now();
+            layer.request(id);
+            layer.drain();
+            assert!(t0.elapsed() < std::time::Duration::from_millis(20));
+            assert!(!layer.is_inflight(id));
+            assert!(layer.get(id).is_none());
+            assert!(!layer.has_inflight());
+        }
+
+        // Phase `mem_cache_evicts_beyond_capacity`.
+        // LRU eviction keeps the resident set bounded so memory can't grow without
+        // limit during a long pan.
+        {
+            let mut layer = TileLayer::offline();
+            let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+            for i in 0..(MEM_CACHE_CAP as u32 + 50) {
+                layer.insert(TileId::new(14, i, 0), DecodedTile { image: img.clone() });
+            }
+            assert!(layer.mem_len() <= MEM_CACHE_CAP);
+            // The most-recently-inserted tile must still be resident.
+            assert!(
+                layer
+                    .mem
+                    .contains_key(&TileId::new(14, MEM_CACHE_CAP as u32 + 49, 0))
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn offline_region_download_persists_renders_and_deletes_tiles() {
+        // Phase `offline_download_streams_progress_without_blocking`.
+        // Starting an offline download enqueues exactly the estimated number of
+        // tiles and the worker streams progress back via `drain()` — never
+        // blocking the caller. Seeds the cache so no network is needed.
+        {
+            let cache = temp_cache();
+            let bounds = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.15, 11.59));
+            let (z0, z1) = (13u8, 14u8);
+            // Pre-seed every tile in range so the worker hits disk, not the wire.
+            for id in bounds.tiles_in_range(z0, z1) {
+                let p = cache.join(id.cache_rel());
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(&p, solid_png(32, 32, [9, 9, 9, 255])).unwrap();
+            }
+            let mut layer = TileLayer::with_cache_dir(cache.clone());
+
+            let est = TileLayer::estimate_download(bounds, z0, z1);
+            let t0 = std::time::Instant::now();
+            let queued = layer.start_download(bounds, z0, z1);
+            assert!(
+                t0.elapsed() < std::time::Duration::from_millis(50),
+                "start_download blocked for {:?}",
+                t0.elapsed()
+            );
+            assert_eq!(queued, est);
+            assert!(queued > 1);
+            assert!(layer.progress().is_active() || est == 0);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                layer.drain();
+                if !layer.progress().is_active() && layer.progress().done >= queued {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let prog = layer.progress();
+            assert_eq!(prog.done, queued, "download did not complete via channel");
+            assert_eq!(prog.failed, 0, "cached tiles should not fail");
+
+            let _ = std::fs::remove_dir_all(&cache);
+        }
+
+        // Phase `download_fetches_and_persists_tiles_to_disk`.
+        // The decisive offline-download real-path test: `start_download` must
+        // actually **fetch tiles over HTTP and persist the PNGs to the on-disk
+        // cache** (not just count). Runs the full production path —
+        // `start_download` → worker → HTTP GET → decode → `write_cache` → drain — and
+        // then asserts the exact `z/x/y.png` files exist on disk.
+        {
+            let cache = temp_cache();
+            let base = serve_png(solid_png(256, 256, [30, 60, 90, 255]));
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+
+            // A small area across two zooms → a handful of real tiles.
+            let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
+            let (z0, z1) = (13u8, 14u8);
+            let ids = bounds.tiles_in_range(z0, z1);
+            assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
+            // None are on disk yet.
+            for id in &ids {
+                assert!(!cache.join(id.cache_rel()).exists());
+            }
+
+            let queued = layer.start_download(bounds, z0, z1);
+            assert_eq!(queued, ids.len() as u32);
+
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while Instant::now() < deadline {
+                layer.drain();
+                if !layer.progress().is_active() && layer.progress().done >= queued {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(layer.progress().done, queued, "download did not complete");
+            assert_eq!(
+                layer.progress().failed,
+                0,
+                "the mock server serves every tile"
+            );
+
+            // Every queued tile is now a real PNG on disk — that is what makes the
+            // region available offline.
+            for id in &ids {
+                let path = cache.join(id.cache_rel());
+                assert!(path.exists(), "tile {id:?} was not persisted to {path:?}");
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(decode_png(&bytes).is_ok(), "persisted tile is a valid PNG");
+            }
+
+            let _ = std::fs::remove_dir_all(&cache);
+        }
+
+        // Phase `cached_region_renders_offline_without_network`.
+        // A downloaded region must **render offline**: with the tiles already on
+        // disk and the network unreachable (a refused local port), a live layer
+        // still serves the tile from the cache — `load_tile` reads disk *before*
+        // the network, and a disk hit records no failure. This is the guarantee
+        // that a pre-downloaded area works with no connection.
+        {
+            let cache = temp_cache();
+            let id = TileId::new(16, 35210, 22696);
+            // Persist the tile as if a prior download had written it.
+            let path = cache.join(id.cache_rel());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
+
+            // Network is definitively down (closed port), i.e. offline.
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+            layer.request(id);
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline && layer.get(id).is_none() {
+                layer.drain();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                layer.get(id).is_some(),
+                "a cached tile must load offline (disk-first), with no network"
+            );
+            assert!(
+                !layer.has_failures(),
+                "a disk cache hit must not be recorded as a fetch failure"
+            );
+
+            let _ = std::fs::remove_dir_all(&cache);
+        }
+
+        // Phase `delete_tiles_removes_from_disk_and_reports_freed`.
+        // Removing a downloaded region deletes exactly its tiles from disk and
+        // reports the bytes freed, without touching tiles it wasn't asked to drop.
+        {
+            let cache = temp_cache();
+            let doomed = TileId::new(15, 17600, 11360);
+            let kept = TileId::new(15, 17601, 11360);
+            for id in [doomed, kept] {
+                let p = cache.join(id.cache_rel());
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(&p, solid_png(64, 64, [7, 7, 7, 255])).unwrap();
+            }
+            let mut layer = TileLayer::offline_with_cache_dir(cache.clone());
+
+            let freed = layer.delete_tiles(&[doomed]);
+            assert!(freed > 0, "deleting a real tile frees its bytes");
+            assert!(
+                !cache.join(doomed.cache_rel()).exists(),
+                "the tile is gone from disk"
+            );
+            assert!(
+                cache.join(kept.cache_rel()).exists(),
+                "an untouched tile is kept"
+            );
+
+            let _ = std::fs::remove_dir_all(&cache);
+        }
     }
 
     // --- Failed-tile negative cache ----------------------------------------
@@ -1317,134 +1495,102 @@ mod tests {
         format!("http://127.0.0.1:{port}")
     }
 
-    /// The core of the fix: a tile whose *real* fetch fails must be
-    /// negative-cached, so a subsequent `request()` (what `draw_tiles` issues
-    /// every frame for each non-resident tile) is suppressed and does NOT
-    /// enqueue new work or mark the tile in-flight. This is what stops the
-    /// per-frame refetch spin and the tile-server hammering. Exercises the full
-    /// production path: request → worker → HTTP failure → drain → suppression.
     #[test]
-    fn failed_fetch_is_negative_cached_and_suppresses_refetch() {
-        let cache = temp_cache();
-        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
-        let id = TileId::new(14, 8801, 5681);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn failed_tiles_are_negative_cached_with_capped_exponential_backoff() {
+        // Phase `failed_fetch_is_negative_cached_and_suppresses_refetch`.
+        // The core of the fix: a tile whose *real* fetch fails must be
+        // negative-cached, so a subsequent `request()` (what `draw_tiles` issues
+        // every frame for each non-resident tile) is suppressed and does NOT
+        // enqueue new work or mark the tile in-flight. This is what stops the
+        // per-frame refetch spin and the tile-server hammering. Exercises the full
+        // production path: request → worker → HTTP failure → drain → suppression.
+        {
+            let cache = temp_cache();
+            let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+            let id = TileId::new(14, 8801, 5681);
 
-        // First request is dispatched and marked in-flight.
-        layer.request(id);
-        assert!(layer.is_inflight(id), "first request should be in-flight");
+            // First request is dispatched and marked in-flight.
+            layer.request(id);
+            assert!(layer.is_inflight(id), "first request should be in-flight");
 
-        // Wait for the (fast) connection-refused failure to arrive via drain.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline && layer.is_inflight(id) {
-            layer.drain();
-            std::thread::sleep(Duration::from_millis(5));
+            // Wait for the (fast) connection-refused failure to arrive via drain.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline && layer.is_inflight(id) {
+                layer.drain();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                !layer.is_inflight(id),
+                "a failed fetch must clear in-flight"
+            );
+            assert!(layer.get(id).is_none(), "a failed tile is not resident");
+            assert!(
+                layer.is_backing_off(id),
+                "a failed tile must be negative-cached"
+            );
+            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+
+            // The decisive assertion: re-requesting the doomed tile is a no-op while
+            // it is backing off — no new job, nothing in flight. `has_inflight()`
+            // therefore stays false, which is what lets the app's frame loop idle.
+            layer.request(id);
+            assert!(
+                !layer.is_inflight(id),
+                "a backed-off tile must not be re-requested"
+            );
+            assert!(
+                !layer.has_inflight(),
+                "no work should be in flight after a suppressed request — the loop can idle"
+            );
+
+            let _ = std::fs::remove_dir_all(&cache);
         }
-        assert!(
-            !layer.is_inflight(id),
-            "a failed fetch must clear in-flight"
-        );
-        assert!(layer.get(id).is_none(), "a failed tile is not resident");
-        assert!(
-            layer.is_backing_off(id),
-            "a failed tile must be negative-cached"
-        );
-        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
 
-        // The decisive assertion: re-requesting the doomed tile is a no-op while
-        // it is backing off — no new job, nothing in flight. `has_inflight()`
-        // therefore stays false, which is what lets the app's frame loop idle.
-        layer.request(id);
-        assert!(
-            !layer.is_inflight(id),
-            "a backed-off tile must not be re-requested"
-        );
-        assert!(
-            !layer.has_inflight(),
-            "no work should be in flight after a suppressed request — the loop can idle"
-        );
-
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
-    /// The backoff grows exponentially (bounded) across consecutive failures so
-    /// a persistently-unreachable server is retried ever more rarely, and a
-    /// later success clears the entry entirely.
-    #[test]
-    fn failure_backoff_grows_and_clears_on_success() {
-        let mut layer = TileLayer::offline();
-        let id = TileId::new(12, 1, 2);
-        layer.note_failure(id);
-        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
-        layer.note_failure(id);
-        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
-        layer.note_failure(id);
-        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
-
-        // A resident tile (success) clears the negative cache. Simulate the
-        // success branch of `drain` by inserting the decoded tile and dropping
-        // the failure entry as that branch does.
-        layer.failed.remove(&id);
-        let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
-        layer.insert(id, DecodedTile { image: img });
-        assert!(
-            layer.failed_delay(id).is_none(),
-            "success clears the backoff"
-        );
-        assert!(!layer.is_backing_off(id));
-    }
-
-    /// The backoff is capped so it never grows unbounded, even after many
-    /// consecutive failures.
-    #[test]
-    fn failure_backoff_is_capped() {
-        let mut layer = TileLayer::offline();
-        let id = TileId::new(10, 3, 4);
-        for _ in 0..40 {
+        // Phase `failure_backoff_grows_and_clears_on_success`.
+        // The backoff grows exponentially (bounded) across consecutive failures so
+        // a persistently-unreachable server is retried ever more rarely, and a
+        // later success clears the entry entirely.
+        {
+            let mut layer = TileLayer::offline();
+            let id = TileId::new(12, 1, 2);
             layer.note_failure(id);
+            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN));
+            layer.note_failure(id);
+            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 2));
+            layer.note_failure(id);
+            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MIN * 4));
+
+            // A resident tile (success) clears the negative cache. Simulate the
+            // success branch of `drain` by inserting the decoded tile and dropping
+            // the failure entry as that branch does.
+            layer.failed.remove(&id);
+            let img = make_image(vec![0u8; 4 * 4 * 4], 4, 4).unwrap();
+            layer.insert(id, DecodedTile { image: img });
+            assert!(
+                layer.failed_delay(id).is_none(),
+                "success clears the backoff"
+            );
+            assert!(!layer.is_backing_off(id));
         }
-        assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
+
+        // Phase `failure_backoff_is_capped`.
+        // The backoff is capped so it never grows unbounded, even after many
+        // consecutive failures.
+        {
+            let mut layer = TileLayer::offline();
+            let id = TileId::new(10, 3, 4);
+            for _ in 0..40 {
+                layer.note_failure(id);
+            }
+            assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
+        }
     }
 
     // --- Label-free base style + offline region download -------------------
-
-    /// The base raster style the worker fetches must be **label-free**, so the
-    /// app's own themed marker layer is the *only* source of POI/place labels
-    /// (no duplicate, mismatched names baked into the tiles). This asserts on
-    /// the exact constant the live worker uses, not a copy.
-    #[test]
-    fn base_tile_urls_are_label_free_per_theme() {
-        for style in [TileStyle::Light, TileStyle::Dark] {
-            let url = style.base_url();
-            assert!(
-                url.contains("nolabels"),
-                "base tiles must be a label-free style so only the app draws POIs: {url}"
-            );
-            assert!(
-                !url.contains("tile.openstreetmap.org"),
-                "the standard OSM raster bakes labels into the tiles: {url}"
-            );
-        }
-        // Light and dark are distinct endpoints, so a single view is never a mix
-        // of the two tones (the reported light-centre/dark-edge bug).
-        assert_ne!(TileStyle::Light.base_url(), TileStyle::Dark.base_url());
-        // A well-formed z/x/y URL is produced for a sample tile.
-        let id = TileId::new(14, 8800, 5680);
-        let url = TileStyle::Dark.base_url();
-        assert!(
-            id.url(url).ends_with("/14/8800/5680.png"),
-            "{}",
-            id.url(url)
-        );
-    }
-
-    /// The basemap style tracks the theme: a dark chrome theme resolves to the
-    /// dark basemap, a light theme to the light one — the wiring that kills the
-    /// mixed-tone view.
-    #[test]
-    fn style_tracks_theme() {
-        assert_eq!(TileStyle::from_theme(&Theme::dark()), TileStyle::Dark);
-        assert_eq!(TileStyle::from_theme(&Theme::light()), TileStyle::Light);
-    }
 
     /// A one-shot local HTTP/1.1 server that answers every request with the
     /// same PNG bytes, so the *real* fetch→decode→persist path can be exercised
@@ -1469,119 +1615,5 @@ mod tests {
             }
         });
         format!("http://127.0.0.1:{port}")
-    }
-
-    /// The decisive offline-download real-path test: `start_download` must
-    /// actually **fetch tiles over HTTP and persist the PNGs to the on-disk
-    /// cache** (not just count). Runs the full production path —
-    /// `start_download` → worker → HTTP GET → decode → `write_cache` → drain — and
-    /// then asserts the exact `z/x/y.png` files exist on disk.
-    #[test]
-    fn download_fetches_and_persists_tiles_to_disk() {
-        let cache = temp_cache();
-        let base = serve_png(solid_png(256, 256, [30, 60, 90, 255]));
-        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
-
-        // A small area across two zooms → a handful of real tiles.
-        let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
-        let (z0, z1) = (13u8, 14u8);
-        let ids = bounds.tiles_in_range(z0, z1);
-        assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
-        // None are on disk yet.
-        for id in &ids {
-            assert!(!cache.join(id.cache_rel()).exists());
-        }
-
-        let queued = layer.start_download(bounds, z0, z1);
-        assert_eq!(queued, ids.len() as u32);
-
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            layer.drain();
-            if !layer.progress().is_active() && layer.progress().done >= queued {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(layer.progress().done, queued, "download did not complete");
-        assert_eq!(
-            layer.progress().failed,
-            0,
-            "the mock server serves every tile"
-        );
-
-        // Every queued tile is now a real PNG on disk — that is what makes the
-        // region available offline.
-        for id in &ids {
-            let path = cache.join(id.cache_rel());
-            assert!(path.exists(), "tile {id:?} was not persisted to {path:?}");
-            let bytes = std::fs::read(&path).unwrap();
-            assert!(decode_png(&bytes).is_ok(), "persisted tile is a valid PNG");
-        }
-
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
-    /// A downloaded region must **render offline**: with the tiles already on
-    /// disk and the network unreachable (a refused local port), a live layer
-    /// still serves the tile from the cache — `load_tile` reads disk *before*
-    /// the network, and a disk hit records no failure. This is the guarantee
-    /// that a pre-downloaded area works with no connection.
-    #[test]
-    fn cached_region_renders_offline_without_network() {
-        let cache = temp_cache();
-        let id = TileId::new(16, 35210, 22696);
-        // Persist the tile as if a prior download had written it.
-        let path = cache.join(id.cache_rel());
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
-
-        // Network is definitively down (closed port), i.e. offline.
-        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
-        layer.request(id);
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline && layer.get(id).is_none() {
-            layer.drain();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(
-            layer.get(id).is_some(),
-            "a cached tile must load offline (disk-first), with no network"
-        );
-        assert!(
-            !layer.has_failures(),
-            "a disk cache hit must not be recorded as a fetch failure"
-        );
-
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
-    /// Removing a downloaded region deletes exactly its tiles from disk and
-    /// reports the bytes freed, without touching tiles it wasn't asked to drop.
-    #[test]
-    fn delete_tiles_removes_from_disk_and_reports_freed() {
-        let cache = temp_cache();
-        let doomed = TileId::new(15, 17600, 11360);
-        let kept = TileId::new(15, 17601, 11360);
-        for id in [doomed, kept] {
-            let p = cache.join(id.cache_rel());
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, solid_png(64, 64, [7, 7, 7, 255])).unwrap();
-        }
-        let mut layer = TileLayer::offline_with_cache_dir(cache.clone());
-
-        let freed = layer.delete_tiles(&[doomed]);
-        assert!(freed > 0, "deleting a real tile frees its bytes");
-        assert!(
-            !cache.join(doomed.cache_rel()).exists(),
-            "the tile is gone from disk"
-        );
-        assert!(
-            cache.join(kept.cache_rel()).exists(),
-            "an untouched tile is kept"
-        );
-
-        let _ = std::fs::remove_dir_all(&cache);
     }
 }

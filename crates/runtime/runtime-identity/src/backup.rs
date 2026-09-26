@@ -768,267 +768,270 @@ mod tests {
         66c063f345fb17a9fb6775d6";
 
     #[test]
-    fn v1_backup_from_an_earlier_build_still_opens() {
-        let passphrase = b"correct horse battery staple";
-        let key = derive_v1_key(
-            passphrase,
-            &[1; SALT_LEN],
-            ARGON_MEMORY_KIB,
-            ARGON_ITERATIONS,
-            ARGON_LANES,
-        )
-        .unwrap();
-        assert_eq!(
-            hex::encode(key.expose_secret()),
-            "eb641d1b946edf14c62d7dca0578e4dc9236cb4aaf2bfe103e9751bc8ac66242"
-        );
-        let blob = hex::decode(KAT_BACKUP_V1).unwrap();
-        let record = open_record(&blob, passphrase).unwrap();
-        // Compare as JSON values: the fixture's key order is fixed, but the
-        // expected record's order follows whether serde_json's
-        // `preserve_order` is unified into this build.
-        let opened: serde_json::Value = serde_json::from_slice(&record).unwrap();
-        let expected: serde_json::Value = serde_json::from_slice(&record_bytes("Ada", 71)).unwrap();
-        assert_eq!(opened, expected);
-        assert!(open_record(&blob, b"wrong horse battery staple").is_err());
-        // A v1 header claiming a heavier profile is refused before derivation.
-        let mut heavier = blob;
-        heavier[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(open_record(&heavier, passphrase).is_err());
-    }
-
-    #[test]
-    fn v1_backup_file_still_verifies_and_imports() {
-        let dir = tempfile::tempdir().expect("dir");
-        let backup = dir.path().join("old.tilo-identity-backup");
-        fs::write(&backup, hex::decode(KAT_BACKUP_V1).unwrap()).expect("fixture");
-        let passphrase = b"correct horse battery staple";
-        let info = verify_portable_backup(&backup, passphrase).expect("v1 verifies");
-        let restored = tempfile::tempdir().expect("restore");
-        let imported = import_portable_backup(&backup, passphrase, restored.path(), "restored")
-            .expect("v1 imports");
-        let identity = super::super::load_from_path(imported).expect("restored identity loads");
-        assert_eq!(identity.group_public_key(), info.group_public_key);
-    }
-
-    #[test]
-    fn new_backups_are_v2_seal_envelopes_and_reject_tampering() {
-        let passphrase = b"a sufficient passphrase";
-        let blob = seal_record(b"{\"record\":true}", passphrase).expect("seal");
-        assert_eq!(&blob[..MAGIC.len()], MAGIC);
-        assert_eq!(blob[MAGIC.len()], FORMAT_V2);
-        assert!(envelope::is_envelope(&blob[PREFIX_LEN..]));
-        assert_eq!(
-            open_record(&blob, passphrase).unwrap().as_slice(),
-            b"{\"record\":true}"
-        );
-        assert!(open_record(&blob, b"another sufficient passphrase").is_err());
-        for index in [0, MAGIC.len(), PREFIX_LEN + 8, blob.len() - 1] {
-            let mut tampered = blob.to_vec();
-            tampered[index] ^= 0x01;
-            assert!(open_record(&tampered, passphrase).is_err(), "byte {index}");
-        }
-        // Rewriting the version byte cannot downgrade a v2 envelope to v1.
-        let mut downgraded = blob.to_vec();
-        downgraded[MAGIC.len()] = FORMAT_V1;
-        assert!(open_record(&downgraded, passphrase).is_err());
-    }
-
-    #[test]
-    fn encrypted_portable_backup_round_trips_and_imports() {
-        let source = tempfile::tempdir().expect("source");
-        let identity = secured_identity(source.path(), "personal", 71);
-        let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.tilo-identity-backup");
-        let passphrase = b"correct horse battery staple";
-
-        let info = export_portable_backup(&identity, &backup, passphrase).expect("export");
-        assert_eq!(info.bytes_written, fs::metadata(&backup).unwrap().len());
-        assert_eq!(verify_portable_backup(&backup, passphrase).unwrap(), info);
-
-        let restored = tempfile::tempdir().expect("restore");
-        let imported = import_portable_backup(&backup, passphrase, restored.path(), "restored")
-            .expect("restore");
-        let identity = super::super::load_from_path(imported).expect("restored identity loads");
-        assert_eq!(identity.group_public_key(), info.group_public_key);
-    }
-
-    #[test]
-    fn backup_is_not_metadata_copy_and_wrong_passphrase_fails_closed() {
-        let source = tempfile::tempdir().expect("source");
-        let identity = secured_identity(source.path(), "personal", 72);
-        let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.tilo-identity-backup");
-        export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
-
-        let bytes = fs::read(&backup).expect("read envelope");
-        assert!(!bytes.starts_with(b"{"), "backup is an encrypted envelope");
-        assert!(!bytes.windows(32).any(|part| part == [72_u8; 32]));
-        assert!(verify_portable_backup(&backup, b"wrong passphrase").is_err());
-        assert!(
-            import_portable_backup(&backup, b"wrong passphrase", source.path(), "wrong").is_err()
-        );
-    }
-
-    #[test]
-    fn matching_import_rejects_a_backup_replaced_after_verification() {
-        let source = tempfile::tempdir().expect("source");
-        let first = secured_identity(source.path(), "first", 75);
-        let second = secured_identity(source.path(), "second", 76);
-        let backup_dir = tempfile::tempdir().expect("backups");
-        let first_backup = backup_dir.path().join("first.backup");
-        let second_backup = backup_dir.path().join("second.backup");
-        let passphrase = b"correct horse battery staple";
-        let expected = export_portable_backup(&first, &first_backup, passphrase)
-            .expect("first export")
-            .group_public_key;
-        export_portable_backup(&second, &second_backup, passphrase).expect("second export");
-
-        let restored = tempfile::tempdir().expect("restore");
-        let error = import_portable_backup_matching(
-            &second_backup,
-            passphrase,
-            restored.path(),
-            "restored",
-            expected,
-        )
-        .expect_err("a different authenticated identity must be rejected");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(!restored.path().join("restored.json").exists());
-    }
-
-    #[test]
-    fn tampering_and_existing_destinations_are_refused() {
-        let source = tempfile::tempdir().expect("source");
-        let identity = secured_identity(source.path(), "personal", 73);
-        let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.tilo-identity-backup");
-        export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
-
-        let mut bytes = fs::read(&backup).expect("read");
-        let at = bytes.len() - 1;
-        bytes[at] ^= 0x80;
-        fs::write(&backup, bytes).expect("tamper");
-        assert!(verify_portable_backup(&backup, b"the passphrase").is_err());
-
-        let existing = backup_dir.path().join("existing.backup");
-        fs::write(&existing, b"do not replace").expect("existing");
-        assert_eq!(
-            export_portable_backup(&identity, &existing, b"the passphrase")
-                .expect_err("existing destination must be refused")
-                .kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_eq!(fs::read(&existing).unwrap(), b"do not replace");
-    }
-
-    #[test]
-    fn concurrent_publication_preserves_the_winner_and_loser_staging_file() {
-        let dir = tempfile::tempdir().expect("dir");
-        let first_staging = dir.path().join("first.tmp");
-        let second_staging = dir.path().join("second.tmp");
-        let destination = dir.path().join("identity.backup");
-        fs::write(&first_staging, b"first complete payload").expect("first staging file");
-        fs::write(&second_staging, b"second complete payload").expect("second staging file");
-
-        let start = Arc::new(Barrier::new(2));
-        let first_start = Arc::clone(&start);
-        let first_source = first_staging.clone();
-        let first_destination = destination.clone();
-        let first = std::thread::spawn(move || {
-            first_start.wait();
-            publish_new_file(&first_source, &first_destination)
-        });
-        let second_source = second_staging.clone();
-        let second_destination = destination.clone();
-        let second = std::thread::spawn(move || {
-            start.wait();
-            publish_new_file(&second_source, &second_destination)
-        });
-
-        let first_result = first.join().expect("first publisher");
-        let second_result = second.join().expect("second publisher");
-        assert_ne!(
-            first_result.is_ok(),
-            second_result.is_ok(),
-            "exactly one publication must succeed"
-        );
-
-        if first_result.is_ok() {
-            assert_eq!(fs::read(&destination).unwrap(), b"first complete payload");
-            assert!(!first_staging.exists(), "winning staging name is consumed");
-            assert_eq!(
-                fs::read(&second_staging).unwrap(),
-                b"second complete payload"
-            );
-        } else {
-            assert_eq!(fs::read(&destination).unwrap(), b"second complete payload");
-            assert!(!second_staging.exists(), "winning staging name is consumed");
-            assert_eq!(fs::read(&first_staging).unwrap(), b"first complete payload");
-        }
-    }
-
-    #[test]
-    fn backup_reader_rejects_symlink_and_empty_passphrase() {
-        let dir = tempfile::tempdir().expect("dir");
-        let identity = secured_identity(dir.path(), "personal", 74);
-        let backup = dir.path().join("identity.backup");
-        assert!(export_portable_backup(&identity, &backup, b"").is_err());
-
-        let link = dir.path().join("link.backup");
-        symlink(&backup, &link).expect("link");
-        assert!(verify_portable_backup(&link, b"a sufficient passphrase").is_err());
-        assert_eq!(
-            fs::metadata(&identity).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn failed_readback_removes_only_the_exact_new_envelope() {
-        let dir = tempfile::tempdir().expect("dir");
-        let destination = dir.path().join("identity.backup");
-        let envelope =
-            seal_record(b"not a real identity", b"a sufficient passphrase").expect("envelope");
-        write_new_backup(&destination, envelope.as_slice()).expect("publish");
-
-        assert!(
-            checked_readback(
-                &destination,
-                b"a sufficient passphrase",
-                [0; 32],
-                envelope.as_slice(),
+    fn backups_round_trip_across_formats_and_fail_closed() {
+        // phase: v1_backup_from_an_earlier_build_still_opens
+        {
+            let passphrase = b"correct horse battery staple";
+            let key = derive_v1_key(
+                passphrase,
+                &[1; SALT_LEN],
+                ARGON_MEMORY_KIB,
+                ARGON_ITERATIONS,
+                ARGON_LANES,
             )
-            .is_err()
-        );
-        assert!(
-            !destination.exists(),
-            "a final target that fails read-back must not remain"
-        );
+            .unwrap();
+            assert_eq!(
+                hex::encode(key.expose_secret()),
+                "eb641d1b946edf14c62d7dca0578e4dc9236cb4aaf2bfe103e9751bc8ac66242"
+            );
+            let blob = hex::decode(KAT_BACKUP_V1).unwrap();
+            let record = open_record(&blob, passphrase).unwrap();
+            // Compare as JSON values: the fixture's key order is fixed, but the
+            // expected record's order follows whether serde_json's
+            // `preserve_order` is unified into this build.
+            let opened: serde_json::Value = serde_json::from_slice(&record).unwrap();
+            let expected: serde_json::Value =
+                serde_json::from_slice(&record_bytes("Ada", 71)).unwrap();
+            assert_eq!(opened, expected);
+            assert!(open_record(&blob, b"wrong horse battery staple").is_err());
+            // A v1 header claiming a heavier profile is refused before derivation.
+            let mut heavier = blob;
+            heavier[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(open_record(&heavier, passphrase).is_err());
+        }
+        // phase: v1_backup_file_still_verifies_and_imports
+        {
+            let dir = tempfile::tempdir().expect("dir");
+            let backup = dir.path().join("old.tilo-identity-backup");
+            fs::write(&backup, hex::decode(KAT_BACKUP_V1).unwrap()).expect("fixture");
+            let passphrase = b"correct horse battery staple";
+            let info = verify_portable_backup(&backup, passphrase).expect("v1 verifies");
+            let restored = tempfile::tempdir().expect("restore");
+            let imported = import_portable_backup(&backup, passphrase, restored.path(), "restored")
+                .expect("v1 imports");
+            let identity = super::super::load_from_path(imported).expect("restored identity loads");
+            assert_eq!(identity.group_public_key(), info.group_public_key);
+        }
+        // phase: new_backups_are_v2_seal_envelopes_and_reject_tampering
+        {
+            let passphrase = b"a sufficient passphrase";
+            let blob = seal_record(b"{\"record\":true}", passphrase).expect("seal");
+            assert_eq!(&blob[..MAGIC.len()], MAGIC);
+            assert_eq!(blob[MAGIC.len()], FORMAT_V2);
+            assert!(envelope::is_envelope(&blob[PREFIX_LEN..]));
+            assert_eq!(
+                open_record(&blob, passphrase).unwrap().as_slice(),
+                b"{\"record\":true}"
+            );
+            assert!(open_record(&blob, b"another sufficient passphrase").is_err());
+            for index in [0, MAGIC.len(), PREFIX_LEN + 8, blob.len() - 1] {
+                let mut tampered = blob.to_vec();
+                tampered[index] ^= 0x01;
+                assert!(open_record(&tampered, passphrase).is_err(), "byte {index}");
+            }
+            // Rewriting the version byte cannot downgrade a v2 envelope to v1.
+            let mut downgraded = blob.to_vec();
+            downgraded[MAGIC.len()] = FORMAT_V1;
+            assert!(open_record(&downgraded, passphrase).is_err());
+        }
+        // phase: encrypted_portable_backup_round_trips_and_imports
+        {
+            let source = tempfile::tempdir().expect("source");
+            let identity = secured_identity(source.path(), "personal", 71);
+            let backup_dir = tempfile::tempdir().expect("backup dir");
+            let backup = backup_dir.path().join("ada.tilo-identity-backup");
+            let passphrase = b"correct horse battery staple";
+
+            let info = export_portable_backup(&identity, &backup, passphrase).expect("export");
+            assert_eq!(info.bytes_written, fs::metadata(&backup).unwrap().len());
+            assert_eq!(verify_portable_backup(&backup, passphrase).unwrap(), info);
+
+            let restored = tempfile::tempdir().expect("restore");
+            let imported = import_portable_backup(&backup, passphrase, restored.path(), "restored")
+                .expect("restore");
+            let identity = super::super::load_from_path(imported).expect("restored identity loads");
+            assert_eq!(identity.group_public_key(), info.group_public_key);
+        }
+        // phase: backup_is_not_metadata_copy_and_wrong_passphrase_fails_closed
+        {
+            let source = tempfile::tempdir().expect("source");
+            let identity = secured_identity(source.path(), "personal", 72);
+            let backup_dir = tempfile::tempdir().expect("backup dir");
+            let backup = backup_dir.path().join("ada.tilo-identity-backup");
+            export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
+
+            let bytes = fs::read(&backup).expect("read envelope");
+            assert!(!bytes.starts_with(b"{"), "backup is an encrypted envelope");
+            assert!(!bytes.windows(32).any(|part| part == [72_u8; 32]));
+            assert!(verify_portable_backup(&backup, b"wrong passphrase").is_err());
+            assert!(
+                import_portable_backup(&backup, b"wrong passphrase", source.path(), "wrong")
+                    .is_err()
+            );
+        }
     }
 
     #[test]
-    fn provider_failure_during_restore_leaves_no_identity_metadata() {
-        let source = tempfile::tempdir().expect("source");
-        let identity = secured_identity(source.path(), "personal", 75);
-        let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.tilo-identity-backup");
-        let passphrase = b"a sufficient passphrase";
-        export_portable_backup(&identity, &backup, passphrase).expect("export");
+    fn imports_refuse_replaced_tampered_linked_or_existing_inputs() {
+        // phase: matching_import_rejects_a_backup_replaced_after_verification
+        {
+            let source = tempfile::tempdir().expect("source");
+            let first = secured_identity(source.path(), "first", 75);
+            let second = secured_identity(source.path(), "second", 76);
+            let backup_dir = tempfile::tempdir().expect("backups");
+            let first_backup = backup_dir.path().join("first.backup");
+            let second_backup = backup_dir.path().join("second.backup");
+            let passphrase = b"correct horse battery staple";
+            let expected = export_portable_backup(&first, &first_backup, passphrase)
+                .expect("first export")
+                .group_public_key;
+            export_portable_backup(&second, &second_backup, passphrase).expect("second export");
 
-        let restored = tempfile::tempdir().expect("restore");
-        let error = import_portable_backup_with_provider(
-            &backup,
-            passphrase,
-            restored.path(),
-            "restored",
-            &FailingProvider,
-        )
-        .expect_err("provider failure must abort restore");
-        assert_eq!(error.kind(), io::ErrorKind::Other);
-        assert!(
-            !restored.path().join("restored.json").exists(),
-            "failed secure-store import must clean up public identity metadata"
-        );
+            let restored = tempfile::tempdir().expect("restore");
+            let error = import_portable_backup_matching(
+                &second_backup,
+                passphrase,
+                restored.path(),
+                "restored",
+                expected,
+            )
+            .expect_err("a different authenticated identity must be rejected");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(!restored.path().join("restored.json").exists());
+        }
+        // phase: tampering_and_existing_destinations_are_refused
+        {
+            let source = tempfile::tempdir().expect("source");
+            let identity = secured_identity(source.path(), "personal", 73);
+            let backup_dir = tempfile::tempdir().expect("backup dir");
+            let backup = backup_dir.path().join("ada.tilo-identity-backup");
+            export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
+
+            let mut bytes = fs::read(&backup).expect("read");
+            let at = bytes.len() - 1;
+            bytes[at] ^= 0x80;
+            fs::write(&backup, bytes).expect("tamper");
+            assert!(verify_portable_backup(&backup, b"the passphrase").is_err());
+
+            let existing = backup_dir.path().join("existing.backup");
+            fs::write(&existing, b"do not replace").expect("existing");
+            assert_eq!(
+                export_portable_backup(&identity, &existing, b"the passphrase")
+                    .expect_err("existing destination must be refused")
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(fs::read(&existing).unwrap(), b"do not replace");
+        }
+        // phase: backup_reader_rejects_symlink_and_empty_passphrase
+        {
+            let dir = tempfile::tempdir().expect("dir");
+            let identity = secured_identity(dir.path(), "personal", 74);
+            let backup = dir.path().join("identity.backup");
+            assert!(export_portable_backup(&identity, &backup, b"").is_err());
+
+            let link = dir.path().join("link.backup");
+            symlink(&backup, &link).expect("link");
+            assert!(verify_portable_backup(&link, b"a sufficient passphrase").is_err());
+            assert_eq!(
+                fs::metadata(&identity).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn publication_and_restore_failures_leave_no_partial_state() {
+        // phase: concurrent_publication_preserves_the_winner_and_loser_staging_file
+        {
+            let dir = tempfile::tempdir().expect("dir");
+            let first_staging = dir.path().join("first.tmp");
+            let second_staging = dir.path().join("second.tmp");
+            let destination = dir.path().join("identity.backup");
+            fs::write(&first_staging, b"first complete payload").expect("first staging file");
+            fs::write(&second_staging, b"second complete payload").expect("second staging file");
+
+            let start = Arc::new(Barrier::new(2));
+            let first_start = Arc::clone(&start);
+            let first_source = first_staging.clone();
+            let first_destination = destination.clone();
+            let first = std::thread::spawn(move || {
+                first_start.wait();
+                publish_new_file(&first_source, &first_destination)
+            });
+            let second_source = second_staging.clone();
+            let second_destination = destination.clone();
+            let second = std::thread::spawn(move || {
+                start.wait();
+                publish_new_file(&second_source, &second_destination)
+            });
+
+            let first_result = first.join().expect("first publisher");
+            let second_result = second.join().expect("second publisher");
+            assert_ne!(
+                first_result.is_ok(),
+                second_result.is_ok(),
+                "exactly one publication must succeed"
+            );
+
+            if first_result.is_ok() {
+                assert_eq!(fs::read(&destination).unwrap(), b"first complete payload");
+                assert!(!first_staging.exists(), "winning staging name is consumed");
+                assert_eq!(
+                    fs::read(&second_staging).unwrap(),
+                    b"second complete payload"
+                );
+            } else {
+                assert_eq!(fs::read(&destination).unwrap(), b"second complete payload");
+                assert!(!second_staging.exists(), "winning staging name is consumed");
+                assert_eq!(fs::read(&first_staging).unwrap(), b"first complete payload");
+            }
+        }
+        // phase: failed_readback_removes_only_the_exact_new_envelope
+        {
+            let dir = tempfile::tempdir().expect("dir");
+            let destination = dir.path().join("identity.backup");
+            let envelope =
+                seal_record(b"not a real identity", b"a sufficient passphrase").expect("envelope");
+            write_new_backup(&destination, envelope.as_slice()).expect("publish");
+
+            assert!(
+                checked_readback(
+                    &destination,
+                    b"a sufficient passphrase",
+                    [0; 32],
+                    envelope.as_slice(),
+                )
+                .is_err()
+            );
+            assert!(
+                !destination.exists(),
+                "a final target that fails read-back must not remain"
+            );
+        }
+        // phase: provider_failure_during_restore_leaves_no_identity_metadata
+        {
+            let source = tempfile::tempdir().expect("source");
+            let identity = secured_identity(source.path(), "personal", 75);
+            let backup_dir = tempfile::tempdir().expect("backup dir");
+            let backup = backup_dir.path().join("ada.tilo-identity-backup");
+            let passphrase = b"a sufficient passphrase";
+            export_portable_backup(&identity, &backup, passphrase).expect("export");
+
+            let restored = tempfile::tempdir().expect("restore");
+            let error = import_portable_backup_with_provider(
+                &backup,
+                passphrase,
+                restored.path(),
+                "restored",
+                &FailingProvider,
+            )
+            .expect_err("provider failure must abort restore");
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert!(
+                !restored.path().join("restored.json").exists(),
+                "failed secure-store import must clean up public identity metadata"
+            );
+        }
     }
 }

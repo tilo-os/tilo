@@ -2569,236 +2569,415 @@ mod tests {
         assert_eq!((portrait.x, portrait.y), (-1080, 0));
     }
 
+    /// Builtin/external classification, distinct duplicate labels, migration and virtual connector filtering.
     #[test]
-    fn classify_builtin_and_external_connectors() {
-        let builtin = classify_connector("card0-eDP-1", "connected\n");
-        assert_eq!(builtin.label, "Built-in display");
-        assert!(builtin.builtin);
-        assert!(builtin.connected);
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn display_connectors_are_classified_labelled_and_filtered() {
+        // Case `classify_builtin_and_external_connectors`.
+        {
+            let builtin = classify_connector("card0-eDP-1", "connected\n");
+            assert_eq!(builtin.label, "Built-in display");
+            assert!(builtin.builtin);
+            assert!(builtin.connected);
 
-        let hdmi = classify_connector("card0-HDMI-A-1", "disconnected\n");
-        assert_eq!(hdmi.label, "HDMI-A-1");
-        assert!(!hdmi.builtin);
-        assert!(!hdmi.connected);
+            let hdmi = classify_connector("card0-HDMI-A-1", "disconnected\n");
+            assert_eq!(hdmi.label, "HDMI-A-1");
+            assert!(!hdmi.builtin);
+            assert!(!hdmi.connected);
 
-        let dp = classify_connector("card1-DP-2", "connected");
-        assert_eq!(dp.label, "DP-2");
-        assert!(dp.connected);
-    }
+            let dp = classify_connector("card1-DP-2", "connected");
+            assert_eq!(dp.label, "DP-2");
+            assert!(dp.connected);
+        }
 
-    #[test]
-    fn qualified_duplicate_snapshot_labels_are_distinct_in_settings() {
-        let first = OutputDescriptor {
-            connector: "pci:0000:01:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        let second = OutputDescriptor {
-            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
-        let named = OutputDescriptor {
-            monitor: Some(MonitorIdentity {
-                make: "Dell".into(),
-                model: "DELL U2720Q".into(),
-                ..MonitorIdentity::default()
-            }),
-            ..first.clone()
-        };
-        assert_eq!(
-            snapshot_label(&named, false),
-            "Dell U2720Q · HDMI-A-1 · pci:0000:01:00.0",
-            "a monitor is named by its EDID and still told apart by port"
-        );
-        assert_eq!(
-            snapshot_label(&second, false),
-            "HDMI-A-1 · pci:0000:03:00.0"
-        );
+        // Case `qualified_duplicate_snapshot_labels_are_distinct_in_settings`.
+        {
+            let first = OutputDescriptor {
+                connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            let second = OutputDescriptor {
+                connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+                connector_label: "HDMI-A-1".into(),
+                modes: vec![],
+                hdr: false,
+                vrr: false,
+                color_profiles: vec![],
+                monitor: None,
+            };
+            assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
+            let named = OutputDescriptor {
+                monitor: Some(MonitorIdentity {
+                    make: "Dell".into(),
+                    model: "DELL U2720Q".into(),
+                    ..MonitorIdentity::default()
+                }),
+                ..first.clone()
+            };
+            assert_eq!(
+                snapshot_label(&named, false),
+                "Dell U2720Q · HDMI-A-1 · pci:0000:01:00.0",
+                "a monitor is named by its EDID and still told apart by port"
+            );
+            assert_eq!(
+                snapshot_label(&second, false),
+                "HDMI-A-1 · pci:0000:03:00.0"
+            );
 
-        let display = DisplayOutput {
-            label: snapshot_label(&first, false),
-            connector: first.connector.clone(),
-            connector_label: first.label().to_string(),
-            ..classify_connector("card0-HDMI-A-1", "connected")
-        };
-        let staged = DisplayPane::output_descriptor(&display);
-        assert_eq!(staged.connector, "pci:0000:01:00.0/HDMI-A-1");
-        assert_eq!(
-            staged.connector_label, "HDMI-A-1",
-            "the card qualifier is UI-only, never folded into descriptor data"
-        );
-    }
+            let display = DisplayOutput {
+                label: snapshot_label(&first, false),
+                connector: first.connector.clone(),
+                connector_label: first.label().to_string(),
+                ..classify_connector("card0-HDMI-A-1", "connected")
+            };
+            let staged = DisplayPane::output_descriptor(&display);
+            assert_eq!(staged.connector, "pci:0000:01:00.0/HDMI-A-1");
+            assert_eq!(
+                staged.connector_label, "HDMI-A-1",
+                "the card qualifier is UI-only, never folded into descriptor data"
+            );
+        }
 
-    #[test]
-    fn duplicate_connector_migration_keeps_legacy_intent_without_cross_targeting() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let first = "pci:0000:01:00.0/HDMI-A-1";
-        let second = "pci:0000:03:00.0/HDMI-A-1";
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![
-                DisplayOutput {
-                    label: "HDMI-A-1 · pci:0000:01:00.0".into(),
-                    connector: first.into(),
-                    ..classify_connector("card0-HDMI-A-1", "connected")
+        // Case `duplicate_connector_migration_keeps_legacy_intent_without_cross_targeting`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let first = "pci:0000:01:00.0/HDMI-A-1";
+            let second = "pci:0000:03:00.0/HDMI-A-1";
+            let mut pane =
+                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                    .with_outputs(vec![
+                        DisplayOutput {
+                            label: "HDMI-A-1 · pci:0000:01:00.0".into(),
+                            connector: first.into(),
+                            ..classify_connector("card0-HDMI-A-1", "connected")
+                        },
+                        DisplayOutput {
+                            label: "HDMI-A-1 · pci:0000:03:00.0".into(),
+                            connector: second.into(),
+                            ..classify_connector("card1-HDMI-A-1", "connected")
+                        },
+                    ]);
+            pane.output_config.outputs.insert(
+                "HDMI-A-1".into(),
+                OutputConfig {
+                    enabled: false,
+                    ..Default::default()
                 },
-                DisplayOutput {
-                    label: "HDMI-A-1 · pci:0000:03:00.0".into(),
-                    connector: second.into(),
-                    ..classify_connector("card1-HDMI-A-1", "connected")
+            );
+
+            let mut doc = AutoCommit::new();
+            pane.seed_state(&mut doc, &automerge::ROOT);
+
+            // The ambiguous old key remains intact for a future one-card
+            // topology, but the current topology gets independent safe defaults
+            // and independent CRDT/persistence keys.
+            assert!(!pane.output_config.outputs["HDMI-A-1"].enabled);
+            assert!(pane.output_config.outputs.contains_key(first));
+            assert!(pane.output_config.outputs.contains_key(second));
+            let persisted =
+                serde_json::to_value(&pane.output_config).expect("display config serialises");
+            let persisted_outputs = persisted
+                .get("outputs")
+                .and_then(serde_json::Value::as_object)
+                .expect("outputs map");
+            assert!(persisted_outputs.contains_key(first));
+            assert!(persisted_outputs.contains_key(second));
+            assert!(
+                doc.get(&automerge::ROOT, output_key(first, "enabled"))
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                doc.get(&automerge::ROOT, output_key(second, "enabled"))
+                    .unwrap()
+                    .is_some()
+            );
+        }
+
+        // Case `virtual_connectors_are_filtered`.
+        // The compositor's writeback connector and other virtual connectors are
+        // not displays a user plugs into, so they are filtered from the list.
+        {
+            assert!(is_virtual_connector("card0-Writeback-1"));
+            assert!(is_virtual_connector("card0-Virtual-1"));
+            assert!(!is_virtual_connector("card0-eDP-1"));
+            assert!(!is_virtual_connector("card0-HDMI-A-1"));
+            assert!(!is_virtual_connector("card0-DP-2"));
+            assert!(!is_virtual_connector("card0-USB-1"));
+        }
+    }
+
+    /// Brightness drags dispatch once, unchanged values rest, latches are inert, and seeding writes brightness.
+    #[test]
+    fn brightness_dispatches_only_local_changes() {
+        // Case `brightness_slider_invokes_set_brightness_on_drag`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert!(rec.calls().is_empty(), "seed sync should not dispatch");
+            let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
+            pane.sync(&mut doc, &root);
+            let calls = rec.calls();
+            assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
+            assert!(calls[0].starts_with("set_brightness("));
+            assert!(calls[0].contains("75."), "expected 75% in {:?}", calls[0]);
+        }
+
+        // Case `brightness_unchanged_does_not_redispatch`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            pane.sync(&mut doc, &root);
+            assert_eq!(rec.calls().len(), 1);
+        }
+
+        // Case `replicated_display_latches_are_inert_without_an_execution_token`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+            let commands = ui::LocalState::new(None);
+            let mut pane =
+                DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                    .with_command_state(&commands)
+                    .with_operation_status(&status);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let initial_heads = doc.get_heads();
+            pane.sync(&mut doc, &root);
+            assert_eq!(doc.get_heads(), initial_heads);
+            let _ = doc.put(&root, BRIGHTNESS_KEY, 0.9);
+            let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
+            pane.sync(&mut doc, &root);
+
+            assert!(rec.calls().is_empty());
+            assert!((pane.last_brightness - 0.5).abs() < f32::EPSILON);
+        }
+
+        // Case `seed_writes_initial_brightness_into_crdt`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let (val, _) = doc.get(&root, BRIGHTNESS_KEY).unwrap().unwrap();
+            match val {
+                automerge::Value::Scalar(s) => match s.as_ref() {
+                    automerge::ScalarValue::F64(f) => assert!((f - 0.42).abs() < 1e-6, "got {f}"),
+                    other => panic!("expected F64 scalar, got {other:?}"),
                 },
-            ]);
-        pane.output_config.outputs.insert(
-            "HDMI-A-1".into(),
-            OutputConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        );
-
-        let mut doc = AutoCommit::new();
-        pane.seed_state(&mut doc, &automerge::ROOT);
-
-        // The ambiguous old key remains intact for a future one-card
-        // topology, but the current topology gets independent safe defaults
-        // and independent CRDT/persistence keys.
-        assert!(!pane.output_config.outputs["HDMI-A-1"].enabled);
-        assert!(pane.output_config.outputs.contains_key(first));
-        assert!(pane.output_config.outputs.contains_key(second));
-        let persisted =
-            serde_json::to_value(&pane.output_config).expect("display config serialises");
-        let persisted_outputs = persisted
-            .get("outputs")
-            .and_then(serde_json::Value::as_object)
-            .expect("outputs map");
-        assert!(persisted_outputs.contains_key(first));
-        assert!(persisted_outputs.contains_key(second));
-        assert!(
-            doc.get(&automerge::ROOT, output_key(first, "enabled"))
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            doc.get(&automerge::ROOT, output_key(second, "enabled"))
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn brightness_slider_invokes_set_brightness_on_drag() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(rec.calls().is_empty(), "seed sync should not dispatch");
-        let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
-        pane.sync(&mut doc, &root);
-        let calls = rec.calls();
-        assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
-        assert!(calls[0].starts_with("set_brightness("));
-        assert!(calls[0].contains("75."), "expected 75% in {:?}", calls[0]);
-    }
-
-    #[test]
-    fn brightness_unchanged_does_not_redispatch() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane =
-            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        assert_eq!(rec.calls().len(), 1);
-    }
-
-    #[test]
-    fn replicated_display_latches_are_inert_without_an_execution_token() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-        let commands = ui::LocalState::new(None);
-        let mut pane =
-            DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                .with_command_state(&commands)
-                .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let initial_heads = doc.get_heads();
-        pane.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), initial_heads);
-        let _ = doc.put(&root, BRIGHTNESS_KEY, 0.9);
-        let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
-        pane.sync(&mut doc, &root);
-
-        assert!(rec.calls().is_empty());
-        assert!((pane.last_brightness - 0.5).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn seed_writes_initial_brightness_into_crdt() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let (val, _) = doc.get(&root, BRIGHTNESS_KEY).unwrap().unwrap();
-        match val {
-            automerge::Value::Scalar(s) => match s.as_ref() {
-                automerge::ScalarValue::F64(f) => assert!((f - 0.42).abs() < 1e-6, "got {f}"),
-                other => panic!("expected F64 scalar, got {other:?}"),
-            },
-            automerge::Value::Object(obj_type) => {
-                panic!("expected scalar, got object {obj_type:?}")
+                automerge::Value::Object(obj_type) => {
+                    panic!("expected scalar, got object {obj_type:?}")
+                }
             }
         }
     }
 
-    /// The arrangement card is driven by the injected output list, proving
-    /// it renders real hardware rather than a hard-coded pair.
+    /// The arrangement follows injected, connected outputs and switches mirror/extend.
     #[test]
-    fn arrangement_reflects_injected_outputs() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![
-                DisplayOutput {
-                    label: "Built-in display".into(),
-                    connected: true,
-                    builtin: true,
-                    connector: "eDP-1".into(),
-                    modes: Vec::new(),
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    ..classify_connector("card0-eDP-1", "connected")
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn display_arrangement_reflects_outputs_and_mirror_modes() {
+        // Case `arrangement_reflects_injected_outputs`.
+        // The arrangement card is driven by the injected output list, proving
+        // it renders real hardware rather than a hard-coded pair.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                .with_outputs(vec![
+                    DisplayOutput {
+                        label: "Built-in display".into(),
+                        connected: true,
+                        builtin: true,
+                        connector: "eDP-1".into(),
+                        modes: Vec::new(),
+                        hdr: false,
+                        vrr: false,
+                        color_profiles: Vec::new(),
+                        ..classify_connector("card0-eDP-1", "connected")
+                    },
+                    DisplayOutput {
+                        label: "HDMI-A-1".into(),
+                        connected: true,
+                        builtin: false,
+                        connector: "HDMI-A-1".into(),
+                        modes: Vec::new(),
+                        hdr: false,
+                        vrr: false,
+                        color_profiles: Vec::new(),
+                        ..classify_connector("card0-HDMI-A-1", "connected")
+                    },
+                ]);
+            assert_eq!(pane.outputs().len(), 2);
+            assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
+        }
+
+        // Case `mirror_negotiation_allows_usb_c_monitor_refresh_to_differ`.
+        {
+            let full_hd_60 = OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            };
+            let full_hd_5994 = OutputMode {
+                refresh_mhz: 59_940,
+                ..full_hd_60
+            };
+            let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
+            let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
+
+            assert_eq!(
+                best_mirror_modes(&usb_c, &panel),
+                Some((full_hd_5994, full_hd_60)),
+                "software mirroring needs a shared extent, not identical connector clocks"
+            );
+        }
+
+        // Case `settings_switches_usb_c_display_between_mirror_and_extend`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let full_hd_60 = OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            };
+            let full_hd_5994 = OutputMode {
+                refresh_mhz: 59_940,
+                ..full_hd_60
+            };
+            let outputs = vec![
+                display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]),
+                display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]),
+            ];
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                    .with_outputs(outputs);
+            pane.output_config.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    primary: true,
+                    mode: Some(full_hd_60),
+                    ..Default::default()
                 },
-                DisplayOutput {
-                    label: "HDMI-A-1".into(),
-                    connected: true,
-                    builtin: false,
-                    connector: "HDMI-A-1".into(),
-                    modes: Vec::new(),
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    ..classify_connector("card0-HDMI-A-1", "connected")
+            );
+            pane.output_config.outputs.insert(
+                "DP-1".into(),
+                OutputConfig {
+                    x: 1920,
+                    mode: Some(full_hd_5994),
+                    ..Default::default()
                 },
-            ]);
-        assert_eq!(pane.outputs().len(), 2);
-        assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
+            );
+
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(
+                &root,
+                output_key("DP-1", "mirror"),
+                "Mirror Built-in display",
+            );
+            pane.sync(&mut doc, &root);
+            let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
+            assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
+            assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
+            assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
+
+            // Simulate Keep, then select Extend. The saved independent origin was
+            // never overwritten by mirroring and becomes active again.
+            pane.output_config = mirrored;
+            pane.pending_candidate = None;
+            let _ = doc.put(&root, output_key("DP-1", "mirror"), "Extend workspace");
+            pane.sync(&mut doc, &root);
+            let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
+            assert_eq!(extended.outputs["DP-1"].mirror_of, None);
+            assert_eq!(extended.outputs["DP-1"].x, 1920);
+            assert_eq!(extended.outputs["DP-1"].y, 0);
+        }
+
+        // Case `arrangement_lists_only_connected_outputs`.
+        // Only connected outputs become rows; a laptop's dozen idle DP ports are
+        // summarised in a caption rather than enumerated one-per-row.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+                .with_outputs(vec![
+                    DisplayOutput {
+                        label: "Built-in display".into(),
+                        connected: true,
+                        builtin: true,
+                        connector: "eDP-1".into(),
+                        modes: Vec::new(),
+                        hdr: false,
+                        vrr: false,
+                        color_profiles: Vec::new(),
+                        ..classify_connector("card0-eDP-1", "connected")
+                    },
+                    DisplayOutput {
+                        label: "DP-1".into(),
+                        connected: false,
+                        builtin: false,
+                        connector: "DP-1".into(),
+                        modes: Vec::new(),
+                        hdr: false,
+                        vrr: false,
+                        color_profiles: Vec::new(),
+                        ..classify_connector("card0-DP-1", "disconnected")
+                    },
+                    DisplayOutput {
+                        label: "DP-2".into(),
+                        connected: false,
+                        builtin: false,
+                        connector: "DP-2".into(),
+                        modes: Vec::new(),
+                        hdr: false,
+                        vrr: false,
+                        color_profiles: Vec::new(),
+                        ..classify_connector("card0-DP-2", "disconnected")
+                    },
+                    DisplayOutput {
+                        label: "HDMI-A-1".into(),
+                        connected: false,
+                        builtin: false,
+                        connector: "HDMI-A-1".into(),
+                        modes: Vec::new(),
+                        hdr: false,
+                        vrr: false,
+                        color_profiles: Vec::new(),
+                        ..classify_connector("card0-HDMI-A-1", "disconnected")
+                    },
+                ]);
+            let shown = pane.connected_outputs();
+            assert_eq!(
+                shown.len(),
+                1,
+                "only the connected built-in display is listed"
+            );
+            assert_eq!(shown[0].label, "Built-in display");
+        }
     }
 
     fn display_with_modes(
@@ -2827,60 +3006,121 @@ mod tests {
         }
     }
 
+    /// Scale labels, seeding, fractional persistence and staged display plans.
     #[test]
-    fn an_external_monitor_card_sets_that_monitors_brightness() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let level = |connector: &str, level: f32| os_actions::MonitorLevel {
-            connector: connector.into(),
-            level,
-        };
-        let mut pane = DisplayPane::with_dispatcher(
-            Arc::clone(&rec) as Arc<dyn Dispatcher + Send + Sync>,
-            0.5,
-        )
-        .with_outputs(vec![
-            display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
-            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
-        ])
-        .with_monitor_brightness(&[level("eDP-1", 0.5), level("DP-2", 0.3)]);
-        assert_eq!(
-            pane.output_brightness.keys().collect::<Vec<_>>(),
-            ["DP-2"],
-            "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, output_key("DP-2", "brightness"), 0.8);
-        pane.sync(&mut doc, &root);
-        assert!(
-            rec.calls()
-                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
-            "{:?}",
-            rec.calls()
-        );
-    }
+    fn display_scale_and_plans_persist_confirm_and_revert() {
+        // Case `scale_label_and_factor_round_trip`.
+        {
+            for (label, factor) in DISPLAY_SCALES {
+                assert_eq!(scale_label(*factor), *label);
+                assert_eq!(scale_factor_of(label), Some(*factor));
+            }
+            // Nearest-label mapping for an off-grid stored value.
+            assert_eq!(scale_label(1.48), "150%");
+            assert_eq!(scale_factor_of("bogus"), None);
+        }
 
-    #[test]
-    fn mirror_negotiation_allows_usb_c_monitor_refresh_to_differ() {
-        let full_hd_60 = OutputMode {
-            width: 1920,
-            height: 1080,
-            refresh_mhz: 60_000,
-        };
-        let full_hd_5994 = OutputMode {
-            refresh_mhz: 59_940,
-            ..full_hd_60
-        };
-        let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
-        let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
+        // Case `seed_writes_initial_scale_label_into_crdt`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            // with_dispatcher seeds initial_prefs = DisplayPrefs::default() (1.0).
+            let mut pane =
+                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                read_str_or_text(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
+                Some("100%"),
+                "seed should write the default 100% scale label"
+            );
+        }
 
-        assert_eq!(
-            best_mirror_modes(&usb_c, &panel),
-            Some((full_hd_5994, full_hd_60)),
-            "software mirroring needs a shared extent, not identical connector clocks"
-        );
+        // Case `changing_scale_persists_fractional_factor_to_disk`.
+        // Changing the scale dropdown's CRDT key drives the real persist path
+        // and lands a fractional factor in the shared settings store.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root); // seed
+            // User picks 150% in the dropdown.
+            let _ = doc.put(&root, DISPLAY_SCALE_KEY, "150%");
+            pane.sync(&mut doc, &root);
+            let reloaded = SystemPrefs::load().display.scale;
+            assert!(
+                (reloaded - 1.5).abs() < 1e-9,
+                "expected persisted display scale 1.5, got {reloaded}"
+            );
+        }
+
+        // Case `display_plan_stages_confirms_and_reseeds_after_revert`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane =
+                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
+            let mut committed = DisplayConfig::default();
+            committed.outputs.insert(
+                "eDP-1".into(),
+                OutputConfig {
+                    primary: true,
+                    mode: pane.outputs[0].current_mode,
+                    ..Default::default()
+                },
+            );
+            let set = pane.display_set();
+            committed.save_for(&set).unwrap();
+            pane.output_config = committed.clone();
+
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let transform_key = output_key("eDP-1", "transform");
+            let _ = doc.put(&root, &transform_key, "Portrait right");
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
+                OutputTransform::Rotate90
+            );
+            assert_eq!(
+                DisplayConfig::load_for(&set),
+                committed,
+                "editing is only staged"
+            );
+
+            let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
+            pane.sync(&mut doc, &root);
+            let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
+            assert_eq!(transaction.state, DisplayTransactionState::Requested);
+            assert_eq!(
+                transaction.set, set,
+                "the plan is staged for the monitors it was arranged on"
+            );
+            transaction.state = DisplayTransactionState::AwaitingConfirmation;
+            transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+            transaction.save().unwrap();
+            let _ = doc.put(&root, KEEP_DISPLAY_KEY, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                DisplayTransaction::load().unwrap().state,
+                DisplayTransactionState::ConfirmRequested
+            );
+
+            transaction.state = DisplayTransactionState::Reverted;
+            transaction.deadline_unix_ms = None;
+            transaction.save().unwrap();
+            pane.sync(&mut doc, &root);
+            assert!(pane.pending_candidate.is_none());
+            assert_eq!(
+                read_str_or_text(&doc, &root, &transform_key).as_deref(),
+                Some("Landscape"),
+                "revert resets controls to last known-good rather than reoffering the failed plan"
+            );
+        }
     }
 
     fn laptop_with_monitor_pane() -> DisplayPane {
@@ -3026,247 +3266,37 @@ mod tests {
     }
 
     #[test]
-    fn settings_switches_usb_c_display_between_mirror_and_extend() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let full_hd_60 = OutputMode {
-            width: 1920,
-            height: 1080,
-            refresh_mhz: 60_000,
+    fn an_external_monitor_card_sets_that_monitors_brightness() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let level = |connector: &str, level: f32| os_actions::MonitorLevel {
+            connector: connector.into(),
+            level,
         };
-        let full_hd_5994 = OutputMode {
-            refresh_mhz: 59_940,
-            ..full_hd_60
-        };
-        let outputs = vec![
-            display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]),
-            display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]),
-        ];
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(outputs);
-        pane.output_config.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                primary: true,
-                mode: Some(full_hd_60),
-                ..Default::default()
-            },
-        );
-        pane.output_config.outputs.insert(
-            "DP-1".into(),
-            OutputConfig {
-                x: 1920,
-                mode: Some(full_hd_5994),
-                ..Default::default()
-            },
-        );
-
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            output_key("DP-1", "mirror"),
-            "Mirror Built-in display",
-        );
-        pane.sync(&mut doc, &root);
-        let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
-        assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
-        assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
-        assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
-
-        // Simulate Keep, then select Extend. The saved independent origin was
-        // never overwritten by mirroring and becomes active again.
-        pane.output_config = mirrored;
-        pane.pending_candidate = None;
-        let _ = doc.put(&root, output_key("DP-1", "mirror"), "Extend workspace");
-        pane.sync(&mut doc, &root);
-        let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
-        assert_eq!(extended.outputs["DP-1"].mirror_of, None);
-        assert_eq!(extended.outputs["DP-1"].x, 1920);
-        assert_eq!(extended.outputs["DP-1"].y, 0);
-    }
-
-    /// The compositor's writeback connector and other virtual connectors are
-    /// not displays a user plugs into, so they are filtered from the list.
-    #[test]
-    fn virtual_connectors_are_filtered() {
-        assert!(is_virtual_connector("card0-Writeback-1"));
-        assert!(is_virtual_connector("card0-Virtual-1"));
-        assert!(!is_virtual_connector("card0-eDP-1"));
-        assert!(!is_virtual_connector("card0-HDMI-A-1"));
-        assert!(!is_virtual_connector("card0-DP-2"));
-        assert!(!is_virtual_connector("card0-USB-1"));
-    }
-
-    /// Only connected outputs become rows; a laptop's dozen idle DP ports are
-    /// summarised in a caption rather than enumerated one-per-row.
-    #[test]
-    fn arrangement_lists_only_connected_outputs() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![
-                DisplayOutput {
-                    label: "Built-in display".into(),
-                    connected: true,
-                    builtin: true,
-                    connector: "eDP-1".into(),
-                    modes: Vec::new(),
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    ..classify_connector("card0-eDP-1", "connected")
-                },
-                DisplayOutput {
-                    label: "DP-1".into(),
-                    connected: false,
-                    builtin: false,
-                    connector: "DP-1".into(),
-                    modes: Vec::new(),
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    ..classify_connector("card0-DP-1", "disconnected")
-                },
-                DisplayOutput {
-                    label: "DP-2".into(),
-                    connected: false,
-                    builtin: false,
-                    connector: "DP-2".into(),
-                    modes: Vec::new(),
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    ..classify_connector("card0-DP-2", "disconnected")
-                },
-                DisplayOutput {
-                    label: "HDMI-A-1".into(),
-                    connected: false,
-                    builtin: false,
-                    connector: "HDMI-A-1".into(),
-                    modes: Vec::new(),
-                    hdr: false,
-                    vrr: false,
-                    color_profiles: Vec::new(),
-                    ..classify_connector("card0-HDMI-A-1", "disconnected")
-                },
-            ]);
-        let shown = pane.connected_outputs();
+        let mut pane = DisplayPane::with_dispatcher(
+            Arc::clone(&rec) as Arc<dyn Dispatcher + Send + Sync>,
+            0.5,
+        )
+        .with_outputs(vec![
+            display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
+        ])
+        .with_monitor_brightness(&[level("eDP-1", 0.5), level("DP-2", 0.3)]);
         assert_eq!(
-            shown.len(),
-            1,
-            "only the connected built-in display is listed"
+            pane.output_brightness.keys().collect::<Vec<_>>(),
+            ["DP-2"],
+            "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
         );
-        assert_eq!(shown[0].label, "Built-in display");
-    }
-
-    #[test]
-    fn scale_label_and_factor_round_trip() {
-        for (label, factor) in DISPLAY_SCALES {
-            assert_eq!(scale_label(*factor), *label);
-            assert_eq!(scale_factor_of(label), Some(*factor));
-        }
-        // Nearest-label mapping for an off-grid stored value.
-        assert_eq!(scale_label(1.48), "150%");
-        assert_eq!(scale_factor_of("bogus"), None);
-    }
-
-    #[test]
-    fn seed_writes_initial_scale_label_into_crdt() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        // with_dispatcher seeds initial_prefs = DisplayPrefs::default() (1.0).
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(
-            read_str_or_text(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
-            Some("100%"),
-            "seed should write the default 100% scale label"
-        );
-    }
-
-    /// Changing the scale dropdown's CRDT key drives the real persist path
-    /// and lands a fractional factor in the shared settings store.
-    #[test]
-    fn changing_scale_persists_fractional_factor_to_disk() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seed
-        // User picks 150% in the dropdown.
-        let _ = doc.put(&root, DISPLAY_SCALE_KEY, "150%");
+        let _ = doc.put(&root, output_key("DP-2", "brightness"), 0.8);
         pane.sync(&mut doc, &root);
-        let reloaded = SystemPrefs::load().display.scale;
         assert!(
-            (reloaded - 1.5).abs() < 1e-9,
-            "expected persisted display scale 1.5, got {reloaded}"
-        );
-    }
-
-    #[test]
-    fn display_plan_stages_confirms_and_reseeds_after_revert() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let mut committed = DisplayConfig::default();
-        committed.outputs.insert(
-            "eDP-1".into(),
-            OutputConfig {
-                primary: true,
-                mode: pane.outputs[0].current_mode,
-                ..Default::default()
-            },
-        );
-        let set = pane.display_set();
-        committed.save_for(&set).unwrap();
-        pane.output_config = committed.clone();
-
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let transform_key = output_key("eDP-1", "transform");
-        let _ = doc.put(&root, &transform_key, "Portrait right");
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
-            OutputTransform::Rotate90
-        );
-        assert_eq!(
-            DisplayConfig::load_for(&set),
-            committed,
-            "editing is only staged"
-        );
-
-        let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
-        pane.sync(&mut doc, &root);
-        let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
-        assert_eq!(transaction.state, DisplayTransactionState::Requested);
-        assert_eq!(
-            transaction.set, set,
-            "the plan is staged for the monitors it was arranged on"
-        );
-        transaction.state = DisplayTransactionState::AwaitingConfirmation;
-        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
-        transaction.save().unwrap();
-        let _ = doc.put(&root, KEEP_DISPLAY_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            DisplayTransaction::load().unwrap().state,
-            DisplayTransactionState::ConfirmRequested
-        );
-
-        transaction.state = DisplayTransactionState::Reverted;
-        transaction.deadline_unix_ms = None;
-        transaction.save().unwrap();
-        pane.sync(&mut doc, &root);
-        assert!(pane.pending_candidate.is_none());
-        assert_eq!(
-            read_str_or_text(&doc, &root, &transform_key).as_deref(),
-            Some("Landscape"),
-            "revert resets controls to last known-good rather than reoffering the failed plan"
+            rec.calls()
+                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
+            "{:?}",
+            rec.calls()
         );
     }
 }

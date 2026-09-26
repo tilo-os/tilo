@@ -289,33 +289,38 @@ mod tests {
     use ui::headless::SemanticExpectation;
     use ui::prelude::TestApp;
 
+    /// The generated starter switches locale without rebuilding its widget tree, and generated graph
+    /// screens reach the app component registry.
     #[test]
-    fn generated_starter_can_switch_locale_without_rebuilding_its_widget_tree() {
-        let mut app = TestApp::<super::starter::App>::new().expect("app opens");
-        ui::i18n::I18nManager::set_locale("de-DE");
-        app.harness().relayout();
-        let snapshot = app
-            .harness()
-            .inspection_json()
-            .expect("localized semantic snapshot");
-        ui::i18n::I18nManager::set_locale("en-US");
-        assert!(snapshot.contains("Deine erste Tilo-App"), "{snapshot}");
-        assert!(snapshot.contains("Dein Name"), "{snapshot}");
-        assert!(snapshot.contains("Neuigkeiten erhalten"), "{snapshot}");
-        assert!(snapshot.contains("Aktualisierungsintervall"), "{snapshot}");
-        assert!(snapshot.contains("Lautstärke"), "{snapshot}");
-        assert!(snapshot.contains("Hallo, world!"), "{snapshot}");
-    }
+    fn generated_templates_localise_and_reach_the_component_registry() {
+        // Phase: generated_starter_can_switch_locale_without_rebuilding_its_widget_tree.
+        {
+            let mut app = TestApp::<super::starter::App>::new().expect("app opens");
+            ui::i18n::I18nManager::set_locale("de-DE");
+            app.harness().relayout();
+            let snapshot = app
+                .harness()
+                .inspection_json()
+                .expect("localized semantic snapshot");
+            ui::i18n::I18nManager::set_locale("en-US");
+            assert!(snapshot.contains("Deine erste Tilo-App"), "{snapshot}");
+            assert!(snapshot.contains("Dein Name"), "{snapshot}");
+            assert!(snapshot.contains("Neuigkeiten erhalten"), "{snapshot}");
+            assert!(snapshot.contains("Aktualisierungsintervall"), "{snapshot}");
+            assert!(snapshot.contains("Lautstärke"), "{snapshot}");
+            assert!(snapshot.contains("Hallo, world!"), "{snapshot}");
+        }
 
-    #[test]
-    fn generated_graph_screens_reach_the_app_component_registry() {
-        let mut app = TestApp::<super::graph::App>::new().expect("app opens");
-        app.harness()
-            .expect(
-                &SemanticExpectation::named("activity-summary-title")
-                    .role(Role::Heading { level: 2 })
-                    .name("Recent activity"),
-            )
-            .expect("generated component registry reaches the screen router");
+        // Phase: generated_graph_screens_reach_the_app_component_registry.
+        {
+            let mut app = TestApp::<super::graph::App>::new().expect("app opens");
+            app.harness()
+                .expect(
+                    &SemanticExpectation::named("activity-summary-title")
+                        .role(Role::Heading { level: 2 })
+                        .name("Recent activity"),
+                )
+                .expect("generated component registry reaches the screen router");
+        }
     }
 }

@@ -1297,150 +1297,176 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn mailto_encoding_cannot_create_an_extra_field() {
-        let uri = mailto_uri(&EmailRequest {
-            addresses: vec!["a@example.test".into()],
-            subject: Some("hello&bcc=other@example.test".into()),
-            body: Some("line one\nline two".into()),
-            ..EmailRequest::default()
-        });
-        assert_eq!(
-            uri,
-            "mailto:a@example.test?subject=hello%26bcc%3Dother@example.test&body=line%20one%0Aline%20two"
-        );
+    fn mail_handoff_encodes_fields_and_grants_attachments_once() {
+        // Phase `mailto_encoding_cannot_create_an_extra_field`.
+        {
+            let uri = mailto_uri(&EmailRequest {
+                addresses: vec!["a@example.test".into()],
+                subject: Some("hello&bcc=other@example.test".into()),
+                body: Some("line one\nline two".into()),
+                ..EmailRequest::default()
+            });
+            assert_eq!(
+                uri,
+                "mailto:a@example.test?subject=hello%26bcc%3Dother@example.test&body=line%20one%0Aline%20two"
+            );
+        }
+        // Phase `mail_attachment_is_one_opaque_uri_query_value`.
+        {
+            let uri = mailto_uri(&EmailRequest {
+                attachments: vec!["file:///run/user/1000/doc/token/a%20%26%20b.pdf".into()],
+                ..EmailRequest::default()
+            });
+            assert_eq!(
+                uri,
+                "mailto:?attachment=file%3A%2F%2F%2Frun%2Fuser%2F1000%2Fdoc%2Ftoken%2Fa%2520%2526%2520b.pdf"
+            );
+            assert!(!uri.contains("&b.pdf"));
+        }
+        // Phase `mail_attachments_become_one_shot_read_grants_for_the_handler_only`.
+        {
+            let mut capabilities = Vec::new();
+            add_mail_attachment_grants(
+                &mut capabilities,
+                "so.tilo.mail",
+                &[PathBuf::from("/run/user/1000/doc/abc/report.pdf")],
+            );
+            assert_eq!(capabilities.len(), 1);
+            let grant = &capabilities[0];
+            assert_eq!(grant.subject, Subject::app("so.tilo.mail"));
+            assert_eq!(
+                grant.scope,
+                Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
+            );
+            assert_eq!(grant.verb, Verb::Read);
+            assert_eq!(grant.expiry, Expiry::AfterUse);
+            assert!(grant.id.starts_with("portal-email:"));
+        }
     }
 
     #[test]
-    fn mail_attachment_is_one_opaque_uri_query_value() {
-        let uri = mailto_uri(&EmailRequest {
-            attachments: vec!["file:///run/user/1000/doc/token/a%20%26%20b.pdf".into()],
-            ..EmailRequest::default()
-        });
-        assert_eq!(
-            uri,
-            "mailto:?attachment=file%3A%2F%2F%2Frun%2Fuser%2F1000%2Fdoc%2Ftoken%2Fa%2520%2526%2520b.pdf"
-        );
-        assert!(!uri.contains("&b.pdf"));
+    fn launcher_and_document_data_is_durable_and_confined() {
+        // Phase `dynamic_library_is_non_executable_and_durable`.
+        {
+            let dir = tempfile::tempdir().expect("temporary state directory");
+            let path = dir.path().join("launchers.json");
+            let service = ShellDynamicLauncherService::at_path(&path);
+            let request = LauncherInstallRequest {
+                app_id: "org.example.Caller".into(),
+                name: "Example site".into(),
+                launcher_type: 2,
+                target: Some("https://example.test/".into()),
+                editable_name: true,
+                editable_icon: false,
+                icon_kind: "tilo-web".into(),
+                icon_bytes: None,
+            };
+            assert!(matches!(
+                service.prepare_install(&request),
+                PortalResult::Success(_)
+            ));
+            let records = ShellDynamicLauncherService::at_path(&path).records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].target.as_deref(), Some("https://example.test/"));
+            assert_eq!(records[0].icon_kind, "tilo-web");
+            assert!(records[0].icon_bytes.is_none());
+            assert!(!std::fs::read_to_string(&path).unwrap().contains("Exec="));
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        // Phase `supplied_launcher_icon_is_durable_data_not_a_path`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("launchers.json");
+            let service = ShellDynamicLauncherService::at_path(&path);
+            let icon = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec();
+            let request = LauncherInstallRequest {
+                app_id: "org.example.Caller".into(),
+                name: "Reviewed launcher".into(),
+                launcher_type: 1,
+                target: None,
+                editable_name: false,
+                editable_icon: false,
+                icon_kind: "supplied".into(),
+                icon_bytes: Some(icon.clone()),
+            };
+            assert!(matches!(
+                service.prepare_install(&request),
+                PortalResult::Success(_)
+            ));
+            let restored = ShellDynamicLauncherService::at_path(path).records();
+            assert_eq!(restored[0].icon_bytes.as_deref(), Some(icon.as_slice()));
+            assert!(
+                !std::fs::read_to_string(dir.path().join("launchers.json"))
+                    .unwrap()
+                    .contains("/home/")
+            );
+        }
+        // Phase `document_uri_is_confined_to_the_document_portal_mount`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let exported = root.path().join("grant/a b.png");
+            fs::create_dir_all(exported.parent().unwrap()).unwrap();
+            fs::write(&exported, b"png").unwrap();
+            let uri = format!("file://{}", exported.display()).replace(' ', "%20");
+            assert_eq!(
+                document_portal_path_from_uri_at(&uri, root.path()).unwrap(),
+                exported.canonicalize().unwrap()
+            );
+            assert!(document_portal_path_from_uri_at("file:///etc/passwd", root.path()).is_err());
+            assert!(document_portal_path_from_uri_at("file://remote/path", root.path()).is_err());
+        }
     }
 
     #[test]
-    fn mail_attachments_become_one_shot_read_grants_for_the_handler_only() {
-        let mut capabilities = Vec::new();
-        add_mail_attachment_grants(
-            &mut capabilities,
-            "so.tilo.mail",
-            &[PathBuf::from("/run/user/1000/doc/abc/report.pdf")],
-        );
-        assert_eq!(capabilities.len(), 1);
-        let grant = &capabilities[0];
-        assert_eq!(grant.subject, Subject::app("so.tilo.mail"));
-        assert_eq!(
-            grant.scope,
-            Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
-        );
-        assert_eq!(grant.verb, Verb::Read);
-        assert_eq!(grant.expiry, Expiry::AfterUse);
-        assert!(grant.id.starts_with("portal-email:"));
-    }
+    fn wallpaper_imports_are_normalised_private_and_scoped() {
+        // Phase `imported_wallpaper_is_normalised_and_private`.
+        {
+            use image::ImageEncoder as _;
+            let mut original = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut original)
+                .write_image(&[12, 34, 56], 1, 1, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            let normalized = normalise_wallpaper(&original).unwrap();
+            let decoder =
+                image::codecs::png::PngDecoder::new(std::io::Cursor::new(&normalized)).unwrap();
+            assert_eq!(
+                image::ImageDecoder::color_type(&decoder),
+                image::ColorType::Rgba8
+            );
+            assert_eq!(
+                ui::png::decode_rgba8(&normalized).unwrap().rgba,
+                [12, 34, 56, 255]
+            );
 
-    #[test]
-    fn dynamic_library_is_non_executable_and_durable() {
-        let dir = tempfile::tempdir().expect("temporary state directory");
-        let path = dir.path().join("launchers.json");
-        let service = ShellDynamicLauncherService::at_path(&path);
-        let request = LauncherInstallRequest {
-            app_id: "org.example.Caller".into(),
-            name: "Example site".into(),
-            launcher_type: 2,
-            target: Some("https://example.test/".into()),
-            editable_name: true,
-            editable_icon: false,
-            icon_kind: "tilo-web".into(),
-            icon_bytes: None,
-        };
-        assert!(matches!(
-            service.prepare_install(&request),
-            PortalResult::Success(_)
-        ));
-        let records = ShellDynamicLauncherService::at_path(&path).records();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].target.as_deref(), Some("https://example.test/"));
-        assert_eq!(records[0].icon_kind, "tilo-web");
-        assert!(records[0].icon_bytes.is_none());
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("Exec="));
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
-            0
-        );
-    }
-
-    #[test]
-    fn supplied_launcher_icon_is_durable_data_not_a_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("launchers.json");
-        let service = ShellDynamicLauncherService::at_path(&path);
-        let icon = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec();
-        let request = LauncherInstallRequest {
-            app_id: "org.example.Caller".into(),
-            name: "Reviewed launcher".into(),
-            launcher_type: 1,
-            target: None,
-            editable_name: false,
-            editable_icon: false,
-            icon_kind: "supplied".into(),
-            icon_bytes: Some(icon.clone()),
-        };
-        assert!(matches!(
-            service.prepare_install(&request),
-            PortalResult::Success(_)
-        ));
-        let restored = ShellDynamicLauncherService::at_path(path).records();
-        assert_eq!(restored[0].icon_bytes.as_deref(), Some(icon.as_slice()));
-        assert!(
-            !std::fs::read_to_string(dir.path().join("launchers.json"))
-                .unwrap()
-                .contains("/home/")
-        );
-    }
-
-    #[test]
-    fn document_uri_is_confined_to_the_document_portal_mount() {
-        let root = tempfile::tempdir().unwrap();
-        let exported = root.path().join("grant/a b.png");
-        fs::create_dir_all(exported.parent().unwrap()).unwrap();
-        fs::write(&exported, b"png").unwrap();
-        let uri = format!("file://{}", exported.display()).replace(' ', "%20");
-        assert_eq!(
-            document_portal_path_from_uri_at(&uri, root.path()).unwrap(),
-            exported.canonicalize().unwrap()
-        );
-        assert!(document_portal_path_from_uri_at("file:///etc/passwd", root.path()).is_err());
-        assert!(document_portal_path_from_uri_at("file://remote/path", root.path()).is_err());
-    }
-
-    #[test]
-    fn imported_wallpaper_is_normalised_and_private() {
-        use image::ImageEncoder as _;
-        let mut original = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut original)
-            .write_image(&[12, 34, 56], 1, 1, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        let normalized = normalise_wallpaper(&original).unwrap();
-        let decoder =
-            image::codecs::png::PngDecoder::new(std::io::Cursor::new(&normalized)).unwrap();
-        assert_eq!(
-            image::ImageDecoder::color_type(&decoder),
-            image::ColorType::Rgba8
-        );
-        assert_eq!(
-            ui::png::decode_rgba8(&normalized).unwrap().rgba,
-            [12, 34, 56, 255]
-        );
-
-        let cache = tempfile::tempdir().unwrap();
-        let file = cache.path().join("private.png");
-        write_private_bytes(&file, b"private").unwrap();
-        assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
+            let cache = tempfile::tempdir().unwrap();
+            let file = cache.path().join("private.png");
+            write_private_bytes(&file, b"private").unwrap();
+            assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
+        }
+        // Phase `wallpaper_preview_is_scoped_and_cancelled_without_a_persistent_uri`.
+        {
+            let file = format!("{}.png", "a".repeat(64));
+            set_wallpaper_preview("preview-workspace", &file);
+            assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_some());
+            assert!(wallpaper_preview_file_for_workspace("other-workspace").is_none());
+            clear_wallpaper_preview("preview-workspace", &file);
+            assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_none());
+        }
+        // Phase `wallpaper_normaliser_accepts_common_desktop_formats`.
+        {
+            let source = image::DynamicImage::ImageRgba8(
+                image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255]).unwrap(),
+            );
+            for format in [image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
+                let mut encoded = std::io::Cursor::new(Vec::new());
+                source.write_to(&mut encoded, format).unwrap();
+                let normalized = normalise_wallpaper(encoded.get_ref()).unwrap();
+                assert!(normalized.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
+            }
+        }
     }
 
     #[test]
@@ -1491,29 +1517,6 @@ mod tests {
         );
         assert_eq!(WallpaperScope::parse(Some("all")), WallpaperScope::All);
         assert_eq!(WallpaperScope::parse(None), WallpaperScope::Workspace);
-    }
-
-    #[test]
-    fn wallpaper_preview_is_scoped_and_cancelled_without_a_persistent_uri() {
-        let file = format!("{}.png", "a".repeat(64));
-        set_wallpaper_preview("preview-workspace", &file);
-        assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_some());
-        assert!(wallpaper_preview_file_for_workspace("other-workspace").is_none());
-        clear_wallpaper_preview("preview-workspace", &file);
-        assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_none());
-    }
-
-    #[test]
-    fn wallpaper_normaliser_accepts_common_desktop_formats() {
-        let source = image::DynamicImage::ImageRgba8(
-            image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255]).unwrap(),
-        );
-        for format in [image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
-            let mut encoded = std::io::Cursor::new(Vec::new());
-            source.write_to(&mut encoded, format).unwrap();
-            let normalized = normalise_wallpaper(encoded.get_ref()).unwrap();
-            assert!(normalized.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
-        }
     }
 }
 

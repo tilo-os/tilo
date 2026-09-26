@@ -820,26 +820,242 @@ fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostError> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn search_is_opt_in_and_uses_host_shortcut_conventions() {
-        use crate::platform::{Platform, PlatformConventions, Shortcut};
-        use crate::widget::Widget;
-        let mut host = super::StandaloneHistoryHost::new();
-        assert!(
-            !host.has_search(),
-            "headless/history-only hosts expose no dead Search control"
-        );
-        assert!(host.search_mut().is_none());
-        for platform in [Platform::Windows, Platform::MacOs] {
-            let conventions = PlatformConventions::new(platform);
+    fn standalone_history_host_search_selection_and_session_follow_host_conventions() {
+        // Case `search_is_opt_in_and_uses_host_shortcut_conventions`.
+        {
+            use crate::platform::{Platform, PlatformConventions, Shortcut};
+            use crate::widget::Widget;
             let mut host = super::StandaloneHistoryHost::new();
-            host.enable_search(conventions);
-            let button = host.search_mut().unwrap();
-            let shortcut = Shortcut::command("K").label(conventions);
-            assert!(Widget::tooltip(button).unwrap().contains(&shortcut));
-            assert_eq!(
-                button.accessibility().unwrap().name.as_deref(),
-                Some("Search")
+            assert!(
+                !host.has_search(),
+                "headless/history-only hosts expose no dead Search control"
             );
+            assert!(host.search_mut().is_none());
+            for platform in [Platform::Windows, Platform::MacOs] {
+                let conventions = PlatformConventions::new(platform);
+                let mut host = super::StandaloneHistoryHost::new();
+                host.enable_search(conventions);
+                let button = host.search_mut().unwrap();
+                let shortcut = Shortcut::command("K").label(conventions);
+                assert!(Widget::tooltip(button).unwrap().contains(&shortcut));
+                assert_eq!(
+                    button.accessibility().unwrap().name.as_deref(),
+                    Some("Search")
+                );
+            }
+        }
+
+        // Case `canonical_three_change_selection_preserves_typing_and_rejects_old_session`.
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "value", "before").unwrap();
+            doc.commit();
+            let mut ids = Vec::new();
+            for value in ["one", "two", "three"] {
+                doc.put(ROOT, "value", value).unwrap();
+                ids.push(encode_entry(crate::history_source::entry_id_from_hash(
+                    &doc.commit().unwrap().to_string(),
+                )));
+            }
+            doc.put(ROOT, "value", "typing").unwrap();
+            let pending = doc.pending_ops();
+            let identity = uuid::Uuid::new_v4();
+            let permissions = PermissionContext::permissive();
+            let context = HistoryReadContext {
+                document: &doc,
+                active_record: None,
+                document_identity: identity,
+                permissions: &permissions,
+            };
+            let mut host = StandaloneHistoryHost::new();
+            remember(&mut host, identity);
+            invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
+            let session = host.session_id.unwrap();
+            let select = HistoryCommand::Select {
+                session,
+                entries: ids,
+            };
+            invoke(&mut host, &select, &context).unwrap();
+            let comparison = host.session.as_ref().unwrap().comparison().unwrap();
+            assert_eq!(comparison.entries.len(), 3);
+            let before = AutoCommit::load(&comparison.before_document).unwrap();
+            let after = AutoCommit::load(&comparison.after_document).unwrap();
+            assert_eq!(
+                before.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+                Some("before")
+            );
+            assert_eq!(
+                after.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+                Some("three")
+            );
+            assert_eq!(doc.pending_ops(), pending);
+            invoke(&mut host, &HistoryCommand::Close { session }, &context).unwrap();
+            invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
+            assert_eq!(
+                invoke(&mut host, &select, &context),
+                Err(HistoryHostError::StaleSession)
+            );
+            assert!(host.session.as_ref().unwrap().selection().is_empty());
+        }
+
+        // Case `replacing_document_removes_private_presentation_and_session_actions`.
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "private", "saved").unwrap();
+            doc.commit();
+            let permissions = PermissionContext::permissive();
+            let identity = uuid::Uuid::new_v4();
+            let mut context = HistoryReadContext {
+                document: &doc,
+                active_record: None,
+                document_identity: identity,
+                permissions: &permissions,
+            };
+            let mut host = StandaloneHistoryHost::new();
+            remember(&mut host, identity);
+            invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
+            assert_eq!(host.presentation_roots(&context).unwrap().len(), 2);
+            let resources = host.local_resources(&context).unwrap();
+            assert_eq!(resources.len(), 2);
+            assert!(
+                resources
+                    .iter()
+                    .flat_map(|resource| &resource.actions)
+                    .all(|action| action.kind == OperationKind::View)
+            );
+            context.document_identity = uuid::Uuid::new_v4();
+            assert_eq!(
+                host.local_resources(&context).err(),
+                Some(HistoryHostError::History(HistoryError::Stale))
+            );
+            assert!(!host.is_open());
+            assert!(host.pane_mut().is_none());
+            assert_eq!(host.presentation_roots(&context).unwrap().len(), 1);
+            assert_eq!(host.local_resources(&context).unwrap().len(), 1);
+        }
+
+        // Case `shared_arena_composition_preserves_app_grid_and_hides_content_when_narrow`.
+        {
+            let doc = AutoCommit::new();
+            let permissions = PermissionContext::permissive();
+            let identity = uuid::Uuid::new_v4();
+            let context = HistoryReadContext {
+                document: &doc,
+                active_record: None,
+                document_identity: identity,
+                permissions: &permissions,
+            };
+            let mut host = StandaloneHistoryHost::new();
+            remember(&mut host, identity);
+            invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
+            for search_enabled in [false, true] {
+                if search_enabled {
+                    host.enable_search(crate::platform::PlatformConventions::new(
+                        crate::platform::Platform::Windows,
+                    ));
+                }
+                for width in [1100.0, 500.0] {
+                    let mut app = Text::new("app content").with_id("private-app-content");
+                    let mut tree = TaffyTree::new();
+                    let mut nodes = HashMap::new();
+                    let theme = Theme::dark();
+                    let app_node = app.build_layout(&mut tree, &theme, &mut nodes);
+                    let mut style = tree.style(app_node).unwrap().clone();
+                    style.display = taffy::Display::Grid;
+                    tree.set_style(app_node, style).unwrap();
+                    let layout = host.build_layout(app_node, &mut tree, &theme, &mut nodes, width);
+                    assert_eq!(layout.app_visible, width >= 900.0);
+                    assert_eq!(
+                        tree.style(app_node).unwrap().display,
+                        if layout.app_visible {
+                            taffy::Display::Grid
+                        } else {
+                            taffy::Display::None
+                        }
+                    );
+                    assert!(nodes.contains_key(&layout.app));
+                    assert!(nodes.contains_key(&layout.toolbar));
+                    assert!(nodes.contains_key(&layout.pane.unwrap()));
+                    assert_ne!(layout.app, layout.toolbar);
+                    assert_ne!(layout.app, layout.pane.unwrap());
+                    assert_eq!(
+                        tree.children(layout.root).unwrap(),
+                        vec![
+                            layout.toolbar_group.unwrap_or(layout.toolbar),
+                            layout.content
+                        ]
+                    );
+                    host.with_presentation(&context, &app, layout, Rect::ZERO, |presentation| {
+                        fn check_pairing(
+                            widget: &dyn Widget,
+                            node: NodeId,
+                            tree: &TaffyTree<()>,
+                            nodes: &HashMap<NodeId, *mut dyn Widget>,
+                            visited: &mut Vec<String>,
+                        ) {
+                            if let Some(id) = widget.test_id() {
+                                visited.push(id.to_owned());
+                            }
+                            if let Some(pointer) = nodes.get(&node) {
+                                assert_eq!(
+                                    std::ptr::from_ref(widget).cast::<()>(),
+                                    pointer.cast_const().cast::<()>(),
+                                    "node must refer to actual retained widget"
+                                );
+                            } else {
+                                assert!(
+                                    matches!(
+                                        widget.test_id(),
+                                        Some(
+                                            "standalone-presentation"
+                                                | "standalone-content"
+                                                | "standalone-services"
+                                        )
+                                    ),
+                                    "only ephemeral traversal containers lack node-map pointers"
+                                );
+                            }
+                            let children = widget.children();
+                            let child_nodes = tree.children(node).unwrap();
+                            assert_eq!(
+                                children.len(),
+                                child_nodes.len(),
+                                "widget/Taffy child topology must match"
+                            );
+                            for (child, node) in children.into_iter().zip(child_nodes) {
+                                check_pairing(child, node, tree, nodes, visited);
+                            }
+                        }
+                        let mut visited = Vec::new();
+                        check_pairing(presentation, layout.root, &tree, &nodes, &mut visited);
+                        assert_eq!(
+                            visited.iter().any(|id| id == "private-app-content"),
+                            layout.app_visible
+                        );
+                        assert!(visited.iter().any(|id| id == "standalone-history"));
+                        assert_eq!(
+                            visited
+                                .iter()
+                                .filter(|id| *id == "standalone-search-open")
+                                .count(),
+                            usize::from(search_enabled)
+                        );
+                        assert_eq!(layout.search.is_some(), search_enabled);
+                        assert_eq!(layout.toolbar_group.is_some(), search_enabled);
+                        if let Some(search) = layout.search {
+                            assert!(nodes.contains_key(&search));
+                            assert_eq!(
+                                tree.children(layout.toolbar_group.unwrap()).unwrap(),
+                                vec![layout.toolbar, search]
+                            );
+                        }
+                        assert!(presentation.callback_binding().is_none());
+                        assert!(!nodes.contains_key(&layout.root));
+                        assert!(!nodes.contains_key(&layout.content));
+                    })
+                    .unwrap();
+                }
+            }
         }
     }
 
@@ -866,218 +1082,5 @@ mod tests {
             }),
             None,
         );
-    }
-
-    #[test]
-    fn canonical_three_change_selection_preserves_typing_and_rejects_old_session() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "value", "before").unwrap();
-        doc.commit();
-        let mut ids = Vec::new();
-        for value in ["one", "two", "three"] {
-            doc.put(ROOT, "value", value).unwrap();
-            ids.push(encode_entry(crate::history_source::entry_id_from_hash(
-                &doc.commit().unwrap().to_string(),
-            )));
-        }
-        doc.put(ROOT, "value", "typing").unwrap();
-        let pending = doc.pending_ops();
-        let identity = uuid::Uuid::new_v4();
-        let permissions = PermissionContext::permissive();
-        let context = HistoryReadContext {
-            document: &doc,
-            active_record: None,
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let mut host = StandaloneHistoryHost::new();
-        remember(&mut host, identity);
-        invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
-        let session = host.session_id.unwrap();
-        let select = HistoryCommand::Select {
-            session,
-            entries: ids,
-        };
-        invoke(&mut host, &select, &context).unwrap();
-        let comparison = host.session.as_ref().unwrap().comparison().unwrap();
-        assert_eq!(comparison.entries.len(), 3);
-        let before = AutoCommit::load(&comparison.before_document).unwrap();
-        let after = AutoCommit::load(&comparison.after_document).unwrap();
-        assert_eq!(
-            before.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-            Some("before")
-        );
-        assert_eq!(
-            after.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-            Some("three")
-        );
-        assert_eq!(doc.pending_ops(), pending);
-        invoke(&mut host, &HistoryCommand::Close { session }, &context).unwrap();
-        invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
-        assert_eq!(
-            invoke(&mut host, &select, &context),
-            Err(HistoryHostError::StaleSession)
-        );
-        assert!(host.session.as_ref().unwrap().selection().is_empty());
-    }
-
-    #[test]
-    fn replacing_document_removes_private_presentation_and_session_actions() {
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, "private", "saved").unwrap();
-        doc.commit();
-        let permissions = PermissionContext::permissive();
-        let identity = uuid::Uuid::new_v4();
-        let mut context = HistoryReadContext {
-            document: &doc,
-            active_record: None,
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let mut host = StandaloneHistoryHost::new();
-        remember(&mut host, identity);
-        invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
-        assert_eq!(host.presentation_roots(&context).unwrap().len(), 2);
-        let resources = host.local_resources(&context).unwrap();
-        assert_eq!(resources.len(), 2);
-        assert!(
-            resources
-                .iter()
-                .flat_map(|resource| &resource.actions)
-                .all(|action| action.kind == OperationKind::View)
-        );
-        context.document_identity = uuid::Uuid::new_v4();
-        assert_eq!(
-            host.local_resources(&context).err(),
-            Some(HistoryHostError::History(HistoryError::Stale))
-        );
-        assert!(!host.is_open());
-        assert!(host.pane_mut().is_none());
-        assert_eq!(host.presentation_roots(&context).unwrap().len(), 1);
-        assert_eq!(host.local_resources(&context).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn shared_arena_composition_preserves_app_grid_and_hides_content_when_narrow() {
-        let doc = AutoCommit::new();
-        let permissions = PermissionContext::permissive();
-        let identity = uuid::Uuid::new_v4();
-        let context = HistoryReadContext {
-            document: &doc,
-            active_record: None,
-            document_identity: identity,
-            permissions: &permissions,
-        };
-        let mut host = StandaloneHistoryHost::new();
-        remember(&mut host, identity);
-        invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
-        for search_enabled in [false, true] {
-            if search_enabled {
-                host.enable_search(crate::platform::PlatformConventions::new(
-                    crate::platform::Platform::Windows,
-                ));
-            }
-            for width in [1100.0, 500.0] {
-                let mut app = Text::new("app content").with_id("private-app-content");
-                let mut tree = TaffyTree::new();
-                let mut nodes = HashMap::new();
-                let theme = Theme::dark();
-                let app_node = app.build_layout(&mut tree, &theme, &mut nodes);
-                let mut style = tree.style(app_node).unwrap().clone();
-                style.display = taffy::Display::Grid;
-                tree.set_style(app_node, style).unwrap();
-                let layout = host.build_layout(app_node, &mut tree, &theme, &mut nodes, width);
-                assert_eq!(layout.app_visible, width >= 900.0);
-                assert_eq!(
-                    tree.style(app_node).unwrap().display,
-                    if layout.app_visible {
-                        taffy::Display::Grid
-                    } else {
-                        taffy::Display::None
-                    }
-                );
-                assert!(nodes.contains_key(&layout.app));
-                assert!(nodes.contains_key(&layout.toolbar));
-                assert!(nodes.contains_key(&layout.pane.unwrap()));
-                assert_ne!(layout.app, layout.toolbar);
-                assert_ne!(layout.app, layout.pane.unwrap());
-                assert_eq!(
-                    tree.children(layout.root).unwrap(),
-                    vec![
-                        layout.toolbar_group.unwrap_or(layout.toolbar),
-                        layout.content
-                    ]
-                );
-                host.with_presentation(&context, &app, layout, Rect::ZERO, |presentation| {
-                    fn check_pairing(
-                        widget: &dyn Widget,
-                        node: NodeId,
-                        tree: &TaffyTree<()>,
-                        nodes: &HashMap<NodeId, *mut dyn Widget>,
-                        visited: &mut Vec<String>,
-                    ) {
-                        if let Some(id) = widget.test_id() {
-                            visited.push(id.to_owned());
-                        }
-                        if let Some(pointer) = nodes.get(&node) {
-                            assert_eq!(
-                                std::ptr::from_ref(widget).cast::<()>(),
-                                pointer.cast_const().cast::<()>(),
-                                "node must refer to actual retained widget"
-                            );
-                        } else {
-                            assert!(
-                                matches!(
-                                    widget.test_id(),
-                                    Some(
-                                        "standalone-presentation"
-                                            | "standalone-content"
-                                            | "standalone-services"
-                                    )
-                                ),
-                                "only ephemeral traversal containers lack node-map pointers"
-                            );
-                        }
-                        let children = widget.children();
-                        let child_nodes = tree.children(node).unwrap();
-                        assert_eq!(
-                            children.len(),
-                            child_nodes.len(),
-                            "widget/Taffy child topology must match"
-                        );
-                        for (child, node) in children.into_iter().zip(child_nodes) {
-                            check_pairing(child, node, tree, nodes, visited);
-                        }
-                    }
-                    let mut visited = Vec::new();
-                    check_pairing(presentation, layout.root, &tree, &nodes, &mut visited);
-                    assert_eq!(
-                        visited.iter().any(|id| id == "private-app-content"),
-                        layout.app_visible
-                    );
-                    assert!(visited.iter().any(|id| id == "standalone-history"));
-                    assert_eq!(
-                        visited
-                            .iter()
-                            .filter(|id| *id == "standalone-search-open")
-                            .count(),
-                        usize::from(search_enabled)
-                    );
-                    assert_eq!(layout.search.is_some(), search_enabled);
-                    assert_eq!(layout.toolbar_group.is_some(), search_enabled);
-                    if let Some(search) = layout.search {
-                        assert!(nodes.contains_key(&search));
-                        assert_eq!(
-                            tree.children(layout.toolbar_group.unwrap()).unwrap(),
-                            vec![layout.toolbar, search]
-                        );
-                    }
-                    assert!(presentation.callback_binding().is_none());
-                    assert!(!nodes.contains_key(&layout.root));
-                    assert!(!nodes.contains_key(&layout.content));
-                })
-                .unwrap();
-            }
-        }
     }
 }

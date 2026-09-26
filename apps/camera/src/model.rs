@@ -557,72 +557,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn screen_round_trips() {
-        for s in Screen::ALL {
-            assert_eq!(Screen::parse_str(s.as_str()), Some(s));
-        }
-        assert_eq!(Screen::parse_str("nope"), None);
-    }
-
-    #[test]
-    fn facing_cycles_through_all() {
-        let mut f = Facing::Back;
-        f = f.next();
-        assert_eq!(f, Facing::Front);
-        f = f.next();
-        assert_eq!(f, Facing::Wide);
-        f = f.next();
-        assert_eq!(f, Facing::Back);
-    }
-
-    #[test]
-    fn classify_url() {
-        assert_eq!(classify("https://example.test/app"), CodeKind::Url);
-        assert_eq!(classify("HTTP://X"), CodeKind::Url);
-    }
-
-    #[test]
-    fn classify_and_parse_wifi() {
-        let k = classify("WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;");
-        match k {
-            CodeKind::Wifi {
-                ssid,
-                auth,
-                password,
-                hidden,
-            } => {
-                assert_eq!(ssid, "Tilo Guest");
-                assert_eq!(auth, "WPA2");
-                assert_eq!(password, "hunter2");
-                assert!(!hidden);
+    fn screen_and_facing_round_trip_and_cycle() {
+        // Phase `screen_round_trips`.
+        {
+            for s in Screen::ALL {
+                assert_eq!(Screen::parse_str(s.as_str()), Some(s));
             }
-            other => panic!("expected wifi, got {other:?}"),
+            assert_eq!(Screen::parse_str("nope"), None);
+        }
+        // Phase `facing_cycles_through_all`.
+        {
+            let mut f = Facing::Back;
+            f = f.next();
+            assert_eq!(f, Facing::Front);
+            f = f.next();
+            assert_eq!(f, Facing::Wide);
+            f = f.next();
+            assert_eq!(f, Facing::Back);
         }
     }
 
     #[test]
-    fn classify_and_parse_contact_vcard() {
-        let v = "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nTEL:+1-555-0100\nEMAIL:ada@analytical.engine\nORG:Analytical Engines\nEND:VCARD";
-        match classify(v) {
-            CodeKind::Contact {
-                name,
-                phone,
-                email,
-                org,
-            } => {
-                assert_eq!(name, "Ada Lovelace");
-                assert_eq!(phone, "+1-555-0100");
-                assert_eq!(email, "ada@analytical.engine");
-                assert_eq!(org, "Analytical Engines");
+    fn code_classification_parses_payloads_and_matches_actions() {
+        // Phase `classify_url`.
+        {
+            assert_eq!(classify("https://example.test/app"), CodeKind::Url);
+            assert_eq!(classify("HTTP://X"), CodeKind::Url);
+        }
+        // Phase `classify_and_parse_wifi`.
+        {
+            let k = classify("WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;");
+            match k {
+                CodeKind::Wifi {
+                    ssid,
+                    auth,
+                    password,
+                    hidden,
+                } => {
+                    assert_eq!(ssid, "Tilo Guest");
+                    assert_eq!(auth, "WPA2");
+                    assert_eq!(password, "hunter2");
+                    assert!(!hidden);
+                }
+                other => panic!("expected wifi, got {other:?}"),
             }
-            other => panic!("expected contact, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn actions_match_kind() {
-        assert_eq!(classify("https://x").actions()[0], "Open link");
-        assert_eq!(classify("WIFI:S:x;;").actions()[0], "Connect");
-        assert_eq!(classify("tel:+15550100").actions()[0], "Call");
+        // Phase `classify_and_parse_contact_vcard`.
+        {
+            let v = "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nTEL:+1-555-0100\nEMAIL:ada@analytical.engine\nORG:Analytical Engines\nEND:VCARD";
+            match classify(v) {
+                CodeKind::Contact {
+                    name,
+                    phone,
+                    email,
+                    org,
+                } => {
+                    assert_eq!(name, "Ada Lovelace");
+                    assert_eq!(phone, "+1-555-0100");
+                    assert_eq!(email, "ada@analytical.engine");
+                    assert_eq!(org, "Analytical Engines");
+                }
+                other => panic!("expected contact, got {other:?}"),
+            }
+        }
+        // Phase `actions_match_kind`.
+        {
+            assert_eq!(classify("https://x").actions()[0], "Open link");
+            assert_eq!(classify("WIFI:S:x;;").actions()[0], "Connect");
+            assert_eq!(classify("tel:+15550100").actions()[0], "Call");
+        }
     }
 }

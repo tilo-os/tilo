@@ -472,40 +472,61 @@ fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
 mod tests {
     use super::*;
 
+    /// Local vLLM is OpenAI-compatible and plainly local, hosted profiles hold only a vault
+    /// reference, a hosted HTTP endpoint is rejected but loopback HTTP is not, and a bad default is
+    /// not active.
     #[test]
-    fn local_vllm_is_openai_compatible_and_plainly_local() {
-        let profile = ProviderProfile::local_vllm();
-        assert_eq!(profile.protocol, ProviderProtocol::OpenAiCompatible);
-        assert_eq!(profile.location, EndpointLocation::ThisDevice);
-        assert!(profile.endpoint.starts_with("http://127.0.0.1"));
-        assert!(profile.is_local_vllm_candidate());
-        assert!(profile.credential.is_none());
-    }
+    fn provider_profiles_are_plainly_local_or_vault_backed_https() {
+        // Phase: local_vllm_is_openai_compatible_and_plainly_local.
+        {
+            let profile = ProviderProfile::local_vllm();
+            assert_eq!(profile.protocol, ProviderProtocol::OpenAiCompatible);
+            assert_eq!(profile.location, EndpointLocation::ThisDevice);
+            assert!(profile.endpoint.starts_with("http://127.0.0.1"));
+            assert!(profile.is_local_vllm_candidate());
+            assert!(profile.credential.is_none());
+        }
 
-    #[test]
-    fn hosted_profiles_hold_only_a_vault_reference() {
-        let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        let json = serde_json::to_string(&profile).unwrap();
-        assert!(json.contains("tilo.secret-service"));
-        assert!(json.contains("agent-provider/"));
-        assert!(!json.contains("sk-ant-"));
-        assert!(!json.contains("api_key\":\""));
-    }
+        // Phase: hosted_profiles_hold_only_a_vault_reference.
+        {
+            let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            let json = serde_json::to_string(&profile).unwrap();
+            assert!(json.contains("tilo.secret-service"));
+            assert!(json.contains("agent-provider/"));
+            assert!(!json.contains("sk-ant-"));
+            assert!(!json.contains("api_key\":\""));
+        }
 
-    #[test]
-    fn hosted_http_endpoint_is_rejected_but_loopback_http_is_not() {
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-        profile.endpoint = "http://api.example.test".into();
-        let config = ProviderConfig {
-            profiles: vec![profile],
-            ..ProviderConfig::default()
-        };
-        assert!(!config.validation_errors().is_empty());
-        let local = ProviderConfig {
-            profiles: vec![ProviderProfile::local_vllm()],
-            ..ProviderConfig::default()
-        };
-        assert!(local.validation_errors().is_empty());
+        // Phase: hosted_http_endpoint_is_rejected_but_loopback_http_is_not.
+        {
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+            profile.endpoint = "http://api.example.test".into();
+            let config = ProviderConfig {
+                profiles: vec![profile],
+                ..ProviderConfig::default()
+            };
+            assert!(!config.validation_errors().is_empty());
+            let local = ProviderConfig {
+                profiles: vec![ProviderProfile::local_vllm()],
+                ..ProviderConfig::default()
+            };
+            assert!(local.validation_errors().is_empty());
+        }
+
+        // Phase: bad_default_is_not_active.
+        {
+            let config = ProviderConfig {
+                default_profile: Some("gone".into()),
+                profiles: vec![ProviderProfile::local_vllm()],
+            };
+            assert!(config.active_profile().is_none());
+            assert!(
+                config
+                    .validation_errors()
+                    .iter()
+                    .any(|issue| issue.profile_id == "default")
+            );
+        }
     }
 
     #[test]
@@ -535,20 +556,5 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("appearance"));
         assert!(!body.contains("sk-live-secret"));
-    }
-
-    #[test]
-    fn bad_default_is_not_active() {
-        let config = ProviderConfig {
-            default_profile: Some("gone".into()),
-            profiles: vec![ProviderProfile::local_vllm()],
-        };
-        assert!(config.active_profile().is_none());
-        assert!(
-            config
-                .validation_errors()
-                .iter()
-                .any(|issue| issue.profile_id == "default")
-        );
     }
 }

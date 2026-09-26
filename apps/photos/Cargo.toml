@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "photos"
 version = "0.1.0"
 edition = "2024"
@@ -51,6 +52,10 @@ runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 libc.workspace = true
 vello_encoding.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

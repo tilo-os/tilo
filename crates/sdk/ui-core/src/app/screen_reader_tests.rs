@@ -32,7 +32,7 @@ impl Speaker for SharedRecorder {
 #[allow(
     clippy::non_send_fields_in_send_ty,
     reason = "the Rc<RefCell<_>> is deliberately asserted Send above — this test double \
-                  never actually crosses a thread"
+              never actually crosses a thread"
 )]
 unsafe impl Send for SharedRecorder {}
 
@@ -108,88 +108,91 @@ fn app_with_reader() -> (App, SharedRecorder) {
 }
 
 #[test]
-fn autofocus_narrates_the_focused_widget() {
-    let (mut app, rec) = app_with_reader();
-    app.autofocus_first = true;
-    app.init_layout();
-    assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
-}
+fn reader_narrates_focus_and_obeys_its_enablement() {
+    // Case `autofocus_narrates_the_focused_widget`.
+    {
+        let (mut app, rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
+    }
 
-#[test]
-fn directional_focus_change_narrates_new_widget() {
-    let (mut app, rec) = app_with_reader();
-    app.autofocus_first = true;
-    app.init_layout();
-    let second = app.focusable_order[1];
-    let ak_id = accesskit::NodeId(u64::from(second) + 1);
-    app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
-    let spoken = rec.0.borrow();
-    assert_eq!(
-        spoken.spoken(),
-        &["Save, button".to_string(), "Cancel, button".to_string()],
-        "each focus change narrates the newly focused control"
-    );
-}
+    // Case `directional_focus_change_narrates_new_widget`.
+    {
+        let (mut app, rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        let second = app.focusable_order[1];
+        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
+        let spoken = rec.0.borrow();
+        assert_eq!(
+            spoken.spoken(),
+            &["Save, button".to_string(), "Cancel, button".to_string()],
+            "each focus change narrates the newly focused control"
+        );
+    }
 
-#[test]
-fn disabling_reader_silences_and_stops() {
-    let (mut app, rec) = app_with_reader();
-    app.autofocus_first = true;
-    app.init_layout();
-    assert!(app.screen_reader_enabled());
-    app.set_screen_reader_enabled(false);
-    assert!(!app.screen_reader_enabled());
-    assert!(
-        rec.0.borrow().stop_count() >= 1,
-        "disabling stops in-flight speech"
-    );
-    let before = rec.0.borrow().spoken().len();
-    let second = app.focusable_order[1];
-    let ak_id = accesskit::NodeId(u64::from(second) + 1);
-    app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
-    assert_eq!(
-        rec.0.borrow().spoken().len(),
-        before,
-        "no narration after the reader is disabled"
-    );
-}
+    // Case `disabling_reader_silences_and_stops`.
+    {
+        let (mut app, rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        assert!(app.screen_reader_enabled());
+        app.set_screen_reader_enabled(false);
+        assert!(!app.screen_reader_enabled());
+        assert!(
+            rec.0.borrow().stop_count() >= 1,
+            "disabling stops in-flight speech"
+        );
+        let before = rec.0.borrow().spoken().len();
+        let second = app.focusable_order[1];
+        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
+        assert_eq!(
+            rec.0.borrow().spoken().len(),
+            before,
+            "no narration after the reader is disabled"
+        );
+    }
 
-#[test]
-fn reader_disabled_by_default_unless_env() {
-    let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
-    app.autofocus_first = true;
-    app.init_layout();
-    assert!(
-        !app.screen_reader_enabled(),
-        "the reader is opt-in; default-off builds are unaffected"
-    );
-}
+    // Case `reader_disabled_by_default_unless_env`.
+    {
+        let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
+        app.autofocus_first = true;
+        app.init_layout();
+        assert!(
+            !app.screen_reader_enabled(),
+            "the reader is opt-in; default-off builds are unaffected"
+        );
+    }
 
-#[test]
-fn screen_reader_key_layer_is_noop_when_disabled() {
-    // winit's KeyEvent has no public constructor; the disabled-guard is
-    // the first line of the method, so a non-keyboard event exercises it.
-    let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
-    app.init_layout();
-    assert!(!app.screen_reader_enabled());
-    let ev = WindowEvent::CursorLeft {
-        device_id: unsafe { std::mem::zeroed() },
-    };
-    assert!(
-        !app.handle_screen_reader_key(&ev),
-        "reader-off App must never consume an event in the SR key layer"
-    );
-}
+    // Case `screen_reader_key_layer_is_noop_when_disabled`.
+    {
+        // winit's KeyEvent has no public constructor; the disabled-guard is
+        // the first line of the method, so a non-keyboard event exercises it.
+        let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
+        app.init_layout();
+        assert!(!app.screen_reader_enabled());
+        let ev = WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        };
+        assert!(
+            !app.handle_screen_reader_key(&ev),
+            "reader-off App must never consume an event in the SR key layer"
+        );
+    }
 
-#[test]
-fn screen_reader_key_layer_ignores_non_keyboard_when_enabled() {
-    let (mut app, _rec) = app_with_reader();
-    app.init_layout();
-    assert!(app.screen_reader_enabled());
-    let ev = WindowEvent::CursorLeft {
-        device_id: unsafe { std::mem::zeroed() },
-    };
-    assert!(!app.handle_screen_reader_key(&ev));
+    // Case `screen_reader_key_layer_ignores_non_keyboard_when_enabled`.
+    {
+        let (mut app, _rec) = app_with_reader();
+        app.init_layout();
+        assert!(app.screen_reader_enabled());
+        let ev = WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        };
+        assert!(!app.handle_screen_reader_key(&ev));
+    }
 }
 
 // ----- Live regions -----
@@ -262,77 +265,80 @@ fn app_with_reader_over(root: Box<dyn Widget>) -> (App, SharedRecorder) {
 }
 
 #[test]
-fn live_region_change_announces_without_moving_focus() {
-    let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
-    let val = live.value.clone();
-    let (mut app, rec) = app_with_reader_over(Box::new(live));
-    let focus_before = app.focused_node;
+fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
+    // Case `live_region_change_announces_without_moving_focus`.
+    {
+        let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
+        let val = live.value.clone();
+        let (mut app, rec) = app_with_reader_over(Box::new(live));
+        let focus_before = app.focused_node;
 
-    // Seed the snapshot, then forget it so we assert purely on the change.
-    app.scan_live_regions();
-    rec.0.borrow_mut().reset();
+        // Seed the snapshot, then forget it so we assert purely on the change.
+        app.scan_live_regions();
+        rec.0.borrow_mut().reset();
 
-    *val.borrow_mut() = "File saved".to_string();
-    app.scan_live_regions();
-    assert_eq!(
-        rec.0.borrow().last(),
-        Some("Notifications, group, File saved"),
-        "the changed live text is announced (name, role, value)"
-    );
-    assert_eq!(
-        app.focused_node, focus_before,
-        "live region must not move focus"
-    );
+        *val.borrow_mut() = "File saved".to_string();
+        app.scan_live_regions();
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("Notifications, group, File saved"),
+            "the changed live text is announced (name, role, value)"
+        );
+        assert_eq!(
+            app.focused_node, focus_before,
+            "live region must not move focus"
+        );
 
-    rec.0.borrow_mut().reset();
-    app.scan_live_regions();
-    assert!(
-        rec.0.borrow().spoken().is_empty(),
-        "unchanged live text is not re-announced"
-    );
-}
+        rec.0.borrow_mut().reset();
+        app.scan_live_regions();
+        assert!(
+            rec.0.borrow().spoken().is_empty(),
+            "unchanged live text is not re-announced"
+        );
+    }
 
-#[test]
-fn assertive_live_region_uses_important_interrupting_priority() {
-    let live = LiveWidget::new("Errors", crate::a11y::Politeness::Assertive);
-    let val = live.value.clone();
-    let (mut app, rec) = app_with_reader_over(Box::new(live));
-    *val.borrow_mut() = "Permission denied".to_string();
-    app.scan_live_regions();
-    let recref = rec.0.borrow();
-    let last = recref
-        .utterances()
-        .last()
-        .expect("an utterance was recorded");
-    assert_eq!(last.priority, tts::Priority::Important);
-    assert!(last.interrupt, "assertive live regions interrupt");
-}
+    // Case `assertive_live_region_uses_important_interrupting_priority`.
+    {
+        let live = LiveWidget::new("Errors", crate::a11y::Politeness::Assertive);
+        let val = live.value.clone();
+        let (mut app, rec) = app_with_reader_over(Box::new(live));
+        *val.borrow_mut() = "Permission denied".to_string();
+        app.scan_live_regions();
+        let recref = rec.0.borrow();
+        let last = recref
+            .utterances()
+            .last()
+            .expect("an utterance was recorded");
+        assert_eq!(last.priority, tts::Priority::Important);
+        assert!(last.interrupt, "assertive live regions interrupt");
+    }
 
-#[test]
-fn polite_live_region_uses_notification_non_interrupting_priority() {
-    let live = LiveWidget::new("Status", crate::a11y::Politeness::Polite);
-    let val = live.value.clone();
-    let (mut app, rec) = app_with_reader_over(Box::new(live));
-    *val.borrow_mut() = "Uploading, 40%".to_string();
-    app.scan_live_regions();
-    let recref = rec.0.borrow();
-    let last = recref
-        .utterances()
-        .last()
-        .expect("an utterance was recorded");
-    assert_eq!(last.priority, tts::Priority::Notification);
-    assert!(!last.interrupt, "polite live regions do not interrupt");
-}
+    // Case `polite_live_region_uses_notification_non_interrupting_priority`.
+    {
+        let live = LiveWidget::new("Status", crate::a11y::Politeness::Polite);
+        let val = live.value.clone();
+        let (mut app, rec) = app_with_reader_over(Box::new(live));
+        *val.borrow_mut() = "Uploading, 40%".to_string();
+        app.scan_live_regions();
+        let recref = rec.0.borrow();
+        let last = recref
+            .utterances()
+            .last()
+            .expect("an utterance was recorded");
+        assert_eq!(last.priority, tts::Priority::Notification);
+        assert!(!last.interrupt, "polite live regions do not interrupt");
+    }
 
-#[test]
-fn live_region_scan_is_noop_when_reader_off() {
-    let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
-    let val = live.value.clone();
-    let mut app = App::new(State::new(), Box::new(live));
-    app.init_layout();
-    assert!(!app.screen_reader_enabled());
-    *val.borrow_mut() = "anything".to_string();
-    app.scan_live_regions();
+    // Case `live_region_scan_is_noop_when_reader_off`.
+    {
+        let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
+        let val = live.value.clone();
+        let mut app = App::new(State::new(), Box::new(live));
+        app.init_layout();
+        assert!(!app.screen_reader_enabled());
+        *val.borrow_mut() = "anything".to_string();
+        app.scan_live_regions();
+    }
 }
 
 // ----- Text review (caret movement over existing content) -----
@@ -349,58 +355,61 @@ fn app_with_focused_input(initial: &str) -> (App, SharedRecorder, NodeId) {
 }
 
 #[test]
-fn caret_move_one_char_announces_the_character() {
-    let (mut app, rec, id) = app_with_focused_input("abc");
-    let pre = app.text_review_snapshot();
-    assert!(pre.is_some(), "focused text input yields a review snapshot");
-    rec.0.borrow_mut().reset(); // forget the autofocus narration
-    unsafe {
-        (*(*app.layout.node_map.get(&id).unwrap())).set_state("2");
+fn caret_review_announces_characters_and_words_for_text_widgets() {
+    // Case `caret_move_one_char_announces_the_character`.
+    {
+        let (mut app, rec, id) = app_with_focused_input("abc");
+        let pre = app.text_review_snapshot();
+        assert!(pre.is_some(), "focused text input yields a review snapshot");
+        rec.0.borrow_mut().reset(); // forget the autofocus narration
+        unsafe {
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("2");
+        }
+        app.announce_text_review(pre);
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("c"),
+            "single-step move echoes the char"
+        );
     }
-    app.announce_text_review(pre);
-    assert_eq!(
-        rec.0.borrow().last(),
-        Some("c"),
-        "single-step move echoes the char"
-    );
-}
 
-#[test]
-fn caret_jump_to_start_announces_the_word() {
-    let (mut app, rec, id) = app_with_focused_input("hello world");
-    let pre = app.text_review_snapshot();
-    rec.0.borrow_mut().reset(); // forget the autofocus narration
-    unsafe {
-        (*(*app.layout.node_map.get(&id).unwrap())).set_state("0");
+    // Case `caret_jump_to_start_announces_the_word`.
+    {
+        let (mut app, rec, id) = app_with_focused_input("hello world");
+        let pre = app.text_review_snapshot();
+        rec.0.borrow_mut().reset(); // forget the autofocus narration
+        unsafe {
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("0");
+        }
+        app.announce_text_review(pre);
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("hello"),
+            "a long jump echoes the word"
+        );
     }
-    app.announce_text_review(pre);
-    assert_eq!(
-        rec.0.borrow().last(),
-        Some("hello"),
-        "a long jump echoes the word"
-    );
-}
 
-#[test]
-fn no_caret_move_announces_nothing() {
-    let (mut app, rec, _id) = app_with_focused_input("abc");
-    let pre = app.text_review_snapshot();
-    rec.0.borrow_mut().reset(); // forget the autofocus narration
-    app.announce_text_review(pre);
-    assert!(
-        rec.0.borrow().spoken().is_empty(),
-        "no move, no announcement"
-    );
-}
+    // Case `no_caret_move_announces_nothing`.
+    {
+        let (mut app, rec, _id) = app_with_focused_input("abc");
+        let pre = app.text_review_snapshot();
+        rec.0.borrow_mut().reset(); // forget the autofocus narration
+        app.announce_text_review(pre);
+        assert!(
+            rec.0.borrow().spoken().is_empty(),
+            "no move, no announcement"
+        );
+    }
 
-#[test]
-fn text_review_snapshot_is_none_for_non_text_widget() {
-    let (mut app, _rec) = app_with_reader();
-    app.autofocus_first = true;
-    app.init_layout();
-    assert!(app.focused_node.is_some());
-    assert!(
-        app.text_review_snapshot().is_none(),
-        "a button has no caret to review"
-    );
+    // Case `text_review_snapshot_is_none_for_non_text_widget`.
+    {
+        let (mut app, _rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        assert!(app.focused_node.is_some());
+        assert!(
+            app.text_review_snapshot().is_none(),
+            "a button has no caret to review"
+        );
+    }
 }

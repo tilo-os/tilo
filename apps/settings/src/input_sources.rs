@@ -225,54 +225,52 @@ fn fallback_catalog() -> Vec<CatalogEntry> {
 mod tests {
     use super::*;
 
+    /// The xkb catalogue parser yields base layouts and `layout:variant`
+    /// entries, resolving entity and character references in descriptions;
+    /// the installed catalogue contains a real US layout.
     #[test]
-    fn parses_base_layouts_and_variants_from_standard_shape() {
-        let xml = br"<xkbConfigRegistry><layoutList><layout><configItem>
+    fn input_source_catalog_parses_layouts_variants_and_references() {
+        // (case, registry xml, base label, variant label)
+        let cases: [(&str, &[u8], &str, &str); 2] = [
+            (
+                "standard shape",
+                br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US)</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak</description>
-          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
-        let entries = parse_catalog(&mut Reader::from_reader(&xml[..])).unwrap();
-        assert_eq!(
-            entries,
-            [
-                CatalogEntry {
-                    id: "us".into(),
-                    label: "English (US)".into(),
-                },
-                CatalogEntry {
-                    id: "us:dvorak".into(),
-                    label: "English (US) — Dvorak".into(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn entity_and_character_references_stay_in_descriptions() {
-        let xml = br"<xkbConfigRegistry><layoutList><layout><configItem>
+          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>",
+                "English (US)",
+                "English (US) — Dvorak",
+            ),
+            (
+                "entity and character references",
+                br"<xkbConfigRegistry><layoutList><layout><configItem>
             <name>us</name><description>English (US) &amp; &lt;intl&gt; &#x1F600;</description>
           </configItem><variantList><variant><configItem>
             <name>dvorak</name><description>Dvorak &amp;&#32;more</description>
-          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>";
-        let entries = parse_catalog(&mut Reader::from_reader(&xml[..])).unwrap();
-        assert_eq!(
-            entries,
-            [
-                CatalogEntry {
-                    id: "us".into(),
-                    label: "English (US) & <intl> \u{1F600}".into(),
-                },
-                CatalogEntry {
-                    id: "us:dvorak".into(),
-                    label: "English (US) & <intl> \u{1F600} — Dvorak & more".into(),
-                },
-            ]
-        );
-    }
+          </configItem></variant></variantList></layout></layoutList></xkbConfigRegistry>",
+                "English (US) & <intl> \u{1F600}",
+                "English (US) & <intl> \u{1F600} — Dvorak & more",
+            ),
+        ];
+        for (case, xml, base, variant) in cases {
+            let entries = parse_catalog(&mut Reader::from_reader(xml)).unwrap();
+            assert_eq!(
+                entries,
+                [
+                    CatalogEntry {
+                        id: "us".into(),
+                        label: base.into(),
+                    },
+                    CatalogEntry {
+                        id: "us:dvorak".into(),
+                        label: variant.into(),
+                    },
+                ],
+                "case {case}"
+            );
+        }
 
-    #[test]
-    fn installed_catalog_contains_a_real_us_layout() {
         assert!(installed_catalog().iter().any(|entry| entry.id == "us"));
     }
 

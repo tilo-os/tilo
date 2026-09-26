@@ -144,36 +144,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semantic_shortcut_formats_for_each_platform() {
-        let shortcut = Shortcut::command("K").shift();
-        assert_eq!(
-            shortcut.label(PlatformConventions::new(Platform::MacOs)),
-            "⌘⇧K"
-        );
-        assert_eq!(
-            shortcut.label(PlatformConventions::new(Platform::Windows)),
-            "Ctrl+Shift+K"
-        );
-        assert_eq!(
-            shortcut.label(PlatformConventions::new(Platform::Linux)),
-            "Ctrl+Shift+K"
-        );
-    }
+    fn shortcuts_modifiers_and_dialog_order_follow_each_platform_hig() {
+        // Case `semantic_shortcut_formats_for_each_platform`.
+        {
+            let shortcut = Shortcut::command("K").shift();
+            assert_eq!(
+                shortcut.label(PlatformConventions::new(Platform::MacOs)),
+                "⌘⇧K"
+            );
+            assert_eq!(
+                shortcut.label(PlatformConventions::new(Platform::Windows)),
+                "Ctrl+Shift+K"
+            );
+            assert_eq!(
+                shortcut.label(PlatformConventions::new(Platform::Linux)),
+                "Ctrl+Shift+K"
+            );
+        }
 
-    #[test]
-    fn command_modifier_and_dialog_order_follow_platform_hig() {
-        let control = winit::keyboard::ModifiersState::CONTROL;
-        let command = winit::keyboard::ModifiersState::SUPER;
-        let mac = PlatformConventions::new(Platform::MacOs);
-        let windows = PlatformConventions::new(Platform::Windows);
-        assert!(mac.command_modifier_down(command));
-        assert!(!mac.command_modifier_down(control));
-        assert!(windows.command_modifier_down(control));
-        assert!(!windows.command_modifier_down(command));
-        assert_eq!(mac.dialog_action_order(), DialogActionOrder::PrimaryLast);
-        assert_eq!(
-            windows.dialog_action_order(),
-            DialogActionOrder::PrimaryFirst
-        );
+        // Case `command_modifier_and_dialog_order_follow_platform_hig`.
+        {
+            let control = winit::keyboard::ModifiersState::CONTROL;
+            let command = winit::keyboard::ModifiersState::SUPER;
+            let mac = PlatformConventions::new(Platform::MacOs);
+            let windows = PlatformConventions::new(Platform::Windows);
+            assert!(mac.command_modifier_down(command));
+            assert!(!mac.command_modifier_down(control));
+            assert!(windows.command_modifier_down(control));
+            assert!(!windows.command_modifier_down(command));
+            assert_eq!(mac.dialog_action_order(), DialogActionOrder::PrimaryLast);
+            assert_eq!(
+                windows.dialog_action_order(),
+                DialogActionOrder::PrimaryFirst
+            );
+        }
     }
 }

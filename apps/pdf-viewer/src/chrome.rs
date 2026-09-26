@@ -167,7 +167,11 @@ mod tests {
     use ui::tokens::colors::HAIRLINE_MIN_DELTA;
 
     #[test]
-    fn every_chrome_edge_registers_on_every_preset() {
+    #[expect(
+        clippy::float_cmp,
+        reason = "the rhythm tokens are exact literals, not computed values"
+    )]
+    fn chrome_edges_pointer_targets_and_rhythm_follow_theme_tokens() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let c = &theme.tokens.colors;
             for (name, fill) in [
@@ -187,24 +191,14 @@ mod tests {
                     >= edge_delta(edge_on(overlay), overlay)
             );
         }
-    }
 
-    #[test]
-    fn pointer_targets_grow_to_the_metric_and_never_shrink() {
         let theme = Theme::dark();
         let min = f64::from(theme.tokens.metrics.min_pointer_target);
         let small = pointer_target(Rect::new(0.0, 0.0, 24.0, 24.0), &theme);
         assert_eq!((small.width(), small.height()), (min, min));
         let big = Rect::new(0.0, 0.0, 200.0, 40.0);
         assert_eq!(pointer_target(big, &theme), big);
-    }
 
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the rhythm tokens are exact literals, not computed values"
-    )]
-    fn rhythm_is_monotone_token_steps() {
         const { assert!(rhythm::TIGHT < rhythm::RELATED) };
         const { assert!(rhythm::RELATED < rhythm::SIBLING) };
         const { assert!(rhythm::SIBLING < rhythm::SECTION) };

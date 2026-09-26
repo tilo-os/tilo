@@ -114,51 +114,471 @@ pub(super) fn registration() -> HistoryRegistration {
     .unwrap()
 }
 #[test]
-fn managed_history_button_opens_real_activity_without_invoking_live_effects() {
-    let effects = Rc::new(Cell::new(0));
-    let probe = effects.clone();
-    let root = Column::new().push(Box::new(
-        Button::new("live-effect", "Send", None).on_click(move || probe.set(probe.get() + 1)),
-    ));
-    let mut state = State::new();
-    state.doc.put(ROOT, "body", "first").unwrap();
-    state.commit_action(None, None);
-    state.doc.put(ROOT, "body", "second").unwrap();
-    state.commit_action(None, None);
-    let before = state.doc.get_heads();
-    let mut driver = Driver::from_managed_root(
-        state,
-        ManagedRoot::new(Box::new(root), registration()),
-        (900, 650),
-    )
-    .unwrap();
-    assert!(
-        driver.targets().contains_key("history-open"),
-        "managed roots need the actual shared History control"
-    );
-    driver.click_named("history-open").unwrap();
-    assert!(driver.targets().contains_key("activity_timeline"));
-    assert_eq!(effects.get(), 0);
-    assert_eq!(driver.state_mut().doc.get_heads(), before);
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn every_input_enters_the_same_history_canvas_without_live_effects() {
+    // phase: managed_history_button_opens_real_activity_without_invoking_live_effects
+    {
+        let effects = Rc::new(Cell::new(0));
+        let probe = effects.clone();
+        let root = Column::new().push(Box::new(
+            Button::new("live-effect", "Send", None).on_click(move || probe.set(probe.get() + 1)),
+        ));
+        let mut state = State::new();
+        state.doc.put(ROOT, "body", "first").unwrap();
+        state.commit_action(None, None);
+        state.doc.put(ROOT, "body", "second").unwrap();
+        state.commit_action(None, None);
+        let before = state.doc.get_heads();
+        let mut driver = Driver::from_managed_root(
+            state,
+            ManagedRoot::new(Box::new(root), registration()),
+            (900, 650),
+        )
+        .unwrap();
+        assert!(
+            driver.targets().contains_key("history-open"),
+            "managed roots need the actual shared History control"
+        );
+        driver.click_named("history-open").unwrap();
+        assert!(driver.targets().contains_key("activity_timeline"));
+        assert_eq!(effects.get(), 0);
+        assert_eq!(driver.state_mut().doc.get_heads(), before);
+    }
+    // phase: pointer_selection_draws_pinned_domain_canvas_and_back_returns_live
+    {
+        let (mut driver, target, before) = versioned_driver((900, 650));
+        driver.click_named("history-open").unwrap();
+        let inspection = driver.inspection();
+        let entry =
+            find_access(&inspection.root, &target).expect("actual visible activity is accessible");
+        let bounds = entry.bounds.as_ref().unwrap();
+        driver.click_at(bounds.x0 + 100.0, (bounds.y0 + bounds.y1) / 2.0);
+        assert!(driver.targets().contains_key("history-preview"));
+        assert!(!driver.targets().contains_key("live-effect"));
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first")
+        );
+        let targets = driver.targets();
+        assert!(
+            targets["activity_timeline"].x1 <= targets["history-preview"].x0,
+            "wide activity sits beside the content"
+        );
+        if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
+            driver.render_window_png(&std::path::Path::new(&directory).join("wide.png"));
+        }
+        assert_eq!(driver.state_mut().doc.get_heads(), before);
+        driver.state_mut().doc.put(ROOT, "body", "remote").unwrap();
+        driver.state_mut().commit_action(None, None);
+        driver.relayout();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first")
+        );
+        driver.type_text("cannot-edit");
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first")
+        );
+        assert!(
+            driver
+                .state_mut()
+                .doc
+                .get(ROOT, "effect")
+                .unwrap()
+                .is_none()
+        );
+        driver.click_named("history-back-live").unwrap();
+        assert!(driver.targets().contains_key("live-effect"));
+        assert!(!driver.targets().contains_key("history-preview"));
+    }
+    // phase: accessible_activation_uses_the_same_canvas_and_narrow_activity_navigation
+    {
+        let (mut driver, target, before) = versioned_driver((390, 650));
+        driver.click_named("history-open").unwrap();
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert!(driver.targets().contains_key("history-preview"));
+        assert!(!driver.targets().contains_key("activity_timeline"));
+        assert!(!driver.targets().contains_key("live-effect"));
+        driver.click_named("history-before").unwrap();
+        assert!(
+            !driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first")
+        );
+        driver.click_named("history-after").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first")
+        );
+        assert!(
+            driver.targets()["history-preview"].y0 <= 104.0,
+            "narrow navigation leaves the canvas usable"
+        );
+        if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
+            driver.render_window_png(&std::path::Path::new(&directory).join("narrow.png"));
+        }
+        driver.click_named("history-activity").unwrap();
+        assert!(driver.targets().contains_key("activity_timeline"));
+        assert!(!driver.targets().contains_key("history-preview"));
+        assert_eq!(driver.state_mut().doc.get_heads(), before);
+    }
+    // phase: keyboard_enters_activity_and_selects_the_same_domain_canvas
+    {
+        let (mut driver, target, _) = versioned_driver((900, 650));
+        driver
+            .perform_named("history-open", &crate::a11y::Action::Focus)
+            .unwrap();
+        driver
+            .state_mut()
+            .doc
+            .put(ROOT, "pending-keyboard", "keep")
+            .unwrap();
+        let pending = driver.state_mut().doc.pending_ops();
+        let heads = driver.state_mut().doc.base_heads();
+        driver.key("Enter");
+        assert!(driver.targets().contains_key("activity_timeline"));
+        assert_eq!(driver.state_mut().doc.base_heads(), heads);
+        assert_eq!(driver.state_mut().doc.pending_ops(), pending);
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &crate::a11y::Action::Focus,
+            )
+            .unwrap();
+        driver.key("Enter");
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first")
+        );
+        driver
+            .perform_named("history-back-live", &crate::a11y::Action::Focus)
+            .unwrap();
+        driver.key("Enter");
+        assert!(driver.targets().contains_key("live-effect"));
+    }
+    // phase: exported_accessibility_activation_preserves_pending_edits_through_back_live
+    {
+        let (mut driver, target, _) = versioned_driver((900, 650));
+        driver
+            .state_mut()
+            .doc
+            .put(ROOT, "pending", "untouched")
+            .unwrap();
+        let heads = driver.state_mut().doc.base_heads();
+        let pending = driver.state_mut().doc.pending_ops();
+        let open = driver.a11y_node_named("History").unwrap();
+        driver
+            .perform_a11y_action(open, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(
+            driver.state_mut().doc.base_heads(),
+            heads,
+            "AccessKit History open"
+        );
+        let inspection = driver.inspection();
+        let name = find_access(&inspection.root, &target)
+            .unwrap()
+            .name
+            .as_ref()
+            .unwrap();
+        let bounds = find_access(&inspection.root, &target)
+            .unwrap()
+            .bounds
+            .as_ref()
+            .unwrap();
+        let row = driver
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label() == Some(name) && node.bounds().is_some_and(|rect| rect.y0 == bounds.y0)
+            })
+            .unwrap()
+            .0;
+        driver
+            .perform_a11y_action(row, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(
+            driver.targets().contains_key("history-preview"),
+            "{}",
+            driver.inspection_json().unwrap()
+        );
+        let back = driver.a11y_node_named("Back to live").unwrap();
+        driver
+            .perform_a11y_action(back, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(
+            driver.state_mut().doc.base_heads(),
+            heads,
+            "AccessKit Back to live"
+        );
+        assert_eq!(driver.state_mut().doc.pending_ops(), pending);
+        assert!(driver.targets().contains_key("live-effect"));
+    }
 }
 #[test]
-fn managed_registration_rejects_missing_source_and_foreign_owner() {
-    assert!(HistoryRegistration::new(&DEFINITION, vec![]).is_err());
-    assert!(
-        HistoryRegistration::new(
-            &DEFINITION,
-            vec![HistorySourceRegistration::HostDocument {
-                scope: "document",
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn managed_registration_admits_only_real_owners_and_scopes() {
+    // phase: managed_registration_rejects_missing_source_and_foreign_owner
+    {
+        assert!(HistoryRegistration::new(&DEFINITION, vec![]).is_err());
+        assert!(
+            HistoryRegistration::new(
+                &DEFINITION,
+                vec![HistorySourceRegistration::HostDocument {
+                    scope: "document",
+                    resource: HistoryResource::new(
+                        "fixture",
+                        "other",
+                        "different-app",
+                        crate::RecordId::for_tab(777)
+                    ),
+                }]
+            )
+            .is_err()
+        );
+    }
+    // phase: managed_registration_supports_multiple_scopes_and_refuses_empty_namespace
+    {
+        static MULTI: HistoryDefinition = HistoryDefinition {
+            app_id: "dev.tilo.history-fixture",
+            scopes: &[
+                HistoryScopeDefinition {
+                    key: "a",
+                    title: "A",
+                    presentation: HistoryPresentation::Domain { create: preview },
+                    content_schema: None,
+                },
+                HistoryScopeDefinition {
+                    key: "b",
+                    title: "B",
+                    presentation: HistoryPresentation::Domain { create: preview },
+                    content_schema: None,
+                },
+            ],
+        };
+        let sources = ["a", "b"]
+            .into_iter()
+            .map(|scope| HistorySourceRegistration::HostDocument {
+                scope,
                 resource: HistoryResource::new(
                     "fixture",
-                    "other",
-                    "different-app",
-                    crate::RecordId::for_tab(777)
+                    "lifetime-1",
+                    MULTI.app_id,
+                    crate::RecordId::for_tab(777),
                 ),
-            }]
+            })
+            .collect();
+        let registration = HistoryRegistration::new(&MULTI, sources).unwrap();
+        let mut driver = Driver::from_managed_root(
+            State::new(),
+            ManagedRoot::new(Box::new(Column::new()), registration),
+            (900, 650),
         )
-        .is_err()
-    );
+        .expect("registered scopes must compose in the managed host");
+        driver.click_named("history-scope-b").unwrap();
+        assert!(driver.targets().contains_key("history-scope-a"));
+        assert!(
+            HistoryRegistration::new(
+                &DEFINITION,
+                vec![HistorySourceRegistration::HostDocument {
+                    scope: "document",
+                    resource: HistoryResource::new(
+                        "",
+                        "",
+                        DEFINITION.app_id,
+                        crate::RecordId::for_tab(777)
+                    )
+                }]
+            )
+            .is_err()
+        );
+    }
+    // phase: outer_state_registration_rejects_legacy_scratch_owner_at_root_or_descendant
+    {
+        use crate::widget::{AppKind, TileContent, TileHost};
+        for nested in [false, true] {
+            let mut tile = TileHost::new(TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "terminal".into(),
+            });
+            tile.bind_or_create_record(
+                crate::record::RecordStore::in_memory(),
+                crate::record::RecordCheckout::new(
+                    crate::RecordId::for_tab(999),
+                    crate::record::RecordKind::new("scratch"),
+                ),
+            );
+            let root: Box<dyn crate::widget::Widget> = if nested {
+                Box::new(Column::new().push(Box::new(tile)))
+            } else {
+                Box::new(tile)
+            };
+            assert!(
+                Driver::from_managed_root(
+                    State::new(),
+                    ManagedRoot::new(root, registration()),
+                    (900, 650)
+                )
+                .is_err()
+            );
+        }
+    }
+    // phase: managed_history_rejects_owner_mounted_during_initial_settlement
+    {
+        for pending in [false, true] {
+            for layout in [false, true] {
+                let result = Driver::from_managed_root(
+                    State::new(),
+                    ManagedRoot::new(
+                        lazy_owner_root(Rc::new(Cell::new(true)), pending, layout),
+                        registration(),
+                    ),
+                    (900, 650),
+                );
+                assert!(
+                    matches!(result, Err(HistoryRegistrationError::UnsupportedOwner)),
+                    "pending={pending}, layout={layout}"
+                );
+            }
+        }
+    }
+    // phase: managed_history_invalidates_after_later_owner_mount_without_outer_state_fallback
+    {
+        for pending in [false, true] {
+            for layout in [false, true] {
+                let mount = Rc::new(Cell::new(false));
+                let mut state = State::new();
+                state.doc.put(ROOT, "body", "outer document").unwrap();
+                state.commit_action(None, None);
+                let mut driver = Driver::from_managed_root(
+                    state,
+                    ManagedRoot::new(
+                        lazy_owner_root(mount.clone(), pending, layout),
+                        registration(),
+                    ),
+                    (900, 650),
+                )
+                .unwrap();
+                driver.click_named("history-open").unwrap();
+                assert!(driver.targets().contains_key("activity_timeline"));
+                let stale_row = driver
+                    .a11y_nodes()
+                    .into_iter()
+                    .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+                    .unwrap()
+                    .0;
+                if !layout {
+                    driver
+                        .perform_a11y_action(stale_row, &crate::a11y::Action::Activate)
+                        .unwrap();
+                    assert!(driver.targets().contains_key("history-preview"));
+                }
+                driver
+                    .state_mut()
+                    .doc
+                    .put(ROOT, "unfinished", "pending live work")
+                    .unwrap();
+                let heads = driver.state_mut().doc.base_heads();
+                let pending_ops = driver.state_mut().doc.pending_ops();
+                mount.set(true);
+                driver.relayout();
+                assert_eq!(
+                    driver.validate_history_registration(),
+                    Err(HistoryRegistrationError::UnsupportedOwner),
+                    "pending={pending}, layout={layout}"
+                );
+                assert!(!driver.targets().contains_key("activity_timeline"));
+                assert!(!driver.targets().contains_key("history-preview"));
+                assert!(!driver.targets().contains_key("history-open"));
+                assert!(
+                    driver
+                        .inspection_json()
+                        .unwrap()
+                        .contains("requires the component History runner")
+                );
+                assert!(
+                    driver
+                        .perform_a11y_action(stale_row, &crate::a11y::Action::Activate)
+                        .is_err(),
+                    "removed History AT target must be refused"
+                );
+                assert_eq!(driver.state_mut().doc.base_heads(), heads);
+                assert_eq!(driver.state_mut().doc.pending_ops(), pending_ops);
+                driver.relayout();
+                assert!(!driver.targets().contains_key("activity_timeline"));
+                assert_eq!(driver.state_mut().doc.base_heads(), heads);
+                assert_eq!(driver.state_mut().doc.pending_ops(), pending_ops);
+            }
+        }
+    }
+    // phase: strict_existing_admission_never_reserves_missing_memory_or_persisted_records
+    {
+        let checkout = crate::record::RecordCheckout::new(
+            crate::RecordId::for_tab(918),
+            crate::record::RecordKind::new("note"),
+        );
+        let memory = crate::record::RecordStore::in_memory();
+        assert!(matches!(
+            memory.open_existing_record_checked(&checkout),
+            Err(crate::record::RecordOpenError::MissingRecord)
+        ));
+        assert!(memory.open_records().is_empty());
+        memory.open_record(&checkout);
+        assert!(memory.open_existing_record_checked(&checkout).is_ok());
+        let wrong = crate::record::RecordCheckout::new(
+            checkout.id.clone(),
+            crate::record::RecordKind::new("wrong"),
+        );
+        assert!(matches!(
+            memory.open_existing_record_checked(&wrong),
+            Err(crate::record::RecordOpenError::IdentityMismatch)
+        ));
+        let directory = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(directory.path().to_path_buf());
+        let persisted = owners
+            .open("dev.tilo.history-fixture", "workspace")
+            .unwrap();
+        assert!(matches!(
+            persisted.open_existing_record_checked(&checkout),
+            Err(crate::record::RecordOpenError::MissingRecord)
+        ));
+        assert!(persisted.open_records().is_empty());
+        persisted
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        assert!(persisted.open_existing_record_checked(&checkout).is_ok());
+        assert!(matches!(
+            persisted.open_existing_record_checked(&wrong),
+            Err(crate::record::RecordOpenError::IdentityMismatch)
+        ));
+    }
 }
 
 fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::ChangeHash>) {
@@ -210,705 +630,443 @@ fn find_access<'a>(
                 .find_map(|child| find_access(child, target))
         })
 }
+
 #[test]
-fn pointer_selection_draws_pinned_domain_canvas_and_back_returns_live() {
-    let (mut driver, target, before) = versioned_driver((900, 650));
-    driver.click_named("history-open").unwrap();
-    let inspection = driver.inspection();
-    let entry =
-        find_access(&inspection.root, &target).expect("actual visible activity is accessible");
-    let bounds = entry.bounds.as_ref().unwrap();
-    driver.click_at(bounds.x0 + 100.0, (bounds.y0 + bounds.y1) / 2.0);
-    assert!(driver.targets().contains_key("history-preview"));
-    assert!(!driver.targets().contains_key("live-effect"));
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first")
-    );
-    let targets = driver.targets();
-    assert!(
-        targets["activity_timeline"].x1 <= targets["history-preview"].x0,
-        "wide activity sits beside the content"
-    );
-    if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-        driver.render_window_png(&std::path::Path::new(&directory).join("wide.png"));
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn history_preserves_pending_work_and_restores_exactly_one_focus() {
+    // phase: history_from_unfinished_editor_preserves_pending_work_and_restores_stable_focus
+    {
+        use crate::widget::TextInput;
+        use winit::event::{Ime, WindowEvent};
+        for route in ["pointer", "keyboard", "accesskit"] {
+            let mut state = State::new();
+            state.doc.put(ROOT, "body", "first").unwrap();
+            state.commit_action(None, None);
+            let version = state.doc.get_heads().pop().unwrap();
+            let id = crate::history_source::entry_id_from_hash(&version.to_string());
+            let target = format!(
+                "timeline-entry:{}",
+                crate::widget::history_group::hex16(&id)
+            );
+            let root = Column::new().push(Box::new(
+                TextInput::from_document_string("draft").with_id("draft-editor"),
+            ));
+            let mut driver = Driver::from_managed_root(
+                state,
+                ManagedRoot::new(Box::new(root), registration()),
+                (900, 650),
+            )
+            .unwrap();
+            driver.click_named("draft-editor").unwrap();
+            driver.type_text("unfinished");
+            driver
+                .perform_named(
+                    "draft-editor",
+                    &crate::a11y::Action::SetSelection {
+                        anchor: 2,
+                        focus: 7,
+                    },
+                )
+                .unwrap();
+            driver.send(&WindowEvent::Ime(Ime::Preedit(
+                "composition".into(),
+                Some((0, 11)),
+            )));
+            let editor_before = driver.focused_access_node().unwrap();
+            // An in-progress editor transaction may outlive the last input dispatch.
+            // Keep that real owner transaction pending while opening framework chrome.
+            driver
+                .state_mut()
+                .doc
+                .put(ROOT, "in-progress", "unfinished")
+                .unwrap();
+            let before_heads = driver.state_mut().doc.base_heads();
+            let before_pending = driver.state_mut().doc.pending_ops();
+            let before_bytes = driver.state_mut().doc.clone().save();
+            assert!(
+                before_pending > 0,
+                "fixture has actual unfinished live writes"
+            );
+            match route {
+                "pointer" => driver.click_named("history-open").unwrap(),
+                "keyboard" => {
+                    driver.tab(false);
+                    driver.key("Enter");
+                }
+                _ => {
+                    let node = driver.a11y_node_named("History").unwrap();
+                    driver
+                        .perform_a11y_action(node, &crate::a11y::Action::Activate)
+                        .unwrap();
+                }
+            }
+            assert_eq!(
+                driver.state_mut().doc.base_heads(),
+                before_heads,
+                "entry via {route}"
+            );
+            if route == "keyboard" {
+                driver
+                    .perform_semantic_named(
+                        "activity_timeline",
+                        Some(&target),
+                        &crate::a11y::Action::Focus,
+                    )
+                    .unwrap();
+                driver.key("Enter");
+            } else if route == "pointer" {
+                let inspection = driver.inspection();
+                let bounds = find_access(&inspection.root, &target)
+                    .unwrap()
+                    .bounds
+                    .as_ref()
+                    .unwrap();
+                driver.click_at(bounds.x0 + 100.0, (bounds.y0 + bounds.y1) / 2.0);
+            } else {
+                let inspection = driver.inspection();
+                let bounds = find_access(&inspection.root, &target)
+                    .unwrap()
+                    .bounds
+                    .as_ref()
+                    .unwrap();
+                let node = driver
+                    .a11y_nodes()
+                    .into_iter()
+                    .find(|(_, node)| {
+                        node.role() == accesskit::Role::ListItem
+                            && node.bounds().is_some_and(|rect| rect.y0 == bounds.y0)
+                    })
+                    .unwrap()
+                    .0;
+                driver
+                    .perform_a11y_action(node, &crate::a11y::Action::Activate)
+                    .unwrap();
+            }
+            assert_eq!(
+                driver.state_mut().doc.base_heads(),
+                before_heads,
+                "selection"
+            );
+            assert_eq!(driver.state_mut().doc.pending_ops(), before_pending);
+            assert_eq!(driver.state_mut().doc.clone().save(), before_bytes);
+            match route {
+                "pointer" => driver.click_named("history-back-live").unwrap(),
+                "keyboard" => {
+                    driver
+                        .perform_named("history-back-live", &crate::a11y::Action::Focus)
+                        .unwrap();
+                    driver.key("Enter");
+                }
+                _ => {
+                    let node = driver.a11y_node_named("Back to live").unwrap();
+                    driver
+                        .perform_a11y_action(node, &crate::a11y::Action::Activate)
+                        .unwrap();
+                }
+            }
+            let editor_after = driver.focused_access_node().unwrap();
+            assert_eq!(editor_after.semantic_key.as_deref(), Some("draft-editor"));
+            assert_eq!(editor_after.text_selection, editor_before.text_selection);
+            assert_eq!(editor_after.value, editor_before.value);
+            assert_eq!(
+                driver.state_mut().doc.base_heads(),
+                before_heads,
+                "return via {route}"
+            );
+            assert_eq!(driver.state_mut().doc.pending_ops(), before_pending);
+            driver.key("q");
+            assert_eq!(
+                driver.state_mut().doc.pending_ops(),
+                0,
+                "later ordinary live input keeps its normal commit boundary"
+            );
+        }
     }
-    assert_eq!(driver.state_mut().doc.get_heads(), before);
-    driver.state_mut().doc.put(ROOT, "body", "remote").unwrap();
-    driver.state_mut().commit_action(None, None);
-    driver.relayout();
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first")
-    );
-    driver.type_text("cannot-edit");
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first")
-    );
-    assert!(
-        driver
-            .state_mut()
-            .doc
-            .get(ROOT, "effect")
-            .unwrap()
-            .is_none()
-    );
-    driver.click_named("history-back-live").unwrap();
-    assert!(driver.targets().contains_key("live-effect"));
-    assert!(!driver.targets().contains_key("history-preview"));
-}
-#[test]
-fn accessible_activation_uses_the_same_canvas_and_narrow_activity_navigation() {
-    let (mut driver, target, before) = versioned_driver((390, 650));
-    driver.click_named("history-open").unwrap();
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&target),
-            &crate::a11y::Action::Activate,
-        )
-        .unwrap();
-    assert!(driver.targets().contains_key("history-preview"));
-    assert!(!driver.targets().contains_key("activity_timeline"));
-    assert!(!driver.targets().contains_key("live-effect"));
-    driver.click_named("history-before").unwrap();
-    assert!(
-        !driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first")
-    );
-    driver.click_named("history-after").unwrap();
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first")
-    );
-    assert!(
-        driver.targets()["history-preview"].y0 <= 104.0,
-        "narrow navigation leaves the canvas usable"
-    );
-    if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-        driver.render_window_png(&std::path::Path::new(&directory).join("narrow.png"));
+    // phase: unopened_history_focus_returns_to_exactly_one_live_editor
+    {
+        use crate::widget::TextInput;
+        for route in ["tab", "shift-tab", "pointer"] {
+            let root = Column::new()
+                .push(Box::new(
+                    TextInput::from_document_string("first").with_id("first-editor"),
+                ))
+                .push(Box::new(
+                    TextInput::from_document_string("second").with_id("second-editor"),
+                ));
+            let mut driver = Driver::from_managed_root(
+                State::new(),
+                ManagedRoot::new(Box::new(root), registration()),
+                (900, 650),
+            )
+            .unwrap();
+            driver.click_named("second-editor").unwrap();
+            driver.type_text("second");
+            driver.tab(false);
+            assert_eq!(
+                driver.focused_access_node().unwrap().name.as_deref(),
+                Some("History")
+            );
+            let target = match route {
+                "tab" => {
+                    driver.tab(false);
+                    "first-editor"
+                }
+                "shift-tab" => {
+                    driver.tab(true);
+                    "second-editor"
+                }
+                _ => {
+                    driver.click_named("first-editor").unwrap();
+                    "first-editor"
+                }
+            };
+            assert_eq!(
+                driver.focused_access_node().map(|node| node.semantic_key),
+                Some(Some(target.into())),
+                "{route} must retain runner focus"
+            );
+            let inspection = driver.inspection();
+            for id in ["first-editor", "second-editor"] {
+                assert_eq!(
+                    find_access(&inspection.root, id).unwrap().state.focused,
+                    id == target,
+                    "{route}: {id}"
+                );
+            }
+            driver.key("x");
+            let inspection = driver.inspection();
+            assert_eq!(
+                find_access(&inspection.root, "first-editor")
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some(if target == "first-editor" { "x" } else { "" })
+            );
+            assert_eq!(
+                find_access(&inspection.root, "second-editor")
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some(if target == "second-editor" {
+                    "secondx"
+                } else {
+                    "second"
+                })
+            );
+            assert!(!driver.targets().contains_key("activity_timeline"));
+        }
     }
-    driver.click_named("history-activity").unwrap();
-    assert!(driver.targets().contains_key("activity_timeline"));
-    assert!(!driver.targets().contains_key("history-preview"));
-    assert_eq!(driver.state_mut().doc.get_heads(), before);
+    // phase: moving_host_and_rebuilding_chrome_preserves_real_accessibility_targets
+    {
+        for _ in 0..8 {
+            let (driver, _, _) = versioned_driver((900, 650));
+            let mut moved = vec![driver];
+            let mut driver = moved.pop().unwrap();
+            let open = driver.a11y_node_named("History").unwrap();
+            driver
+                .perform_a11y_action(open, &crate::a11y::Action::Activate)
+                .unwrap();
+            let row = driver
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+                .unwrap()
+                .0;
+            driver
+                .perform_a11y_action(row, &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(driver.targets().contains_key("history-preview"));
+            driver.resize((390, 650)).unwrap();
+            let before = driver.a11y_node_named("Before").unwrap();
+            driver
+                .perform_a11y_action(before, &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(driver.a11y_node_named("Historical: Before").is_some());
+            let back = driver.a11y_node_named("Back to live").unwrap();
+            driver
+                .perform_a11y_action(back, &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(driver.targets().contains_key("live-effect"));
+        }
+    }
 }
 
 #[test]
-fn history_from_unfinished_editor_preserves_pending_work_and_restores_stable_focus() {
-    use crate::widget::TextInput;
-    use winit::event::{Ime, WindowEvent};
-    for route in ["pointer", "keyboard", "accesskit"] {
-        let mut state = State::new();
-        state.doc.put(ROOT, "body", "first").unwrap();
-        state.commit_action(None, None);
-        let version = state.doc.get_heads().pop().unwrap();
-        let id = crate::history_source::entry_id_from_hash(&version.to_string());
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn the_history_timeline_explains_scopes_and_announces_live_updates() {
+    // phase: history_timeline_omits_unavailable_mutating_affordances
+    {
+        use crate::widget::ActivityTimeline;
+        let (mut driver, _, _) = versioned_driver((900, 650));
+        let resource = HistoryResource::new(
+            "fixture",
+            "lifetime-1",
+            DEFINITION.app_id,
+            crate::RecordId::for_tab(777),
+        );
+        let controller = HistoryController::new(resource, &driver.state_mut().doc).unwrap();
+        let mut timeline =
+            ActivityTimeline::with_entries(controller.entries().to_vec()).with_preview_selection();
+        timeline.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0));
+        timeline.set_selection(Some((0, 0)));
+        assert!(
+            !timeline.begin_naming_selection(),
+            "preview has no owned naming action"
+        );
+        for row in 0..8 {
+            assert!(
+                timeline.revert_chip_rect(row).is_none(),
+                "restore is reviewed by host, never a direct timeline revert"
+            );
+        }
+    }
+    // phase: external_history_explains_why_no_versions_exist
+    {
+        static EXTERNAL: HistoryDefinition = HistoryDefinition {
+            app_id: "dev.tilo.external-fixture",
+            scopes: &[HistoryScopeDefinition {
+                key: "session",
+                title: "Remote session",
+                presentation: HistoryPresentation::External {
+                    reason: "Remote content has no document versions",
+                },
+                content_schema: None,
+            }],
+        };
+        let registration = HistoryRegistration::new(
+            &EXTERNAL,
+            vec![HistorySourceRegistration::Unversioned {
+                scope: "session",
+                reason: "Remote content has no document versions",
+            }],
+        )
+        .unwrap();
+        let mut driver = Driver::from_managed_root(
+            State::new(),
+            ManagedRoot::new(Box::new(Column::new()), registration),
+            (390, 650),
+        )
+        .unwrap();
+        driver.click_named("history-open").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Remote content has no document versions")
+        );
+        assert!(!driver.targets().contains_key("activity_timeline"));
+    }
+    // phase: preview_wheel_navigation_is_scoped_to_canvas_and_preserved_per_compare_side
+    {
+        let (mut driver, target, _) = versioned_driver((900, 650));
+        driver.click_named("history-open").unwrap();
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        driver.click_named("history-after").unwrap();
+        driver.scroll(0.0, 1.0);
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first; scroll 0"),
+            "toolbar wheel is not canvas navigation"
+        );
+        let canvas = driver.targets()["history-preview"].center();
+        driver.send(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(canvas.x, canvas.y),
+        });
+        driver.scroll(0.0, 1.0);
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first; scroll 32")
+        );
+        driver.key("PageDown");
+        driver.type_text("not-preview-input");
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first; scroll 32")
+        );
+        driver.click_named("history-before").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: ; scroll 0")
+        );
+        driver.click_named("history-after").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Notebook: first; scroll 32")
+        );
+    }
+    // phase: pinned_history_announces_live_updates_and_clears_notice_on_return
+    {
+        let (mut driver, _, heads) = versioned_driver((390, 650));
+        let id = crate::history_source::entry_id_from_hash(&heads[0].to_string());
         let target = format!(
             "timeline-entry:{}",
             crate::widget::history_group::hex16(&id)
         );
-        let root = Column::new().push(Box::new(
-            TextInput::from_document_string("draft").with_id("draft-editor"),
-        ));
-        let mut driver = Driver::from_managed_root(
-            state,
-            ManagedRoot::new(Box::new(root), registration()),
-            (900, 650),
-        )
-        .unwrap();
-        driver.click_named("draft-editor").unwrap();
-        driver.type_text("unfinished");
+        driver.click_named("history-open").unwrap();
         driver
-            .perform_named(
-                "draft-editor",
-                &crate::a11y::Action::SetSelection {
-                    anchor: 2,
-                    focus: 7,
-                },
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &crate::a11y::Action::Activate,
             )
             .unwrap();
-        driver.send(&WindowEvent::Ime(Ime::Preedit(
-            "composition".into(),
-            Some((0, 11)),
-        )));
-        let editor_before = driver.focused_access_node().unwrap();
-        // An in-progress editor transaction may outlive the last input dispatch.
-        // Keep that real owner transaction pending while opening framework chrome.
+        assert!(driver.a11y_node_named("Live content has updates").is_none());
         driver
             .state_mut()
             .doc
-            .put(ROOT, "in-progress", "unfinished")
+            .put(ROOT, "body", "remote update")
             .unwrap();
-        let before_heads = driver.state_mut().doc.base_heads();
-        let before_pending = driver.state_mut().doc.pending_ops();
-        let before_bytes = driver.state_mut().doc.clone().save();
-        assert!(
-            before_pending > 0,
-            "fixture has actual unfinished live writes"
-        );
-        match route {
-            "pointer" => driver.click_named("history-open").unwrap(),
-            "keyboard" => {
-                driver.tab(false);
-                driver.key("Enter");
-            }
-            _ => {
-                let node = driver.a11y_node_named("History").unwrap();
-                driver
-                    .perform_a11y_action(node, &crate::a11y::Action::Activate)
-                    .unwrap();
-            }
-        }
-        assert_eq!(
-            driver.state_mut().doc.base_heads(),
-            before_heads,
-            "entry via {route}"
-        );
-        if route == "keyboard" {
-            driver
-                .perform_semantic_named(
-                    "activity_timeline",
-                    Some(&target),
-                    &crate::a11y::Action::Focus,
-                )
-                .unwrap();
-            driver.key("Enter");
-        } else if route == "pointer" {
-            let inspection = driver.inspection();
-            let bounds = find_access(&inspection.root, &target)
-                .unwrap()
-                .bounds
-                .as_ref()
-                .unwrap();
-            driver.click_at(bounds.x0 + 100.0, (bounds.y0 + bounds.y1) / 2.0);
-        } else {
-            let inspection = driver.inspection();
-            let bounds = find_access(&inspection.root, &target)
-                .unwrap()
-                .bounds
-                .as_ref()
-                .unwrap();
-            let node = driver
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| {
-                    node.role() == accesskit::Role::ListItem
-                        && node.bounds().is_some_and(|rect| rect.y0 == bounds.y0)
-                })
-                .unwrap()
-                .0;
-            driver
-                .perform_a11y_action(node, &crate::a11y::Action::Activate)
-                .unwrap();
-        }
-        assert_eq!(
-            driver.state_mut().doc.base_heads(),
-            before_heads,
-            "selection"
-        );
-        assert_eq!(driver.state_mut().doc.pending_ops(), before_pending);
-        assert_eq!(driver.state_mut().doc.clone().save(), before_bytes);
-        match route {
-            "pointer" => driver.click_named("history-back-live").unwrap(),
-            "keyboard" => {
-                driver
-                    .perform_named("history-back-live", &crate::a11y::Action::Focus)
-                    .unwrap();
-                driver.key("Enter");
-            }
-            _ => {
-                let node = driver.a11y_node_named("Back to live").unwrap();
-                driver
-                    .perform_a11y_action(node, &crate::a11y::Action::Activate)
-                    .unwrap();
-            }
-        }
-        let editor_after = driver.focused_access_node().unwrap();
-        assert_eq!(editor_after.semantic_key.as_deref(), Some("draft-editor"));
-        assert_eq!(editor_after.text_selection, editor_before.text_selection);
-        assert_eq!(editor_after.value, editor_before.value);
-        assert_eq!(
-            driver.state_mut().doc.base_heads(),
-            before_heads,
-            "return via {route}"
-        );
-        assert_eq!(driver.state_mut().doc.pending_ops(), before_pending);
-        driver.key("q");
-        assert_eq!(
-            driver.state_mut().doc.pending_ops(),
-            0,
-            "later ordinary live input keeps its normal commit boundary"
-        );
-    }
-}
-
-#[test]
-fn history_timeline_omits_unavailable_mutating_affordances() {
-    use crate::widget::ActivityTimeline;
-    let (mut driver, _, _) = versioned_driver((900, 650));
-    let resource = HistoryResource::new(
-        "fixture",
-        "lifetime-1",
-        DEFINITION.app_id,
-        crate::RecordId::for_tab(777),
-    );
-    let controller = HistoryController::new(resource, &driver.state_mut().doc).unwrap();
-    let mut timeline =
-        ActivityTimeline::with_entries(controller.entries().to_vec()).with_preview_selection();
-    timeline.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0));
-    timeline.set_selection(Some((0, 0)));
-    assert!(
-        !timeline.begin_naming_selection(),
-        "preview has no owned naming action"
-    );
-    for row in 0..8 {
-        assert!(
-            timeline.revert_chip_rect(row).is_none(),
-            "restore is reviewed by host, never a direct timeline revert"
-        );
-    }
-}
-
-#[test]
-fn keyboard_enters_activity_and_selects_the_same_domain_canvas() {
-    let (mut driver, target, _) = versioned_driver((900, 650));
-    driver
-        .perform_named("history-open", &crate::a11y::Action::Focus)
-        .unwrap();
-    driver
-        .state_mut()
-        .doc
-        .put(ROOT, "pending-keyboard", "keep")
-        .unwrap();
-    let pending = driver.state_mut().doc.pending_ops();
-    let heads = driver.state_mut().doc.base_heads();
-    driver.key("Enter");
-    assert!(driver.targets().contains_key("activity_timeline"));
-    assert_eq!(driver.state_mut().doc.base_heads(), heads);
-    assert_eq!(driver.state_mut().doc.pending_ops(), pending);
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&target),
-            &crate::a11y::Action::Focus,
-        )
-        .unwrap();
-    driver.key("Enter");
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first")
-    );
-    driver
-        .perform_named("history-back-live", &crate::a11y::Action::Focus)
-        .unwrap();
-    driver.key("Enter");
-    assert!(driver.targets().contains_key("live-effect"));
-}
-
-#[test]
-fn exported_accessibility_activation_preserves_pending_edits_through_back_live() {
-    let (mut driver, target, _) = versioned_driver((900, 650));
-    driver
-        .state_mut()
-        .doc
-        .put(ROOT, "pending", "untouched")
-        .unwrap();
-    let heads = driver.state_mut().doc.base_heads();
-    let pending = driver.state_mut().doc.pending_ops();
-    let open = driver.a11y_node_named("History").unwrap();
-    driver
-        .perform_a11y_action(open, &crate::a11y::Action::Activate)
-        .unwrap();
-    assert_eq!(
-        driver.state_mut().doc.base_heads(),
-        heads,
-        "AccessKit History open"
-    );
-    let inspection = driver.inspection();
-    let name = find_access(&inspection.root, &target)
-        .unwrap()
-        .name
-        .as_ref()
-        .unwrap();
-    let bounds = find_access(&inspection.root, &target)
-        .unwrap()
-        .bounds
-        .as_ref()
-        .unwrap();
-    let row = driver
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.label() == Some(name) && node.bounds().is_some_and(|rect| rect.y0 == bounds.y0)
-        })
-        .unwrap()
-        .0;
-    driver
-        .perform_a11y_action(row, &crate::a11y::Action::Activate)
-        .unwrap();
-    assert!(
-        driver.targets().contains_key("history-preview"),
-        "{}",
-        driver.inspection_json().unwrap()
-    );
-    let back = driver.a11y_node_named("Back to live").unwrap();
-    driver
-        .perform_a11y_action(back, &crate::a11y::Action::Activate)
-        .unwrap();
-    assert_eq!(
-        driver.state_mut().doc.base_heads(),
-        heads,
-        "AccessKit Back to live"
-    );
-    assert_eq!(driver.state_mut().doc.pending_ops(), pending);
-    assert!(driver.targets().contains_key("live-effect"));
-}
-
-#[test]
-fn managed_registration_supports_multiple_scopes_and_refuses_empty_namespace() {
-    static MULTI: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.tilo.history-fixture",
-        scopes: &[
-            HistoryScopeDefinition {
-                key: "a",
-                title: "A",
-                presentation: HistoryPresentation::Domain { create: preview },
-                content_schema: None,
-            },
-            HistoryScopeDefinition {
-                key: "b",
-                title: "B",
-                presentation: HistoryPresentation::Domain { create: preview },
-                content_schema: None,
-            },
-        ],
-    };
-    let sources = ["a", "b"]
-        .into_iter()
-        .map(|scope| HistorySourceRegistration::HostDocument {
-            scope,
-            resource: HistoryResource::new(
-                "fixture",
-                "lifetime-1",
-                MULTI.app_id,
-                crate::RecordId::for_tab(777),
-            ),
-        })
-        .collect();
-    let registration = HistoryRegistration::new(&MULTI, sources).unwrap();
-    let mut driver = Driver::from_managed_root(
-        State::new(),
-        ManagedRoot::new(Box::new(Column::new()), registration),
-        (900, 650),
-    )
-    .expect("registered scopes must compose in the managed host");
-    driver.click_named("history-scope-b").unwrap();
-    assert!(driver.targets().contains_key("history-scope-a"));
-    assert!(
-        HistoryRegistration::new(
-            &DEFINITION,
-            vec![HistorySourceRegistration::HostDocument {
-                scope: "document",
-                resource: HistoryResource::new(
-                    "",
-                    "",
-                    DEFINITION.app_id,
-                    crate::RecordId::for_tab(777)
-                )
-            }]
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn external_history_explains_why_no_versions_exist() {
-    static EXTERNAL: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.tilo.external-fixture",
-        scopes: &[HistoryScopeDefinition {
-            key: "session",
-            title: "Remote session",
-            presentation: HistoryPresentation::External {
-                reason: "Remote content has no document versions",
-            },
-            content_schema: None,
-        }],
-    };
-    let registration = HistoryRegistration::new(
-        &EXTERNAL,
-        vec![HistorySourceRegistration::Unversioned {
-            scope: "session",
-            reason: "Remote content has no document versions",
-        }],
-    )
-    .unwrap();
-    let mut driver = Driver::from_managed_root(
-        State::new(),
-        ManagedRoot::new(Box::new(Column::new()), registration),
-        (390, 650),
-    )
-    .unwrap();
-    driver.click_named("history-open").unwrap();
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Remote content has no document versions")
-    );
-    assert!(!driver.targets().contains_key("activity_timeline"));
-}
-
-#[test]
-fn strict_existing_admission_never_reserves_missing_memory_or_persisted_records() {
-    let checkout = crate::record::RecordCheckout::new(
-        crate::RecordId::for_tab(918),
-        crate::record::RecordKind::new("note"),
-    );
-    let memory = crate::record::RecordStore::in_memory();
-    assert!(matches!(
-        memory.open_existing_record_checked(&checkout),
-        Err(crate::record::RecordOpenError::MissingRecord)
-    ));
-    assert!(memory.open_records().is_empty());
-    memory.open_record(&checkout);
-    assert!(memory.open_existing_record_checked(&checkout).is_ok());
-    let wrong = crate::record::RecordCheckout::new(
-        checkout.id.clone(),
-        crate::record::RecordKind::new("wrong"),
-    );
-    assert!(matches!(
-        memory.open_existing_record_checked(&wrong),
-        Err(crate::record::RecordOpenError::IdentityMismatch)
-    ));
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(directory.path().to_path_buf());
-    let persisted = owners
-        .open("dev.tilo.history-fixture", "workspace")
-        .unwrap();
-    assert!(matches!(
-        persisted.open_existing_record_checked(&checkout),
-        Err(crate::record::RecordOpenError::MissingRecord)
-    ));
-    assert!(persisted.open_records().is_empty());
-    persisted
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|_| Ok(()))
-        .unwrap();
-    assert!(persisted.open_existing_record_checked(&checkout).is_ok());
-    assert!(matches!(
-        persisted.open_existing_record_checked(&wrong),
-        Err(crate::record::RecordOpenError::IdentityMismatch)
-    ));
-}
-
-#[test]
-fn preview_wheel_navigation_is_scoped_to_canvas_and_preserved_per_compare_side() {
-    let (mut driver, target, _) = versioned_driver((900, 650));
-    driver.click_named("history-open").unwrap();
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&target),
-            &crate::a11y::Action::Activate,
-        )
-        .unwrap();
-    driver.click_named("history-after").unwrap();
-    driver.scroll(0.0, 1.0);
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first; scroll 0"),
-        "toolbar wheel is not canvas navigation"
-    );
-    let canvas = driver.targets()["history-preview"].center();
-    driver.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(canvas.x, canvas.y),
-    });
-    driver.scroll(0.0, 1.0);
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first; scroll 32")
-    );
-    driver.key("PageDown");
-    driver.type_text("not-preview-input");
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first; scroll 32")
-    );
-    driver.click_named("history-before").unwrap();
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: ; scroll 0")
-    );
-    driver.click_named("history-after").unwrap();
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: first; scroll 32")
-    );
-}
-
-#[test]
-fn outer_state_registration_rejects_legacy_scratch_owner_at_root_or_descendant() {
-    use crate::widget::{AppKind, TileContent, TileHost};
-    for nested in [false, true] {
-        let mut tile = TileHost::new(TileContent::Stub {
-            kind: AppKind::Terminal,
-            label: "terminal".into(),
-        });
-        tile.bind_or_create_record(
-            crate::record::RecordStore::in_memory(),
-            crate::record::RecordCheckout::new(
-                crate::RecordId::for_tab(999),
-                crate::record::RecordKind::new("scratch"),
-            ),
-        );
-        let root: Box<dyn crate::widget::Widget> = if nested {
-            Box::new(Column::new().push(Box::new(tile)))
-        } else {
-            Box::new(tile)
-        };
-        assert!(
-            Driver::from_managed_root(
-                State::new(),
-                ManagedRoot::new(root, registration()),
-                (900, 650)
-            )
-            .is_err()
-        );
-    }
-}
-
-#[test]
-fn moving_host_and_rebuilding_chrome_preserves_real_accessibility_targets() {
-    for _ in 0..8 {
-        let (driver, _, _) = versioned_driver((900, 650));
-        let mut moved = vec![driver];
-        let mut driver = moved.pop().unwrap();
-        let open = driver.a11y_node_named("History").unwrap();
-        driver
-            .perform_a11y_action(open, &crate::a11y::Action::Activate)
-            .unwrap();
-        let row = driver
+        driver.state_mut().commit_action(None, None);
+        driver.relayout();
+        let notice = driver.a11y_node_named("Live content has updates").unwrap();
+        let node = driver
             .a11y_nodes()
             .into_iter()
-            .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+            .find(|(id, _)| *id == notice)
             .unwrap()
-            .0;
-        driver
-            .perform_a11y_action(row, &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(driver.targets().contains_key("history-preview"));
-        driver.resize((390, 650)).unwrap();
-        let before = driver.a11y_node_named("Before").unwrap();
-        driver
-            .perform_a11y_action(before, &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(driver.a11y_node_named("Historical: Before").is_some());
-        let back = driver.a11y_node_named("Back to live").unwrap();
-        driver
-            .perform_a11y_action(back, &crate::a11y::Action::Activate)
-            .unwrap();
-        assert!(driver.targets().contains_key("live-effect"));
-    }
-}
-
-#[test]
-fn unopened_history_focus_returns_to_exactly_one_live_editor() {
-    use crate::widget::TextInput;
-    for route in ["tab", "shift-tab", "pointer"] {
-        let root = Column::new()
-            .push(Box::new(
-                TextInput::from_document_string("first").with_id("first-editor"),
-            ))
-            .push(Box::new(
-                TextInput::from_document_string("second").with_id("second-editor"),
-            ));
-        let mut driver = Driver::from_managed_root(
-            State::new(),
-            ManagedRoot::new(Box::new(root), registration()),
-            (900, 650),
-        )
-        .unwrap();
-        driver.click_named("second-editor").unwrap();
-        driver.type_text("second");
-        driver.tab(false);
-        assert_eq!(
-            driver.focused_access_node().unwrap().name.as_deref(),
-            Some("History")
-        );
-        let target = match route {
-            "tab" => {
-                driver.tab(false);
-                "first-editor"
-            }
-            "shift-tab" => {
-                driver.tab(true);
-                "second-editor"
-            }
-            _ => {
-                driver.click_named("first-editor").unwrap();
-                "first-editor"
-            }
-        };
-        assert_eq!(
-            driver.focused_access_node().map(|node| node.semantic_key),
-            Some(Some(target.into())),
-            "{route} must retain runner focus"
-        );
-        let inspection = driver.inspection();
-        for id in ["first-editor", "second-editor"] {
-            assert_eq!(
-                find_access(&inspection.root, id).unwrap().state.focused,
-                id == target,
-                "{route}: {id}"
+            .1;
+        assert_eq!(node.live(), Some(accesskit::Live::Polite));
+        let bounds = node.bounds().unwrap();
+        assert!(bounds.x0 >= 0.0 && bounds.x1 <= 390.0 && bounds.y1 <= 650.0);
+        if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
+            driver.render_window_png(
+                &std::path::Path::new(&directory).join("narrow-live-update.png"),
             );
+            driver.resize((900, 650)).unwrap();
+            driver
+                .render_window_png(&std::path::Path::new(&directory).join("wide-live-update.png"));
         }
-        driver.key("x");
-        let inspection = driver.inspection();
-        assert_eq!(
-            find_access(&inspection.root, "first-editor")
+        assert!(
+            driver
+                .inspection_json()
                 .unwrap()
-                .value
-                .as_deref(),
-            Some(if target == "first-editor" { "x" } else { "" })
+                .contains("Notebook: second")
         );
-        assert_eq!(
-            find_access(&inspection.root, "second-editor")
-                .unwrap()
-                .value
-                .as_deref(),
-            Some(if target == "second-editor" {
-                "secondx"
-            } else {
-                "second"
-            })
-        );
-        assert!(!driver.targets().contains_key("activity_timeline"));
+        driver.click_named("history-back-live").unwrap();
+        assert!(driver.a11y_node_named("Live content has updates").is_none());
     }
 }
 
@@ -1022,140 +1180,4 @@ fn lazy_owner_root(mount: Rc<Cell<bool>>, pending: bool, during_layout: bool) ->
         mounted: false,
         dirty: false,
     })
-}
-#[test]
-fn managed_history_rejects_owner_mounted_during_initial_settlement() {
-    for pending in [false, true] {
-        for layout in [false, true] {
-            let result = Driver::from_managed_root(
-                State::new(),
-                ManagedRoot::new(
-                    lazy_owner_root(Rc::new(Cell::new(true)), pending, layout),
-                    registration(),
-                ),
-                (900, 650),
-            );
-            assert!(
-                matches!(result, Err(HistoryRegistrationError::UnsupportedOwner)),
-                "pending={pending}, layout={layout}"
-            );
-        }
-    }
-}
-#[test]
-fn managed_history_invalidates_after_later_owner_mount_without_outer_state_fallback() {
-    for pending in [false, true] {
-        for layout in [false, true] {
-            let mount = Rc::new(Cell::new(false));
-            let mut state = State::new();
-            state.doc.put(ROOT, "body", "outer document").unwrap();
-            state.commit_action(None, None);
-            let mut driver = Driver::from_managed_root(
-                state,
-                ManagedRoot::new(
-                    lazy_owner_root(mount.clone(), pending, layout),
-                    registration(),
-                ),
-                (900, 650),
-            )
-            .unwrap();
-            driver.click_named("history-open").unwrap();
-            assert!(driver.targets().contains_key("activity_timeline"));
-            let stale_row = driver
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| node.role() == accesskit::Role::ListItem)
-                .unwrap()
-                .0;
-            if !layout {
-                driver
-                    .perform_a11y_action(stale_row, &crate::a11y::Action::Activate)
-                    .unwrap();
-                assert!(driver.targets().contains_key("history-preview"));
-            }
-            driver
-                .state_mut()
-                .doc
-                .put(ROOT, "unfinished", "pending live work")
-                .unwrap();
-            let heads = driver.state_mut().doc.base_heads();
-            let pending_ops = driver.state_mut().doc.pending_ops();
-            mount.set(true);
-            driver.relayout();
-            assert_eq!(
-                driver.validate_history_registration(),
-                Err(HistoryRegistrationError::UnsupportedOwner),
-                "pending={pending}, layout={layout}"
-            );
-            assert!(!driver.targets().contains_key("activity_timeline"));
-            assert!(!driver.targets().contains_key("history-preview"));
-            assert!(!driver.targets().contains_key("history-open"));
-            assert!(
-                driver
-                    .inspection_json()
-                    .unwrap()
-                    .contains("requires the component History runner")
-            );
-            assert!(
-                driver
-                    .perform_a11y_action(stale_row, &crate::a11y::Action::Activate)
-                    .is_err(),
-                "removed History AT target must be refused"
-            );
-            assert_eq!(driver.state_mut().doc.base_heads(), heads);
-            assert_eq!(driver.state_mut().doc.pending_ops(), pending_ops);
-            driver.relayout();
-            assert!(!driver.targets().contains_key("activity_timeline"));
-            assert_eq!(driver.state_mut().doc.base_heads(), heads);
-            assert_eq!(driver.state_mut().doc.pending_ops(), pending_ops);
-        }
-    }
-}
-#[test]
-fn pinned_history_announces_live_updates_and_clears_notice_on_return() {
-    let (mut driver, _, heads) = versioned_driver((390, 650));
-    let id = crate::history_source::entry_id_from_hash(&heads[0].to_string());
-    let target = format!(
-        "timeline-entry:{}",
-        crate::widget::history_group::hex16(&id)
-    );
-    driver.click_named("history-open").unwrap();
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&target),
-            &crate::a11y::Action::Activate,
-        )
-        .unwrap();
-    assert!(driver.a11y_node_named("Live content has updates").is_none());
-    driver
-        .state_mut()
-        .doc
-        .put(ROOT, "body", "remote update")
-        .unwrap();
-    driver.state_mut().commit_action(None, None);
-    driver.relayout();
-    let notice = driver.a11y_node_named("Live content has updates").unwrap();
-    let node = driver
-        .a11y_nodes()
-        .into_iter()
-        .find(|(id, _)| *id == notice)
-        .unwrap()
-        .1;
-    assert_eq!(node.live(), Some(accesskit::Live::Polite));
-    let bounds = node.bounds().unwrap();
-    assert!(bounds.x0 >= 0.0 && bounds.x1 <= 390.0 && bounds.y1 <= 650.0);
-    if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-        driver.render_window_png(&std::path::Path::new(&directory).join("narrow-live-update.png"));
-        driver.resize((900, 650)).unwrap();
-        driver.render_window_png(&std::path::Path::new(&directory).join("wide-live-update.png"));
-    }
-    assert!(
-        driver
-            .inspection_json()
-            .unwrap()
-            .contains("Notebook: second")
-    );
-    driver.click_named("history-back-live").unwrap();
-    assert!(driver.a11y_node_named("Live content has updates").is_none());
 }

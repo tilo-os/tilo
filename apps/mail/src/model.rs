@@ -942,153 +942,181 @@ mod tests {
     }
 
     #[test]
-    fn normalize_strips_reply_prefixes() {
-        assert_eq!(normalize_subject("Re: Re: Hello"), "Hello");
-        assert_eq!(normalize_subject("FWD: Fw: Plan"), "Plan");
-        assert_eq!(normalize_subject("Plain"), "Plain");
-    }
-
-    #[test]
-    fn threads_follow_rfc_reply_links_without_merging_same_subject_mail() {
-        let mut mb = Mailbox::default();
-        let mut first = msg("Launch plan", 100, Folder::Inbox);
-        first.rfc_message_id = Some("launch-root@example.test".into());
-        let mut reply = msg("Re: Launch plan", 200, Folder::Inbox);
-        reply.rfc_message_id = Some("launch-reply@example.test".into());
-        reply.in_reply_to = Some("<launch-root@example.test>".into());
-        let mut unrelated = msg("Launch plan", 150, Folder::Inbox);
-        unrelated.rfc_message_id = Some("unrelated@example.test".into());
-        mb.insert(first);
-        mb.insert(reply);
-        mb.insert(unrelated);
-        let threads = mb.threads_in(Folder::Inbox);
-        assert_eq!(threads.len(), 2);
-        // Most-recent-first: "Launch plan" (200) before "Lunch?" (150).
-        assert_eq!(threads[0].subject, "Launch plan");
-        assert_eq!(threads[0].message_ids.len(), 2);
-        assert_eq!(threads[0].id, "launch-root@example.test");
-        assert_eq!(threads[1].message_ids.len(), 1);
-        assert_eq!(threads[1].id, "unrelated@example.test");
-    }
-
-    #[test]
-    fn references_root_keeps_a_multihop_thread_stable_during_hydration() {
-        let mut mb = Mailbox::default();
-        // C's raw mail held `References: <launch-root> <launch-middle>`;
-        // transport stores the oldest/root token in `in_reply_to`. At this
-        // point neither B nor A has been hydrated yet.
-        let mut latest = msg("Re: Launch plan", 300, Folder::Inbox);
-        latest.rfc_message_id = Some("launch-latest@example.test".into());
-        latest.in_reply_to = Some("launch-root@example.test".into());
-        mb.insert(latest);
-        let before = mb.threads_in(Folder::Inbox);
-        assert_eq!(before[0].id, "launch-root@example.test");
-
-        let mut middle = msg("Re: Launch plan", 200, Folder::Inbox);
-        middle.rfc_message_id = Some("launch-middle@example.test".into());
-        middle.in_reply_to = Some("launch-root@example.test".into());
-        mb.insert(middle);
-        let after_middle = mb.threads_in(Folder::Inbox);
-        assert_eq!(after_middle.len(), 1);
-        assert_eq!(after_middle[0].id, "launch-root@example.test");
-
-        let mut root = msg("Launch plan", 100, Folder::Inbox);
-        root.rfc_message_id = Some("launch-root@example.test".into());
-        mb.insert(root);
-        let after = mb.threads_in(Folder::Inbox);
-        assert_eq!(after.len(), 1);
-        assert_eq!(after[0].id, "launch-root@example.test");
-        assert_eq!(after[0].message_ids.len(), 3);
-    }
-
-    #[test]
-    fn unread_count_and_mark_read() {
-        let mut mb = Mailbox::default();
-        let m = msg("Hi", 10, Folder::Inbox);
-        let id = m.id;
-        mb.insert(m);
-        assert_eq!(mb.unread_count(Folder::Inbox), 1);
-        mb.mark_read(id, true);
-        assert_eq!(mb.unread_count(Folder::Inbox), 0);
-    }
-
-    #[test]
-    fn search_page_enforces_work_and_result_bounds_without_losing_newest_order() {
-        let mut mb = Mailbox::default();
-        for ts in 0..6 {
-            mb.insert(msg("Release notes", ts, Folder::Inbox));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn threads_follow_rfc_links_and_stay_stable() {
+        // Phase `normalize_strips_reply_prefixes`.
+        {
+            assert_eq!(normalize_subject("Re: Re: Hello"), "Hello");
+            assert_eq!(normalize_subject("FWD: Fw: Plan"), "Plan");
+            assert_eq!(normalize_subject("Plain"), "Plain");
         }
 
-        let page = mb.search_page("release", None, 4, 2);
-        assert_eq!(page.inspected, 2, "result bound ends work early");
-        assert_eq!(page.messages.len(), 2);
-        assert!(
-            page.truncated,
-            "remaining loaded matches are not enumerated"
-        );
-        assert!(
-            page.messages[0].timestamp_min > page.messages[1].timestamp_min,
-            "visible search rows remain newest-first"
-        );
+        // Phase `threads_follow_rfc_reply_links_without_merging_same_subject_mail`.
+        {
+            let mut mb = Mailbox::default();
+            let mut first = msg("Launch plan", 100, Folder::Inbox);
+            first.rfc_message_id = Some("launch-root@example.test".into());
+            let mut reply = msg("Re: Launch plan", 200, Folder::Inbox);
+            reply.rfc_message_id = Some("launch-reply@example.test".into());
+            reply.in_reply_to = Some("<launch-root@example.test>".into());
+            let mut unrelated = msg("Launch plan", 150, Folder::Inbox);
+            unrelated.rfc_message_id = Some("unrelated@example.test".into());
+            mb.insert(first);
+            mb.insert(reply);
+            mb.insert(unrelated);
+            let threads = mb.threads_in(Folder::Inbox);
+            assert_eq!(threads.len(), 2);
+            // Most-recent-first: "Launch plan" (200) before "Lunch?" (150).
+            assert_eq!(threads[0].subject, "Launch plan");
+            assert_eq!(threads[0].message_ids.len(), 2);
+            assert_eq!(threads[0].id, "launch-root@example.test");
+            assert_eq!(threads[1].message_ids.len(), 1);
+            assert_eq!(threads[1].id, "unrelated@example.test");
+        }
 
-        let body_page = mb.search_page("second line", None, 3, 20);
-        assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
-        assert_eq!(body_page.messages.len(), 3);
-        assert!(body_page.truncated);
+        // Phase `references_root_keeps_a_multihop_thread_stable_during_hydration`.
+        {
+            let mut mb = Mailbox::default();
+            // C's raw mail held `References: <launch-root> <launch-middle>`;
+            // transport stores the oldest/root token in `in_reply_to`. At this
+            // point neither B nor A has been hydrated yet.
+            let mut latest = msg("Re: Launch plan", 300, Folder::Inbox);
+            latest.rfc_message_id = Some("launch-latest@example.test".into());
+            latest.in_reply_to = Some("launch-root@example.test".into());
+            mb.insert(latest);
+            let before = mb.threads_in(Folder::Inbox);
+            assert_eq!(before[0].id, "launch-root@example.test");
+
+            let mut middle = msg("Re: Launch plan", 200, Folder::Inbox);
+            middle.rfc_message_id = Some("launch-middle@example.test".into());
+            middle.in_reply_to = Some("launch-root@example.test".into());
+            mb.insert(middle);
+            let after_middle = mb.threads_in(Folder::Inbox);
+            assert_eq!(after_middle.len(), 1);
+            assert_eq!(after_middle[0].id, "launch-root@example.test");
+
+            let mut root = msg("Launch plan", 100, Folder::Inbox);
+            root.rfc_message_id = Some("launch-root@example.test".into());
+            mb.insert(root);
+            let after = mb.threads_in(Folder::Inbox);
+            assert_eq!(after.len(), 1);
+            assert_eq!(after[0].id, "launch-root@example.test");
+            assert_eq!(after[0].message_ids.len(), 3);
+        }
     }
 
     #[test]
-    fn star_makes_message_appear_in_virtual_folder() {
-        let mut mb = Mailbox::default();
-        let m = msg("Hi", 10, Folder::Inbox);
-        let id = m.id;
-        mb.insert(m);
-        assert_eq!(mb.count(Folder::Starred), 0);
-        assert!(mb.toggle_star(id));
-        assert_eq!(mb.count(Folder::Starred), 1);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn folder_flags_track_unread_star_and_trash() {
+        // Phase `unread_count_and_mark_read`.
+        {
+            let mut mb = Mailbox::default();
+            let m = msg("Hi", 10, Folder::Inbox);
+            let id = m.id;
+            mb.insert(m);
+            assert_eq!(mb.unread_count(Folder::Inbox), 1);
+            mb.mark_read(id, true);
+            assert_eq!(mb.unread_count(Folder::Inbox), 0);
+        }
+
+        // Phase `star_makes_message_appear_in_virtual_folder`.
+        {
+            let mut mb = Mailbox::default();
+            let m = msg("Hi", 10, Folder::Inbox);
+            let id = m.id;
+            mb.insert(m);
+            assert_eq!(mb.count(Folder::Starred), 0);
+            assert!(mb.toggle_star(id));
+            assert_eq!(mb.count(Folder::Starred), 1);
+        }
+
+        // Phase `delete_moves_to_trash_then_purges`.
+        {
+            let mut mb = Mailbox::default();
+            let m = msg("Hi", 10, Folder::Inbox);
+            let id = m.id;
+            mb.insert(m);
+            mb.delete(id);
+            assert_eq!(mb.get(id).unwrap().folder, Folder::Trash);
+            mb.delete(id);
+            assert!(mb.get(id).is_none());
+        }
     }
 
     #[test]
-    fn delete_moves_to_trash_then_purges() {
-        let mut mb = Mailbox::default();
-        let m = msg("Hi", 10, Folder::Inbox);
-        let id = m.id;
-        mb.insert(m);
-        mb.delete(id);
-        assert_eq!(mb.get(id).unwrap().folder, Folder::Trash);
-        mb.delete(id);
-        assert!(mb.get(id).is_none());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn mailbox_search_is_bounded_and_case_insensitive() {
+        // Phase `search_page_enforces_work_and_result_bounds_without_losing_newest_order`.
+        {
+            let mut mb = Mailbox::default();
+            for ts in 0..6 {
+                mb.insert(msg("Release notes", ts, Folder::Inbox));
+            }
+
+            let page = mb.search_page("release", None, 4, 2);
+            assert_eq!(page.inspected, 2, "result bound ends work early");
+            assert_eq!(page.messages.len(), 2);
+            assert!(
+                page.truncated,
+                "remaining loaded matches are not enumerated"
+            );
+            assert!(
+                page.messages[0].timestamp_min > page.messages[1].timestamp_min,
+                "visible search rows remain newest-first"
+            );
+
+            let body_page = mb.search_page("second line", None, 3, 20);
+            assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
+            assert_eq!(body_page.messages.len(), 3);
+            assert!(body_page.truncated);
+        }
+
+        // Phase `search_matches_subject_and_body_case_insensitively`.
+        {
+            let mut mb = Mailbox::default();
+            mb.insert(msg("Launch Plan", 10, Folder::Inbox));
+            let hits = mb.search("launch", None);
+            assert_eq!(hits.len(), 1);
+            let body_hits = mb.search("second line", None);
+            assert_eq!(body_hits.len(), 1);
+            assert!(mb.search("nothing", None).is_empty());
+        }
     }
 
     #[test]
-    fn search_matches_subject_and_body_case_insensitively() {
-        let mut mb = Mailbox::default();
-        mb.insert(msg("Launch Plan", 10, Folder::Inbox));
-        let hits = mb.search("launch", None);
-        assert_eq!(hits.len(), 1);
-        let body_hits = mb.search("second line", None);
-        assert_eq!(body_hits.len(), 1);
-        assert!(mb.search("nothing", None).is_empty());
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn setup_model_autofills_and_validates() {
+        // Phase `autofill_recognises_gmail`.
+        {
+            let mut cfg = AccountConfig {
+                email: "person@gmail.com".into(),
+                ..Default::default()
+            };
+            assert!(cfg.autofill_from_email());
+            assert_eq!(cfg.imap_host, "imap.gmail.com");
+            assert_eq!(cfg.smtp_host, "smtp.gmail.com");
+            assert!(cfg.is_valid());
+        }
 
-    #[test]
-    fn autofill_recognises_gmail() {
-        let mut cfg = AccountConfig {
-            email: "person@gmail.com".into(),
-            ..Default::default()
-        };
-        assert!(cfg.autofill_from_email());
-        assert_eq!(cfg.imap_host, "imap.gmail.com");
-        assert_eq!(cfg.smtp_host, "smtp.gmail.com");
-        assert!(cfg.is_valid());
-    }
-
-    #[test]
-    fn validate_flags_missing_fields() {
-        let cfg = AccountConfig::default();
-        assert!(!cfg.is_valid());
-        let keys: Vec<_> = cfg.validate().into_iter().map(|(k, _)| k).collect();
-        assert!(keys.contains(&"email"));
-        assert!(keys.contains(&"imap_host"));
+        // Phase `validate_flags_missing_fields`.
+        {
+            let cfg = AccountConfig::default();
+            assert!(!cfg.is_valid());
+            let keys: Vec<_> = cfg.validate().into_iter().map(|(k, _)| k).collect();
+            assert!(keys.contains(&"email"));
+            assert!(keys.contains(&"imap_host"));
+        }
     }
 }

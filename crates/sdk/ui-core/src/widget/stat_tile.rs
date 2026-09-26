@@ -385,21 +385,49 @@ mod tests {
     use vello_encoding::DrawTag;
 
     #[test]
-    fn retained_measure_uses_the_active_text_scale() {
-        let mut tile = StatTile::new("CPU", "42%");
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        tile.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-        let mut text = TextRenderer::new();
-        let measured = tile.measure(
-            taffy::Size {
-                width: None,
-                height: None,
-            },
-            taffy::Size::MAX_CONTENT,
-            &mut text,
-        );
-        assert!(measured.height > px(tile_height(false, &Theme::dark())));
+    fn stat_tile_layout_measures_at_text_scale_and_splits_rows() {
+        // Case `retained_measure_uses_the_active_text_scale`.
+        {
+            let mut tile = StatTile::new("CPU", "42%");
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            tile.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+            let mut text = TextRenderer::new();
+            let measured = tile.measure(
+                taffy::Size {
+                    width: None,
+                    height: None,
+                },
+                taffy::Size::MAX_CONTENT,
+                &mut text,
+            );
+            assert!(measured.height > px(tile_height(false, &Theme::dark())));
+        }
+
+        // Case `tiles_split_a_row_evenly`.
+        {
+            let rects = lay_out_row(3);
+            assert_eq!(rects.len(), 3);
+            let w0 = rects[0].width();
+            for r in &rects {
+                assert!(
+                    (r.width() - w0).abs() < 1.0,
+                    "all tiles share width, got {} vs {w0}",
+                    r.width()
+                );
+            }
+            // Three tiles + 2×12px gaps must fit in 600px.
+            assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
+        }
+
+        // Case `delta_makes_tile_taller`.
+        {
+            let theme = Theme::dark();
+            assert!(
+                tile_height(true, &theme) > tile_height(false, &theme),
+                "a delta line adds height"
+            );
+        }
     }
 
     fn lay_out_row(tiles: usize) -> Vec<Rect> {
@@ -446,93 +474,71 @@ mod tests {
     }
 
     #[test]
-    fn tiles_split_a_row_evenly() {
-        let rects = lay_out_row(3);
-        assert_eq!(rects.len(), 3);
-        let w0 = rects[0].width();
-        for r in &rects {
-            assert!(
-                (r.width() - w0).abs() < 1.0,
-                "all tiles share width, got {} vs {w0}",
-                r.width()
+    fn stat_tile_paints_semantic_colours_and_pairs_semantics() {
+        // Case `trend_colors_are_semantic`.
+        {
+            let theme = Theme::dark();
+            assert_eq!(
+                Trend::Up.color(&theme),
+                theme.tokens.colors.semantic.success
+            );
+            assert_eq!(
+                Trend::Down.color(&theme),
+                theme.tokens.colors.semantic.danger
+            );
+            assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
+            assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
+            assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
+        }
+
+        // Case `value_color_defaults_to_primary_and_overrides`.
+        {
+            let theme = Theme::dark();
+            let plain = StatTile::new("CPU", "42%");
+            assert_eq!(plain.value_color(&theme), theme.text_primary);
+            let tinted =
+                StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
+            assert_eq!(
+                tinted.value_color(&theme),
+                theme.tokens.colors.semantic.danger
             );
         }
-        // Three tiles + 2×12px gaps must fit in 600px.
-        assert!((w0 * 3.0 + 24.0 - 600.0).abs() < 2.0, "widths + gaps ≈ 600");
-    }
 
-    #[test]
-    fn delta_makes_tile_taller() {
-        let theme = Theme::dark();
-        assert!(
-            tile_height(true, &theme) > tile_height(false, &theme),
-            "a delta line adds height"
-        );
-    }
+        // Case `draws_card_and_content`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            let mut t = StatTile::new("Requests", "1,284")
+                .with_icon(Icon::BarChart)
+                .with_delta("12%", Trend::Up);
+            t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
+            t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|x| **x == DrawTag::COLOR)
+                .count();
+            assert!(
+                fills > 4,
+                "card + caption + value + icon + delta ⇒ many fills, got {fills}"
+            );
+        }
 
-    #[test]
-    fn trend_colors_are_semantic() {
-        let theme = Theme::dark();
-        assert_eq!(
-            Trend::Up.color(&theme),
-            theme.tokens.colors.semantic.success
-        );
-        assert_eq!(
-            Trend::Down.color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-        assert_eq!(Trend::Flat.color(&theme), theme.text_dim);
-        assert_eq!(Trend::Up.arrow(), Some(Icon::ChevronUp));
-        assert_eq!(Trend::Flat.arrow(), None, "a flat trend draws no arrow");
-    }
-
-    #[test]
-    fn value_color_defaults_to_primary_and_overrides() {
-        let theme = Theme::dark();
-        let plain = StatTile::new("CPU", "42%");
-        assert_eq!(plain.value_color(&theme), theme.text_primary);
-        let tinted =
-            StatTile::new("CPU", "99%").with_value_color(theme.tokens.colors.semantic.danger);
-        assert_eq!(
-            tinted.value_color(&theme),
-            theme.tokens.colors.semantic.danger
-        );
-    }
-
-    #[test]
-    fn draws_card_and_content() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        let mut t = StatTile::new("Requests", "1,284")
-            .with_icon(Icon::BarChart)
-            .with_delta("12%", Trend::Up);
-        t.rect = Rect::new(0.0, 0.0, 160.0, 100.0);
-        t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|x| **x == DrawTag::COLOR)
-            .count();
-        assert!(
-            fills > 4,
-            "card + caption + value + icon + delta ⇒ many fills, got {fills}"
-        );
-    }
-
-    #[test]
-    fn accessibility_pairs_caption_and_value() {
-        use crate::a11y::Role;
-        let t = StatTile::new("CPU", "42%").with_delta("3%", Trend::Down);
-        let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("CPU"));
-        assert_eq!(
-            node.value.as_deref(),
-            Some("42% (3%)"),
-            "delta joins the announced value"
-        );
+        // Case `accessibility_pairs_caption_and_value`.
+        {
+            use crate::a11y::Role;
+            let t = StatTile::new("CPU", "42%").with_delta("3%", Trend::Down);
+            let node = Widget::accessibility(&t).expect("stat tile exposes a11y");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("CPU"));
+            assert_eq!(
+                node.value.as_deref(),
+                Some("42% (3%)"),
+                "delta joins the announced value"
+            );
+        }
     }
 }

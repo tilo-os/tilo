@@ -131,60 +131,60 @@ def disks(directory, rows, final, disk_size=SIZE, staged=True):
 
 
 class DirectFinalTests(unittest.TestCase):
-    def test_raw_gpt_slot_numbers_can_differ_from_windows_numbers(self):
-        plan, rows, final, disk_size = direct_fixture()
-        raw_slots = [dict(row) for row in rows]
-        by_number = {row["number"]: row for row in raw_slots}
-        by_number[4]["number"], by_number[5]["number"] = 5, 4
-        with tempfile.TemporaryDirectory() as tmp:
-            source_path, target_path = disks(Path(tmp), rows, final, disk_size, staged=False)
-            for path in (source_path, target_path):
-                with path.open("r+b") as stream:
-                    write_gpt(stream, raw_slots, disk_size)
-            with source_path.open("rb") as source:
-                hashes = {role: copy.hash_range(source, row["offset_bytes"], row["size_bytes"])
-                          for role, row in zip(copy.ROLES, final, strict=True)}
-            receipt = {"schema": copy.SCHEMA, "raw_size_bytes": disk_size,
-                       "partitions": rows, "final_sha256": hashes}
-            self.assertEqual(copy.source_preflight(source_path, receipt, rows, final, disk_size), hashes)
-            with target_path.open("rb") as target:
-                current = {"partitions": rows, **plan["windows_disk"]}
-                self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final))
-
-    def test_separate_live_disk_needs_only_seven_physical_partitions(self):
-        plan, rows, final, disk_size = direct_fixture()
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            plan_path = directory / "plan.json"; plan_path.write_text(json.dumps(plan))
-            with patch.object(copy, "GIB", MIB):
-                self.assertEqual(copy.load_plan(plan_path), plan)
-            expected, actual_final = copy.expected_rows(plan, None, rows)
-            self.assertEqual((expected, actual_final), (rows, final))
-            source_path, target_path = disks(directory, rows, final, disk_size, staged=False)
-            with source_path.open("rb") as source:
-                hashes = {role: copy.hash_range(source, row["offset_bytes"], row["size_bytes"])
-                          for role, row in zip(copy.ROLES, final, strict=True)}
-            receipt = {"schema": copy.SCHEMA, "raw_size_bytes": disk_size,
-                       "partitions": rows, "final_sha256": hashes}
-            self.assertEqual(copy.source_preflight(source_path, receipt, rows, final, disk_size), hashes)
-            with source_path.open("rb") as source, target_path.open("r+b") as target:
-                current = {"partitions": rows, **plan["windows_disk"]}
-                self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final))
-                result = copy.transfer(source, target, rows, final, hashes, write=True,
-                                       live_windows_partition_number=3)
-                self.assertEqual(len(result), 3)
-                self.assertEqual(copy.transfer(source, target, rows, final, hashes, write=False,
-                                               live_windows_partition_number=3), result)
-            with source_path.open("rb") as source, target_path.open("rb") as target:
-                for row in rows:
-                    self.assertEqual(copy.hash_range(source, row["offset_bytes"], row["size_bytes"]),
-                                     copy.hash_range(target, row["offset_bytes"], row["size_bytes"]))
-            changed = json.loads(json.dumps(plan))
-            changed["target_partitions"][2]["size_bytes"] -= MIB
-            plan_path.write_text(json.dumps(changed))
-            with patch.object(copy, "GIB", MIB):
-                with self.assertRaisesRegex(ValueError, "final geometry"):
-                    copy.load_plan(plan_path)
+    def test_slot_numbering_and_partition_count(self):
+        with self.subTest(phase="raw_gpt_slot_numbers_can_differ_from_windows_numbers"):
+            plan, rows, final, disk_size = direct_fixture()
+            raw_slots = [dict(row) for row in rows]
+            by_number = {row["number"]: row for row in raw_slots}
+            by_number[4]["number"], by_number[5]["number"] = 5, 4
+            with tempfile.TemporaryDirectory() as tmp:
+                source_path, target_path = disks(Path(tmp), rows, final, disk_size, staged=False)
+                for path in (source_path, target_path):
+                    with path.open("r+b") as stream:
+                        write_gpt(stream, raw_slots, disk_size)
+                with source_path.open("rb") as source:
+                    hashes = {role: copy.hash_range(source, row["offset_bytes"], row["size_bytes"])
+                              for role, row in zip(copy.ROLES, final, strict=True)}
+                receipt = {"schema": copy.SCHEMA, "raw_size_bytes": disk_size,
+                           "partitions": rows, "final_sha256": hashes}
+                self.assertEqual(copy.source_preflight(source_path, receipt, rows, final, disk_size), hashes)
+                with target_path.open("rb") as target:
+                    current = {"partitions": rows, **plan["windows_disk"]}
+                    self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final))
+        with self.subTest(phase="separate_live_disk_needs_only_seven_physical_partitions"):
+            plan, rows, final, disk_size = direct_fixture()
+            with tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                plan_path = directory / "plan.json"; plan_path.write_text(json.dumps(plan))
+                with patch.object(copy, "GIB", MIB):
+                    self.assertEqual(copy.load_plan(plan_path), plan)
+                expected, actual_final = copy.expected_rows(plan, None, rows)
+                self.assertEqual((expected, actual_final), (rows, final))
+                source_path, target_path = disks(directory, rows, final, disk_size, staged=False)
+                with source_path.open("rb") as source:
+                    hashes = {role: copy.hash_range(source, row["offset_bytes"], row["size_bytes"])
+                              for role, row in zip(copy.ROLES, final, strict=True)}
+                receipt = {"schema": copy.SCHEMA, "raw_size_bytes": disk_size,
+                           "partitions": rows, "final_sha256": hashes}
+                self.assertEqual(copy.source_preflight(source_path, receipt, rows, final, disk_size), hashes)
+                with source_path.open("rb") as source, target_path.open("r+b") as target:
+                    current = {"partitions": rows, **plan["windows_disk"]}
+                    self.assertEqual(copy.validate_physical(plan, None, current, target), (rows, final))
+                    result = copy.transfer(source, target, rows, final, hashes, write=True,
+                                           live_windows_partition_number=3)
+                    self.assertEqual(len(result), 3)
+                    self.assertEqual(copy.transfer(source, target, rows, final, hashes, write=False,
+                                                   live_windows_partition_number=3), result)
+                with source_path.open("rb") as source, target_path.open("rb") as target:
+                    for row in rows:
+                        self.assertEqual(copy.hash_range(source, row["offset_bytes"], row["size_bytes"]),
+                                         copy.hash_range(target, row["offset_bytes"], row["size_bytes"]))
+                changed = json.loads(json.dumps(plan))
+                changed["target_partitions"][2]["size_bytes"] -= MIB
+                plan_path.write_text(json.dumps(changed))
+                with patch.object(copy, "GIB", MIB):
+                    with self.assertRaisesRegex(ValueError, "final geometry"):
+                        copy.load_plan(plan_path)
 
 if __name__ == "__main__":
     unittest.main()

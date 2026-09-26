@@ -740,104 +740,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn floor_is_the_counter_minus_the_base() {
-        let s = FloorState {
-            counter: 105,
-            base: 100,
-        };
-        assert_eq!(s.floor_generation(), 5);
+    fn floors_map_counters_through_the_base_without_wrapping() {
+        // Phase `floor_is_the_counter_minus_the_base`.
+        {
+            let s = FloorState {
+                counter: 105,
+                base: 100,
+            };
+            assert_eq!(s.floor_generation(), 5);
+        }
+        // Phase `a_negative_base_is_the_normal_case_on_a_fresh_tpm`.
+        {
+            // Enrolling generation 500 on a TPM whose counter reads 1.
+            let s = FloorState {
+                counter: 1,
+                base: 1 - 498,
+            };
+            assert_eq!(s.floor_generation(), 498);
+            assert_eq!(s.operand_for(500).unwrap(), 3);
+            assert_eq!(s.operand_for(498).unwrap(), 1);
+        }
+        // Phase `a_base_above_the_counter_reads_as_floor_zero_not_a_wrap`.
+        {
+            let s = FloorState {
+                counter: 3,
+                base: 100,
+            };
+            assert_eq!(s.floor_generation(), 0);
+        }
+        // Phase `operand_is_absolute`.
+        {
+            let s = FloorState {
+                counter: 105,
+                base: 100,
+            };
+            assert_eq!(s.operand_for(7).unwrap(), 107);
+            assert_eq!(s.operand_for(0).unwrap(), 100);
+        }
+        // Phase `a_generation_that_maps_below_zero_is_refused`.
+        {
+            let s = FloorState {
+                counter: 1,
+                base: -400,
+            };
+            let e = s.operand_for(399).unwrap_err().to_string();
+            assert!(e.contains("below zero"), "{e}");
+        }
+        // Phase `decode_is_big_endian`.
+        {
+            assert_eq!(decode(&[0, 0, 0, 0, 0, 0, 0, 7]).unwrap(), Some(7));
+            assert_eq!(decode(&[1, 0, 0, 0, 0, 0, 0, 0]).unwrap(), Some(1 << 56));
+            assert!(decode(&[0, 0]).is_err());
+        }
+        // Phase `index_is_formatted_the_way_tpm2_tools_expects`.
+        {
+            assert_eq!(idx(DEFAULT_NV_INDEX), "0x01D91100");
+        }
     }
 
     #[test]
-    fn a_negative_base_is_the_normal_case_on_a_fresh_tpm() {
-        // Enrolling generation 500 on a TPM whose counter reads 1.
-        let s = FloorState {
-            counter: 1,
-            base: 1 - 498,
-        };
-        assert_eq!(s.floor_generation(), 498);
-        assert_eq!(s.operand_for(500).unwrap(), 3);
-        assert_eq!(s.operand_for(498).unwrap(), 1);
-    }
-
-    #[test]
-    fn a_base_above_the_counter_reads_as_floor_zero_not_a_wrap() {
-        let s = FloorState {
-            counter: 3,
-            base: 100,
-        };
-        assert_eq!(s.floor_generation(), 0);
-    }
-
-    #[test]
-    fn operand_is_absolute() {
-        let s = FloorState {
-            counter: 105,
-            base: 100,
-        };
-        assert_eq!(s.operand_for(7).unwrap(), 107);
-        assert_eq!(s.operand_for(0).unwrap(), 100);
-    }
-
-    #[test]
-    fn a_generation_that_maps_below_zero_is_refused() {
-        let s = FloorState {
-            counter: 1,
-            base: -400,
-        };
-        let e = s.operand_for(399).unwrap_err().to_string();
-        assert!(e.contains("below zero"), "{e}");
-    }
-
-    #[test]
-    fn increments_to_counts_the_gap() {
-        let s = FloorState {
-            counter: 105,
-            base: 100,
-        };
-        assert_eq!(s.increments_to(5).unwrap(), 0);
-        assert_eq!(s.increments_to(8).unwrap(), 3);
-    }
-
-    #[test]
-    fn increments_to_counts_the_gap_with_a_negative_base() {
-        let s = FloorState {
-            counter: 1,
-            base: -497,
-        };
-        assert_eq!(s.floor_generation(), 498);
-        assert_eq!(s.increments_to(498).unwrap(), 0);
-        assert_eq!(s.increments_to(500).unwrap(), 2);
-    }
-
-    #[test]
-    fn increments_to_refuses_to_go_backwards() {
-        let s = FloorState {
-            counter: 105,
-            base: 100,
-        };
-        let e = s.increments_to(4).unwrap_err().to_string();
-        assert!(e.contains("do not decrement"), "{e}");
-    }
-
-    #[test]
-    fn operand_overflow_is_an_error() {
-        let s = FloorState {
-            counter: u64::MAX,
-            base: i64::MAX,
-        };
-        assert!(s.operand_for(u64::MAX).is_err());
-    }
-
-    #[test]
-    fn decode_is_big_endian() {
-        assert_eq!(decode(&[0, 0, 0, 0, 0, 0, 0, 7]).unwrap(), Some(7));
-        assert_eq!(decode(&[1, 0, 0, 0, 0, 0, 0, 0]).unwrap(), Some(1 << 56));
-        assert!(decode(&[0, 0]).is_err());
-    }
-
-    #[test]
-    fn index_is_formatted_the_way_tpm2_tools_expects() {
-        assert_eq!(idx(DEFAULT_NV_INDEX), "0x01D91100");
+    fn increments_count_the_gap_forward_only_and_never_overflow() {
+        // Phase `increments_to_counts_the_gap`.
+        {
+            let s = FloorState {
+                counter: 105,
+                base: 100,
+            };
+            assert_eq!(s.increments_to(5).unwrap(), 0);
+            assert_eq!(s.increments_to(8).unwrap(), 3);
+        }
+        // Phase `increments_to_counts_the_gap_with_a_negative_base`.
+        {
+            let s = FloorState {
+                counter: 1,
+                base: -497,
+            };
+            assert_eq!(s.floor_generation(), 498);
+            assert_eq!(s.increments_to(498).unwrap(), 0);
+            assert_eq!(s.increments_to(500).unwrap(), 2);
+        }
+        // Phase `increments_to_refuses_to_go_backwards`.
+        {
+            let s = FloorState {
+                counter: 105,
+                base: 100,
+            };
+            let e = s.increments_to(4).unwrap_err().to_string();
+            assert!(e.contains("do not decrement"), "{e}");
+        }
+        // Phase `operand_overflow_is_an_error`.
+        {
+            let s = FloorState {
+                counter: u64::MAX,
+                base: i64::MAX,
+            };
+            assert!(s.operand_for(u64::MAX).is_err());
+        }
     }
 }

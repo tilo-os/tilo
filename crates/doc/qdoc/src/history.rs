@@ -208,24 +208,28 @@ mod tests {
     }
 
     #[test]
-    fn empty_stamped_commit_does_not_poison_next_actor() {
-        check_empty_commit_actor_transition(false);
+    fn empty_commits_do_not_poison_the_next_actor() {
+        // An empty stamped commit, then an empty open transaction.
+        for open_transaction in [false, true] {
+            check_empty_commit_actor_transition(open_transaction);
+        }
     }
 
-    #[test]
-    fn empty_open_transaction_does_not_poison_next_actor() {
-        check_empty_commit_actor_transition(true);
-    }
-
-    #[test]
-    fn version_chain_and_time_travel() {
+    /// "first edit" then "second" in two paragraphs, one change per edit.
+    fn two_paragraph_history() -> Document {
         let mut d = Document::new();
         let a = d.insert_block(None, "paragraph");
         d.splice_text(&a, 0, 0, "first");
         d.splice_text(&a, 5, 0, " edit");
         let b = d.insert_block(Some(&a), "paragraph");
         d.splice_text(&b, 0, 0, "second");
+        d
+    }
 
+    #[test]
+    fn time_travel_materializes_every_version() {
+        // The version chain.
+        let mut d = two_paragraph_history();
         let vers = d.versions();
         // schema-init + 5 edits → several authored changes.
         assert!(
@@ -237,44 +241,20 @@ mod tests {
             vers.iter().all(|v| !v.actor_hex.is_empty()),
             "every change has an author"
         );
-
         let latest = d.materialize_at(vers.len() - 1).unwrap();
         assert_eq!(latest.blocks.len(), 2, "latest has both paragraphs");
         let v0 = d.materialize_at(0).unwrap();
         assert_eq!(v0.blocks.len(), 0, "version 0 is just the schema init");
-
-        // Some intermediate version has exactly one block (after the first insert, before the second).
+        // Some intermediate version has exactly one block (after the first
+        // insert, before the second).
         let saw_one = (0..vers.len()).any(|i| d.materialize_at(i).unwrap().blocks.len() == 1);
         assert!(
             saw_one,
             "an intermediate version should have a single block"
         );
-    }
 
-    #[test]
-    fn time_travel_shows_text_growth() {
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "hello");
-        let mid = d.versions().len() - 1; // after "hello"
-        d.splice_text(&p, 5, 0, " world");
-
-        let at_mid = d.materialize_at(mid).unwrap();
-        assert_eq!(at_mid.blocks[0].text, "hello");
-        let last = d.versions().len() - 1;
-        let now = d.materialize_at(last).unwrap();
-        assert_eq!(now.blocks[0].text, "hello world");
-    }
-
-    #[test]
-    fn one_replay_matches_materializing_each_version() {
-        let mut d = Document::new();
-        let a = d.insert_block(None, "paragraph");
-        d.splice_text(&a, 0, 0, "first");
-        d.splice_text(&a, 5, 0, " edit");
-        let b = d.insert_block(Some(&a), "paragraph");
-        d.splice_text(&b, 0, 0, "second");
-        let count = d.versions().len();
+        // One replay matches materializing each version.
+        let count = vers.len();
         let every: Vec<usize> = (0..count).collect();
         let series = super::materialize_series(&mut d.doc, &every);
         assert_eq!(series.len(), count);
@@ -292,6 +272,19 @@ mod tests {
         assert_eq!(
             series[2].as_ref(),
             Some(&d.materialize_at(count - 1).unwrap())
+        );
+
+        // Text growth is visible between versions.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "hello");
+        let mid = d.versions().len() - 1; // after "hello"
+        d.splice_text(&p, 5, 0, " world");
+        assert_eq!(d.materialize_at(mid).unwrap().blocks[0].text, "hello");
+        let last = d.versions().len() - 1;
+        assert_eq!(
+            d.materialize_at(last).unwrap().blocks[0].text,
+            "hello world"
         );
     }
 }

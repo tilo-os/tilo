@@ -188,47 +188,52 @@ mod tests {
     }
 
     #[test]
-    fn tilo_broker_transport_is_production_on() {
-        assert!(can_attempt_live(ConnectionKind::Tilo));
-        assert!(!can_attempt_live(ConnectionKind::Rdp));
-        assert_eq!(
-            can_attempt_live(ConnectionKind::Ssh),
-            live_sessions_enabled()
-        );
-        assert_eq!(
-            can_attempt_live(ConnectionKind::Vnc),
-            live_sessions_enabled()
-        );
-    }
+    fn session_readiness_and_preflight_fail_closed() {
+        eprintln!("phase tilo_broker_transport_is_production_on");
+        {
+            assert!(can_attempt_live(ConnectionKind::Tilo));
+            assert!(!can_attempt_live(ConnectionKind::Rdp));
+            assert_eq!(
+                can_attempt_live(ConnectionKind::Ssh),
+                live_sessions_enabled()
+            );
+            assert_eq!(
+                can_attempt_live(ConnectionKind::Vnc),
+                live_sessions_enabled()
+            );
+        }
 
-    #[test]
-    fn readiness_distinguishes_a_missing_capability_from_a_missing_backend() {
-        assert_eq!(
-            transport_readiness(ConnectionKind::Rdp),
-            TransportReadiness::BackendUnavailable
-        );
-        assert_eq!(
-            transport_readiness(ConnectionKind::Tilo),
-            TransportReadiness::Ready
-        );
-        assert_eq!(
-            transport_readiness(ConnectionKind::Ssh).can_connect(),
-            live_sessions_enabled()
-        );
-    }
+        eprintln!("phase readiness_distinguishes_a_missing_capability_from_a_missing_backend");
+        {
+            assert_eq!(
+                transport_readiness(ConnectionKind::Rdp),
+                TransportReadiness::BackendUnavailable
+            );
+            assert_eq!(
+                transport_readiness(ConnectionKind::Tilo),
+                TransportReadiness::Ready
+            );
+            assert_eq!(
+                transport_readiness(ConnectionKind::Ssh).can_connect(),
+                live_sessions_enabled()
+            );
+        }
 
-    #[test]
-    fn connection_preflight_fails_closed_for_bad_profiles_but_not_cached_presence() {
-        let mut tilo = connection(ConnectionKind::Tilo);
-        tilo.host = "friendly-name".into();
-        assert_eq!(
-            connection_readiness(&tilo),
-            TransportReadiness::InvalidProfile
+        eprintln!(
+            "phase connection_preflight_fails_closed_for_bad_profiles_but_not_cached_presence"
         );
+        {
+            let mut tilo = connection(ConnectionKind::Tilo);
+            tilo.host = "friendly-name".into();
+            assert_eq!(
+                connection_readiness(&tilo),
+                TransportReadiness::InvalidProfile
+            );
 
-        let mut offline = connection(ConnectionKind::Tilo);
-        offline.presence = crate::model::Presence::Offline;
-        assert_eq!(connection_readiness(&offline), TransportReadiness::Ready);
+            let mut offline = connection(ConnectionKind::Tilo);
+            offline.presence = crate::model::Presence::Offline;
+            assert_eq!(connection_readiness(&offline), TransportReadiness::Ready);
+        }
     }
 }
 

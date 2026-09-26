@@ -415,25 +415,122 @@ mod tests {
     }
 
     #[test]
-    fn history_new_hosted_tabs_have_records_before_tree_rebuild() {
-        let chrome = chrome_with_default_tree();
-        let mut st = chrome.borrow_mut();
-        let first = open_hosted(
-            &mut st,
-            AppKind::Other("Notes".into()),
-            "Notes",
-            Destination::Beside,
-        );
-        let second = duplicate_active_tab(&mut st).unwrap();
-        for id in [first, second] {
-            assert!(
-                st.records()
-                    .read(&ui::RecordId::for_tab(id), |_| ())
-                    .is_some(),
-                "the creating action must establish its new record before presentation"
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn window_actions_are_durable_for_history_restart_and_peers() {
+        // Phase `history_new_hosted_tabs_have_records_before_tree_rebuild`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st = chrome.borrow_mut();
+            let first = open_hosted(
+                &mut st,
+                AppKind::Other("Notes".into()),
+                "Notes",
+                Destination::Beside,
             );
+            let second = duplicate_active_tab(&mut st).unwrap();
+            for id in [first, second] {
+                assert!(
+                    st.records()
+                        .read(&ui::RecordId::for_tab(id), |_| ())
+                        .is_some(),
+                    "the creating action must establish its new record before presentation"
+                );
+            }
+            assert_ne!(first, second);
         }
-        assert_ne!(first, second);
+
+        // Phase `opening_a_hosted_app_is_durable_for_restart_and_peer_export`.
+        {
+            let state_dir = tempfile::tempdir().expect("state directory");
+            let state_path = state_dir.path().join("state.json");
+            let chrome = chrome_with_default_tree();
+            let mut st = chrome.borrow_mut();
+            let baseline = {
+                let mut tree = st.tree_mut();
+                tree.persist_path = Some(state_path.clone());
+                tree.current_heads()
+            };
+            let mut replica = st.tree().clone();
+
+            let tab_id = open_terminal(&mut st, Destination::Beside);
+            let (changes, restarted) = {
+                let mut tree = st.tree_mut();
+                let changes = tree.export_changes_since(&baseline);
+                tree.flush_to_disk();
+                drop(tree);
+                let restarted = crate::shell::persist::load_tree_from(&state_path)
+                    .expect("opening a hosted app must leave a loadable state file");
+                (changes, restarted)
+            };
+
+            replica
+                .apply_changes(&changes)
+                .expect("hosted app creation must be present in peer export");
+
+            for (authority, tree) in [("restart", &restarted), ("peer export", &replica)] {
+                assert!(
+                    tree.desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|workspace| workspace.strips.iter())
+                        .flat_map(|strip| strip.window_groups.iter())
+                        .flat_map(|group| group.tabs.iter())
+                        .any(|tab| tab.id == tab_id),
+                    "a hosted app opened in the chrome must survive the {authority} authority read"
+                );
+            }
+        }
+
+        // Phase `switching_workspace_is_durable_across_restart`.
+        {
+            let state_dir = tempfile::tempdir().expect("state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            tree.desktop
+                .workspaces
+                .first_mut()
+                .expect("demo has a first workspace")
+                .name = "Home (workspace persistence test)".into();
+            tree.persist_path = Some(state_path.clone());
+            let first = tree
+                .desktop
+                .workspaces
+                .first()
+                .expect("demo has a first workspace")
+                .id;
+            let target = tree
+                .desktop
+                .workspaces
+                .get(1)
+                .expect("demo has a second workspace")
+                .id;
+
+            tree.set_active(target);
+
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("workspace selection must leave a loadable state file");
+            assert_eq!(
+                restarted.desktop.active, target,
+                "the workspace selected by the user must be the one reopened"
+            );
+
+            let mut moved_up = restarted;
+            moved_up.persist_path = Some(state_path.clone());
+            assert!(moved_up.switch_up());
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("moving to the previous workspace must persist immediately");
+            assert_eq!(restarted.desktop.active, first);
+
+            let mut moved_down = restarted;
+            moved_down.persist_path = Some(state_path.clone());
+            assert!(moved_down.switch_down());
+            let restarted = crate::shell::persist::load_tree_from(&state_path)
+                .expect("moving to the next workspace must persist immediately");
+            assert_eq!(restarted.desktop.active, target);
+        }
     }
 
     /// The group the user is looking at, and the number of tabs in it.
@@ -460,262 +557,179 @@ mod tests {
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the borrow feeds a chain of derived references (strip -> window_groups -> \
-                  group -> tab) used through the assertions right after; ending it earlier \
-                  would mean cloning test fixture data for no real gain"
+    group -> tab) used through the assertions right after; ending it earlier \
+    would mean cloning test fixture data for no real gain"
     )]
-    fn open_terminal_here_adds_a_tab_to_the_focused_group() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        let before = focused_group_tab_count(&st);
-        let group = focused_group(&st).unwrap();
-        let id = open_terminal(&mut st, Destination::Here);
-        assert_eq!(
-            focused_group_tab_count(&st),
-            before + 1,
-            "the terminal joined the group the user was looking at"
-        );
-        let tree = st.tree();
-        let g = tree
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .strips
-            .iter()
-            .flat_map(|s| s.window_groups.iter())
-            .find(|w| w.id == group)
-            .unwrap();
-        assert_eq!(g.active_tab, id, "the new tab is focused");
-        let tab = g.tabs.iter().find(|t| t.id == id).unwrap();
-        assert!(
-            matches!(
-                &tab.tile,
-                TileContent::AppPlaceholder {
-                    kind: AppKind::Terminal,
-                    ..
-                }
-            ),
-            "a real terminal placeholder, not a stub: {:?}",
-            tab.tile
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "each borrow feeds a chain of derived references (strip -> window_groups -> \
-                  original) used through the assertion right after; ending it earlier would mean \
-                  cloning test fixture data for no real gain"
+    original) used through the assertion right after; ending it earlier would mean \
+    cloning test fixture data for no real gain"
     )]
-    fn open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        // Collapse to a single tab so the "open beside" branch is under test.
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            let g = &mut ws.strips[0].window_groups[0];
-            g.tabs.truncate(1);
-            g.active_tab = g.tabs[0].id;
-        }
-        let group = focused_group(&st).unwrap();
-        let groups_before = {
-            let tree = st.tree();
-            tree.desktop.active_workspace().unwrap().strips[0]
-                .window_groups
-                .len()
-        };
-        open_terminal(&mut st, Destination::Beside);
-        let tree = st.tree();
-        let strip = &tree.desktop.active_workspace().unwrap().strips[0];
-        assert_eq!(
-            strip.window_groups.len(),
-            groups_before + 1,
-            "a single-window group gains a neighbour, not a tab"
-        );
-        let original = strip.window_groups.iter().find(|g| g.id == group).unwrap();
-        assert_eq!(original.tabs.len(), 1, "the original group is untouched");
-    }
-
-    #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "each borrow feeds a chain of derived references used through the assertion \
-                  right after; ending it earlier would mean cloning test fixture data for no \
-                  real gain"
+    right after; ending it earlier would mean cloning test fixture data for no \
+    real gain"
     )]
-    fn duplicate_active_tab_copies_the_focused_app_into_the_same_group() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
-        let group = focused_group(&st).unwrap();
-        // Focus the Terminal tab so the duplicate has a known kind to copy.
-        let terminal_tab = {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            let g = ws.strips[0]
-                .window_groups
-                .iter_mut()
-                .find(|g| g.id == group)
-                .unwrap();
-            let id = g
-                .tabs
-                .iter()
-                .find(|t| {
-                    matches!(
-                        &t.tile,
-                        TileContent::AppPlaceholder {
-                            kind: AppKind::Terminal,
-                            ..
-                        }
-                    )
-                })
-                .map(|t| t.id)
-                .expect("the default tree seeds a terminal");
-            g.active_tab = id;
-            id
-        };
-        let before = focused_group_tab_count(&st);
-        let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
-        assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
-        assert_eq!(focused_group_tab_count(&st), before + 1);
-        let tree = st.tree();
-        let g = tree.desktop.active_workspace().unwrap().strips[0]
-            .window_groups
-            .iter()
-            .find(|g| g.id == group)
-            .unwrap();
-        let dup = g.tabs.iter().find(|t| t.id == new_id).unwrap();
-        assert!(
-            matches!(
-                &dup.tile,
-                TileContent::AppPlaceholder {
-                    kind: AppKind::Terminal,
-                    ..
-                }
-            ),
-            "the duplicate is the same app kind: {:?}",
-            dup.tile
-        );
-        assert_eq!(g.active_tab, new_id, "the duplicate takes focus");
-    }
-
-    #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the mutable borrow's only job in this block is building the fixture; it's \
-                  already dropped at the block's closing brace, right after its last use"
+    already dropped at the block's closing brace, right after its last use"
     )]
-    fn duplicating_a_foreign_window_reports_why_it_cannot() {
-        let chrome = chrome_with_default_tree();
-        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn window_actions_open_and_duplicate_tabs_in_the_right_group() {
+        // Phase `open_terminal_here_adds_a_tab_to_the_focused_group`.
         {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            let g = &mut ws.strips[0].window_groups[0];
-            let id = next_id();
-            g.tabs.push(Tab {
-                id,
-                title: "Foreign".into(),
-                tile: TileContent::Foreign {
-                    app_id: "org.example.thing".into(),
-                    surface_id: 7,
-                },
-            });
-            g.active_tab = id;
-        }
-        assert_eq!(
-            duplicate_active_tab(&mut st),
-            Err(DuplicateError::ForeignWindow),
-            "a client-owned window cannot be cloned by the compositor"
-        );
-    }
-
-    #[test]
-    fn opening_a_hosted_app_is_durable_for_restart_and_peer_export() {
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        let chrome = chrome_with_default_tree();
-        let mut st = chrome.borrow_mut();
-        let baseline = {
-            let mut tree = st.tree_mut();
-            tree.persist_path = Some(state_path.clone());
-            tree.current_heads()
-        };
-        let mut replica = st.tree().clone();
-
-        let tab_id = open_terminal(&mut st, Destination::Beside);
-        let (changes, restarted) = {
-            let mut tree = st.tree_mut();
-            let changes = tree.export_changes_since(&baseline);
-            tree.flush_to_disk();
-            drop(tree);
-            let restarted = crate::shell::persist::load_tree_from(&state_path)
-                .expect("opening a hosted app must leave a loadable state file");
-            (changes, restarted)
-        };
-
-        replica
-            .apply_changes(&changes)
-            .expect("hosted app creation must be present in peer export");
-
-        for (authority, tree) in [("restart", &restarted), ("peer export", &replica)] {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            let before = focused_group_tab_count(&st);
+            let group = focused_group(&st).unwrap();
+            let id = open_terminal(&mut st, Destination::Here);
+            assert_eq!(
+                focused_group_tab_count(&st),
+                before + 1,
+                "the terminal joined the group the user was looking at"
+            );
+            let tree = st.tree();
+            let g = tree
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .flat_map(|s| s.window_groups.iter())
+                .find(|w| w.id == group)
+                .unwrap();
+            assert_eq!(g.active_tab, id, "the new tab is focused");
+            let tab = g.tabs.iter().find(|t| t.id == id).unwrap();
             assert!(
-                tree.desktop
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| workspace.strips.iter())
-                    .flat_map(|strip| strip.window_groups.iter())
-                    .flat_map(|group| group.tabs.iter())
-                    .any(|tab| tab.id == tab_id),
-                "a hosted app opened in the chrome must survive the {authority} authority read"
+                matches!(
+                    &tab.tile,
+                    TileContent::AppPlaceholder {
+                        kind: AppKind::Terminal,
+                        ..
+                    }
+                ),
+                "a real terminal placeholder, not a stub: {:?}",
+                tab.tile
             );
         }
-    }
 
-    #[test]
-    fn switching_workspace_is_durable_across_restart() {
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.desktop
-            .workspaces
-            .first_mut()
-            .expect("demo has a first workspace")
-            .name = "Home (workspace persistence test)".into();
-        tree.persist_path = Some(state_path.clone());
-        let first = tree
-            .desktop
-            .workspaces
-            .first()
-            .expect("demo has a first workspace")
-            .id;
-        let target = tree
-            .desktop
-            .workspaces
-            .get(1)
-            .expect("demo has a second workspace")
-            .id;
+        // Phase `open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            // Collapse to a single tab so the "open beside" branch is under test.
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().unwrap();
+                let g = &mut ws.strips[0].window_groups[0];
+                g.tabs.truncate(1);
+                g.active_tab = g.tabs[0].id;
+            }
+            let group = focused_group(&st).unwrap();
+            let groups_before = {
+                let tree = st.tree();
+                tree.desktop.active_workspace().unwrap().strips[0]
+                    .window_groups
+                    .len()
+            };
+            open_terminal(&mut st, Destination::Beside);
+            let tree = st.tree();
+            let strip = &tree.desktop.active_workspace().unwrap().strips[0];
+            assert_eq!(
+                strip.window_groups.len(),
+                groups_before + 1,
+                "a single-window group gains a neighbour, not a tab"
+            );
+            let original = strip.window_groups.iter().find(|g| g.id == group).unwrap();
+            assert_eq!(original.tabs.len(), 1, "the original group is untouched");
+        }
 
-        tree.set_active(target);
+        // Phase `duplicate_active_tab_copies_the_focused_app_into_the_same_group`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            let group = focused_group(&st).unwrap();
+            // Focus the Terminal tab so the duplicate has a known kind to copy.
+            let terminal_tab = {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().unwrap();
+                let g = ws.strips[0]
+                    .window_groups
+                    .iter_mut()
+                    .find(|g| g.id == group)
+                    .unwrap();
+                let id = g
+                    .tabs
+                    .iter()
+                    .find(|t| {
+                        matches!(
+                            &t.tile,
+                            TileContent::AppPlaceholder {
+                                kind: AppKind::Terminal,
+                                ..
+                            }
+                        )
+                    })
+                    .map(|t| t.id)
+                    .expect("the default tree seeds a terminal");
+                g.active_tab = id;
+                id
+            };
+            let before = focused_group_tab_count(&st);
+            let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
+            assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
+            assert_eq!(focused_group_tab_count(&st), before + 1);
+            let tree = st.tree();
+            let g = tree.desktop.active_workspace().unwrap().strips[0]
+                .window_groups
+                .iter()
+                .find(|g| g.id == group)
+                .unwrap();
+            let dup = g.tabs.iter().find(|t| t.id == new_id).unwrap();
+            assert!(
+                matches!(
+                    &dup.tile,
+                    TileContent::AppPlaceholder {
+                        kind: AppKind::Terminal,
+                        ..
+                    }
+                ),
+                "the duplicate is the same app kind: {:?}",
+                dup.tile
+            );
+            assert_eq!(g.active_tab, new_id, "the duplicate takes focus");
+        }
 
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("workspace selection must leave a loadable state file");
-        assert_eq!(
-            restarted.desktop.active, target,
-            "the workspace selected by the user must be the one reopened"
-        );
-
-        let mut moved_up = restarted;
-        moved_up.persist_path = Some(state_path.clone());
-        assert!(moved_up.switch_up());
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("moving to the previous workspace must persist immediately");
-        assert_eq!(restarted.desktop.active, first);
-
-        let mut moved_down = restarted;
-        moved_down.persist_path = Some(state_path.clone());
-        assert!(moved_down.switch_down());
-        let restarted = crate::shell::persist::load_tree_from(&state_path)
-            .expect("moving to the next workspace must persist immediately");
-        assert_eq!(restarted.desktop.active, target);
+        // Phase `duplicating_a_foreign_window_reports_why_it_cannot`.
+        {
+            let chrome = chrome_with_default_tree();
+            let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().unwrap();
+                let g = &mut ws.strips[0].window_groups[0];
+                let id = next_id();
+                g.tabs.push(Tab {
+                    id,
+                    title: "Foreign".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.example.thing".into(),
+                        surface_id: 7,
+                    },
+                });
+                g.active_tab = id;
+            }
+            assert_eq!(
+                duplicate_active_tab(&mut st),
+                Err(DuplicateError::ForeignWindow),
+                "a client-owned window cannot be cloned by the compositor"
+            );
+        }
     }
 }

@@ -1733,63 +1733,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oversized_request_is_rejected_without_allocating_payload() {
-        use tokio::io::AsyncWriteExt;
-        let (mut writer, mut reader) = tokio::io::duplex(16);
-        let write = tokio::spawn(async move {
-            writer
-                .write_all(
-                    &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
-                        .unwrap()
-                        .to_be_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-        assert!(matches!(
-            read_request(&mut reader).await,
-            Err(FrameError::TooLarge)
-        ));
-        write.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn client_rejects_oversized_response_without_allocating_payload() {
-        use tokio::io::AsyncWriteExt;
-        let (mut writer, mut reader) = tokio::io::duplex(16);
-        let write = tokio::spawn(async move {
-            writer
-                .write_all(
-                    &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
-                        .unwrap()
-                        .to_be_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-        assert!(matches!(
-            read_response(&mut reader).await,
-            Err(RecordProtocolClientError::ResponseTooLarge)
-        ));
-        write.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn client_rejects_malformed_response() {
-        use tokio::io::AsyncWriteExt;
-        let (mut writer, mut reader) = tokio::io::duplex(16);
-        let write = tokio::spawn(async move {
-            let malformed = [0xff, 0xff];
-            writer
-                .write_all(&u32::try_from(malformed.len()).unwrap().to_be_bytes())
-                .await
-                .unwrap();
-            writer.write_all(&malformed).await.unwrap();
-        });
-        assert!(matches!(
-            read_response(&mut reader).await,
-            Err(RecordProtocolClientError::InvalidResponse)
-        ));
-        write.await.unwrap();
+    async fn oversized_or_malformed_frames_are_rejected_without_allocating() {
+        // Phase `oversized_request_is_rejected_without_allocating_payload`.
+        {
+            use tokio::io::AsyncWriteExt;
+            let (mut writer, mut reader) = tokio::io::duplex(16);
+            let write = tokio::spawn(async move {
+                writer
+                    .write_all(
+                        &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
+                            .unwrap()
+                            .to_be_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            assert!(matches!(
+                read_request(&mut reader).await,
+                Err(FrameError::TooLarge)
+            ));
+            write.await.unwrap();
+        }
+        // Phase `client_rejects_oversized_response_without_allocating_payload`.
+        {
+            use tokio::io::AsyncWriteExt;
+            let (mut writer, mut reader) = tokio::io::duplex(16);
+            let write = tokio::spawn(async move {
+                writer
+                    .write_all(
+                        &u32::try_from(MAX_RECORD_PROTOCOL_FRAME_BYTES + 1)
+                            .unwrap()
+                            .to_be_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            assert!(matches!(
+                read_response(&mut reader).await,
+                Err(RecordProtocolClientError::ResponseTooLarge)
+            ));
+            write.await.unwrap();
+        }
+        // Phase `client_rejects_malformed_response`.
+        {
+            use tokio::io::AsyncWriteExt;
+            let (mut writer, mut reader) = tokio::io::duplex(16);
+            let write = tokio::spawn(async move {
+                let malformed = [0xff, 0xff];
+                writer
+                    .write_all(&u32::try_from(malformed.len()).unwrap().to_be_bytes())
+                    .await
+                    .unwrap();
+                writer.write_all(&malformed).await.unwrap();
+            });
+            assert!(matches!(
+                read_response(&mut reader).await,
+                Err(RecordProtocolClientError::InvalidResponse)
+            ));
+            write.await.unwrap();
+        }
     }
 }

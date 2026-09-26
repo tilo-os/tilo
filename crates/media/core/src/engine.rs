@@ -973,187 +973,190 @@ mod tests {
     use super::*;
 
     #[test]
-    fn waiting_without_a_deadline_is_a_wait_not_an_abort() {
-        // "Block until the frame lands, however long that takes" is spelled
-        // `Duration::MAX`. Turning that into a deadline overflows `Instant`,
-        // and `Instant + Duration` panics rather than saturating — so the one
-        // caller who asked hardest to be patient was the one who got killed.
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        assert!(
-            e.seek_and_wait(1_000, std::time::Duration::MAX),
-            "an unbounded wait still returns the frame it waited for"
-        );
-    }
-
-    #[test]
-    fn opens_and_orders_duration_before_position() {
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        e.play();
-
-        // First poll: DurationKnown must precede any Position.
-        let evts = e.poll_at(0);
-        let dur_idx = evts
-            .iter()
-            .position(|x| matches!(x, MediaEvent::DurationKnown { .. }));
-        assert!(
-            dur_idx.is_some(),
-            "duration announced on first poll: {evts:?}"
-        );
-        if let Some(pos_idx) = evts
-            .iter()
-            .position(|x| matches!(x, MediaEvent::Position { .. }))
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn synthesized_engine_transport_orders_events_and_follows_the_host() {
+        // Phase `waiting_without_a_deadline_is_a_wait_not_an_abort`.
         {
-            assert!(dur_idx.unwrap() < pos_idx, "DurationKnown before Position");
+            // "Block until the frame lands, however long that takes" is spelled
+            // `Duration::MAX`. Turning that into a deadline overflows `Instant`,
+            // and `Instant + Duration` panics rather than saturating — so the one
+            // caller who asked hardest to be patient was the one who got killed.
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            assert!(
+                e.seek_and_wait(1_000, std::time::Duration::MAX),
+                "an unbounded wait still returns the frame it waited for"
+            );
         }
-        // Duration announced exactly once.
-        let evts2 = e.poll_at(50);
-        assert!(
-            !evts2
+        // Phase `opens_and_orders_duration_before_position`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            e.play();
+
+            // First poll: DurationKnown must precede any Position.
+            let evts = e.poll_at(0);
+            let dur_idx = evts
                 .iter()
-                .any(|x| matches!(x, MediaEvent::DurationKnown { .. }))
-        );
+                .position(|x| matches!(x, MediaEvent::DurationKnown { .. }));
+            assert!(
+                dur_idx.is_some(),
+                "duration announced on first poll: {evts:?}"
+            );
+            if let Some(pos_idx) = evts
+                .iter()
+                .position(|x| matches!(x, MediaEvent::Position { .. }))
+            {
+                assert!(dur_idx.unwrap() < pos_idx, "DurationKnown before Position");
+            }
+            // Duration announced exactly once.
+            let evts2 = e.poll_at(50);
+            assert!(
+                !evts2
+                    .iter()
+                    .any(|x| matches!(x, MediaEvent::DurationKnown { .. }))
+            );
+        }
+        // Phase `playhead_advances_with_virtual_time`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            e.play();
+            e.poll_at(0); // baseline
+            e.poll_at(1_000);
+            assert_eq!(
+                e.position_ms(),
+                1_000,
+                "1s of virtual time advanced the playhead 1s"
+            );
+            e.pause();
+            e.poll_at(2_000);
+            e.poll_at(3_000);
+            assert_eq!(e.position_ms(), 1_000, "paused playhead does not advance");
+        }
+        // Phase `playback_rate_is_clamped_and_drives_synthesized_transport`.
+        {
+            let mut engine = MediaEngine::new_synthesized();
+            engine.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            engine.set_rate(2.0);
+            engine.play();
+            engine.poll_at(0);
+            engine.poll_at(1_000);
+            assert_eq!(engine.position_ms(), 2_000);
+            assert!((engine.transport_state(1_000).rate - 2.0).abs() < f32::EPSILON);
+            engine.set_rate(99.0);
+            assert!((engine.rate() - 4.0).abs() < f32::EPSILON);
+        }
+        // Phase `reaching_duration_emits_position_then_ended_last`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            e.seek_ms(e.duration_ms().unwrap() - 10);
+            e.play();
+            e.poll_at(0); // baseline
+            let evts = e.poll_at(1_000); // jumps past the end
+            assert_eq!(
+                evts.last(),
+                Some(&MediaEvent::Ended),
+                "Ended is the final event"
+            );
+            assert!(
+                evts.iter()
+                    .any(|x| matches!(x, MediaEvent::Position { .. }))
+            );
+            assert!(!e.is_playing(), "stopped at the end");
+            assert_eq!(e.position_ms(), e.duration_ms().unwrap());
+        }
+        // Phase `follower_applies_host_transport_and_seeks_on_large_drift`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            e.poll_at(0);
+            // Host is playing, well ahead of us — a corrective seek must fire.
+            let host = TransportState {
+                playing: true,
+                position_ms: 30_000,
+                rate: 1.0,
+                epoch_ms: 0,
+            };
+            let seeked = e.apply_transport(&host, 0);
+            assert!(seeked, "large drift triggers a seek");
+            assert_eq!(e.position_ms(), 30_000);
+            assert!(e.is_playing(), "adopted the host's playing state");
+
+            // Now in sync: a matching host state issues no seek.
+            let host2 = TransportState {
+                playing: true,
+                position_ms: 30_000,
+                rate: 1.0,
+                epoch_ms: 0,
+            };
+            assert!(
+                !e.apply_transport(&host2, 0),
+                "no seek when already aligned"
+            );
+        }
+        // Phase `transport_state_snapshots_engine`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            e.seek_ms(5_000);
+            e.play();
+            let ts = e.transport_state(1_234);
+            assert_eq!(ts.position_ms, 5_000);
+            assert!(ts.playing);
+            assert_eq!(ts.epoch_ms, 1_234);
+        }
     }
 
     #[test]
-    fn playhead_advances_with_virtual_time() {
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        e.play();
-        e.poll_at(0); // baseline
-        e.poll_at(1_000);
-        assert_eq!(
-            e.position_ms(),
-            1_000,
-            "1s of virtual time advanced the playhead 1s"
-        );
-        e.pause();
-        e.poll_at(2_000);
-        e.poll_at(3_000);
-        assert_eq!(e.position_ms(), 1_000, "paused playhead does not advance");
-    }
-
-    #[test]
-    fn playback_rate_is_clamped_and_drives_synthesized_transport() {
-        let mut engine = MediaEngine::new_synthesized();
-        engine.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        engine.set_rate(2.0);
-        engine.play();
-        engine.poll_at(0);
-        engine.poll_at(1_000);
-        assert_eq!(engine.position_ms(), 2_000);
-        assert!((engine.transport_state(1_000).rate - 2.0).abs() < f32::EPSILON);
-        engine.set_rate(99.0);
-        assert!((engine.rate() - 4.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn reaching_duration_emits_position_then_ended_last() {
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        e.seek_ms(e.duration_ms().unwrap() - 10);
-        e.play();
-        e.poll_at(0); // baseline
-        let evts = e.poll_at(1_000); // jumps past the end
-        assert_eq!(
-            evts.last(),
-            Some(&MediaEvent::Ended),
-            "Ended is the final event"
-        );
-        assert!(
-            evts.iter()
-                .any(|x| matches!(x, MediaEvent::Position { .. }))
-        );
-        assert!(!e.is_playing(), "stopped at the end");
-        assert_eq!(e.position_ms(), e.duration_ms().unwrap());
-    }
-
-    #[test]
-    fn synthesized_engine_produces_a_frame() {
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        let f = e.latest_frame().expect("a seed frame exists after open");
-        assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
-        assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
-    }
-
-    #[test]
-    fn no_frame_is_produced_until_a_source_is_opened() {
-        let mut e = MediaEngine::new_synthesized();
-        // Pumping a never-opened engine must not fabricate a picture — the
-        // player's empty state stays a clean surface, not a test pattern.
-        e.poll_at(0);
-        e.poll_at(100);
-        assert!(
-            e.latest_frame().is_none(),
-            "empty state carries no synthesized frame"
-        );
-        // Opening a source seeds the first frame.
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        assert!(
-            e.latest_frame().is_some(),
-            "a frame appears once media is opened"
-        );
-    }
-
-    #[test]
-    fn follower_applies_host_transport_and_seeks_on_large_drift() {
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        e.poll_at(0);
-        // Host is playing, well ahead of us — a corrective seek must fire.
-        let host = TransportState {
-            playing: true,
-            position_ms: 30_000,
-            rate: 1.0,
-            epoch_ms: 0,
-        };
-        let seeked = e.apply_transport(&host, 0);
-        assert!(seeked, "large drift triggers a seek");
-        assert_eq!(e.position_ms(), 30_000);
-        assert!(e.is_playing(), "adopted the host's playing state");
-
-        // Now in sync: a matching host state issues no seek.
-        let host2 = TransportState {
-            playing: true,
-            position_ms: 30_000,
-            rate: 1.0,
-            epoch_ms: 0,
-        };
-        assert!(
-            !e.apply_transport(&host2, 0),
-            "no seek when already aligned"
-        );
-    }
-
-    #[test]
-    fn transport_state_snapshots_engine() {
-        let mut e = MediaEngine::new_synthesized();
-        e.open(Source::Remote {
-            url: "https://x/v.mp4".into(),
-        });
-        e.seek_ms(5_000);
-        e.play();
-        let ts = e.transport_state(1_234);
-        assert_eq!(ts.position_ms, 5_000);
-        assert!(ts.playing);
-        assert_eq!(ts.epoch_ms, 1_234);
+    fn synthesized_engine_produces_frames_only_once_opened() {
+        // Phase `synthesized_engine_produces_a_frame`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            let f = e.latest_frame().expect("a seed frame exists after open");
+            assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
+            assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
+        }
+        // Phase `no_frame_is_produced_until_a_source_is_opened`.
+        {
+            let mut e = MediaEngine::new_synthesized();
+            // Pumping a never-opened engine must not fabricate a picture — the
+            // player's empty state stays a clean surface, not a test pattern.
+            e.poll_at(0);
+            e.poll_at(100);
+            assert!(
+                e.latest_frame().is_none(),
+                "empty state carries no synthesized frame"
+            );
+            // Opening a source seeds the first frame.
+            e.open(Source::Remote {
+                url: "https://x/v.mp4".into(),
+            });
+            assert!(
+                e.latest_frame().is_some(),
+                "a frame appears once media is opened"
+            );
+        }
     }
 }

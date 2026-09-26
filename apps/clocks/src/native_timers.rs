@@ -139,23 +139,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn opening_an_empty_profile_preserves_another_profiles_timer() {
-        let host = TestScheduler::default();
-        let foreign_id = timer_id(uuid::Uuid::new_v4());
-        host.schedule(
-            &foreign_id,
-            "Other profile",
-            SystemTime::now() + Duration::from_secs(3600),
-        )
-        .unwrap();
-        reconcile(&mut ClockState::default(), &host, Utc::now(), |_| Ok(())).unwrap();
-        assert!(
-            host.pending.borrow().contains_key(&foreign_id),
-            "another profile's timer was cancelled"
-        );
-    }
-
     fn running_state() -> ClockState {
         let mut timer = crate::Timer::new("Owned timer", Duration::from_secs(3600));
         timer.start(Utc::now());
@@ -166,70 +149,128 @@ mod tests {
     }
 
     #[test]
-    fn deleted_timer_cancellation_survives_failure_and_restart_without_touching_another_profile() {
-        let host = TestScheduler::default();
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("Grün profile/clocks.json");
-        let mut first = running_state();
-        let first_id = first.timers[0].id;
-        reconcile(&mut first, &host, Utc::now(), |s| {
-            s.save_at(&path).map_err(|e| e.to_string())
-        })
-        .unwrap();
-        let mut second = running_state();
-        let second_id = timer_id(second.timers[0].id);
-        reconcile(&mut second, &host, Utc::now(), |_| Ok(())).unwrap();
-        assert_eq!(host.pending.borrow().len(), 2);
+    fn reconcile_touches_only_owned_timers_and_persists_ownership_before_the_host() {
+        // Case: opening an empty profile preserves another profile's timer.
+        {
+            let host = TestScheduler::default();
+            let foreign_id = timer_id(uuid::Uuid::new_v4());
+            host.schedule(
+                &foreign_id,
+                "Other profile",
+                SystemTime::now() + Duration::from_secs(3600),
+            )
+            .unwrap();
+            reconcile(&mut ClockState::default(), &host, Utc::now(), |_| Ok(())).unwrap();
+            assert!(
+                host.pending.borrow().contains_key(&foreign_id),
+                "another profile's timer was cancelled"
+            );
+        }
 
-        first.timers.clear();
-        host.fail_cancel.set(true);
-        assert!(
-            reconcile(&mut first, &host, Utc::now(), |s| s
-                .save_at(&path)
-                .map_err(|e| e.to_string()))
-            .is_err()
-        );
-        let mut restarted = ClockState::load_at(&path);
-        assert!(restarted.timers.is_empty());
-        assert!(restarted.native_timer_owners.contains(&first_id));
-        host.fail_cancel.set(false);
-        reconcile(&mut restarted, &host, Utc::now(), |s| {
-            s.save_at(&path).map_err(|e| e.to_string())
-        })
-        .unwrap();
-        assert_eq!(host.pending.borrow().len(), 1);
-        assert!(host.pending.borrow().contains_key(&second_id));
-        assert!(ClockState::load_at(&path).native_timer_owners.is_empty());
-    }
+        // Case: a deleted timer's cancellation survives failure and restart
+        // without touching another profile.
+        {
+            let host = TestScheduler::default();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("Grün profile/clocks.json");
+            let mut first = running_state();
+            let first_id = first.timers[0].id;
+            reconcile(&mut first, &host, Utc::now(), |s| {
+                s.save_at(&path).map_err(|e| e.to_string())
+            })
+            .unwrap();
+            let mut second = running_state();
+            let second_id = timer_id(second.timers[0].id);
+            reconcile(&mut second, &host, Utc::now(), |_| Ok(())).unwrap();
+            assert_eq!(
+                host.pending.borrow().len(),
+                2,
+                "case deleted-timer: both profiles scheduled"
+            );
 
-    #[test]
-    fn storage_failure_prevents_native_submission() {
-        let host = TestScheduler::default();
-        let mut state = running_state();
-        assert!(
-            reconcile(&mut state, &host, Utc::now(), |_| Err(
-                "storage unavailable".into()
-            ))
-            .is_err()
-        );
-        assert!(host.pending.borrow().is_empty());
-        assert!(state.timers[0].native_scheduled_end.is_none());
-    }
+            first.timers.clear();
+            host.fail_cancel.set(true);
+            assert!(
+                reconcile(&mut first, &host, Utc::now(), |s| s
+                    .save_at(&path)
+                    .map_err(|e| e.to_string()))
+                .is_err(),
+                "case deleted-timer: failed cancellation is reported"
+            );
+            let mut restarted = ClockState::load_at(&path);
+            assert!(
+                restarted.timers.is_empty(),
+                "case deleted-timer: deletion persisted"
+            );
+            assert!(
+                restarted.native_timer_owners.contains(&first_id),
+                "case deleted-timer: ownership retained for retry"
+            );
+            host.fail_cancel.set(false);
+            reconcile(&mut restarted, &host, Utc::now(), |s| {
+                s.save_at(&path).map_err(|e| e.to_string())
+            })
+            .unwrap();
+            assert_eq!(
+                host.pending.borrow().len(),
+                1,
+                "case deleted-timer: retry cancels"
+            );
+            assert!(
+                host.pending.borrow().contains_key(&second_id),
+                "case deleted-timer: other profile untouched"
+            );
+            assert!(
+                ClockState::load_at(&path).native_timer_owners.is_empty(),
+                "case deleted-timer: ownership released"
+            );
+        }
 
-    #[test]
-    fn an_elapsed_notification_is_retained_until_windows_delivers_it() {
-        let host = TestScheduler::default();
-        let id = uuid::Uuid::new_v4();
-        let mut state = ClockState::default();
-        state.native_timer_owners.insert(id);
-        host.pending
-            .borrow_mut()
-            .insert(timer_id(id), SystemTime::now() - Duration::from_secs(60));
-        reconcile(&mut state, &host, Utc::now(), |_| Ok(())).unwrap();
-        assert!(host.pending.borrow().contains_key(&timer_id(id)));
-        assert!(state.native_timer_owners.contains(&id));
-        host.pending.borrow_mut().clear();
-        reconcile(&mut state, &host, Utc::now(), |_| Ok(())).unwrap();
-        assert!(state.native_timer_owners.is_empty());
+        // Case: a storage failure prevents native submission.
+        {
+            let host = TestScheduler::default();
+            let mut state = running_state();
+            assert!(
+                reconcile(&mut state, &host, Utc::now(), |_| Err(
+                    "storage unavailable".into()
+                ))
+                .is_err(),
+                "case storage-failure: reported"
+            );
+            assert!(
+                host.pending.borrow().is_empty(),
+                "case storage-failure: nothing submitted"
+            );
+            assert!(
+                state.timers[0].native_scheduled_end.is_none(),
+                "case storage-failure: no handoff recorded"
+            );
+        }
+
+        // Case: an elapsed notification is retained until Windows delivers it.
+        {
+            let host = TestScheduler::default();
+            let id = uuid::Uuid::new_v4();
+            let mut state = ClockState::default();
+            state.native_timer_owners.insert(id);
+            host.pending
+                .borrow_mut()
+                .insert(timer_id(id), SystemTime::now() - Duration::from_secs(60));
+            reconcile(&mut state, &host, Utc::now(), |_| Ok(())).unwrap();
+            assert!(
+                host.pending.borrow().contains_key(&timer_id(id)),
+                "case elapsed: still pending on the host"
+            );
+            assert!(
+                state.native_timer_owners.contains(&id),
+                "case elapsed: ownership retained"
+            );
+            host.pending.borrow_mut().clear();
+            reconcile(&mut state, &host, Utc::now(), |_| Ok(())).unwrap();
+            assert!(
+                state.native_timer_owners.is_empty(),
+                "case elapsed: ownership released after delivery"
+            );
+        }
     }
 }

@@ -542,14 +542,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combined_geometry_single_output_equals_its_size() {
-        let outs = [Output::new(OutputId(0), (1920, 1080), 1.0)];
-        assert_eq!(combined_geometry(&outs), (1920, 1080));
-    }
+    fn combined_geometry_spans_every_output_and_is_zero_for_none() {
+        let single = [Output::new(OutputId(0), (1920, 1080), 1.0)];
+        assert_eq!(
+            combined_geometry(&single),
+            (1920, 1080),
+            "single output equals its size"
+        );
 
-    #[test]
-    fn combined_geometry_side_by_side_sums_width_takes_max_height() {
-        let outs = [
+        let side_by_side = [
             Output {
                 id: OutputId(0),
                 position: (0, 0),
@@ -574,7 +575,13 @@ mod tests {
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
-        assert_eq!(combined_geometry(&outs), (3200, 1080));
+        assert_eq!(
+            combined_geometry(&side_by_side),
+            (3200, 1080),
+            "side by side"
+        );
+
+        assert_eq!(combined_geometry(&[]), (0, 0), "empty");
     }
 
     #[test]
@@ -611,79 +618,5 @@ mod tests {
             PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
             None
         );
-    }
-
-    #[test]
-    fn combined_geometry_empty_is_zero() {
-        assert_eq!(combined_geometry(&[]), (0, 0));
-    }
-}
-
-/// Apply a host-window DPI change to the compositor's single output.
-///
-/// Winit emits `ScaleFactorChanged` when a window crosses monitors even when
-/// its physical size stays the same.  Treating that as a resize lets the
-/// compositor re-run its ordinary output/scale propagation path, including
-/// `wp_fractional_scale` and layout.  The suggested inner size is deliberately
-/// left to the subsequent `Resized` event; a scale-only event must still be
-/// useful on platforms that keep the pixel size unchanged.
-pub fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Option<BackendEvent> {
-    // Winit reports a positive, finite scale factor. Keep the guard here so a
-    // malformed backend event cannot poison all subsequent geometry with NaN
-    // or zero, and so the pure helper remains safe to reuse in tests.
-    if !scale_factor.is_finite() || scale_factor <= 0.0 {
-        return None;
-    }
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "monitor scale factor; f32 precision is ample for a UI scale value"
-    )]
-    let scale = scale_factor as f32;
-    // A duplicate notification is harmless but needlessly rebuilds layout and
-    // reconfigures the presentation pipe, so preserve the resize no-op rule.
-    #[allow(
-        clippy::float_cmp,
-        reason = "exact equality avoids rebuilding layout for duplicate host notifications"
-    )]
-    if output.scale == scale {
-        return None;
-    }
-    output.scale = scale;
-    Some(BackendEvent::OutputResized {
-        id: output.id,
-        size: output.size,
-        scale,
-    })
-}
-#[cfg(test)]
-mod scale_factor_tests {
-    use super::*;
-
-    #[test]
-    fn scale_factor_change_updates_output_without_a_pixel_resize() {
-        let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
-
-        let event = apply_scale_factor_changed(&mut output, 1.5)
-            .expect("a real DPI change must reach the compositor");
-
-        assert_eq!(output.scale, 1.5);
-        assert!(matches!(
-            event,
-            BackendEvent::OutputResized {
-                id: OutputId(7),
-                size: (1920, 1080),
-                scale: 1.5,
-            }
-        ));
-    }
-
-    #[test]
-    fn duplicate_or_invalid_scale_changes_are_ignored() {
-        let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
-        assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());
-        assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
-        assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
-        assert_eq!(output.scale, 1.25);
     }
 }

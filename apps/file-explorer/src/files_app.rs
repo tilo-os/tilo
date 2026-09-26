@@ -4590,19 +4590,6 @@ fn merge_supported_path(path: &std::path::Path) -> bool {
         .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "txt" | "qdoc"))
 }
 
-#[cfg(test)]
-mod merge_support_tests {
-    use super::merge_supported_path;
-
-    #[test]
-    fn merge_is_never_offered_for_binary_or_unsupported_names() {
-        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
-        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
-        assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-}
-
 /// How the explorer hands a document to the application that owns it.
 ///
 /// `Ok(())` means the host took it. `Err(reason)` is a failure the user

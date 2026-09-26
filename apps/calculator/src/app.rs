@@ -1973,293 +1973,355 @@ impl CalculatorApp {
 mod tests {
     use super::*;
 
+    /// A history row's published `open` action recalls exactly that row: via
+    /// the headless host for a local viewer, and via the resource operation by
+    /// stable identity (surviving index shifts, refusing deleted rows). Recall
+    /// is presentation only. Each phase builds a fresh seeded app + document.
     #[test]
-    fn history_recall_through_headless_host_is_available_to_local_viewer() {
-        let mut app = CalculatorApp::seeded();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
-        let expression = crate::doc::load(&state.doc).unwrap().history[1]
-            .expr
-            .clone();
-        let resources = app.resources(&state.doc);
-        let row = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
-            .unwrap();
-        let binding = tilo_actions::ActionBinding::unit_for(row, "open").unwrap();
-        app.set_mode(Mode::Graph3d);
-        let before = state.doc.get_heads();
-        // Exercise the same published binding and host admission used by a
-        // search result, rather than calling the app's handler directly.
-        let root = ui::widget::Column::new().push(Box::new(app)).push(Box::new(
-            ui::widget::Button::new("recall", "Recall", None).on_action(binding),
-        ));
-        let mut harness = ui::headless::FrameHarness::new(state, Box::new(root), (800, 600));
-        harness.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(
-                Some(ui::permissions::Role::Viewer),
-                ui::permissions::LOCAL_USER,
-            ),
-            vec![],
-        ));
-        harness
-            .perform_named("recall", &ui::a11y::Action::Activate)
-            .unwrap();
-        harness
-            .expect(&ui::headless::SemanticExpectation::named("calculator_app").value(expression))
-            .unwrap();
-        assert_eq!(harness.state_mut().doc.get_heads(), before);
-    }
+    fn history_recall_by_published_action_uses_stable_identity() {
+        // phase history_recall_through_headless_host_is_available_to_local_viewer
+        {
+            let mut app = CalculatorApp::seeded();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
+            let expression = crate::doc::load(&state.doc).unwrap().history[1]
+                .expr
+                .clone();
+            let resources = app.resources(&state.doc);
+            let row = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
+                .unwrap();
+            let binding = tilo_actions::ActionBinding::unit_for(row, "open").unwrap();
+            app.set_mode(Mode::Graph3d);
+            let before = state.doc.get_heads();
+            // Exercise the same published binding and host admission used by a
+            // search result, rather than calling the app's handler directly.
+            let root = ui::widget::Column::new().push(Box::new(app)).push(Box::new(
+                ui::widget::Button::new("recall", "Recall", None).on_action(binding),
+            ));
+            let mut harness = ui::headless::FrameHarness::new(state, Box::new(root), (800, 600));
+            harness.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(
+                    Some(ui::permissions::Role::Viewer),
+                    ui::permissions::LOCAL_USER,
+                ),
+                vec![],
+            ));
+            harness
+                .perform_named("recall", &ui::a11y::Action::Activate)
+                .unwrap();
+            harness
+                .expect(
+                    &ui::headless::SemanticExpectation::named("calculator_app").value(expression),
+                )
+                .unwrap();
+            assert_eq!(
+                harness.state_mut().doc.get_heads(),
+                before,
+                "headless recall: document unchanged"
+            );
+        }
 
-    #[test]
-    fn search_recall_uses_stable_history_identity_and_refuses_deleted_entries() {
-        let mut app = CalculatorApp::seeded();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
-        let expression = crate::doc::load(&state.doc).unwrap().history[1]
-            .expr
-            .clone();
-        let resources = app.resources(&state.doc);
-        let row = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
-            .unwrap();
-        let open = row.actions.iter().find(|spec| spec.id == "open").unwrap();
-        assert_eq!(open.kind, tilo_actions::OperationKind::View);
-        let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
-            panic!("recall needs no prompt");
-        };
-        // A new calculation moves every old positional index. The saved search
-        // result must still recall exactly the document row it advertised.
-        app.perform_action(
-            &mut state.doc,
-            &actions::commit_history_action("999+1", "1000"),
-        );
-        let heads = state.doc.get_heads();
-        app.set_mode(Mode::Graph3d);
-        assert!(
-            app.invoke_resource_operation(
+        // phase search_recall_uses_stable_history_identity_and_refuses_deleted_entries
+        {
+            let mut app = CalculatorApp::seeded();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
+            let expression = crate::doc::load(&state.doc).unwrap().history[1]
+                .expr
+                .clone();
+            let resources = app.resources(&state.doc);
+            let row = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
+                .unwrap();
+            let open = row.actions.iter().find(|spec| spec.id == "open").unwrap();
+            assert_eq!(
                 open.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &state.doc,
-                &state.root
-            )
-            .unwrap()
-        );
-        assert_eq!(app.model.mode, Mode::Calc);
-        assert_eq!(app.model.expr, expression);
-        assert_eq!(state.doc.get_heads(), heads, "recall is presentation only");
-        app.model_dirty = false;
-        app.model.expr = "uncommitted input".into();
-        assert!(
-            app.invoke_resource_operation(
-                open.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &state.doc,
-                &state.root
-            )
-            .unwrap()
-        );
-        assert_eq!(app.model.expr, expression);
-        assert!(
-            app.model_dirty,
-            "recalling while already in Calc still repaints"
-        );
-        app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
-        assert!(
-            app.invoke_resource_operation(
-                open.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &state.doc,
-                &state.root
-            )
-            .is_err()
-        );
-        assert_eq!(
-            app.model.expr, expression,
-            "stale search must not recall a different row"
-        );
+                tilo_actions::OperationKind::View,
+                "search recall: open is a View"
+            );
+            let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
+                panic!("recall needs no prompt");
+            };
+            // A new calculation moves every old positional index. The saved search
+            // result must still recall exactly the document row it advertised.
+            app.perform_action(
+                &mut state.doc,
+                &actions::commit_history_action("999+1", "1000"),
+            );
+            let heads = state.doc.get_heads();
+            app.set_mode(Mode::Graph3d);
+            assert!(
+                app.invoke_resource_operation(
+                    open.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &state.doc,
+                    &state.root
+                )
+                .unwrap(),
+                "search recall: first invoke handled"
+            );
+            assert_eq!(app.model.mode, Mode::Calc, "search recall: back in Calc");
+            assert_eq!(app.model.expr, expression, "search recall: expression");
+            assert_eq!(state.doc.get_heads(), heads, "recall is presentation only");
+            app.model_dirty = false;
+            app.model.expr = "uncommitted input".into();
+            assert!(
+                app.invoke_resource_operation(
+                    open.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &state.doc,
+                    &state.root
+                )
+                .unwrap(),
+                "search recall: second invoke handled"
+            );
+            assert_eq!(
+                app.model.expr, expression,
+                "search recall: overwrites uncommitted input"
+            );
+            assert!(
+                app.model_dirty,
+                "recalling while already in Calc still repaints"
+            );
+            app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
+            assert!(
+                app.invoke_resource_operation(
+                    open.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &state.doc,
+                    &state.root
+                )
+                .is_err(),
+                "search recall: deleted row is refused"
+            );
+            assert_eq!(
+                app.model.expr, expression,
+                "stale search must not recall a different row"
+            );
+        }
     }
 
+    /// Launch and mode-switch state: the live app boots empty in Calc, the
+    /// seeded constructor is populated, `set_mode` marks dirty, and entering an
+    /// empty graph mode seeds an editable starter. Fresh app per phase.
     #[test]
-    fn live_launch_is_empty_calc_mode() {
-        // The live app must boot to a blank slate in Calculator mode — no
-        // fabricated plots / history / memory / expression.
-        let app = CalculatorApp::new();
-        assert_eq!(app.model.mode, Mode::Calc);
-        assert!(
-            app.model.expr.is_empty(),
-            "live launch must have an empty expression"
-        );
-        assert!(
-            app.model.history.is_empty(),
-            "live launch must have no history"
-        );
-        assert!(
-            app.model.funcs.is_empty(),
-            "live launch must have no pre-plotted functions"
-        );
-        assert_eq!(app.model.memory, 0.0, "live launch must have empty memory");
-        assert_eq!(app.model.ans, 0.0);
+    fn launch_state_and_mode_switch_seeding() {
+        // phase live_launch_is_empty_calc_mode
+        {
+            // The live app must boot to a blank slate in Calculator mode — no
+            // fabricated plots / history / memory / expression.
+            let app = CalculatorApp::new();
+            assert_eq!(app.model.mode, Mode::Calc, "live launch: Calc mode");
+            assert!(
+                app.model.expr.is_empty(),
+                "live launch must have an empty expression"
+            );
+            assert!(
+                app.model.history.is_empty(),
+                "live launch must have no history"
+            );
+            assert!(
+                app.model.funcs.is_empty(),
+                "live launch must have no pre-plotted functions"
+            );
+            assert_eq!(app.model.memory, 0.0, "live launch must have empty memory");
+            assert_eq!(app.model.ans, 0.0, "live launch: ans is 0");
+        }
+        // phase seeded_launch_has_lived_in_content
+        {
+            // The demo/shots constructor keeps the populated content.
+            let app = CalculatorApp::seeded();
+            assert!(!app.model.funcs.is_empty(), "seeded: funcs present");
+            assert!(!app.model.history.is_empty(), "seeded: history present");
+        }
+        // phase set_mode_marks_dirty
+        {
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph2d);
+            assert_eq!(app.model.mode, Mode::Graph2d, "set_mode: mode");
+            assert!(app.model_dirty, "set_mode: marks dirty");
+        }
+        // phase entering_empty_graph_modes_seeds_a_starter
+        {
+            // Switching an empty live app into a graph mode gives it an editable
+            // starter (empty 2D row / example surface), not a blank void.
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph2d);
+            assert_eq!(app.model.funcs.len(), 1, "Graph 2D seeds one empty row");
+            assert!(
+                app.model.funcs[0].expr.is_empty(),
+                "Graph 2D starter row is empty"
+            );
+            app.set_mode(Mode::Graph3d);
+            assert_eq!(
+                app.model.surfaces.len(),
+                1,
+                "Graph 3D seeds one starter surface"
+            );
+            assert!(
+                !app.model.surfaces[0].expr.trim().is_empty(),
+                "Graph 3D starter is a non-empty example surface"
+            );
+        }
     }
 
-    #[test]
-    fn seeded_launch_has_lived_in_content() {
-        // The demo/shots constructor keeps the populated content.
-        let app = CalculatorApp::seeded();
-        assert!(!app.model.funcs.is_empty());
-        assert!(!app.model.history.is_empty());
-    }
-
-    #[test]
-    fn set_mode_marks_dirty() {
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph2d);
-        assert_eq!(app.model.mode, Mode::Graph2d);
-        assert!(app.model_dirty);
-    }
-
+    /// The semantic tree exposes the topbar, keypad, expression and graph
+    /// formula controls, and activating/setting them through
+    /// `perform_semantic_action` drives the model. Fresh app per phase.
     #[test]
     #[allow(
         clippy::items_after_statements,
         reason = "the local sibling-key assertion reads most clearly next to the tree it validates"
     )]
-    fn accessibility_exposes_and_activates_topbar_controls() {
+    fn accessibility_exposes_and_activates_calculator_controls() {
         use ui::a11y::Action;
         use ui::widget::Widget as _;
 
-        let mut app = CalculatorApp::new();
-        let tree = app.accessibility().expect("calculator semantics");
-        assert_eq!(tree.name.as_deref(), Some("Calculator"));
-        let mode_bar = &tree.children[0].children[0];
-        fn siblings_are_consistently_keyed(nodes: &[ui::a11y::AccessNode]) -> bool {
-            nodes.is_empty()
-                || nodes.iter().all(|node| node.key.is_some())
-                || nodes.iter().all(|node| node.key.is_none())
+        // phase accessibility_exposes_and_activates_topbar_controls
+        {
+            let mut app = CalculatorApp::new();
+            let tree = app.accessibility().expect("calculator semantics");
+            assert_eq!(
+                tree.name.as_deref(),
+                Some("Calculator"),
+                "topbar: root name"
+            );
+            let mode_bar = &tree.children[0].children[0];
+            fn siblings_are_consistently_keyed(nodes: &[ui::a11y::AccessNode]) -> bool {
+                nodes.is_empty()
+                    || nodes.iter().all(|node| node.key.is_some())
+                    || nodes.iter().all(|node| node.key.is_none())
+            }
+            assert!(
+                siblings_are_consistently_keyed(&tree.children)
+                    && siblings_are_consistently_keyed(&tree.children[0].children)
+                    && siblings_are_consistently_keyed(&mode_bar.children),
+                "synthetic Calculator siblings must not mix stable and ordinal keys"
+            );
+            assert!(
+                mode_bar.children.iter().any(|node| {
+                    node.action_target.as_deref() == Some("calculator.mode:1")
+                        && node.name.as_deref() == Some("Graph 2D")
+                }),
+                "topbar: Graph 2D mode control exposed"
+            );
+
+            let mut doc = AutoCommit::new();
+            assert!(
+                app.perform_semantic_action(
+                    "calculator.mode:1",
+                    &Action::Activate,
+                    &mut doc,
+                    &automerge::ROOT,
+                ),
+                "topbar: mode activate handled"
+            );
+            assert_eq!(app.model.mode, Mode::Graph2d, "topbar: mode switched");
+            assert!(
+                app.perform_semantic_action(
+                    "calculator.angle:degrees",
+                    &Action::ToggleCheck,
+                    &mut doc,
+                    &automerge::ROOT,
+                ),
+                "topbar: angle toggle handled"
+            );
+            assert!(app.model.deg, "topbar: degrees on");
         }
-        assert!(
-            siblings_are_consistently_keyed(&tree.children)
-                && siblings_are_consistently_keyed(&tree.children[0].children)
-                && siblings_are_consistently_keyed(&mode_bar.children),
-            "synthetic Calculator siblings must not mix stable and ordinal keys"
-        );
-        assert!(mode_bar.children.iter().any(|node| {
-            node.action_target.as_deref() == Some("calculator.mode:1")
-                && node.name.as_deref() == Some("Graph 2D")
-        }));
 
-        let mut doc = AutoCommit::new();
-        assert!(app.perform_semantic_action(
-            "calculator.mode:1",
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.model.mode, Mode::Graph2d);
-        assert!(app.perform_semantic_action(
-            "calculator.angle:degrees",
-            &Action::ToggleCheck,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(app.model.deg);
+        // phase accessibility_exposes_keypad_and_graph_formula_controls
+        {
+            let mut app = CalculatorApp::new();
+            app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.relayout();
+            app.layout_active();
+            let tree = app.accessibility().expect("calculator semantics");
+            let keypad = tree
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Scientific keypad"))
+                .expect("all painted keypad keys are exposed");
+            let expression = tree
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Expression"))
+                .expect("expression is a semantic text input");
+            assert_eq!(
+                expression.role,
+                ui::a11y::Role::TextInput,
+                "keypad: expression role"
+            );
+            let seven = keypad
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Calculator key 7"))
+                .expect("digit key is actionable");
+            let mut doc = AutoCommit::new();
+            assert!(
+                app.perform_semantic_action(
+                    seven.action_target.as_deref().unwrap_or_default(),
+                    &Action::Activate,
+                    &mut doc,
+                    &automerge::ROOT,
+                ),
+                "keypad: key 7 handled"
+            );
+            assert_eq!(app.model.expr, "7", "keypad: key 7 appended");
+            assert!(
+                app.perform_semantic_action(
+                    expression.action_target.as_deref().unwrap_or_default(),
+                    &Action::SetValue("sqrt(9)".into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ),
+                "keypad: expression SetValue handled"
+            );
+            assert_eq!(app.model.expr, "sqrt(9)", "keypad: expression set");
+
+            app.set_mode(Mode::Graph2d);
+            crate::doc::store(&mut doc, &app.model);
+            app.layout_active();
+            let graph = app.accessibility().expect("graph semantics");
+            let panel = graph
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Functions"))
+                .expect("functions panel is exposed");
+            let formula = panel
+                .children
+                .iter()
+                .flat_map(|node| node.children.iter())
+                .find(|node| node.role == ui::a11y::Role::TextInput)
+                .expect("formula editor is a text input");
+            assert!(
+                app.perform_semantic_action(
+                    formula.action_target.as_deref().unwrap_or_default(),
+                    &Action::SetValue("2*x".into()),
+                    &mut doc,
+                    &automerge::ROOT,
+                ),
+                "graph: formula SetValue handled"
+            );
+            assert_eq!(app.model.funcs[0].expr, "2*x", "graph: formula set");
+        }
     }
 
+    /// Topbar geometry: the mode switcher and RAD/DEG toggle never clip or
+    /// collide down to 400 px, reflow between breakpoints on resize, and widen
+    /// to seat their measured labels at a large text scale (1× unchanged).
     #[test]
-    fn accessibility_exposes_keypad_and_graph_formula_controls() {
-        use ui::a11y::Action;
-        use ui::widget::Widget as _;
-
-        let mut app = CalculatorApp::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        let tree = app.accessibility().expect("calculator semantics");
-        let keypad = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Scientific keypad"))
-            .expect("all painted keypad keys are exposed");
-        let expression = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Expression"))
-            .expect("expression is a semantic text input");
-        assert_eq!(expression.role, ui::a11y::Role::TextInput);
-        let seven = keypad
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Calculator key 7"))
-            .expect("digit key is actionable");
-        let mut doc = AutoCommit::new();
-        assert!(app.perform_semantic_action(
-            seven.action_target.as_deref().unwrap_or_default(),
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.model.expr, "7");
-        assert!(app.perform_semantic_action(
-            expression.action_target.as_deref().unwrap_or_default(),
-            &Action::SetValue("sqrt(9)".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.model.expr, "sqrt(9)");
-
-        app.set_mode(Mode::Graph2d);
-        crate::doc::store(&mut doc, &app.model);
-        app.layout_active();
-        let graph = app.accessibility().expect("graph semantics");
-        let panel = graph
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Functions"))
-            .expect("functions panel is exposed");
-        let formula = panel
-            .children
-            .iter()
-            .flat_map(|node| node.children.iter())
-            .find(|node| node.role == ui::a11y::Role::TextInput)
-            .expect("formula editor is a text input");
-        assert!(app.perform_semantic_action(
-            formula.action_target.as_deref().unwrap_or_default(),
-            &Action::SetValue("2*x".into()),
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.model.funcs[0].expr, "2*x");
-    }
-
-    #[test]
-    fn entering_empty_graph_modes_seeds_a_starter() {
-        // Switching an empty live app into a graph mode gives it an editable
-        // starter (empty 2D row / example surface), not a blank void.
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph2d);
-        assert_eq!(app.model.funcs.len(), 1, "Graph 2D seeds one empty row");
-        assert!(app.model.funcs[0].expr.is_empty());
-        app.set_mode(Mode::Graph3d);
-        assert_eq!(
-            app.model.surfaces.len(),
-            1,
-            "Graph 3D seeds one starter surface"
-        );
-        assert!(
-            !app.model.surfaces[0].expr.trim().is_empty(),
-            "Graph 3D starter is a non-empty example surface"
-        );
-    }
-
-    #[test]
-    fn topbar_never_overlaps_or_clips_down_to_400() {
+    fn topbar_layout_reflows_and_seats_labels_without_overlap() {
+        // phase topbar_never_overlaps_or_clips_down_to_400
         // The mode switcher and RAD/DEG toggle must reflow so they neither clip
         // past the window edge nor collide, at every width down to 400 px.
         for w in [400.0, 460.0, 520.0, 560.0, 620.0, 680.0, 800.0, 1280.0] {
@@ -2284,336 +2346,335 @@ mod tests {
                 "RAD/DEG toggle clipped the window edge at w={w}"
             );
         }
-    }
 
-    /// At an accessibility text scale the topbar's segments and RAD/DEG halves
-    /// widen to seat the labels the renderer actually paints — measured on the
-    /// production draw path — instead of keeping their 1× widths and letting
-    /// the labels run into each other.
-    #[test]
-    fn topbar_controls_seat_their_measured_labels_at_large_text() {
-        let mut app = CalculatorApp::seeded();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.relayout();
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let labels = app.topbar_labels;
-        assert!(
-            labels.full > 0.0 && labels.toggle > 0.0,
-            "labels measured: {labels:?}"
-        );
-        let seg_label = if app.seg_short {
-            labels.short
-        } else {
-            labels.full
-        };
-        for (i, r) in app.seg_rects.iter().enumerate() {
+        // phase topbar_controls_seat_their_measured_labels_at_large_text
+        {
+            // At an accessibility text scale the topbar's segments and RAD/DEG halves
+            // widen to seat the labels the renderer actually paints — measured on the
+            // production draw path — instead of keeping their 1× widths and letting
+            // the labels run into each other.
+            let mut app = CalculatorApp::seeded();
+            app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+            app.relayout();
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(2.0);
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let labels = app.topbar_labels;
             assert!(
-                r.width() + 0.5 >= seg_label + 2.0 * TopbarLabels::SEG_PAD_X,
-                "segment {i} {r:?} must seat its label ({seg_label}px) with padding"
+                labels.full > 0.0 && labels.toggle > 0.0,
+                "labels measured: {labels:?}"
+            );
+            let seg_label = if app.seg_short {
+                labels.short
+            } else {
+                labels.full
+            };
+            for (i, r) in app.seg_rects.iter().enumerate() {
+                assert!(
+                    r.width() + 0.5 >= seg_label + 2.0 * TopbarLabels::SEG_PAD_X,
+                    "segment {i} {r:?} must seat its label ({seg_label}px) with padding"
+                );
+            }
+            for (name, r) in [("RAD", app.rad_rect), ("DEG", app.deg_rect)] {
+                assert!(
+                    r.width() + 0.5 >= labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X,
+                    "{name} half {r:?} must seat its label ({}px)",
+                    labels.toggle
+                );
+            }
+            assert!(
+                app.seg_rects[2].x1 <= app.rad_rect.x0 + 0.5,
+                "the widened switcher still clears the toggle: {} vs {}",
+                app.seg_rects[2].x1,
+                app.rad_rect.x0
+            );
+            // 1× keeps its authored geometry: the measured labels fit the ordinary
+            // clamps, so nothing widens.
+            let mut base = CalculatorApp::seeded();
+            base.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+            base.relayout();
+            let before = (base.seg_rects, base.rad_rect, base.deg_rect);
+            let mut tr1 = TextRenderer::new();
+            base.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr1,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            assert_eq!(
+                (base.seg_rects, base.rad_rect, base.deg_rect),
+                before,
+                "1× topbar geometry is unchanged by measurement"
             );
         }
-        for (name, r) in [("RAD", app.rad_rect), ("DEG", app.deg_rect)] {
+
+        // phase topbar_reflows_on_resize_between_breakpoints
+        {
+            // Re-derive the layout from the CURRENT width every relayout: shrinking a
+            // laid-out instance must switch to condensed mode labels, and
+            // re-widening must restore them (not freeze at the first frame).
+            let mut app = CalculatorApp::seeded();
+            app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+            app.relayout();
+            assert!(!app.seg_short, "wide: full mode labels");
+            app.area = Rect::new(0.0, 0.0, 430.0, 720.0);
+            app.relayout();
+            assert!(app.seg_short, "narrow: condensed mode labels");
+            app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
+            app.relayout();
+            assert!(!app.seg_short, "re-widening must restore the full labels");
+        }
+    }
+
+    /// The real key path (`on_key`): Ctrl+digit switches mode, typing and
+    /// Backspace edit the active 2D function / 3D surface, and Enter appends and
+    /// focuses a fresh row. Fresh app + state per phase.
+    #[test]
+    fn keyboard_path_switches_mode_and_edits_graph_rows() {
+        let none = winit::event::Modifiers::default();
+
+        // phase ctrl_digit_switches_mode
+        {
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
+            assert_eq!(app.model.mode, Mode::Graph3d, "ctrl+3 switches to Graph 3D");
+        }
+
+        // phase typing_into_graph2d_field_updates_active_func
+        {
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.set_mode(Mode::Graph2d);
+            // start from a clean active row
+            app.model.funcs = vec![crate::model::PlotFn {
+                expr: String::new(),
+                visible: true,
+            }];
+            app.model.active_fn = 0;
+            for ch in ["2", "*", "x"] {
+                app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+            }
+            assert_eq!(app.model.funcs[0].expr, "2*x", "typing into 2D field");
+        }
+
+        // phase backspace_in_graph3d_field_edits_surface
+        {
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.set_mode(Mode::Graph3d);
+            app.model.surfaces = vec![PlotFn {
+                expr: "x+y".into(),
+                visible: true,
+            }];
+            app.model.active_surface = 0;
+            // on_key_g3 resyncs the active field to the surface before editing.
+            app.on_key(&WKey::Named(NamedKey::Backspace), none, &mut st.doc);
+            assert_eq!(app.model.surfaces[0].expr, "x+", "backspace in 3D field");
+        }
+
+        // phase enter_in_graph2d_adds_and_focuses_a_new_function
+        {
+            // Real key path: after editing a function, Enter appends a fresh empty
+            // row and focuses it (the "next expression" gesture).
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.set_mode(Mode::Graph2d);
+            app.model.funcs = vec![PlotFn {
+                expr: String::new(),
+                visible: true,
+            }];
+            app.model.active_fn = 0;
+            for ch in ["s", "i", "n", "(", "x", ")"] {
+                app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+            }
+            assert_eq!(app.model.funcs[0].expr, "sin(x)", "enter 2D: typed row");
+            app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
+            assert_eq!(
+                app.model.funcs.len(),
+                2,
+                "Enter must add a new function row"
+            );
+            assert_eq!(app.model.active_fn, 1, "the new row must be focused");
             assert!(
-                r.width() + 0.5 >= labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X,
-                "{name} half {r:?} must seat its label ({}px)",
-                labels.toggle
+                app.model.funcs[1].expr.is_empty(),
+                "the new row starts empty"
+            );
+            assert_eq!(
+                app.model.funcs[0].expr, "sin(x)",
+                "the edited row is preserved"
             );
         }
-        assert!(
-            app.seg_rects[2].x1 <= app.rad_rect.x0 + 0.5,
-            "the widened switcher still clears the toggle: {} vs {}",
-            app.seg_rects[2].x1,
-            app.rad_rect.x0
-        );
-        // 1× keeps its authored geometry: the measured labels fit the ordinary
-        // clamps, so nothing widens.
-        let mut base = CalculatorApp::seeded();
-        base.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        base.relayout();
-        let before = (base.seg_rects, base.rad_rect, base.deg_rect);
-        let mut tr1 = TextRenderer::new();
-        base.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr1,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        assert_eq!(
-            (base.seg_rects, base.rad_rect, base.deg_rect),
-            before,
-            "1× topbar geometry is unchanged by measurement"
-        );
-    }
 
-    #[test]
-    fn topbar_reflows_on_resize_between_breakpoints() {
-        // Re-derive the layout from the CURRENT width every relayout: shrinking a
-        // laid-out instance must switch to condensed mode labels, and
-        // re-widening must restore them (not freeze at the first frame).
-        let mut app = CalculatorApp::seeded();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.relayout();
-        assert!(!app.seg_short, "wide: full mode labels");
-        app.area = Rect::new(0.0, 0.0, 430.0, 720.0);
-        app.relayout();
-        assert!(app.seg_short, "narrow: condensed mode labels");
-        app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.relayout();
-        assert!(!app.seg_short, "re-widening must restore the full labels");
-    }
-
-    #[test]
-    fn narrow_graph2d_toggle_opens_drawer_via_handle_event() {
-        // Drive the REAL production event path (handle_event → on_press) at a
-        // narrow width and assert the collapsed Functions drawer opens.
-        use taffy::{Style, TaffyTree};
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph2d);
-        app.area = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.relayout();
-        app.layout_active();
-        assert!(!app.g2.panel_open(), "narrow default must start collapsed");
-        let toggle = app
-            .g2
-            .toggle_center()
-            .expect("a collapsed toggle must be present");
-
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut st = ui::State::new();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let dev = winit::event::DeviceId::dummy();
-        app.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
-            },
-            1.0,
-            &mods,
-            &mut st.doc,
-            &st.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        app.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: dev,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &mods,
-            &mut st.doc,
-            &st.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-        assert!(
-            app.g2.panel_open(),
-            "tapping the toggle must open the Functions drawer"
-        );
-    }
-
-    #[test]
-    fn ctrl_digit_switches_mode() {
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
-        assert_eq!(app.model.mode, Mode::Graph3d);
-    }
-
-    #[test]
-    fn typing_into_graph2d_field_updates_active_func() {
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.set_mode(Mode::Graph2d);
-        // start from a clean active row
-        app.model.funcs = vec![crate::model::PlotFn {
-            expr: String::new(),
-            visible: true,
-        }];
-        app.model.active_fn = 0;
-        let none = winit::event::Modifiers::default();
-        for ch in ["2", "*", "x"] {
-            app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+        // phase enter_in_graph3d_adds_and_focuses_a_new_surface
+        {
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.set_mode(Mode::Graph3d); // seeds one starter surface
+            let start = app.model.surfaces.len();
+            app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
+            assert_eq!(
+                app.model.surfaces.len(),
+                start + 1,
+                "Enter must add a new surface row"
+            );
+            assert_eq!(
+                app.model.active_surface,
+                app.model.surfaces.len() - 1,
+                "the new surface is focused"
+            );
+            assert!(
+                app.model.surfaces.last().unwrap().expr.is_empty(),
+                "the new surface starts empty"
+            );
         }
-        assert_eq!(app.model.funcs[0].expr, "2*x");
     }
 
+    /// Formula state is CRDT-backed and undoable through the framework: undo/redo
+    /// round-trips through `ui::State`'s snapshot stack, an external CRDT edit is
+    /// adopted on sync, and an event-path edit arms and seals the coalesced undo
+    /// commit. Fresh app + state per phase.
     #[test]
-    fn backspace_in_graph3d_field_edits_surface() {
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.set_mode(Mode::Graph3d);
-        app.model.surfaces = vec![PlotFn {
-            expr: "x+y".into(),
-            visible: true,
-        }];
-        app.model.active_surface = 0;
-        // on_key_g3 resyncs the active field to the surface before editing.
-        let none = winit::event::Modifiers::default();
-        app.on_key(&WKey::Named(NamedKey::Backspace), none, &mut st.doc);
-        assert_eq!(app.model.surfaces[0].expr, "x+");
-    }
+    fn formula_edits_sync_through_crdt_and_framework_undo() {
+        // phase undo_redo_of_formula_edit_routes_through_ui_state
+        {
+            // Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
+            // stack (not a bespoke calculator stack): typing checkpoints via
+            // `commit_action`, Ctrl+Z restores the previous CRDT snapshot, and `sync`
+            // adopts the restored document back into the on-screen model.
+            use crate::doc;
+            let mut app = CalculatorApp::new();
+            let mut state = ui::State::new();
 
-    #[test]
-    fn enter_in_graph2d_adds_and_focuses_a_new_function() {
-        // Real key path: after editing a function, Enter appends a fresh empty
-        // row and focuses it (the "next expression" gesture).
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.set_mode(Mode::Graph2d);
-        app.model.funcs = vec![PlotFn {
-            expr: String::new(),
-            visible: true,
-        }];
-        app.model.active_fn = 0;
-        let none = winit::event::Modifiers::default();
-        for ch in ["s", "i", "n", "(", "x", ")"] {
-            app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+            // Seed the CRDT from the initial model, then checkpoint that baseline.
+            app.sync(&mut state.doc, &state.root);
+            state.commit_action(None, None);
+
+            // Start from a single, empty 2D function; checkpoint it.
+            app.set_mode(Mode::Graph2d);
+            app.model.funcs = vec![PlotFn {
+                expr: String::new(),
+                visible: true,
+            }];
+            app.model.active_fn = 0;
+            doc::store(&mut state.doc, &app.model);
+            state.commit_action(None, None);
+
+            // Type "2*x" (character edits) and seal one checkpoint — exactly what the
+            // App's needs_commit → commit_action coalescing does after a pause.
+            let none = winit::event::Modifiers::default();
+            for ch in ["2", "*", "x"] {
+                app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
+            }
+            assert_eq!(app.model.funcs[0].expr, "2*x", "undo: typed formula");
+            let before = app
+                .take_committed_action()
+                .expect("formula actions expose one undo bracket");
+            assert!(
+                state.record_committed_action(before, None, None),
+                "undo: committed action recorded"
+            );
+
+            // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
+            assert!(
+                state.undo(None, None).is_some(),
+                "undo must pop a checkpoint"
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.model.funcs[0].expr, "",
+                "Ctrl+Z must restore the pre-edit formula"
+            );
+
+            // Ctrl+Y: redo re-applies; sync adopts it.
+            assert!(
+                state.redo(None, None).is_some(),
+                "redo must pop a checkpoint"
+            );
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.model.funcs[0].expr, "2*x",
+                "Ctrl+Y must re-apply the edit"
+            );
         }
-        assert_eq!(app.model.funcs[0].expr, "sin(x)");
-        app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
-        assert_eq!(
-            app.model.funcs.len(),
-            2,
-            "Enter must add a new function row"
-        );
-        assert_eq!(app.model.active_fn, 1, "the new row must be focused");
-        assert!(
-            app.model.funcs[1].expr.is_empty(),
-            "the new row starts empty"
-        );
-        assert_eq!(
-            app.model.funcs[0].expr, "sin(x)",
-            "the edited row is preserved"
-        );
-    }
 
-    #[test]
-    fn enter_in_graph3d_adds_and_focuses_a_new_surface() {
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.set_mode(Mode::Graph3d); // seeds one starter surface
-        let start = app.model.surfaces.len();
-        let none = winit::event::Modifiers::default();
-        app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
-        assert_eq!(
-            app.model.surfaces.len(),
-            start + 1,
-            "Enter must add a new surface row"
-        );
-        assert_eq!(
-            app.model.active_surface,
-            app.model.surfaces.len() - 1,
-            "the new surface is focused"
-        );
-        assert!(
-            app.model.surfaces.last().unwrap().expr.is_empty(),
-            "the new surface starts empty"
-        );
-    }
+        // phase external_crdt_edit_is_adopted_on_sync
+        {
+            // A change made directly in the shared CRDT (as a collaborator's merged
+            // patch would appear) is adopted by `sync` — proving the field buffer is
+            // genuinely CRDT-backed, not a private String the app owns.
+            let mut app = CalculatorApp::new();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
 
-    /// Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
-    /// stack (not a bespoke calculator stack): typing checkpoints via
-    /// `commit_action`, Ctrl+Z restores the previous CRDT snapshot, and `sync`
-    /// adopts the restored document back into the on-screen model.
-    #[test]
-    fn undo_redo_of_formula_edit_routes_through_ui_state() {
-        use crate::doc;
-        let mut app = CalculatorApp::new();
-        let mut state = ui::State::new();
-
-        // Seed the CRDT from the initial model, then checkpoint that baseline.
-        app.sync(&mut state.doc, &state.root);
-        state.commit_action(None, None);
-
-        // Start from a single, empty 2D function; checkpoint it.
-        app.set_mode(Mode::Graph2d);
-        app.model.funcs = vec![PlotFn {
-            expr: String::new(),
-            visible: true,
-        }];
-        app.model.active_fn = 0;
-        doc::store(&mut state.doc, &app.model);
-        state.commit_action(None, None);
-
-        // Type "2*x" (character edits) and seal one checkpoint — exactly what the
-        // App's needs_commit → commit_action coalescing does after a pause.
-        let none = winit::event::Modifiers::default();
-        for ch in ["2", "*", "x"] {
-            app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
+            // Mutate the document out-of-band, then re-sync.
+            app.model.mode = Mode::Graph3d; // (only to prove sync overwrites it)
+            let mut edited = crate::doc::load(&state.doc).expect("seeded");
+            edited.surfaces = vec![PlotFn {
+                expr: "x*y+1".into(),
+                visible: true,
+            }];
+            crate::doc::store(&mut state.doc, &edited);
+            app.sync(&mut state.doc, &state.root);
+            assert_eq!(
+                app.model.surfaces.first().map(|f| f.expr.as_str()),
+                Some("x*y+1"),
+                "sync must adopt the external CRDT surface edit"
+            );
         }
-        assert_eq!(app.model.funcs[0].expr, "2*x");
-        let before = app
-            .take_committed_action()
-            .expect("formula actions expose one undo bracket");
-        assert!(state.record_committed_action(before, None, None));
 
-        // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
-        assert!(
-            state.undo(None, None).is_some(),
-            "undo must pop a checkpoint"
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.model.funcs[0].expr, "",
-            "Ctrl+Z must restore the pre-edit formula"
-        );
-
-        // Ctrl+Y: redo re-applies; sync adopts it.
-        assert!(
-            state.redo(None, None).is_some(),
-            "redo must pop a checkpoint"
-        );
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.model.funcs[0].expr, "2*x",
-            "Ctrl+Y must re-apply the edit"
-        );
-    }
-
-    /// A change made directly in the shared CRDT (as a collaborator's merged
-    /// patch would appear) is adopted by `sync` — proving the field buffer is
-    /// genuinely CRDT-backed, not a private String the app owns.
-    #[test]
-    fn external_crdt_edit_is_adopted_on_sync() {
-        let mut app = CalculatorApp::new();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        // Mutate the document out-of-band, then re-sync.
-        app.model.mode = Mode::Graph3d; // (only to prove sync overwrites it)
-        let mut edited = crate::doc::load(&state.doc).expect("seeded");
-        edited.surfaces = vec![PlotFn {
-            expr: "x*y+1".into(),
-            visible: true,
-        }];
-        crate::doc::store(&mut state.doc, &edited);
-        app.sync(&mut state.doc, &state.root);
-        assert_eq!(
-            app.model.surfaces.first().map(|f| f.expr.as_str()),
-            Some("x*y+1"),
-            "sync must adopt the external CRDT surface edit"
-        );
+        // phase edit_through_event_path_arms_and_seals_undo_commit
+        {
+            // The calculator's half of the framework Ctrl+Z: a real edit through the
+            // event path arms the coalescing timer, `needs_commit` seals a checkpoint
+            // only after the pause, and `on_commit` clears it. (The Ctrl+Z keybinding →
+            // snapshot → sync loop itself lives in `ui::App`; the snapshot round-trip is
+            // proven by the undo_redo_of_formula_edit_routes_through_ui_state phase above.)
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.relayout();
+            app.layout_active();
+            assert!(!app.needs_commit(), "no edit yet → nothing to commit");
+            let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
+            tap(&mut app, &mut st, five);
+            assert_eq!(app.model.expr, "5", "seal: tapped 5");
+            assert!(
+                app.last_edit_time.is_some(),
+                "an edit must arm the coalescing timer"
+            );
+            assert!(
+                !app.needs_commit(),
+                "a just-made edit must not seal a checkpoint mid-burst"
+            );
+            // Once the coalesce window has elapsed the widget asks to checkpoint.
+            app.last_edit_time = Some(
+                std::time::Instant::now()
+                    .checked_sub(COMMIT_COALESCE)
+                    .unwrap(),
+            );
+            assert!(
+                app.needs_commit(),
+                "after the pause the edit must seal into a checkpoint"
+            );
+            // The App calls on_commit after snapshotting; that clears the pending edit.
+            app.on_commit();
+            assert!(!app.needs_commit(), "seal: on_commit clears needs_commit");
+            assert!(
+                app.last_edit_time.is_none(),
+                "seal: on_commit clears the timer"
+            );
+        }
     }
 
     // -- pointer-path harness: drive the REAL production handle_event route -----
@@ -2679,295 +2740,320 @@ mod tests {
         send(app, st, &btn(ElementState::Released));
     }
 
-    #[test]
-    fn calc_keypad_click_appends_to_expression() {
-        // handle_event → on_press → on_press_calc → key_at → apply_key on the
-        // real keycap rects (not a model-level apply_key shortcut).
-        let mut app = CalculatorApp::new(); // Calc mode, empty
-        let mut st = ui::State::new();
+    /// A laid-out app at the wide 1280×800 area used by the pointer tests.
+    fn wide(mut app: CalculatorApp) -> CalculatorApp {
         app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
         app.layout_active();
-        let seven = app.bench_calc_key_center("7").expect("7 keycap laid out");
-        tap(&mut app, &mut st, seven);
-        assert_eq!(app.model.expr, "7", "tapping a digit keycap must append it");
-        let plus = app.bench_calc_key_center("+").expect("+ keycap laid out");
-        tap(&mut app, &mut st, plus);
-        assert_eq!(
-            app.model.expr, "7+",
-            "tapping an operator keycap must append it"
-        );
+        app
     }
 
+    /// Calculator-mode pointer path: keycaps append, a history row recalls,
+    /// Clear empties history, memory keys accumulate/clear, and the RAD/DEG
+    /// toggle changes trig output. Fresh app + state per phase.
     #[test]
-    fn history_row_click_recalls_expression() {
-        // on_press_calc → history_at → model.expr loads the tapped entry.
-        let mut app = CalculatorApp::seeded();
-        app.set_mode(Mode::Calc);
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // wide → history docks open
-        app.relayout();
-        app.layout_active();
-        let want = app.model.history[0].expr.clone();
-        assert!(!want.is_empty());
-        let row = app
-            .calc
-            .history_row_center(0)
-            .expect("history row 0 laid out");
-        app.model.expr = "999".into(); // something distinct to overwrite
-        app.model.after_equals = true;
-        tap(&mut app, &mut st, row);
-        assert_eq!(
-            app.model.expr, want,
-            "tapping a history row must load its expression"
-        );
-        assert!(
-            !app.model.after_equals,
-            "recall must clear the after-equals latch"
-        );
+    fn calc_pointer_clicks_drive_keypad_history_memory_and_angle() {
+        // phase calc_keypad_click_appends_to_expression
+        {
+            // handle_event → on_press → on_press_calc → key_at → apply_key on the
+            // real keycap rects (not a model-level apply_key shortcut).
+            let mut app = wide(CalculatorApp::new()); // Calc mode, empty
+            let mut st = ui::State::new();
+            let seven = app.bench_calc_key_center("7").expect("7 keycap laid out");
+            tap(&mut app, &mut st, seven);
+            assert_eq!(app.model.expr, "7", "tapping a digit keycap must append it");
+            let plus = app.bench_calc_key_center("+").expect("+ keycap laid out");
+            tap(&mut app, &mut st, plus);
+            assert_eq!(
+                app.model.expr, "7+",
+                "tapping an operator keycap must append it"
+            );
+        }
+
+        // phase history_row_click_recalls_expression
+        {
+            // on_press_calc → history_at → model.expr loads the tapped entry.
+            let mut app = CalculatorApp::seeded();
+            app.set_mode(Mode::Calc);
+            let mut st = ui::State::new();
+            let mut app = wide(app); // wide → history docks open
+            let want = app.model.history[0].expr.clone();
+            assert!(!want.is_empty(), "history recall: fixture non-empty");
+            let row = app
+                .calc
+                .history_row_center(0)
+                .expect("history row 0 laid out");
+            app.model.expr = "999".into(); // something distinct to overwrite
+            app.model.after_equals = true;
+            tap(&mut app, &mut st, row);
+            assert_eq!(
+                app.model.expr, want,
+                "tapping a history row must load its expression"
+            );
+            assert!(
+                !app.model.after_equals,
+                "recall must clear the after-equals latch"
+            );
+        }
+
+        // phase clear_history_button_click_empties_history
+        {
+            // on_press_calc → clear_history_at → model.history.clear().
+            let mut app = CalculatorApp::seeded();
+            app.set_mode(Mode::Calc);
+            let mut st = ui::State::new();
+            let mut app = wide(app);
+            assert!(
+                !app.model.history.is_empty(),
+                "clear history: fixture non-empty"
+            );
+            let clear = app
+                .calc
+                .clear_history_center()
+                .expect("Clear button laid out");
+            tap(&mut app, &mut st, clear);
+            assert!(
+                app.model.history.is_empty(),
+                "tapping Clear must empty the history"
+            );
+        }
+
+        // phase memory_button_click_accumulates_via_pointer
+        {
+            // on_press_calc → mem_at → apply_key(MemAdd/MemClear) via the mem rects.
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.model.expr = "10".into();
+            let mut app = wide(app);
+            // MEM_KEYS = [MC, MR, M+, M-]; index 2 is M+, index 0 is MC.
+            let m_add = app.calc.mem_center(2).expect("M+ button laid out");
+            tap(&mut app, &mut st, m_add);
+            assert_eq!(
+                app.model.memory, 10.0,
+                "M+ must add the current value to memory"
+            );
+            tap(&mut app, &mut st, m_add);
+            assert_eq!(app.model.memory, 20.0, "M+ again accumulates");
+            let m_clr = app.calc.mem_center(0).expect("MC button laid out");
+            tap(&mut app, &mut st, m_clr);
+            assert_eq!(app.model.memory, 0.0, "MC must clear memory");
+        }
+
+        // phase deg_toggle_click_changes_angle_mode_and_trig_output
+        {
+            // on_press → deg_rect / rad_rect → model.deg, and the change must flow
+            // through model.ctx() so trig actually evaluates differently.
+            use crate::engine;
+            let mut app = CalculatorApp::new();
+            let mut st = ui::State::new();
+            app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.relayout();
+            assert!(!app.model.deg, "default is radians");
+            let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
+            assert!(
+                (rad_val - 1.0).abs() > 0.01,
+                "RAD sin(90) must not be 1 (got {rad_val})"
+            );
+            let deg_pt = app.deg_rect.center();
+            tap(&mut app, &mut st, deg_pt);
+            assert!(app.model.deg, "clicking DEG must switch to degrees");
+            let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
+            assert!(
+                (deg_val - 1.0).abs() < 1e-9,
+                "DEG sin(90) must be 1 (got {deg_val})"
+            );
+            let rad_pt = app.rad_rect.center();
+            tap(&mut app, &mut st, rad_pt);
+            assert!(!app.model.deg, "clicking RAD must switch back to radians");
+        }
     }
 
+    /// Graph-mode pointer path: drag pans / orbits and the wheel zooms the 2D and
+    /// 3D views, the narrow Functions drawer opens from its toggle, and the row
+    /// visibility dot and delete button act on the tapped row. Fresh app + state
+    /// per phase.
     #[test]
-    fn clear_history_button_click_empties_history() {
-        // on_press_calc → clear_history_at → model.history.clear().
-        let mut app = CalculatorApp::seeded();
-        app.set_mode(Mode::Calc);
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        assert!(!app.model.history.is_empty());
-        let clear = app
-            .calc
-            .clear_history_center()
-            .expect("Clear button laid out");
-        tap(&mut app, &mut st, clear);
-        assert!(
-            app.model.history.is_empty(),
-            "tapping Clear must empty the history"
-        );
-    }
+    fn graph_pointer_path_drives_views_drawer_and_row_controls() {
+        // phase graph2d_drag_pans_the_view
+        {
+            // handle_event drag → on_drag → view2d center shifts.
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph2d);
+            let mut st = ui::State::new();
+            let mut app = wide(app); // docked panel → live canvas
+            assert_eq!(app.model.view2d.cx, 0.0, "pan 2D: starts at cx 0");
+            assert_eq!(app.model.view2d.cy, 0.0, "pan 2D: starts at cy 0");
+            let c = app.g2.canvas.center();
+            drag(&mut app, &mut st, c, Point::new(c.x + 40.0, c.y + 30.0));
+            assert!(app.model.view2d.cx != 0.0, "horizontal drag must pan cx");
+            assert!(app.model.view2d.cy != 0.0, "vertical drag must pan cy");
+        }
 
-    #[test]
-    fn memory_button_click_accumulates_via_pointer() {
-        // on_press_calc → mem_at → apply_key(MemAdd/MemClear) via the mem rects.
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.model.expr = "10".into();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        // MEM_KEYS = [MC, MR, M+, M-]; index 2 is M+, index 0 is MC.
-        let m_add = app.calc.mem_center(2).expect("M+ button laid out");
-        tap(&mut app, &mut st, m_add);
-        assert_eq!(
-            app.model.memory, 10.0,
-            "M+ must add the current value to memory"
-        );
-        tap(&mut app, &mut st, m_add);
-        assert_eq!(app.model.memory, 20.0, "M+ again accumulates");
-        let m_clr = app.calc.mem_center(0).expect("MC button laid out");
-        tap(&mut app, &mut st, m_clr);
-        assert_eq!(app.model.memory, 0.0, "MC must clear memory");
-    }
+        // phase graph2d_wheel_zooms_the_view
+        {
+            // handle_event wheel over the canvas → on_wheel → view2d.scale grows.
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph2d);
+            let mut st = ui::State::new();
+            let mut app = wide(app);
+            let before = app.model.view2d.scale;
+            let c = app.g2.canvas.center();
+            send(&mut app, &mut st, &cursor(c));
+            send(&mut app, &mut st, &wheel(1.0));
+            assert!(
+                app.model.view2d.scale > before,
+                "scrolling up over the canvas must zoom in (scale {before} → {})",
+                app.model.view2d.scale
+            );
+        }
 
-    #[test]
-    fn deg_toggle_click_changes_angle_mode_and_trig_output() {
-        // on_press → deg_rect / rad_rect → model.deg, and the change must flow
-        // through model.ctx() so trig actually evaluates differently.
-        use crate::engine;
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert!(!app.model.deg, "default is radians");
-        let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
-        assert!(
-            (rad_val - 1.0).abs() > 0.01,
-            "RAD sin(90) must not be 1 (got {rad_val})"
-        );
-        let deg_pt = app.deg_rect.center();
-        tap(&mut app, &mut st, deg_pt);
-        assert!(app.model.deg, "clicking DEG must switch to degrees");
-        let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
-        assert!(
-            (deg_val - 1.0).abs() < 1e-9,
-            "DEG sin(90) must be 1 (got {deg_val})"
-        );
-        let rad_pt = app.rad_rect.center();
-        tap(&mut app, &mut st, rad_pt);
-        assert!(!app.model.deg, "clicking RAD must switch back to radians");
-    }
+        // phase graph3d_drag_orbits_the_view
+        {
+            // handle_event drag → on_drag → view3d yaw/pitch change.
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph3d);
+            let mut st = ui::State::new();
+            let mut app = wide(app);
+            let (yaw0, pitch0) = (app.model.view3d.yaw, app.model.view3d.pitch);
+            let c = app.g3.canvas.center();
+            drag(&mut app, &mut st, c, Point::new(c.x + 50.0, c.y + 20.0));
+            assert!(
+                (app.model.view3d.yaw - yaw0).abs() >= f64::EPSILON,
+                "horizontal drag must change yaw"
+            );
+            assert!(
+                (app.model.view3d.pitch - pitch0).abs() >= f64::EPSILON,
+                "vertical drag must change pitch"
+            );
+        }
 
-    #[test]
-    fn graph2d_drag_pans_the_view() {
-        // handle_event drag → on_drag → view2d center shifts.
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph2d);
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // docked panel → live canvas
-        app.relayout();
-        app.layout_active();
-        assert_eq!(app.model.view2d.cx, 0.0);
-        assert_eq!(app.model.view2d.cy, 0.0);
-        let c = app.g2.canvas.center();
-        drag(&mut app, &mut st, c, Point::new(c.x + 40.0, c.y + 30.0));
-        assert!(app.model.view2d.cx != 0.0, "horizontal drag must pan cx");
-        assert!(app.model.view2d.cy != 0.0, "vertical drag must pan cy");
-    }
+        // phase graph3d_wheel_zooms_the_view
+        {
+            // handle_event wheel over the surface canvas → on_wheel → view3d.zoom.
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph3d);
+            let mut st = ui::State::new();
+            let mut app = wide(app);
+            let before = app.model.view3d.zoom;
+            let c = app.g3.canvas.center();
+            send(&mut app, &mut st, &cursor(c));
+            send(&mut app, &mut st, &wheel(1.0));
+            assert!(
+                app.model.view3d.zoom > before,
+                "scrolling up over the surface must zoom in"
+            );
+        }
 
-    #[test]
-    fn graph2d_wheel_zooms_the_view() {
-        // handle_event wheel over the canvas → on_wheel → view2d.scale grows.
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph2d);
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        let before = app.model.view2d.scale;
-        let c = app.g2.canvas.center();
-        send(&mut app, &mut st, &cursor(c));
-        send(&mut app, &mut st, &wheel(1.0));
-        assert!(
-            app.model.view2d.scale > before,
-            "scrolling up over the canvas must zoom in (scale {before} → {})",
-            app.model.view2d.scale
-        );
-    }
+        // phase narrow_graph2d_toggle_opens_drawer_via_handle_event
+        {
+            // Drive the REAL production event path (handle_event → on_press) at a
+            // narrow width and assert the collapsed Functions drawer opens.
+            let mut app = CalculatorApp::new();
+            app.set_mode(Mode::Graph2d);
+            app.area = Rect::new(0.0, 0.0, 560.0, 720.0);
+            app.relayout();
+            app.layout_active();
+            assert!(!app.g2.panel_open(), "narrow default must start collapsed");
+            let toggle = app
+                .g2
+                .toggle_center()
+                .expect("a collapsed toggle must be present");
 
-    #[test]
-    fn graph3d_drag_orbits_the_view() {
-        // handle_event drag → on_drag → view3d yaw/pitch change.
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph3d);
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        let (yaw0, pitch0) = (app.model.view3d.yaw, app.model.view3d.pitch);
-        let c = app.g3.canvas.center();
-        drag(&mut app, &mut st, c, Point::new(c.x + 50.0, c.y + 20.0));
-        assert!(
-            (app.model.view3d.yaw - yaw0).abs() >= f64::EPSILON,
-            "horizontal drag must change yaw"
-        );
-        assert!(
-            (app.model.view3d.pitch - pitch0).abs() >= f64::EPSILON,
-            "vertical drag must change pitch"
-        );
-    }
+            use taffy::{Style, TaffyTree};
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut st = ui::State::new();
+            let mods = winit::event::Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            let dev = winit::event::DeviceId::dummy();
+            app.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
+                },
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            app.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: dev,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            assert!(
+                app.g2.panel_open(),
+                "tapping the toggle must open the Functions drawer"
+            );
+        }
 
-    #[test]
-    fn graph3d_wheel_zooms_the_view() {
-        // handle_event wheel over the surface canvas → on_wheel → view3d.zoom.
-        let mut app = CalculatorApp::new();
-        app.set_mode(Mode::Graph3d);
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        let before = app.model.view3d.zoom;
-        let c = app.g3.canvas.center();
-        send(&mut app, &mut st, &cursor(c));
-        send(&mut app, &mut st, &wheel(1.0));
-        assert!(
-            app.model.view3d.zoom > before,
-            "scrolling up over the surface must zoom in"
-        );
-    }
+        // phase vis_dot_click_toggles_function_visibility
+        {
+            // on_press_g2 → vis_at → funcs[i].visible flips, via the real dot rect.
+            let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
+            app.set_mode(Mode::Graph2d);
+            let mut st = ui::State::new();
+            // Mirror the live frame loop, which syncs the model into the document
+            // before routing a pointer event. Without it the taps dispatch their
+            // toggle actions against an empty document: the first toggle finds no
+            // `funcs[0]` to flip, so it commits an empty change, and (per
+            // `perform_action`'s contract) an empty change wedges the next dispatch
+            // — the second tap then panics inside Automerge's transaction open.
+            app.sync(&mut st.doc, &st.root);
+            let mut app = wide(app); // docked panel
+            assert!(app.model.funcs[0].visible, "vis dot: starts visible");
+            let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
+            tap(&mut app, &mut st, dot);
+            assert!(
+                !app.model.funcs[0].visible,
+                "tapping the dot must hide the function"
+            );
+            tap(&mut app, &mut st, dot);
+            assert!(app.model.funcs[0].visible, "tapping again must show it");
+        }
 
-    #[test]
-    fn vis_dot_click_toggles_function_visibility() {
-        // on_press_g2 → vis_at → funcs[i].visible flips, via the real dot rect.
-        let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
-        app.set_mode(Mode::Graph2d);
-        let mut st = ui::State::new();
-        // Mirror the live frame loop, which syncs the model into the document
-        // before routing a pointer event. Without it the taps dispatch their
-        // toggle actions against an empty document: the first toggle finds no
-        // `funcs[0]` to flip, so it commits an empty change, and (per
-        // `perform_action`'s contract) an empty change wedges the next dispatch
-        // — the second tap then panics inside Automerge's transaction open.
-        app.sync(&mut st.doc, &st.root);
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // docked panel
-        app.relayout();
-        app.layout_active();
-        assert!(app.model.funcs[0].visible);
-        let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
-        tap(&mut app, &mut st, dot);
-        assert!(
-            !app.model.funcs[0].visible,
-            "tapping the dot must hide the function"
-        );
-        tap(&mut app, &mut st, dot);
-        assert!(app.model.funcs[0].visible, "tapping again must show it");
-    }
-
-    #[test]
-    fn graph_row_delete_button_tombstones_the_stable_resource() {
-        // A directly visible delete button must use the same keyed action as
-        // the palette, so it cannot accidentally rebind after a peer changes
-        // list order.
-        let mut app = CalculatorApp::seeded();
-        let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        let id = crate::doc::row_id_at(&st.doc, crate::doc::FUNCS, 0)
-            .expect("first formula has a durable id");
-        let delete = app
-            .g2
-            .delete_rect(0)
-            .expect("first formula has a visible delete control")
-            .center();
-        let before = app.model.funcs.len();
-        tap(&mut app, &mut st, delete);
-        assert_eq!(app.model.funcs.len(), before - 1);
-        assert!(
-            !crate::doc::visible_ids(&st.doc, crate::doc::FUNCS).contains(&id),
-            "the clicked stable row is tombstoned rather than a neighbouring index"
-        );
-    }
-
-    /// The calculator's half of the framework Ctrl+Z: a real edit through the
-    /// event path arms the coalescing timer, `needs_commit` seals a checkpoint
-    /// only after the pause, and `on_commit` clears it. (The Ctrl+Z keybinding →
-    /// snapshot → sync loop itself lives in `ui::App`; the snapshot round-trip is
-    /// proven by `undo_redo_of_formula_edit_routes_through_ui_state`.)
-    #[test]
-    fn edit_through_event_path_arms_and_seals_undo_commit() {
-        let mut app = CalculatorApp::new();
-        let mut st = ui::State::new();
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        app.layout_active();
-        assert!(!app.needs_commit(), "no edit yet → nothing to commit");
-        let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
-        tap(&mut app, &mut st, five);
-        assert_eq!(app.model.expr, "5");
-        assert!(
-            app.last_edit_time.is_some(),
-            "an edit must arm the coalescing timer"
-        );
-        assert!(
-            !app.needs_commit(),
-            "a just-made edit must not seal a checkpoint mid-burst"
-        );
-        // Once the coalesce window has elapsed the widget asks to checkpoint.
-        app.last_edit_time = Some(
-            std::time::Instant::now()
-                .checked_sub(COMMIT_COALESCE)
-                .unwrap(),
-        );
-        assert!(
-            app.needs_commit(),
-            "after the pause the edit must seal into a checkpoint"
-        );
-        // The App calls on_commit after snapshotting; that clears the pending edit.
-        app.on_commit();
-        assert!(!app.needs_commit());
-        assert!(app.last_edit_time.is_none());
+        // phase graph_row_delete_button_tombstones_the_stable_resource
+        {
+            // A directly visible delete button must use the same keyed action as
+            // the palette, so it cannot accidentally rebind after a peer changes
+            // list order.
+            let mut app = CalculatorApp::seeded();
+            let mut st = ui::State::new();
+            app.sync(&mut st.doc, &st.root);
+            let mut app = wide(app);
+            let id = crate::doc::row_id_at(&st.doc, crate::doc::FUNCS, 0)
+                .expect("first formula has a durable id");
+            let delete = app
+                .g2
+                .delete_rect(0)
+                .expect("first formula has a visible delete control")
+                .center();
+            let before = app.model.funcs.len();
+            tap(&mut app, &mut st, delete);
+            assert_eq!(
+                app.model.funcs.len(),
+                before - 1,
+                "delete button: one row removed"
+            );
+            assert!(
+                !crate::doc::visible_ids(&st.doc, crate::doc::FUNCS).contains(&id),
+                "the clicked stable row is tombstoned rather than a neighbouring index"
+            );
+        }
     }
 }

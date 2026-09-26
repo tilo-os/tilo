@@ -1164,29 +1164,33 @@ mod tests {
         palette: ["Run speed test", "Change test region"],
     }
 
+    /// Neither the wide metadata row nor the stacked dial touches the primary action.
     #[test]
-    fn wide_metadata_row_never_touches_primary_action() {
-        for height in [520.0, 640.0, 760.0, 900.0] {
-            let mut app = SpeedTestApp::new();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, height);
-            let facts_bottom = app.rect.y1 - 196.0 + 42.0;
-            assert!(
-                facts_bottom + 28.0 <= app.primary_rect().y0,
-                "metadata and action overlap at {height}px"
-            );
+    fn metadata_and_dial_never_touch_the_primary_action() {
+        // Case `wide_metadata_row_never_touches_primary_action`.
+        {
+            for height in [520.0, 640.0, 760.0, 900.0] {
+                let mut app = SpeedTestApp::new();
+                app.rect = Rect::new(0.0, 0.0, 1180.0, height);
+                let facts_bottom = app.rect.y1 - 196.0 + 42.0;
+                assert!(
+                    facts_bottom + 28.0 <= app.primary_rect().y0,
+                    "metadata and action overlap at {height}px"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn stacked_dial_never_touches_primary_action() {
-        for width in [480.0, 560.0, 700.0, 849.0] {
-            let mut app = SpeedTestApp::new();
-            app.rect = Rect::new(0.0, 0.0, width, 820.0);
-            let decorated_dial_bottom = app.dial_center().y + app.dial_radius() + 28.0;
-            assert!(
-                decorated_dial_bottom + 5.0 <= app.primary_rect().y0,
-                "dial and action overlap at {width}px"
-            );
+        // Case `stacked_dial_never_touches_primary_action`.
+        {
+            for width in [480.0, 560.0, 700.0, 849.0] {
+                let mut app = SpeedTestApp::new();
+                app.rect = Rect::new(0.0, 0.0, width, 820.0);
+                let decorated_dial_bottom = app.dial_center().y + app.dial_radius() + 28.0;
+                assert!(
+                    decorated_dial_bottom + 5.0 <= app.primary_rect().y0,
+                    "dial and action overlap at {width}px"
+                );
+            }
         }
     }
 }

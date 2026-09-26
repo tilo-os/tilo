@@ -2017,7 +2017,19 @@ mod tests {
         v
     }
 
+    /// Scrolling reuses measurement, painting and drop-target publication visit
+    /// only what the viewport shows, and the reserved status lane stays clear —
+    /// each phase with its own view fixture.
     #[test]
+    fn scroll_measurement_culling_and_drop_targets_bound_the_work() {
+        scroll_layout_reuses_real_file_view_measurement();
+        rows_outside_the_scroll_viewport_are_culled();
+        visible_range_avoids_scanning_a_large_directory();
+        drop_targets_are_limited_to_visible_folders();
+        list_and_grid_leave_a_reserved_bottom_lane_clear();
+        apply_layout_publishes_folder_rows_as_drop_targets();
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "measurement scenario checks every scroll layout step in sequence"
@@ -2130,7 +2142,23 @@ mod tests {
         }
     }
 
+    /// List rows, header and columns adapt to pane width, item zoom and
+    /// accessibility text scale — each phase with its own view fixture.
     #[test]
+    fn list_geometry_follows_width_zoom_and_text_scale() {
+        nested_navigation_layout_preserves_large_text_file_row_geometry();
+        large_text_list_reserves_scaled_rows_and_filename_width();
+        truncated_file_names_preserve_distinguishing_suffix();
+        zoom_scale_grows_row_height_and_cell_size();
+        narrow_list_collapses_detail_columns_to_give_name_room();
+        large_item_zoom_hides_detail_columns_earlier_on_narrow_windows();
+        accessibility_text_scale_reserves_metadata_width_without_double_zooming_items();
+        header_pins_to_the_viewport_top_once_scrolled();
+        header_click_sorts_even_after_the_list_is_scrolled();
+        list_item_at_maps_rows_below_the_header();
+        neighbouring_faces_keep_a_token_gap();
+    }
+
     fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
@@ -2182,7 +2210,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn large_text_list_reserves_scaled_rows_and_filename_width() {
         let sink = new_sink();
         let mut view = FileView::new(&items(2), &SelectionModel::new(), &sink);
@@ -2219,7 +2246,6 @@ mod tests {
         assert!(!view.show_modified());
     }
 
-    #[test]
     fn truncated_file_names_preserve_distinguishing_suffix() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
@@ -2230,6 +2256,13 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_and_badges_describe_each_file_state() {
+        accessibility_list_bounds_describe_the_scroll_viewport();
+        accessibility_exposes_each_file_selection_and_collaboration_state();
+        sync_badge_maps_each_state_to_a_distinct_emblem();
+        rich_availability_badges_are_honest_and_actionable();
+    }
+
     fn accessibility_list_bounds_describe_the_scroll_viewport() {
         let sink = new_sink();
         let entries = vec![ent("a.txt", false), ent("b.txt", false)];
@@ -2247,7 +2280,6 @@ mod tests {
         assert_eq!(view.accessibility().unwrap().children.len(), 2);
     }
 
-    #[test]
     fn accessibility_exposes_each_file_selection_and_collaboration_state() {
         use ui::widget::Widget;
 
@@ -2311,6 +2343,14 @@ mod tests {
     }
 
     #[test]
+    fn grid_flows_wraps_and_navigates_by_visual_rows() {
+        grid_flows_left_to_right_and_wraps_to_fill_width();
+        grid_columns_scale_with_width_and_never_zero();
+        grid_arrow_targets_follow_the_measured_visual_row();
+        phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom();
+        grid_labels_share_one_baseline_and_stay_inside_the_cell();
+    }
+
     fn grid_flows_left_to_right_and_wraps_to_fill_width() {
         // A wide pane must lay several columns per row, not one item per line.
         let v = grid(12, 900.0);
@@ -2337,7 +2377,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn grid_columns_scale_with_width_and_never_zero() {
         assert!(grid(20, 1200.0).columns > grid(20, 400.0).columns);
         assert!(
@@ -2346,7 +2385,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn grid_arrow_targets_follow_the_measured_visual_row() {
         let mut v = grid(8, 400.0);
         // Keep the assertion about directional semantics independent of a
@@ -2366,7 +2404,6 @@ mod tests {
         assert_eq!(v.grid_key_target(NamedKey::ArrowRight), Some(7));
     }
 
-    #[test]
     fn phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom() {
         // A 390px window leaves a 358px FileView after the content gutter.
         // Both regular and 160% item zoom must retain a compact two-column
@@ -2417,7 +2454,18 @@ mod tests {
         }
     }
 
+    /// Each preview source runs against its own temp dir and thumbnail service.
     #[test]
+    fn thumbnails_use_the_shared_service_or_host_without_hydrating() {
+        image_cells_request_previews_through_the_shared_service();
+        workspace_thumbnail_keys_follow_content_across_renames();
+        a_workspace_photo_the_host_never_previewed_is_still_shown();
+        #[cfg(unix)]
+        a_host_preview_is_adopted_rather_than_the_file_re_decoded();
+        a_projected_file_is_never_hydrated_just_to_preview_it();
+        badge_types_never_schedule_a_decode();
+    }
+
     fn image_cells_request_previews_through_the_shared_service() {
         // The file view must off-load decoding to the shared thumbnail service,
         // never decode per-app: a request for an image cell schedules work on the
@@ -2479,7 +2527,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn workspace_thumbnail_keys_follow_content_across_renames() {
         let dir = tempfile::tempdir().unwrap();
         let (_service, ctx) = thumb_ctx(dir.path());
@@ -2536,7 +2583,6 @@ mod tests {
         (service, ctx)
     }
 
-    #[test]
     fn a_workspace_photo_the_host_never_previewed_is_still_shown() {
         // A workspace root is often an ordinary directory — no FUSE driver
         // behind it, so no `user.tilo.thumb` to read and no sync attribute
@@ -2572,7 +2618,6 @@ mod tests {
         );
     }
 
-    #[test]
     #[cfg(unix)]
     fn a_host_preview_is_adopted_rather_than_the_file_re_decoded() {
         // When the metadata channel does answer, that answer is what gets
@@ -2611,7 +2656,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_projected_file_is_never_hydrated_just_to_preview_it() {
         // Its bytes are on a peer. With no host preview the row keeps its
         // badge rather than pulling the whole file across to draw a small
@@ -2640,7 +2684,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn badge_types_never_schedule_a_decode() {
         let dir = tempfile::tempdir().unwrap();
         let cache = thumbnail::ThumbCache::open(dir.path()).unwrap();
@@ -2661,7 +2704,6 @@ mod tests {
         assert_eq!(service.pending(), 0, "a badge type never schedules work");
     }
 
-    #[test]
     fn zoom_scale_grows_row_height_and_cell_size() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2675,7 +2717,6 @@ mod tests {
         assert!(zoomed.cell_h() > base.cell_h());
     }
 
-    #[test]
     fn narrow_list_collapses_detail_columns_to_give_name_room() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2716,7 +2757,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn large_item_zoom_hides_detail_columns_earlier_on_narrow_windows() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2734,7 +2774,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn accessibility_text_scale_reserves_metadata_width_without_double_zooming_items() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2761,7 +2800,6 @@ mod tests {
         assert!(!v.show_modified(), "metadata yields to the primary name");
     }
 
-    #[test]
     fn rows_outside_the_scroll_viewport_are_culled() {
         // The paint path calls `cull(vp, row)` for every row/cell; a long
         // directory must only pay to draw what the viewport actually shows.
@@ -2778,7 +2816,6 @@ mod tests {
         assert!(!cull(None, Rect::new(0.0, 99_999.0, 600.0, 100_000.0)));
     }
 
-    #[test]
     fn visible_range_avoids_scanning_a_large_directory() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2808,7 +2845,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn drop_targets_are_limited_to_visible_folders() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2830,7 +2866,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn list_and_grid_leave_a_reserved_bottom_lane_clear() {
         // Files reserves a bottom lane for its floating status pill. The
         // drawing and folder-drop paths use this same predicate, so a partly
@@ -2874,7 +2909,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn header_pins_to_the_viewport_top_once_scrolled() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2895,7 +2929,6 @@ mod tests {
         assert!((v.header_top(None) + 250.0).abs() < f64::EPSILON);
     }
 
-    #[test]
     fn header_click_sorts_even_after_the_list_is_scrolled() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2916,7 +2949,15 @@ mod tests {
         );
     }
 
+    /// Each press scenario uses its own view and command sink.
     #[test]
+    fn pointer_presses_emit_context_select_and_drag_commands() {
+        right_press_selects_the_row_under_the_cursor_for_the_menu();
+        right_press_on_empty_space_clears_the_selection_for_the_menu();
+        dragging_a_directory_row_begins_a_pin_drag();
+        a_file_row_press_begins_a_move_drag();
+    }
+
     fn right_press_selects_the_row_under_the_cursor_for_the_menu() {
         // The dangerous bug this guards: a right-click must target the row it
         // lands on, not whatever was selected before. The FileView emits a
@@ -2958,7 +2999,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn right_press_on_empty_space_clears_the_selection_for_the_menu() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2997,7 +3037,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn sync_badge_maps_each_state_to_a_distinct_emblem() {
         let theme = Theme::dark();
         // Each hydration state gets its own recognisable glyph, and the
@@ -3046,7 +3085,6 @@ mod tests {
         AvailabilityProjection::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
     }
 
-    #[test]
     fn rich_availability_badges_are_honest_and_actionable() {
         let theme = Theme::dark();
         let unknown = availability_with(
@@ -3117,7 +3155,6 @@ mod tests {
         assert_eq!(availability_badge(&failed, &theme).0, Icon::Ban);
     }
 
-    #[test]
     fn dragging_a_directory_row_begins_a_pin_drag() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -3166,7 +3203,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_file_row_press_begins_a_move_drag() {
         // Files (not only folders) are draggable now — a row drag moves the
         // file into a folder it is dropped onto. The host decides drop
@@ -3213,7 +3249,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn apply_layout_publishes_folder_rows_as_drop_targets() {
         // The host resolves a drop against the folder rects the view publishes,
         // so only directories must appear, at their laid-out positions.
@@ -3263,7 +3298,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn list_item_at_maps_rows_below_the_header() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -3282,7 +3316,6 @@ mod tests {
     /// Folder and file cells in one grid row share a preview slot and hence
     /// one label baseline; the folder glyph (smaller than a file badge) is
     /// centred inside that slot rather than pulling its label up.
-    #[test]
     fn grid_labels_share_one_baseline_and_stay_inside_the_cell() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -3324,7 +3357,6 @@ mod tests {
     /// HIG §7 "Nothing touches": two adjacent chosen rows keep an `s1` gap
     /// between their faces, two grid cells keep the grid gap, and the header
     /// rule is inset from the pane edge like every other separator.
-    #[test]
     fn neighbouring_faces_keep_a_token_gap() {
         let sink = new_sink();
         let s1 = f64::from(Spacing::BASE.s1);

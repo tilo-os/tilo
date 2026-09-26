@@ -178,68 +178,67 @@ mod tests {
     }
 
     #[test]
-    fn action_serde_lowercase_wire() {
-        for (a, expected) in [
-            (EntryAction::Add, "\"add\""),
-            (EntryAction::Update, "\"update\""),
-            (EntryAction::Delete, "\"delete\""),
-        ] {
-            let s = serde_json::to_string(&a).unwrap();
-            assert_eq!(s, expected);
-            let back: EntryAction = serde_json::from_str(&s).unwrap();
-            assert_eq!(back, a);
+    fn change_requests_sign_and_serialise_canonically() {
+        // phase: action_serde_lowercase_wire
+        {
+            for (a, expected) in [
+                (EntryAction::Add, "\"add\""),
+                (EntryAction::Update, "\"update\""),
+                (EntryAction::Delete, "\"delete\""),
+            ] {
+                let s = serde_json::to_string(&a).unwrap();
+                assert_eq!(s, expected);
+                let back: EntryAction = serde_json::from_str(&s).unwrap();
+                assert_eq!(back, a);
+            }
         }
-    }
-
-    #[test]
-    fn signing_message_distinguishes_actions() {
-        let entry = sample_entry();
-        let a = change_signing_message(EntryAction::Add, &entry);
-        let u = change_signing_message(EntryAction::Update, &entry);
-        let d = change_signing_message(EntryAction::Delete, &entry);
-        assert_ne!(a, u);
-        assert_ne!(u, d);
-        assert_ne!(a, d);
-    }
-
-    #[test]
-    fn change_request_json_roundtrip() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let req = sign_change_request(EntryAction::Add, sample_entry(), &key);
-        let s = serde_json::to_string(&req).unwrap();
-        let back: EntryChangeRequest = serde_json::from_str(&s).unwrap();
-        assert_eq!(back, req);
-    }
-
-    #[test]
-    fn sign_change_request_also_signs_entry() {
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let mut entry = sample_entry();
-        // Real workflow: publisher pubkey on the entry matches
-        // the signing key; otherwise verify_entry_signature
-        // (correctly) rejects.
-        entry.publisher_pubkey_hex = hex::encode(key.verifying_key().to_bytes());
-        let req = sign_change_request(EntryAction::Add, entry, &key);
-        // Entry sig must be a real signature — 128 hex chars.
-        assert_eq!(req.entry.signature_hex.len(), 128);
-        // And it must verify against the same key it was signed with.
-        assert!(crate::verify::verify_entry_signature(&req.entry));
-    }
-
-    #[test]
-    fn change_signing_bytes_ignore_entry_signature_field() {
-        let mut e = sample_entry();
-        let m1 = change_signing_message(EntryAction::Update, &e);
-        // Even a nonsense value in signature_hex must NOT change the
-        // change-level signing digest.
-        e.signature_hex = "junk".into();
-        let m2 = change_signing_message(EntryAction::Update, &e);
-        assert_eq!(m1, m2);
-        // But the entry sig hex used to be an assertion tool — resign
-        // it with a fresh key and prove that too.
-        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-        sign_entry(&mut e, &key);
-        let m3 = change_signing_message(EntryAction::Update, &e);
-        assert_eq!(m1, m3);
+        // phase: signing_message_distinguishes_actions
+        {
+            let entry = sample_entry();
+            let a = change_signing_message(EntryAction::Add, &entry);
+            let u = change_signing_message(EntryAction::Update, &entry);
+            let d = change_signing_message(EntryAction::Delete, &entry);
+            assert_ne!(a, u);
+            assert_ne!(u, d);
+            assert_ne!(a, d);
+        }
+        // phase: change_request_json_roundtrip
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let req = sign_change_request(EntryAction::Add, sample_entry(), &key);
+            let s = serde_json::to_string(&req).unwrap();
+            let back: EntryChangeRequest = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, req);
+        }
+        // phase: sign_change_request_also_signs_entry
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let mut entry = sample_entry();
+            // Real workflow: publisher pubkey on the entry matches
+            // the signing key; otherwise verify_entry_signature
+            // (correctly) rejects.
+            entry.publisher_pubkey_hex = hex::encode(key.verifying_key().to_bytes());
+            let req = sign_change_request(EntryAction::Add, entry, &key);
+            // Entry sig must be a real signature — 128 hex chars.
+            assert_eq!(req.entry.signature_hex.len(), 128);
+            // And it must verify against the same key it was signed with.
+            assert!(crate::verify::verify_entry_signature(&req.entry));
+        }
+        // phase: change_signing_bytes_ignore_entry_signature_field
+        {
+            let mut e = sample_entry();
+            let m1 = change_signing_message(EntryAction::Update, &e);
+            // Even a nonsense value in signature_hex must NOT change the
+            // change-level signing digest.
+            e.signature_hex = "junk".into();
+            let m2 = change_signing_message(EntryAction::Update, &e);
+            assert_eq!(m1, m2);
+            // But the entry sig hex used to be an assertion tool — resign
+            // it with a fresh key and prove that too.
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            sign_entry(&mut e, &key);
+            let m3 = change_signing_message(EntryAction::Update, &e);
+            assert_eq!(m1, m3);
+        }
     }
 }
