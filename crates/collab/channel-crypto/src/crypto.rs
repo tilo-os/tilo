@@ -76,6 +76,18 @@ impl MemberKey {
         })
     }
 
+    /// Fresh key material for one device's membership of one channel. The
+    /// credential names the device's certified Ed25519 key, so a steward can
+    /// map every leaf back to the device it admitted; the MLS signer is a
+    /// separate key minted here and never leaves the device's member state.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::generate`].
+    pub fn for_device(device: &collab_types::Ed25519PublicKey) -> Result<Self> {
+        Self::generate(device.as_bytes())
+    }
+
     /// The display name embedded in this member's credential.
     pub fn name(&self) -> &[u8] {
         &self.name
