@@ -1727,7 +1727,7 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
         .unwrap();
     let checkout = note(714);
     for (store, owner) in [(&first, "first"), (&second, "second")] {
-        seed_note(&store, &checkout, owner, owner);
+        seed_note(store, &checkout, owner, owner);
     }
     let (probe, handles) = unfenced_retained_lifecycle_probe("rebound-lifecycle", "first");
     let mut tile = Box::new(crate::widget::TileHost::new(
@@ -2335,7 +2335,7 @@ fn cached_item_blocks_release_until_broker_drains_then_preserves_terminal_order(
         (&old_store, &old, "old"),
         (&candidate_store, &candidate, "candidate"),
     ] {
-        seed_note(&store, checkout, owner, owner);
+        seed_note(store, checkout, owner, owner);
     }
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
@@ -2483,7 +2483,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         (&obsolete_store, &obsolete, "obsolete"),
         (&latest_store, &latest, "latest"),
     ] {
-        seed_note(&store, checkout, owner, owner);
+        seed_note(store, checkout, owner, owner);
     }
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &old_store, &old);
@@ -2584,7 +2584,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             (&obsolete_store, &obsolete, "obsolete"),
             (&latest_store, &latest, "latest"),
         ] {
-            assert_eq!(stored_body(&store, &checkout), body);
+            assert_eq!(stored_body(store, checkout), body);
         }
         assert!(
             tile.poll_resource_operation(invocation, false, &outer, &ROOT)
@@ -2639,7 +2639,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         (&obsolete_store, &obsolete, "obsolete"),
         (&latest_store, &latest, "fresh latest result"),
     ] {
-        assert_eq!(stored_body(&store, &checkout), body);
+        assert_eq!(stored_body(store, checkout), body);
     }
 }
 

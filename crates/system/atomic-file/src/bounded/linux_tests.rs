@@ -298,6 +298,7 @@ fn bounded_linux_existing_sentinel_has_real_exclusive_lease() {
     assert!(!root.path().join("absent").exists());
 }
 
+#[test]
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
     use allocations::measure;

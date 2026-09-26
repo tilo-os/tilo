@@ -1,6 +1,12 @@
 //! Helpers shared by application tests that drive a root under framework
 //! History through the headless [`Driver`].
 #![cfg(any(test, feature = "test-support"))]
+#![allow(
+    clippy::panic,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test helpers report a broken fixture by panicking the test that called them"
+)]
 
 use super::{Driver, InspectionNode};
 use crate::a11y::{AccessNode, Action};
