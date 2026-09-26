@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime};
 use collab_types::{DocumentFrame, DocumentMutation, DocumentMutationKind, SignedOp};
 
 use crate::{
-    DocumentOp, Environment, Event, InspectKeyframe, Offset, Origin, PresenceUpdate,
-    RedactionSummary, Route, RouteSnapshot, SessionLayer, SessionTrace, SnapshotPoint, TimedEvent,
+    DocumentOp, Environment, Event, InspectKeyframe, Offset, Origin, PresenceUpdate, Redactions,
+    Route, RouteSnapshot, SessionLayer, SessionTrace, SnapshotPoint, TimedEvent,
 };
 
 /// Bounds on one trace. Hitting any of them marks the trace truncated and
@@ -334,7 +334,7 @@ impl TraceBuilder {
             timeline: self.timeline,
             tags: self.tags,
             layer: SessionLayer::Logic,
-            redactions: RedactionSummary::default(),
+            redactions: Redactions::default(),
             truncated: self.truncated,
         }
     }
@@ -521,13 +521,15 @@ mod tests {
         );
         trace.push_op(epoch, route("so.tilo.mail"), "alice".into(), incremental(2));
         trace.add_tag("send-fails");
-        let summary = trace.finish(epoch + Duration::from_millis(1_500)).summary();
+        let trace = trace.finish(epoch + Duration::from_millis(1_500));
+        let summary = trace.summary();
         assert_eq!(summary.steps, 1);
-        assert_eq!(summary.failed_steps, 1);
-        assert_eq!(summary.ops, 2);
         assert_eq!(summary.apps, vec!["so.tilo.mail", "so.tilo.notes"]);
-        assert_eq!(summary.rooms, vec!["room-1"]);
         assert_eq!(summary.duration_ms, 1_500);
-        assert_eq!(summary.tags, vec!["send-fails"]);
+        let details = trace.details();
+        assert_eq!(details.failed_steps, 1);
+        assert_eq!(details.ops, 2);
+        assert_eq!(details.rooms, vec!["room-1"]);
+        assert_eq!(details.tags, vec!["send-fails"]);
     }
 }

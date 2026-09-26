@@ -301,7 +301,10 @@ fn assert_trace(pending: &shell::shell::recorder::PendingSession, room: &str) {
     );
     let summary = session_trace::read_summary(pending.document()).unwrap();
     assert_eq!(summary.apps, vec![APP]);
-    assert_eq!(summary.ops, 2);
+    assert_eq!(
+        session_trace::read_details(pending.document()).unwrap().ops,
+        2
+    );
 
     // Replaying the snapshot and the ops reproduces the recorded document.
     let mut replayed = snapshot_doc;

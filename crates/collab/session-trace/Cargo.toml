@@ -20,6 +20,8 @@ collab-types = { path = "../collab-types" }
 tilo-actions = { path = "../actions" }
 # The redacted duplicate replays recorded changes into fresh documents.
 tilo-automerge = { path = "../../doc/tilo-automerge" }
+# The session card (`SessionSummary`) is the one chat renders on a remark.
+tilo-reference = { path = "../reference" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

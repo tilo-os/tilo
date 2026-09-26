@@ -5,17 +5,17 @@
 //! session {
 //!   format:      FORMAT_VERSION
 //!   duration_us: monotonic span
-//!   summary:     { origin, started_unix_ms, duration_ms, apps[], rooms[],
-//!                  steps, failed_steps, ops, tags[], layer,
-//!                  redacted_text, redacted_regions, cut_steps,
-//!                  generation?, truncated }
+//!   summary:     { apps[], duration_ms, steps, layer, redacted_text,
+//!                  redacted_regions, generation? }        (the card)
+//!   details:     { origin, started_unix_ms, rooms[], failed_steps, ops,
+//!                  tags[], truncated }
 //!   environment: bytes (postcard Environment)
 //!   snapshots:   [bytes (postcard RouteSnapshot)]
 //!   timeline:    [bytes (postcard Vec<TimedEvent>)]   chunks, in order
 //! }
 //! ```
 //!
-//! The summary is plain Automerge scalars so a card reads it without
+//! Both maps are plain Automerge scalars so a card reads them without
 //! decoding a single timeline chunk.
 
 use automerge::transaction::Transactable;
@@ -23,7 +23,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    Environment, FORMAT_VERSION, Origin, RedactionSummary, RouteSnapshot, SessionLayer,
+    Environment, FORMAT_VERSION, Origin, Redactions, RouteSnapshot, SessionDetails, SessionLayer,
     SessionSummary, SessionTrace, TimedEvent,
 };
 
@@ -72,6 +72,7 @@ pub fn write(doc: &mut AutoCommit, trace: &SessionTrace) -> Result<(), TraceErro
     doc.put(&session, "format", FORMAT_VERSION)?;
     doc.put(&session, "duration_us", trace.duration.0)?;
     write_summary(doc, &session, &trace.summary())?;
+    write_details(doc, &session, &trace.details())?;
     doc.put(
         &session,
         "environment",
@@ -113,35 +114,58 @@ pub fn write(doc: &mut AutoCommit, trace: &SessionTrace) -> Result<(), TraceErro
     Ok(())
 }
 
+const fn layer_name(layer: SessionLayer) -> &'static str {
+    match layer {
+        SessionLayer::Logic => "logic",
+        SessionLayer::BelowToolkit => "below_toolkit",
+    }
+}
+
+fn parse_layer(value: &str) -> Option<SessionLayer> {
+    match value {
+        "logic" => Some(SessionLayer::Logic),
+        "below_toolkit" => Some(SessionLayer::BelowToolkit),
+        _ => None,
+    }
+}
+
 fn write_summary(
     doc: &mut AutoCommit,
     session: &ObjId,
     summary: &SessionSummary,
 ) -> Result<(), TraceError> {
     let map = doc.put_object(session, "summary", ObjType::Map)?;
-    if let Some(origin) = summary.origin {
-        doc.put(&map, "origin", origin.as_str())?;
-    }
-    doc.put(&map, "started_unix_ms", summary.started_unix_ms)?;
-    doc.put(&map, "duration_ms", summary.duration_ms)?;
     put_strings(doc, &map, "apps", &summary.apps)?;
-    put_strings(doc, &map, "rooms", &summary.rooms)?;
+    doc.put(&map, "duration_ms", summary.duration_ms)?;
     doc.put(&map, "steps", u64::from(summary.steps))?;
-    doc.put(&map, "failed_steps", u64::from(summary.failed_steps))?;
-    doc.put(&map, "ops", u64::from(summary.ops))?;
-    put_strings(doc, &map, "tags", &summary.tags)?;
-    doc.put(&map, "layer", summary.layer.as_str())?;
+    doc.put(&map, "layer", layer_name(summary.layer))?;
     doc.put(&map, "redacted_text", u64::from(summary.redactions.text))?;
     doc.put(
         &map,
         "redacted_regions",
         u64::from(summary.redactions.regions),
     )?;
-    doc.put(&map, "cut_steps", u64::from(summary.redactions.cut_steps))?;
     if let Some(generation) = summary.generation {
         doc.put(&map, "generation", generation)?;
     }
-    doc.put(&map, "truncated", summary.truncated)?;
+    Ok(())
+}
+
+fn write_details(
+    doc: &mut AutoCommit,
+    session: &ObjId,
+    details: &SessionDetails,
+) -> Result<(), TraceError> {
+    let map = doc.put_object(session, "details", ObjType::Map)?;
+    if let Some(origin) = details.origin {
+        doc.put(&map, "origin", origin.as_str())?;
+    }
+    doc.put(&map, "started_unix_ms", details.started_unix_ms)?;
+    put_strings(doc, &map, "rooms", &details.rooms)?;
+    doc.put(&map, "failed_steps", u64::from(details.failed_steps))?;
+    doc.put(&map, "ops", u64::from(details.ops))?;
+    put_strings(doc, &map, "tags", &details.tags)?;
+    doc.put(&map, "truncated", details.truncated)?;
     Ok(())
 }
 
@@ -221,31 +245,39 @@ fn check_format(doc: &impl ReadDoc, session: &ObjId) -> Result<(), TraceError> {
     }
 }
 
-/// Read the metadata a card renders, without decoding the timeline.
-/// `None` when `doc` holds no readable session.
+/// Read the card a remark carries for this session, without decoding the
+/// timeline. `None` when `doc` holds no readable session.
 pub fn read_summary(doc: &impl ReadDoc) -> Option<SessionSummary> {
     let session = session_obj(doc)?;
     check_format(doc, &session).ok()?;
     let map = object(doc, &session, "summary", ObjType::Map)?;
     Some(SessionSummary {
+        apps: strings(doc, &map, "apps"),
+        duration_ms: uint(doc, &map, "duration_ms").unwrap_or(0),
+        steps: count(doc, &map, "steps"),
+        layer: string(doc, &map, "layer")
+            .and_then(|value| parse_layer(&value))
+            .unwrap_or(SessionLayer::Logic),
+        redactions: Redactions {
+            text: count(doc, &map, "redacted_text"),
+            regions: count(doc, &map, "redacted_regions"),
+        },
+        generation: uint(doc, &map, "generation"),
+    })
+}
+
+/// Read the rest of the cheap metadata, without decoding the timeline.
+pub fn read_details(doc: &impl ReadDoc) -> Option<SessionDetails> {
+    let session = session_obj(doc)?;
+    check_format(doc, &session).ok()?;
+    let map = object(doc, &session, "details", ObjType::Map)?;
+    Some(SessionDetails {
         origin: string(doc, &map, "origin").and_then(|value| Origin::parse(&value)),
         started_unix_ms: uint(doc, &map, "started_unix_ms").unwrap_or(0),
-        duration_ms: uint(doc, &map, "duration_ms").unwrap_or(0),
-        apps: strings(doc, &map, "apps"),
         rooms: strings(doc, &map, "rooms"),
-        steps: count(doc, &map, "steps"),
         failed_steps: count(doc, &map, "failed_steps"),
         ops: count(doc, &map, "ops"),
         tags: strings(doc, &map, "tags"),
-        layer: string(doc, &map, "layer")
-            .and_then(|value| SessionLayer::parse(&value))
-            .unwrap_or_default(),
-        redactions: RedactionSummary {
-            text: count(doc, &map, "redacted_text"),
-            regions: count(doc, &map, "redacted_regions"),
-            cut_steps: count(doc, &map, "cut_steps"),
-        },
-        generation: uint(doc, &map, "generation"),
         truncated: matches!(
             scalar(doc, &map, "truncated"),
             Some(ScalarValue::Boolean(true))
@@ -297,6 +329,7 @@ pub fn read(doc: &impl ReadDoc) -> Result<SessionTrace, TraceError> {
     let session = session_obj(doc).ok_or(TraceError::Missing)?;
     check_format(doc, &session)?;
     let summary = read_summary(doc).ok_or(TraceError::Malformed("summary"))?;
+    let details = read_details(doc).ok_or(TraceError::Malformed("details"))?;
     let environment: Environment =
         decode_bytes(scalar(doc, &session, "environment"), "environment")?;
     let snapshots: Vec<RouteSnapshot> = decode_list(doc, &session, "snapshots", MAX_SNAPSHOTS)?;
@@ -309,18 +342,18 @@ pub fn read(doc: &impl ReadDoc) -> Result<SessionTrace, TraceError> {
         return Err(TraceError::Malformed("timeline order"));
     }
     Ok(SessionTrace {
-        origin: summary.origin.ok_or(TraceError::Malformed("origin"))?,
-        started_unix_ms: summary.started_unix_ms,
+        origin: details.origin.ok_or(TraceError::Malformed("origin"))?,
+        started_unix_ms: details.started_unix_ms,
         duration: crate::Offset(
             uint(doc, &session, "duration_us").ok_or(TraceError::Malformed("duration_us"))?,
         ),
         environment,
         snapshots,
         timeline,
-        tags: summary.tags,
+        tags: details.tags,
         layer: summary.layer,
         redactions: summary.redactions,
-        truncated: summary.truncated,
+        truncated: details.truncated,
     })
 }
 
@@ -439,12 +472,25 @@ mod tests {
         assert_eq!(summary, trace.summary());
         assert_eq!(summary.apps, vec!["so.tilo.notes"]);
         assert_eq!(summary.steps, 1);
-        assert_eq!(summary.failed_steps, 1);
-        assert_eq!(summary.ops, 2);
         assert_eq!(summary.duration_ms, 4_000);
-        assert_eq!(summary.started_unix_ms, 1_700_000_000_000);
         assert_eq!(summary.generation, Some(12));
-        assert_eq!(summary.origin, Some(Origin::Explicit));
+        assert_eq!(summary.layer, SessionLayer::Logic);
+        let details = read_details(&doc).expect("details");
+        assert_eq!(details, trace.details());
+        assert_eq!(details.failed_steps, 1);
+        assert_eq!(details.ops, 2);
+        assert_eq!(details.started_unix_ms, 1_700_000_000_000);
+        assert_eq!(details.origin, Some(Origin::Explicit));
+        // It is the card chat attaches to a remark.
+        assert!(
+            tilo_reference::RecordAttachment::session(
+                "uuid:1",
+                "Send fails",
+                "personal",
+                summary.clone()
+            )
+            .is_valid()
+        );
 
         // The summary survives a corrupt timeline chunk; the full read does not.
         let session = session_obj(&doc).expect("session");

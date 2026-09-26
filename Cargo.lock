@@ -12640,6 +12640,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-reference",
  "uuid",
 ]
 

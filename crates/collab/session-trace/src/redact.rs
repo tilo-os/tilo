@@ -638,7 +638,7 @@ pub fn duplicate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Environment, Offset, Origin, RedactionSummary, SessionLayer};
+    use crate::{Environment, Offset, Origin, Redactions, SessionLayer};
     use automerge::transaction::Transactable;
 
     #[test]
@@ -727,7 +727,7 @@ mod tests {
                 .collect(),
             tags: Vec::new(),
             layer: SessionLayer::Logic,
-            redactions: RedactionSummary::default(),
+            redactions: Redactions::default(),
             truncated: false,
         };
         let redaction = Redaction {

@@ -35,7 +35,7 @@ pub mod redact;
 
 pub use builder::{Limits, Pushed, TraceBuilder};
 pub use recent::{OpReference, RecentBuffer, RecentEntry, RecentItem};
-pub use record::{TraceError, is_session, read, read_summary, write};
+pub use record::{TraceError, is_session, read, read_details, read_summary, write};
 
 use std::time::Duration;
 
@@ -43,8 +43,7 @@ use collab_types::SignedOp;
 use serde::{Deserialize, Serialize};
 use tilo_actions::SemanticInteraction;
 
-/// Record kind of a session trace.
-pub const SESSION_RECORD_KIND: &str = "session";
+pub use tilo_reference::{Redactions, SESSION_RECORD_KIND, SessionLayer, SessionSummary};
 /// Blob relation naming the compositor frame blob of a session.
 pub const FRAMES_BLOB_RELATION: &str = "frames";
 /// Record relation from a redacted duplicate to the session it was built from.
@@ -317,69 +316,26 @@ pub struct TimedEvent {
     pub event: Event,
 }
 
-/// What review took out before the trace left the device.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedactionSummary {
-    /// Text spans replaced by shape-preserving placeholders.
-    pub text: u32,
-    /// Screen regions masked in frames.
-    pub regions: u32,
-    /// Steps the reporter cut.
-    pub cut_steps: u32,
-}
-
-/// Whether the problem the report is about sits in the toolkit's logic or
-/// below it (renderer, fonts, driver, compositor).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionLayer {
-    /// Structure replays exactly; the default until frames disagree.
-    #[default]
-    Logic,
-    BelowToolkit,
-}
-
-impl SessionLayer {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Logic => "logic",
-            Self::BelowToolkit => "below-toolkit",
-        }
-    }
-
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "logic" => Some(Self::Logic),
-            "below-toolkit" => Some(Self::BelowToolkit),
-            _ => None,
-        }
-    }
-}
-
-/// Everything a card or a list needs about a session, readable from the
-/// record document without decoding the timeline.
+/// What the card does not carry: the rest of a session's cheap metadata,
+/// readable from the record document without decoding the timeline. The
+/// card itself is [`SessionSummary`], the one type chat renders.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionSummary {
+pub struct SessionDetails {
     pub origin: Option<Origin>,
     /// Wall-clock start, milliseconds since the Unix epoch. Display only.
     pub started_unix_ms: u64,
-    pub duration_ms: u64,
-    /// Distinct app ids of the recorded routes, sorted.
-    pub apps: Vec<String>,
     /// Distinct rooms recorded, sorted.
     pub rooms: Vec<String>,
-    /// Distinct semantic interactions (by invocation).
-    pub steps: u32,
-    /// Of those, the ones whose last phase was a failure.
+    /// Of the steps, the ones whose last phase was a failure.
     pub failed_steps: u32,
     pub ops: u32,
     pub tags: Vec<String>,
-    pub layer: SessionLayer,
-    pub redactions: RedactionSummary,
-    /// Image generation the session ran on, when known.
-    pub generation: Option<u64>,
     /// A bound was hit and later events were not kept.
     pub truncated: bool,
 }
+
+/// Most apps a card lists, the card's own bound.
+const MAX_SUMMARY_APPS: usize = 16;
 
 /// A complete session trace.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -392,7 +348,7 @@ pub struct SessionTrace {
     pub timeline: Vec<TimedEvent>,
     pub tags: Vec<String>,
     pub layer: SessionLayer,
-    pub redactions: RedactionSummary,
+    pub redactions: Redactions,
     pub truncated: bool,
 }
 
@@ -426,8 +382,8 @@ impl SessionTrace {
             .find(|snapshot| &snapshot.route == route)
     }
 
-    /// Cheap metadata, derived from the trace.
-    pub fn summary(&self) -> SessionSummary {
+    /// Apps, sorted, and rooms the trace touched.
+    fn apps_and_rooms(&self) -> (Vec<String>, Vec<String>) {
         let routes = self.routes();
         let mut apps: Vec<String> = routes
             .iter()
@@ -444,6 +400,12 @@ impl SessionTrace {
         rooms.retain(|room| !room.is_empty());
         rooms.sort();
         rooms.dedup();
+        (apps, rooms)
+    }
+
+    /// Each distinct semantic interaction (a step) and whether its last
+    /// phase failed, plus the number of document ops.
+    fn steps_and_ops(&self) -> (Vec<(tilo_actions::InvocationId, bool)>, u32) {
         let mut last_phase: Vec<(tilo_actions::InvocationId, bool)> = Vec::new();
         let mut ops = 0_u32;
         for entry in &self.timeline {
@@ -468,17 +430,18 @@ impl SessionTrace {
                 Event::Presence(_) | Event::Inspect(_) => {}
             }
         }
-        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        (last_phase, ops)
+    }
+
+    /// The card a remark carries for this session.
+    pub fn summary(&self) -> SessionSummary {
+        let (mut apps, _) = self.apps_and_rooms();
+        apps.truncate(MAX_SUMMARY_APPS);
+        let (steps, _) = self.steps_and_ops();
         SessionSummary {
-            origin: Some(self.origin),
-            started_unix_ms: self.started_unix_ms,
-            duration_ms: self.duration.as_millis(),
             apps,
-            rooms,
-            steps: count(last_phase.len()),
-            failed_steps: count(last_phase.iter().filter(|(_, failed)| *failed).count()),
-            ops,
-            tags: self.tags.clone(),
+            duration_ms: self.duration.as_millis(),
+            steps: u32::try_from(steps.len()).unwrap_or(u32::MAX),
             layer: self.layer,
             redactions: self.redactions,
             generation: self
@@ -486,6 +449,21 @@ impl SessionTrace {
                 .image
                 .as_ref()
                 .and_then(|image| image.generation),
+        }
+    }
+
+    /// The rest of the cheap metadata.
+    pub fn details(&self) -> SessionDetails {
+        let (_, rooms) = self.apps_and_rooms();
+        let (steps, ops) = self.steps_and_ops();
+        SessionDetails {
+            origin: Some(self.origin),
+            started_unix_ms: self.started_unix_ms,
+            rooms,
+            failed_steps: u32::try_from(steps.iter().filter(|(_, failed)| *failed).count())
+                .unwrap_or(u32::MAX),
+            ops,
+            tags: self.tags.clone(),
             truncated: self.truncated,
         }
     }
