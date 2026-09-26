@@ -489,58 +489,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recognises_section_properties() {
-        assert!(is_section_properties("<w:sectPr>"));
-        assert!(is_section_properties(
-            r#"<w:sectPr w:rsidR="00A1"><w:pgSz/></w:sectPr>"#
-        ));
-        assert!(is_section_properties("<w:sectPr/>"));
-        assert!(!is_section_properties("<w:sectPrChange/>"));
-        assert!(!is_section_properties("<w:sdt></w:sdt>"));
-    }
-
-    #[test]
-    fn rebuilt_sectpr_keeps_page_setup_and_orders_cols() {
-        let original = concat!(
-            r#"<w:sectPr w:rsidR="00A1">"#,
-            r#"<w:headerReference w:type="default" r:id="rId8"/>"#,
-            r#"<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440"/>"#,
-            r#"<w:cols w:space="708"/><w:titlePg/><w:docGrid w:linePitch="360"/>"#,
-            "</w:sectPr>",
-        );
-        let mut c = DocxContainer { parts: Vec::new() };
-        let parts = ExportedParts {
-            header: Some(Vec::new()),
-            footer: None,
-        };
-        let plan = plan(
-            &mut c,
-            Some(original),
-            &[],
-            &parts,
-            KeptRegions::default(),
-            r#"<w:cols w:num="2"/>"#,
-        );
-        assert_eq!(
-            plan.sectpr,
-            concat!(
+    fn section_properties_are_recognised_rebuilt_and_removed() {
+        // Phase `recognises_section_properties`.
+        {
+            assert!(is_section_properties("<w:sectPr>"));
+            assert!(is_section_properties(
+                r#"<w:sectPr w:rsidR="00A1"><w:pgSz/></w:sectPr>"#
+            ));
+            assert!(is_section_properties("<w:sectPr/>"));
+            assert!(!is_section_properties("<w:sectPrChange/>"));
+            assert!(!is_section_properties("<w:sdt></w:sdt>"));
+        }
+        // Phase `rebuilt_sectpr_keeps_page_setup_and_orders_cols`.
+        {
+            let original = concat!(
                 r#"<w:sectPr w:rsidR="00A1">"#,
-                r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#,
+                r#"<w:headerReference w:type="default" r:id="rId8"/>"#,
                 r#"<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440"/>"#,
-                r#"<w:cols w:num="2"/><w:titlePg/><w:docGrid w:linePitch="360"/>"#,
+                r#"<w:cols w:space="708"/><w:titlePg/><w:docGrid w:linePitch="360"/>"#,
                 "</w:sectPr>",
-            )
-        );
-        assert_eq!(plan.header_part.as_deref(), Some("word/header1.xml"));
-        assert_eq!(plan.footer_part, None);
-    }
-
-    #[test]
-    fn removes_only_matching_elements() {
-        let xml = r#"<R><X Id="a"/><X Id="b"></X><Y Id="a"/></R>"#;
-        assert_eq!(
-            remove_elements(xml, b"X", |e| attr(e, b"Id").is_some()),
-            r#"<R><Y Id="a"/></R>"#
-        );
+            );
+            let mut c = DocxContainer { parts: Vec::new() };
+            let parts = ExportedParts {
+                header: Some(Vec::new()),
+                footer: None,
+            };
+            let plan = plan(
+                &mut c,
+                Some(original),
+                &[],
+                &parts,
+                KeptRegions::default(),
+                r#"<w:cols w:num="2"/>"#,
+            );
+            assert_eq!(
+                plan.sectpr,
+                concat!(
+                    r#"<w:sectPr w:rsidR="00A1">"#,
+                    r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#,
+                    r#"<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440"/>"#,
+                    r#"<w:cols w:num="2"/><w:titlePg/><w:docGrid w:linePitch="360"/>"#,
+                    "</w:sectPr>",
+                )
+            );
+            assert_eq!(plan.header_part.as_deref(), Some("word/header1.xml"));
+            assert_eq!(plan.footer_part, None);
+        }
+        // Phase `removes_only_matching_elements`.
+        {
+            let xml = r#"<R><X Id="a"/><X Id="b"></X><Y Id="a"/></R>"#;
+            assert_eq!(
+                remove_elements(xml, b"X", |e| attr(e, b"Id").is_some()),
+                r#"<R><Y Id="a"/></R>"#
+            );
+        }
     }
 }

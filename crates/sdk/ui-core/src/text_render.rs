@@ -2685,18 +2685,145 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_catalog_constructs_the_production_renderer_and_caches() {
-        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-            "en-US",
-        );
-        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
-        let first = renderer.measure("Reading", 16.0, None);
-        let second = renderer.measure("Reading", 16.0, None);
-        assert_eq!(first, second);
-        assert!(first.0 > 0.0 && first.1 > 0.0);
-        assert_eq!(renderer.hits, 1);
-        assert_eq!(renderer.misses, 1);
+    fn renderer_font_system_pins_families_weights_and_fallbacks() {
+        // Case `explicit_catalog_constructs_the_production_renderer_and_caches`.
+        {
+            let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+                "en-US",
+            );
+            let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+            let first = renderer.measure("Reading", 16.0, None);
+            let second = renderer.measure("Reading", 16.0, None);
+            assert_eq!(first, second);
+            assert!(first.0 > 0.0 && first.1 > 0.0);
+            assert_eq!(renderer.hits, 1);
+            assert_eq!(renderer.misses, 1);
+        }
+
+        // Case `product_font_system_pins_every_generic_family`.
+        {
+            let font_system = crate::font_catalog::fixture_font_system();
+            let database = font_system.db();
+            assert_eq!(database.family_name(&Family::SansSerif), UI_SANS_FAMILY);
+            assert_eq!(database.family_name(&Family::Serif), UI_SERIF_FAMILY);
+            assert_eq!(
+                database.family_name(&Family::Monospace),
+                UI_MONOSPACE_FAMILY
+            );
+        }
+
+        // Case `shipped_fallback_policy_shapes_representative_scripts`.
+        {
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            let style = TextStyle::new(18.0);
+            let samples = [
+                ("Arabic", "مرحبا"),
+                ("Hebrew", "שלום"),
+                ("Devanagari", "नमस्ते"),
+                ("Bengali", "বাংলা"),
+                ("Thai", "สวัสดี"),
+                ("CJK", "日本語"),
+                ("symbols", "∞→✓"),
+                ("emoji", "🙂"),
+            ];
+
+            for (script, sample) in samples {
+                let runs = renderer.shaped_runs(sample, None, &style);
+                let glyphs: Vec<_> = runs.iter().flat_map(|run| run.glyphs.iter()).collect();
+                assert!(!glyphs.is_empty(), "{script} produced no shaped glyphs");
+                assert!(
+                    glyphs.iter().all(|glyph| glyph.id != 0),
+                    "{script} fell through to a .notdef glyph; install the Tilo Noto fallback package"
+                );
+            }
+        }
+
+        // Case `named_weights_resolve_to_tailwind_numeric_values`:
+        // A drift here would silently collapse every chrome label onto the
+        // fallback weight.
+        {
+            assert_eq!(TextWeight::Regular.to_u16(), 400);
+            assert_eq!(TextWeight::Medium.to_u16(), 500);
+            assert_eq!(TextWeight::Semibold.to_u16(), 600);
+            assert_eq!(TextWeight::Bold.to_u16(), 700);
+            assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
+            assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
+            // Default must be Regular so call sites through `draw_text` keep
+            // their 400-weight behaviour.
+            assert_eq!(TextWeight::default(), TextWeight::Regular);
+        }
+
+        // Case `font_choice_families_resolve_and_shape`:
+        // Two different families must be distinct shape-cache entries (so
+        // serif doesn't collide with sans).
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let fams = tr.system_families();
+            assert!(!fams.is_empty(), "the system font db exposes some families");
+
+            // Both generic families measure to a positive advance for real text.
+            let (ws, _) = tr.measure_font(
+                "Reading",
+                20.0,
+                None,
+                TextWeight::Regular,
+                false,
+                &FontChoice::Serif,
+            );
+            let (wn, _) = tr.measure_font(
+                "Reading",
+                20.0,
+                None,
+                TextWeight::Regular,
+                false,
+                &FontChoice::SansSerif,
+            );
+            assert!(ws > 0.0, "serif shapes to a real width");
+            assert!(wn > 0.0, "sans shapes to a real width");
+
+            // A specific installed family shapes into glyph runs without panicking.
+            let mut scene = Scene::new();
+            let named = FontChoice::Named(fams[0].clone());
+            tr.draw_text_font(
+                &mut scene,
+                "Reading",
+                20.0,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                TextWeight::Regular,
+                false,
+                &named,
+            );
+
+            // Serif and Sans of the same string are distinct shape-cache entries.
+            let _ = tr.take_shape_stats();
+            tr.draw_text_font(
+                &mut scene,
+                "Reading",
+                20.0,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                TextWeight::Regular,
+                false,
+                &FontChoice::Serif,
+            );
+            tr.draw_text_font(
+                &mut scene,
+                "Reading",
+                20.0,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                TextWeight::Regular,
+                false,
+                &FontChoice::SansSerif,
+            );
+            let (_h, m, _ns) = tr.take_shape_stats();
+            assert_eq!(m, 2, "serif and sans shape as separate families");
+        }
     }
 
     struct EveryThirdByte;
@@ -2728,1005 +2855,903 @@ mod tests {
         .expect("valid concave flow polygon")
     }
 
-    #[test]
-    fn custom_hyphenator_inserts_source_mapped_discretionary_breaks() {
-        let style = TextStyle::new(18.0).with_hyphenator(Arc::new(EveryThirdByte));
-        let map = style.hyphenation.offset_map("customizable");
-        assert_eq!(
-            map.shape_text("customizable"),
-            "cus\u{ad}tom\u{ad}iza\u{ad}ble"
-        );
-        assert_ne!(
-            style.hyphenation.cache_hash(),
-            Hyphenation::None.cache_hash()
-        );
-        for source in 0..="customizable".len() {
-            assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
-        }
-    }
-
-    #[test]
-    fn polygon_flow_computes_conservative_spans_and_clips_paint() {
-        use vello_encoding::DrawTag;
-
-        let region = notched_region();
-        assert_eq!(region.spans_for_band(0.0, 20.0, 200.0), [0.0..200.0]);
-        assert_eq!(
-            region.spans_for_band(50.0, 20.0, 200.0),
-            [0.0..80.0, 120.0..200.0]
-        );
-
-        let mut renderer = crate::font_catalog::fixture_renderer();
-        let style = TextStyle::new(16.0).with_line_height(1.25);
-        let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
-        let engine = PolygonTextLayout::new(region);
-        let layout = engine.layout(
-            &mut renderer,
-            text,
-            TextLayoutConstraints {
-                max_width: Some(200.0),
-                max_height: Some(120.0),
-            },
-            &style,
-        );
-        assert!(layout.lines.iter().any(|line| line.x == 0.0));
-        assert!(layout.lines.iter().any(|line| line.x >= 120.0));
-        assert!(layout.width <= 200.0);
-        assert!(layout.height <= 120.0);
-
-        let mut engine = engine;
-        let mut scene = Scene::new();
-        engine.draw(
-            &mut renderer,
-            &mut scene,
-            text,
-            TextLayoutConstraints {
-                max_width: Some(200.0),
-                max_height: Some(120.0),
-            },
-            &style,
-            Color::WHITE,
-            Affine::IDENTITY,
-        );
-        let begin = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .position(|tag| *tag == DrawTag::BEGIN_CLIP);
-        let end = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .rposition(|tag| *tag == DrawTag::END_CLIP);
-        assert!(begin.zip(end).is_some_and(|(begin, end)| begin < end));
-    }
-
-    #[test]
-    fn product_font_system_pins_every_generic_family() {
-        let font_system = crate::font_catalog::fixture_font_system();
-        let database = font_system.db();
-        assert_eq!(database.family_name(&Family::SansSerif), UI_SANS_FAMILY);
-        assert_eq!(database.family_name(&Family::Serif), UI_SERIF_FAMILY);
-        assert_eq!(
-            database.family_name(&Family::Monospace),
-            UI_MONOSPACE_FAMILY
-        );
-    }
-
-    #[test]
-    fn shipped_fallback_policy_shapes_representative_scripts() {
-        let mut renderer = crate::font_catalog::fixture_renderer();
-        let style = TextStyle::new(18.0);
-        let samples = [
-            ("Arabic", "مرحبا"),
-            ("Hebrew", "שלום"),
-            ("Devanagari", "नमस्ते"),
-            ("Bengali", "বাংলা"),
-            ("Thai", "สวัสดี"),
-            ("CJK", "日本語"),
-            ("symbols", "∞→✓"),
-            ("emoji", "🙂"),
-        ];
-
-        for (script, sample) in samples {
-            let runs = renderer.shaped_runs(sample, None, &style);
-            let glyphs: Vec<_> = runs.iter().flat_map(|run| run.glyphs.iter()).collect();
-            assert!(!glyphs.is_empty(), "{script} produced no shaped glyphs");
-            assert!(
-                glyphs.iter().all(|glyph| glyph.id != 0),
-                "{script} fell through to a .notdef glyph; install the Tilo Noto fallback package"
-            );
-        }
-    }
-
-    /// A drift here would silently collapse every chrome label onto the
-    /// fallback weight.
-    #[test]
-    fn named_weights_resolve_to_tailwind_numeric_values() {
-        assert_eq!(TextWeight::Regular.to_u16(), 400);
-        assert_eq!(TextWeight::Medium.to_u16(), 500);
-        assert_eq!(TextWeight::Semibold.to_u16(), 600);
-        assert_eq!(TextWeight::Bold.to_u16(), 700);
-        assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
-        assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
-        // Default must be Regular so call sites through `draw_text` keep
-        // their 400-weight behaviour.
-        assert_eq!(TextWeight::default(), TextWeight::Regular);
-    }
-
-    /// Measuring the same string twice should hit the cache the second time
-    /// — without this, every widget's `draw` pays a full cosmic-text shape.
-    #[test]
-    fn measure_cache_returns_hit_on_second_call() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let label = "Hello, gallery!";
-        let (w1, h1) = tr.measure(label, 16.0, None);
-        let (hits1, misses1) = tr.cache_stats();
-        assert_eq!(misses1, 1);
-        assert_eq!(hits1, 0);
-
-        let (w2, h2) = tr.measure(label, 16.0, None);
-        let (hits2, misses2) = tr.cache_stats();
-        assert_eq!(hits2, 1, "second measure of same string must hit");
-        assert_eq!(misses2, 1, "miss count unchanged after a hit");
-        assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
-    }
-
-    #[test]
-    fn measure_cache_keys_on_size() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let _ = tr.measure("abc", 12.0, None);
-        let _ = tr.measure("abc", 16.0, None);
-        let _ = tr.measure("abc", 12.0, None); // hit
-        let (hits, misses) = tr.cache_stats();
-        assert_eq!(hits, 1);
-        assert_eq!(misses, 2);
-    }
-
-    #[test]
-    fn style_line_height_controls_layout_and_cache_identity() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let compact = TextStyle::new(20.0).with_line_height(1.2);
-        let relaxed = TextStyle::new(20.0).with_line_height(1.6);
-
-        let (_, compact_h) = tr.measure_style("first\nsecond", None, &compact);
-        let (_, relaxed_h) = tr.measure_style("first\nsecond", None, &relaxed);
-        assert!((compact_h - 48.0).abs() < 0.01);
-        assert!((relaxed_h - 64.0).abs() < 0.01);
-
-        let (hits, misses) = tr.cache_stats();
-        assert_eq!(hits, 0);
-        assert_eq!(misses, 2, "different leading must not alias in the cache");
-        let _ = tr.measure_style("first\nsecond", None, &relaxed);
-        let (hits, misses) = tr.cache_stats();
-        assert_eq!(hits, 1);
-        assert_eq!(misses, 2);
-    }
-
-    #[test]
-    fn style_is_shared_by_measurement_and_drawing() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let style = TextStyle::new(18.0)
-            .with_line_height(1.4)
-            .with_weight(TextWeight::Semibold)
-            .with_italic(true)
-            .with_family(FontChoice::Serif);
-        let _ = tr.measure_style("Consistent typography", Some(180.0), &style);
-
-        let mut scene = Scene::new();
-        tr.draw_style(
-            &mut scene,
-            "Consistent typography",
-            Color::WHITE,
-            Affine::IDENTITY,
-            Some(180.0),
-            &style,
-        );
-        let (_hits, misses, _ns) = tr.take_shape_stats();
-        assert_eq!(misses, 1);
-        assert!(
-            !scene.encoding().resources.glyph_runs.is_empty(),
-            "the complete style produces drawable glyph geometry"
-        );
-    }
-
-    /// A highlighted run must add a real fill: the highlighted scene must
-    /// encode strictly more paths than the plain one.
-    #[test]
-    fn background_span_emits_an_extra_fill_in_the_scene() {
-        use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
-        let mut tr = crate::font_catalog::fixture_renderer();
-
-        let plain_spans = [RichSpan::new("highlighted")];
-        let plain = RichTextLayout::shape(
-            &mut tr.font_system,
-            &plain_spans,
-            false,
-            16.0,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
-        let highlighted = RichTextLayout::shape(
-            &mut tr.font_system,
-            &hl_spans,
-            false,
-            16.0,
-            400.0,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-
-        let mut plain_scene = Scene::new();
-        tr.draw_rich(
-            &mut plain_scene,
-            &plain,
-            Affine::IDENTITY,
-            Color::from_rgb8(0, 0, 0),
-        );
-        let plain_paths = plain_scene.encoding().n_paths;
-
-        let mut hl_scene = Scene::new();
-        tr.draw_rich(
-            &mut hl_scene,
-            &highlighted,
-            Affine::IDENTITY,
-            Color::from_rgb8(0, 0, 0),
-        );
-        let hl_paths = hl_scene.encoding().n_paths;
-
-        assert!(
-            hl_paths > plain_paths,
-            "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
-        );
-    }
-
-    #[test]
-    fn elide_returns_text_unchanged_when_it_fits() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let s = "short";
-        let (w, _) = tr.measure(s, 14.0, None);
-        let out = tr.elide_to_width(s, 14.0, w + 50.0);
-        assert_eq!(out, s, "fitting text must be returned unchanged");
-        assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
-    }
-
-    #[test]
-    fn elide_truncates_and_appends_ellipsis() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let s = "the quick brown fox jumps over the lazy dog";
-        let (full_w, _) = tr.measure(s, 14.0, None);
-        let budget = full_w / 3.0; // force truncation
-        let out = tr.elide_to_width(s, 14.0, budget);
-        assert!(
-            out.ends_with('\u{2026}'),
-            "truncated text must end with …, got {out:?}"
-        );
-        assert!(
-            out.chars().count() < s.chars().count(),
-            "must drop characters"
-        );
-        let (out_w, _) = tr.measure(&out, 14.0, None);
-        assert!(
-            out_w <= budget + 0.5,
-            "elided string ({out_w}) must fit the budget ({budget})",
-        );
-    }
-
-    #[test]
-    fn elide_never_splits_a_grapheme_and_drops_space_before_the_ellipsis() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        // "e" + combining acute, repeated: a char-wise cut could strand the
-        // accent from its base letter.
-        let s = "cafe\u{301} cafe\u{301} cafe\u{301} cafe\u{301}";
-        for budget in [10.0_f32, 25.0, 40.0, 55.0, 70.0, 85.0] {
-            let out = tr.elide_to_width(s, 14.0, budget);
-            let kept = out.trim_end_matches(ELLIPSIS);
-            assert!(s.starts_with(kept), "{out:?} is not a prefix of the text");
-            let rest = s.get(kept.len()..).unwrap_or_default();
-            assert!(
-                !rest.starts_with('\u{301}'),
-                "{out:?} strands a combining mark"
-            );
-            assert!(!kept.ends_with(' '), "space before the ellipsis in {out:?}");
-            if out != ELLIPSIS.to_string() {
-                assert!(
-                    tr.measure(&out, 14.0, None).0 <= budget,
-                    "{out:?} overflows {budget}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn elide_keeps_the_longest_prefix_that_fits() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let s = "the quick brown fox jumps over the lazy dog";
-        let (full_w, _) = tr.measure(s, 14.0, None);
-        let budget = full_w / 2.0;
-        let out = tr.elide_to_width(s, 14.0, budget);
-        let kept = out.trim_end_matches(ELLIPSIS);
-        // One more character (plus the ellipsis) must no longer fit.
-        let rest = s.get(kept.len()..).unwrap_or_default();
-        let next_end = kept.len() + rest.chars().next().map_or(0, char::len_utf8);
-        let longer = format!(
-            "{}{ELLIPSIS}",
-            s.get(..next_end).unwrap_or_default().trim_end()
-        );
-        if longer != out {
-            assert!(
-                tr.measure(&longer, 14.0, None).0 > budget,
-                "{longer:?} would still fit"
-            );
-        }
-    }
-
-    #[test]
-    fn elide_measures_in_the_given_style() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
-        let mono = TextStyle::new(13.0).with_family(FontChoice::Monospace);
-        let budget = tr.measure_style(s, None, &mono).0 / 2.0;
-        let out = tr.elide_to_width_style(s, budget, &mono);
-        assert!(out.ends_with(ELLIPSIS));
-        assert!(tr.measure_style(&out, None, &mono).0 <= budget);
-    }
-
-    /// A zero/empty budget yields empty output; so does empty input.
-    #[test]
-    fn elide_edge_cases() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
-        assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
-    }
-
-    #[test]
-    fn clamp_to_lines_caps_line_count_and_elides_last() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
-             incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
-        // Narrow width forces several wrapped lines; cap to 2.
-        let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
-        assert!(
-            lines.len() <= 2,
-            "must not exceed max_lines, got {}",
-            lines.len()
-        );
-        assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
-        assert!(
-            lines.last().unwrap().ends_with('\u{2026}'),
-            "overflowing clamp must elide the final line: {:?}",
-            lines.last(),
-        );
-    }
-
-    #[test]
-    fn clamp_to_lines_degenerate_cases() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
-        let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
-        assert_eq!(one.len(), 1);
-        assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
-    }
-
-    #[test]
-    fn clamp_to_lines_no_overflow_keeps_all() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
-        assert_eq!(lines, vec!["two words".to_string()]);
-        assert!(!lines[0].ends_with('\u{2026}'));
-    }
-
-    #[test]
-    fn wrap_lines_uses_cjk_opportunities_without_spaces() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let text = "東京京都大阪名古屋";
-        let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
-        let lines = tr.wrap_lines(text, 14.0, two_glyphs);
-        assert!(lines.len() > 1, "CJK text wraps without ASCII spaces");
-        assert_eq!(lines.concat(), text);
-        assert!(lines.iter().all(|line| !line.is_empty()));
-    }
-
-    #[test]
-    fn wrap_lines_respects_non_breaking_space() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let text = "10\u{a0}km away";
-        let narrow = tr.measure("10", 14.0, None).0 + 1.0;
-        let lines = tr.wrap_lines(text, 14.0, narrow);
-        assert_eq!(lines.first().map(String::as_str), Some("10\u{a0}km"));
-        assert_eq!(lines.join(" "), text);
-    }
-
-    #[test]
-    fn wrap_lines_uses_dictionary_breaks_for_thai() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let text = "ทุกสองสัปดาห์";
-        let first_word = &text[..9];
-        let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
-        let lines = tr.wrap_lines(text, 14.0, budget);
-        assert_eq!(lines, vec![&text[..9], &text[9..18], &text[18..]]);
-        assert_eq!(lines.concat(), text);
-    }
-
-    #[test]
     #[allow(
         clippy::cast_possible_truncation,
         reason = "buckets glyph y-positions into small row indices for a three-line test layout; round() already yields an integer-valued f32 far below i32::MAX"
     )]
-    fn measure_and_draw_use_dictionary_breaks_for_thai() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let style = TextStyle::new(18.0);
-        let text = "ทุกสองสัปดาห์";
-        let width = [&text[..9], &text[9..18], &text[18..]]
-            .into_iter()
-            .map(|word| tr.measure_style(word, None, &style).0)
-            .fold(0.0f32, f32::max)
-            + 0.5;
-
-        let (_, height) = tr.measure_style(text, Some(width), &style);
-        assert!(
-            (height - style.line_height_px() * 3.0).abs() < 0.01,
-            "plain widget measurement must use the three ICU word rows"
-        );
-
-        let runs = tr.shaped_runs(text, Some(width), &style);
-        let mut rows: Vec<i32> = runs
-            .iter()
-            .flat_map(|run| run.glyphs.iter())
-            .map(|glyph| (glyph.y / style.line_height_px()).round() as i32)
-            .collect();
-        rows.sort_unstable();
-        rows.dedup();
-        assert_eq!(rows.len(), 3, "paint geometry must match measured wrapping");
-    }
-
     #[test]
-    fn automatic_hyphenation_wraps_and_paints_only_exercised_breaks() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let text = "extensive";
-        let plain = TextStyle::new(20.0);
-        let hyphenated = plain.clone().with_auto_hyphenation("en-US");
-        let width = tr.measure_style("exten-", None, &plain).0 + 0.5;
-
-        let (_, plain_height) = tr.measure_style(text, Some(width), &plain);
-        let (hyphenated_width, hyphenated_height) =
-            tr.measure_style(text, Some(width), &hyphenated);
-        assert_eq!(plain_height, plain.line_height_px());
-        assert!(hyphenated_height >= hyphenated.line_height_px() * 2.0);
-        assert!(
-            hyphenated_width <= width + 0.01,
-            "the visible discretionary glyph is included in line fitting"
-        );
-
-        let narrow = tr.shaped_runs(text, Some(width), &hyphenated);
-        let narrow_glyphs = narrow.iter().map(|run| run.glyphs.len()).sum::<usize>();
-        assert!(
-            narrow_glyphs > text.chars().count(),
-            "an exercised discretionary break paints one additional hyphen glyph"
-        );
-
-        let wide = tr.shaped_runs(text, Some(10_000.0), &hyphenated);
-        let wide_glyphs = wide.iter().map(|run| run.glyphs.len()).sum::<usize>();
-        assert_eq!(
-            wide_glyphs,
-            text.chars().count(),
-            "unused discretionary opportunities stay invisible"
-        );
-    }
-
-    #[test]
-    fn hyphenation_policy_participates_in_measurement_cache_identity() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let text = "extensive";
-        let width = 70.0;
-        let plain = TextStyle::new(20.0);
-        let automatic = plain.clone().with_auto_hyphenation("en");
-        let _ = tr.measure_style(text, Some(width), &plain);
-        let _ = tr.measure_style(text, Some(width), &automatic);
-        let (hits, misses) = tr.cache_stats();
-        assert_eq!((hits, misses), (0, 2));
-    }
-
-    /// The DRAW path caches shaped glyph geometry: drawing the same string
-    /// twice shapes it once.
-    #[test]
-    fn shape_cache_reshapes_once_for_repeated_draw() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let mut scene = Scene::new();
-        let t = Affine::IDENTITY;
-        let c = Color::WHITE;
-        tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
-        let (_h, m1, _ns1) = tr.take_shape_stats();
-        assert_eq!(m1, 1, "first draw must shape once (miss)");
-
-        // Every redraw must be a cache hit; zero reshapes.
-        for _ in 0..5 {
-            tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
-        }
-        let (h, m, ns) = tr.take_shape_stats();
-        assert_eq!(m, 0, "repeated identical draws must not reshape");
-        assert_eq!(h, 5, "all five redraws must hit the shape cache");
-        assert_eq!(ns, 0, "no shaping time on an all-hit frame");
-    }
-
-    /// Colour is NOT part of the shape key — a theme recolour of the same
-    /// label reuses the cached glyph geometry, making theme switches free.
-    #[test]
-    fn shape_cache_reuses_geometry_across_recolor() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let mut scene = Scene::new();
-        let t = Affine::IDENTITY;
-        tr.draw_text_weighted(
-            &mut scene,
-            "Clear",
-            16.0,
-            Color::WHITE,
-            t,
-            None,
-            TextWeight::Regular,
-        );
-        let _ = tr.take_shape_stats();
-        // Same string + size + weight, different colour (dark→light theme).
-        tr.draw_text_weighted(
-            &mut scene,
-            "Clear",
-            16.0,
-            Color::BLACK,
-            t,
-            None,
-            TextWeight::Regular,
-        );
-        let (h, m, _ns) = tr.take_shape_stats();
-        assert_eq!(m, 0, "recolour must not reshape");
-        assert_eq!(h, 1, "recolour must hit the cached geometry");
-    }
-
-    /// A different wrap width is a different shape — wrapping changes
-    /// glyph positions, so it must miss and reshape.
-    #[test]
-    fn shape_cache_keys_on_width() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let mut scene = Scene::new();
-        let t = Affine::IDENTITY;
-        let s = "the quick brown fox";
-        tr.draw_text_weighted(
-            &mut scene,
-            s,
-            16.0,
-            Color::WHITE,
-            t,
-            Some(200.0),
-            TextWeight::Regular,
-        );
-        tr.draw_text_weighted(
-            &mut scene,
-            s,
-            16.0,
-            Color::WHITE,
-            t,
-            Some(60.0),
-            TextWeight::Regular,
-        );
-        tr.draw_text_weighted(
-            &mut scene,
-            s,
-            16.0,
-            Color::WHITE,
-            t,
-            Some(200.0),
-            TextWeight::Regular,
-        ); // hit
-        let (h, m, _ns) = tr.take_shape_stats();
-        assert_eq!(m, 2, "each distinct width shapes once");
-        assert_eq!(h, 1, "the repeated width hits");
-    }
-
-    /// `bump_generation` (locale / font hot-swap) invalidates shaped
-    /// geometry too, so the next draw reshapes.
-    #[test]
-    fn bump_generation_invalidates_shape_cache() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let mut scene = Scene::new();
-        let t = Affine::IDENTITY;
-        tr.draw_text_weighted(
-            &mut scene,
-            "Send",
-            16.0,
-            Color::WHITE,
-            t,
-            None,
-            TextWeight::Regular,
-        );
-        let _ = tr.take_shape_stats();
-        tr.draw_text_weighted(
-            &mut scene,
-            "Send",
-            16.0,
-            Color::WHITE,
-            t,
-            None,
-            TextWeight::Regular,
-        );
-        let (h, _m, _ns) = tr.take_shape_stats();
-        assert_eq!(h, 1, "second draw hits before bump");
-        tr.bump_generation();
-        tr.draw_text_weighted(
-            &mut scene,
-            "Send",
-            16.0,
-            Color::WHITE,
-            t,
-            None,
-            TextWeight::Regular,
-        );
-        let (_h, m, _ns) = tr.take_shape_stats();
-        assert_eq!(m, 1, "draw after bump must reshape");
-    }
-
-    /// Two different families must be distinct shape-cache entries (so
-    /// serif doesn't collide with sans).
-    #[test]
-    fn font_choice_families_resolve_and_shape() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let fams = tr.system_families();
-        assert!(!fams.is_empty(), "the system font db exposes some families");
-
-        // Both generic families measure to a positive advance for real text.
-        let (ws, _) = tr.measure_font(
-            "Reading",
-            20.0,
-            None,
-            TextWeight::Regular,
-            false,
-            &FontChoice::Serif,
-        );
-        let (wn, _) = tr.measure_font(
-            "Reading",
-            20.0,
-            None,
-            TextWeight::Regular,
-            false,
-            &FontChoice::SansSerif,
-        );
-        assert!(ws > 0.0, "serif shapes to a real width");
-        assert!(wn > 0.0, "sans shapes to a real width");
-
-        // A specific installed family shapes into glyph runs without panicking.
-        let mut scene = Scene::new();
-        let named = FontChoice::Named(fams[0].clone());
-        tr.draw_text_font(
-            &mut scene,
-            "Reading",
-            20.0,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            TextWeight::Regular,
-            false,
-            &named,
-        );
-
-        // Serif and Sans of the same string are distinct shape-cache entries.
-        let _ = tr.take_shape_stats();
-        tr.draw_text_font(
-            &mut scene,
-            "Reading",
-            20.0,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            TextWeight::Regular,
-            false,
-            &FontChoice::Serif,
-        );
-        tr.draw_text_font(
-            &mut scene,
-            "Reading",
-            20.0,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            TextWeight::Regular,
-            false,
-            &FontChoice::SansSerif,
-        );
-        let (_h, m, _ns) = tr.take_shape_stats();
-        assert_eq!(m, 2, "serif and sans shape as separate families");
-    }
-
-    #[test]
-    fn advanced_features_are_part_of_shaping_and_measurement() {
-        let mut renderer = crate::font_catalog::fixture_renderer();
-        let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
-        let kerned = renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(true));
-        let unkerned = renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(false));
-        assert!(
-            (kerned.0 - unkerned.0).abs() > 0.1,
-            "explicit kerning must alter positioned advances"
-        );
-
-        let normal = renderer.measure_style("TRACKING", None, &base);
-        let tracked = renderer.measure_style("TRACKING", None, &base.clone().with_tracking(0.08));
-        assert!(tracked.0 > normal.0, "positive tracking must widen the run");
-
-        let mut scene = Scene::new();
-        renderer.draw_style(
-            &mut scene,
-            "Features",
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            &base,
-        );
-        renderer.draw_style(
-            &mut scene,
-            "Features",
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            &base.clone().with_small_caps(true),
-        );
-        let (_, misses, _) = renderer.take_shape_stats();
-        assert_eq!(misses, 2, "feature settings must not collide in the cache");
-    }
-
-    #[test]
-    fn feature_numeric_and_variation_builders_replace_their_own_settings() {
-        let style = TextStyle::new(20.0)
-            .with_font_feature(OpenTypeTag::KERNING, 0)
-            .with_kerning(true)
-            .with_numeric_style(NumericStyle::ProportionalLining)
-            .with_numeric_style(NumericStyle::TabularOldstyle)
-            .with_font_variation(OpenTypeTag::WEIGHT, 310.0)
-            .with_font_variation(OpenTypeTag::WEIGHT, 675.0)
-            .with_optical_sizing(OpticalSizing::Auto);
-        assert_eq!(
-            style
-                .font_features
-                .iter()
-                .find(|feature| feature.tag == OpenTypeTag::KERNING)
-                .map(|feature| feature.value),
-            Some(1)
-        );
-        assert!(
-            style.font_features.iter().any(|feature| {
-                feature.tag == OpenTypeTag::TABULAR_NUMERALS && feature.value == 1
-            })
-        );
-        assert!(style.font_features.iter().any(|feature| {
-            feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS && feature.value == 1
-        }));
-        assert_eq!(style.effective_weight().0, 675);
-        assert_eq!(
-            style
-                .resolved_variations()
-                .iter()
-                .find(|axis| axis.tag == OpenTypeTag::OPTICAL_SIZE)
-                .map(|axis| axis.value),
-            Some(20.0)
-        );
-        assert_eq!(
-            style
-                .font_variations
-                .iter()
-                .filter(|axis| axis.tag == OpenTypeTag::WEIGHT)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn variable_axes_are_normalized_in_the_faces_native_axis_order() {
-        let renderer = crate::font_catalog::fixture_renderer();
-        let face = renderer
-            .font_system
-            .db()
-            .query(&cosmic_text::fontdb::Query {
-                families: &[Family::Name("Adwaita Sans")],
-                ..cosmic_text::fontdb::Query::default()
-            })
-            .expect("the controlled fixture ships Adwaita Sans");
-        let coords = renderer.normalized_coords(
-            face,
-            &[
-                FontVariation {
-                    tag: OpenTypeTag::WEIGHT,
-                    value: 700.0,
-                },
-                FontVariation {
-                    tag: OpenTypeTag::OPTICAL_SIZE,
-                    value: 32.0,
-                },
-            ],
-            Weight(700),
-        );
-        assert_eq!(coords.len(), 2, "Adwaita exposes opsz and wght");
-        assert!(
-            coords.iter().all(|coordinate| *coordinate > 0),
-            "both requested values sit above the face defaults: {coords:?}"
-        );
-    }
-
-    /// `bump_generation` blows away every cached entry — the next
-    /// measure of a previously-seen string registers as a miss.
-    #[test]
-    fn bump_generation_invalidates_cache() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let _ = tr.measure("abc", 12.0, None);
-        let _ = tr.measure("abc", 12.0, None); // hit
-        tr.bump_generation();
-        let _ = tr.measure("abc", 12.0, None); // miss after bump
-        let (hits, misses) = tr.cache_stats();
-        assert_eq!(hits, 1);
-        assert_eq!(misses, 2);
-    }
-
-    #[test]
-    fn text_scale_one_is_metric_identity_and_invalid_values_are_safe() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let base = tr.measure("Accessible calendar", 18.0, None);
-        tr.set_text_scale(1.0);
-        assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
-
-        tr.set_text_scale(f32::NAN);
-        assert_eq!(tr.text_scale, 1.0, "NaN resets to the safe identity scale");
-        tr.set_text_scale(100.0);
-        assert_eq!(tr.text_scale, 4.0, "oversized scales are bounded");
-        tr.set_text_scale(0.0);
-        assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
-    }
-
-    #[test]
-    fn text_scale_changes_measure_and_shape_cache_together() {
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let base = tr.measure("Calendar", 20.0, None);
-        tr.set_text_scale(2.0);
-        let doubled = tr.measure("Calendar", 20.0, None);
-        assert!(
-            (doubled.0 - base.0 * 2.0).abs() < 0.1 && (doubled.1 - base.1 * 2.0).abs() < 0.1,
-            "measurement uses the same scaled metrics that drawing receives: {base:?} -> {doubled:?}"
-        );
-
-        let mut scene = Scene::new();
-        let _ = tr.take_shape_stats();
-        tr.draw_text(
-            &mut scene,
-            "Calendar",
-            20.0,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-        );
-        tr.set_text_scale(1.0);
-        tr.draw_text(
-            &mut scene,
-            "Calendar",
-            20.0,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-        );
-        let (_hits, misses, _ns) = tr.take_shape_stats();
-        assert_eq!(
-            misses, 2,
-            "each scaled style owns a distinct shape-cache entry"
-        );
-    }
-
-    #[test]
-    fn custom_canvas_styles_remain_renderer_relative_at_supported_scales() {
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            renderer.set_text_scale(scale);
-            let style = TextStyle::new(14.0).with_letter_spacing(2.0);
-            let (_, height) = renderer.measure_style("Canvas", None, &style);
-            assert!(
-                (height - 14.0 * 1.25 * scale).abs() < 0.001,
-                "custom canvas measure at {scale}x: {height}"
+    fn line_breaking_follows_script_rules_hyphenation_and_polygon_flow() {
+        // Case `custom_hyphenator_inserts_source_mapped_discretionary_breaks`.
+        {
+            let style = TextStyle::new(18.0).with_hyphenator(Arc::new(EveryThirdByte));
+            let map = style.hyphenation.offset_map("customizable");
+            assert_eq!(
+                map.shape_text("customizable"),
+                "cus\u{ad}tom\u{ad}iza\u{ad}ble"
             );
+            assert_ne!(
+                style.hyphenation.cache_hash(),
+                Hyphenation::None.cache_hash()
+            );
+            for source in 0..="customizable".len() {
+                assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+            }
+        }
+
+        // Case `polygon_flow_computes_conservative_spans_and_clips_paint`.
+        {
+            use vello_encoding::DrawTag;
+
+            let region = notched_region();
+            assert_eq!(region.spans_for_band(0.0, 20.0, 200.0), [0.0..200.0]);
+            assert_eq!(
+                region.spans_for_band(50.0, 20.0, 200.0),
+                [0.0..80.0, 120.0..200.0]
+            );
+
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            let style = TextStyle::new(16.0).with_line_height(1.25);
+            let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
+            let engine = PolygonTextLayout::new(region);
+            let layout = engine.layout(
+                &mut renderer,
+                text,
+                TextLayoutConstraints {
+                    max_width: Some(200.0),
+                    max_height: Some(120.0),
+                },
+                &style,
+            );
+            assert!(layout.lines.iter().any(|line| line.x == 0.0));
+            assert!(layout.lines.iter().any(|line| line.x >= 120.0));
+            assert!(layout.width <= 200.0);
+            assert!(layout.height <= 120.0);
+
+            let mut engine = engine;
+            let mut scene = Scene::new();
+            engine.draw(
+                &mut renderer,
+                &mut scene,
+                text,
+                TextLayoutConstraints {
+                    max_width: Some(200.0),
+                    max_height: Some(120.0),
+                },
+                &style,
+                Color::WHITE,
+                Affine::IDENTITY,
+            );
+            let begin = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .position(|tag| *tag == DrawTag::BEGIN_CLIP);
+            let end = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .rposition(|tag| *tag == DrawTag::END_CLIP);
+            assert!(begin.zip(end).is_some_and(|(begin, end)| begin < end));
+        }
+
+        // Case `wrap_lines_uses_cjk_opportunities_without_spaces`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let text = "東京京都大阪名古屋";
+            let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
+            let lines = tr.wrap_lines(text, 14.0, two_glyphs);
+            assert!(lines.len() > 1, "CJK text wraps without ASCII spaces");
+            assert_eq!(lines.concat(), text);
+            assert!(lines.iter().all(|line| !line.is_empty()));
+        }
+
+        // Case `wrap_lines_respects_non_breaking_space`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let text = "10\u{a0}km away";
+            let narrow = tr.measure("10", 14.0, None).0 + 1.0;
+            let lines = tr.wrap_lines(text, 14.0, narrow);
+            assert_eq!(lines.first().map(String::as_str), Some("10\u{a0}km"));
+            assert_eq!(lines.join(" "), text);
+        }
+
+        // Case `wrap_lines_uses_dictionary_breaks_for_thai`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let text = "ทุกสองสัปดาห์";
+            let first_word = &text[..9];
+            let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
+            let lines = tr.wrap_lines(text, 14.0, budget);
+            assert_eq!(lines, vec![&text[..9], &text[9..18], &text[18..]]);
+            assert_eq!(lines.concat(), text);
+        }
+
+        // Case `measure_and_draw_use_dictionary_breaks_for_thai`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let style = TextStyle::new(18.0);
+            let text = "ทุกสองสัปดาห์";
+            let width = [&text[..9], &text[9..18], &text[18..]]
+                .into_iter()
+                .map(|word| tr.measure_style(word, None, &style).0)
+                .fold(0.0f32, f32::max)
+                + 0.5;
+
+            let (_, height) = tr.measure_style(text, Some(width), &style);
+            assert!(
+                (height - style.line_height_px() * 3.0).abs() < 0.01,
+                "plain widget measurement must use the three ICU word rows"
+            );
+
+            let runs = tr.shaped_runs(text, Some(width), &style);
+            let mut rows: Vec<i32> = runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| (glyph.y / style.line_height_px()).round() as i32)
+                .collect();
+            rows.sort_unstable();
+            rows.dedup();
+            assert_eq!(rows.len(), 3, "paint geometry must match measured wrapping");
+        }
+
+        // Case `automatic_hyphenation_wraps_and_paints_only_exercised_breaks`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let text = "extensive";
+            let plain = TextStyle::new(20.0);
+            let hyphenated = plain.clone().with_auto_hyphenation("en-US");
+            let width = tr.measure_style("exten-", None, &plain).0 + 0.5;
+
+            let (_, plain_height) = tr.measure_style(text, Some(width), &plain);
+            let (hyphenated_width, hyphenated_height) =
+                tr.measure_style(text, Some(width), &hyphenated);
+            assert_eq!(plain_height, plain.line_height_px());
+            assert!(hyphenated_height >= hyphenated.line_height_px() * 2.0);
+            assert!(
+                hyphenated_width <= width + 0.01,
+                "the visible discretionary glyph is included in line fitting"
+            );
+
+            let narrow = tr.shaped_runs(text, Some(width), &hyphenated);
+            let narrow_glyphs = narrow.iter().map(|run| run.glyphs.len()).sum::<usize>();
+            assert!(
+                narrow_glyphs > text.chars().count(),
+                "an exercised discretionary break paints one additional hyphen glyph"
+            );
+
+            let wide = tr.shaped_runs(text, Some(10_000.0), &hyphenated);
+            let wide_glyphs = wide.iter().map(|run| run.glyphs.len()).sum::<usize>();
+            assert_eq!(
+                wide_glyphs,
+                text.chars().count(),
+                "unused discretionary opportunities stay invisible"
+            );
+        }
+    }
+
+    #[test]
+    fn measure_cache_hits_and_keys_on_size_policy_and_generation() {
+        // Case `measure_cache_returns_hit_on_second_call`:
+        // Measuring the same string twice should hit the cache the second time
+        // — without this, every widget's `draw` pays a full cosmic-text shape.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let label = "Hello, gallery!";
+            let (w1, h1) = tr.measure(label, 16.0, None);
+            let (hits1, misses1) = tr.cache_stats();
+            assert_eq!(misses1, 1);
+            assert_eq!(hits1, 0);
+
+            let (w2, h2) = tr.measure(label, 16.0, None);
+            let (hits2, misses2) = tr.cache_stats();
+            assert_eq!(hits2, 1, "second measure of same string must hit");
+            assert_eq!(misses2, 1, "miss count unchanged after a hit");
+            assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
+        }
+
+        // Case `measure_cache_keys_on_size`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let _ = tr.measure("abc", 12.0, None);
+            let _ = tr.measure("abc", 16.0, None);
+            let _ = tr.measure("abc", 12.0, None); // hit
+            let (hits, misses) = tr.cache_stats();
+            assert_eq!(hits, 1);
+            assert_eq!(misses, 2);
+        }
+
+        // Case `hyphenation_policy_participates_in_measurement_cache_identity`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let text = "extensive";
+            let width = 70.0;
+            let plain = TextStyle::new(20.0);
+            let automatic = plain.clone().with_auto_hyphenation("en");
+            let _ = tr.measure_style(text, Some(width), &plain);
+            let _ = tr.measure_style(text, Some(width), &automatic);
+            let (hits, misses) = tr.cache_stats();
+            assert_eq!((hits, misses), (0, 2));
+        }
+
+        // Case `bump_generation_invalidates_cache`:
+        // `bump_generation` blows away every cached entry — the next
+        // measure of a previously-seen string registers as a miss.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let _ = tr.measure("abc", 12.0, None);
+            let _ = tr.measure("abc", 12.0, None); // hit
+            tr.bump_generation();
+            let _ = tr.measure("abc", 12.0, None); // miss after bump
+            let (hits, misses) = tr.cache_stats();
+            assert_eq!(hits, 1);
+            assert_eq!(misses, 2);
+        }
+    }
+
+    #[test]
+    fn style_is_shared_by_measurement_and_drawing_including_backgrounds() {
+        // Case `style_line_height_controls_layout_and_cache_identity`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let compact = TextStyle::new(20.0).with_line_height(1.2);
+            let relaxed = TextStyle::new(20.0).with_line_height(1.6);
+
+            let (_, compact_h) = tr.measure_style("first\nsecond", None, &compact);
+            let (_, relaxed_h) = tr.measure_style("first\nsecond", None, &relaxed);
+            assert!((compact_h - 48.0).abs() < 0.01);
+            assert!((relaxed_h - 64.0).abs() < 0.01);
+
+            let (hits, misses) = tr.cache_stats();
+            assert_eq!(hits, 0);
+            assert_eq!(misses, 2, "different leading must not alias in the cache");
+            let _ = tr.measure_style("first\nsecond", None, &relaxed);
+            let (hits, misses) = tr.cache_stats();
+            assert_eq!(hits, 1);
+            assert_eq!(misses, 2);
+        }
+
+        // Case `style_is_shared_by_measurement_and_drawing`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let style = TextStyle::new(18.0)
+                .with_line_height(1.4)
+                .with_weight(TextWeight::Semibold)
+                .with_italic(true)
+                .with_family(FontChoice::Serif);
+            let _ = tr.measure_style("Consistent typography", Some(180.0), &style);
+
+            let mut scene = Scene::new();
+            tr.draw_style(
+                &mut scene,
+                "Consistent typography",
+                Color::WHITE,
+                Affine::IDENTITY,
+                Some(180.0),
+                &style,
+            );
+            let (_hits, misses, _ns) = tr.take_shape_stats();
+            assert_eq!(misses, 1);
+            assert!(
+                !scene.encoding().resources.glyph_runs.is_empty(),
+                "the complete style produces drawable glyph geometry"
+            );
+        }
+
+        // Case `background_span_emits_an_extra_fill_in_the_scene`:
+        // A highlighted run must add a real fill: the highlighted scene must
+        // encode strictly more paths than the plain one.
+        {
+            use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
+            let mut tr = crate::font_catalog::fixture_renderer();
+
+            let plain_spans = [RichSpan::new("highlighted")];
+            let plain = RichTextLayout::shape(
+                &mut tr.font_system,
+                &plain_spans,
+                false,
+                16.0,
+                400.0,
+                TextAlign::Left,
+                FontFamily::Sans,
+                vec![],
+                vec![],
+                1.0,
+            );
+            let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
+            let highlighted = RichTextLayout::shape(
+                &mut tr.font_system,
+                &hl_spans,
+                false,
+                16.0,
+                400.0,
+                TextAlign::Left,
+                FontFamily::Sans,
+                vec![],
+                vec![],
+                1.0,
+            );
+
+            let mut plain_scene = Scene::new();
+            tr.draw_rich(
+                &mut plain_scene,
+                &plain,
+                Affine::IDENTITY,
+                Color::from_rgb8(0, 0, 0),
+            );
+            let plain_paths = plain_scene.encoding().n_paths;
+
+            let mut hl_scene = Scene::new();
+            tr.draw_rich(
+                &mut hl_scene,
+                &highlighted,
+                Affine::IDENTITY,
+                Color::from_rgb8(0, 0, 0),
+            );
+            let hl_paths = hl_scene.encoding().n_paths;
+
+            assert!(
+                hl_paths > plain_paths,
+                "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
+            );
+        }
+    }
+
+    #[test]
+    fn elide_and_clamp_truncate_at_grapheme_boundaries() {
+        // Case `elide_returns_text_unchanged_when_it_fits`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let s = "short";
+            let (w, _) = tr.measure(s, 14.0, None);
+            let out = tr.elide_to_width(s, 14.0, w + 50.0);
+            assert_eq!(out, s, "fitting text must be returned unchanged");
+            assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
+        }
+
+        // Case `elide_truncates_and_appends_ellipsis`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let s = "the quick brown fox jumps over the lazy dog";
+            let (full_w, _) = tr.measure(s, 14.0, None);
+            let budget = full_w / 3.0; // force truncation
+            let out = tr.elide_to_width(s, 14.0, budget);
+            assert!(
+                out.ends_with('\u{2026}'),
+                "truncated text must end with …, got {out:?}"
+            );
+            assert!(
+                out.chars().count() < s.chars().count(),
+                "must drop characters"
+            );
+            let (out_w, _) = tr.measure(&out, 14.0, None);
+            assert!(
+                out_w <= budget + 0.5,
+                "elided string ({out_w}) must fit the budget ({budget})",
+            );
+        }
+
+        // Case `elide_never_splits_a_grapheme_and_drops_space_before_the_ellipsis`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            // "e" + combining acute, repeated: a char-wise cut could strand the
+            // accent from its base letter.
+            let s = "cafe\u{301} cafe\u{301} cafe\u{301} cafe\u{301}";
+            for budget in [10.0_f32, 25.0, 40.0, 55.0, 70.0, 85.0] {
+                let out = tr.elide_to_width(s, 14.0, budget);
+                let kept = out.trim_end_matches(ELLIPSIS);
+                assert!(s.starts_with(kept), "{out:?} is not a prefix of the text");
+                let rest = s.get(kept.len()..).unwrap_or_default();
+                assert!(
+                    !rest.starts_with('\u{301}'),
+                    "{out:?} strands a combining mark"
+                );
+                assert!(!kept.ends_with(' '), "space before the ellipsis in {out:?}");
+                if out != ELLIPSIS.to_string() {
+                    assert!(
+                        tr.measure(&out, 14.0, None).0 <= budget,
+                        "{out:?} overflows {budget}"
+                    );
+                }
+            }
+        }
+
+        // Case `elide_keeps_the_longest_prefix_that_fits`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let s = "the quick brown fox jumps over the lazy dog";
+            let (full_w, _) = tr.measure(s, 14.0, None);
+            let budget = full_w / 2.0;
+            let out = tr.elide_to_width(s, 14.0, budget);
+            let kept = out.trim_end_matches(ELLIPSIS);
+            // One more character (plus the ellipsis) must no longer fit.
+            let rest = s.get(kept.len()..).unwrap_or_default();
+            let next_end = kept.len() + rest.chars().next().map_or(0, char::len_utf8);
+            let longer = format!(
+                "{}{ELLIPSIS}",
+                s.get(..next_end).unwrap_or_default().trim_end()
+            );
+            if longer != out {
+                assert!(
+                    tr.measure(&longer, 14.0, None).0 > budget,
+                    "{longer:?} would still fit"
+                );
+            }
+        }
+
+        // Case `elide_measures_in_the_given_style`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
+            let mono = TextStyle::new(13.0).with_family(FontChoice::Monospace);
+            let budget = tr.measure_style(s, None, &mono).0 / 2.0;
+            let out = tr.elide_to_width_style(s, budget, &mono);
+            assert!(out.ends_with(ELLIPSIS));
+            assert!(tr.measure_style(&out, None, &mono).0 <= budget);
+        }
+
+        // Case `elide_edge_cases`:
+        // A zero/empty budget yields empty output; so does empty input.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
+            assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
+        }
+
+        // Case `clamp_to_lines_caps_line_count_and_elides_last`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+             incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
+            // Narrow width forces several wrapped lines; cap to 2.
+            let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
+            assert!(
+                lines.len() <= 2,
+                "must not exceed max_lines, got {}",
+                lines.len()
+            );
+            assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
+            assert!(
+                lines.last().unwrap().ends_with('\u{2026}'),
+                "overflowing clamp must elide the final line: {:?}",
+                lines.last(),
+            );
+        }
+
+        // Case `clamp_to_lines_degenerate_cases`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
+            let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
+            assert_eq!(one.len(), 1);
+            assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
+        }
+
+        // Case `clamp_to_lines_no_overflow_keeps_all`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
+            assert_eq!(lines, vec!["two words".to_string()]);
+            assert!(!lines[0].ends_with('\u{2026}'));
+        }
+    }
+
+    #[test]
+    fn shape_cache_reuses_geometry_and_keys_on_width_and_generation() {
+        // Case `shape_cache_reshapes_once_for_repeated_draw`:
+        // The DRAW path caches shaped glyph geometry: drawing the same string
+        // twice shapes it once.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut scene = Scene::new();
+            let t = Affine::IDENTITY;
+            let c = Color::WHITE;
+            tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
+            let (_h, m1, _ns1) = tr.take_shape_stats();
+            assert_eq!(m1, 1, "first draw must shape once (miss)");
+
+            // Every redraw must be a cache hit; zero reshapes.
+            for _ in 0..5 {
+                tr.draw_text_weighted(&mut scene, "Equals =", 20.0, c, t, None, TextWeight::Bold);
+            }
+            let (h, m, ns) = tr.take_shape_stats();
+            assert_eq!(m, 0, "repeated identical draws must not reshape");
+            assert_eq!(h, 5, "all five redraws must hit the shape cache");
+            assert_eq!(ns, 0, "no shaping time on an all-hit frame");
+        }
+
+        // Case `shape_cache_reuses_geometry_across_recolor`:
+        // Colour is NOT part of the shape key — a theme recolour of the same
+        // label reuses the cached glyph geometry, making theme switches free.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut scene = Scene::new();
+            let t = Affine::IDENTITY;
+            tr.draw_text_weighted(
+                &mut scene,
+                "Clear",
+                16.0,
+                Color::WHITE,
+                t,
+                None,
+                TextWeight::Regular,
+            );
+            let _ = tr.take_shape_stats();
+            // Same string + size + weight, different colour (dark→light theme).
+            tr.draw_text_weighted(
+                &mut scene,
+                "Clear",
+                16.0,
+                Color::BLACK,
+                t,
+                None,
+                TextWeight::Regular,
+            );
+            let (h, m, _ns) = tr.take_shape_stats();
+            assert_eq!(m, 0, "recolour must not reshape");
+            assert_eq!(h, 1, "recolour must hit the cached geometry");
+        }
+
+        // Case `shape_cache_keys_on_width`:
+        // A different wrap width is a different shape — wrapping changes
+        // glyph positions, so it must miss and reshape.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut scene = Scene::new();
+            let t = Affine::IDENTITY;
+            let s = "the quick brown fox";
+            tr.draw_text_weighted(
+                &mut scene,
+                s,
+                16.0,
+                Color::WHITE,
+                t,
+                Some(200.0),
+                TextWeight::Regular,
+            );
+            tr.draw_text_weighted(
+                &mut scene,
+                s,
+                16.0,
+                Color::WHITE,
+                t,
+                Some(60.0),
+                TextWeight::Regular,
+            );
+            tr.draw_text_weighted(
+                &mut scene,
+                s,
+                16.0,
+                Color::WHITE,
+                t,
+                Some(200.0),
+                TextWeight::Regular,
+            ); // hit
+            let (h, m, _ns) = tr.take_shape_stats();
+            assert_eq!(m, 2, "each distinct width shapes once");
+            assert_eq!(h, 1, "the repeated width hits");
+        }
+
+        // Case `bump_generation_invalidates_shape_cache`:
+        // `bump_generation` (locale / font hot-swap) invalidates shaped
+        // geometry too, so the next draw reshapes.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let mut scene = Scene::new();
+            let t = Affine::IDENTITY;
+            tr.draw_text_weighted(
+                &mut scene,
+                "Send",
+                16.0,
+                Color::WHITE,
+                t,
+                None,
+                TextWeight::Regular,
+            );
+            let _ = tr.take_shape_stats();
+            tr.draw_text_weighted(
+                &mut scene,
+                "Send",
+                16.0,
+                Color::WHITE,
+                t,
+                None,
+                TextWeight::Regular,
+            );
+            let (h, _m, _ns) = tr.take_shape_stats();
+            assert_eq!(h, 1, "second draw hits before bump");
+            tr.bump_generation();
+            tr.draw_text_weighted(
+                &mut scene,
+                "Send",
+                16.0,
+                Color::WHITE,
+                t,
+                None,
+                TextWeight::Regular,
+            );
+            let (_h, m, _ns) = tr.take_shape_stats();
+            assert_eq!(m, 1, "draw after bump must reshape");
+        }
+    }
+
+    #[test]
+    fn font_features_and_variation_axes_shape_and_measure() {
+        // Case `advanced_features_are_part_of_shaping_and_measurement`.
+        {
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
+            let kerned =
+                renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(true));
+            let unkerned =
+                renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(false));
+            assert!(
+                (kerned.0 - unkerned.0).abs() > 0.1,
+                "explicit kerning must alter positioned advances"
+            );
+
+            let normal = renderer.measure_style("TRACKING", None, &base);
+            let tracked =
+                renderer.measure_style("TRACKING", None, &base.clone().with_tracking(0.08));
+            assert!(tracked.0 > normal.0, "positive tracking must widen the run");
 
             let mut scene = Scene::new();
             renderer.draw_style(
                 &mut scene,
-                "Canvas",
+                "Features",
                 Color::WHITE,
                 Affine::IDENTITY,
                 None,
-                &style,
+                &base,
             );
-            let runs = &scene.encoding().resources.glyph_runs;
-            assert!(!runs.is_empty(), "custom canvas draw emitted no glyphs");
-            for run in runs {
+            renderer.draw_style(
+                &mut scene,
+                "Features",
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                &base.clone().with_small_caps(true),
+            );
+            let (_, misses, _) = renderer.take_shape_stats();
+            assert_eq!(misses, 2, "feature settings must not collide in the cache");
+        }
+
+        // Case `feature_numeric_and_variation_builders_replace_their_own_settings`.
+        {
+            let style = TextStyle::new(20.0)
+                .with_font_feature(OpenTypeTag::KERNING, 0)
+                .with_kerning(true)
+                .with_numeric_style(NumericStyle::ProportionalLining)
+                .with_numeric_style(NumericStyle::TabularOldstyle)
+                .with_font_variation(OpenTypeTag::WEIGHT, 310.0)
+                .with_font_variation(OpenTypeTag::WEIGHT, 675.0)
+                .with_optical_sizing(OpticalSizing::Auto);
+            assert_eq!(
+                style
+                    .font_features
+                    .iter()
+                    .find(|feature| feature.tag == OpenTypeTag::KERNING)
+                    .map(|feature| feature.value),
+                Some(1)
+            );
+            assert!(style.font_features.iter().any(|feature| {
+                feature.tag == OpenTypeTag::TABULAR_NUMERALS && feature.value == 1
+            }));
+            assert!(style.font_features.iter().any(|feature| {
+                feature.tag == OpenTypeTag::OLDSTYLE_NUMERALS && feature.value == 1
+            }));
+            assert_eq!(style.effective_weight().0, 675);
+            assert_eq!(
+                style
+                    .resolved_variations()
+                    .iter()
+                    .find(|axis| axis.tag == OpenTypeTag::OPTICAL_SIZE)
+                    .map(|axis| axis.value),
+                Some(20.0)
+            );
+            assert_eq!(
+                style
+                    .font_variations
+                    .iter()
+                    .filter(|axis| axis.tag == OpenTypeTag::WEIGHT)
+                    .count(),
+                1
+            );
+        }
+
+        // Case `variable_axes_are_normalized_in_the_faces_native_axis_order`.
+        {
+            let renderer = crate::font_catalog::fixture_renderer();
+            let face = renderer
+                .font_system
+                .db()
+                .query(&cosmic_text::fontdb::Query {
+                    families: &[Family::Name("Adwaita Sans")],
+                    ..cosmic_text::fontdb::Query::default()
+                })
+                .expect("the controlled fixture ships Adwaita Sans");
+            let coords = renderer.normalized_coords(
+                face,
+                &[
+                    FontVariation {
+                        tag: OpenTypeTag::WEIGHT,
+                        value: 700.0,
+                    },
+                    FontVariation {
+                        tag: OpenTypeTag::OPTICAL_SIZE,
+                        value: 32.0,
+                    },
+                ],
+                Weight(700),
+            );
+            assert_eq!(coords.len(), 2, "Adwaita exposes opsz and wght");
+            assert!(
+                coords.iter().all(|coordinate| *coordinate > 0),
+                "both requested values sit above the face defaults: {coords:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_and_ui_scale_apply_once_to_metrics_and_caches() {
+        // Case `text_scale_one_is_metric_identity_and_invalid_values_are_safe`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let base = tr.measure("Accessible calendar", 18.0, None);
+            tr.set_text_scale(1.0);
+            assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
+
+            tr.set_text_scale(f32::NAN);
+            assert_eq!(tr.text_scale, 1.0, "NaN resets to the safe identity scale");
+            tr.set_text_scale(100.0);
+            assert_eq!(tr.text_scale, 4.0, "oversized scales are bounded");
+            tr.set_text_scale(0.0);
+            assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
+        }
+
+        // Case `text_scale_changes_measure_and_shape_cache_together`.
+        {
+            let mut tr = crate::font_catalog::fixture_renderer();
+            let base = tr.measure("Calendar", 20.0, None);
+            tr.set_text_scale(2.0);
+            let doubled = tr.measure("Calendar", 20.0, None);
+            assert!(
+                (doubled.0 - base.0 * 2.0).abs() < 0.1 && (doubled.1 - base.1 * 2.0).abs() < 0.1,
+                "measurement uses the same scaled metrics that drawing receives: {base:?} -> {doubled:?}"
+            );
+
+            let mut scene = Scene::new();
+            let _ = tr.take_shape_stats();
+            tr.draw_text(
+                &mut scene,
+                "Calendar",
+                20.0,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+            );
+            tr.set_text_scale(1.0);
+            tr.draw_text(
+                &mut scene,
+                "Calendar",
+                20.0,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+            );
+            let (_hits, misses, _ns) = tr.take_shape_stats();
+            assert_eq!(
+                misses, 2,
+                "each scaled style owns a distinct shape-cache entry"
+            );
+        }
+
+        // Case `custom_canvas_styles_remain_renderer_relative_at_supported_scales`.
+        {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                renderer.set_text_scale(scale);
+                let style = TextStyle::new(14.0).with_letter_spacing(2.0);
+                let (_, height) = renderer.measure_style("Canvas", None, &style);
                 assert!(
-                    (run.font_size - 14.0 * scale).abs() < 0.001,
-                    "custom canvas draw at {scale}x: {}",
-                    run.font_size
+                    (height - 14.0 * 1.25 * scale).abs() < 0.001,
+                    "custom canvas measure at {scale}x: {height}"
                 );
+
+                let mut scene = Scene::new();
+                renderer.draw_style(
+                    &mut scene,
+                    "Canvas",
+                    Color::WHITE,
+                    Affine::IDENTITY,
+                    None,
+                    &style,
+                );
+                let runs = &scene.encoding().resources.glyph_runs;
+                assert!(!runs.is_empty(), "custom canvas draw emitted no glyphs");
+                for run in runs {
+                    assert!(
+                        (run.font_size - 14.0 * scale).abs() < 0.001,
+                        "custom canvas draw at {scale}x: {}",
+                        run.font_size
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales() {
-        let text = "Tracked resolved text";
-        let resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
-        let mut renderer = crate::font_catalog::fixture_renderer();
-
-        let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
-        let resolved_at_one = renderer.measure_style(text, None, &resolved);
-        let mut scene_at_one = Scene::new();
-        renderer.draw_style(
-            &mut scene_at_one,
-            text,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            &resolved,
-        );
-
-        renderer.set_text_scale(2.0);
-        let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
-        assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
-
-        let renderer_input = renderer.renderer_input_style(&resolved);
-        assert!((renderer_input.size - 14.0).abs() < 0.001);
-        assert!((renderer_input.letter_spacing - 1.5).abs() < 0.001);
-        let resolved_at_two = renderer.measure_style(text, None, &renderer_input);
-        assert_eq!(resolved_at_two, resolved_at_one);
-
-        let mut scene_at_two = Scene::new();
-        renderer.draw_style(
-            &mut scene_at_two,
-            text,
-            Color::WHITE,
-            Affine::IDENTITY,
-            None,
-            &renderer_input,
-        );
-        let first = scene_at_one.encoding();
-        let second = scene_at_two.encoding();
-        assert_eq!(first.resources.glyphs.len(), second.resources.glyphs.len());
-        for (left, right) in first.resources.glyphs.iter().zip(&second.resources.glyphs) {
-            assert_eq!(left.id, right.id);
-            assert_eq!(left.x, right.x);
-            assert_eq!(left.y, right.y);
-        }
-        assert_eq!(
-            first.resources.glyph_runs.len(),
-            second.resources.glyph_runs.len()
-        );
-        for (left, right) in first
-            .resources
-            .glyph_runs
-            .iter()
-            .zip(&second.resources.glyph_runs)
+        // Case `resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales`.
         {
-            assert_eq!(left.font_size, right.font_size);
-            assert_eq!(left.transform, right.transform);
-            assert_eq!(left.glyphs, right.glyphs);
-        }
-    }
+            let text = "Tracked resolved text";
+            let resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+            let mut renderer = crate::font_catalog::fixture_renderer();
 
-    #[test]
-    fn resolved_theme_style_applies_ui_and_text_scale_once() {
-        let base = crate::theme::Theme::dark().tokens.typography.scale.sm;
-        let theme = crate::theme::Theme::dark()
-            .with_ui_scale(1.25)
-            .with_text_scale(2.0);
-        let resolved = TextStyle::new(theme.tokens.typography.scale.sm);
-        let mut renderer = crate::font_catalog::fixture_renderer();
-        renderer.set_text_scale(2.0);
-        let renderer_input = renderer.renderer_input_style(&resolved);
-        let (_, height) = renderer.measure_style("Scale once", None, &renderer_input);
-        assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
+            let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
+            let resolved_at_one = renderer.measure_style(text, None, &resolved);
+            let mut scene_at_one = Scene::new();
+            renderer.draw_style(
+                &mut scene_at_one,
+                text,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                &resolved,
+            );
+
+            renderer.set_text_scale(2.0);
+            let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
+            assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
+
+            let renderer_input = renderer.renderer_input_style(&resolved);
+            assert!((renderer_input.size - 14.0).abs() < 0.001);
+            assert!((renderer_input.letter_spacing - 1.5).abs() < 0.001);
+            let resolved_at_two = renderer.measure_style(text, None, &renderer_input);
+            assert_eq!(resolved_at_two, resolved_at_one);
+
+            let mut scene_at_two = Scene::new();
+            renderer.draw_style(
+                &mut scene_at_two,
+                text,
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                &renderer_input,
+            );
+            let first = scene_at_one.encoding();
+            let second = scene_at_two.encoding();
+            assert_eq!(first.resources.glyphs.len(), second.resources.glyphs.len());
+            for (left, right) in first.resources.glyphs.iter().zip(&second.resources.glyphs) {
+                assert_eq!(left.id, right.id);
+                assert_eq!(left.x, right.x);
+                assert_eq!(left.y, right.y);
+            }
+            assert_eq!(
+                first.resources.glyph_runs.len(),
+                second.resources.glyph_runs.len()
+            );
+            for (left, right) in first
+                .resources
+                .glyph_runs
+                .iter()
+                .zip(&second.resources.glyph_runs)
+            {
+                assert_eq!(left.font_size, right.font_size);
+                assert_eq!(left.transform, right.transform);
+                assert_eq!(left.glyphs, right.glyphs);
+            }
+        }
+
+        // Case `resolved_theme_style_applies_ui_and_text_scale_once`.
+        {
+            let base = crate::theme::Theme::dark().tokens.typography.scale.sm;
+            let theme = crate::theme::Theme::dark()
+                .with_ui_scale(1.25)
+                .with_text_scale(2.0);
+            let resolved = TextStyle::new(theme.tokens.typography.scale.sm);
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(2.0);
+            let renderer_input = renderer.renderer_input_style(&resolved);
+            let (_, height) = renderer.measure_style("Scale once", None, &renderer_input);
+            assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
+        }
     }
 }
 

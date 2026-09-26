@@ -923,95 +923,103 @@ mod tests {
         assert!(out.is_none(), "editor event does not submit the form");
     }
 
+    /// Opening resets the form, profiles parse the port, focus wraps for `SQLite` and engine switches blur hidden fields.
     #[test]
-    fn open_resets_form_and_focus() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        assert!(m.is_open());
-        assert_eq!(m.engine, Engine::Postgres);
+    fn connect_form_resets_parses_and_navigates() {
+        // --- phase: open_resets_form_and_focus ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            assert!(m.is_open());
+            assert_eq!(m.engine, Engine::Postgres);
+        }
+
+        // --- phase: build_profile_parses_port ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.host.set_text("db.example");
+            m.port.set_text("6543");
+            m.database.set_text("app");
+            let p = m.build_profile();
+            assert_eq!(p.port, 6543);
+            assert_eq!(p.host, "db.example");
+        }
+
+        // --- phase: next_field_wraps_for_sqlite ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.set_engine(Engine::Sqlite);
+            m.focus = Some(Field::FilePath);
+            // Only Name + FilePath in the SQLite order, so it wraps to Name.
+            assert!(matches!(m.next_field(), Field::Name));
+        }
+
+        // --- phase: switching_engine_blurs_a_field_that_becomes_hidden ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.focus_field(Some(Field::Password));
+            m.set_engine(Engine::Sqlite);
+            assert_eq!(m.focus, Some(Field::Name));
+            assert!(Widget::is_focused(&m.name));
+            assert!(!Widget::is_focused(&m.password));
+            assert_eq!(m.visible_fields(), &[Field::Name, Field::FilePath]);
+        }
     }
 
+    /// Fields replace keyboard selections and commit IME through the shared input, and the password is a protected secret.
     #[test]
-    fn build_profile_parses_port() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.host.set_text("db.example");
-        m.port.set_text("6543");
-        m.database.set_text("app");
-        let p = m.build_profile();
-        assert_eq!(p.port, 6543);
-        assert_eq!(p.host, "db.example");
-    }
+    fn connect_form_inputs_use_shared_secret_safe_editing() {
+        // --- phase: shared_input_replaces_a_keyboard_selection ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            send(
+                &mut m,
+                &key_event(Key::Character(SmolStr::new("a")), Some("a")),
+                ctrl,
+            );
+            assert_eq!(m.name.selection_range_public(), Some((0, 14)));
 
-    #[test]
-    fn next_field_wraps_for_sqlite() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.set_engine(Engine::Sqlite);
-        m.focus = Some(Field::FilePath);
-        // Only Name + FilePath in the SQLite order, so it wraps to Name.
-        assert!(matches!(m.next_field(), Field::Name));
-    }
+            send(
+                &mut m,
+                &key_event(Key::Character(SmolStr::new("P")), Some("P")),
+                Modifiers::default(),
+            );
+            assert_eq!(m.name.value(), "P");
+        }
 
-    #[test]
-    fn shared_input_replaces_a_keyboard_selection() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        send(
-            &mut m,
-            &key_event(Key::Character(SmolStr::new("a")), Some("a")),
-            ctrl,
-        );
-        assert_eq!(m.name.selection_range_public(), Some((0, 14)));
+        // --- phase: ime_commit_uses_the_same_focused_input_path ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.name.set_text("");
+            send(
+                &mut m,
+                &WindowEvent::Ime(winit::event::Ime::Commit("接続".into())),
+                Modifiers::default(),
+            );
+            assert_eq!(m.name.value(), "接続");
+        }
 
-        send(
-            &mut m,
-            &key_event(Key::Character(SmolStr::new("P")), Some("P")),
-            Modifiers::default(),
-        );
-        assert_eq!(m.name.value(), "P");
-    }
-
-    #[test]
-    fn ime_commit_uses_the_same_focused_input_path() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.name.set_text("");
-        send(
-            &mut m,
-            &WindowEvent::Ime(winit::event::Ime::Commit("接続".into())),
-            Modifiers::default(),
-        );
-        assert_eq!(m.name.value(), "接続");
-    }
-
-    #[test]
-    fn password_is_a_protected_secret_input() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.password.set_text("correct horse");
-        assert!(m.password.is_secret());
-        assert_eq!(
-            Widget::ime_purpose(&m.password),
-            Some(winit::window::ImePurpose::Password)
-        );
-        let node = Widget::accessibility(&m.password).expect("text input accessibility node");
-        assert_eq!(node.role, Role::TextInput);
-        assert!(node.state.protected);
-        assert_eq!(node.value, None, "password never enters the a11y value");
-        assert_eq!(m.build_profile().password, "correct horse");
-    }
-
-    #[test]
-    fn switching_engine_blurs_a_field_that_becomes_hidden() {
-        let mut m = ConnectModal::new();
-        m.open_new();
-        m.focus_field(Some(Field::Password));
-        m.set_engine(Engine::Sqlite);
-        assert_eq!(m.focus, Some(Field::Name));
-        assert!(Widget::is_focused(&m.name));
-        assert!(!Widget::is_focused(&m.password));
-        assert_eq!(m.visible_fields(), &[Field::Name, Field::FilePath]);
+        // --- phase: password_is_a_protected_secret_input ---
+        {
+            let mut m = ConnectModal::new();
+            m.open_new();
+            m.password.set_text("correct horse");
+            assert!(m.password.is_secret());
+            assert_eq!(
+                Widget::ime_purpose(&m.password),
+                Some(winit::window::ImePurpose::Password)
+            );
+            let node = Widget::accessibility(&m.password).expect("text input accessibility node");
+            assert_eq!(node.role, Role::TextInput);
+            assert!(node.state.protected);
+            assert_eq!(node.value, None, "password never enters the a11y value");
+            assert_eq!(m.build_profile().password, "correct horse");
+        }
     }
 }

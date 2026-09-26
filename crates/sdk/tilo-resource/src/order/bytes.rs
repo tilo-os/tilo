@@ -117,53 +117,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn between_empty_bounds_is_mid() {
-        let k = between(None, None);
-        assert_eq!(cmp(&[], &k), Ordering::Less);
-    }
+    fn between_orders_strictly_within_its_bounds() {
+        use Ordering::{Equal, Less};
+        let mid = between(None, None);
+        let after = between(Some(&mid), None);
+        let before = between(None, Some(&mid));
+        let (ten, twenty) = (vec![10u8], vec![20u8]);
+        let midpoint = between(Some(&ten), Some(&twenty));
+        for (name, a, b, want) in [
+            (
+                "between empty bounds is past the empty key",
+                &[][..],
+                &mid[..],
+                Less,
+            ),
+            ("append after is greater", &mid[..], &after[..], Less),
+            ("prepend before is smaller", &before[..], &mid[..], Less),
+            (
+                "midpoint is above its lower bound",
+                &ten[..],
+                &midpoint[..],
+                Less,
+            ),
+            (
+                "midpoint is below its upper bound",
+                &midpoint[..],
+                &twenty[..],
+                Less,
+            ),
+            (
+                "trailing zeros compare equal",
+                &[5][..],
+                &[5, 0, 0][..],
+                Equal,
+            ),
+        ] {
+            assert_eq!(cmp(a, b), want, "case {name}");
+        }
 
-    #[test]
-    fn append_after_is_greater() {
-        let a = between(None, None);
-        let b = between(Some(&a), None);
-        assert_eq!(cmp(&a, &b), Ordering::Less);
-    }
-
-    #[test]
-    fn prepend_before_is_smaller() {
-        let a = between(None, None);
-        let b = between(None, Some(&a));
-        assert_eq!(cmp(&b, &a), Ordering::Less);
-    }
-
-    #[test]
-    fn midpoint_is_strictly_between() {
-        let a = vec![10u8];
-        let b = vec![20u8];
-        let m = between(Some(&a), Some(&b));
-        assert_eq!(cmp(&a, &m), Ordering::Less);
-        assert_eq!(cmp(&m, &b), Ordering::Less);
-    }
-
-    #[test]
-    fn repeated_subdivision_stays_ordered() {
         // Insert 200 keys always between the first two; each must stay ordered.
         let mut lo = between(None, None);
         let hi = between(Some(&lo), None);
         let mut prev = lo.clone();
         for _ in 0..200 {
             let m = between(Some(&lo), Some(&hi));
-            assert_eq!(cmp(&lo, &m), Ordering::Less, "m must exceed lo");
-            assert_eq!(cmp(&m, &hi), Ordering::Less, "m must precede hi");
-            assert_eq!(cmp(&prev, &m), Ordering::Less, "strictly increasing");
+            assert_eq!(cmp(&lo, &m), Less, "m must exceed lo");
+            assert_eq!(cmp(&m, &hi), Less, "m must precede hi");
+            assert_eq!(cmp(&prev, &m), Less, "strictly increasing");
             prev = m.clone();
             lo = m;
         }
-    }
-
-    #[test]
-    fn trailing_zeros_compare_equal() {
-        assert_eq!(cmp(&[5], &[5, 0, 0]), Ordering::Equal);
     }
 
     #[test]

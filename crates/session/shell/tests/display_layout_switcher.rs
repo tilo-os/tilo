@@ -89,7 +89,7 @@ fn publish_laptop_with_monitor() {
     );
 }
 
-fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
+pub(crate) fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     use taffy::{Dimension, Style};
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -133,7 +133,7 @@ fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
 /// Route a pressed logical key through the host dispatcher. `KeyEvent` has
 /// no public constructor, so its opaque platform payload is zeroed and every
 /// public field set, as the compositor's own harness does.
-fn press(
+pub(crate) fn press(
     host: &mut ShellOverlayHost,
     layout: &(TaffyTree<()>, NodeId),
     key: Key,

@@ -150,50 +150,50 @@ mod tests {
     const SHELLS: &str = "/bin/bash\n/bin/zsh\n";
 
     #[test]
-    fn exactly_one_interactive_user_is_selected() {
-        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
-                      greetd:x:977:977::/var/lib/greetd:/usr/sbin/nologin\n\
-                      quickuser:x:1000:1000:Quinten Quick,,,:/home/quickuser:/bin/bash\n";
-        assert_eq!(
-            select_login_user(passwd, "UID_MIN 1000\nUID_MAX 60000\n", Some(SHELLS)),
-            Some(LoginUser {
-                username: "quickuser".into(),
-                display_name: "Quinten Quick".into(),
-            })
-        );
-    }
+    fn local_user_discovery_selects_only_one_safe_interactive_user() {
+        // Phase `exactly_one_interactive_user_is_selected`.
+        {
+            let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                          greetd:x:977:977::/var/lib/greetd:/usr/sbin/nologin\n\
+                          quickuser:x:1000:1000:Quinten Quick,,,:/home/quickuser:/bin/bash\n";
+            assert_eq!(
+                select_login_user(passwd, "UID_MIN 1000\nUID_MAX 60000\n", Some(SHELLS)),
+                Some(LoginUser {
+                    username: "quickuser".into(),
+                    display_name: "Quinten Quick".into(),
+                })
+            );
+        }
+        // Phase `zero_or_multiple_users_never_guess`.
+        {
+            let none = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1000:1000::/:/sbin/nologin\n";
+            assert_eq!(select_login_user(none, "", Some(SHELLS)), None);
 
-    #[test]
-    fn zero_or_multiple_users_never_guess() {
-        let none = "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1000:1000::/:/sbin/nologin\n";
-        assert_eq!(select_login_user(none, "", Some(SHELLS)), None);
-
-        let multiple = "alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
-                        bob:x:1001:1001:Bob:/home/bob:/bin/zsh\n";
-        assert_eq!(select_login_user(multiple, "", Some(SHELLS)), None);
-    }
-
-    #[test]
-    fn uid_bounds_and_shell_allowlist_are_enforced() {
-        let passwd = "service:x:1500:1500::/srv/service:/bin/custom\n\
-                      person:x:2000:2000::/home/person:/bin/bash\n";
-        assert_eq!(
-            select_login_user(passwd, "UID_MIN 2000\nUID_MAX 2999\n", Some(SHELLS))
-                .map(|user| user.username),
-            Some("person".into())
-        );
-    }
-
-    #[test]
-    fn malformed_or_unsafe_records_fall_back() {
-        assert_eq!(select_login_user("broken:record", "", Some(SHELLS)), None);
-        assert_eq!(
-            select_login_user(
-                "bad name:x:1000:1000:Bad\nName:/home/bad:/bin/bash\n",
-                "",
-                Some(SHELLS)
-            ),
-            None
-        );
+            let multiple = "alice:x:1000:1000:Alice:/home/alice:/bin/bash\n\
+                            bob:x:1001:1001:Bob:/home/bob:/bin/zsh\n";
+            assert_eq!(select_login_user(multiple, "", Some(SHELLS)), None);
+        }
+        // Phase `uid_bounds_and_shell_allowlist_are_enforced`.
+        {
+            let passwd = "service:x:1500:1500::/srv/service:/bin/custom\n\
+                          person:x:2000:2000::/home/person:/bin/bash\n";
+            assert_eq!(
+                select_login_user(passwd, "UID_MIN 2000\nUID_MAX 2999\n", Some(SHELLS))
+                    .map(|user| user.username),
+                Some("person".into())
+            );
+        }
+        // Phase `malformed_or_unsafe_records_fall_back`.
+        {
+            assert_eq!(select_login_user("broken:record", "", Some(SHELLS)), None);
+            assert_eq!(
+                select_login_user(
+                    "bad name:x:1000:1000:Bad\nName:/home/bad:/bin/bash\n",
+                    "",
+                    Some(SHELLS)
+                ),
+                None
+            );
+        }
     }
 }

@@ -149,110 +149,112 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_relative_path_becomes_an_absolute_file_uri_not_a_hostname() {
-        // `file://clips/a.mp4` parses `clips` as a host and is rejected by
-        // every GStreamer source element, so the media never plays.
-        let uri = Source::LocalFile(PathBuf::from("clips/a.mp4"))
-            .to_uri()
-            .unwrap();
-        assert!(
-            uri.starts_with("file:///"),
-            "must be an absolute file URI, got {uri}"
-        );
-        assert!(uri.ends_with("/clips/a.mp4"), "path preserved: {uri}");
+    fn sources_resolve_to_absolute_or_workspace_urls() {
+        // Phase `a_relative_path_becomes_an_absolute_file_uri_not_a_hostname`.
+        {
+            // `file://clips/a.mp4` parses `clips` as a host and is rejected by
+            // every GStreamer source element, so the media never plays.
+            let uri = Source::LocalFile(PathBuf::from("clips/a.mp4"))
+                .to_uri()
+                .unwrap();
+            assert!(
+                uri.starts_with("file:///"),
+                "must be an absolute file URI, got {uri}"
+            );
+            assert!(uri.ends_with("/clips/a.mp4"), "path preserved: {uri}");
+        }
+        // Phase `remote_uri_passes_through_and_has_no_path`.
+        {
+            let s = Source::Remote {
+                url: "https://cdn.test/v.webm".into(),
+            };
+            assert_eq!(s.to_uri().unwrap(), "https://cdn.test/v.webm");
+            assert!(s.abs_path().is_none());
+            assert!(s.is_ready(), "remote is always ready to stream");
+            assert!(s.open_reader().is_err(), "remote is not byte-read here");
+        }
+        // Phase `workspace_relative_resolves_under_the_mount_root`.
+        {
+            // Point the mount at a scratch dir so the test needs no real FUSE.
+            let dir = std::env::temp_dir().join(format!("tilo-media-src-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_WORKSPACE_ROOT", &dir);
+
+            let rel = Source::Workspace(PathBuf::from("clips/a.mp4"));
+            assert_eq!(rel.abs_path().unwrap(), dir.join("clips/a.mp4"));
+            assert!(!rel.is_ready(), "not hydrated yet — the byte is not local");
+
+            // Hydrate it (write the file) and it reports ready + readable.
+            std::fs::create_dir_all(dir.join("clips")).unwrap();
+            std::fs::write(dir.join("clips/a.mp4"), b"hello bytes").unwrap();
+            assert!(rel.is_ready());
+            assert_eq!(rel.byte_len(), Some(11));
+            let mut buf = Vec::new();
+            rel.open_reader().unwrap().read_to_end(&mut buf).unwrap();
+            assert_eq!(buf, b"hello bytes");
+
+            drop(env);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `workspace_absolute_path_is_left_as_is`.
+        {
+            let path = std::env::temp_dir().join("workspace/media/x.mov");
+            assert!(path.is_absolute());
+            let abs = Source::Workspace(path.clone());
+            assert_eq!(abs.abs_path().unwrap(), path);
+        }
     }
 
     #[test]
     #[cfg(unix)]
-    fn local_file_uri_is_percent_encoded() {
-        let s = Source::LocalFile(PathBuf::from("/home/a/My Clip.mp4"));
-        assert_eq!(s.to_uri().unwrap(), "file:///home/a/My%20Clip.mp4");
-        assert!(s.abs_path().unwrap().ends_with("My Clip.mp4"));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_drive_unc_and_verbatim_paths_become_file_urls() {
-        for (path, expected) in [
-            (
-                r"C:\Media\日本語.webm",
-                "file:///C:/Media/%E6%97%A5%E6%9C%AC%E8%AA%9E.webm",
-            ),
-            (
-                r"C:\Media\My Clip #1%.mp4",
-                "file:///C:/Media/My%20Clip%20%231%25.mp4",
-            ),
-            (
-                r"\\server\share\My Clip.mp4",
-                "file://server/share/My%20Clip.mp4",
-            ),
-            (
-                r"\\?\C:\Media\My Clip.mp4",
-                "file:///C:/Media/My%20Clip.mp4",
-            ),
-        ] {
-            assert_eq!(path_to_file_uri(Path::new(path)).unwrap(), expected);
+    fn unix_paths_become_percent_encoded_byte_exact_file_urls() {
+        // Phase `local_file_uri_is_percent_encoded`.
+        {
+            let s = Source::LocalFile(PathBuf::from("/home/a/My Clip.mp4"));
+            assert_eq!(s.to_uri().unwrap(), "file:///home/a/My%20Clip.mp4");
+            assert!(s.abs_path().unwrap().ends_with("My Clip.mp4"));
+        }
+        // Phase `unix_file_url_preserves_non_utf8_path_bytes`.
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let path = Path::new(std::ffi::OsStr::from_bytes(b"/media/clip\xff #%.mp4"));
+            let uri = path_to_file_uri(path).unwrap();
+            assert_eq!(uri, "file:///media/clip%FF%20%23%25.mp4");
+            assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
         }
     }
 
     #[test]
     #[cfg(windows)]
-    fn windows_device_paths_are_rejected_as_media_urls() {
-        let error = path_to_file_uri(Path::new(r"\\.\COM1")).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn unix_file_url_preserves_non_utf8_path_bytes() {
-        use std::os::unix::ffi::OsStrExt;
-        let path = Path::new(std::ffi::OsStr::from_bytes(b"/media/clip\xff #%.mp4"));
-        let uri = path_to_file_uri(path).unwrap();
-        assert_eq!(uri, "file:///media/clip%FF%20%23%25.mp4");
-        assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
-    }
-
-    #[test]
-    fn remote_uri_passes_through_and_has_no_path() {
-        let s = Source::Remote {
-            url: "https://cdn.test/v.webm".into(),
-        };
-        assert_eq!(s.to_uri().unwrap(), "https://cdn.test/v.webm");
-        assert!(s.abs_path().is_none());
-        assert!(s.is_ready(), "remote is always ready to stream");
-        assert!(s.open_reader().is_err(), "remote is not byte-read here");
-    }
-
-    #[test]
-    fn workspace_relative_resolves_under_the_mount_root() {
-        // Point the mount at a scratch dir so the test needs no real FUSE.
-        let dir = std::env::temp_dir().join(format!("tilo-media-src-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_WORKSPACE_ROOT", &dir);
-
-        let rel = Source::Workspace(PathBuf::from("clips/a.mp4"));
-        assert_eq!(rel.abs_path().unwrap(), dir.join("clips/a.mp4"));
-        assert!(!rel.is_ready(), "not hydrated yet — the byte is not local");
-
-        // Hydrate it (write the file) and it reports ready + readable.
-        std::fs::create_dir_all(dir.join("clips")).unwrap();
-        std::fs::write(dir.join("clips/a.mp4"), b"hello bytes").unwrap();
-        assert!(rel.is_ready());
-        assert_eq!(rel.byte_len(), Some(11));
-        let mut buf = Vec::new();
-        rel.open_reader().unwrap().read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, b"hello bytes");
-
-        drop(env);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn workspace_absolute_path_is_left_as_is() {
-        let path = std::env::temp_dir().join("workspace/media/x.mov");
-        assert!(path.is_absolute());
-        let abs = Source::Workspace(path.clone());
-        assert_eq!(abs.abs_path().unwrap(), path);
+    fn windows_paths_become_file_urls_and_device_paths_are_refused() {
+        // Phase `windows_drive_unc_and_verbatim_paths_become_file_urls`.
+        {
+            for (path, expected) in [
+                (
+                    r"C:\Media\日本語.webm",
+                    "file:///C:/Media/%E6%97%A5%E6%9C%AC%E8%AA%9E.webm",
+                ),
+                (
+                    r"C:\Media\My Clip #1%.mp4",
+                    "file:///C:/Media/My%20Clip%20%231%25.mp4",
+                ),
+                (
+                    r"\\server\share\My Clip.mp4",
+                    "file://server/share/My%20Clip.mp4",
+                ),
+                (
+                    r"\\?\C:\Media\My Clip.mp4",
+                    "file:///C:/Media/My%20Clip.mp4",
+                ),
+            ] {
+                assert_eq!(path_to_file_uri(Path::new(path)).unwrap(), expected);
+            }
+        }
+        // Phase `windows_device_paths_are_rejected_as_media_urls`.
+        {
+            let error = path_to_file_uri(Path::new(r"\\.\COM1")).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
     }
 }

@@ -176,27 +176,29 @@ mod tests {
     use crate::speaker::rate_to_ssip;
 
     #[test]
-    fn identity_constants_are_sane() {
-        assert_eq!(super::SSIP_USER, "tilo");
-        assert_eq!(super::SSIP_COMPONENT, "screen-reader");
-    }
-
-    #[test]
     #[allow(
         clippy::cast_precision_loss,
         reason = "milli only ever reaches 4000, far inside f32's exact-integer range"
     )]
-    fn rate_translation_matches_ssip_range() {
-        // The SSIP RATE command takes -100..=100; prove our translation stays
-        // inside it for a sweep of normalized rates.
-        for milli in 1..=4000u32 {
-            let r = milli as f32 / 1000.0; // 0.001 ..= 4.0
-            let v = rate_to_ssip(r);
-            assert!(
-                (-100..=100).contains(&v),
-                "rate {r} -> {v} out of SSIP range"
-            );
+    fn speechd_identity_and_rate_translation_match_ssip() {
+        // Phase `identity_constants_are_sane`.
+        {
+            assert_eq!(super::SSIP_USER, "tilo");
+            assert_eq!(super::SSIP_COMPONENT, "screen-reader");
         }
-        assert_eq!(rate_to_ssip(1.0), 0);
+        // Phase `rate_translation_matches_ssip_range`.
+        {
+            // The SSIP RATE command takes -100..=100; prove our translation stays
+            // inside it for a sweep of normalized rates.
+            for milli in 1..=4000u32 {
+                let r = milli as f32 / 1000.0; // 0.001 ..= 4.0
+                let v = rate_to_ssip(r);
+                assert!(
+                    (-100..=100).contains(&v),
+                    "rate {r} -> {v} out of SSIP range"
+                );
+            }
+            assert_eq!(rate_to_ssip(1.0), 0);
+        }
     }
 }

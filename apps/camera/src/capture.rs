@@ -188,82 +188,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn list_devices_yields_valid_sorted_paths() {
-        // Runs with or without a camera. When nodes exist they must be real
-        // /dev/video* paths in ascending numeric order.
-        let devs = list_devices();
-        for d in &devs {
-            assert!(d.starts_with("/dev/video"), "unexpected device path: {d}");
-        }
-        let nums: Vec<u32> = devs
-            .iter()
-            .filter_map(|d| d.rsplit("video").next().and_then(|n| n.parse().ok()))
-            .collect();
-        assert!(
-            nums.windows(2).all(|w| w[0] <= w[1]),
-            "devices sorted numerically"
-        );
-    }
-
-    #[test]
-    fn frame_admission_refuses_overflow_mismatch_and_oversize() {
-        assert!(valid_rgba_frame(1280, 720, 1280 * 720 * 4));
-        assert!(!valid_rgba_frame(1280, 720, 1));
-        assert!(!valid_rgba_frame(0, 720, 0));
-        assert!(!valid_rgba_frame(4097, 2160, 4097 * 2160 * 4));
-    }
-
-    #[test]
-    fn latest_slot_replaces_stale_frames_without_a_queue() {
-        let (wake_tx, wake_rx) = std::sync::mpsc::sync_channel(1);
-        let slot = Arc::new(Mutex::new(None));
-        let frames = LatestFrames {
-            slot: Arc::clone(&slot),
-            wake_rx,
-        };
-        *slot.lock().unwrap() = Some(CamFrame {
-            rgba: vec![1, 2, 3, 4],
-            width: 1,
-            height: 1,
-        });
-        wake_tx.try_send(()).unwrap();
-        // A producer can keep replacing the single slot even while the wake
-        // token is full. The UI must receive B, never stale A.
-        *slot.lock().unwrap() = Some(CamFrame {
-            rgba: vec![5, 6, 7, 8],
-            width: 1,
-            height: 1,
-        });
-        assert!(matches!(wake_tx.try_send(()), Err(TrySendError::Full(()))));
-        assert_eq!(frames.take_latest().unwrap().rgba, vec![5, 6, 7, 8]);
-        assert!(frames.take_latest().is_none());
-    }
-
-    #[test]
-    fn open_first_device_or_skip() {
-        // Honest device test: opt-in only. This opens a real camera when one is
-        // present, which is not hermetic, so a plain `cargo test` (now that
-        // `live-capture` is a default feature) must not touch hardware. Set
-        // CAMERA_LIVE_TEST=1 to exercise it on a machine with a webcam.
-        if std::env::var("CAMERA_LIVE_TEST").is_err() {
-            eprintln!("CAMERA_LIVE_TEST not set — skipping live-open device test");
-            return;
-        }
-        // Honest device test: skip cleanly when no camera is present.
-        let devs = list_devices();
-        let Some(dev) = devs.first() else {
-            eprintln!("no /dev/video* device present — skipping live-open test");
-            return;
-        };
-        match Capture::open(dev, 640, 480) {
-            Ok(cap) => {
-                // A real pipeline opened; the frame channel is live. We don't
-                // assert a frame arrives — CI cameras may be present but not
-                // streamable — only that the pipeline built and plays.
-                drop(cap);
+    fn capture_admits_only_valid_devices_and_the_latest_frame() {
+        // Phase `list_devices_yields_valid_sorted_paths`.
+        {
+            // Runs with or without a camera. When nodes exist they must be real
+            // /dev/video* paths in ascending numeric order.
+            let devs = list_devices();
+            for d in &devs {
+                assert!(d.starts_with("/dev/video"), "unexpected device path: {d}");
             }
-            Err(e) => {
-                eprintln!("device {dev} present but not openable here: {e}");
+            let nums: Vec<u32> = devs
+                .iter()
+                .filter_map(|d| d.rsplit("video").next().and_then(|n| n.parse().ok()))
+                .collect();
+            assert!(
+                nums.windows(2).all(|w| w[0] <= w[1]),
+                "devices sorted numerically"
+            );
+        }
+        // Phase `frame_admission_refuses_overflow_mismatch_and_oversize`.
+        {
+            assert!(valid_rgba_frame(1280, 720, 1280 * 720 * 4));
+            assert!(!valid_rgba_frame(1280, 720, 1));
+            assert!(!valid_rgba_frame(0, 720, 0));
+            assert!(!valid_rgba_frame(4097, 2160, 4097 * 2160 * 4));
+        }
+        // Phase `latest_slot_replaces_stale_frames_without_a_queue`.
+        {
+            let (wake_tx, wake_rx) = std::sync::mpsc::sync_channel(1);
+            let slot = Arc::new(Mutex::new(None));
+            let frames = LatestFrames {
+                slot: Arc::clone(&slot),
+                wake_rx,
+            };
+            *slot.lock().unwrap() = Some(CamFrame {
+                rgba: vec![1, 2, 3, 4],
+                width: 1,
+                height: 1,
+            });
+            wake_tx.try_send(()).unwrap();
+            // A producer can keep replacing the single slot even while the wake
+            // token is full. The UI must receive B, never stale A.
+            *slot.lock().unwrap() = Some(CamFrame {
+                rgba: vec![5, 6, 7, 8],
+                width: 1,
+                height: 1,
+            });
+            assert!(matches!(wake_tx.try_send(()), Err(TrySendError::Full(()))));
+            assert_eq!(frames.take_latest().unwrap().rgba, vec![5, 6, 7, 8]);
+            assert!(frames.take_latest().is_none());
+        }
+        // Phase `open_first_device_or_skip`.
+        {
+            // Honest device test: opt-in only. This opens a real camera when one is
+            // present, which is not hermetic, so a plain `cargo test` (now that
+            // `live-capture` is a default feature) must not touch hardware. Set
+            // CAMERA_LIVE_TEST=1 to exercise it on a machine with a webcam.
+            if std::env::var("CAMERA_LIVE_TEST").is_err() {
+                eprintln!("CAMERA_LIVE_TEST not set — skipping live-open device test");
+            } else {
+                // Honest device test: skip cleanly when no camera is present.
+                let devs = list_devices();
+                if let Some(dev) = devs.first() {
+                    match Capture::open(dev, 640, 480) {
+                        Ok(cap) => {
+                            // A real pipeline opened; the frame channel is live. We don't
+                            // assert a frame arrives — CI cameras may be present but not
+                            // streamable — only that the pipeline built and plays.
+                            drop(cap);
+                        }
+                        Err(e) => {
+                            eprintln!("device {dev} present but not openable here: {e}");
+                        }
+                    }
+                } else {
+                    eprintln!("no /dev/video* device present — skipping live-open test");
+                }
             }
         }
     }

@@ -70,28 +70,32 @@ pub fn to_blocks(text: &str) -> Vec<ContentBlock> {
 mod tests {
     use super::*;
 
+    /// Gemtext renders headings, links, lists and preformatted blocks.
     #[test]
-    fn headings_links_and_lists() {
-        let doc = "# Title\n## Sub\nA paragraph.\n* item one\n* item two\n=> gemini://example.org Capsule\n=> gemini://bare.org";
-        let blocks = to_blocks(doc);
-        assert_eq!(blocks[0].kind, BlockKind::Heading1);
-        assert_eq!(blocks[1].kind, BlockKind::Heading2);
-        assert_eq!(blocks[2].kind, BlockKind::Paragraph);
-        assert_eq!(blocks[3].kind, BlockKind::Bullet);
-        let link = blocks.iter().find(|b| b.kind == BlockKind::Link).unwrap();
-        assert_eq!(link.text, "Capsule");
-        assert_eq!(link.href.as_deref(), Some("gemini://example.org"));
-        // Bare link uses the URL as its label.
-        let bare = blocks.last().unwrap();
-        assert_eq!(bare.text, "gemini://bare.org");
-    }
+    fn gemtext_renders_headings_links_lists_and_preformatted() {
+        // --- phase: headings_links_and_lists ---
+        {
+            let doc = "# Title\n## Sub\nA paragraph.\n* item one\n* item two\n=> gemini://example.org Capsule\n=> gemini://bare.org";
+            let blocks = to_blocks(doc);
+            assert_eq!(blocks[0].kind, BlockKind::Heading1);
+            assert_eq!(blocks[1].kind, BlockKind::Heading2);
+            assert_eq!(blocks[2].kind, BlockKind::Paragraph);
+            assert_eq!(blocks[3].kind, BlockKind::Bullet);
+            let link = blocks.iter().find(|b| b.kind == BlockKind::Link).unwrap();
+            assert_eq!(link.text, "Capsule");
+            assert_eq!(link.href.as_deref(), Some("gemini://example.org"));
+            // Bare link uses the URL as its label.
+            let bare = blocks.last().unwrap();
+            assert_eq!(bare.text, "gemini://bare.org");
+        }
 
-    #[test]
-    fn preformatted_blocks() {
-        let doc = "```rust\nfn main() {}\nlet x = 1;\n```\nafter";
-        let blocks = to_blocks(doc);
-        assert_eq!(blocks[0].kind, BlockKind::Code);
-        assert_eq!(blocks[0].text, "fn main() {}\nlet x = 1;");
-        assert_eq!(blocks[1].text, "after");
+        // --- phase: preformatted_blocks ---
+        {
+            let doc = "```rust\nfn main() {}\nlet x = 1;\n```\nafter";
+            let blocks = to_blocks(doc);
+            assert_eq!(blocks[0].kind, BlockKind::Code);
+            assert_eq!(blocks[0].text, "fn main() {}\nlet x = 1;");
+            assert_eq!(blocks[1].text, "after");
+        }
     }
 }

@@ -43,7 +43,7 @@ use tilo_automation::{
     Shortcut, TriggerSpec, shortcut_id_of, shortcut_resource_id,
 };
 
-use crate::shell::automation_triggers::{Armed, validate_trigger};
+use crate::shell::automation_triggers::{Armed, readable_folder, validate_trigger};
 
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
@@ -296,31 +296,61 @@ pub fn replace_trigger_chords(keymap: &mut ShortcutConfig, chords: Vec<ActionCho
     keymap.actions != before
 }
 
-/// Why `shortcut`'s triggers cannot be saved in `room` beside `others`,
-/// the workspace's saved shortcuts, with `keymap` the chords already taken
-/// on this device.
+/// Why `shortcut`'s triggers cannot be saved in `workspace` by `saver`,
+/// with `keymap` the chords already taken on this device.
+///
+/// An input a trigger's payload ([`TriggerSpec::payload`]) names must have
+/// the payload's type, and an input the shortcut requires must be given by
+/// every one of its triggers: nobody is there to give it.
 ///
 /// # Errors
 ///
 /// The first problem, for the person saving it.
 pub fn check_triggers(
     shortcut: &Shortcut,
-    others: &[Shortcut],
-    room: &str,
+    workspace: &Workspace,
+    saver: &str,
     keymap: &ShortcutConfig,
 ) -> Result<(), String> {
     if shortcut.triggers.is_empty() {
         return Ok(());
     }
-    if shortcut.inputs.iter().any(|input| input.required) {
-        return Err(
-            "a shortcut with triggers cannot require inputs: nobody is there to give them".into(),
-        );
+    for input in &shortcut.inputs {
+        let given: Vec<_> = shortcut
+            .triggers
+            .iter()
+            .map(|trigger| {
+                trigger
+                    .payload()
+                    .iter()
+                    .find(|value| value.name == input.name)
+            })
+            .collect();
+        if let Some(value) = given.iter().flatten().find(|value| value.ty != input.ty) {
+            return Err(format!(
+                "input `{}` is {} but a trigger gives it as {}",
+                input.name,
+                input.ty.label(),
+                value.ty.label()
+            ));
+        }
+        if input.required && given.iter().any(Option::is_none) {
+            return Err(format!(
+                "a shortcut with triggers cannot require input `{}` unless every trigger gives it: \
+                 nobody is there to give it",
+                input.name
+            ));
+        }
     }
-    let target = chord_target(room, &shortcut.id);
+    let room = workspace.room.to_string();
+    let others = &workspace.shortcuts;
+    let target = chord_target(&room, &shortcut.id);
     let mut keyboard = None;
     for trigger in &shortcut.triggers {
         validate_trigger(trigger)?;
+        if let TriggerSpec::FileChanged { capability } = trigger {
+            readable_folder(workspace, capability, saver)?;
+        }
         let TriggerSpec::Keyboard { chord: text } = trigger else {
             continue;
         };
@@ -433,13 +463,14 @@ pub fn apply_library(
     operation: LibraryOperation,
     context: &SaveContext<'_>,
 ) -> Result<ActionOutput, String> {
-    let (saved, room) = tree
+    let workspace = tree
         .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.id == workspace_id)
-        .map(|workspace| (workspace.shortcuts.clone(), workspace.room.to_string()))
+        .cloned()
         .ok_or("the workspace is no longer hosted here")?;
+    let saved = workspace.shortcuts.clone();
     let (shortcut, replacing) = match operation {
         LibraryOperation::List => {
             return Ok(ActionOutput {
@@ -468,7 +499,7 @@ pub fn apply_library(
     if !exists && replacing {
         return Err(format!("there is no shortcut `{}`", shortcut.id));
     }
-    check_triggers(&shortcut, &saved, &room, context.keymap)?;
+    check_triggers(&shortcut, &workspace, context.saver, context.keymap)?;
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
     tilo_automation::check(&shortcut, context.catalog, &resolver).map_err(|errors| {
         errors

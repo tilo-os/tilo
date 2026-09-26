@@ -607,23 +607,28 @@ impl Widget for Heatmap {
 mod tests {
     use super::*;
     #[test]
-    fn constant_values_have_a_safe_range() {
-        let heatmap = Heatmap::new(
-            vec!["A".into()],
-            vec!["B".into()],
-            vec![HeatmapCell::new("x", 0, 0, 3.0)],
-        );
-        let range = heatmap.range();
-        assert!(range.1 > range.0);
-    }
-    #[test]
-    fn invalid_coordinates_have_no_rect() {
-        let mut heatmap = Heatmap::new(vec!["A".into()], vec!["B".into()], vec![]);
-        heatmap.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-        assert!(
-            heatmap
-                .cell_rect(&HeatmapCell::new("x", 2, 0, 1.0))
-                .is_none()
-        );
+    fn heatmap_guards_constant_values_and_invalid_coordinates() {
+        fn constant_values_have_a_safe_range() {
+            let heatmap = Heatmap::new(
+                vec!["A".into()],
+                vec!["B".into()],
+                vec![HeatmapCell::new("x", 0, 0, 3.0)],
+            );
+            let range = heatmap.range();
+            assert!(range.1 > range.0);
+        }
+
+        fn invalid_coordinates_have_no_rect() {
+            let mut heatmap = Heatmap::new(vec!["A".into()], vec!["B".into()], vec![]);
+            heatmap.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+            assert!(
+                heatmap
+                    .cell_rect(&HeatmapCell::new("x", 2, 0, 1.0))
+                    .is_none()
+            );
+        }
+
+        constant_values_have_a_safe_range();
+        invalid_coordinates_have_no_rect();
     }
 }

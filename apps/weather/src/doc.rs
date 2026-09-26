@@ -428,103 +428,103 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn round_trip_locations_and_selected_without_persisting_local_units() {
-        let mut model = crate::sample::sample_model();
-        model.selected = 2;
-        model.set_units(Units::IMPERIAL);
+    fn weather_document_holds_only_keyed_shared_locations() {
+        // Case `round_trip_locations_and_selected_without_persisting_local_units`.
+        {
+            let mut model = crate::sample::sample_model();
+            model.selected = 2;
+            model.set_units(Units::IMPERIAL);
 
-        let mut doc = AutoCommit::new();
-        WeatherDoc::write_model(&mut doc, &model);
-        assert!(WeatherDoc::is_initialised(&doc));
+            let mut doc = AutoCommit::new();
+            WeatherDoc::write_model(&mut doc, &model);
+            assert!(WeatherDoc::is_initialised(&doc));
 
-        let back = WeatherDoc::read_model(&doc);
-        assert_eq!(back.locations.len(), model.locations.len());
-        assert_eq!(back.selected, 2);
-        assert_eq!(
-            back.units,
-            Units::default(),
-            "units are local Settings state"
-        );
-        assert!(back.snapshots.is_empty(), "provider cache is device-local");
-        assert!(
-            back.air_quality.is_empty(),
-            "provider cache is device-local"
-        );
-    }
-
-    #[test]
-    fn provider_records_never_enter_the_collaborative_document() {
-        let model = crate::sample::sample_model();
-        let mut doc = AutoCommit::new();
-        WeatherDoc::write_model(&mut doc, &model);
-        assert!(doc.get(&ROOT, "snapshots").unwrap().is_none());
-        assert!(doc.get(&ROOT, "air_quality").unwrap().is_none());
-    }
-
-    #[test]
-    fn legacy_location_list_is_read_then_migrated_to_keyed_records() {
-        let model = crate::sample::sample_model();
-        let mut legacy = AutoCommit::new();
-        let list = legacy
-            .put_object(&ROOT, "locations", ObjType::List)
-            .unwrap();
-        for (index, location) in model.locations.iter().enumerate() {
-            let entry = legacy.insert_object(&list, index, ObjType::Map).unwrap();
-            legacy.put(&entry, "id", location.id.to_string()).unwrap();
-            legacy.put(&entry, "name", location.name.as_str()).unwrap();
-            legacy
-                .put(&entry, "region", location.region.as_str())
-                .unwrap();
-            legacy
-                .put(&entry, "country", location.country.as_str())
-                .unwrap();
-            legacy
-                .put(&entry, "country_code", location.country_code.as_str())
-                .unwrap();
-            legacy.put(&entry, "lat", location.latitude).unwrap();
-            legacy.put(&entry, "lon", location.longitude).unwrap();
-            legacy
-                .put(&entry, "tz", location.timezone.as_str())
-                .unwrap();
+            let back = WeatherDoc::read_model(&doc);
+            assert_eq!(back.locations.len(), model.locations.len());
+            assert_eq!(back.selected, 2);
+            assert_eq!(
+                back.units,
+                Units::default(),
+                "units are local Settings state"
+            );
+            assert!(back.snapshots.is_empty(), "provider cache is device-local");
+            assert!(
+                back.air_quality.is_empty(),
+                "provider cache is device-local"
+            );
         }
+        // Case `provider_records_never_enter_the_collaborative_document`.
+        {
+            let model = crate::sample::sample_model();
+            let mut doc = AutoCommit::new();
+            WeatherDoc::write_model(&mut doc, &model);
+            assert!(doc.get(&ROOT, "snapshots").unwrap().is_none());
+            assert!(doc.get(&ROOT, "air_quality").unwrap().is_none());
+        }
+        // Case `legacy_location_list_is_read_then_migrated_to_keyed_records`.
+        {
+            let model = crate::sample::sample_model();
+            let mut legacy = AutoCommit::new();
+            let list = legacy
+                .put_object(&ROOT, "locations", ObjType::List)
+                .unwrap();
+            for (index, location) in model.locations.iter().enumerate() {
+                let entry = legacy.insert_object(&list, index, ObjType::Map).unwrap();
+                legacy.put(&entry, "id", location.id.to_string()).unwrap();
+                legacy.put(&entry, "name", location.name.as_str()).unwrap();
+                legacy
+                    .put(&entry, "region", location.region.as_str())
+                    .unwrap();
+                legacy
+                    .put(&entry, "country", location.country.as_str())
+                    .unwrap();
+                legacy
+                    .put(&entry, "country_code", location.country_code.as_str())
+                    .unwrap();
+                legacy.put(&entry, "lat", location.latitude).unwrap();
+                legacy.put(&entry, "lon", location.longitude).unwrap();
+                legacy
+                    .put(&entry, "tz", location.timezone.as_str())
+                    .unwrap();
+            }
 
-        WeatherDoc::migrate_legacy_locations(&mut legacy);
-        assert!(matches!(
-            legacy.get(&ROOT, "saved_locations"),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        ));
-        assert_eq!(
-            WeatherDoc::read_model(&legacy).locations.len(),
-            model.locations.len()
-        );
-    }
+            WeatherDoc::migrate_legacy_locations(&mut legacy);
+            assert!(matches!(
+                legacy.get(&ROOT, "saved_locations"),
+                Ok(Some((Value::Object(ObjType::Map), _)))
+            ));
+            assert_eq!(
+                WeatherDoc::read_model(&legacy).locations.len(),
+                model.locations.len()
+            );
+        }
+        // Case `remove_wins_over_a_concurrent_same_id_add_without_resurrection`.
+        {
+            let mut base = AutoCommit::new();
+            WeatherDoc::ensure_schema(&mut base);
+            let location = SavedLocation::new(
+                "Oslo",
+                "Oslo",
+                "Norway",
+                "NO",
+                59.9139,
+                10.7522,
+                "Europe/Oslo",
+            );
+            WeatherDoc::upsert_location(&mut base, &location);
+            base.commit();
+            let bytes = base.save();
+            let mut remover = AutoCommit::load(&bytes).unwrap();
+            let mut stale_adder = AutoCommit::load(&bytes).unwrap();
 
-    #[test]
-    fn remove_wins_over_a_concurrent_same_id_add_without_resurrection() {
-        let mut base = AutoCommit::new();
-        WeatherDoc::ensure_schema(&mut base);
-        let location = SavedLocation::new(
-            "Oslo",
-            "Oslo",
-            "Norway",
-            "NO",
-            59.9139,
-            10.7522,
-            "Europe/Oslo",
-        );
-        WeatherDoc::upsert_location(&mut base, &location);
-        base.commit();
-        let bytes = base.save();
-        let mut remover = AutoCommit::load(&bytes).unwrap();
-        let mut stale_adder = AutoCommit::load(&bytes).unwrap();
+            WeatherDoc::remove_location(&mut remover, location.id);
+            remover.commit();
+            WeatherDoc::upsert_location(&mut stale_adder, &location);
+            stale_adder.commit();
+            let changes = stale_adder.get_changes(&base.get_heads());
+            remover.apply_incoming(changes).unwrap();
 
-        WeatherDoc::remove_location(&mut remover, location.id);
-        remover.commit();
-        WeatherDoc::upsert_location(&mut stale_adder, &location);
-        stale_adder.commit();
-        let changes = stale_adder.get_changes(&base.get_heads());
-        remover.apply_incoming(changes).unwrap();
-
-        assert!(WeatherDoc::read_model(&remover).locations.is_empty());
+            assert!(WeatherDoc::read_model(&remover).locations.is_empty());
+        }
     }
 }

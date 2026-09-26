@@ -3813,6 +3813,7 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-clock",
  "tilo-dav",
  "tilo-test-env",
@@ -4172,12 +4173,14 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "bao-tree",
  "blake3",
  "bounded-command",
  "bytes",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fs-content",
  "fs-native",
  "fuser",
  "futures-util",
@@ -4188,6 +4191,7 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-gossip",
+ "irpc",
  "libc",
  "moka",
  "postcard",
@@ -4195,6 +4199,7 @@ dependencies = [
  "qdoc-codecs",
  "rand 0.10.1",
  "redb",
+ "ref-cast",
  "runtime-fs",
  "serde",
  "serde_bytes",
@@ -4215,11 +4220,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs-native"
+name = "fs-content"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "fastcdc",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "fs-native"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fs-content",
  "libc",
 ]
 
@@ -7936,6 +7951,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-automerge",
  "tilo-test-env",
  "tracing",
@@ -9386,6 +9402,7 @@ name = "osk"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "emoji",
  "libc",
  "runtime-dylib",
  "serde",
@@ -12672,6 +12689,7 @@ dependencies = [
  "mime_guess",
  "naga",
  "neighbour-wire",
+ "notify",
  "os-actions",
  "package-store",
  "parking_lot",
@@ -12686,11 +12704,13 @@ dependencies = [
  "rand_core 0.10.0",
  "rcgen",
  "reis",
+ "resvg",
  "runtime-collab",
  "runtime-fs",
  "runtime-identity",
  "runtime-portal",
  "rustls",
+ "secret-vault",
  "serde",
  "serde_json",
  "serial_test",
@@ -12708,6 +12728,7 @@ dependencies = [
  "threshold-identity",
  "thumbnail",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-automation",
  "tilo-automerge",
  "tilo-bluez",
@@ -12739,6 +12760,8 @@ dependencies = [
  "walkdir",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
  "wgpu",
  "windows-vm",
  "winit",
@@ -12761,6 +12784,18 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "shortcuts"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-automation",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -14028,7 +14063,6 @@ dependencies = [
  "image",
  "libc",
  "notify",
- "serde",
  "serde_json",
  "syn 2.0.117",
  "tempfile",
@@ -14082,8 +14116,6 @@ dependencies = [
 name = "tilo-app-template-smoke"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "tilo-app",
  "tilo-app-cli",
 ]
@@ -14812,6 +14844,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tar",
  "tempfile",

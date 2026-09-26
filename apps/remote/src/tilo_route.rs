@@ -151,26 +151,29 @@ mod tests {
     }
 
     #[test]
-    fn remote_consumes_direct_first_mesh_routing() {
-        assert_eq!(
-            provider(true, vec![server(3)]).route("studio-node"),
-            Ok(TiloRouteDecision::Direct)
-        );
-    }
+    fn tilo_routes_prefer_direct_mesh_and_never_fake_success() {
+        eprintln!("phase remote_consumes_direct_first_mesh_routing");
+        {
+            assert_eq!(
+                provider(true, vec![server(3)]).route("studio-node"),
+                Ok(TiloRouteDecision::Direct)
+            );
+        }
 
-    #[test]
-    fn workspace_wide_relay_is_not_a_control_route() {
-        assert!(
-            provider(false, vec![server(3)])
-                .route("studio-node")
-                .is_err()
-        );
-    }
+        eprintln!("phase workspace_wide_relay_is_not_a_control_route");
+        {
+            assert!(
+                provider(false, vec![server(3)])
+                    .route("studio-node")
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn stale_or_missing_discovery_never_becomes_success() {
-        assert!(provider(false, Vec::new()).route("studio-node").is_err());
-        assert!(provider(true, Vec::new()).route("different-node").is_err());
-        assert!(UnavailableTiloRouteProvider.route("studio-node").is_err());
+        eprintln!("phase stale_or_missing_discovery_never_becomes_success");
+        {
+            assert!(provider(false, Vec::new()).route("studio-node").is_err());
+            assert!(provider(true, Vec::new()).route("different-node").is_err());
+            assert!(UnavailableTiloRouteProvider.route("studio-node").is_err());
+        }
     }
 }

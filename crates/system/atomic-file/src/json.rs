@@ -38,28 +38,30 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn a_missing_or_malformed_file_loads_as_the_default() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("store.json");
-        assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
-        std::fs::write(&p, b"{not json").unwrap();
-        assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
-        std::fs::write(&p, b"42").unwrap();
-        assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
-    }
-
-    #[test]
-    fn a_saved_value_round_trips() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("nested/store.json");
-        let value: BTreeSet<String> = ["a".to_string(), "b".to_string()].into();
-        write_private(&p, &value).unwrap();
-        assert_eq!(load_or_default::<BTreeSet<String>>(&p), value);
-        #[cfg(unix)]
+    fn json_values_round_trip_and_missing_or_malformed_files_load_as_default() {
+        // Phase `a_missing_or_malformed_file_loads_as_the_default`.
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("store.json");
+            assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
+            std::fs::write(&p, b"{not json").unwrap();
+            assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
+            std::fs::write(&p, b"42").unwrap();
+            assert!(load_or_default::<BTreeSet<String>>(&p).is_empty());
+        }
+        // Phase `a_saved_value_round_trips`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("nested/store.json");
+            let value: BTreeSet<String> = ["a".to_string(), "b".to_string()].into();
+            write_private(&p, &value).unwrap();
+            assert_eq!(load_or_default::<BTreeSet<String>>(&p), value);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600);
+            }
         }
     }
 }

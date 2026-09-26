@@ -4755,217 +4755,251 @@ mod tests {
                 .any(|child| target_exists(child, target))
     }
 
+    /// Sync seeds the sample topology and drive selection round-trips through the CRDT.
     #[test]
-    fn sync_seeds_sample_topology() {
-        let (app, _doc) = seeded_app();
-        assert_eq!(app.topo.drives.len(), 4);
-        assert_eq!(app.selected, 0);
-        assert_eq!(app.tab, Tab::Overview);
-    }
-
-    #[test]
-    fn root_accessibility_reports_disk_operation_status() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        app.status = "Rescan complete".into();
-        let node = app.accessibility().expect("disks exports a window");
-        assert_eq!(node.role, Role::Window);
-        assert!(
-            node.children
-                .iter()
-                .any(|child| child.name.as_deref() == Some("Rescan complete"))
-        );
-    }
-
-    #[test]
-    fn select_persists_to_doc_and_back() {
-        let (mut app, mut doc) = seeded_app();
-        app.select(&mut doc, 2);
-        assert_eq!(DisksDoc::selected(&doc), 2);
-        // A fresh app syncing the same doc adopts the selection.
-        let mut app2 = DisksApp::new();
-        let root = ui::automerge::ROOT;
-        app2.sync(&mut doc, &root);
-        assert_eq!(app2.selected, 2);
-    }
-
-    #[test]
-    fn destructive_action_opens_modal() {
-        let (mut app, mut doc) = seeded_app();
-        app.trigger_action(&mut doc, ActionKind::Format);
-        assert!(app.pending.is_some());
-        assert!(DisksDoc::pending(&doc).starts_with("format:"));
-    }
-
-    #[test]
-    fn non_destructive_action_sets_status_no_modal() {
-        let (mut app, mut doc) = seeded_app();
-        // Benchmark always applies, so it reports on the status line with no modal.
-        app.trigger_action(&mut doc, ActionKind::Benchmark);
-        assert!(app.pending.is_none());
-        assert!(!DisksDoc::status(&doc).is_empty());
-    }
-
-    #[test]
-    fn exported_disk_actions_declare_background_jobs() {
-        let (app, doc) = seeded_app();
-        for action in Widget::resources(&app, &doc)
-            .iter()
-            .flat_map(|root| root.children.iter())
-            .flat_map(|drive| {
-                drive
-                    .actions
-                    .iter()
-                    .chain(drive.children.iter().flat_map(|p| p.actions.iter()))
-            })
+    fn sync_and_selection_persist_through_the_document() {
+        // --- phase: sync_seeds_sample_topology ---
         {
-            assert!(matches!(
-                action.contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            ));
-            assert_eq!(action.contract.result, ResultSpec::Job);
+            let (app, _doc) = seeded_app();
+            assert_eq!(app.topo.drives.len(), 4);
+            assert_eq!(app.selected, 0);
+            assert_eq!(app.tab, Tab::Overview);
+        }
+
+        // --- phase: select_persists_to_doc_and_back ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select(&mut doc, 2);
+            assert_eq!(DisksDoc::selected(&doc), 2);
+            // A fresh app syncing the same doc adopts the selection.
+            let mut app2 = DisksApp::new();
+            let root = ui::automerge::ROOT;
+            app2.sync(&mut doc, &root);
+            assert_eq!(app2.selected, 2);
         }
     }
 
+    /// A disk operation from request (modal or direct) through confirmation and the worker result to the reported status.
     #[test]
-    fn disk_resources_publish_whole_drive_format_and_benchmark() {
-        let (app, doc) = seeded_app();
-        let resources = Widget::resources(&app, &doc);
-        let disk = resources
-            .first()
-            .and_then(|root| root.children.first())
-            .expect("sample exposes its first disk resource");
-        for id in ["format", "benchmark"] {
+    fn disk_operation_lifecycle_from_request_to_status() {
+        // --- phase: destructive_action_opens_modal ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.trigger_action(&mut doc, ActionKind::Format);
+            assert!(app.pending.is_some());
+            assert!(DisksDoc::pending(&doc).starts_with("format:"));
+        }
+
+        // --- phase: non_destructive_action_sets_status_no_modal ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            // Benchmark always applies, so it reports on the status line with no modal.
+            app.trigger_action(&mut doc, ActionKind::Benchmark);
+            assert!(app.pending.is_none());
+            assert!(!DisksDoc::status(&doc).is_empty());
+        }
+
+        // --- phase: confirm_requires_typed_name_then_clears_pending ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.trigger_action(&mut doc, ActionKind::Format); // whole nvme disk
+            // The Erase gate is locked until the exact device name is typed.
+            assert!(!app.confirm_ready(), "empty input does not unlock");
+            app.confirm_pending(&mut doc);
+            assert!(app.pending.is_some(), "confirm is a no-op while locked");
+
+            app.confirm_input.set_text("wrong");
+            assert!(!app.confirm_ready());
+            app.confirm_pending(&mut doc);
+            assert!(app.pending.is_some(), "a mismatched name stays locked");
+
+            app.confirm_input.set_text("nvme0n1"); // the whole-disk device name
+            assert!(app.confirm_ready(), "the exact name unlocks Erase");
+            app.confirm_pending(&mut doc);
+            assert!(app.pending.is_none(), "confirming clears the modal");
+            assert_eq!(DisksDoc::pending(&doc), "");
+            // Hermetic build reports the plan rather than executing.
+            assert!(DisksDoc::status(&doc).contains("Block.Format"));
+        }
+
+        // --- phase: worker_result_becomes_terminal_lifecycle_update ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            let invocation = tilo_actions::InvocationId::new();
+            let (tx, rx) = mpsc::channel();
+            app.action_invocation = Some(invocation);
+            app.action_rx = Some(rx);
+            tx.send(ActionResult {
+                text: "mounted".into(),
+                error: None,
+                refresh: false,
+            })
+            .unwrap();
+            app.sync(&mut doc, &ui::automerge::ROOT);
+            assert!(matches!(
+                app.poll_resource_operation(invocation, false, &doc, &ui::automerge::ROOT),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+
+        // --- phase: root_accessibility_reports_disk_operation_status ---
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            app.status = "Rescan complete".into();
+            let node = app.accessibility().expect("disks exports a window");
+            assert_eq!(node.role, Role::Window);
             assert!(
-                disk.actions.iter().any(|action| action.id == id),
-                "whole-drive resource must publish {id}"
+                node.children
+                    .iter()
+                    .any(|child| child.name.as_deref() == Some("Rescan complete"))
             );
         }
-        let format = disk
-            .actions
-            .iter()
-            .find(|action| action.id == "format")
-            .expect("format action");
-        assert!(matches!(
-            format.contract.confirmation,
-            ConfirmationPolicy::Phrase { .. }
-        ));
     }
 
+    /// Exported disk resources publish their operations as background jobs whose targets are revalidated against the live topology.
     #[test]
-    fn resource_operation_targets_are_revalidated_against_current_topology() {
-        let (app, _doc) = seeded_app();
-        assert!(
-            app.revalidate_operation_target(ActionKind::Benchmark, "nvme0n1")
-                .is_ok()
-        );
-        assert!(
-            app.revalidate_operation_target(ActionKind::Mount, "nvme0n1")
-                .unwrap_err()
-                .contains("whole disk")
-        );
-        assert!(
-            app.revalidate_operation_target(ActionKind::Format, "no-longer-present")
-                .unwrap_err()
-                .contains("no longer present")
-        );
+    fn exported_disk_resources_declare_revalidated_background_actions() {
+        // --- phase: exported_disk_actions_declare_background_jobs ---
+        {
+            let (app, doc) = seeded_app();
+            for action in Widget::resources(&app, &doc)
+                .iter()
+                .flat_map(|root| root.children.iter())
+                .flat_map(|drive| {
+                    drive
+                        .actions
+                        .iter()
+                        .chain(drive.children.iter().flat_map(|p| p.actions.iter()))
+                })
+            {
+                assert!(matches!(
+                    action.contract.execution,
+                    ExecutionMode::Background { cancellable: false }
+                ));
+                assert_eq!(action.contract.result, ResultSpec::Job);
+            }
+        }
+
+        // --- phase: disk_resources_publish_whole_drive_format_and_benchmark ---
+        {
+            let (app, doc) = seeded_app();
+            let resources = Widget::resources(&app, &doc);
+            let disk = resources
+                .first()
+                .and_then(|root| root.children.first())
+                .expect("sample exposes its first disk resource");
+            for id in ["format", "benchmark"] {
+                assert!(
+                    disk.actions.iter().any(|action| action.id == id),
+                    "whole-drive resource must publish {id}"
+                );
+            }
+            let format = disk
+                .actions
+                .iter()
+                .find(|action| action.id == "format")
+                .expect("format action");
+            assert!(matches!(
+                format.contract.confirmation,
+                ConfirmationPolicy::Phrase { .. }
+            ));
+        }
+
+        // --- phase: resource_operation_targets_are_revalidated_against_current_topology ---
+        {
+            let (app, _doc) = seeded_app();
+            assert!(
+                app.revalidate_operation_target(ActionKind::Benchmark, "nvme0n1")
+                    .is_ok()
+            );
+            assert!(
+                app.revalidate_operation_target(ActionKind::Mount, "nvme0n1")
+                    .unwrap_err()
+                    .contains("whole disk")
+            );
+            assert!(
+                app.revalidate_operation_target(ActionKind::Format, "no-longer-present")
+                    .unwrap_err()
+                    .contains("no longer present")
+            );
+        }
     }
 
+    /// Canvas-drawn controls are exposed to accessibility with spoken names and route activation.
     #[test]
-    fn accessibility_exposes_and_routes_canvas_controls() {
-        let (mut app, mut doc) = seeded_app();
-        layout_at(&mut app, 1280.0);
-        let node = app.accessibility().expect("disks accessibility tree");
-        assert!(target_exists(&node, "disks.rescan"));
-        assert!(target_exists(&node, "disks.drive:nvme0n1"));
-        assert!(target_exists(&node, "disks.action:format"));
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "disks.tab:smart",
-            &A11yAction::Activate,
-            &mut doc,
-            &ui::automerge::ROOT,
-        ));
-        assert_eq!(app.tab, Tab::Smart);
+    fn accessibility_names_and_routes_canvas_controls() {
+        // --- phase: accessibility_exposes_and_routes_canvas_controls ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            layout_at(&mut app, 1280.0);
+            let node = app.accessibility().expect("disks accessibility tree");
+            assert!(target_exists(&node, "disks.rescan"));
+            assert!(target_exists(&node, "disks.drive:nvme0n1"));
+            assert!(target_exists(&node, "disks.action:format"));
+            assert!(Widget::perform_semantic_action(
+                &mut app,
+                "disks.tab:smart",
+                &A11yAction::Activate,
+                &mut doc,
+                &ui::automerge::ROOT,
+            ));
+            assert_eq!(app.tab, Tab::Smart);
+        }
+
+        // --- phase: icon_only_hamburger_face_has_a_spoken_name ---
+        {
+            let face = ButtonFace::new(Rect::ZERO, "")
+                .icon(Icon::Menu)
+                .accessible_name("Show drives");
+            assert_eq!(face.spoken_name(), "Show drives");
+            assert_eq!(
+                ButtonFace::new(Rect::ZERO, "Rescan")
+                    .icon(Icon::Refresh)
+                    .spoken_name(),
+                "Rescan"
+            );
+        }
     }
 
+    /// The detail pane lays out one card per drive on a shared left edge and inset.
     #[test]
-    fn worker_result_becomes_terminal_lifecycle_update() {
-        let (mut app, mut doc) = seeded_app();
-        let invocation = tilo_actions::InvocationId::new();
-        let (tx, rx) = mpsc::channel();
-        app.action_invocation = Some(invocation);
-        app.action_rx = Some(rx);
-        tx.send(ActionResult {
-            text: "mounted".into(),
-            error: None,
-            refresh: false,
-        })
-        .unwrap();
-        app.sync(&mut doc, &ui::automerge::ROOT);
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &ui::automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-    }
+    fn drive_cards_align_to_a_shared_grid() {
+        // --- phase: layout_has_one_card_per_drive ---
+        {
+            let (mut app, _doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let lay = app.compute_layout();
+            assert_eq!(lay.cards.len(), 4);
+            assert_eq!(lay.tabs.len(), 3);
+            assert_eq!(lay.action_buttons.len(), 5);
+        }
 
-    #[test]
-    fn confirm_requires_typed_name_then_clears_pending() {
-        let (mut app, mut doc) = seeded_app();
-        app.trigger_action(&mut doc, ActionKind::Format); // whole nvme disk
-        // The Erase gate is locked until the exact device name is typed.
-        assert!(!app.confirm_ready(), "empty input does not unlock");
-        app.confirm_pending(&mut doc);
-        assert!(app.pending.is_some(), "confirm is a no-op while locked");
-
-        app.confirm_input.set_text("wrong");
-        assert!(!app.confirm_ready());
-        app.confirm_pending(&mut doc);
-        assert!(app.pending.is_some(), "a mismatched name stays locked");
-
-        app.confirm_input.set_text("nvme0n1"); // the whole-disk device name
-        assert!(app.confirm_ready(), "the exact name unlocks Erase");
-        app.confirm_pending(&mut doc);
-        assert!(app.pending.is_none(), "confirming clears the modal");
-        assert_eq!(DisksDoc::pending(&doc), "");
-        // Hermetic build reports the plan rather than executing.
-        assert!(DisksDoc::status(&doc).contains("Block.Format"));
-    }
-
-    #[test]
-    fn layout_has_one_card_per_drive() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let lay = app.compute_layout();
-        assert_eq!(lay.cards.len(), 4);
-        assert_eq!(lay.tabs.len(), 3);
-        assert_eq!(lay.action_buttons.len(), 5);
-    }
-
-    /// The identity header and the action band are stacked cards sharing one
-    /// left edge, and the band's first button sits on the same inner inset
-    /// the drive rows and the header text use — one vertical line for the
-    /// eye to follow down the detail pane.
-    #[test]
-    fn detail_cards_share_one_left_edge_and_inner_inset() {
-        let app = at_width(1280.0);
-        let lay = app.compute_layout();
-        assert!(
-            (lay.header.x0 - lay.action_bar.x0).abs() < f64::EPSILON
-                && (lay.header.x1 - lay.action_bar.x1).abs() < f64::EPSILON,
-            "header {:?} and action band {:?} share their edges",
-            lay.header,
-            lay.action_bar
-        );
-        let first_button = lay
-            .action_buttons
-            .first()
-            .map(|(r, _, _)| *r)
-            .expect("buttons");
-        assert!(
-            (first_button.x0 - (lay.action_bar.x0 + CARD_INSET)).abs() < f64::EPSILON,
-            "first action button {first_button:?} starts on the shared card inset"
-        );
+        // --- phase: detail_cards_share_one_left_edge_and_inner_inset ---
+        // The identity header and the action band are stacked cards sharing one
+        // left edge, and the band's first button sits on the same inner inset
+        // the drive rows and the header text use — one vertical line for the
+        // eye to follow down the detail pane.
+        {
+            let app = at_width(1280.0);
+            let lay = app.compute_layout();
+            assert!(
+                (lay.header.x0 - lay.action_bar.x0).abs() < f64::EPSILON
+                    && (lay.header.x1 - lay.action_bar.x1).abs() < f64::EPSILON,
+                "header {:?} and action band {:?} share their edges",
+                lay.header,
+                lay.action_bar
+            );
+            let first_button = lay
+                .action_buttons
+                .first()
+                .map(|(r, _, _)| *r)
+                .expect("buttons");
+            assert!(
+                (first_button.x0 - (lay.action_bar.x0 + CARD_INSET)).abs() < f64::EPSILON,
+                "first action button {first_button:?} starts on the shared card inset"
+            );
+        }
     }
 
     /// Lay the app out at a given width through the real `build_layout` +
@@ -4995,75 +5029,113 @@ mod tests {
         app.apply_layout(&taffy, node, Point::ZERO);
     }
 
+    /// The drive list docks beside the detail when wide, collapses to an overlay flap when narrow, restores across breakpoints and scrolls.
     #[test]
-    fn wide_window_docks_the_list_beside_the_detail() {
-        let app = at_width(1280.0);
-        assert_eq!(app.split_layout(), SplitLayout::Docked);
-        assert!(app.list_open(), "docked list is open by default");
-        let lay = app.compute_layout();
-        assert!(lay.hamburger.is_none(), "no hamburger when docked");
-        assert_eq!(lay.scrim.width(), 0.0, "no scrim when docked");
-        // The detail header begins to the right of the docked list column.
-        assert!(
-            lay.header.x0 >= PAD + LIST_W,
-            "detail is inset past the docked list, got x0={}",
-            lay.header.x0
-        );
-    }
+    fn responsive_layout_docks_collapses_and_scrolls_the_drive_list() {
+        // --- phase: wide_window_docks_the_list_beside_the_detail ---
+        {
+            let app = at_width(1280.0);
+            assert_eq!(app.split_layout(), SplitLayout::Docked);
+            assert!(app.list_open(), "docked list is open by default");
+            let lay = app.compute_layout();
+            assert!(lay.hamburger.is_none(), "no hamburger when docked");
+            assert_eq!(lay.scrim.width(), 0.0, "no scrim when docked");
+            // The detail header begins to the right of the docked list column.
+            assert!(
+                lay.header.x0 >= PAD + LIST_W,
+                "detail is inset past the docked list, got x0={}",
+                lay.header.x0
+            );
+        }
 
-    #[test]
-    fn narrow_window_collapses_list_to_a_closed_overlay() {
-        let app = at_width(640.0);
-        assert_eq!(app.split_layout(), SplitLayout::Overlay);
-        assert!(!app.list_open(), "overlay list is closed by default");
-        let lay = app.compute_layout();
-        assert!(lay.hamburger.is_some(), "narrow window shows a hamburger");
-        assert_eq!(lay.scrim.width(), 0.0, "closed flap paints no scrim");
-        // Detail uses the full width (minus the usual padding) when collapsed.
-        assert!(
-            (lay.content.width() - (app.rect.width() - 2.0 * PAD)).abs() < 1.0,
-            "collapsed detail spans the full width"
-        );
-        // The list panel is slid fully off the left edge while closed.
-        assert!(
-            lay.sidebar.x1 <= app.rect.x0 + 0.5,
-            "closed flap is off-screen left"
-        );
-    }
+        // --- phase: narrow_window_collapses_list_to_a_closed_overlay ---
+        {
+            let app = at_width(640.0);
+            assert_eq!(app.split_layout(), SplitLayout::Overlay);
+            assert!(!app.list_open(), "overlay list is closed by default");
+            let lay = app.compute_layout();
+            assert!(lay.hamburger.is_some(), "narrow window shows a hamburger");
+            assert_eq!(lay.scrim.width(), 0.0, "closed flap paints no scrim");
+            // Detail uses the full width (minus the usual padding) when collapsed.
+            assert!(
+                (lay.content.width() - (app.rect.width() - 2.0 * PAD)).abs() < 1.0,
+                "collapsed detail spans the full width"
+            );
+            // The list panel is slid fully off the left edge while closed.
+            assert!(
+                lay.sidebar.x1 <= app.rect.x0 + 0.5,
+                "closed flap is off-screen left"
+            );
+        }
 
-    #[test]
-    fn hamburger_summons_overlay_flap_with_scrim() {
-        let mut app = at_width(640.0);
-        app.flap.snap(true); // settle open deterministically
-        assert!(app.list_open());
-        let lay = app.compute_layout();
-        assert!(
-            lay.scrim.width() > 0.0,
-            "open overlay flap dims the content behind a scrim"
-        );
-        // Fully revealed, the list panel sits flush at the left edge.
-        assert!(
-            (lay.sidebar.x0 - app.rect.x0).abs() < 1.0,
-            "revealed overlay list is flush left, got x0={}",
-            lay.sidebar.x0
-        );
-        // Cards ride along with the panel.
-        assert_eq!(lay.cards.len(), 4);
-        assert!((lay.cards[0].x0 - (app.rect.x0 + PAD)).abs() < 1.0);
-    }
+        // --- phase: hamburger_summons_overlay_flap_with_scrim ---
+        {
+            let mut app = at_width(640.0);
+            app.flap.snap(true); // settle open deterministically
+            assert!(app.list_open());
+            let lay = app.compute_layout();
+            assert!(
+                lay.scrim.width() > 0.0,
+                "open overlay flap dims the content behind a scrim"
+            );
+            // Fully revealed, the list panel sits flush at the left edge.
+            assert!(
+                (lay.sidebar.x0 - app.rect.x0).abs() < 1.0,
+                "revealed overlay list is flush left, got x0={}",
+                lay.sidebar.x0
+            );
+            // Cards ride along with the panel.
+            assert_eq!(lay.cards.len(), 4);
+            assert!((lay.cards[0].x0 - (app.rect.x0 + PAD)).abs() < 1.0);
+        }
 
-    #[test]
-    fn crossing_breakpoint_restores_the_layout_default() {
-        // User hides the docked list, then the window narrows: the stale
-        // preference is dropped and the overlay default (closed) applies;
-        // widening again returns to the docked default (open).
-        let mut app = at_width(1280.0);
-        app.flap.close();
-        assert!(!app.list_open());
-        layout_at(&mut app, 640.0);
-        assert!(!app.list_open(), "narrow default is closed");
-        layout_at(&mut app, 1280.0);
-        assert!(app.list_open(), "widening restores the docked-open default");
+        // --- phase: crossing_breakpoint_restores_the_layout_default ---
+        {
+            // User hides the docked list, then the window narrows: the stale
+            // preference is dropped and the overlay default (closed) applies;
+            // widening again returns to the docked default (open).
+            let mut app = at_width(1280.0);
+            app.flap.close();
+            assert!(!app.list_open());
+            layout_at(&mut app, 640.0);
+            assert!(!app.list_open(), "narrow default is closed");
+            layout_at(&mut app, 1280.0);
+            assert!(app.list_open(), "widening restores the docked-open default");
+        }
+
+        // --- phase: narrow_layout_scrolls_both_the_list_and_the_content ---
+        {
+            // A short window overflows both panes; the wheel must move them.
+            let mut h = Harness::new(640.0, 420.0);
+            h.app.snap_sidebar(true); // reveal the overlay drive list
+            h.relayout();
+            assert!(
+                h.app.content_h > h.lay().content.height(),
+                "content overflows the short window"
+            );
+
+            // Scroll the content pane down, then back to the top (clamped at 0).
+            // Aim at the content's right edge so the open overlay list (which
+            // covers the left) doesn't intercept the wheel.
+            let content = h.lay().content;
+            let cpt = Point::new(content.x1 - 24.0, content.y0 + 18.0);
+            h.wheel(cpt, -3.0);
+            assert!(
+                h.app.content_scroll > 0.0,
+                "wheel scrolls the detail content down"
+            );
+            h.wheel(cpt, 30.0);
+            assert_eq!(h.app.content_scroll, 0.0, "scrolling up clamps at the top");
+
+            // Scroll the drive list.
+            assert!(
+                h.app.list_h > h.lay().list_body.height(),
+                "the drive list overflows too"
+            );
+            let lpt = center(h.lay().list_body);
+            h.wheel(lpt, -3.0);
+            assert!(h.app.list_scroll > 0.0, "wheel scrolls the drive list");
+        }
     }
 
     // ================================================================
@@ -5232,320 +5304,322 @@ mod tests {
         }
     }
 
+    /// Clicking drives, tabs, partition segments, rows and the whole-disk pill repoints the detail and scopes which actions apply.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn clicking_a_drive_row_selects_it_and_repoints_the_detail() {
-        let mut h = Harness::new(1280.0, 800.0);
-        let target = h.lay().cards[2];
-        assert!(h.click(center(target)), "a drive row is clickable");
-        assert_eq!(h.app.selected, 2, "the clicked row becomes the selection");
-        // The detail now points at that exact drive.
-        assert_eq!(h.app.drive().unwrap().name, h.app.topo.drives[2].name);
-        assert_eq!(
-            h.app.selected_part, None,
-            "a fresh drive resets to whole-disk"
-        );
-        assert_eq!(
-            DisksDoc::selected(&h.doc),
-            2,
-            "selection persisted to the CRDT"
-        );
+    fn pointer_selection_scopes_the_detail_and_its_actions() {
+        // --- phase: clicking_a_drive_row_selects_it_and_repoints_the_detail ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            let target = h.lay().cards[2];
+            assert!(h.click(center(target)), "a drive row is clickable");
+            assert_eq!(h.app.selected, 2, "the clicked row becomes the selection");
+            // The detail now points at that exact drive.
+            assert_eq!(h.app.drive().unwrap().name, h.app.topo.drives[2].name);
+            assert_eq!(
+                h.app.selected_part, None,
+                "a fresh drive resets to whole-disk"
+            );
+            assert_eq!(
+                DisksDoc::selected(&h.doc),
+                2,
+                "selection persisted to the CRDT"
+            );
+        }
+
+        // --- phase: smart_tab_activation_persists_and_draws_its_full_content ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            let selected_before = h.app.selected;
+            let smart_tab = h
+                .lay()
+                .tabs
+                .iter()
+                .find(|(_, tab)| *tab == Tab::Smart)
+                .map(|(rect, _)| *rect)
+                .expect("SMART tab has a hit target");
+
+            assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
+            assert_eq!(h.app.tab, Tab::Smart);
+            assert_eq!(DisksDoc::tab(&h.doc), Tab::Smart.key());
+            assert_eq!(
+                h.app.selected, selected_before,
+                "changing detail tabs must not retarget the selected drive"
+            );
+
+            h.draw();
+            let expected_height = h
+                .app
+                .drive()
+                .map(|drive| h.app.content_height(drive))
+                .expect("the seeded app has a selected drive");
+            assert_eq!(
+                h.app.content_h, expected_height,
+                "the real draw pass publishes the SMART tab's complete scroll extent"
+            );
+        }
+
+        // --- phase: clicking_a_partition_segment_selects_it_and_scopes_actions ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            // nvme partitions: 0=EFI 1=root 2=home 3=swap. Click the root segment.
+            let seg = h
+                .lay()
+                .part_segments
+                .iter()
+                .find(|(_, i)| *i == 1)
+                .map(|(r, _)| *r)
+                .unwrap();
+            assert!(h.click(center(seg)), "a map segment is clickable");
+            assert_eq!(
+                h.app.selected_part,
+                Some(1),
+                "the segment becomes the partition selection"
+            );
+            assert_eq!(
+                DisksDoc::selected_part(&h.doc),
+                Some(1),
+                "persisted to the CRDT"
+            );
+            // Actions now target that mounted partition.
+            let drive = h.app.drive().unwrap();
+            assert!(
+                h.app.action_enabled(drive, ActionKind::Unmount),
+                "mounted → Unmount applies"
+            );
+            assert!(
+                !h.app.action_enabled(drive, ActionKind::Mount),
+                "already mounted → Mount inert"
+            );
+        }
+
+        // --- phase: clicking_a_partition_row_in_the_table_selects_it ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            h.app.set_tab(&mut h.doc, Tab::Partitions);
+            h.relayout();
+            let row = h
+                .lay()
+                .part_rows
+                .iter()
+                .find(|(_, i)| *i == 2)
+                .map(|(r, _)| *r)
+                .unwrap();
+            assert!(h.click(center(row)));
+            assert_eq!(
+                h.app.selected_part,
+                Some(2),
+                "table row selects the partition"
+            );
+        }
+
+        // --- phase: whole_disk_pill_clears_the_partition_selection ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            let seg = h
+                .lay()
+                .part_segments
+                .iter()
+                .find(|(_, i)| *i == 1)
+                .map(|(r, _)| *r)
+                .unwrap();
+            h.click(center(seg));
+            assert_eq!(h.app.selected_part, Some(1));
+            let pill = h.lay().whole_disk_pill;
+            assert!(h.click(center(pill)), "the Whole disk pill is clickable");
+            assert_eq!(
+                h.app.selected_part, None,
+                "clicking it returns to whole-disk scope"
+            );
+        }
+
+        // --- phase: multipartition_whole_disk_gates_mount_unmount ---
+        {
+            let (mut app, mut doc) = seeded_app(); // nvme (4 partitions) selected
+            let d = app.drive().unwrap();
+            assert!(
+                !app.action_enabled(d, ActionKind::Mount),
+                "no partition chosen → Mount inert"
+            );
+            assert!(
+                !app.action_enabled(d, ActionKind::Unmount),
+                "no partition chosen → Unmount inert"
+            );
+            // Choosing the EFI partition (mounted) enables Unmount.
+            app.select_part(&mut doc, Some(0));
+            let d = app.drive().unwrap();
+            assert!(app.action_enabled(d, ActionKind::Unmount));
+            assert!(!app.action_enabled(d, ActionKind::Mount));
+        }
+
+        // --- phase: single_filesystem_disk_targets_its_sole_partition ---
+        {
+            let (mut app, mut doc) = seeded_app();
+            app.select(&mut doc, 3); // USB stick: one mounted partition, removable
+            let d = app.drive().unwrap();
+            assert!(
+                app.action_enabled(d, ActionKind::Unmount),
+                "sole fs is the implicit target"
+            );
+            assert!(
+                app.action_enabled(d, ActionKind::Eject),
+                "removable → Eject applies"
+            );
+            // A fixed, non-removable disk cannot be ejected.
+            app.select(&mut doc, 1); // SATA SSD
+            assert!(!app.action_enabled(app.drive().unwrap(), ActionKind::Eject));
+        }
     }
 
+    /// The format confirmation modal targets the partition, is honest about live vs demo, and gates confirmation on the typed name through shared input.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn smart_tab_activation_persists_and_draws_its_full_content() {
-        let mut h = Harness::new(1280.0, 800.0);
-        let selected_before = h.app.selected;
-        let smart_tab = h
-            .lay()
-            .tabs
-            .iter()
-            .find(|(_, tab)| *tab == Tab::Smart)
-            .map(|(rect, _)| *rect)
-            .expect("SMART tab has a hit target");
+    fn format_confirmation_modal_gates_the_destructive_action() {
+        // --- phase: clicking_format_prompts_confirmation_targeting_the_partition ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            // Select the home partition, then click the Format button.
+            let seg = h
+                .lay()
+                .part_segments
+                .iter()
+                .find(|(_, i)| *i == 2)
+                .map(|(r, _)| *r)
+                .unwrap();
+            h.click(center(seg));
+            let fmt = h
+                .lay()
+                .action_buttons
+                .iter()
+                .find(|(_, a, _)| *a == ActionKind::Format)
+                .map(|(r, _, _)| *r)
+                .unwrap();
+            assert!(h.click(center(fmt)), "Format is clickable");
+            let pending = h.app.pending.expect("format opens a confirm modal");
+            assert_eq!(pending.action, ActionKind::Format);
+            assert_eq!(
+                pending.part,
+                Some(2),
+                "the confirmation targets the selected partition"
+            );
+            assert_eq!(DisksDoc::pending(&h.doc), "format:0:2");
+            // The modal is now part of the layout and blocks the app.
+            assert!(h.lay().modal.is_some());
+        }
 
-        assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
-        assert_eq!(h.app.tab, Tab::Smart);
-        assert_eq!(DisksDoc::tab(&h.doc), Tab::Smart.key());
-        assert_eq!(
-            h.app.selected, selected_before,
-            "changing detail tabs must not retarget the selected drive"
-        );
+        // --- phase: format_confirm_body_is_honest_about_live_vs_demo ---
+        {
+            // The reassurance that nothing is written must appear ONLY in the
+            // hermetic demo/--shots build. In the live binary Format really
+            // erases the device, so the confirm must never claim it is inert.
+            let demo = ActionKind::Format.confirm_body("/dev/sdz1", false);
+            assert!(
+                demo.contains("no changes are written to disk"),
+                "the demo build reassures the reader it is inert: {demo}"
+            );
+            let live = ActionKind::Format.confirm_body("/dev/sdz1", true);
+            assert!(
+                !live.contains("no changes are written to disk"),
+                "the live build must not claim the format is inert: {live}"
+            );
+            assert!(
+                live.contains("erases ALL data") && live.contains("cannot be undone"),
+                "the live build still warns the format is destructive: {live}"
+            );
+        }
 
-        h.draw();
-        let expected_height = h
-            .app
-            .drive()
-            .map(|drive| h.app.content_height(drive))
-            .expect("the seeded app has a selected drive");
-        assert_eq!(
-            h.app.content_h, expected_height,
-            "the real draw pass publishes the SMART tab's complete scroll extent"
-        );
-    }
+        // --- phase: disabled_action_button_does_not_fire ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            // Whole nvme selected → Mount is disabled; clicking it is a no-op.
+            let lay = h.lay();
+            let mount = *lay
+                .action_buttons
+                .iter()
+                .find(|(_, a, _)| *a == ActionKind::Mount)
+                .unwrap();
+            assert!(
+                !mount.2,
+                "Mount is disabled for the multi-partition whole disk"
+            );
+            drop(lay);
+            h.click(center(mount.0));
+            assert!(
+                DisksDoc::status(&h.doc).is_empty(),
+                "a disabled button reports nothing"
+            );
+            assert!(h.app.pending.is_none());
+        }
 
-    #[test]
-    fn clicking_a_partition_segment_selects_it_and_scopes_actions() {
-        let mut h = Harness::new(1280.0, 800.0);
-        // nvme partitions: 0=EFI 1=root 2=home 3=swap. Click the root segment.
-        let seg = h
-            .lay()
-            .part_segments
-            .iter()
-            .find(|(_, i)| *i == 1)
-            .map(|(r, _)| *r)
-            .unwrap();
-        assert!(h.click(center(seg)), "a map segment is clickable");
-        assert_eq!(
-            h.app.selected_part,
-            Some(1),
-            "the segment becomes the partition selection"
-        );
-        assert_eq!(
-            DisksDoc::selected_part(&h.doc),
-            Some(1),
-            "persisted to the CRDT"
-        );
-        // Actions now target that mounted partition.
-        let drive = h.app.drive().unwrap();
-        assert!(
-            h.app.action_enabled(drive, ActionKind::Unmount),
-            "mounted → Unmount applies"
-        );
-        assert!(
-            !h.app.action_enabled(drive, ActionKind::Mount),
-            "already mounted → Mount inert"
-        );
-    }
+        // --- phase: modal_confirm_face_and_hit_target_share_the_type_gate ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            h.app.trigger_action(&mut h.doc, ActionKind::Format);
+            h.relayout();
+            let confirm = h.lay().modal.unwrap().confirm;
 
-    #[test]
-    fn clicking_a_partition_row_in_the_table_selects_it() {
-        let mut h = Harness::new(1280.0, 800.0);
-        h.app.set_tab(&mut h.doc, Tab::Partitions);
-        h.relayout();
-        let row = h
-            .lay()
-            .part_rows
-            .iter()
-            .find(|(_, i)| *i == 2)
-            .map(|(r, _)| *r)
-            .unwrap();
-        assert!(h.click(center(row)));
-        assert_eq!(
-            h.app.selected_part,
-            Some(2),
-            "table row selects the partition"
-        );
-    }
+            assert!(h.click(center(confirm)), "the modal consumes the click");
+            assert!(
+                h.app.pending.is_some(),
+                "the disabled shared face remains inert until the name matches"
+            );
 
-    #[test]
-    fn whole_disk_pill_clears_the_partition_selection() {
-        let mut h = Harness::new(1280.0, 800.0);
-        let seg = h
-            .lay()
-            .part_segments
-            .iter()
-            .find(|(_, i)| *i == 1)
-            .map(|(r, _)| *r)
-            .unwrap();
-        h.click(center(seg));
-        assert_eq!(h.app.selected_part, Some(1));
-        let pill = h.lay().whole_disk_pill;
-        assert!(h.click(center(pill)), "the Whole disk pill is clickable");
-        assert_eq!(
-            h.app.selected_part, None,
-            "clicking it returns to whole-disk scope"
-        );
-    }
+            let target = h.app.pending_target_leaf(h.app.pending.unwrap());
+            h.app.confirm_input.set_text(&target);
+            assert!(h.app.confirm_ready());
+            assert!(h.click(center(confirm)));
+            assert!(
+                h.app.pending.is_none(),
+                "the same rect activates once the shared face is enabled"
+            );
+        }
 
-    #[test]
-    fn multipartition_whole_disk_gates_mount_unmount() {
-        let (mut app, mut doc) = seeded_app(); // nvme (4 partitions) selected
-        let d = app.drive().unwrap();
-        assert!(
-            !app.action_enabled(d, ActionKind::Mount),
-            "no partition chosen → Mount inert"
-        );
-        assert!(
-            !app.action_enabled(d, ActionKind::Unmount),
-            "no partition chosen → Unmount inert"
-        );
-        // Choosing the EFI partition (mounted) enables Unmount.
-        app.select_part(&mut doc, Some(0));
-        let d = app.drive().unwrap();
-        assert!(app.action_enabled(d, ActionKind::Unmount));
-        assert!(!app.action_enabled(d, ActionKind::Mount));
-    }
+        // --- phase: format_modal_routes_pointer_selection_and_ime_through_shared_input ---
+        {
+            let mut h = Harness::new(1280.0, 800.0);
+            h.app.trigger_action(&mut h.doc, ActionKind::Format);
+            h.relayout();
+            let modal = h.lay().modal.unwrap();
 
-    #[test]
-    fn single_filesystem_disk_targets_its_sole_partition() {
-        let (mut app, mut doc) = seeded_app();
-        app.select(&mut doc, 3); // USB stick: one mounted partition, removable
-        let d = app.drive().unwrap();
-        assert!(
-            app.action_enabled(d, ActionKind::Unmount),
-            "sole fs is the implicit target"
-        );
-        assert!(
-            app.action_enabled(d, ActionKind::Eject),
-            "removable → Eject applies"
-        );
-        // A fixed, non-removable disk cannot be ejected.
-        app.select(&mut doc, 1); // SATA SSD
-        assert!(!app.action_enabled(app.drive().unwrap(), ActionKind::Eject));
-    }
+            // Moving then clicking Cancel must use the current modal pointer, not
+            // the position cached before the overlay opened.
+            assert!(h.click(center(modal.cancel)));
+            assert!(h.app.pending.is_none());
 
-    #[test]
-    fn clicking_format_prompts_confirmation_targeting_the_partition() {
-        let mut h = Harness::new(1280.0, 800.0);
-        // Select the home partition, then click the Format button.
-        let seg = h
-            .lay()
-            .part_segments
-            .iter()
-            .find(|(_, i)| *i == 2)
-            .map(|(r, _)| *r)
-            .unwrap();
-        h.click(center(seg));
-        let fmt = h
-            .lay()
-            .action_buttons
-            .iter()
-            .find(|(_, a, _)| *a == ActionKind::Format)
-            .map(|(r, _, _)| *r)
-            .unwrap();
-        assert!(h.click(center(fmt)), "Format is clickable");
-        let pending = h.app.pending.expect("format opens a confirm modal");
-        assert_eq!(pending.action, ActionKind::Format);
-        assert_eq!(
-            pending.part,
-            Some(2),
-            "the confirmation targets the selected partition"
-        );
-        assert_eq!(DisksDoc::pending(&h.doc), "format:0:2");
-        // The modal is now part of the layout and blocks the app.
-        assert!(h.lay().modal.is_some());
-    }
+            h.app.trigger_action(&mut h.doc, ActionKind::Format);
+            h.relayout();
+            let modal = h.lay().modal.unwrap();
+            let expected = h.app.pending_target_leaf(h.app.pending.unwrap());
 
-    #[test]
-    fn format_confirm_body_is_honest_about_live_vs_demo() {
-        // The reassurance that nothing is written must appear ONLY in the
-        // hermetic demo/--shots build. In the live binary Format really
-        // erases the device, so the confirm must never claim it is inert.
-        let demo = ActionKind::Format.confirm_body("/dev/sdz1", false);
-        assert!(
-            demo.contains("no changes are written to disk"),
-            "the demo build reassures the reader it is inert: {demo}"
-        );
-        let live = ActionKind::Format.confirm_body("/dev/sdz1", true);
-        assert!(
-            !live.contains("no changes are written to disk"),
-            "the live build must not claim the format is inert: {live}"
-        );
-        assert!(
-            live.contains("erases ALL data") && live.contains("cannot be undone"),
-            "the live build still warns the format is destructive: {live}"
-        );
-    }
+            assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Preedit(
+                expected.clone(),
+                Some((0, expected.len())),
+            ))));
+            assert_eq!(h.app.confirm_input.value(), "", "preedit is not committed");
+            assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(
+                expected.clone(),
+            ))));
+            assert!(h.app.confirm_ready());
 
-    #[test]
-    fn disabled_action_button_does_not_fire() {
-        let mut h = Harness::new(1280.0, 800.0);
-        // Whole nvme selected → Mount is disabled; clicking it is a no-op.
-        let lay = h.lay();
-        let mount = *lay
-            .action_buttons
-            .iter()
-            .find(|(_, a, _)| *a == ActionKind::Mount)
-            .unwrap();
-        assert!(
-            !mount.2,
-            "Mount is disabled for the multi-partition whole disk"
-        );
-        drop(lay);
-        h.click(center(mount.0));
-        assert!(
-            DisksDoc::status(&h.doc).is_empty(),
-            "a disabled button reports nothing"
-        );
-        assert!(h.app.pending.is_none());
-    }
-
-    #[test]
-    fn modal_confirm_face_and_hit_target_share_the_type_gate() {
-        let mut h = Harness::new(1280.0, 800.0);
-        h.app.trigger_action(&mut h.doc, ActionKind::Format);
-        h.relayout();
-        let confirm = h.lay().modal.unwrap().confirm;
-
-        assert!(h.click(center(confirm)), "the modal consumes the click");
-        assert!(
-            h.app.pending.is_some(),
-            "the disabled shared face remains inert until the name matches"
-        );
-
-        let target = h.app.pending_target_leaf(h.app.pending.unwrap());
-        h.app.confirm_input.set_text(&target);
-        assert!(h.app.confirm_ready());
-        assert!(h.click(center(confirm)));
-        assert!(
-            h.app.pending.is_none(),
-            "the same rect activates once the shared face is enabled"
-        );
-    }
-
-    #[test]
-    fn format_modal_routes_pointer_selection_and_ime_through_shared_input() {
-        let mut h = Harness::new(1280.0, 800.0);
-        h.app.trigger_action(&mut h.doc, ActionKind::Format);
-        h.relayout();
-        let modal = h.lay().modal.unwrap();
-
-        // Moving then clicking Cancel must use the current modal pointer, not
-        // the position cached before the overlay opened.
-        assert!(h.click(center(modal.cancel)));
-        assert!(h.app.pending.is_none());
-
-        h.app.trigger_action(&mut h.doc, ActionKind::Format);
-        h.relayout();
-        let modal = h.lay().modal.unwrap();
-        let expected = h.app.pending_target_leaf(h.app.pending.unwrap());
-
-        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Preedit(
-            expected.clone(),
-            Some((0, expected.len())),
-        ))));
-        assert_eq!(h.app.confirm_input.value(), "", "preedit is not committed");
-        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(
-            expected.clone(),
-        ))));
-        assert!(h.app.confirm_ready());
-
-        let control = Modifiers::from(ui::winit::keyboard::ModifiersState::CONTROL);
-        assert!(h.dispatch_with_modifiers(&char_key("a"), control));
-        assert_eq!(
-            h.app.confirm_input.selection_range_public(),
-            Some((0, expected.len()))
-        );
-        assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(expected,))));
-        assert!(h.click(center(modal.confirm)));
-        assert!(
-            h.app.pending.is_none(),
-            "Erase runs only after an exact match"
-        );
-    }
-
-    #[test]
-    fn icon_only_hamburger_face_has_a_spoken_name() {
-        let face = ButtonFace::new(Rect::ZERO, "")
-            .icon(Icon::Menu)
-            .accessible_name("Show drives");
-        assert_eq!(face.spoken_name(), "Show drives");
-        assert_eq!(
-            ButtonFace::new(Rect::ZERO, "Rescan")
-                .icon(Icon::Refresh)
-                .spoken_name(),
-            "Rescan"
-        );
+            let control = Modifiers::from(ui::winit::keyboard::ModifiersState::CONTROL);
+            assert!(h.dispatch_with_modifiers(&char_key("a"), control));
+            assert_eq!(
+                h.app.confirm_input.selection_range_public(),
+                Some((0, expected.len()))
+            );
+            assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(expected,))));
+            assert!(h.click(center(modal.confirm)));
+            assert!(
+                h.app.pending.is_none(),
+                "Erase runs only after an exact match"
+            );
+        }
     }
 
     /// Seed a harness with whatever the *real* probe returns (falling back to
@@ -5564,108 +5638,78 @@ mod tests {
         (h, live)
     }
 
+    /// A real probed topology drives the app end to end; an empty probe shows an honest empty state rather than a sample.
     #[test]
-    fn drives_real_probed_topology_end_to_end() {
-        let (mut h, live) = real_or_sample_harness();
-        let names: Vec<String> = h.app.topo.drives.iter().map(|d| d.name.clone()).collect();
-        assert!(
-            !names.is_empty(),
-            "there is always at least one device to drive"
-        );
+    fn probed_topology_drives_the_app_or_an_honest_empty_state() {
+        // --- phase: drives_real_probed_topology_end_to_end ---
+        {
+            let (mut h, live) = real_or_sample_harness();
+            let names: Vec<String> = h.app.topo.drives.iter().map(|d| d.name.clone()).collect();
+            assert!(
+                !names.is_empty(),
+                "there is always at least one device to drive"
+            );
 
-        // One card per device; clicking each repoints the detail at that exact
-        // device with no fabricated fields.
-        for (i, name) in names.iter().enumerate() {
-            let card = h.lay().cards[i];
-            assert!(h.click(center(card)), "drive row {i} is clickable");
-            assert_eq!(h.app.selected, i);
-            let d = h.app.drive().unwrap();
-            assert_eq!(&d.name, name, "detail points at the clicked device");
-            assert!(!d.name.is_empty(), "no nameless devices");
-            assert!(d.size > 0, "no zero-size phantom devices");
-        }
-
-        // Inspect each tab on the first device — real render passes must not panic.
-        h.app.select(&mut h.doc, 0);
-        for tab in [Tab::Overview, Tab::Smart, Tab::Partitions] {
-            h.app.set_tab(&mut h.doc, tab);
-            h.relayout(); // includes a full draw pass
-            assert_eq!(h.app.tab, tab);
-        }
-
-        // Mount/Unmount enablement must mirror the real mount state, and Eject
-        // only where the device is genuinely removable.
-        for i in 0..h.app.topo.drives.len() {
-            h.app.select(&mut h.doc, i);
-            let d = h.app.drive().unwrap().clone();
-            if d.partitions.len() == 1 {
-                let mounted = d.partitions[0].mountpoint.is_some();
-                let dr = h.app.drive().unwrap();
-                assert_eq!(h.app.action_enabled(dr, ActionKind::Unmount), mounted);
-                assert_eq!(h.app.action_enabled(dr, ActionKind::Mount), !mounted);
+            // One card per device; clicking each repoints the detail at that exact
+            // device with no fabricated fields.
+            for (i, name) in names.iter().enumerate() {
+                let card = h.lay().cards[i];
+                assert!(h.click(center(card)), "drive row {i} is clickable");
+                assert_eq!(h.app.selected, i);
+                let d = h.app.drive().unwrap();
+                assert_eq!(&d.name, name, "detail points at the clicked device");
+                assert!(!d.name.is_empty(), "no nameless devices");
+                assert!(d.size > 0, "no zero-size phantom devices");
             }
-            let dr = h.app.drive().unwrap();
-            assert_eq!(h.app.action_enabled(dr, ActionKind::Eject), d.removable);
+
+            // Inspect each tab on the first device — real render passes must not panic.
+            h.app.select(&mut h.doc, 0);
+            for tab in [Tab::Overview, Tab::Smart, Tab::Partitions] {
+                h.app.set_tab(&mut h.doc, tab);
+                h.relayout(); // includes a full draw pass
+                assert_eq!(h.app.tab, tab);
+            }
+
+            // Mount/Unmount enablement must mirror the real mount state, and Eject
+            // only where the device is genuinely removable.
+            for i in 0..h.app.topo.drives.len() {
+                h.app.select(&mut h.doc, i);
+                let d = h.app.drive().unwrap().clone();
+                if d.partitions.len() == 1 {
+                    let mounted = d.partitions[0].mountpoint.is_some();
+                    let dr = h.app.drive().unwrap();
+                    assert_eq!(h.app.action_enabled(dr, ActionKind::Unmount), mounted);
+                    assert_eq!(h.app.action_enabled(dr, ActionKind::Mount), !mounted);
+                }
+                let dr = h.app.drive().unwrap();
+                assert_eq!(h.app.action_enabled(dr, ActionKind::Eject), d.removable);
+            }
+            let _ = live;
         }
-        let _ = live;
-    }
 
-    #[test]
-    fn empty_probe_shows_honest_empty_state_not_a_sample() {
-        // Simulate the live path finding nothing: an empty topology must NOT
-        // fall back to fabricated devices, and the empty-state Rescan hit
-        // target must exist.
-        let (mut app, mut doc) = seeded_app();
-        DisksDoc::write_topology(&mut doc, &Topology::default());
-        app.sync(&mut doc, &ui::automerge::ROOT);
-        assert!(
-            app.topo.drives.is_empty(),
-            "empty topology stays empty — no sample"
-        );
-        assert!(app.drive().is_none());
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let lay = app.compute_layout();
-        assert!(
-            lay.empty_rescan.is_some(),
-            "empty state offers a Rescan button"
-        );
-        assert!(
-            lay.cards.is_empty(),
-            "no drive cards when there are no drives"
-        );
-    }
-
-    #[test]
-    fn narrow_layout_scrolls_both_the_list_and_the_content() {
-        // A short window overflows both panes; the wheel must move them.
-        let mut h = Harness::new(640.0, 420.0);
-        h.app.snap_sidebar(true); // reveal the overlay drive list
-        h.relayout();
-        assert!(
-            h.app.content_h > h.lay().content.height(),
-            "content overflows the short window"
-        );
-
-        // Scroll the content pane down, then back to the top (clamped at 0).
-        // Aim at the content's right edge so the open overlay list (which
-        // covers the left) doesn't intercept the wheel.
-        let content = h.lay().content;
-        let cpt = Point::new(content.x1 - 24.0, content.y0 + 18.0);
-        h.wheel(cpt, -3.0);
-        assert!(
-            h.app.content_scroll > 0.0,
-            "wheel scrolls the detail content down"
-        );
-        h.wheel(cpt, 30.0);
-        assert_eq!(h.app.content_scroll, 0.0, "scrolling up clamps at the top");
-
-        // Scroll the drive list.
-        assert!(
-            h.app.list_h > h.lay().list_body.height(),
-            "the drive list overflows too"
-        );
-        let lpt = center(h.lay().list_body);
-        h.wheel(lpt, -3.0);
-        assert!(h.app.list_scroll > 0.0, "wheel scrolls the drive list");
+        // --- phase: empty_probe_shows_honest_empty_state_not_a_sample ---
+        {
+            // Simulate the live path finding nothing: an empty topology must NOT
+            // fall back to fabricated devices, and the empty-state Rescan hit
+            // target must exist.
+            let (mut app, mut doc) = seeded_app();
+            DisksDoc::write_topology(&mut doc, &Topology::default());
+            app.sync(&mut doc, &ui::automerge::ROOT);
+            assert!(
+                app.topo.drives.is_empty(),
+                "empty topology stays empty — no sample"
+            );
+            assert!(app.drive().is_none());
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let lay = app.compute_layout();
+            assert!(
+                lay.empty_rescan.is_some(),
+                "empty state offers a Rescan button"
+            );
+            assert!(
+                lay.cards.is_empty(),
+                "no drive cards when there are no drives"
+            );
+        }
     }
 }

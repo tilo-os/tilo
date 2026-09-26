@@ -390,203 +390,215 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// lsblk parsing: disks and partitions, pool usage, zram, whole-disk filesystems, skipped entries, the captured inventory, and a probe that never fabricates.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn parse_lsblk_enumerates_disks_and_partitions() {
-        let j = json!({
-            "blockdevices": [
-                {
-                    "name": "nvme0n1", "model": "WD SN560  ", "serial": "23352V ",
-                    "size": 1_024_209_543_168u64, "type": "disk", "rota": false,
-                    "tran": "nvme", "rm": false,
-                    "children": [
-                        { "name": "nvme0n1p1", "size": 629_145_600u64, "type": "part",
-                          "fstype": "vfat", "label": "EFI", "mountpoint": "/boot/efi",
-                          "fsused": 13_754_368u64, "uuid": "BDDD-7686" }
-                    ]
-                }
-            ]
-        });
-        let drives = parse_lsblk(&j);
-        assert_eq!(drives.len(), 1);
-        let d = &drives[0];
-        assert_eq!(d.name, "nvme0n1");
-        assert_eq!(d.kind, DriveKind::Nvme);
-        // Model/serial are trimmed of lsblk's trailing padding.
-        assert_eq!(d.model, "WD SN560");
-        assert_eq!(d.serial.as_deref(), Some("23352V"));
-        assert_eq!(d.partitions.len(), 1);
-        assert_eq!(d.partitions[0].fstype.as_deref(), Some("vfat"));
-        assert_eq!(d.partitions[0].used, Some(13_754_368));
-    }
+    fn parse_lsblk_builds_an_honest_topology() {
+        // --- phase: parse_lsblk_enumerates_disks_and_partitions ---
+        {
+            let j = json!({
+                "blockdevices": [
+                    {
+                        "name": "nvme0n1", "model": "WD SN560  ", "serial": "23352V ",
+                        "size": 1_024_209_543_168u64, "type": "disk", "rota": false,
+                        "tran": "nvme", "rm": false,
+                        "children": [
+                            { "name": "nvme0n1p1", "size": 629_145_600u64, "type": "part",
+                              "fstype": "vfat", "label": "EFI", "mountpoint": "/boot/efi",
+                              "fsused": 13_754_368u64, "uuid": "BDDD-7686" }
+                        ]
+                    }
+                ]
+            });
+            let drives = parse_lsblk(&j);
+            assert_eq!(drives.len(), 1);
+            let d = &drives[0];
+            assert_eq!(d.name, "nvme0n1");
+            assert_eq!(d.kind, DriveKind::Nvme);
+            // Model/serial are trimmed of lsblk's trailing padding.
+            assert_eq!(d.model, "WD SN560");
+            assert_eq!(d.serial.as_deref(), Some("23352V"));
+            assert_eq!(d.partitions.len(), 1);
+            assert_eq!(d.partitions[0].fstype.as_deref(), Some("vfat"));
+            assert_eq!(d.partitions[0].used, Some(13_754_368));
+        }
 
-    #[test]
-    fn parse_lsblk_drops_pool_usage_exceeding_partition_size() {
-        // A multi-device btrfs member: fsused (whole-pool) > this partition.
-        let j = json!({
-            "blockdevices": [{
-                "name": "nvme1n1", "size": 2_000_398_934_016u64, "type": "disk",
-                "rota": false, "tran": "nvme", "rm": false,
-                "children": [{
-                    "name": "nvme1n1p3", "size": 1_998_694_907_904u64, "type": "part",
-                    "fstype": "btrfs", "label": "pool", "mountpoint": "/var/home",
-                    "fsused": 2_623_247_085_568u64, "uuid": "2f0d"
+        // --- phase: parse_lsblk_drops_pool_usage_exceeding_partition_size ---
+        {
+            // A multi-device btrfs member: fsused (whole-pool) > this partition.
+            let j = json!({
+                "blockdevices": [{
+                    "name": "nvme1n1", "size": 2_000_398_934_016u64, "type": "disk",
+                    "rota": false, "tran": "nvme", "rm": false,
+                    "children": [{
+                        "name": "nvme1n1p3", "size": 1_998_694_907_904u64, "type": "part",
+                        "fstype": "btrfs", "label": "pool", "mountpoint": "/var/home",
+                        "fsused": 2_623_247_085_568u64, "uuid": "2f0d"
+                    }]
                 }]
-            }]
-        });
-        let d = &parse_lsblk(&j)[0];
-        let p = &d.partitions[0];
-        assert_eq!(p.fstype.as_deref(), Some("btrfs"));
-        assert_eq!(
-            p.used, None,
-            "pool-wide usage over the partition size is dropped, not clamped to 100%"
-        );
-        assert_eq!(p.used_frac(), None);
-    }
+            });
+            let d = &parse_lsblk(&j)[0];
+            let p = &d.partitions[0];
+            assert_eq!(p.fstype.as_deref(), Some("btrfs"));
+            assert_eq!(
+                p.used, None,
+                "pool-wide usage over the partition size is dropped, not clamped to 100%"
+            );
+            assert_eq!(p.used_frac(), None);
+        }
 
-    #[test]
-    fn parse_lsblk_classifies_zram_as_virtual_not_ssd() {
-        let j = json!({
-            "blockdevices": [{
-                "name": "zram0", "model": null, "serial": null,
-                "size": 16_402_874_368u64, "type": "disk", "rota": false,
-                "tran": null, "rm": false, "mountpoint": "[SWAP]"
-            }]
-        });
-        let d = &parse_lsblk(&j)[0];
-        assert_eq!(d.kind, DriveKind::Zram, "zram must not read as an SSD");
-        assert!(!d.removable, "a zram device is never ejectable");
-        // No model → fall back to the kernel name rather than a blank header.
-        assert_eq!(d.model, "zram0");
-    }
+        // --- phase: parse_lsblk_classifies_zram_as_virtual_not_ssd ---
+        {
+            let j = json!({
+                "blockdevices": [{
+                    "name": "zram0", "model": null, "serial": null,
+                    "size": 16_402_874_368u64, "type": "disk", "rota": false,
+                    "tran": null, "rm": false, "mountpoint": "[SWAP]"
+                }]
+            });
+            let d = &parse_lsblk(&j)[0];
+            assert_eq!(d.kind, DriveKind::Zram, "zram must not read as an SSD");
+            assert!(!d.removable, "a zram device is never ejectable");
+            // No model → fall back to the kernel name rather than a blank header.
+            assert_eq!(d.model, "zram0");
+        }
 
-    #[test]
-    fn parse_lsblk_represents_a_whole_disk_filesystem() {
-        // A USB stick formatted directly (no partition table): lsblk carries
-        // the fstype/mount on the disk row. It must show as a real filesystem
-        // spanning the device, not as a blank/unallocated disk.
-        let j = json!({
-            "blockdevices": [{
-                "name": "sdc", "model": "SanDisk Ultra", "size": 30_752_000_000u64,
-                "type": "disk", "rota": false, "tran": "usb", "rm": true,
-                "fstype": "exfat", "label": "ULTRA", "mountpoint": "/run/media/u/ULTRA",
-                "fsused": 8_240_000_000u64, "uuid": "64ED-1A2B"
-            }]
-        });
-        let d = &parse_lsblk(&j)[0];
-        assert_eq!(d.kind, DriveKind::Usb);
-        assert_eq!(
-            d.partitions.len(),
-            1,
-            "the whole-disk filesystem is one span"
-        );
-        let p = &d.partitions[0];
-        assert_eq!(p.fstype.as_deref(), Some("exfat"));
-        assert_eq!(p.mountpoint.as_deref(), Some("/run/media/u/ULTRA"));
-        assert_eq!(p.size, d.size, "the span covers the whole device");
-        assert_eq!(d.free_tail(), 0, "no unallocated tail for a whole-disk fs");
-    }
+        // --- phase: parse_lsblk_represents_a_whole_disk_filesystem ---
+        {
+            // A USB stick formatted directly (no partition table): lsblk carries
+            // the fstype/mount on the disk row. It must show as a real filesystem
+            // spanning the device, not as a blank/unallocated disk.
+            let j = json!({
+                "blockdevices": [{
+                    "name": "sdc", "model": "SanDisk Ultra", "size": 30_752_000_000u64,
+                    "type": "disk", "rota": false, "tran": "usb", "rm": true,
+                    "fstype": "exfat", "label": "ULTRA", "mountpoint": "/run/media/u/ULTRA",
+                    "fsused": 8_240_000_000u64, "uuid": "64ED-1A2B"
+                }]
+            });
+            let d = &parse_lsblk(&j)[0];
+            assert_eq!(d.kind, DriveKind::Usb);
+            assert_eq!(
+                d.partitions.len(),
+                1,
+                "the whole-disk filesystem is one span"
+            );
+            let p = &d.partitions[0];
+            assert_eq!(p.fstype.as_deref(), Some("exfat"));
+            assert_eq!(p.mountpoint.as_deref(), Some("/run/media/u/ULTRA"));
+            assert_eq!(p.size, d.size, "the span covers the whole device");
+            assert_eq!(d.free_tail(), 0, "no unallocated tail for a whole-disk fs");
+        }
 
-    #[test]
-    fn parse_lsblk_skips_zero_size_and_non_disks() {
-        let j = json!({
-            "blockdevices": [
-                { "name": "loop0", "size": 0u64, "type": "disk" },
-                { "name": "sr0", "size": 0u64, "type": "rom" }
-            ]
-        });
-        assert!(parse_lsblk(&j).is_empty());
-    }
+        // --- phase: parse_lsblk_skips_zero_size_and_non_disks ---
+        {
+            let j = json!({
+                "blockdevices": [
+                    { "name": "loop0", "size": 0u64, "type": "disk" },
+                    { "name": "sr0", "size": 0u64, "type": "rom" }
+                ]
+            });
+            assert!(parse_lsblk(&j).is_empty());
+        }
 
-    #[test]
-    fn parse_smart_reports_permission_error_honestly() {
-        // Exactly what non-root smartctl emits: JSON with only an error msg.
-        let j = json!({
-            "smartctl": {
-                "exit_status": 2,
-                "messages": [{ "string": "Smartctl open device: /dev/nvme1n1 failed: Permission denied", "severity": "error" }]
+        // --- phase: parse_lsblk_matches_the_captured_inventory ---
+        {
+            // Real `lsblk` output for exactly LSBLK_COLUMNS, and the drive list
+            // this module derived from it before the shared parser existed.
+            let input: Value = serde_json::from_str(include_str!(
+                "../../../crates/system/block-devices/tests/fixtures/disks.json"
+            ))
+            .unwrap();
+            let expected: Value =
+                serde_json::from_str(include_str!("../tests/fixtures/lsblk-drives.json")).unwrap();
+            assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
+        }
+
+        // --- phase: probe_returns_none_or_real_devices_never_fabricates ---
+        {
+            // On CI/hardware without lsblk this is None; where lsblk exists every
+            // returned drive is real (non-empty name, non-zero size). Either way,
+            // the parser never invents devices.
+            if let Some(topo) = probe() {
+                assert!(!topo.drives.is_empty());
+                for d in &topo.drives {
+                    assert!(!d.name.is_empty(), "every probed drive has a kernel name");
+                    assert!(d.size > 0, "every probed drive has a real size");
+                }
             }
-        });
-        let s = parse_smart(&j, DriveKind::Nvme);
-        assert_eq!(s.status.0, SmartStatus::Unknown);
-        let detail = s.detail.expect("permission failure carries an explanation");
-        assert!(
-            detail.contains("administrator access"),
-            "explains it is a privilege issue, not absent SMART: {detail}"
-        );
+        }
     }
 
+    /// smartctl parsing: permission errors, a passing `NVMe` log and a failing ATA attribute.
     #[test]
-    fn parse_smart_distils_a_passing_nvme_log() {
-        let j = json!({
-            "smart_status": { "passed": true },
-            "temperature": { "current": 41 },
-            "power_on_time": { "hours": 2196 },
-            "power_cycle_count": 412,
-            "nvme_smart_health_information_log": {
-                "percentage_used": 3,
-                "available_spare": 100,
-                "media_errors": 0,
-                "data_units_written": 94_000_000u64
-            }
-        });
-        let s = parse_smart(&j, DriveKind::Nvme);
-        assert_eq!(s.status.0, SmartStatus::Passed);
-        assert_eq!(s.temp_c, Some(41));
-        assert_eq!(s.power_on_hours, Some(2196));
-        assert_eq!(s.pct_used, Some(3));
-        assert!(
-            s.detail.is_none(),
-            "real data carries no 'unavailable' note"
-        );
-        assert!(s.attrs.iter().any(|a| a.name == "Percentage Used"));
-    }
+    fn parse_smart_reports_health_and_errors_honestly() {
+        // --- phase: parse_smart_reports_permission_error_honestly ---
+        {
+            // Exactly what non-root smartctl emits: JSON with only an error msg.
+            let j = json!({
+                "smartctl": {
+                    "exit_status": 2,
+                    "messages": [{ "string": "Smartctl open device: /dev/nvme1n1 failed: Permission denied", "severity": "error" }]
+                }
+            });
+            let s = parse_smart(&j, DriveKind::Nvme);
+            assert_eq!(s.status.0, SmartStatus::Unknown);
+            let detail = s.detail.expect("permission failure carries an explanation");
+            assert!(
+                detail.contains("administrator access"),
+                "explains it is a privilege issue, not absent SMART: {detail}"
+            );
+        }
 
-    #[test]
-    fn parse_smart_flags_a_failing_ata_attribute() {
-        let j = json!({
-            "smart_status": { "passed": true },
-            "ata_smart_attributes": { "table": [
-                { "id": 5, "name": "Reallocated_Sector_Ct", "when_failed": "-",
-                  "raw": { "value": 8, "string": "8" } },
-                { "id": 197, "name": "Current_Pending_Sector", "when_failed": "-",
-                  "raw": { "value": 2, "string": "2" } }
-            ]}
-        });
-        let s = parse_smart(&j, DriveKind::Hdd);
-        // Passing overall, but non-zero reallocations pull it to Warning.
-        assert_eq!(s.status.0, SmartStatus::Warning);
-        assert_eq!(s.reallocated, Some(8));
-        assert!(
-            s.attrs
-                .iter()
-                .any(|a| a.id == 5 && a.severity == AttrSeverity::Warn)
-        );
-    }
+        // --- phase: parse_smart_distils_a_passing_nvme_log ---
+        {
+            let j = json!({
+                "smart_status": { "passed": true },
+                "temperature": { "current": 41 },
+                "power_on_time": { "hours": 2196 },
+                "power_cycle_count": 412,
+                "nvme_smart_health_information_log": {
+                    "percentage_used": 3,
+                    "available_spare": 100,
+                    "media_errors": 0,
+                    "data_units_written": 94_000_000u64
+                }
+            });
+            let s = parse_smart(&j, DriveKind::Nvme);
+            assert_eq!(s.status.0, SmartStatus::Passed);
+            assert_eq!(s.temp_c, Some(41));
+            assert_eq!(s.power_on_hours, Some(2196));
+            assert_eq!(s.pct_used, Some(3));
+            assert!(
+                s.detail.is_none(),
+                "real data carries no 'unavailable' note"
+            );
+            assert!(s.attrs.iter().any(|a| a.name == "Percentage Used"));
+        }
 
-    #[test]
-    fn parse_lsblk_matches_the_captured_inventory() {
-        // Real `lsblk` output for exactly LSBLK_COLUMNS, and the drive list
-        // this module derived from it before the shared parser existed.
-        let input: Value = serde_json::from_str(include_str!(
-            "../../../crates/system/block-devices/tests/fixtures/disks.json"
-        ))
-        .unwrap();
-        let expected: Value =
-            serde_json::from_str(include_str!("../tests/fixtures/lsblk-drives.json")).unwrap();
-        assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
-    }
-
-    #[test]
-    fn probe_returns_none_or_real_devices_never_fabricates() {
-        // On CI/hardware without lsblk this is None; where lsblk exists every
-        // returned drive is real (non-empty name, non-zero size). Either way,
-        // the parser never invents devices.
-        if let Some(topo) = probe() {
-            assert!(!topo.drives.is_empty());
-            for d in &topo.drives {
-                assert!(!d.name.is_empty(), "every probed drive has a kernel name");
-                assert!(d.size > 0, "every probed drive has a real size");
-            }
+        // --- phase: parse_smart_flags_a_failing_ata_attribute ---
+        {
+            let j = json!({
+                "smart_status": { "passed": true },
+                "ata_smart_attributes": { "table": [
+                    { "id": 5, "name": "Reallocated_Sector_Ct", "when_failed": "-",
+                      "raw": { "value": 8, "string": "8" } },
+                    { "id": 197, "name": "Current_Pending_Sector", "when_failed": "-",
+                      "raw": { "value": 2, "string": "2" } }
+                ]}
+            });
+            let s = parse_smart(&j, DriveKind::Hdd);
+            // Passing overall, but non-zero reallocations pull it to Warning.
+            assert_eq!(s.status.0, SmartStatus::Warning);
+            assert_eq!(s.reallocated, Some(8));
+            assert!(
+                s.attrs
+                    .iter()
+                    .any(|a| a.id == 5 && a.severity == AttrSeverity::Warn)
+            );
         }
     }
 }

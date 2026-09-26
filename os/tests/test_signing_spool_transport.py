@@ -15,6 +15,18 @@ transfer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(transfer)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class TransportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir='/var/lib', prefix='tilo-transfer-test-')
@@ -79,98 +91,100 @@ class TransportTests(unittest.TestCase):
             raise ValueError('fixture transfer exceeds byte admission')
         sink.write(data)
 
-    def test_fetch_and_response_delivery_with_every_transfer_bracketed(self):
-        local = self.root / 'received'
-        self.client.fetch(self.nonce, local)
-        self.assertEqual((local / 'input').read_bytes(), self.data)
-        self.assertIn(('input', transfer.payload_timeout(len(self.data))), self.transfer_timeouts)
-        self.assertEqual(self.events, ['check', 'request', 'check', 'check', 'input', 'check'])
-        outgoing = self.root / 'outgoing'
-        outgoing.mkdir(mode=0o700)
-        signed = b'public signed result'
-        response = {k: self.request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
-        response.update(output_sha256=spool.digest(signed), output_bytes=len(signed))
-        (outgoing / 'output').write_bytes(signed)
-        (outgoing / 'response.json').write_bytes(spool.canonical(response))
-        self.events.clear()
-        self.client.deliver(outgoing)
-        self.assertEqual((self.remote / 'output').read_bytes(), signed)
-        self.assertIn(('put-output', transfer.payload_timeout(len(signed))), self.transfer_timeouts)
-        self.assertEqual(spool.document(self.remote / 'response.json'), response)
-        self.assertEqual(self.events, ['check', 'request', 'check', 'check', 'put-output', 'check', 'check', 'publish-response', 'check'])
-        with self.assertRaises(FileExistsError):
-            self.client.deliver(outgoing)
-
-    def test_container_restart_after_input_does_not_publish_local_request(self):
-        self.mutate_after = 'input'
-        local = self.root / 'received'
-        with self.assertRaisesRegex(ValueError, 'container identity'):
+    def test_direct_transport(self):
+        with self.subTest(phase="fetch_and_response_delivery_with_every_transfer_bracketed"):
+            local = self.root / 'received'
             self.client.fetch(self.nonce, local)
-        self.assertFalse((local / 'request.json').exists())
+            self.assertEqual((local / 'input').read_bytes(), self.data)
+            self.assertIn(('input', transfer.payload_timeout(len(self.data))), self.transfer_timeouts)
+            self.assertEqual(self.events, ['check', 'request', 'check', 'check', 'input', 'check'])
+            outgoing = self.root / 'outgoing'
+            outgoing.mkdir(mode=0o700)
+            signed = b'public signed result'
+            response = {k: self.request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
+            response.update(output_sha256=spool.digest(signed), output_bytes=len(signed))
+            (outgoing / 'output').write_bytes(signed)
+            (outgoing / 'response.json').write_bytes(spool.canonical(response))
+            self.events.clear()
+            self.client.deliver(outgoing)
+            self.assertEqual((self.remote / 'output').read_bytes(), signed)
+            self.assertIn(('put-output', transfer.payload_timeout(len(signed))), self.transfer_timeouts)
+            self.assertEqual(spool.document(self.remote / 'response.json'), response)
+            self.assertEqual(self.events, ['check', 'request', 'check', 'check', 'put-output', 'check', 'check', 'publish-response', 'check'])
+            with self.assertRaises(FileExistsError):
+                self.client.deliver(outgoing)
+        restart_fixture(self)
+        with self.subTest(phase="container_restart_after_input_does_not_publish_local_request"):
+            self.mutate_after = 'input'
+            local = self.root / 'received'
+            with self.assertRaisesRegex(ValueError, 'container identity'):
+                self.client.fetch(self.nonce, local)
+            self.assertFalse((local / 'request.json').exists())
+        restart_fixture(self)
+        with self.subTest(phase="pod_uid_container_id_image_and_spec_changes_rejected"):
+            original = copy.deepcopy(self.pod)
+            for kind in ('uid', 'container', 'image', 'spec'):
+                self.pod = copy.deepcopy(original)
+                if kind == 'uid':
+                    self.pod['metadata']['uid'] = 'replacement'
+                elif kind == 'container':
+                    self.pod['status']['containerStatuses'][0]['containerID'] = 'containerd://replacement'
+                elif kind == 'image':
+                    self.pod['status']['containerStatuses'][0]['imageID'] = 'replacement'
+                else:
+                    self.pod['spec']['hostPID'] = True
+                with self.subTest(kind=kind), self.assertRaises(ValueError):
+                    self.client.transfer('list')
+        restart_fixture(self)
+        with self.subTest(phase="traversal_and_symlink_input_rejected"):
+            with self.assertRaises(ValueError):
+                self.client.fetch('../other', self.root / 'received')
+            (self.remote / 'input').unlink()
+            (self.remote / 'input').symlink_to(self.config)
+            with self.assertRaises(OSError):
+                self.client.fetch(self.nonce, self.root / 'received')
+        restart_fixture(self)
+        with self.subTest(phase="corrupt_response_never_published"):
+            response = {k: self.request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
+            response.update(output_sha256='0' * 64, output_bytes=3)
+            with self.assertRaises(ValueError):
+                transfer.endpoint.execute(self.config, 'put-output', self.nonce, spool.canonical(response).decode(), io.BytesIO(b'bad'), io.BytesIO())
+            self.assertFalse((self.remote / 'output').exists())
+            self.assertFalse((self.remote / 'response.json').exists())
 
-    def test_pod_uid_container_id_image_and_spec_changes_rejected(self):
-        original = copy.deepcopy(self.pod)
-        for kind in ('uid', 'container', 'image', 'spec'):
-            self.pod = copy.deepcopy(original)
-            if kind == 'uid':
-                self.pod['metadata']['uid'] = 'replacement'
-            elif kind == 'container':
-                self.pod['status']['containerStatuses'][0]['containerID'] = 'containerd://replacement'
-            elif kind == 'image':
-                self.pod['status']['containerStatuses'][0]['imageID'] = 'replacement'
-            else:
-                self.pod['spec']['hostPID'] = True
-            with self.subTest(kind=kind), self.assertRaises(ValueError):
-                self.client.transfer('list')
-
-    def test_traversal_and_symlink_input_rejected(self):
-        with self.assertRaises(ValueError):
-            self.client.fetch('../other', self.root / 'received')
-        (self.remote / 'input').unlink()
-        (self.remote / 'input').symlink_to(self.config)
-        with self.assertRaises(OSError):
-            self.client.fetch(self.nonce, self.root / 'received')
-
-    def test_real_process_byte_bound_and_timeout(self):
-        with self.assertRaisesRegex(ValueError, 'byte admission'):
-            transfer.bounded_process([sys.executable, '-c', 'print("x"*100)'], io.BytesIO(), 10)
-        with self.assertRaisesRegex(ValueError, 'deadline'):
-            transfer.bounded_process([sys.executable, '-c', 'import time; time.sleep(2)'], io.BytesIO(), 10, timeout=0.1)
-
-    def test_large_payload_deadline_includes_a_conservative_stream_budget(self):
-        mib = 1024 * 1024
-        self.assertEqual(transfer.payload_timeout(256 * mib), 376)
-        self.assertEqual(transfer.payload_timeout(spool.MAX_INPUT + 65536), 633)
-        with self.assertRaises(ValueError):
-            transfer.payload_timeout(spool.MAX_INPUT + 65537)
-
-    def test_corrupt_response_never_published(self):
-        response = {k: self.request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
-        response.update(output_sha256='0' * 64, output_bytes=3)
-        with self.assertRaises(ValueError):
-            transfer.endpoint.execute(self.config, 'put-output', self.nonce, spool.canonical(response).decode(), io.BytesIO(b'bad'), io.BytesIO())
-        self.assertFalse((self.remote / 'output').exists())
-        self.assertFalse((self.remote / 'response.json').exists())
-
-    def test_timeout_kills_descendant_after_leader_exits(self):
-        output = io.BytesIO()
-        script = ('import subprocess,sys; '
-                  'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
-                  'print(p.pid,flush=True)')
-        with self.assertRaisesRegex(ValueError, 'deadline'):
-            transfer.bounded_process([sys.executable, '-c', script], output, 1024, timeout=0.3)
-        child = int(output.getvalue())
-        status = Path(f'/proc/{child}/stat')
-        try:
-            deadline = time.monotonic() + 1
-            while status.exists() and status.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z')
-        finally:
+    def test_transport_bounds_and_deadlines(self):
+        with self.subTest(phase="real_process_byte_bound_and_timeout"):
+            with self.assertRaisesRegex(ValueError, 'byte admission'):
+                transfer.bounded_process([sys.executable, '-c', 'print("x"*100)'], io.BytesIO(), 10)
+            with self.assertRaisesRegex(ValueError, 'deadline'):
+                transfer.bounded_process([sys.executable, '-c', 'import time; time.sleep(2)'], io.BytesIO(), 10, timeout=0.1)
+        restart_fixture(self)
+        with self.subTest(phase="large_payload_deadline_includes_a_conservative_stream_budget"):
+            mib = 1024 * 1024
+            self.assertEqual(transfer.payload_timeout(256 * mib), 376)
+            self.assertEqual(transfer.payload_timeout(spool.MAX_INPUT + 65536), 633)
+            with self.assertRaises(ValueError):
+                transfer.payload_timeout(spool.MAX_INPUT + 65537)
+        restart_fixture(self)
+        with self.subTest(phase="timeout_kills_descendant_after_leader_exits"):
+            output = io.BytesIO()
+            script = ('import subprocess,sys; '
+                      'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
+                      'print(p.pid,flush=True)')
+            with self.assertRaisesRegex(ValueError, 'deadline'):
+                transfer.bounded_process([sys.executable, '-c', script], output, 1024, timeout=0.3)
+            child = int(output.getvalue())
+            status = Path(f'/proc/{child}/stat')
             try:
-                os.kill(child, 9)
-            except ProcessLookupError:
-                pass
+                deadline = time.monotonic() + 1
+                while status.exists() and status.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z')
+            finally:
+                try:
+                    os.kill(child, 9)
+                except ProcessLookupError:
+                    pass
 
     def enable_nested(self):
         self.binding['docker'] = {'id': 'c' * 64, 'image_id': 'sha256:' + 'd' * 64,
@@ -180,37 +194,38 @@ class TransportTests(unittest.TestCase):
                                  'Running': True, 'Paused': False, 'Restarting': False, 'Dead': False}}
         self.client = transfer.Transport('existing-context', self.binding, self.runner)
 
-    def test_nested_docker_transfer_checks_both_runtime_identities(self):
-        self.enable_nested()
-        self.client.fetch(self.nonce, self.root / 'received')
-        self.assertEqual(self.events, ['check', 'docker-check', 'request', 'check', 'docker-check',
-                                      'check', 'docker-check', 'input', 'check', 'docker-check'])
-
-    def test_nested_restart_after_input_quarantines_request(self):
-        self.enable_nested()
-        self.mutate_nested_after = 'input'
-        local = self.root / 'received'
-        with self.assertRaisesRegex(ValueError, 'nested Docker'):
-            self.client.fetch(self.nonce, local)
-        self.assertFalse((local / 'request.json').exists())
-
-    def test_nested_identity_and_state_substitution_rejected(self):
-        self.enable_nested()
-        original = copy.deepcopy(self.nested)
-        for field, value in (('Id', 'e' * 64), ('Image', 'sha256:' + 'e' * 64),
-                             ('RestartCount', 1), ('Paused', True), ('Running', False),
-                             ('Restarting', True), ('Dead', True), ('StartedAt', 'new')):
-            self.nested = copy.deepcopy(original)
-            (self.nested if field in original else self.nested['State'])[field] = value
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'nested Docker'):
-                self.client.transfer('list')
-
-    def test_nested_container_names_and_short_ids_rejected(self):
-        self.enable_nested()
-        for identifier in ('worker-name', 'abc123', '--privileged'):
-            self.binding['docker']['id'] = identifier
+    def test_nested_docker_transport(self):
+        with self.subTest(phase="nested_docker_transfer_checks_both_runtime_identities"):
+            self.enable_nested()
+            self.client.fetch(self.nonce, self.root / 'received')
+            self.assertEqual(self.events, ['check', 'docker-check', 'request', 'check', 'docker-check',
+                                          'check', 'docker-check', 'input', 'check', 'docker-check'])
+        restart_fixture(self)
+        with self.subTest(phase="nested_restart_after_input_quarantines_request"):
+            self.enable_nested()
+            self.mutate_nested_after = 'input'
+            local = self.root / 'received'
             with self.assertRaisesRegex(ValueError, 'nested Docker'):
-                transfer.Transport('existing-context', self.binding, self.runner)
+                self.client.fetch(self.nonce, local)
+            self.assertFalse((local / 'request.json').exists())
+        restart_fixture(self)
+        with self.subTest(phase="nested_identity_and_state_substitution_rejected"):
+            self.enable_nested()
+            original = copy.deepcopy(self.nested)
+            for field, value in (('Id', 'e' * 64), ('Image', 'sha256:' + 'e' * 64),
+                                 ('RestartCount', 1), ('Paused', True), ('Running', False),
+                                 ('Restarting', True), ('Dead', True), ('StartedAt', 'new')):
+                self.nested = copy.deepcopy(original)
+                (self.nested if field in original else self.nested['State'])[field] = value
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'nested Docker'):
+                    self.client.transfer('list')
+        restart_fixture(self)
+        with self.subTest(phase="nested_container_names_and_short_ids_rejected"):
+            self.enable_nested()
+            for identifier in ('worker-name', 'abc123', '--privileged'):
+                self.binding['docker']['id'] = identifier
+                with self.assertRaisesRegex(ValueError, 'nested Docker'):
+                    transfer.Transport('existing-context', self.binding, self.runner)
 
 if __name__ == '__main__':
     unittest.main()

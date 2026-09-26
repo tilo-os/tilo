@@ -916,116 +916,125 @@ pub fn default_model() -> MapModel {
 mod tests {
     use super::*;
 
+    /// The sample world: populated basemap, default route and transit, monotonic route
+    /// length, grid-following axis-aligned transit legs, and demo-base clocks.
     #[test]
-    fn basemap_is_populated() {
-        let b = basemap();
-        assert!(
-            b.roads.len() > 30,
-            "expected a dense grid, got {}",
-            b.roads.len()
-        );
-        assert!(b.areas.iter().any(|a| a.kind == AreaKind::Park));
-        assert!(b.areas.iter().any(|a| a.kind == AreaKind::Building));
-        assert!(b.river.len() > 5);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn sample_world_is_populated_and_geometrically_sound() {
+        // Phase `basemap_is_populated`.
+        {
+            let b = basemap();
+            assert!(
+                b.roads.len() > 30,
+                "expected a dense grid, got {}",
+                b.roads.len()
+            );
+            assert!(b.areas.iter().any(|a| a.kind == AreaKind::Park));
+            assert!(b.areas.iter().any(|a| a.kind == AreaKind::Building));
+            assert!(b.river.len() > 5);
+        }
 
-    #[test]
-    fn default_model_has_route_and_transit() {
-        let m = default_model();
-        assert!(m.route.is_some());
-        assert_eq!(m.transit.len(), 3);
-        assert!(m.selected_place().is_some());
-        assert!(!m.saved_places().is_empty());
-    }
+        // Phase `default_model_has_route_and_transit`.
+        {
+            let m = default_model();
+            assert!(m.route.is_some());
+            assert_eq!(m.transit.len(), 3);
+            assert!(m.selected_place().is_some());
+            assert!(!m.saved_places().is_empty());
+        }
 
-    #[test]
-    fn sample_route_geometry_monotonic_length() {
-        let r = sample_route();
-        assert!(r.distance_m > 0.0);
-        assert!(r.duration_s > 0.0);
-        assert!(r.geometry.len() >= 3);
-        assert_eq!(r.steps.last().unwrap().maneuver, Maneuver::Arrive);
-    }
+        // Phase `sample_route_geometry_monotonic_length`.
+        {
+            let r = sample_route();
+            assert!(r.distance_m > 0.0);
+            assert!(r.duration_s > 0.0);
+            assert!(r.geometry.len() >= 3);
+            assert_eq!(r.steps.last().unwrap().maneuver, Maneuver::Arrive);
+        }
 
-    /// Every drawn transit leg follows the street grid: each segment runs along
-    /// a grid line (constant lat OR constant lon), never a crow-flies diagonal
-    /// across the blocks, and a ride leg bends at least once (so it is provably
-    /// not a 2-point straight line). This guards the old fake-diagonal route.
-    #[test]
-    fn transit_legs_follow_grid_not_diagonal() {
-        let journeys = sample_transit();
-        assert!(!journeys.is_empty());
-        let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
-        let mut exercised_ride = false;
-        for j in &journeys {
-            for leg in &j.legs {
-                let g = &leg.geometry;
-                assert!(g.len() >= 2, "a drawn leg has a real polyline, not a point");
-                for seg in g.windows(2) {
-                    let axis_aligned =
-                        approx(seg[0].lat, seg[1].lat) || approx(seg[0].lon, seg[1].lon);
-                    assert!(
-                        axis_aligned,
-                        "leg segment cuts a diagonal across blocks: {:?} -> {:?}",
-                        seg[0], seg[1]
-                    );
-                }
-                if leg.mode != TransitMode::Walk {
-                    assert!(
-                        g.len() >= 3,
-                        "a ride leg follows multiple grid segments, not a straight 2-point line"
-                    );
-                    exercised_ride = true;
+        // Phase `transit_legs_follow_grid_not_diagonal`.
+        // Every drawn transit leg follows the street grid: each segment runs along
+        // a grid line (constant lat OR constant lon), never a crow-flies diagonal
+        // across the blocks, and a ride leg bends at least once (so it is provably
+        // not a 2-point straight line). This guards the old fake-diagonal route.
+        {
+            let journeys = sample_transit();
+            assert!(!journeys.is_empty());
+            let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
+            let mut exercised_ride = false;
+            for j in &journeys {
+                for leg in &j.legs {
+                    let g = &leg.geometry;
+                    assert!(g.len() >= 2, "a drawn leg has a real polyline, not a point");
+                    for seg in g.windows(2) {
+                        let axis_aligned =
+                            approx(seg[0].lat, seg[1].lat) || approx(seg[0].lon, seg[1].lon);
+                        assert!(
+                            axis_aligned,
+                            "leg segment cuts a diagonal across blocks: {:?} -> {:?}",
+                            seg[0], seg[1]
+                        );
+                    }
+                    if leg.mode != TransitMode::Walk {
+                        assert!(
+                            g.len() >= 3,
+                            "a ride leg follows multiple grid segments, not a straight 2-point line"
+                        );
+                        exercised_ride = true;
+                    }
                 }
             }
-        }
-        assert!(
-            exercised_ride,
-            "at least one non-walk transit leg was checked"
-        );
-    }
-
-    /// `grid_path` never emits a diagonal segment and keeps the exact endpoints
-    /// as the first/last vertex (the transfer pucks anchor on them).
-    #[test]
-    fn grid_path_is_axis_aligned_and_keeps_endpoints() {
-        let p = grid_path((-5.0, -5.0), (0.0, 0.0));
-        assert_eq!(p.first().copied(), Some(cell(-5.0, -5.0)));
-        assert_eq!(p.last().copied(), Some(cell(0.0, 0.0)));
-        assert!(p.len() >= 3, "a two-axis path bends through the grid");
-        for seg in p.windows(2) {
-            let aligned =
-                (seg[0].lat - seg[1].lat).abs() < 1e-9 || (seg[0].lon - seg[1].lon).abs() < 1e-9;
-            assert!(aligned, "grid_path emitted a diagonal segment");
-        }
-    }
-
-    /// The sample departures derive from the shared demo base minute, so every
-    /// clock reads the same 09:00 morning the Drive summary uses.
-    #[test]
-    fn transit_clocks_derive_from_demo_base() {
-        let base_hh = format!("{:02}", DEMO_CLOCK_BASE_MIN / 60);
-        let journeys = sample_transit();
-        for j in &journeys {
             assert!(
-                j.dep.starts_with(&base_hh),
-                "journey departs the base hour: {}",
-                j.dep
+                exercised_ride,
+                "at least one non-walk transit leg was checked"
             );
-            assert!(
-                j.arr.starts_with(&base_hh),
-                "journey arrives the base hour: {}",
-                j.arr
-            );
-            for leg in &j.legs {
+        }
+
+        // Phase `grid_path_is_axis_aligned_and_keeps_endpoints`.
+        // `grid_path` never emits a diagonal segment and keeps the exact endpoints
+        // as the first/last vertex (the transfer pucks anchor on them).
+        {
+            let p = grid_path((-5.0, -5.0), (0.0, 0.0));
+            assert_eq!(p.first().copied(), Some(cell(-5.0, -5.0)));
+            assert_eq!(p.last().copied(), Some(cell(0.0, 0.0)));
+            assert!(p.len() >= 3, "a two-axis path bends through the grid");
+            for seg in p.windows(2) {
+                let aligned = (seg[0].lat - seg[1].lat).abs() < 1e-9
+                    || (seg[0].lon - seg[1].lon).abs() < 1e-9;
+                assert!(aligned, "grid_path emitted a diagonal segment");
+            }
+        }
+
+        // Phase `transit_clocks_derive_from_demo_base`.
+        // The sample departures derive from the shared demo base minute, so every
+        // clock reads the same 09:00 morning the Drive summary uses.
+        {
+            let base_hh = format!("{:02}", DEMO_CLOCK_BASE_MIN / 60);
+            let journeys = sample_transit();
+            for j in &journeys {
                 assert!(
-                    leg.dep.starts_with(&base_hh),
-                    "leg departs the base hour: {}",
-                    leg.dep
+                    j.dep.starts_with(&base_hh),
+                    "journey departs the base hour: {}",
+                    j.dep
                 );
+                assert!(
+                    j.arr.starts_with(&base_hh),
+                    "journey arrives the base hour: {}",
+                    j.arr
+                );
+                for leg in &j.legs {
+                    assert!(
+                        leg.dep.starts_with(&base_hh),
+                        "leg departs the base hour: {}",
+                        leg.dep
+                    );
+                }
             }
+            // The concrete base instant reads the same wall clock.
+            assert_eq!(demo_clock_base().format("%H:%M").to_string(), "09:00");
         }
-        // The concrete base instant reads the same wall clock.
-        assert_eq!(demo_clock_base().format("%H:%M").to_string(), "09:00");
     }
 }

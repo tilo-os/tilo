@@ -132,66 +132,68 @@ example.org##.sponsored
 ";
 
     #[test]
-    fn compiles_network_and_cosmetic_rules_to_json() {
-        let compiled = compile_filter_lists([FIXTURE]).expect("fixture compiles");
-        assert!(compiled.rule_count >= 3, "got {}", compiled.rule_count);
+    fn adblock_rules_compile_to_chunked_json_filters() {
+        // phase: compiles_network_and_cosmetic_rules_to_json
+        {
+            let compiled = compile_filter_lists([FIXTURE]).expect("fixture compiles");
+            assert!(compiled.rule_count >= 3, "got {}", compiled.rule_count);
 
-        let parsed: serde_json::Value = serde_json::from_str(&compiled.json).expect("valid JSON");
-        let rules = parsed.as_array().expect("JSON array of rules");
-        assert_eq!(rules.len(), compiled.rule_count);
+            let parsed: serde_json::Value =
+                serde_json::from_str(&compiled.json).expect("valid JSON");
+            let rules = parsed.as_array().expect("JSON array of rules");
+            assert_eq!(rules.len(), compiled.rule_count);
 
-        assert!(
-            rules.iter().any(|r| {
-                r["action"]["type"] == "block"
-                    && r["trigger"]["url-filter"]
-                        .as_str()
-                        .is_some_and(|f| f.contains("ads\\.example\\.com"))
-            }),
-            "expected a block rule for ads.example.com in {}",
-            compiled.json
-        );
-        assert!(
-            rules.iter().any(|r| {
-                r["action"]["type"] == "css-display-none"
-                    && r["action"]["selector"]
-                        .as_str()
-                        .is_some_and(|s| s.contains("#ad-banner"))
-            }),
-            "expected a css-display-none rule for #ad-banner",
-        );
-    }
-
-    #[test]
-    fn empty_input_is_an_error() {
-        assert!(matches!(
-            compile_filter_lists([""]),
-            Err(AdblockError::Empty)
-        ));
-    }
-
-    #[test]
-    fn chunking_splits_rules_across_multiple_filters() {
-        let compiled = compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
-        assert!(compiled.rule_count >= 3);
-        assert!(
-            compiled.chunks.len() >= 2,
-            "expected multiple chunks, got {}",
-            compiled.chunks.len()
-        );
-        let mut total = 0;
-        for chunk in &compiled.chunks {
-            let arr: serde_json::Value =
-                serde_json::from_str(chunk).expect("each chunk is valid JSON");
-            let n = arr.as_array().expect("array").len();
-            assert!(n <= 2, "chunk exceeds the cap: {n}");
-            total += n;
+            assert!(
+                rules.iter().any(|r| {
+                    r["action"]["type"] == "block"
+                        && r["trigger"]["url-filter"]
+                            .as_str()
+                            .is_some_and(|f| f.contains("ads\\.example\\.com"))
+                }),
+                "expected a block rule for ads.example.com in {}",
+                compiled.json
+            );
+            assert!(
+                rules.iter().any(|r| {
+                    r["action"]["type"] == "css-display-none"
+                        && r["action"]["selector"]
+                            .as_str()
+                            .is_some_and(|s| s.contains("#ad-banner"))
+                }),
+                "expected a css-display-none rule for #ad-banner",
+            );
         }
-        assert_eq!(total, compiled.rule_count, "chunks must cover every rule");
-    }
-
-    #[test]
-    fn single_chunk_when_under_cap() {
-        let compiled = compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
-        assert_eq!(compiled.chunks.len(), 1);
+        // phase: empty_input_is_an_error
+        {
+            assert!(matches!(
+                compile_filter_lists([""]),
+                Err(AdblockError::Empty)
+            ));
+        }
+        // phase: chunking_splits_rules_across_multiple_filters
+        {
+            let compiled = compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
+            assert!(compiled.rule_count >= 3);
+            assert!(
+                compiled.chunks.len() >= 2,
+                "expected multiple chunks, got {}",
+                compiled.chunks.len()
+            );
+            let mut total = 0;
+            for chunk in &compiled.chunks {
+                let arr: serde_json::Value =
+                    serde_json::from_str(chunk).expect("each chunk is valid JSON");
+                let n = arr.as_array().expect("array").len();
+                assert!(n <= 2, "chunk exceeds the cap: {n}");
+                total += n;
+            }
+            assert_eq!(total, compiled.rule_count, "chunks must cover every rule");
+        }
+        // phase: single_chunk_when_under_cap
+        {
+            let compiled =
+                compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
+            assert_eq!(compiled.chunks.len(), 1);
+        }
     }
 }

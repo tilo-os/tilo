@@ -75,30 +75,28 @@ class NativeFocusedTests(unittest.TestCase):
         self.assertEqual(receipt['SOURCE_SHA'], self.sha)
         return result, receipt
 
-    def test_real_passing_integration_group(self):
-        result, receipt = self.run_group(['first', 'second'], 'integration')
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual([case['name'] for case in receipt['cases']], ['first', 'second'])
-        self.assertTrue(all(case['passed'] and case['executed'] for case in receipt['cases']))
-
-    def test_real_failure_does_not_hide_later_passing_case(self):
-        result, receipt = self.run_group(['tests::fails', 'tests::passes'])
-        self.assertEqual(result.returncode, 101, result.stdout + result.stderr)
-        self.assertEqual([case['exit_code'] for case in receipt['cases']], [101, 0])
-        self.assertEqual([case['passed'] for case in receipt['cases']], [False, True])
-
-    def test_real_absent_test_fails_before_partial_execution(self):
-        result, receipt = self.run_group(['tests::passes', 'tests::absent'])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('absent', receipt['error'])
-        self.assertEqual(receipt['cases'], [])
-
-    def test_real_ignored_test_is_rejected(self):
-        result, receipt = self.run_group(['tests::ignored'])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(receipt['cases'][0]['exit_code'], 0)
-        self.assertFalse(receipt['cases'][0]['executed'])
-        self.assertFalse(receipt['cases'][0]['passed'])
+    def test_focused_run_outcomes(self):
+        with self.subTest(phase="real_passing_integration_group"):
+            result, receipt = self.run_group(['first', 'second'], 'integration')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual([case['name'] for case in receipt['cases']], ['first', 'second'])
+            self.assertTrue(all(case['passed'] and case['executed'] for case in receipt['cases']))
+        with self.subTest(phase="real_failure_does_not_hide_later_passing_case"):
+            result, receipt = self.run_group(['tests::fails', 'tests::passes'])
+            self.assertEqual(result.returncode, 101, result.stdout + result.stderr)
+            self.assertEqual([case['exit_code'] for case in receipt['cases']], [101, 0])
+            self.assertEqual([case['passed'] for case in receipt['cases']], [False, True])
+        with self.subTest(phase="real_absent_test_fails_before_partial_execution"):
+            result, receipt = self.run_group(['tests::passes', 'tests::absent'])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('absent', receipt['error'])
+            self.assertEqual(receipt['cases'], [])
+        with self.subTest(phase="real_ignored_test_is_rejected"):
+            result, receipt = self.run_group(['tests::ignored'])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(receipt['cases'][0]['exit_code'], 0)
+            self.assertFalse(receipt['cases'][0]['executed'])
+            self.assertFalse(receipt['cases'][0]['passed'])
 
 
 if __name__ == '__main__':

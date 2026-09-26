@@ -142,7 +142,17 @@ mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
 
+    /// The merged-output CRDT text: round trip, identical sets commit nothing,
+    /// resolves splice rather than rewrite, and two peers converge. Every phase
+    /// builds its own documents.
     #[test]
+    fn merged_buffer_round_trips_edits_minimally_and_converges() {
+        merged_round_trip();
+        set_merged_is_incremental_and_minimal();
+        resolving_hunks_does_not_rewrite_the_whole_buffer();
+        two_peers_converge_on_merged_buffer();
+    }
+
     fn merged_round_trip() {
         let mut doc = AutoCommit::new();
         assert!(!MergeDoc::has_merged(&doc));
@@ -151,7 +161,6 @@ mod tests {
         assert_eq!(MergeDoc::merged_text(&doc), "line one\nline two\n");
     }
 
-    #[test]
     fn set_merged_is_incremental_and_minimal() {
         let mut doc = AutoCommit::new();
         MergeDoc::set_merged(&mut doc, "a\nb\nc\n");
@@ -163,7 +172,6 @@ mod tests {
         assert_eq!(MergeDoc::merged_text(&doc), "a\nB\nc\n");
     }
 
-    #[test]
     fn resolving_hunks_does_not_rewrite_the_whole_buffer() {
         // Re-resolving a hunk hands `set_merged` the entire composed output.
         // Rewriting it wholesale costs O(len) ops and leaves O(len) tombstones
@@ -195,7 +203,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn two_peers_converge_on_merged_buffer() {
         let mut a = AutoCommit::new();
         MergeDoc::set_merged(&mut a, "shared\n");
@@ -206,7 +213,14 @@ mod tests {
         assert!(MergeDoc::merged_text(&a).contains("from-b"));
     }
 
+    /// The sidecar state next to the merged buffer: per-hunk resolutions (sorted,
+    /// overwritten, cleared) and the session label. Fresh document per phase.
     #[test]
+    fn resolutions_and_session_round_trip() {
+        resolutions_round_trip_and_clear();
+        session_round_trip();
+    }
+
     fn resolutions_round_trip_and_clear() {
         let mut doc = AutoCommit::new();
         assert!(MergeDoc::resolutions(&doc).is_empty());
@@ -230,7 +244,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn session_round_trip() {
         let mut doc = AutoCommit::new();
         assert!(MergeDoc::session(&doc).is_none());

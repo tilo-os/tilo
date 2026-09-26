@@ -206,20 +206,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transit_option_preserves_the_directions_plus_transit_mapping() {
-        let mut panel = None;
-        let mut transit = false;
-        apply_panel("transit", &mut panel, &mut transit);
-        assert_eq!(panel, Some(maps::Panel::Directions));
-        assert!(transit);
-    }
+    fn panel_capture_options_map_to_panels() {
+        // Phase `transit_option_preserves_the_directions_plus_transit_mapping`.
+        {
+            let mut panel = None;
+            let mut transit = false;
+            apply_panel("transit", &mut panel, &mut transit);
+            assert_eq!(panel, Some(maps::Panel::Directions));
+            assert!(transit);
+        }
 
-    #[test]
-    fn unknown_panel_preserves_the_default_capture() {
-        let mut panel = None;
-        let mut transit = false;
-        apply_panel("unknown", &mut panel, &mut transit);
-        assert_eq!(panel, None);
-        assert!(!transit);
+        // Phase `unknown_panel_preserves_the_default_capture`.
+        {
+            let mut panel = None;
+            let mut transit = false;
+            apply_panel("unknown", &mut panel, &mut transit);
+            assert_eq!(panel, None);
+            assert!(!transit);
+        }
     }
 }

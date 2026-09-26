@@ -461,125 +461,131 @@ mod tests {
     }
 
     #[test]
-    fn directory_import_is_bounded_real_and_reports_progress() {
-        let directory = tempfile::tempdir().unwrap();
-        png(&directory.path().join("one.png"));
-        png(&directory.path().join("two.png"));
-        fs::write(directory.path().join("ignore.txt"), "not an image").unwrap();
-        let cancelled = AtomicBool::new(false);
-        let mut progress = Vec::new();
-        let report = index_directory(
-            directory.path(),
-            &ContentStore::memory(),
-            ImportOptions {
-                limits: ImportLimits {
-                    max_files: 1,
-                    ..ImportLimits::default()
+    fn directory_import_is_bounded_cancellable_and_refuses_unsafe_roots() {
+        eprintln!("phase directory_import_is_bounded_real_and_reports_progress");
+        {
+            let directory = tempfile::tempdir().unwrap();
+            png(&directory.path().join("one.png"));
+            png(&directory.path().join("two.png"));
+            fs::write(directory.path().join("ignore.txt"), "not an image").unwrap();
+            let cancelled = AtomicBool::new(false);
+            let mut progress = Vec::new();
+            let report = index_directory(
+                directory.path(),
+                &ContentStore::memory(),
+                ImportOptions {
+                    limits: ImportLimits {
+                        max_files: 1,
+                        ..ImportLimits::default()
+                    },
+                    ..ImportOptions::default()
                 },
-                ..ImportOptions::default()
-            },
-            &cancelled,
-            |value| progress.push(value),
-        )
-        .unwrap();
-        assert_eq!(report.discovered, 1);
-        assert_eq!(report.photos.len(), 1);
-        assert!(report.limit_reached);
-        assert!(report.photos[0].photo.image.content.is_some());
-        assert!(progress.last().is_some_and(|value| value.current.is_none()));
-    }
+                &cancelled,
+                |value| progress.push(value),
+            )
+            .unwrap();
+            assert_eq!(report.discovered, 1);
+            assert_eq!(report.photos.len(), 1);
+            assert!(report.limit_reached);
+            assert!(report.photos[0].photo.image.content.is_some());
+            assert!(progress.last().is_some_and(|value| value.current.is_none()));
+        }
 
-    #[test]
-    fn cancelled_import_does_not_open_or_stage_a_file() {
-        let directory = tempfile::tempdir().unwrap();
-        png(&directory.path().join("one.png"));
-        let cancelled = AtomicBool::new(true);
-        let report = index_directory(
-            directory.path(),
-            &ContentStore::memory(),
-            ImportOptions::default(),
-            &cancelled,
-            |_| {},
-        )
-        .unwrap();
-        assert!(report.cancelled);
-        assert!(report.photos.is_empty());
-        assert_eq!(report.discovered, 0);
-    }
-
-    #[test]
-    fn relative_and_symlink_roots_are_refused() {
-        let cancelled = AtomicBool::new(false);
-        assert_eq!(
-            index_directory(
-                Path::new("relative/photos"),
+        eprintln!("phase cancelled_import_does_not_open_or_stage_a_file");
+        {
+            let directory = tempfile::tempdir().unwrap();
+            png(&directory.path().join("one.png"));
+            let cancelled = AtomicBool::new(true);
+            let report = index_directory(
+                directory.path(),
                 &ContentStore::memory(),
                 ImportOptions::default(),
                 &cancelled,
                 |_| {},
             )
-            .unwrap_err(),
-            "Select an authorised absolute folder path"
-        );
+            .unwrap();
+            assert!(report.cancelled);
+            assert!(report.photos.is_empty());
+            assert_eq!(report.discovered, 0);
+        }
 
-        #[cfg(unix)]
+        eprintln!("phase relative_and_symlink_roots_are_refused");
         {
-            use std::os::unix::fs::symlink;
-            let parent = tempfile::tempdir().unwrap();
-            let real = parent.path().join("real");
-            fs::create_dir(&real).unwrap();
-            let linked = parent.path().join("linked");
-            symlink(&real, &linked).unwrap();
+            let cancelled = AtomicBool::new(false);
             assert_eq!(
                 index_directory(
-                    &linked,
+                    Path::new("relative/photos"),
                     &ContentStore::memory(),
                     ImportOptions::default(),
                     &cancelled,
                     |_| {},
                 )
                 .unwrap_err(),
-                "Select a real folder, not a symbolic link"
+                "Select an authorised absolute folder path"
             );
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+                let parent = tempfile::tempdir().unwrap();
+                let real = parent.path().join("real");
+                fs::create_dir(&real).unwrap();
+                let linked = parent.path().join("linked");
+                symlink(&real, &linked).unwrap();
+                assert_eq!(
+                    index_directory(
+                        &linked,
+                        &ContentStore::memory(),
+                        ImportOptions::default(),
+                        &cancelled,
+                        |_| {},
+                    )
+                    .unwrap_err(),
+                    "Select a real folder, not a symbolic link"
+                );
+            }
         }
     }
 
     #[test]
-    fn exif_reader_has_no_synthetic_fallback_for_a_plain_png() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("plain.png");
-        png(&path);
-        assert!(read_exif(&path).is_none());
-    }
+    fn imports_keep_source_bytes_with_real_exif_upright_dimensions() {
+        eprintln!("phase exif_reader_has_no_synthetic_fallback_for_a_plain_png");
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("plain.png");
+            png(&path);
+            assert!(read_exif(&path).is_none());
+        }
 
-    #[test]
-    fn import_keeps_addressed_source_bytes_but_records_upright_dimensions() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("portrait.jpg");
-        let source = jpeg_with_orientation(6);
-        fs::write(&path, &source).unwrap();
+        eprintln!("phase import_keeps_addressed_source_bytes_but_records_upright_dimensions");
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("portrait.jpg");
+            let source = jpeg_with_orientation(6);
+            fs::write(&path, &source).unwrap();
 
-        let store = ContentStore::memory();
-        let indexed = index_file(
-            &path,
-            &store,
-            ImportOptions::default(),
-            &AtomicBool::new(false),
-        )
-        .expect("index oriented JPEG");
+            let store = ContentStore::memory();
+            let indexed = index_file(
+                &path,
+                &store,
+                ImportOptions::default(),
+                &AtomicBool::new(false),
+            )
+            .expect("index oriented JPEG");
 
-        assert_eq!(indexed.exif.orientation, Some(6));
-        assert_eq!(
-            (indexed.photo.image.width, indexed.photo.image.height),
-            (2, 3)
-        );
-        let hash = indexed
-            .photo
-            .image
-            .content
-            .as_deref()
-            .expect("portable content address");
-        assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
+            assert_eq!(indexed.exif.orientation, Some(6));
+            assert_eq!(
+                (indexed.photo.image.width, indexed.photo.image.height),
+                (2, 3)
+            );
+            let hash = indexed
+                .photo
+                .image
+                .content
+                .as_deref()
+                .expect("portable content address");
+            assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
+        }
     }
 
     #[cfg(unix)]

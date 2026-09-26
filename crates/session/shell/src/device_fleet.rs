@@ -450,198 +450,203 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schema_v1_fleets_without_replay_state_migrate_empty() {
-        let fleet: DeviceFleet = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "identity_id": "00",
-            "certificates": [],
-            "revocations": []
-        }))
-        .expect("legacy fleet");
-        assert!(fleet.consumed_enrollments.is_empty());
-    }
-
-    #[test]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "enrollment, listing and revocation run as one ordered scenario"
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
-    fn enroll_list_and_revoke_a_secondary_device() {
-        let root = tempfile::tempdir().expect("temp root");
-        let identity_dir = root.path().join("config/identity");
-        let paths = IdentityPaths::under(root.path().join("system"));
-        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("provision");
-        let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
-            .load()
-            .expect("registry");
-        let identity_id = registry.default_identity.expect("default identity");
-        let store = DeviceFleetStore::at(&identity_dir, paths);
+    fn fleet_enrollment_migrates_revokes_and_resists_clock_rollback() {
+        // Phase `schema_v1_fleets_without_replay_state_migrate_empty`.
+        {
+            let fleet: DeviceFleet = serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "identity_id": "00",
+                "certificates": [],
+                "revocations": []
+            }))
+            .expect("legacy fleet");
+            assert!(fleet.consumed_enrollments.is_empty());
+        }
+        // Phase `enroll_list_and_revoke_a_secondary_device`.
+        {
+            let root = tempfile::tempdir().expect("temp root");
+            let identity_dir = root.path().join("config/identity");
+            let paths = IdentityPaths::under(root.path().join("system"));
+            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
+                .expect("provision");
+            let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+                .load()
+                .expect("registry");
+            let identity_id = registry.default_identity.expect("default identity");
+            let store = DeviceFleetStore::at(&identity_dir, paths);
 
-        let before = store.load(&identity_id).expect("fleet");
-        assert_eq!(before.certificates.len(), 1);
-        let issued_at_ns = before.certificates[0].issued_at_ns;
-        let token = store
-            .mint_enrollment(
-                &identity_id,
-                DeviceCapabilities::member(),
-                issued_at_ns,
-                issued_at_ns + 5_000,
-            )
-            .expect("token");
-        let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-        let cert = store
-            .complete_enrollment(
+            let before = store.load(&identity_id).expect("fleet");
+            assert_eq!(before.certificates.len(), 1);
+            let issued_at_ns = before.certificates[0].issued_at_ns;
+            let token = store
+                .mint_enrollment(
+                    &identity_id,
+                    DeviceCapabilities::member(),
+                    issued_at_ns,
+                    issued_at_ns + 5_000,
+                )
+                .expect("token");
+            let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+            let cert = store
+                .complete_enrollment(
+                    &identity_id,
+                    &token,
+                    phone.verifying_key().to_bytes(),
+                    "Phone",
+                    issued_at_ns,
+                )
+                .expect("complete");
+            assert_eq!(cert.device_label, "Phone");
+            assert!(!cert.capabilities.can_admit_devices);
+            assert_eq!(
+                store.load(&identity_id).expect("fleet").certificates.len(),
+                2
+            );
+            let replay_device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
+            let replay = store.complete_enrollment(
                 &identity_id,
                 &token,
-                phone.verifying_key().to_bytes(),
-                "Phone",
-                issued_at_ns,
-            )
-            .expect("complete");
-        assert_eq!(cert.device_label, "Phone");
-        assert!(!cert.capabilities.can_admit_devices);
-        assert_eq!(
-            store.load(&identity_id).expect("fleet").certificates.len(),
-            2
-        );
-        let replay_device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
-        let replay = store.complete_enrollment(
-            &identity_id,
-            &token,
-            replay_device.verifying_key().to_bytes(),
-            "Replay",
-            issued_at_ns + 1,
-        );
-        assert_eq!(
-            replay
-                .expect_err("a redeemed nonce must be single-use")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        assert_eq!(
-            store.load(&identity_id).expect("fleet").certificates.len(),
-            2,
-            "replay must not publish another root-signed certificate"
-        );
-
-        let expires_with_issuer = store
-            .mint_enrollment(
-                &identity_id,
-                DeviceCapabilities::member(),
+                replay_device.verifying_key().to_bytes(),
+                "Replay",
                 issued_at_ns + 1,
-                issued_at_ns + 5_000,
-            )
-            .expect("second token");
-        let (root_signer, _) = store.identity(&identity_id).expect("root signer");
-        let mut fleet = store.load(&identity_id).expect("fleet");
-        let issuer = fleet
-            .certificates
-            .iter_mut()
-            .find(|cert| cert.capabilities.can_admit_devices)
-            .expect("issuer certificate");
-        issuer.expires_at_ns = Some(issued_at_ns + 2);
-        let digest = tilo_user_identity::device_cert_signing_digest(issuer).expect("cert digest");
-        issuer.signature = root_signer.sign(&digest).expect("root signature");
-        store.save(&fleet).expect("expired issuer fleet");
-        let after_issuer_expiry = store.complete_enrollment(
-            &identity_id,
-            &expires_with_issuer,
-            replay_device.verifying_key().to_bytes(),
-            "Expired issuer",
-            issued_at_ns + 3,
-        );
-        assert_eq!(
-            after_issuer_expiry
-                .expect_err("expired issuer must not admit devices")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
+            );
+            assert_eq!(
+                replay
+                    .expect_err("a redeemed nonce must be single-use")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                store.load(&identity_id).expect("fleet").certificates.len(),
+                2,
+                "replay must not publish another root-signed certificate"
+            );
 
-        store
-            .revoke(
+            let expires_with_issuer = store
+                .mint_enrollment(
+                    &identity_id,
+                    DeviceCapabilities::member(),
+                    issued_at_ns + 1,
+                    issued_at_ns + 5_000,
+                )
+                .expect("second token");
+            let (root_signer, _) = store.identity(&identity_id).expect("root signer");
+            let mut fleet = store.load(&identity_id).expect("fleet");
+            let issuer = fleet
+                .certificates
+                .iter_mut()
+                .find(|cert| cert.capabilities.can_admit_devices)
+                .expect("issuer certificate");
+            issuer.expires_at_ns = Some(issued_at_ns + 2);
+            let digest =
+                tilo_user_identity::device_cert_signing_digest(issuer).expect("cert digest");
+            issuer.signature = root_signer.sign(&digest).expect("root signature");
+            store.save(&fleet).expect("expired issuer fleet");
+            let after_issuer_expiry = store.complete_enrollment(
                 &identity_id,
-                phone.verifying_key().to_bytes(),
-                RevocationReason::Lost,
-                issued_at_ns + 2,
-            )
-            .expect("revoke");
-        assert!(
+                &expires_with_issuer,
+                replay_device.verifying_key().to_bytes(),
+                "Expired issuer",
+                issued_at_ns + 3,
+            );
+            assert_eq!(
+                after_issuer_expiry
+                    .expect_err("expired issuer must not admit devices")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+
             store
-                .load(&identity_id)
-                .expect("fleet")
-                .is_revoked(&phone.verifying_key().to_bytes())
-        );
-    }
+                .revoke(
+                    &identity_id,
+                    phone.verifying_key().to_bytes(),
+                    RevocationReason::Lost,
+                    issued_at_ns + 2,
+                )
+                .expect("revoke");
+            assert!(
+                store
+                    .load(&identity_id)
+                    .expect("fleet")
+                    .is_revoked(&phone.verifying_key().to_bytes())
+            );
+        }
+        // Phase `clock_rollback_cannot_revive_consumed_enrollment`.
+        {
+            let root = tempfile::tempdir().expect("temp root");
+            let identity_dir = root.path().join("config/identity");
+            let paths = IdentityPaths::under(root.path().join("system"));
+            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
+                .expect("provision");
+            let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+                .load()
+                .expect("registry");
+            let identity_id = registry.default_identity.expect("default identity");
+            let store = DeviceFleetStore::at(&identity_dir, paths);
+            let issued_at_ns =
+                store.load(&identity_id).expect("fleet").certificates[0].issued_at_ns;
 
-    #[test]
-    fn clock_rollback_cannot_revive_consumed_enrollment() {
-        let root = tempfile::tempdir().expect("temp root");
-        let identity_dir = root.path().join("config/identity");
-        let paths = IdentityPaths::under(root.path().join("system"));
-        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("provision");
-        let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
-            .load()
-            .expect("registry");
-        let identity_id = registry.default_identity.expect("default identity");
-        let store = DeviceFleetStore::at(&identity_dir, paths);
-        let issued_at_ns = store.load(&identity_id).expect("fleet").certificates[0].issued_at_ns;
+            let first_token = store
+                .mint_enrollment(
+                    &identity_id,
+                    DeviceCapabilities::member(),
+                    issued_at_ns,
+                    issued_at_ns + 5_000,
+                )
+                .expect("first token");
+            let first_device = ed25519_dalek::SigningKey::from_bytes(&[95; 32]);
+            store
+                .complete_enrollment(
+                    &identity_id,
+                    &first_token,
+                    first_device.verifying_key().to_bytes(),
+                    "First device",
+                    issued_at_ns,
+                )
+                .expect("first enrollment");
 
-        let first_token = store
-            .mint_enrollment(
-                &identity_id,
-                DeviceCapabilities::member(),
-                issued_at_ns,
-                issued_at_ns + 5_000,
-            )
-            .expect("first token");
-        let first_device = ed25519_dalek::SigningKey::from_bytes(&[95; 32]);
-        store
-            .complete_enrollment(
+            let after_first_expiry = issued_at_ns + 5_001;
+            let second_token = store
+                .mint_enrollment(
+                    &identity_id,
+                    DeviceCapabilities::member(),
+                    after_first_expiry,
+                    after_first_expiry + 5_000,
+                )
+                .expect("second token");
+            let second_device = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
+            store
+                .complete_enrollment(
+                    &identity_id,
+                    &second_token,
+                    second_device.verifying_key().to_bytes(),
+                    "Second device",
+                    after_first_expiry,
+                )
+                .expect("second enrollment");
+
+            let replay_device = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+            let replay = store.complete_enrollment(
                 &identity_id,
                 &first_token,
-                first_device.verifying_key().to_bytes(),
-                "First device",
-                issued_at_ns,
-            )
-            .expect("first enrollment");
-
-        let after_first_expiry = issued_at_ns + 5_001;
-        let second_token = store
-            .mint_enrollment(
-                &identity_id,
-                DeviceCapabilities::member(),
-                after_first_expiry,
-                after_first_expiry + 5_000,
-            )
-            .expect("second token");
-        let second_device = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
-        store
-            .complete_enrollment(
-                &identity_id,
-                &second_token,
-                second_device.verifying_key().to_bytes(),
-                "Second device",
-                after_first_expiry,
-            )
-            .expect("second enrollment");
-
-        let replay_device = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
-        let replay = store.complete_enrollment(
-            &identity_id,
-            &first_token,
-            replay_device.verifying_key().to_bytes(),
-            "Rollback replay",
-            issued_at_ns + 1,
-        );
-        assert_eq!(
-            replay
-                .expect_err("clock rollback must not revive a consumed token")
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        let fleet = store.load(&identity_id).expect("fleet");
-        assert_eq!(fleet.certificates.len(), 3);
-        assert_eq!(fleet.consumed_enrollments.len(), 2);
+                replay_device.verifying_key().to_bytes(),
+                "Rollback replay",
+                issued_at_ns + 1,
+            );
+            assert_eq!(
+                replay
+                    .expect_err("clock rollback must not revive a consumed token")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            let fleet = store.load(&identity_id).expect("fleet");
+            assert_eq!(fleet.certificates.len(), 3);
+            assert_eq!(fleet.consumed_enrollments.len(), 2);
+        }
     }
 
     #[test]

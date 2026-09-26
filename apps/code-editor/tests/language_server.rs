@@ -98,6 +98,12 @@ fn require_binary(name: &str) {
 }
 
 #[test]
+fn rust_analyzer_indexes_visibly_and_reports_a_real_error_in_a_real_project() {
+    // Each phase builds its own fixture project and starts its own server.
+    rust_analyzer_reports_a_real_error_in_a_real_project();
+    indexing_is_visible_while_it_happens();
+}
+
 fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     let mut wake_scope = ui::wake::WakeScope::new();
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
@@ -186,7 +192,6 @@ fn rust_analyzer_reports_a_real_error_in_a_real_project() {
     assert!(panel.message.contains("parse_limitt") || panel.message.contains("cannot find"));
 }
 
-#[test]
 fn indexing_is_visible_while_it_happens() {
     // The other half of the fix: a server that takes minutes must not be
     // indistinguishable from a broken one. rust-analyzer only sends

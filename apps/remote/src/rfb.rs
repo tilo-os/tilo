@@ -661,262 +661,277 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn pixel_format_roundtrips() {
-        let f = PixelFormat::rgb888();
-        assert_eq!(PixelFormat::parse(&f.to_bytes()), f);
-    }
-
-    #[test]
-    fn decode_pixel_32bpp_bgrx() {
-        // rgb888(): little-endian value R<<16|G<<8|B -> bytes [B,G,R,x].
-        let f = PixelFormat::rgb888();
-        assert_eq!(
-            f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]),
-            [0x30, 0x20, 0x10, 255]
-        );
-    }
-
-    #[test]
-    fn decode_pixel_16bpp_565() {
-        // 16bpp 5-6-5: red_max 31 (shift 11), green 63 (shift 5), blue 31 (0).
-        let f = PixelFormat {
-            bits_per_pixel: 16,
-            depth: 16,
-            big_endian: false,
-            true_colour: true,
-            red_max: 31,
-            green_max: 63,
-            blue_max: 31,
-            red_shift: 11,
-            green_shift: 5,
-            blue_shift: 0,
-        };
-        // Pure red = 0xF800 -> little-endian [0x00, 0xF8].
-        assert_eq!(f.decode_pixel(&[0x00, 0xF8]), [255, 0, 0, 255]);
-        // Pure blue = 0x001F -> [0x1F, 0x00].
-        assert_eq!(f.decode_pixel(&[0x1F, 0x00]), [0, 0, 255, 255]);
-    }
-
-    #[test]
-    fn raw_rect_lands_in_framebuffer() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(2, 2);
-        // A FramebufferUpdate: pad, count=1; rect at (0,0) 2x2 Raw; 4 px.
-        let mut msg = vec![0u8, 0, 1]; // pad + count
-        msg.extend_from_slice(&[0, 0, 0, 0]); // x,y
-        msg.extend_from_slice(&2u16.to_be_bytes()); // w
-        msg.extend_from_slice(&2u16.to_be_bytes()); // h
-        msg.extend_from_slice(&encoding::RAW.to_be_bytes());
-        // Four BGRX pixels: red, green, blue, white.
-        msg.extend_from_slice(&[0, 0, 255, 0]); // red
-        msg.extend_from_slice(&[0, 255, 0, 0]); // green
-        msg.extend_from_slice(&[255, 0, 0, 0]); // blue
-        msg.extend_from_slice(&[255, 255, 255, 0]); // white
-        let n = decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(&fb.data[0..4], &[255, 0, 0, 255]); // (0,0) red
-        assert_eq!(&fb.data[4..8], &[0, 255, 0, 255]); // (1,0) green
-        assert_eq!(&fb.data[8..12], &[0, 0, 255, 255]); // (0,1) blue
-        assert_eq!(&fb.data[12..16], &[255, 255, 255, 255]); // (1,1) white
-        assert_eq!(fb.generation, 1);
-    }
-
-    #[test]
-    fn copy_rect_moves_pixels() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(2, 1);
-        // Seed (0,0) red.
-        Arc::make_mut(&mut fb.data)[0..4].copy_from_slice(&[255, 0, 0, 255]);
-        // CopyRect: copy the 1x1 region at src (0,0) to dst (1,0).
-        let mut msg = vec![0u8, 0, 1];
-        msg.extend_from_slice(&1u16.to_be_bytes()); // dst x = 1
-        msg.extend_from_slice(&0u16.to_be_bytes()); // dst y
-        msg.extend_from_slice(&1u16.to_be_bytes()); // w
-        msg.extend_from_slice(&1u16.to_be_bytes()); // h
-        msg.extend_from_slice(&encoding::COPY_RECT.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes()); // src x
-        msg.extend_from_slice(&0u16.to_be_bytes()); // src y
-        decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).unwrap();
-        assert_eq!(&fb.data[4..8], &[255, 0, 0, 255]);
-    }
-
-    #[test]
-    fn rre_fills_background_and_subrects() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(2, 2);
-        let mut msg = vec![0u8, 0, 1];
-        msg.extend_from_slice(&0u16.to_be_bytes()); // x
-        msg.extend_from_slice(&0u16.to_be_bytes()); // y
-        msg.extend_from_slice(&2u16.to_be_bytes()); // w
-        msg.extend_from_slice(&2u16.to_be_bytes()); // h
-        msg.extend_from_slice(&encoding::RRE.to_be_bytes());
-        msg.extend_from_slice(&1u32.to_be_bytes()); // 1 subrect
-        msg.extend_from_slice(&[0, 0, 255, 0]); // bg = red (BGRX wire order)
-        // subrect: color blue (BGRX), at (1,1) 1x1
-        msg.extend_from_slice(&[255, 0, 0, 0]);
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).unwrap();
-        assert_eq!(&fb.data[0..4], &[255, 0, 0, 255]); // bg red
-        assert_eq!(&fb.data[12..16], &[0, 0, 255, 255]); // subrect blue
-    }
-
-    #[test]
-    fn server_init_parses() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&800u16.to_be_bytes());
-        bytes.extend_from_slice(&600u16.to_be_bytes());
-        bytes.extend_from_slice(&PixelFormat::rgb888().to_bytes());
-        bytes.extend_from_slice(&(4u32).to_be_bytes());
-        bytes.extend_from_slice(b"test");
-        let si = ServerInit::read(&mut Cursor::new(bytes)).unwrap();
-        assert_eq!((si.width, si.height), (800, 600));
-        assert_eq!(si.name, "test");
-        assert_eq!(si.format, PixelFormat::rgb888());
-    }
-
-    #[test]
-    fn oversized_server_geometry_is_rejected_before_allocation() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
-        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
-        bytes.extend_from_slice(&PixelFormat::rgb888().to_bytes());
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        assert!(ServerInit::read(&mut Cursor::new(bytes)).is_err());
-    }
-
-    #[test]
-    fn overflowing_rectangle_coordinates_do_not_panic() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(2, 2);
-        let mut msg = vec![0u8, 0, 1];
-        msg.extend_from_slice(&u16::MAX.to_be_bytes());
-        msg.extend_from_slice(&u16::MAX.to_be_bytes());
-        msg.extend_from_slice(&2u16.to_be_bytes());
-        msg.extend_from_slice(&2u16.to_be_bytes());
-        msg.extend_from_slice(&encoding::RAW.to_be_bytes());
-        msg.extend_from_slice(&[0u8; 16]);
-        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_ok());
-    }
-
-    #[test]
-    fn exhausted_framebuffer_generation_fails_without_reuse() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(1, 1);
-        fb.generation = u64::MAX;
-        let before = Arc::clone(&fb.data);
-        let mut msg = vec![0u8, 0, 1];
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        msg.extend_from_slice(&1u16.to_be_bytes());
-        msg.extend_from_slice(&encoding::RAW.to_be_bytes());
-        msg.extend_from_slice(&[0, 0, 0, 0]);
-        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
-        assert_eq!(fb.generation, u64::MAX);
-        assert!(Arc::ptr_eq(&fb.data, &before));
-    }
-
-    #[test]
-    fn rre_rejects_oversized_background_before_painting() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(2, 2);
-        let mut msg = vec![0u8, 0, 1];
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&u16::MAX.to_be_bytes());
-        msg.extend_from_slice(&u16::MAX.to_be_bytes());
-        msg.extend_from_slice(&encoding::RRE.to_be_bytes());
-        msg.extend_from_slice(&0u32.to_be_bytes());
-        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
-        assert_eq!(&fb.data[..], &[0; 16]);
-    }
-
-    #[test]
-    fn rre_rejects_cumulative_subrectangle_pixel_work_before_painting() {
-        let f = PixelFormat::rgb888();
-        let mut fb = Framebuffer::new(2, 2);
-        let mut msg = vec![0u8, 0, 1];
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes());
-        msg.extend_from_slice(&4096u16.to_be_bytes());
-        msg.extend_from_slice(&4096u16.to_be_bytes());
-        msg.extend_from_slice(&encoding::RRE.to_be_bytes());
-        msg.extend_from_slice(&2u32.to_be_bytes());
-        msg.extend_from_slice(&[0, 0, 0, 0]);
-        for _ in 0..2 {
-            msg.extend_from_slice(&[0, 0, 0, 0]);
-            msg.extend_from_slice(&0u16.to_be_bytes());
-            msg.extend_from_slice(&0u16.to_be_bytes());
-            msg.extend_from_slice(&4096u16.to_be_bytes());
-            msg.extend_from_slice(&4096u16.to_be_bytes());
+    fn pixel_formats_round_trip_and_decode() {
+        eprintln!("phase pixel_format_roundtrips");
+        {
+            let f = PixelFormat::rgb888();
+            assert_eq!(PixelFormat::parse(&f.to_bytes()), f);
         }
-        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
-        assert_eq!(&fb.data[..], &[0; 16]);
+
+        eprintln!("phase decode_pixel_32bpp_bgrx");
+        {
+            // rgb888(): little-endian value R<<16|G<<8|B -> bytes [B,G,R,x].
+            let f = PixelFormat::rgb888();
+            assert_eq!(
+                f.decode_pixel(&[0x10, 0x20, 0x30, 0x00]),
+                [0x30, 0x20, 0x10, 255]
+            );
+        }
+
+        eprintln!("phase decode_pixel_16bpp_565");
+        {
+            // 16bpp 5-6-5: red_max 31 (shift 11), green 63 (shift 5), blue 31 (0).
+            let f = PixelFormat {
+                bits_per_pixel: 16,
+                depth: 16,
+                big_endian: false,
+                true_colour: true,
+                red_max: 31,
+                green_max: 63,
+                blue_max: 31,
+                red_shift: 11,
+                green_shift: 5,
+                blue_shift: 0,
+            };
+            // Pure red = 0xF800 -> little-endian [0x00, 0xF8].
+            assert_eq!(f.decode_pixel(&[0x00, 0xF8]), [255, 0, 0, 255]);
+            // Pure blue = 0x001F -> [0x1F, 0x00].
+            assert_eq!(f.decode_pixel(&[0x1F, 0x00]), [0, 0, 255, 255]);
+        }
+
+        eprintln!("phase mirror_bits_reverses_byte");
+        {
+            assert_eq!(mirror_bits(0b0000_0001), 0b1000_0000);
+            assert_eq!(mirror_bits(0b1010_0000), 0b0000_0101);
+        }
     }
 
     #[test]
-    fn protocol_version_parse_and_offer() {
-        assert_eq!(parse_protocol_version(b"RFB 003.008\n"), Some((3, 8)));
-        assert_eq!(&client_protocol_version(3, 8), b"RFB 003.008\n");
-        assert_eq!(&client_protocol_version(3, 3), b"RFB 003.003\n");
+    fn rectangle_encodings_paint_the_framebuffer() {
+        eprintln!("phase raw_rect_lands_in_framebuffer");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(2, 2);
+            // A FramebufferUpdate: pad, count=1; rect at (0,0) 2x2 Raw; 4 px.
+            let mut msg = vec![0u8, 0, 1]; // pad + count
+            msg.extend_from_slice(&[0, 0, 0, 0]); // x,y
+            msg.extend_from_slice(&2u16.to_be_bytes()); // w
+            msg.extend_from_slice(&2u16.to_be_bytes()); // h
+            msg.extend_from_slice(&encoding::RAW.to_be_bytes());
+            // Four BGRX pixels: red, green, blue, white.
+            msg.extend_from_slice(&[0, 0, 255, 0]); // red
+            msg.extend_from_slice(&[0, 255, 0, 0]); // green
+            msg.extend_from_slice(&[255, 0, 0, 0]); // blue
+            msg.extend_from_slice(&[255, 255, 255, 0]); // white
+            let n = decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).unwrap();
+            assert_eq!(n, 1);
+            assert_eq!(&fb.data[0..4], &[255, 0, 0, 255]); // (0,0) red
+            assert_eq!(&fb.data[4..8], &[0, 255, 0, 255]); // (1,0) green
+            assert_eq!(&fb.data[8..12], &[0, 0, 255, 255]); // (0,1) blue
+            assert_eq!(&fb.data[12..16], &[255, 255, 255, 255]); // (1,1) white
+            assert_eq!(fb.generation, 1);
+        }
+
+        eprintln!("phase copy_rect_moves_pixels");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(2, 1);
+            // Seed (0,0) red.
+            Arc::make_mut(&mut fb.data)[0..4].copy_from_slice(&[255, 0, 0, 255]);
+            // CopyRect: copy the 1x1 region at src (0,0) to dst (1,0).
+            let mut msg = vec![0u8, 0, 1];
+            msg.extend_from_slice(&1u16.to_be_bytes()); // dst x = 1
+            msg.extend_from_slice(&0u16.to_be_bytes()); // dst y
+            msg.extend_from_slice(&1u16.to_be_bytes()); // w
+            msg.extend_from_slice(&1u16.to_be_bytes()); // h
+            msg.extend_from_slice(&encoding::COPY_RECT.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes()); // src x
+            msg.extend_from_slice(&0u16.to_be_bytes()); // src y
+            decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).unwrap();
+            assert_eq!(&fb.data[4..8], &[255, 0, 0, 255]);
+        }
+
+        eprintln!("phase rre_fills_background_and_subrects");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(2, 2);
+            let mut msg = vec![0u8, 0, 1];
+            msg.extend_from_slice(&0u16.to_be_bytes()); // x
+            msg.extend_from_slice(&0u16.to_be_bytes()); // y
+            msg.extend_from_slice(&2u16.to_be_bytes()); // w
+            msg.extend_from_slice(&2u16.to_be_bytes()); // h
+            msg.extend_from_slice(&encoding::RRE.to_be_bytes());
+            msg.extend_from_slice(&1u32.to_be_bytes()); // 1 subrect
+            msg.extend_from_slice(&[0, 0, 255, 0]); // bg = red (BGRX wire order)
+            // subrect: color blue (BGRX), at (1,1) 1x1
+            msg.extend_from_slice(&[255, 0, 0, 0]);
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).unwrap();
+            assert_eq!(&fb.data[0..4], &[255, 0, 0, 255]); // bg red
+            assert_eq!(&fb.data[12..16], &[0, 0, 255, 255]); // subrect blue
+        }
     }
 
     #[test]
-    fn security_negotiation() {
-        let types = parse_security_types(2, &[security::NONE, security::VNC_AUTH]).unwrap();
-        assert_eq!(choose_security(&types), Some(security::NONE));
-        assert_eq!(
-            choose_security(&[security::VNC_AUTH]),
-            Some(security::VNC_AUTH)
-        );
-        assert_eq!(choose_security(&[99]), None);
-        assert!(parse_security_types(0, &[]).is_err());
+    fn handshake_parses_versions_security_and_server_init() {
+        eprintln!("phase server_init_parses");
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&800u16.to_be_bytes());
+            bytes.extend_from_slice(&600u16.to_be_bytes());
+            bytes.extend_from_slice(&PixelFormat::rgb888().to_bytes());
+            bytes.extend_from_slice(&(4u32).to_be_bytes());
+            bytes.extend_from_slice(b"test");
+            let si = ServerInit::read(&mut Cursor::new(bytes)).unwrap();
+            assert_eq!((si.width, si.height), (800, 600));
+            assert_eq!(si.name, "test");
+            assert_eq!(si.format, PixelFormat::rgb888());
+        }
+
+        eprintln!("phase protocol_version_parse_and_offer");
+        {
+            assert_eq!(parse_protocol_version(b"RFB 003.008\n"), Some((3, 8)));
+            assert_eq!(&client_protocol_version(3, 8), b"RFB 003.008\n");
+            assert_eq!(&client_protocol_version(3, 3), b"RFB 003.003\n");
+        }
+
+        eprintln!("phase security_negotiation");
+        {
+            let types = parse_security_types(2, &[security::NONE, security::VNC_AUTH]).unwrap();
+            assert_eq!(choose_security(&types), Some(security::NONE));
+            assert_eq!(
+                choose_security(&[security::VNC_AUTH]),
+                Some(security::VNC_AUTH)
+            );
+            assert_eq!(choose_security(&[99]), None);
+            assert!(parse_security_types(0, &[]).is_err());
+        }
     }
 
     #[test]
-    fn client_encoders_are_exact() {
-        assert_eq!(
-            encode_framebuffer_update_request(true, 0, 0, 800, 600),
-            [3, 1, 0, 0, 0, 0, 0x03, 0x20, 0x02, 0x58]
-        );
-        assert_eq!(
-            encode_set_encodings(&[encoding::RAW, encoding::COPY_RECT]),
-            vec![2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]
-        );
-        assert_eq!(encode_pointer_event(1, 0x0102, 0x0304), [5, 1, 1, 2, 3, 4]);
-        assert_eq!(encode_key_event(true, 0x61), [4, 1, 0, 0, 0, 0, 0, 0x61]);
-        let spf = encode_set_pixel_format(&PixelFormat::rgb888());
-        assert_eq!(spf[0], 0);
-        assert_eq!(&spf[4..20], &PixelFormat::rgb888().to_bytes());
+    fn hostile_geometry_is_rejected_before_allocation_or_painting() {
+        eprintln!("phase oversized_server_geometry_is_rejected_before_allocation");
+        {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+            bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+            bytes.extend_from_slice(&PixelFormat::rgb888().to_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            assert!(ServerInit::read(&mut Cursor::new(bytes)).is_err());
+        }
+
+        eprintln!("phase overflowing_rectangle_coordinates_do_not_panic");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(2, 2);
+            let mut msg = vec![0u8, 0, 1];
+            msg.extend_from_slice(&u16::MAX.to_be_bytes());
+            msg.extend_from_slice(&u16::MAX.to_be_bytes());
+            msg.extend_from_slice(&2u16.to_be_bytes());
+            msg.extend_from_slice(&2u16.to_be_bytes());
+            msg.extend_from_slice(&encoding::RAW.to_be_bytes());
+            msg.extend_from_slice(&[0u8; 16]);
+            assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_ok());
+        }
+
+        eprintln!("phase exhausted_framebuffer_generation_fails_without_reuse");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(1, 1);
+            fb.generation = u64::MAX;
+            let before = Arc::clone(&fb.data);
+            let mut msg = vec![0u8, 0, 1];
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&encoding::RAW.to_be_bytes());
+            msg.extend_from_slice(&[0, 0, 0, 0]);
+            assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
+            assert_eq!(fb.generation, u64::MAX);
+            assert!(Arc::ptr_eq(&fb.data, &before));
+        }
+
+        eprintln!("phase rre_rejects_oversized_background_before_painting");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(2, 2);
+            let mut msg = vec![0u8, 0, 1];
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&u16::MAX.to_be_bytes());
+            msg.extend_from_slice(&u16::MAX.to_be_bytes());
+            msg.extend_from_slice(&encoding::RRE.to_be_bytes());
+            msg.extend_from_slice(&0u32.to_be_bytes());
+            assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
+            assert_eq!(&fb.data[..], &[0; 16]);
+        }
+
+        eprintln!("phase rre_rejects_cumulative_subrectangle_pixel_work_before_painting");
+        {
+            let f = PixelFormat::rgb888();
+            let mut fb = Framebuffer::new(2, 2);
+            let mut msg = vec![0u8, 0, 1];
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&4096u16.to_be_bytes());
+            msg.extend_from_slice(&4096u16.to_be_bytes());
+            msg.extend_from_slice(&encoding::RRE.to_be_bytes());
+            msg.extend_from_slice(&2u32.to_be_bytes());
+            msg.extend_from_slice(&[0, 0, 0, 0]);
+            for _ in 0..2 {
+                msg.extend_from_slice(&[0, 0, 0, 0]);
+                msg.extend_from_slice(&0u16.to_be_bytes());
+                msg.extend_from_slice(&0u16.to_be_bytes());
+                msg.extend_from_slice(&4096u16.to_be_bytes());
+                msg.extend_from_slice(&4096u16.to_be_bytes());
+            }
+            assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
+            assert_eq!(&fb.data[..], &[0; 16]);
+        }
     }
 
     #[test]
-    fn mirror_bits_reverses_byte() {
-        assert_eq!(mirror_bits(0b0000_0001), 0b1000_0000);
-        assert_eq!(mirror_bits(0b1010_0000), 0b0000_0101);
-    }
+    fn client_messages_and_vnc_auth_are_exact() {
+        eprintln!("phase client_encoders_are_exact");
+        {
+            assert_eq!(
+                encode_framebuffer_update_request(true, 0, 0, 800, 600),
+                [3, 1, 0, 0, 0, 0, 0x03, 0x20, 0x02, 0x58]
+            );
+            assert_eq!(
+                encode_set_encodings(&[encoding::RAW, encoding::COPY_RECT]),
+                vec![2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]
+            );
+            assert_eq!(encode_pointer_event(1, 0x0102, 0x0304), [5, 1, 1, 2, 3, 4]);
+            assert_eq!(encode_key_event(true, 0x61), [4, 1, 0, 0, 0, 0, 0, 0x61]);
+            let spf = encode_set_pixel_format(&PixelFormat::rgb888());
+            assert_eq!(spf[0], 0);
+            assert_eq!(&spf[4..20], &PixelFormat::rgb888().to_bytes());
+        }
 
-    #[test]
-    fn vnc_auth_matches_independent_des_oracle() {
-        // Known-answer vector produced by an independent single-DES
-        // implementation (see the crate's test notes): password "pass",
-        // challenge = 0x00..0x0F, VNC key-byte bit mirroring, DES-ECB.
-        let challenge: [u8; 16] = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f,
-        ];
-        let resp = vnc_auth_response(&challenge, "pass");
-        // Cross-checked against openssl's `des-ecb` (legacy provider) and
-        // pyDes — both independent single-DES implementations.
-        assert_eq!(
-            resp,
-            [
-                0x5f, 0xb0, 0x2f, 0x4e, 0x6e, 0xc9, 0xfd, 0xa0, 0x6c, 0x41, 0xdf, 0x1f, 0x35, 0x01,
-                0x51, 0x38,
-            ]
-        );
+        eprintln!("phase vnc_auth_matches_independent_des_oracle");
+        {
+            // Known-answer vector produced by an independent single-DES
+            // implementation (see the crate's test notes): password "pass",
+            // challenge = 0x00..0x0F, VNC key-byte bit mirroring, DES-ECB.
+            let challenge: [u8; 16] = [
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f,
+            ];
+            let resp = vnc_auth_response(&challenge, "pass");
+            // Cross-checked against openssl's `des-ecb` (legacy provider) and
+            // pyDes — both independent single-DES implementations.
+            assert_eq!(
+                resp,
+                [
+                    0x5f, 0xb0, 0x2f, 0x4e, 0x6e, 0xc9, 0xfd, 0xa0, 0x6c, 0x41, 0xdf, 0x1f, 0x35,
+                    0x01, 0x51, 0x38,
+                ]
+            );
+        }
     }
 }

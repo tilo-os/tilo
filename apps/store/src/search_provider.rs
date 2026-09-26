@@ -322,58 +322,106 @@ mod tests {
         }
     }
 
+    /// Cursor paging, canonical details and invalidated stale addresses/cursors.
     #[test]
-    fn full_catalogue_is_cursor_paged_and_details_are_canonical() {
-        let items = (0..2_048).map(item).collect::<Vec<_>>();
-        let index = StoreSearchIndex::default();
-        index.sync(&items);
-        let provider = index.provider();
-        let first = provider.search_page("example", None, 9, 4);
-        assert!(first.inspected <= 9);
-        assert_eq!(first.results.len(), 4);
-        assert!(first.next.is_some());
-        let address = first.results[0].action_address().unwrap();
-        let resource = provider.resolve_action_resource(&address).unwrap();
-        assert_eq!(resource.actions[0].id, "show-details");
-        assert_eq!(resource.actions[0].kind, OperationKind::View);
+    fn catalogue_paging_and_stale_addresses_are_refused() {
+        // Case `full_catalogue_is_cursor_paged_and_details_are_canonical`.
+        {
+            let items = (0..2_048).map(item).collect::<Vec<_>>();
+            let index = StoreSearchIndex::default();
+            index.sync(&items);
+            let provider = index.provider();
+            let first = provider.search_page("example", None, 9, 4);
+            assert!(first.inspected <= 9);
+            assert_eq!(first.results.len(), 4);
+            assert!(first.next.is_some());
+            let address = first.results[0].action_address().unwrap();
+            let resource = provider.resolve_action_resource(&address).unwrap();
+            assert_eq!(resource.actions[0].id, "show-details");
+            assert_eq!(resource.actions[0].kind, OperationKind::View);
+        }
+
+        // Case `removed_catalogue_entry_refuses_stale_palette_address`.
+        {
+            let index = StoreSearchIndex::default();
+            index.sync(&[item(7)]);
+            let provider = index.provider();
+            let hit = provider.search_limited("app 7", 1).pop().unwrap();
+            let address = hit.action_address().unwrap();
+            index.sync(&[]);
+            assert!(provider.resolve_action_resource(&address).is_none());
+        }
+
+        // Case `same_cardinality_replacement_invalidates_old_cursor`.
+        {
+            let index = StoreSearchIndex::default();
+            index.sync(&[item(1), item(2)]);
+            let provider = index.provider();
+            let cursor = provider
+                .search_page("", None, 1, 1)
+                .next
+                .expect("a two-row directory has a continuation");
+
+            index.sync(&[item(3), item(4)]);
+
+            assert_eq!(provider.search_limited("app 3", 1).len(), 1);
+            assert!(!provider.action_directory_cursor_is_current(&cursor));
+        }
     }
 
+    /// Malformed rebuilds withdraw and older stages never publish after newer ones.
     #[test]
-    fn removed_catalogue_entry_refuses_stale_palette_address() {
-        let index = StoreSearchIndex::default();
-        index.sync(&[item(7)]);
-        let provider = index.provider();
-        let hit = provider.search_limited("app 7", 1).pop().unwrap();
-        let address = hit.action_address().unwrap();
-        index.sync(&[]);
-        assert!(provider.resolve_action_resource(&address).is_none());
-    }
+    fn bulk_rebuilds_withdraw_malformed_input_and_publish_in_order() {
+        // Case `malformed_bulk_rebuild_withdraws_instead_of_partially_publishing`.
+        {
+            let index = StoreSearchIndex::default();
+            index.sync(&[item(9)]);
+            let provider = index.provider();
+            index.sync(&[item(10), item(10)]);
 
-    #[test]
-    fn same_cardinality_replacement_invalidates_old_cursor() {
-        let index = StoreSearchIndex::default();
-        index.sync(&[item(1), item(2)]);
-        let provider = index.provider();
-        let cursor = provider
-            .search_page("", None, 1, 1)
-            .next
-            .expect("a two-row directory has a continuation");
+            assert_eq!(provider.action_directory_generation(), None);
+            assert!(provider.search_limited("app", 10).is_empty());
+        }
 
-        index.sync(&[item(3), item(4)]);
+        // Case `serialized_writers_cannot_publish_an_older_stage_after_a_newer_one`.
+        {
+            let index = StoreSearchIndex::default();
+            index.sync(&[item(1)]);
+            let older_index = index.clone();
+            let (older_staged, older_staged_receiver) = mpsc::channel();
+            let (release_older, release_older_receiver) = mpsc::channel();
+            let older = std::thread::spawn(move || {
+                older_index.rebuild_serialized(&[item(2)], || {
+                    older_staged.send(()).expect("older stage signal");
+                    release_older_receiver.recv().expect("older release");
+                });
+            });
+            older_staged_receiver
+                .recv()
+                .expect("older stage pauses before publication");
+            assert!(
+                index.writer.try_lock().is_err(),
+                "the serial writer lock covers the complete rebuild lifecycle"
+            );
 
-        assert_eq!(provider.search_limited("app 3", 1).len(), 1);
-        assert!(!provider.action_directory_cursor_is_current(&cursor));
-    }
+            let newer_index = index.clone();
+            let (newer_started, newer_started_receiver) = mpsc::channel();
+            let newer = std::thread::spawn(move || {
+                newer_started.send(()).expect("newer writer started");
+                newer_index.sync(&[item(3)]);
+            });
+            newer_started_receiver
+                .recv()
+                .expect("newer writer attempted publication");
 
-    #[test]
-    fn malformed_bulk_rebuild_withdraws_instead_of_partially_publishing() {
-        let index = StoreSearchIndex::default();
-        index.sync(&[item(9)]);
-        let provider = index.provider();
-        index.sync(&[item(10), item(10)]);
+            release_older.send(()).expect("release older publication");
+            older.join().expect("older writer");
+            newer.join().expect("newer writer");
 
-        assert_eq!(provider.action_directory_generation(), None);
-        assert!(provider.search_limited("app", 10).is_empty());
+            let provider = index.provider();
+            assert!(provider.search_limited("app 2", 10).is_empty());
+            assert_eq!(provider.search_limited("app 3", 10).len(), 1);
+        }
     }
 
     #[test]
@@ -406,45 +454,5 @@ mod tests {
         assert!(provider.resolve_action_resource(&address).is_some());
         continue_publish.send(()).expect("release publication");
         replacement.join().expect("replacement worker");
-    }
-
-    #[test]
-    fn serialized_writers_cannot_publish_an_older_stage_after_a_newer_one() {
-        let index = StoreSearchIndex::default();
-        index.sync(&[item(1)]);
-        let older_index = index.clone();
-        let (older_staged, older_staged_receiver) = mpsc::channel();
-        let (release_older, release_older_receiver) = mpsc::channel();
-        let older = std::thread::spawn(move || {
-            older_index.rebuild_serialized(&[item(2)], || {
-                older_staged.send(()).expect("older stage signal");
-                release_older_receiver.recv().expect("older release");
-            });
-        });
-        older_staged_receiver
-            .recv()
-            .expect("older stage pauses before publication");
-        assert!(
-            index.writer.try_lock().is_err(),
-            "the serial writer lock covers the complete rebuild lifecycle"
-        );
-
-        let newer_index = index.clone();
-        let (newer_started, newer_started_receiver) = mpsc::channel();
-        let newer = std::thread::spawn(move || {
-            newer_started.send(()).expect("newer writer started");
-            newer_index.sync(&[item(3)]);
-        });
-        newer_started_receiver
-            .recv()
-            .expect("newer writer attempted publication");
-
-        release_older.send(()).expect("release older publication");
-        older.join().expect("older writer");
-        newer.join().expect("newer writer");
-
-        let provider = index.provider();
-        assert!(provider.search_limited("app 2", 10).is_empty());
-        assert_eq!(provider.search_limited("app 3", 10).len(), 1);
     }
 }

@@ -261,39 +261,43 @@ fn writing_snippets() -> Vec<Snippet> {
 mod tests {
     use super::*;
 
+    /// The starter library is non-trivial, exposes placeholders and has unique ids.
     #[test]
-    fn starter_library_is_non_trivial() {
-        let lib = starter_library();
-        assert!(lib.len() >= 10);
-        // Every starter snippet has a title and a body.
-        for s in &lib {
-            assert!(!s.title.is_empty());
-            assert!(!s.body.is_empty());
+    fn starter_library_is_substantial_templated_and_unique() {
+        // Case `starter_library_is_non_trivial`.
+        {
+            let lib = starter_library();
+            assert!(lib.len() >= 10);
+            // Every starter snippet has a title and a body.
+            for s in &lib {
+                assert!(!s.title.is_empty());
+                assert!(!s.body.is_empty());
+            }
+            // A spread of languages is represented.
+            let langs: std::collections::HashSet<_> = lib.iter().map(|s| s.language).collect();
+            assert!(langs.contains(&Language::Shell));
+            assert!(langs.contains(&Language::Rust));
+            assert!(langs.contains(&Language::Sql));
+            assert!(langs.contains(&Language::Git));
         }
-        // A spread of languages is represented.
-        let langs: std::collections::HashSet<_> = lib.iter().map(|s| s.language).collect();
-        assert!(langs.contains(&Language::Shell));
-        assert!(langs.contains(&Language::Rust));
-        assert!(langs.contains(&Language::Sql));
-        assert!(langs.contains(&Language::Git));
-    }
 
-    #[test]
-    fn starter_snippets_expose_placeholders() {
-        let lib = starter_library();
-        let with_vars = lib.iter().filter(|s| s.has_placeholders()).count();
-        assert!(
-            with_vars >= 8,
-            "most starter snippets should have variables"
-        );
-    }
+        // Case `starter_snippets_expose_placeholders`.
+        {
+            let lib = starter_library();
+            let with_vars = lib.iter().filter(|s| s.has_placeholders()).count();
+            assert!(
+                with_vars >= 8,
+                "most starter snippets should have variables"
+            );
+        }
 
-    #[test]
-    fn ids_are_unique() {
-        let lib = starter_library();
-        let mut ids: Vec<_> = lib.iter().map(|s| s.id).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), lib.len());
+        // Case `ids_are_unique`.
+        {
+            let lib = starter_library();
+            let mut ids: Vec<_> = lib.iter().map(|s| s.id).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), lib.len());
+        }
     }
 }

@@ -872,230 +872,239 @@ mod tests {
     use automerge::{ROOT, transaction::Transactable};
 
     #[test]
-    fn legacy_history_observes_committed_state_without_closing_pending_edits() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Text::new("Document")),
-        );
-        app.state.doc.put(ROOT, "title", "before").unwrap();
-        app.state.commit_action(None, None);
-        app.state.doc.put(ROOT, "title", "typing").unwrap();
-        let pending = app.state.doc.pending_ops();
-        app.open_document_history().unwrap();
-        let snapshot = app.document_history_snapshot().unwrap().unwrap();
-        assert_eq!(snapshot.entries.len(), 1);
-        app.select_document_history(&[snapshot.entries[0].id])
-            .unwrap();
-        assert!(
-            app.document_history_snapshot()
-                .unwrap()
-                .unwrap()
-                .comparison
-                .is_some()
-        );
-        assert_eq!(app.state.doc.pending_ops(), pending);
-        app.close_document_history();
-        assert!(app.document_history_snapshot().unwrap().is_none());
+    fn legacy_history_observes_commits_and_invalidates_on_replacement() {
+        // Case `legacy_history_observes_committed_state_without_closing_pending_edits`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Text::new("Document")),
+            );
+            app.state.doc.put(ROOT, "title", "before").unwrap();
+            app.state.commit_action(None, None);
+            app.state.doc.put(ROOT, "title", "typing").unwrap();
+            let pending = app.state.doc.pending_ops();
+            app.open_document_history().unwrap();
+            let snapshot = app.document_history_snapshot().unwrap().unwrap();
+            assert_eq!(snapshot.entries.len(), 1);
+            app.select_document_history(&[snapshot.entries[0].id])
+                .unwrap();
+            assert!(
+                app.document_history_snapshot()
+                    .unwrap()
+                    .unwrap()
+                    .comparison
+                    .is_some()
+            );
+            assert_eq!(app.state.doc.pending_ops(), pending);
+            app.close_document_history();
+            assert!(app.document_history_snapshot().unwrap().is_none());
+        }
+
+        // Case `replacing_legacy_document_invalidates_even_with_no_record_set`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Text::new("Document")),
+            );
+            app.state
+                .doc
+                .put(ROOT, "private", "first document")
+                .unwrap();
+            app.state.commit_action(None, None);
+            app.open_document_history().unwrap();
+            let old = app.document_history_snapshot().unwrap().unwrap().entries[0].id;
+            assert!(app.state.adopt_doc(automerge::AutoCommit::new()));
+            assert!(app.document_history_snapshot().is_err());
+            assert!(app.select_document_history(&[old]).is_err());
+            assert!(!app.document_history.is_open());
+        }
     }
 
-    #[test]
-    fn replacing_legacy_document_invalidates_even_with_no_record_set() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Text::new("Document")),
-        );
-        app.state
-            .doc
-            .put(ROOT, "private", "first document")
-            .unwrap();
-        app.state.commit_action(None, None);
-        app.open_document_history().unwrap();
-        let old = app.document_history_snapshot().unwrap().unwrap().entries[0].id;
-        assert!(app.state.adopt_doc(automerge::AutoCommit::new()));
-        assert!(app.document_history_snapshot().is_err());
-        assert!(app.select_document_history(&[old]).is_err());
-        assert!(!app.document_history.is_open());
-    }
     fn layout(app: &mut App, width: u32) {
         let root = app.layout.root_node.expect("initialized layout");
         assert!(super::super::run_layout_pass(app, root, width, 700, 1.0, false, None).is_some());
     }
 
     #[test]
-    fn native_system_surface_omits_document_chrome_but_keeps_its_controls() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new("login", "Log in", None)),
-        )
-        .without_native_document_chrome();
-        // Exercise the same preparation used before the live event loop.
-        app.prepare_native_presentation();
-        app.init_layout();
-        layout(&mut app, 1024);
-        app.refresh_semantic_tree();
-        assert!(app.history_layout.is_none());
-        assert!(!app.history_chrome_enabled);
-        let names: Vec<_> = app
-            .semantic_tree()
-            .iter()
-            .filter_map(|node| node.name.as_deref())
-            .collect();
-        assert!(names.contains(&"Log in"));
-        assert!(!names.contains(&"History"));
-        assert!(!names.contains(&"Search"));
-        let open = tilo_actions::ActionAddress::new(
-            crate::standalone_history_host::HISTORY_RESOURCE,
-            "open",
-        );
-        assert!(app.action_ui_routes(&open).is_empty());
+    fn native_history_surface_chrome_door_and_presentation_follow_the_surface_kind() {
+        // Case `native_system_surface_omits_document_chrome_but_keeps_its_controls`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new("login", "Log in", None)),
+            )
+            .without_native_document_chrome();
+            // Exercise the same preparation used before the live event loop.
+            app.prepare_native_presentation();
+            app.init_layout();
+            layout(&mut app, 1024);
+            app.refresh_semantic_tree();
+            assert!(app.history_layout.is_none());
+            assert!(!app.history_chrome_enabled);
+            let names: Vec<_> = app
+                .semantic_tree()
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect();
+            assert!(names.contains(&"Log in"));
+            assert!(!names.contains(&"History"));
+            assert!(!names.contains(&"Search"));
+            let open = tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "open",
+            );
+            assert!(app.action_ui_routes(&open).is_empty());
+        }
+
+        // Case `native_document_surface_keeps_shared_chrome_by_default`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new("document", "Document", None)),
+            );
+            app.prepare_native_presentation();
+            app.init_layout();
+            layout(&mut app, 1024);
+            assert!(app.history_layout.is_some());
+            assert!(app.history_chrome_enabled);
+            let open = tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "open",
+            );
+            assert!(!app.action_ui_routes(&open).is_empty());
+        }
+
+        // Case `native_history_local_door_preserves_root_and_excludes_broker_resources`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new(
+                    "document-control",
+                    "Document control",
+                    None,
+                )),
+            );
+            app.state.doc.put(ROOT, "title", "before").unwrap();
+            app.state.commit_action(None, None);
+            app.state.doc.put(ROOT, "title", "pending").unwrap();
+            let pending = app.state.doc.pending_ops();
+            app.enable_document_history_chrome();
+            app.init_layout();
+            layout(&mut app, 1200);
+            let original = std::ptr::from_ref(app.root_widget.as_ref());
+            let open = tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "open",
+            );
+            assert!(
+                !app.action_ui_routes(&open).is_empty(),
+                "launcher is a visible canonical affordance"
+            );
+            app.invoke_history_address_local(&open, None)
+                .expect("local History address")
+                .unwrap();
+            layout(&mut app, 1200);
+            assert!(app.document_history.is_open());
+            assert!(std::ptr::eq(
+                original,
+                std::ptr::from_ref(app.root_widget.as_ref())
+            ));
+            assert!(
+                app.collect_resources()
+                    .iter()
+                    .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
+            );
+            let snapshot = app.document_history_snapshot().unwrap().unwrap();
+            app.select_document_history(&[snapshot.entries[0].id])
+                .unwrap();
+            assert!(
+                app.document_history_snapshot()
+                    .unwrap()
+                    .unwrap()
+                    .comparison
+                    .is_some()
+            );
+            assert_eq!(app.state.doc.pending_ops(), pending);
+            app.close_document_history();
+            layout(&mut app, 1200);
+            assert!(!app.document_history.is_open());
+        }
+
+        // Case `native_history_narrow_presentation_excludes_app_focus_and_accessibility`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new(
+                    "private-app-control",
+                    "Private app control",
+                    None,
+                )),
+            );
+            app.state.doc.put(ROOT, "title", "history").unwrap();
+            app.state.commit_action(None, None);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            layout(&mut app, 1200);
+            let content = app.history_layout.unwrap().app;
+            app.set_focused_node(Some(content));
+            app.open_document_history().unwrap();
+            layout(&mut app, 640);
+            assert!(!app.history_layout.unwrap().app_visible);
+            assert!(
+                app.focused_node
+                    .is_some_and(|node| app.is_history_node(node))
+            );
+            assert!(
+                app.focusable_order
+                    .iter()
+                    .all(|node| app.is_history_node(*node))
+            );
+            app.refresh_semantic_tree();
+            assert!(
+                app.semantic_tree()
+                    .find_by_name("Private app control")
+                    .is_none()
+            );
+            assert!(
+                app.semantic_tree()
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some("History"))
+            );
+            app.close_document_history();
+            layout(&mut app, 640);
+            assert!(app.history_layout.unwrap().app_visible);
+            assert_eq!(app.focused_node, Some(app.history_layout.unwrap().app));
+            app.refresh_semantic_tree();
+            assert!(
+                app.semantic_tree()
+                    .find_by_name("Private app control")
+                    .is_some()
+            );
+        }
+
+        // Case `native_history_redraw_probe_rebuilds_after_document_revocation`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new("content", "Content", None)),
+            );
+            app.state.doc.put(ROOT, "title", "private").unwrap();
+            app.state.commit_action(None, None);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            layout(&mut app, 640);
+            app.open_document_history().unwrap();
+            layout(&mut app, 640);
+            assert!(!app.history_layout.unwrap().app_visible);
+            assert!(app.state.adopt_doc(automerge::AutoCommit::new()));
+            assert!(app.history_needs_redraw());
+            assert!(app.layout.structure_dirty);
+            layout(&mut app, 640);
+            assert!(!app.document_history.is_open());
+            assert!(app.history_layout.unwrap().app_visible);
+        }
     }
 
-    #[test]
-    fn native_document_surface_keeps_shared_chrome_by_default() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new("document", "Document", None)),
-        );
-        app.prepare_native_presentation();
-        app.init_layout();
-        layout(&mut app, 1024);
-        assert!(app.history_layout.is_some());
-        assert!(app.history_chrome_enabled);
-        let open = tilo_actions::ActionAddress::new(
-            crate::standalone_history_host::HISTORY_RESOURCE,
-            "open",
-        );
-        assert!(!app.action_ui_routes(&open).is_empty());
-    }
-
-    #[test]
-    fn native_history_local_door_preserves_root_and_excludes_broker_resources() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new(
-                "document-control",
-                "Document control",
-                None,
-            )),
-        );
-        app.state.doc.put(ROOT, "title", "before").unwrap();
-        app.state.commit_action(None, None);
-        app.state.doc.put(ROOT, "title", "pending").unwrap();
-        let pending = app.state.doc.pending_ops();
-        app.enable_document_history_chrome();
-        app.init_layout();
-        layout(&mut app, 1200);
-        let original = std::ptr::from_ref(app.root_widget.as_ref());
-        let open = tilo_actions::ActionAddress::new(
-            crate::standalone_history_host::HISTORY_RESOURCE,
-            "open",
-        );
-        assert!(
-            !app.action_ui_routes(&open).is_empty(),
-            "launcher is a visible canonical affordance"
-        );
-        app.invoke_history_address_local(&open, None)
-            .expect("local History address")
-            .unwrap();
-        layout(&mut app, 1200);
-        assert!(app.document_history.is_open());
-        assert!(std::ptr::eq(
-            original,
-            std::ptr::from_ref(app.root_widget.as_ref())
-        ));
-        assert!(
-            app.collect_resources()
-                .iter()
-                .all(|resource| !resource.id.as_str().starts_with("tilo.host:"))
-        );
-        let snapshot = app.document_history_snapshot().unwrap().unwrap();
-        app.select_document_history(&[snapshot.entries[0].id])
-            .unwrap();
-        assert!(
-            app.document_history_snapshot()
-                .unwrap()
-                .unwrap()
-                .comparison
-                .is_some()
-        );
-        assert_eq!(app.state.doc.pending_ops(), pending);
-        app.close_document_history();
-        layout(&mut app, 1200);
-        assert!(!app.document_history.is_open());
-    }
-
-    #[test]
-    fn native_history_narrow_presentation_excludes_app_focus_and_accessibility() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new(
-                "private-app-control",
-                "Private app control",
-                None,
-            )),
-        );
-        app.state.doc.put(ROOT, "title", "history").unwrap();
-        app.state.commit_action(None, None);
-        app.enable_document_history_chrome();
-        app.init_layout();
-        layout(&mut app, 1200);
-        let content = app.history_layout.unwrap().app;
-        app.set_focused_node(Some(content));
-        app.open_document_history().unwrap();
-        layout(&mut app, 640);
-        assert!(!app.history_layout.unwrap().app_visible);
-        assert!(
-            app.focused_node
-                .is_some_and(|node| app.is_history_node(node))
-        );
-        assert!(
-            app.focusable_order
-                .iter()
-                .all(|node| app.is_history_node(*node))
-        );
-        app.refresh_semantic_tree();
-        assert!(
-            app.semantic_tree()
-                .find_by_name("Private app control")
-                .is_none()
-        );
-        assert!(
-            app.semantic_tree()
-                .iter()
-                .any(|node| node.name.as_deref() == Some("History"))
-        );
-        app.close_document_history();
-        layout(&mut app, 640);
-        assert!(app.history_layout.unwrap().app_visible);
-        assert_eq!(app.focused_node, Some(app.history_layout.unwrap().app));
-        app.refresh_semantic_tree();
-        assert!(
-            app.semantic_tree()
-                .find_by_name("Private app control")
-                .is_some()
-        );
-    }
-    #[test]
-    fn native_history_redraw_probe_rebuilds_after_document_revocation() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new("content", "Content", None)),
-        );
-        app.state.doc.put(ROOT, "title", "private").unwrap();
-        app.state.commit_action(None, None);
-        app.enable_document_history_chrome();
-        app.init_layout();
-        layout(&mut app, 640);
-        app.open_document_history().unwrap();
-        layout(&mut app, 640);
-        assert!(!app.history_layout.unwrap().app_visible);
-        assert!(app.state.adopt_doc(automerge::AutoCommit::new()));
-        assert!(app.history_needs_redraw());
-        assert!(app.layout.structure_dirty);
-        layout(&mut app, 640);
-        assert!(!app.document_history.is_open());
-        assert!(app.history_layout.unwrap().app_visible);
-    }
     fn native_click(app: &mut App, id: &str) {
         let node = *app
             .layout
@@ -1141,124 +1150,132 @@ mod tests {
     }
 
     #[test]
-    fn native_history_click_finalization_preserves_pending_app_edits() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Button::new(
-                "app-write",
-                "Write",
-                Some("pressed"),
-            )),
-        );
-        app.state.doc.put(ROOT, "title", "committed").unwrap();
-        app.state.commit_action(None, None);
-        app.enable_document_history_chrome();
-        app.init_layout();
-        layout(&mut app, 1200);
-        app.state.doc.put(ROOT, "title", "pending typing").unwrap();
-        let pending = app.state.doc.pending_ops();
-        assert!(pending > 0);
-        native_click(&mut app, "standalone-history-open");
-        assert!(app.document_history.is_open());
-        assert_eq!(app.state.doc.pending_ops(), pending);
-        layout(&mut app, 1200);
-        native_click(&mut app, "standalone-history-close");
-        assert!(!app.document_history.is_open());
-        assert_eq!(app.state.doc.pending_ops(), pending);
-        layout(&mut app, 1200);
-        native_click(&mut app, "app-write");
-        assert_eq!(
-            app.state.doc.pending_ops(),
-            0,
-            "ordinary app input retains the native commit boundary"
-        );
-    }
-    #[test]
-    fn native_history_tab_finalization_preserves_pending_app_edits() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Text::new("Document")),
-        );
-        app.state.doc.put(ROOT, "title", "committed").unwrap();
-        app.state.commit_action(None, None);
-        app.enable_document_history_chrome();
-        app.init_layout();
-        layout(&mut app, 1200);
-        app.open_document_history().unwrap();
-        layout(&mut app, 1200);
-        let toolbar = app.history_layout.unwrap().toolbar;
-        app.set_focused_node(Some(toolbar));
-        app.state.doc.put(ROOT, "title", "pending typing").unwrap();
-        let pending = app.state.doc.pending_ops();
-        let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
-        let event = winit::event::WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    ),
-                    state: winit::event::ElementState::Pressed,
-                },
-                key.clone(),
-                None,
-                winit::keyboard::KeyLocation::Standard,
-                false,
-                None,
-                key,
-            ),
-            is_synthetic: false,
-        };
-        let mut handled = false;
-        let mut focus = None;
-        let history_handled = app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
-        assert!(!handled, "toolbar leaves Tab to host navigation");
-        assert!(app.focus_tab(false));
-        app.finalize_handled_native_event(&event, false, history_handled);
-        assert_ne!(app.focused_node, Some(toolbar));
-        assert_eq!(app.state.doc.pending_ops(), pending);
-    }
-    #[test]
-    fn native_history_retained_widgets_survive_moving_initialized_app() {
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Text::new("Document")),
-        );
-        app.state.doc.put(ROOT, "title", "saved").unwrap();
-        app.state.commit_action(None, None);
-        app.enable_document_history_chrome();
-        app.init_layout();
-        let toolbar = app.history_layout.unwrap().toolbar;
-        let admitted = app.layout.node_map[&toolbar];
-        let mut moved = Box::new(app);
-        let retained = std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
-        assert!(
-            std::ptr::addr_eq(admitted, retained),
-            "admitted pointer must still name the actual retained toolbar after App moves"
-        );
-        let handled = moved
-            .dispatch_node(toolbar, |widget, document, path| {
-                widget.perform_action(&crate::a11y::Action::Activate, document, path)
-            })
-            .unwrap();
-        assert!(handled);
-        assert_eq!(moved.dispatch_history_controls(), 1);
-        assert!(moved.document_history.is_open());
-        // The open pane and its inline children must remain stable too.
-        moved.rebuild_structure();
-        let pane = moved.history_layout.unwrap().pane.unwrap();
-        let admitted_pane = moved.layout.node_map[&pane];
-        let mut moved_again = Box::new(*moved);
-        let retained_pane =
-            std::ptr::from_mut(moved_again.document_history.pane_mut().unwrap() as &mut dyn Widget);
-        assert!(std::ptr::addr_eq(admitted_pane, retained_pane));
-        assert_eq!(
-            moved_again
-                .inspect_node(pane, |widget| widget.test_id().map(str::to_owned))
-                .unwrap()
-                .as_deref(),
-            Some("standalone-history")
-        );
+    fn native_history_finalization_and_moves_preserve_pending_app_state() {
+        // Case `native_history_click_finalization_preserves_pending_app_edits`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new(
+                    "app-write",
+                    "Write",
+                    Some("pressed"),
+                )),
+            );
+            app.state.doc.put(ROOT, "title", "committed").unwrap();
+            app.state.commit_action(None, None);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            layout(&mut app, 1200);
+            app.state.doc.put(ROOT, "title", "pending typing").unwrap();
+            let pending = app.state.doc.pending_ops();
+            assert!(pending > 0);
+            native_click(&mut app, "standalone-history-open");
+            assert!(app.document_history.is_open());
+            assert_eq!(app.state.doc.pending_ops(), pending);
+            layout(&mut app, 1200);
+            native_click(&mut app, "standalone-history-close");
+            assert!(!app.document_history.is_open());
+            assert_eq!(app.state.doc.pending_ops(), pending);
+            layout(&mut app, 1200);
+            native_click(&mut app, "app-write");
+            assert_eq!(
+                app.state.doc.pending_ops(),
+                0,
+                "ordinary app input retains the native commit boundary"
+            );
+        }
+
+        // Case `native_history_tab_finalization_preserves_pending_app_edits`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Text::new("Document")),
+            );
+            app.state.doc.put(ROOT, "title", "committed").unwrap();
+            app.state.commit_action(None, None);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            layout(&mut app, 1200);
+            app.open_document_history().unwrap();
+            layout(&mut app, 1200);
+            let toolbar = app.history_layout.unwrap().toolbar;
+            app.set_focused_node(Some(toolbar));
+            app.state.doc.put(ROOT, "title", "pending typing").unwrap();
+            let pending = app.state.doc.pending_ops();
+            let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
+            let event = winit::event::WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: winit::event::KeyEvent::synthetic(
+                    winit::event::RawKeyEvent {
+                        physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                            winit::keyboard::NativeKeyCode::Unidentified,
+                        ),
+                        state: winit::event::ElementState::Pressed,
+                    },
+                    key.clone(),
+                    None,
+                    winit::keyboard::KeyLocation::Standard,
+                    false,
+                    None,
+                    key,
+                ),
+                is_synthetic: false,
+            };
+            let mut handled = false;
+            let mut focus = None;
+            let history_handled =
+                app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
+            assert!(!handled, "toolbar leaves Tab to host navigation");
+            assert!(app.focus_tab(false));
+            app.finalize_handled_native_event(&event, false, history_handled);
+            assert_ne!(app.focused_node, Some(toolbar));
+            assert_eq!(app.state.doc.pending_ops(), pending);
+        }
+
+        // Case `native_history_retained_widgets_survive_moving_initialized_app`.
+        {
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Text::new("Document")),
+            );
+            app.state.doc.put(ROOT, "title", "saved").unwrap();
+            app.state.commit_action(None, None);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            let toolbar = app.history_layout.unwrap().toolbar;
+            let admitted = app.layout.node_map[&toolbar];
+            let mut moved = Box::new(app);
+            let retained =
+                std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
+            assert!(
+                std::ptr::addr_eq(admitted, retained),
+                "admitted pointer must still name the actual retained toolbar after App moves"
+            );
+            let handled = moved
+                .dispatch_node(toolbar, |widget, document, path| {
+                    widget.perform_action(&crate::a11y::Action::Activate, document, path)
+                })
+                .unwrap();
+            assert!(handled);
+            assert_eq!(moved.dispatch_history_controls(), 1);
+            assert!(moved.document_history.is_open());
+            // The open pane and its inline children must remain stable too.
+            moved.rebuild_structure();
+            let pane = moved.history_layout.unwrap().pane.unwrap();
+            let admitted_pane = moved.layout.node_map[&pane];
+            let mut moved_again = Box::new(*moved);
+            let retained_pane = std::ptr::from_mut(
+                moved_again.document_history.pane_mut().unwrap() as &mut dyn Widget,
+            );
+            assert!(std::ptr::addr_eq(admitted_pane, retained_pane));
+            assert_eq!(
+                moved_again
+                    .inspect_node(pane, |widget| widget.test_id().map(str::to_owned))
+                    .unwrap()
+                    .as_deref(),
+                Some("standalone-history")
+            );
+        }
     }
 }
 

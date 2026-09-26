@@ -145,34 +145,28 @@ mod tests {
     }
 
     #[test]
-    fn a_catalogue_backed_provider_finds_the_last_record() {
-        let (catalog, hit) = assert_late_hit_reachable(|corpus| catalogue(corpus, ""), 3_000);
-        assert_eq!(hit.title, "Document 2999");
-        assert_eq!(catalog.stats().records, 3_000);
+    fn the_late_hit_corpus_puts_the_needle_only_in_the_last_record_a_catalogue_finds() {
+        // phase: a_catalogue_backed_provider_finds_the_last_record
+        {
+            let (catalog, hit) = assert_late_hit_reachable(|corpus| catalogue(corpus, ""), 3_000);
+            assert_eq!(hit.title, "Document 2999");
+            assert_eq!(catalog.stats().records, 3_000);
+        }
+        // phase: only_the_last_row_carries_the_needle
+        {
+            let rows: Vec<_> = Corpus { next: 0, len: 4 }.collect();
+            assert_eq!(rows.len(), 4);
+            assert!(
+                rows.iter()
+                    .take(3)
+                    .all(|row| !row.is_target && !row.text.contains(LATE_HIT_NEEDLE))
+            );
+            assert!(rows[3].is_target && rows[3].text.contains(LATE_HIT_NEEDLE));
+        }
     }
 
     #[test]
-    fn only_the_last_row_carries_the_needle() {
-        let rows: Vec<_> = Corpus { next: 0, len: 4 }.collect();
-        assert_eq!(rows.len(), 4);
-        assert!(
-            rows.iter()
-                .take(3)
-                .all(|row| !row.is_target && !row.text.contains(LATE_HIT_NEEDLE))
-        );
-        assert!(rows[3].is_target && rows[3].text.contains(LATE_HIT_NEEDLE));
-    }
-
-    #[test]
-    #[should_panic(expected = "exactly the last of 20 records")]
-    fn a_provider_that_matches_ordinary_rows_fails() {
-        let needle = format!(" {LATE_HIT_NEEDLE}");
-        assert_late_hit_reachable(|corpus| catalogue(corpus, &needle), 20);
-    }
-
-    #[test]
-    #[should_panic(expected = "search work must follow the matches")]
-    fn a_provider_that_scans_the_corpus_fails() {
+    fn the_late_hit_check_fails_a_provider_that_matches_or_scans_ordinary_rows() {
         /// Finds the right record, but by reading every one of them.
         struct Scanning(SearchCatalog);
         impl SearchProvider for Scanning {
@@ -194,6 +188,33 @@ mod tests {
                 page
             }
         }
-        assert_late_hit_reachable(|corpus| Scanning(catalogue(corpus, "")), 100);
+        fn panic_message(check: impl FnOnce()) -> String {
+            let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check))
+                .expect_err("the check must fail this provider");
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_default()
+        }
+
+        // A provider that matches ordinary rows fails.
+        let needle = format!(" {LATE_HIT_NEEDLE}");
+        let message = panic_message(|| {
+            assert_late_hit_reachable(|corpus| catalogue(corpus, &needle), 20);
+        });
+        assert!(
+            message.contains("exactly the last of 20 records"),
+            "case matches ordinary rows: {message}"
+        );
+
+        // A provider that scans the corpus fails.
+        let message = panic_message(|| {
+            assert_late_hit_reachable(|corpus| Scanning(catalogue(corpus, "")), 100);
+        });
+        assert!(
+            message.contains("search work must follow the matches"),
+            "case scans the corpus: {message}"
+        );
     }
 }

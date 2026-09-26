@@ -129,34 +129,36 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_copy_summarizes_work_instead_of_repeating_a_glance_label() {
-        let digest = ActivityDigest {
-            briefs: vec![
-                brief(1, "Onboard Sarah"),
-                brief(2, "Write Q3 financial report"),
-            ],
-            total_changes: 4,
-            people: 2,
-        };
-        let request = NarrativeRequest::from_digest(&digest).expect("two briefs");
-        assert_eq!(
-            request.deterministic_text,
-            "Work centered on Onboard Sarah and Write Q3 financial report."
-        );
-    }
-
-    #[test]
-    fn refuses_ungrounded_generated_claims() {
-        let request = NarrativeRequest {
-            deterministic_text: "Ada updated the brief".into(),
-            source_ids: vec![HistoryEntryId([1; 16])],
-            sources: Vec::new(),
-        };
-        let invented = GroundedNarrative {
-            text: "The launch was approved".into(),
-            source_ids: vec![HistoryEntryId([2; 16])],
-            generator: "test-model".into(),
-        };
-        assert!(validate_narrative(&request, invented).is_none());
+    fn narratives_summarise_work_and_refuse_ungrounded_claims() {
+        // phase: deterministic_copy_summarizes_work_instead_of_repeating_a_glance_label
+        {
+            let digest = ActivityDigest {
+                briefs: vec![
+                    brief(1, "Onboard Sarah"),
+                    brief(2, "Write Q3 financial report"),
+                ],
+                total_changes: 4,
+                people: 2,
+            };
+            let request = NarrativeRequest::from_digest(&digest).expect("two briefs");
+            assert_eq!(
+                request.deterministic_text,
+                "Work centered on Onboard Sarah and Write Q3 financial report."
+            );
+        }
+        // phase: refuses_ungrounded_generated_claims
+        {
+            let request = NarrativeRequest {
+                deterministic_text: "Ada updated the brief".into(),
+                source_ids: vec![HistoryEntryId([1; 16])],
+                sources: Vec::new(),
+            };
+            let invented = GroundedNarrative {
+                text: "The launch was approved".into(),
+                source_ids: vec![HistoryEntryId([2; 16])],
+                generator: "test-model".into(),
+            };
+            assert!(validate_narrative(&request, invented).is_none());
+        }
     }
 }
