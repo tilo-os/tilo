@@ -73,6 +73,7 @@ pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;
 pub mod notification;
+pub mod notification_history;
 pub mod osd;
 pub mod overlay_host;
 pub mod overview;
