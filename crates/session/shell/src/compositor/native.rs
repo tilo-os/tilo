@@ -2129,6 +2129,31 @@ fn post_codec_pack_notices(frame_builder: &mut FrameBuilder) -> bool {
     true
 }
 
+/// Start XDG autostart entries once per login, as soon as there is a
+/// workspace to attribute them to (and whose X11 display they may use).
+fn run_autostart_once(frame_builder: &FrameBuilder) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.load(std::sync::atomic::Ordering::Relaxed)
+        || !crate::compositor::session_env::is_tilo_login()
+    {
+        return;
+    }
+    let Some(room) = frame_builder
+        .chrome()
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
+    else {
+        return;
+    };
+    STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    match crate::shell::host_apps::launch_autostart(Some(&room)) {
+        Ok(started) => tracing::info!(started, "started XDG autostart entries"),
+        Err(error) => tracing::warn!(%error, "XDG autostart entries were not started"),
+    }
+}
+
 /// Host palette actions are queued by chrome, then launched here so the
 /// compositor can mint an external xdg-activation token before the child is
 /// spawned. This keeps the token single-use and binds it to the exact user
@@ -5540,6 +5565,7 @@ pub fn run() {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    crate::compositor::session_env::export(&public_socket_path);
     // Host tools started before the first open still see Tilo's defaults.
     let _ = std::thread::Builder::new()
         .name("tilo-mimeapps-publish".to_string())
@@ -6781,6 +6807,7 @@ pub fn run() {
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
+        run_autostart_once(&frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
         // client starts auto-repeat after a press and only stops once it sees the

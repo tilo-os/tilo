@@ -1266,13 +1266,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # to an in-memory store and every host app keeps its own defaults.
 # `xdg-utils` gives host apps `xdg-open`/`xdg-mime`, which read the
 # tilo-mimeapps.list the compositor publishes; `xdg-user-dirs` names the
-# Documents/Downloads/… folders host apps expect.
+# Documents/Downloads/… folders host apps expect. `geoclue2` is the service
+# xdg-desktop-portal's Location portal asks; without it every request fails.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
     dconf \
     gsettings-desktop-schemas \
     xdg-utils \
     xdg-user-dirs \
+    geoclue2 \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
