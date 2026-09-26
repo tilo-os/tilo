@@ -1066,7 +1066,6 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
-const TEST_CONTROL_WAKE_ENV: &str = "TILO_TEST_CONTROL_WAKE_FD";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1265,6 +1264,9 @@ fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
     reader: BufReader<UnixStream>,
+    /// Wakes the compositor loop when request bytes arrive on this stream;
+    /// removed from the loop together with the connection.
+    wake: Option<calloop::RegistrationToken>,
     closed: bool,
     pending_invocation: Option<PendingTestControlInvocation>,
     output: Vec<u8>,
@@ -1304,11 +1306,37 @@ impl TestControlConn {
         }
         Some(Self {
             reader: BufReader::new(stream),
+            wake: None,
             closed: false,
             pending_invocation: None,
             output: Vec::new(),
             output_offset: 0,
         })
+    }
+
+    /// Register this stream with `handle` as an edge-triggered wake. A
+    /// driver's `connect` makes the listener readable and is accepted at
+    /// once; its request line arrives separately, possibly only after this
+    /// iteration has already found the stream empty. Without its own wake
+    /// an idle compositor would sleep on the unread request until some
+    /// unrelated event. Edge-triggered, because every pump drains the stream
+    /// until it would block, and a level registration would spin on a peer
+    /// that half-closed while it waits for its response.
+    fn watch(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        let clone = match self.reader.get_ref().try_clone() {
+            Ok(clone) => clone,
+            Err(error) => {
+                eprintln!("tilo compositor: test_control conn wake clone: {error}");
+                return;
+            }
+        };
+        match handle.insert_source(
+            Generic::new(clone, Interest::READ, Mode::Edge),
+            |_, _, _| Ok(PostAction::Continue),
+        ) {
+            Ok(token) => self.wake = Some(token),
+            Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
+        }
     }
 
     fn peer_disconnected(&self) -> bool {
@@ -5769,11 +5797,10 @@ pub fn run() {
     // of the listener as a wake token so a driver which connects to an idle
     // compositor is serviced immediately.  Accepting and executing requests
     // stays below on the compositor thread; this source only prevents the
-    // outer calloop from sleeping through the listener's readability.
-    //
-    // The inherited eventfd below remains useful for older harnesses which
-    // write to an already-connected stream, but a plain Unix-socket client
-    // must never depend on that private side channel.
+    // outer calloop from sleeping through the listener's readability.  Each
+    // accepted stream gets its own wake (see `TestControlConn::watch`), because
+    // a connection is accepted as soon as it exists, which is often before
+    // the request bytes that follow it have arrived.
     let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
         let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
         if duplicate < 0 {
@@ -5797,69 +5824,6 @@ pub fn run() {
             }
         }
     });
-    // Test drivers pass an inherited eventfd and increment it after writing a
-    // command. That gives this manually-pumped protocol a proper outer-loop
-    // wake without registering a persistent Unix stream as permanently
-    // readable. The release build ignores test-control environment overrides.
-    let _test_control_wake = if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
-        std::env::var(TEST_CONTROL_WAKE_ENV)
-            .ok()
-            .and_then(|raw| raw.parse::<std::os::fd::RawFd>().ok())
-            .filter(|raw| *raw >= 0)
-            .and_then(|raw| {
-                // Duplicate rather than adopting the inherited number: the
-                // pre-existing Rust/Python process machinery may also own an
-                // object at that numeric fd. The duplicate gives calloop
-                // unambiguous lifetime ownership while preserving the same
-                // eventfd counter shared with the driver.
-                let duplicate = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 3) };
-                if duplicate < 0 {
-                    eprintln!(
-                        "tilo compositor: test_control duplicate wake fd {raw}: {}",
-                        std::io::Error::last_os_error()
-                    );
-                    return None;
-                }
-                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-                match event_loop.handle().insert_source(
-                    Generic::new(fd, Interest::READ, Mode::Level),
-                    |_, fd, _| {
-                        let mut value = 0u64;
-                        // SAFETY: eventfd's read ABI is exactly one native
-                        // u64. Drain through EAGAIN to clear level readiness.
-                        let result = unsafe {
-                            libc::read(
-                                fd.as_raw_fd(),
-                                (&raw mut value).cast::<libc::c_void>(),
-                                std::mem::size_of::<u64>(),
-                            )
-                        };
-                        if result < 0
-                            && std::io::Error::last_os_error().kind()
-                                != std::io::ErrorKind::WouldBlock
-                        {
-                            eprintln!(
-                                "tilo compositor: test_control wake read: {}",
-                                std::io::Error::last_os_error()
-                            );
-                        }
-                        Ok(PostAction::Continue)
-                    },
-                ) {
-                    Ok(token) => {
-                        eprintln!("tilo compositor: test_control wake fd {raw} registered");
-                        Some(token)
-                    }
-                    Err(error) => {
-                        eprintln!("tilo compositor: test_control wake source: {error}");
-                        None
-                    }
-                }
-            })
-    } else {
-        None
-    };
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
@@ -8644,17 +8608,15 @@ pub fn run() {
         }
 
         // Accept new test-control connections and drain them in this same
-        // iteration. Previously new connections were appended here but only
-        // pumped after the following calloop sleep. With no inherited wake fd
-        // that made a freshly connected test driver wait until an unrelated
-        // desktop event; with the wake fd it created a fragile two-phase
-        // handshake. Keeping accept+drain together makes the control protocol
-        // deterministic and leaves production builds unaffected.
+        // iteration, so a request already written is answered without
+        // another calloop sleep. One written after this drain wakes the loop
+        // through the connection's own source.
         if let Some(listener) = &test_control_listener {
             loop {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
-                        if let Some(conn) = TestControlConn::new(stream) {
+                        if let Some(mut conn) = TestControlConn::new(stream) {
+                            conn.watch(&event_loop.handle());
                             test_control_conns.push(conn);
                         }
                     }
@@ -8680,7 +8642,14 @@ pub fn run() {
                 injected_redraw_pending = true;
             }
         }
-        test_control_conns.retain(|conn| !conn.closed);
+        test_control_conns.retain_mut(|conn| {
+            if conn.closed
+                && let Some(token) = conn.wake.take()
+            {
+                event_loop.handle().remove(token);
+            }
+            !conn.closed
+        });
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
@@ -10238,6 +10207,44 @@ mod tests {
         });
         crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
             None,
+        );
+    }
+
+    /// A driver's request often lands after its connection was accepted and
+    /// found empty. The accepted stream must then wake an otherwise idle
+    /// loop itself, rather than leave the request for an unrelated event.
+    #[test]
+    fn a_request_written_after_accept_wakes_an_idle_loop() {
+        use std::io::Write as _;
+
+        let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        let mut conn = TestControlConn::new(server).expect("server connection");
+        conn.watch(&event_loop.handle());
+
+        // Nothing to read yet, so the loop sleeps out its whole timeout.
+        let idle = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("idle dispatch");
+        assert!(
+            idle.elapsed() >= Duration::from_millis(150),
+            "the loop must be idle before the request, or this proves nothing"
+        );
+
+        client
+            .write_all(b"{\"op\":\"list_targets\"}\n")
+            .expect("write the request");
+        let woke = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_secs(30)), &mut state)
+            .expect("dispatch");
+        assert!(
+            woke.elapsed() < Duration::from_secs(10),
+            "the request did not wake the loop (slept {:?})",
+            woke.elapsed()
         );
     }
 
