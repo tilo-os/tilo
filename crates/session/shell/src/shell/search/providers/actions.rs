@@ -101,6 +101,12 @@ const PRESENCE_FOLLOW_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Stable collaborator id returned by the workspace roster.",
 )];
 
+const SCREENSHOT_SEND_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "target",
+    ParamType::Text,
+    "`workspace` to save into this workspace's files, or the id of one of your online devices.",
+)];
+
 const PRESENCE_STATUS_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "text",
     ParamType::Text,
@@ -1106,6 +1112,26 @@ impl Action {
                 Ok(())
             },
         ),
+        Action {
+            id: "capture.screenshot.send",
+            label: "Send the last screenshot",
+            subtitle: "To one of your devices, or into this workspace's files",
+            params: SCREENSHOT_SEND_PARAMS,
+            apply: |st, args| {
+                let target = args.text("target").unwrap_or_default().trim();
+                if target.is_empty() {
+                    return Err(ActionError::Refused(
+                        "name `workspace` or one of your online devices".into(),
+                    ));
+                }
+                st.push_screenshot_send(if target == "workspace" {
+                    ui::widget::ScreenshotSendTarget::Workspace
+                } else {
+                    ui::widget::ScreenshotSendTarget::Device(target.to_string())
+                });
+                Ok(())
+            },
+        },
         chrome(
             "collaborators.open",
             "Show collaborators",

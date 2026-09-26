@@ -110,6 +110,7 @@ pub mod remote_cursors;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
