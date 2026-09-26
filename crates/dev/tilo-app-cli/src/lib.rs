@@ -5216,31 +5216,49 @@ fn terminate_build_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// The process and every descendant currently listed under it.
+/// The process and every descendant, found from `/proc/<pid>/status` `PPid`.
+///
+/// `/proc/<pid>/task/<pid>/children` is empty on kernels built without
+/// `CONFIG_PROC_CHILDREN`, which is how a cancelled `sleep` survived the
+/// process-group signal in CI.
 #[cfg(unix)]
 fn descendant_pids(root: u32) -> Vec<u32> {
+    let mut by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Some(parent) = parent_pid(pid) else {
+                continue;
+            };
+            by_parent.entry(parent).or_default().push(pid);
+        }
+    }
     let mut pids = vec![root];
     let mut cursor = 0usize;
     while let Some(pid) = pids.get(cursor).copied() {
         cursor = cursor.saturating_add(1);
-        for child in direct_child_pids(pid) {
-            if !pids.contains(&child) {
-                pids.push(child);
+        if let Some(children) = by_parent.get(&pid) {
+            for child in children {
+                if !pids.contains(child) {
+                    pids.push(*child);
+                }
             }
         }
     }
     pids
 }
 
-/// Child pids from `/proc/<pid>/task/<pid>/children`, or nothing when the
-/// kernel does not publish that file.
 #[cfg(unix)]
-fn direct_child_pids(pid: u32) -> Vec<u32> {
-    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-        .unwrap_or_default()
-        .split_whitespace()
-        .filter_map(|token| token.parse().ok())
-        .collect()
+fn parent_pid(pid: u32) -> Option<u32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("PPid:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
 }
 
 fn dev_binary_name(manifest: &Path) -> Result<String> {
