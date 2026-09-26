@@ -267,6 +267,54 @@ impl ChannelGroup {
         self.group.members().count()
     }
 
+    /// Whether this member still belongs to the group. A member removed by
+    /// a processed commit is inactive: it derives no further content keys.
+    pub fn is_active(&self) -> bool {
+        self.group.is_active()
+    }
+
+    /// Every member's leaf index and credential identity (for devices, the
+    /// 32-byte certified device key), in leaf order.
+    pub fn member_identities(&self) -> Vec<(u32, Vec<u8>)> {
+        self.group
+            .members()
+            .map(|member| {
+                (
+                    member.index.u32(),
+                    BasicCredential::try_from(member.credential)
+                        .map(|credential| credential.identity().to_vec())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// The leaf of the member whose credential identity is `identity`.
+    pub fn leaf_index_of(&self, identity: &[u8]) -> Option<u32> {
+        self.member_identities()
+            .into_iter()
+            .find_map(|(leaf, member)| (member == identity).then_some(leaf))
+    }
+
+    /// What an application endpoint needs to seal and open this channel's
+    /// content: the current epoch and every content key held. It carries
+    /// none of the MLS signing, HPKE or ratchet secrets, so handing it to an
+    /// app process never lets that process change membership.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`] when this member was removed.
+    pub fn content_keys(&self) -> Result<crate::ChannelContentKeys> {
+        if !self.group.is_active() {
+            return Err(Error::MissingContentKey(self.epoch()));
+        }
+        Ok(crate::ChannelContentKeys::new(
+            self.channel_id,
+            self.epoch(),
+            self.keyring.clone(),
+        ))
+    }
+
     /// Read-only borrow of the underlying member key, so the broker can look
     /// up which identity public key this group operates under without
     /// re-deriving it from the attestation store.
@@ -697,6 +745,20 @@ impl ChannelGroup {
             .merge_pending_commit(&self.member.provider)
             .map_err(Error::openmls)?;
         self.record_epoch_key()?;
+        Ok(true)
+    }
+
+    /// Drop a staged commit whose durable record was never written. Returns
+    /// `false` when no commit is staged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the staged commit cannot be cleared.
+    pub fn discard_pending_transaction(&mut self) -> Result<bool> {
+        if self.group.pending_commit().is_none() {
+            return Ok(false);
+        }
+        self.clear_pending()?;
         Ok(true)
     }
 }
