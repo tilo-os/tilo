@@ -535,19 +535,66 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_group_role_and_hidden_when_empty() {
-        use crate::a11y::Role;
-        let b = banner_at(Rect::new(0.0, 0.0, 400.0, 40.0), 3);
-        let node = Widget::accessibility(&b).expect("banner is not presentational");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Kanban move conflicts"));
-        assert_eq!(node.description.as_deref(), Some("3 unresolved"));
-        assert!(!node.state.hidden, "a banner with conflicts is visible");
+    fn conflict_banner_paints_and_hides_by_count() {
+        fn accessibility_reports_group_role_and_hidden_when_empty() {
+            use crate::a11y::Role;
+            let b = banner_at(Rect::new(0.0, 0.0, 400.0, 40.0), 3);
+            let node = Widget::accessibility(&b).expect("banner is not presentational");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Kanban move conflicts"));
+            assert_eq!(node.description.as_deref(), Some("3 unresolved"));
+            assert!(!node.state.hidden, "a banner with conflicts is visible");
 
-        // Zero conflicts → the banner paints nothing, so it is hidden from ATs.
-        let empty = banner_at(Rect::new(0.0, 0.0, 400.0, 40.0), 0);
-        let node = Widget::accessibility(&empty).unwrap();
-        assert!(node.state.hidden, "an empty banner must be hidden");
+            // Zero conflicts → the banner paints nothing, so it is hidden from ATs.
+            let empty = banner_at(Rect::new(0.0, 0.0, 400.0, 40.0), 0);
+            let node = Widget::accessibility(&empty).unwrap();
+            assert!(node.state.hidden, "an empty banner must be hidden");
+        }
+
+        fn banner_paints_nothing_when_count_zero() {
+            // The contract the chrome relies on to leave the banner in the
+            // layout tree without affecting layout.
+            let b = banner_at(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT), 0);
+            assert_eq!(b.conflict_count(), 0);
+            assert_eq!(b.get_rect(), Rect::ZERO);
+            assert!(b.review_chip_rect().is_none());
+            assert!(b.dismiss_chip_rect().is_none());
+        }
+
+        fn banner_paints_warning_strip_when_count_positive() {
+            // Both chip rects must be inside the banner rect (hit-testable).
+            let b = banner_at(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT), 3);
+            assert_eq!(b.conflict_count(), 3);
+            let r = b.get_rect();
+            assert!(r.width() > 0.0);
+            let review = b.review_chip_rect().expect("review chip must exist");
+            let dismiss = b.dismiss_chip_rect().expect("dismiss chip must exist");
+            assert!(r.contains(review.center()));
+            assert!(r.contains(dismiss.center()));
+            // Dismiss is the rightmost chip.
+            assert!(dismiss.x0 > review.x0);
+            // Count label uses the plural form for n != 1.
+            assert!(b.count_label().contains("3 conflicts"));
+        }
+
+        fn count_updates_via_setter() {
+            // Chip-rect existence flips at zero/non-zero.
+            let mut b = ConflictBanner::new("Kanban move");
+            b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
+            assert_eq!(b.conflict_count(), 0);
+            assert!(b.review_chip_rect().is_none());
+            b.set_conflict_count(7);
+            assert_eq!(b.conflict_count(), 7);
+            assert!(b.review_chip_rect().is_some());
+            b.set_conflict_count(0);
+            assert_eq!(b.conflict_count(), 0);
+            assert!(b.review_chip_rect().is_none());
+        }
+
+        accessibility_reports_group_role_and_hidden_when_empty();
+        banner_paints_nothing_when_count_zero();
+        banner_paints_warning_strip_when_count_positive();
+        count_updates_via_setter();
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -586,101 +633,62 @@ mod tests {
     }
 
     #[test]
-    fn banner_paints_nothing_when_count_zero() {
-        // The contract the chrome relies on to leave the banner in the
-        // layout tree without affecting layout.
-        let b = banner_at(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT), 0);
-        assert_eq!(b.conflict_count(), 0);
-        assert_eq!(b.get_rect(), Rect::ZERO);
-        assert!(b.review_chip_rect().is_none());
-        assert!(b.dismiss_chip_rect().is_none());
-    }
+    fn conflict_banner_chips_fire_only_their_callbacks() {
+        fn review_callback_fires_on_review_button_click() {
+            // Move cursor over the review chip, click — callback fires
+            // exactly once. Pins the hover→hit-test→callback wire.
+            let fired: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+            let fired_clone = fired.clone();
+            let mut b = ConflictBanner::new("Kanban move")
+                .on_review(move || *fired_clone.borrow_mut() += 1);
+            b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
+            b.set_conflict_count(2);
 
-    #[test]
-    fn banner_paints_warning_strip_when_count_positive() {
-        // Both chip rects must be inside the banner rect (hit-testable).
-        let b = banner_at(Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT), 3);
-        assert_eq!(b.conflict_count(), 3);
-        let r = b.get_rect();
-        assert!(r.width() > 0.0);
-        let review = b.review_chip_rect().expect("review chip must exist");
-        let dismiss = b.dismiss_chip_rect().expect("dismiss chip must exist");
-        assert!(r.contains(review.center()));
-        assert!(r.contains(dismiss.center()));
-        // Dismiss is the rightmost chip.
-        assert!(dismiss.x0 > review.x0);
-        // Count label uses the plural form for n != 1.
-        assert!(b.count_label().contains("3 conflicts"));
-    }
+            let chip = b.review_chip_rect().unwrap();
+            dispatch(&mut b, &cursor_moved(chip.center().x, chip.center().y));
+            dispatch(&mut b, &mouse_press());
+            assert_eq!(*fired.borrow(), 1);
+        }
 
-    #[test]
-    fn review_callback_fires_on_review_button_click() {
-        // Move cursor over the review chip, click — callback fires
-        // exactly once. Pins the hover→hit-test→callback wire.
-        let fired: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
-        let fired_clone = fired.clone();
-        let mut b =
-            ConflictBanner::new("Kanban move").on_review(move || *fired_clone.borrow_mut() += 1);
-        b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
-        b.set_conflict_count(2);
+        fn dismiss_callback_fires_on_dismiss_button_click() {
+            // Symmetrical wire for the Dismiss chip.
+            let fired: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+            let fired_clone = fired.clone();
+            let mut b = ConflictBanner::new("Rename collision")
+                .on_dismiss(move || *fired_clone.borrow_mut() += 1);
+            b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
+            b.set_conflict_count(1);
 
-        let chip = b.review_chip_rect().unwrap();
-        dispatch(&mut b, &cursor_moved(chip.center().x, chip.center().y));
-        dispatch(&mut b, &mouse_press());
-        assert_eq!(*fired.borrow(), 1);
-    }
+            let chip = b.dismiss_chip_rect().unwrap();
+            dispatch(&mut b, &cursor_moved(chip.center().x, chip.center().y));
+            dispatch(&mut b, &mouse_press());
+            assert_eq!(*fired.borrow(), 1);
+            // Singular form for n == 1.
+            assert!(b.count_label().contains("1 conflict in this doc"));
+        }
 
-    #[test]
-    fn dismiss_callback_fires_on_dismiss_button_click() {
-        // Symmetrical wire for the Dismiss chip.
-        let fired: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
-        let fired_clone = fired.clone();
-        let mut b = ConflictBanner::new("Rename collision")
-            .on_dismiss(move || *fired_clone.borrow_mut() += 1);
-        b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
-        b.set_conflict_count(1);
+        fn cursor_outside_chips_does_not_fire_callbacks() {
+            // Clicking inside the banner but outside both chips must
+            // not fire either callback. Pins the hit-test boundary.
+            let fired_review: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+            let fired_dismiss: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+            let fr = fired_review.clone();
+            let fd = fired_dismiss.clone();
+            let mut b = ConflictBanner::new("Kanban move")
+                .on_review(move || *fr.borrow_mut() += 1)
+                .on_dismiss(move || *fd.borrow_mut() += 1);
+            b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
+            b.set_conflict_count(3);
 
-        let chip = b.dismiss_chip_rect().unwrap();
-        dispatch(&mut b, &cursor_moved(chip.center().x, chip.center().y));
-        dispatch(&mut b, &mouse_press());
-        assert_eq!(*fired.borrow(), 1);
-        // Singular form for n == 1.
-        assert!(b.count_label().contains("1 conflict in this doc"));
-    }
+            // Click on the leading-glyph area, well left of both chips.
+            dispatch(&mut b, &cursor_moved(20.0, BANNER_HEIGHT / 2.0));
+            dispatch(&mut b, &mouse_press());
+            assert_eq!(*fired_review.borrow(), 0);
+            assert_eq!(*fired_dismiss.borrow(), 0);
+        }
 
-    #[test]
-    fn count_updates_via_setter() {
-        // Chip-rect existence flips at zero/non-zero.
-        let mut b = ConflictBanner::new("Kanban move");
-        b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
-        assert_eq!(b.conflict_count(), 0);
-        assert!(b.review_chip_rect().is_none());
-        b.set_conflict_count(7);
-        assert_eq!(b.conflict_count(), 7);
-        assert!(b.review_chip_rect().is_some());
-        b.set_conflict_count(0);
-        assert_eq!(b.conflict_count(), 0);
-        assert!(b.review_chip_rect().is_none());
-    }
-
-    #[test]
-    fn cursor_outside_chips_does_not_fire_callbacks() {
-        // Clicking inside the banner but outside both chips must
-        // not fire either callback. Pins the hit-test boundary.
-        let fired_review: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
-        let fired_dismiss: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
-        let fr = fired_review.clone();
-        let fd = fired_dismiss.clone();
-        let mut b = ConflictBanner::new("Kanban move")
-            .on_review(move || *fr.borrow_mut() += 1)
-            .on_dismiss(move || *fd.borrow_mut() += 1);
-        b.rect = Rect::new(0.0, 0.0, 600.0, BANNER_HEIGHT);
-        b.set_conflict_count(3);
-
-        // Click on the leading-glyph area, well left of both chips.
-        dispatch(&mut b, &cursor_moved(20.0, BANNER_HEIGHT / 2.0));
-        dispatch(&mut b, &mouse_press());
-        assert_eq!(*fired_review.borrow(), 0);
-        assert_eq!(*fired_dismiss.borrow(), 0);
+        review_callback_fires_on_review_button_click();
+        dismiss_callback_fires_on_dismiss_button_click();
+        cursor_outside_chips_does_not_fire_callbacks();
     }
 }

@@ -351,65 +351,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_words_is_case_insensitive() {
-        let d = Dictionary::from_words(["Hello", "WORLD"]);
-        assert!(d.contains("hello"));
-        assert!(d.contains("HELLO"));
-        assert!(d.contains("World"));
-        assert!(!d.contains("goodbye"));
-    }
-
-    #[test]
-    fn trims_and_skips_empty() {
-        let d = Dictionary::from_words(["  spaced  ", "", "   ", "ok"]);
-        assert!(d.contains("spaced"));
-        assert!(d.contains("ok"));
-        assert_eq!(d.len(), 2);
-    }
-
-    #[test]
-    fn len_range_iter_respects_bounds() {
-        let d = Dictionary::from_words(["a", "to", "cat", "four", "fives"]);
-        let got: HashSet<&str> = d.words_in_len_range(3, 4).collect();
-        assert!(got.contains("cat"));
-        assert!(got.contains("four"));
-        assert!(!got.contains("to"));
-        assert!(!got.contains("fives"));
-    }
-
-    #[test]
-    fn builtin_loads() {
-        let d = Dictionary::builtin();
-        assert!(d.len() > 10_000);
-        assert!(d.contains("the"));
-        assert!(d.contains("quick"));
-        assert!(!d.contains("teh"));
-    }
-
-    #[test]
-    fn add_word_makes_a_word_known_case_insensitively() {
-        let mut d = Dictionary::from_words(["alpha", "beta"]);
-        assert!(!d.contains("tilo"), "precondition: unknown word");
-        assert!(d.add_word("Tilo"), "first add records the word");
-        assert!(d.contains("tilo"), "added word is now known");
-        assert!(d.contains("TILO"), "membership stays case-insensitive");
-        // Re-adding is a no-op, and adding a built-in word records nothing.
-        assert!(
-            !d.add_word("tilo"),
-            "re-adding an existing user word is a no-op"
-        );
-        assert!(
-            !d.add_word("alpha"),
-            "adding a built-in word records nothing"
-        );
-    }
-
-    #[test]
-    fn add_word_ignores_empty_and_whitespace() {
-        let mut d = Dictionary::from_words(["alpha"]);
-        assert!(!d.add_word(""));
-        assert!(!d.add_word("   "));
-        assert_eq!(d.user_words().count(), 0);
+    fn dictionaries_build_case_insensitively_and_accept_added_words() {
+        // Phase `from_words_is_case_insensitive`.
+        {
+            let d = Dictionary::from_words(["Hello", "WORLD"]);
+            assert!(d.contains("hello"));
+            assert!(d.contains("HELLO"));
+            assert!(d.contains("World"));
+            assert!(!d.contains("goodbye"));
+        }
+        // Phase `trims_and_skips_empty`.
+        {
+            let d = Dictionary::from_words(["  spaced  ", "", "   ", "ok"]);
+            assert!(d.contains("spaced"));
+            assert!(d.contains("ok"));
+            assert_eq!(d.len(), 2);
+        }
+        // Phase `len_range_iter_respects_bounds`.
+        {
+            let d = Dictionary::from_words(["a", "to", "cat", "four", "fives"]);
+            let got: HashSet<&str> = d.words_in_len_range(3, 4).collect();
+            assert!(got.contains("cat"));
+            assert!(got.contains("four"));
+            assert!(!got.contains("to"));
+            assert!(!got.contains("fives"));
+        }
+        // Phase `builtin_loads`.
+        {
+            let d = Dictionary::builtin();
+            assert!(d.len() > 10_000);
+            assert!(d.contains("the"));
+            assert!(d.contains("quick"));
+            assert!(!d.contains("teh"));
+        }
+        // Phase `add_word_makes_a_word_known_case_insensitively`.
+        {
+            let mut d = Dictionary::from_words(["alpha", "beta"]);
+            assert!(!d.contains("tilo"), "precondition: unknown word");
+            assert!(d.add_word("Tilo"), "first add records the word");
+            assert!(d.contains("tilo"), "added word is now known");
+            assert!(d.contains("TILO"), "membership stays case-insensitive");
+            // Re-adding is a no-op, and adding a built-in word records nothing.
+            assert!(
+                !d.add_word("tilo"),
+                "re-adding an existing user word is a no-op"
+            );
+            assert!(
+                !d.add_word("alpha"),
+                "adding a built-in word records nothing"
+            );
+        }
+        // Phase `add_word_ignores_empty_and_whitespace`.
+        {
+            let mut d = Dictionary::from_words(["alpha"]);
+            assert!(!d.add_word(""));
+            assert!(!d.add_word("   "));
+            assert_eq!(d.user_words().count(), 0);
+        }
     }
 }
 
@@ -417,29 +415,31 @@ mod tests {
 mod product_vocabulary_tests {
     use super::*;
 
-    /// The assistant this OS ships is not a misspelling.
-    ///
-    /// A red underline beneath `Claude` in a Tilo document is the system
-    /// reporting itself as an error, and it turned up in a document where
-    /// somebody had simply addressed the agent by name.
     #[test]
-    fn the_products_own_nouns_are_not_misspellings() {
-        let d = Dictionary::builtin();
-        for word in ["Claude", "claude", "Tilo", "TILO", "tilo", "tilo"] {
-            assert!(
-                d.contains(word),
-                "{word} is a name this OS puts on screen itself, so its own \
-                 spellchecker must not underline it",
-            );
+    fn product_nouns_are_known_but_ordinary_misspellings_are_caught() {
+        // Phase `the_products_own_nouns_are_not_misspellings`.
+        // The assistant this OS ships is not a misspelling.
+        //
+        // A red underline beneath `Claude` in a Tilo document is the system
+        // reporting itself as an error, and it turned up in a document where
+        // somebody had simply addressed the agent by name.
+        {
+            let d = Dictionary::builtin();
+            for word in ["Claude", "claude", "Tilo", "TILO", "tilo", "tilo"] {
+                assert!(
+                    d.contains(word),
+                    "{word} is a name this OS puts on screen itself, so its own \
+                     spellchecker must not underline it",
+                );
+            }
         }
-    }
-
-    /// And the general list still applies — a dictionary that accepted
-    /// everything would pass the test above for the wrong reason.
-    #[test]
-    fn an_ordinary_misspelling_is_still_caught() {
-        let d = Dictionary::builtin();
-        assert!(!d.contains("teh"), "the general word list must still apply");
-        assert!(d.contains("the"));
+        // Phase `an_ordinary_misspelling_is_still_caught`.
+        // And the general list still applies — a dictionary that accepted
+        // everything would pass the test above for the wrong reason.
+        {
+            let d = Dictionary::builtin();
+            assert!(!d.contains("teh"), "the general word list must still apply");
+            assert!(d.contains("the"));
+        }
     }
 }

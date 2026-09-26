@@ -3641,7 +3641,7 @@ fn tab_drag_out_to_new_group() -> Scenario {
                 // mid-y ≈ 128). Pill 1 (Files) sits at x≈424 with the
                 // Wide group laid out from x≈224 + 24 padding + 14 px
                 // leading icon + ~6 px gap. The integration test
-                // `driver_drag_tab_out_creates_sibling_group` reads
+                // `driver_tab_drag_and_detach_scope_to_the_right_group` reads
                 // these via `WindowGroup::tab_rects()` for pixel-
                 // accurate hit; this scenario just needs coords close
                 // enough that the press lands inside the pill.
@@ -4215,73 +4215,219 @@ mod tests {
     }
 
     #[test]
-    fn scenario_palette_typing_lands_query() {
-        let mut d = ShellDriver::new((1600, 900));
-        let mut sink = CountingSink { seen: Vec::new() };
-        let scenario = palette_typing();
-        run(&mut d, &scenario, &mut sink);
-        // Locate the snapshot taken right after the `Type("h")` step.
-        let typed = sink
-            .seen
-            .iter()
-            .find(|(n, _)| n == "03-palette-typed-h")
-            .expect("scenario should snapshot 03-palette-typed-h");
-        assert_eq!(
-            typed.1, "h",
-            "after Type(\"h\") with palette open, the query should be 'h'"
-        );
-        // Final state: palette closed.
-        assert!(
-            !d.host().palette_visible(),
-            "Esc should close the palette by the end of the scenario"
-        );
-    }
-
-    #[test]
-    fn scenario_catalogue_lookup_round_trip() {
-        for s in catalogue() {
-            let found = lookup(s.name).expect("named scenario should be in catalogue");
-            assert_eq!(found.name, s.name);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn scenario_steps_drive_the_shell_and_snapshot_only_when_asked() {
+        // Phase `scenario_palette_typing_lands_query`.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            let mut sink = CountingSink { seen: Vec::new() };
+            let scenario = palette_typing();
+            run(&mut d, &scenario, &mut sink);
+            // Locate the snapshot taken right after the `Type("h")` step.
+            let typed = sink
+                .seen
+                .iter()
+                .find(|(n, _)| n == "03-palette-typed-h")
+                .expect("scenario should snapshot 03-palette-typed-h");
+            assert_eq!(
+                typed.1, "h",
+                "after Type(\"h\") with palette open, the query should be 'h'"
+            );
+            // Final state: palette closed.
+            assert!(
+                !d.host().palette_visible(),
+                "Esc should close the palette by the end of the scenario"
+            );
         }
-        assert!(lookup("does_not_exist").is_none());
-    }
-
-    #[test]
-    fn collaboration_product_proof_keeps_invitation_presence_and_recovery_distinct() {
-        let scenario = collaboration_product_proof();
-        let snapshots: Vec<_> = scenario
-            .actions
-            .iter()
-            .filter_map(|action| match action {
-                Action::Snapshot(name) => Some(*name),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            snapshots,
-            vec![
-                "01-solo-workspace",
-                "02-invite-pending",
-                "03-ada-editing-notes",
-                "04-attributed-history",
-                "05-history-comparison",
-                "06-reverted-forward",
-                "07-ada-in-files",
-            ],
-            "the proof must retain every product state rather than skipping from invite to history"
-        );
-        assert!(
-            scenario
-                .actions
-                .windows(2)
-                .any(|pair| matches!(pair, [Action::SeedInvitePending, Action::Wait(_)]))
-        );
-        assert!(
-            scenario
+        // Phase `scenario_catalogue_lookup_round_trip`.
+        {
+            for s in catalogue() {
+                let found = lookup(s.name).expect("named scenario should be in catalogue");
+                assert_eq!(found.name, s.name);
+            }
+            assert!(lookup("does_not_exist").is_none());
+        }
+        // Phase `scenario_workspace_switch_moves_active_index`.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            let initial = d.chrome().tree().desktop.active;
+            let mut sink = NullSink;
+            let scenario = workspace_switch();
+            run(&mut d, &scenario, &mut sink);
+            // After the round-trip the active workspace should match the
+            // initial one again.
+            assert_eq!(d.chrome().tree().desktop.active, initial);
+        }
+        // Phase `scenario_post_animation_waits_outlast_their_animation`.
+        // Regression: post-action waits in built-in scenarios must outlast
+        // the longest in-flight animation, otherwise offscreen snapshots
+        // capture mid-animation pixels (slide voids, layout-spring pill
+        // overlap) instead of the settled state the scenario name implies.
+        //
+        // We only enforce the obvious cases here — the catalogue grows,
+        // and not every wait gates a known animation — but the two we did
+        // fix during the 2026-05-04 inspection sweep are pinned so a future
+        // edit that shortens them re-introduces the visual artefacts.
+        {
+            // tab_drag releases a drag whose post-drop layout spring runs
+            // for LAYOUT_ANIM_MS = 180 ms (see ui::widget::tabs).
+            let td = tab_drag();
+            let td_waits: Vec<u32> = td
                 .actions
                 .iter()
-                .any(|action| matches!(action, Action::RevertRoomActivity))
-        );
+                .filter_map(|a| match a {
+                    Action::Wait(n) => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            assert!(!td_waits.is_empty(), "tab_drag must contain Wait actions");
+            for n in &td_waits {
+                assert!(
+                    u64::from(*n) * 16 >= 180,
+                    "tab_drag Wait({n}) is shorter than LAYOUT_ANIM_MS=180; snapshot will paint adjacent pills overlapping"
+                );
+            }
+        }
+        // Phase `chrome_state_json_includes_palette_query`.
+        {
+            let mut d = ShellDriver::new((1600, 900));
+            d.host_mut().set_palette_visible(true);
+            d.host_mut().set_palette_query("hello");
+            let json = chrome_state_json(&d);
+            assert!(
+                json.contains("\"palette_query\":\"hello\""),
+                "json should include palette_query: {json}"
+            );
+            assert!(json.contains("\"palette_visible\":true"));
+        }
+        // Phase `per_frame_flag_inserts_snapshots_between_waits`.
+        // `run_with(per_frame = Some(n))` must insert `n` intermediate
+        // snapshots between a named snapshot and the surrounding waits.
+        // Pinned so a future edit that drops the wait expansion would
+        // re-introduce the "single still frame for animated scenarios"
+        // gap the harness was added to close.
+        {
+            // Synthetic minimal scenario: one named snapshot, one wait, one
+            // closing snapshot. Drives no real animation so the test stays
+            // fast (~step_frames sleeps for 16 ms × frames).
+            let scenario = Scenario {
+                name: "_per_frame_test",
+                description: "",
+                actions: vec![
+                    Action::Snapshot("a"),
+                    Action::Wait(4),
+                    Action::Snapshot("b"),
+                ],
+            };
+            let mut d = ShellDriver::new((128, 96));
+            let mut sink = NameSink { names: Vec::new() };
+            run_with(&mut d, &scenario, &mut sink, Some(4));
+            // Expected: ["a", "a-frame00", "a-frame01", "a-frame02", "a-frame03", "b"].
+            // The intermediate frames hang off the most-recent named snapshot
+            // ("a"), so a regression that loses the upstream name would
+            // surface as "frame-00" instead of "a-frame00".
+            assert_eq!(
+                sink.names,
+                vec![
+                    "a".to_string(),
+                    "a-frame00".to_string(),
+                    "a-frame01".to_string(),
+                    "a-frame02".to_string(),
+                    "a-frame03".to_string(),
+                    "b".to_string(),
+                ],
+                "per-frame expansion must insert 4 intermediate snapshots between Wait(4) and Snapshot",
+            );
+        }
+        // Phase `per_frame_none_is_identical_to_plain_run`.
+        // When `per_frame` is `None`, `run_with` must behave exactly like
+        // `run` — no extra snapshots inserted.
+        {
+            let scenario = Scenario {
+                name: "_no_per_frame",
+                description: "",
+                actions: vec![
+                    Action::Snapshot("first"),
+                    Action::Wait(2),
+                    Action::Snapshot("second"),
+                ],
+            };
+            let mut d = ShellDriver::new((128, 96));
+            let mut sink = NameSink { names: Vec::new() };
+            run_with(&mut d, &scenario, &mut sink, None);
+            assert_eq!(sink.names, vec!["first".to_string(), "second".to_string()],);
+        }
+    }
+
+    #[test]
+    fn collaboration_product_proof_keeps_states_distinct_and_backed_by_claims() {
+        // Phase `collaboration_product_proof_keeps_invitation_presence_and_recovery_distinct`.
+        {
+            let scenario = collaboration_product_proof();
+            let snapshots: Vec<_> = scenario
+                .actions
+                .iter()
+                .filter_map(|action| match action {
+                    Action::Snapshot(name) => Some(*name),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                snapshots,
+                vec![
+                    "01-solo-workspace",
+                    "02-invite-pending",
+                    "03-ada-editing-notes",
+                    "04-attributed-history",
+                    "05-history-comparison",
+                    "06-reverted-forward",
+                    "07-ada-in-files",
+                ],
+                "the proof must retain every product state rather than skipping from invite to history"
+            );
+            assert!(
+                scenario
+                    .actions
+                    .windows(2)
+                    .any(|pair| matches!(pair, [Action::SeedInvitePending, Action::Wait(_)]))
+            );
+            assert!(
+                scenario
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action, Action::RevertRoomActivity))
+            );
+        }
+        // Phase `collaboration_product_proof_frames_are_backed_by_the_claimed_state`.
+        {
+            let mut driver = ShellDriver::new((1600, 900));
+            let mut sink = CollaborationProofSink {
+                pending_invite_is_durable: false,
+                ada_activity_is_visible: false,
+                forward_revert_is_announced: false,
+                ada_is_active_in_files: false,
+            };
+            run(&mut driver, &collaboration_product_proof(), &mut sink);
+            assert!(
+                sink.pending_invite_is_durable,
+                "the pending-invite frame must show both durable access and non-live presence"
+            );
+            assert!(
+                sink.ada_activity_is_visible,
+                "the attributed-history frame must visibly filter to Ada's authored changes"
+            );
+            assert!(
+                sink.forward_revert_is_announced,
+                "the reverted frame must be backed by a new forward recovery"
+            );
+            assert!(
+                sink.ada_is_active_in_files,
+                "the last frame must place the admitted collaborator in real Files content"
+            );
+        }
     }
 
     /// Snapshot names are a contract with the visual review suite. Check the
@@ -4360,77 +4506,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn collaboration_product_proof_frames_are_backed_by_the_claimed_state() {
-        let mut driver = ShellDriver::new((1600, 900));
-        let mut sink = CollaborationProofSink {
-            pending_invite_is_durable: false,
-            ada_activity_is_visible: false,
-            forward_revert_is_announced: false,
-            ada_is_active_in_files: false,
-        };
-        run(&mut driver, &collaboration_product_proof(), &mut sink);
-        assert!(
-            sink.pending_invite_is_durable,
-            "the pending-invite frame must show both durable access and non-live presence"
-        );
-        assert!(
-            sink.ada_activity_is_visible,
-            "the attributed-history frame must visibly filter to Ada's authored changes"
-        );
-        assert!(
-            sink.forward_revert_is_announced,
-            "the reverted frame must be backed by a new forward recovery"
-        );
-        assert!(
-            sink.ada_is_active_in_files,
-            "the last frame must place the admitted collaborator in real Files content"
-        );
-    }
-
-    #[test]
-    fn scenario_workspace_switch_moves_active_index() {
-        let mut d = ShellDriver::new((1600, 900));
-        let initial = d.chrome().tree().desktop.active;
-        let mut sink = NullSink;
-        let scenario = workspace_switch();
-        run(&mut d, &scenario, &mut sink);
-        // After the round-trip the active workspace should match the
-        // initial one again.
-        assert_eq!(d.chrome().tree().desktop.active, initial);
-    }
-
-    /// Regression: post-action waits in built-in scenarios must outlast
-    /// the longest in-flight animation, otherwise offscreen snapshots
-    /// capture mid-animation pixels (slide voids, layout-spring pill
-    /// overlap) instead of the settled state the scenario name implies.
-    ///
-    /// We only enforce the obvious cases here — the catalogue grows,
-    /// and not every wait gates a known animation — but the two we did
-    /// fix during the 2026-05-04 inspection sweep are pinned so a future
-    /// edit that shortens them re-introduces the visual artefacts.
-    #[test]
-    fn scenario_post_animation_waits_outlast_their_animation() {
-        // tab_drag releases a drag whose post-drop layout spring runs
-        // for LAYOUT_ANIM_MS = 180 ms (see ui::widget::tabs).
-        let td = tab_drag();
-        let td_waits: Vec<u32> = td
-            .actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::Wait(n) => Some(*n),
-                _ => None,
-            })
-            .collect();
-        assert!(!td_waits.is_empty(), "tab_drag must contain Wait actions");
-        for n in &td_waits {
-            assert!(
-                u64::from(*n) * 16 >= 180,
-                "tab_drag Wait({n}) is shorter than LAYOUT_ANIM_MS=180; snapshot will paint adjacent pills overlapping"
-            );
-        }
-    }
-
     /// Sink that only records snapshot names — used to verify the
     /// per-frame expansion in `run_with` inserts the right number of
     /// intermediate captures between snapshots.
@@ -4441,65 +4516,6 @@ mod tests {
         fn capture(&mut self, _driver: &mut ShellDriver, name: &str) {
             self.names.push(name.to_string());
         }
-    }
-
-    /// `run_with(per_frame = Some(n))` must insert `n` intermediate
-    /// snapshots between a named snapshot and the surrounding waits.
-    /// Pinned so a future edit that drops the wait expansion would
-    /// re-introduce the "single still frame for animated scenarios"
-    /// gap the harness was added to close.
-    #[test]
-    fn per_frame_flag_inserts_snapshots_between_waits() {
-        // Synthetic minimal scenario: one named snapshot, one wait, one
-        // closing snapshot. Drives no real animation so the test stays
-        // fast (~step_frames sleeps for 16 ms × frames).
-        let scenario = Scenario {
-            name: "_per_frame_test",
-            description: "",
-            actions: vec![
-                Action::Snapshot("a"),
-                Action::Wait(4),
-                Action::Snapshot("b"),
-            ],
-        };
-        let mut d = ShellDriver::new((128, 96));
-        let mut sink = NameSink { names: Vec::new() };
-        run_with(&mut d, &scenario, &mut sink, Some(4));
-        // Expected: ["a", "a-frame00", "a-frame01", "a-frame02", "a-frame03", "b"].
-        // The intermediate frames hang off the most-recent named snapshot
-        // ("a"), so a regression that loses the upstream name would
-        // surface as "frame-00" instead of "a-frame00".
-        assert_eq!(
-            sink.names,
-            vec![
-                "a".to_string(),
-                "a-frame00".to_string(),
-                "a-frame01".to_string(),
-                "a-frame02".to_string(),
-                "a-frame03".to_string(),
-                "b".to_string(),
-            ],
-            "per-frame expansion must insert 4 intermediate snapshots between Wait(4) and Snapshot",
-        );
-    }
-
-    /// When `per_frame` is `None`, `run_with` must behave exactly like
-    /// `run` — no extra snapshots inserted.
-    #[test]
-    fn per_frame_none_is_identical_to_plain_run() {
-        let scenario = Scenario {
-            name: "_no_per_frame",
-            description: "",
-            actions: vec![
-                Action::Snapshot("first"),
-                Action::Wait(2),
-                Action::Snapshot("second"),
-            ],
-        };
-        let mut d = ShellDriver::new((128, 96));
-        let mut sink = NameSink { names: Vec::new() };
-        run_with(&mut d, &scenario, &mut sink, None);
-        assert_eq!(sink.names, vec!["first".to_string(), "second".to_string()],);
     }
 
     /// Sink that records what the strip's scroll looks like at each
@@ -4636,18 +4652,5 @@ mod tests {
             back_x < 1.0,
             "the reverse direct pan returns the strip home (scroll_x = {back_x})"
         );
-    }
-
-    #[test]
-    fn chrome_state_json_includes_palette_query() {
-        let mut d = ShellDriver::new((1600, 900));
-        d.host_mut().set_palette_visible(true);
-        d.host_mut().set_palette_query("hello");
-        let json = chrome_state_json(&d);
-        assert!(
-            json.contains("\"palette_query\":\"hello\""),
-            "json should include palette_query: {json}"
-        );
-        assert!(json.contains("\"palette_visible\":true"));
     }
 }

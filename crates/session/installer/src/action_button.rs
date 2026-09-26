@@ -180,41 +180,44 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_space_fire_the_focused_action() {
-        assert_key_fires(NamedKey::Enter);
-        assert_key_fires(NamedKey::Space);
-    }
+    fn action_buttons_are_named_activatable_native_controls() {
+        // Phase `enter_and_space_fire_the_focused_action`.
+        {
+            assert_key_fires(NamedKey::Enter);
+            assert_key_fires(NamedKey::Space);
+        }
+        // Phase `button_semantics_are_named_focusable_and_activatable`.
+        {
+            let mut button =
+                ActionButton::new("Reboot now", "installer.reboot").with_test_id("reboot");
+            button.set_focus(true);
+            let node = button.accessibility().expect("button semantics");
+            assert_eq!(node.role, ui::a11y::Role::Button);
+            assert_eq!(node.name.as_deref(), Some("Reboot now"));
+            assert!(node.state.focusable);
+            assert!(node.state.focused);
 
-    #[test]
-    fn button_semantics_are_named_focusable_and_activatable() {
-        let mut button = ActionButton::new("Reboot now", "installer.reboot").with_test_id("reboot");
-        button.set_focus(true);
-        let node = button.accessibility().expect("button semantics");
-        assert_eq!(node.role, ui::a11y::Role::Button);
-        assert_eq!(node.name.as_deref(), Some("Reboot now"));
-        assert!(node.state.focusable);
-        assert!(node.state.focused);
-
-        let mut doc = AutoCommit::new();
-        assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
-        assert_eq!(
-            doc.get(&ROOT, "installer.reboot")
-                .unwrap()
-                .and_then(|(value, _)| value.as_bool()),
-            Some(true)
-        );
-        assert!(button.is_focused(), "AT activation must not steal focus");
-    }
-
-    #[test]
-    fn recovery_ack_is_a_cleanly_named_native_checkbox() {
-        let button = ActionButton::new("[x] I will save my recovery key", "installer.recovery_ack")
-            .with_test_id("recovery_ack")
-            .checkbox(true);
-        let node = button.accessibility().expect("checkbox semantics");
-        assert_eq!(node.role, ui::a11y::Role::Checkbox);
-        assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
-        assert_eq!(node.state.checked, Some(true));
+            let mut doc = AutoCommit::new();
+            assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert_eq!(
+                doc.get(&ROOT, "installer.reboot")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_bool()),
+                Some(true)
+            );
+            assert!(button.is_focused(), "AT activation must not steal focus");
+        }
+        // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
+        {
+            let button =
+                ActionButton::new("[x] I will save my recovery key", "installer.recovery_ack")
+                    .with_test_id("recovery_ack")
+                    .checkbox(true);
+            let node = button.accessibility().expect("checkbox semantics");
+            assert_eq!(node.role, ui::a11y::Role::Checkbox);
+            assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
+            assert_eq!(node.state.checked, Some(true));
+        }
     }
 }
 

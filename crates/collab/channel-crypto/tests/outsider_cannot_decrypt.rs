@@ -29,7 +29,15 @@ fn alice_bob_group() -> (ChannelId, ChannelGroup, ChannelGroup) {
     (cid, alice_g, bob_g)
 }
 
+/// An outsider in a brand-new group, or one who never received a welcome for the same channel
+/// id, cannot decrypt.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn an_outsider_without_a_welcome_cannot_decrypt() {
+    outsider_in_a_brand_new_group_cannot_decrypt();
+    outsider_who_never_received_a_welcome_cannot_decrypt_from_same_channel_id();
+}
+
 fn outsider_in_a_brand_new_group_cannot_decrypt() {
     // Dave never joins. He has his own ChannelGroup (different identity,
     // different MLS group state) and tries to decrypt alice's ciphertext
@@ -48,7 +56,6 @@ fn outsider_in_a_brand_new_group_cannot_decrypt() {
     );
 }
 
-#[test]
 fn outsider_who_never_received_a_welcome_cannot_decrypt_from_same_channel_id() {
     // Subtle case: the *channel id* in EncryptionMetadata is not the
     // security boundary, the MLS group is. Even if dave creates a fresh
@@ -66,7 +73,15 @@ fn outsider_who_never_received_a_welcome_cannot_decrypt_from_same_channel_id() {
     );
 }
 
+/// Tampered, truncated and garbage ciphertext are all rejected without panicking.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn malformed_ciphertext_is_rejected_gracefully() {
+    tampered_ciphertext_is_rejected();
+    truncated_ciphertext_is_rejected();
+    garbage_bytes_decrypt_fails_gracefully();
+}
+
 fn tampered_ciphertext_is_rejected() {
     // Flip a byte in the ciphertext — the AEAD tag check fails inside
     // openmls, giving Error::OpenMls rather than a successful decrypt to garbage.
@@ -79,7 +94,6 @@ fn tampered_ciphertext_is_rejected() {
     assert!(err.is_err(), "tampered ciphertext must be rejected");
 }
 
-#[test]
 fn truncated_ciphertext_is_rejected() {
     // A 1-byte truncation breaks the TLS-codec framing; the error
     // surfaces as Error::TlsCodec or Error::OpenMls depending on where
@@ -91,7 +105,6 @@ fn truncated_ciphertext_is_rejected() {
     assert!(err.is_err(), "truncated ciphertext must be rejected");
 }
 
-#[test]
 fn garbage_bytes_decrypt_fails_gracefully() {
     // 32 bytes of nonsense — should error, not panic.
     let (_cid, _alice_g, mut bob_g) = alice_bob_group();

@@ -986,46 +986,50 @@ fn wrap_row_count(widths: &[f64], max_width: f64, gap: f64) -> usize {
 mod tests {
     use super::*;
 
+    /// The panel clamps between the rails, pill rows wrap greedily keeping empty sections, and the hit stack prefers controls.
     #[test]
-    fn panel_clamps_between_resolved_reader_rails() {
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let (x0, x1) = ReadingSettings::panel_x_bounds(viewport, 256.0, 936.0);
-        assert_eq!((x0, x1), (616.0, 936.0));
-    }
+    fn reading_settings_panel_layout_and_hit_stack() {
+        // --- phase: panel_clamps_between_resolved_reader_rails ---
+        {
+            let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let (x0, x1) = ReadingSettings::panel_x_bounds(viewport, 256.0, 936.0);
+            assert_eq!((x0, x1), (616.0, 936.0));
+        }
 
-    #[test]
-    fn pill_rows_wrap_greedily_and_keep_empty_sections_visible() {
-        assert_eq!(wrap_row_count(&[], 100.0, 8.0), 1);
-        assert_eq!(wrap_row_count(&[40.0, 40.0], 100.0, 8.0), 1);
-        assert_eq!(wrap_row_count(&[40.0, 40.0, 40.0], 100.0, 8.0), 2);
-    }
+        // --- phase: pill_rows_wrap_greedily_and_keep_empty_sections_visible ---
+        {
+            assert_eq!(wrap_row_count(&[], 100.0, 8.0), 1);
+            assert_eq!(wrap_row_count(&[40.0, 40.0], 100.0, 8.0), 1);
+            assert_eq!(wrap_row_count(&[40.0, 40.0, 40.0], 100.0, 8.0), 2);
+        }
 
-    #[test]
-    fn modal_hit_stack_prefers_controls_over_panel_and_outside_dismiss() {
-        let mut settings = ReadingSettings::default();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let panel = Rect::new(400.0, 50.0, 700.0, 500.0);
-        let control = Rect::new(500.0, 100.0, 600.0, 140.0);
-        settings.push_hit(viewport, ReadingSettingsAction::Dismiss);
-        settings.push_hit(panel, ReadingSettingsAction::Swallow);
-        settings.push_hit(control, ReadingSettingsAction::OpenManager);
-        assert_eq!(
-            settings.hit_test(Point::new(550.0, 120.0)),
-            Some(ReadingSettingsAction::OpenManager)
-        );
-        assert_eq!(
-            settings.hit_test(Point::new(450.0, 200.0)),
-            Some(ReadingSettingsAction::Swallow)
-        );
-        assert_eq!(
-            settings.hit_test(Point::new(100.0, 200.0)),
-            Some(ReadingSettingsAction::Dismiss)
-        );
-        settings.close();
-        assert_eq!(
-            settings.hit_test(Point::new(550.0, 120.0)),
-            None,
-            "closing clears stale modal geometry before another frame"
-        );
+        // --- phase: modal_hit_stack_prefers_controls_over_panel_and_outside_dismiss ---
+        {
+            let mut settings = ReadingSettings::default();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let panel = Rect::new(400.0, 50.0, 700.0, 500.0);
+            let control = Rect::new(500.0, 100.0, 600.0, 140.0);
+            settings.push_hit(viewport, ReadingSettingsAction::Dismiss);
+            settings.push_hit(panel, ReadingSettingsAction::Swallow);
+            settings.push_hit(control, ReadingSettingsAction::OpenManager);
+            assert_eq!(
+                settings.hit_test(Point::new(550.0, 120.0)),
+                Some(ReadingSettingsAction::OpenManager)
+            );
+            assert_eq!(
+                settings.hit_test(Point::new(450.0, 200.0)),
+                Some(ReadingSettingsAction::Swallow)
+            );
+            assert_eq!(
+                settings.hit_test(Point::new(100.0, 200.0)),
+                Some(ReadingSettingsAction::Dismiss)
+            );
+            settings.close();
+            assert_eq!(
+                settings.hit_test(Point::new(550.0, 120.0)),
+                None,
+                "closing clears stale modal geometry before another frame"
+            );
+        }
     }
 }

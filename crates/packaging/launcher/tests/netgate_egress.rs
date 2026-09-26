@@ -8,7 +8,8 @@
 //! ## The two kernel properties underneath
 //!
 //! Pinned by
-//! [`an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`]
+//! [`without_a_gate_the_sandbox_has_no_network_and_fails_closed`] (phase
+//! `an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`)
 //! so a kernel or `bwrap` regression fails the build instead of quietly
 //! turning the filter into a no-op: (1) an unshared network namespace
 //! is genuinely empty — `connect(2)` to a public address fails
@@ -543,355 +544,361 @@ fn start_gate(name: &str, policy: EgressPolicy) -> (NetGate, PathBuf) {
 }
 
 #[test]
-fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host() {
-    let dir = runtime_scratch_dir();
-    let host_socket = dir.join("proof.sock");
-    let _ = std::fs::remove_file(&host_socket);
-    let listener = UnixListener::bind(&host_socket).expect("bind unix socket");
-    std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 4];
-            if stream.read_exact(&mut buf).is_ok() && &buf == b"PING" {
-                let _ = stream.write_all(b"PONG");
+fn without_a_gate_the_sandbox_has_no_network_and_fails_closed() {
+    // Phase `an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`.
+    {
+        let dir = runtime_scratch_dir();
+        let host_socket = dir.join("proof.sock");
+        let _ = std::fs::remove_file(&host_socket);
+        let listener = UnixListener::bind(&host_socket).expect("bind unix socket");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4];
+                if stream.read_exact(&mut buf).is_ok() && &buf == b"PING" {
+                    let _ = stream.write_all(b"PONG");
+                }
             }
-        }
-    });
+        });
 
-    let exe = std::env::current_exe().expect("current_exe");
-    let exe_s = exe.display().to_string();
-    let tcp = TcpListener::bind("127.0.0.1:0").expect("bind tcp");
-    let host_port = tcp.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        while let Ok((mut stream, _)) = tcp.accept() {
-            let _ = stream.write_all(b"HOST");
-        }
-    });
+        let exe = std::env::current_exe().expect("current_exe");
+        let exe_s = exe.display().to_string();
+        let tcp = TcpListener::bind("127.0.0.1:0").expect("bind tcp");
+        let host_port = tcp.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = tcp.accept() {
+                let _ = stream.write_all(b"HOST");
+            }
+        });
 
-    let output = std::process::Command::new(bwrap())
-        .args(["--unshare-all", "--die-with-parent"])
-        .args(["--ro-bind", "/usr", "/usr"])
-        .args(["--ro-bind-try", "/lib64", "/lib64"])
-        .args(["--ro-bind-try", "/lib", "/lib"])
-        .args(["--proc", "/proc"])
-        .args(["--dev", "/dev"])
-        .args(["--tmpfs", "/tmp"])
-        .args(["--ro-bind", &exe_s, &exe_s])
-        .args([
-            "--bind",
-            &host_socket.display().to_string(),
-            SANDBOX_SOCKET_PATH,
-        ])
-        .arg(&exe)
-        .args([
-            "--exact",
-            &probe_test_name("proof_probe"),
-            "--nocapture",
-            "--test-threads",
-            "1",
-        ])
-        .env("TILO_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
-        .env("TILO_NETGATE_PROOF_PORT", host_port.to_string())
-        .output()
-        .expect("spawn bwrap");
+        let output = std::process::Command::new(bwrap())
+            .args(["--unshare-all", "--die-with-parent"])
+            .args(["--ro-bind", "/usr", "/usr"])
+            .args(["--ro-bind-try", "/lib64", "/lib64"])
+            .args(["--ro-bind-try", "/lib", "/lib"])
+            .args(["--proc", "/proc"])
+            .args(["--dev", "/dev"])
+            .args(["--tmpfs", "/tmp"])
+            .args(["--ro-bind", &exe_s, &exe_s])
+            .args([
+                "--bind",
+                &host_socket.display().to_string(),
+                SANDBOX_SOCKET_PATH,
+            ])
+            .arg(&exe)
+            .args([
+                "--exact",
+                &probe_test_name("proof_probe"),
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env("TILO_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
+            .env("TILO_NETGATE_PROOF_PORT", host_port.to_string())
+            .output()
+            .expect("spawn bwrap");
 
-    let report = ProbeReport {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    };
+        let report = ProbeReport {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        };
 
-    assert_eq!(
-        report.get("tcp_public"),
-        "NetworkUnreachable",
-        "an unshared netns must have no route to a public address — if this reaches, every \
-         filter built on namespace isolation is decorative"
-    );
-    assert_ne!(
-        report.get("tcp_loopback"),
-        "REACHED",
-        "the host's loopback must not be the sandbox's loopback — a host service bound to \
-         127.0.0.1 would otherwise be reachable from inside and the isolation illusory"
-    );
-    assert_eq!(
-        report.get("unix"),
-        "PONG",
-        "a bind-mounted AF_UNIX socket must remain connectable from inside an unshared \
-         network namespace — this is the single channel the egress policy sits on"
-    );
-}
-
-/// (1) An app granted one host reaches it, and reaches nothing else.
-#[test]
-fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
-    let allowed_port = serve("ALLOWED-SERVER");
-    let other_port = serve("OTHER-SERVER");
-
-    let decision = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
-    let policy = decision.policy().expect("a named host is filtered").clone();
-    let (gate, socket) = start_gate("one-host", policy);
-
-    let report = run_probe(&decision, Some(&socket), allowed_port, other_port, true);
-    report.dump("granted: localhost");
-
-    // Reaches the allowlisted host, end to end, by name.
-    assert_eq!(
-        report.get("gate_by_name"),
-        "BODY:ALLOWED-SERVER",
-        "a granted host must actually be reachable — a filter that denies everything is not \
-         enforcement, it is breakage"
-    );
-    // And via the relay, the path an unmodified HTTP client takes
-    // through ALL_PROXY.
-    assert_eq!(
-        report.get("relay_by_name"),
-        "BODY:ALLOWED-SERVER",
-        "the loopback relay must carry the same traffic the direct socket does"
-    );
-
-    // Does NOT reach the same server addressed as a literal — identical
-    // reachability, so a different outcome can only be the policy.
-    assert_eq!(
-        report.get("gate_by_literal"),
-        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-        "an address literal must not satisfy a hostname grant, even when it is the very \
-         server the grant names — otherwise anyone who controls a DNS answer turns a \
-         name-scoped grant into an any-host grant"
-    );
-    assert_eq!(
-        report.get("relay_by_literal"),
-        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-        "the relay must not be a way around the policy the direct socket enforces"
-    );
-
-    // Does not reach an unlisted name; the refusal is `HOST_UNREACHABLE`,
-    // the same as an unresolvable host, a state the app already handles.
-    assert_eq!(
-        report.get("gate_by_other_name"),
-        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-        "an unlisted host must be refused as unreachable, not as forbidden"
-    );
-
-    // The same three answers over HTTP CONNECT — the path a client with no
-    // SOCKS support takes, so the policy must hold there too.
-    assert_eq!(
-        report.get("http_by_name"),
-        "BODY:ALLOWED-SERVER",
-        "HTTP CONNECT must reach a granted host — it is the only proxy protocol an \
-         unmodified HTTP client speaks without an opt-in feature"
-    );
-    assert_eq!(
-        report.get("http_by_literal"),
-        "STATUS:502",
-        "the literal must be refused over HTTP too, or the SOCKS-side rule is bypassable by \
-         switching protocol"
-    );
-    assert_eq!(
-        report.get("http_by_other_name"),
-        "STATUS:502",
-        "an unlisted host must be refused over HTTP too, and as a gateway that could not \
-         reach it rather than as a forbidden request"
-    );
-
-    // No route beside the gate.
-    assert_eq!(
-        report.get("raw_public"),
-        "NetworkUnreachable",
-        "the namespace must stay empty — the gate is the only way out"
-    );
-    assert!(
-        report.get("raw_allowed").starts_with("ERR:"),
-        "even the allowed server must be unreachable by raw TCP: {}",
-        report.get("raw_allowed")
-    );
-
-    // The gate itself agrees about what it did.
-    assert!(
-        gate.stats().allowed() >= 3,
-        "gate should have allowed the by-name connections on both protocols, saw {}",
-        gate.stats().allowed()
-    );
-    assert!(
-        gate.stats().denied() >= 5,
-        "gate should have denied both literals and the unlisted name over both protocols, saw {}",
-        gate.stats().denied()
-    );
-}
-
-/// (2) An app granted nothing reaches neither host.
-#[test]
-fn a_grant_of_nothing_reaches_nothing() {
-    let allowed_port = serve("ALLOWED-SERVER");
-    let other_port = serve("OTHER-SERVER");
-
-    let decision = EgressDecision::resolve("off", &[], &[]);
-    assert_eq!(
-        decision,
-        EgressDecision::Blocked,
-        "no manifest network and no grant must resolve to blocked"
-    );
-
-    // Blocked means no gate is started at all, so there is no socket to
-    // bind into the sandbox.
-    let report = run_probe(&decision, None, allowed_port, other_port, false);
-    report.dump("granted: nothing");
-
-    for key in ["raw_allowed", "raw_other"] {
-        assert!(
-            report.get(key).starts_with("ERR:"),
-            "an app granted nothing must reach no server: {key} = {}",
-            report.get(key)
+        assert_eq!(
+            report.get("tcp_public"),
+            "NetworkUnreachable",
+            "an unshared netns must have no route to a public address — if this reaches, every \
+             filter built on namespace isolation is decorative"
+        );
+        assert_ne!(
+            report.get("tcp_loopback"),
+            "REACHED",
+            "the host's loopback must not be the sandbox's loopback — a host service bound to \
+             127.0.0.1 would otherwise be reachable from inside and the isolation illusory"
+        );
+        assert_eq!(
+            report.get("unix"),
+            "PONG",
+            "a bind-mounted AF_UNIX socket must remain connectable from inside an unshared \
+             network namespace — this is the single channel the egress policy sits on"
         );
     }
-    assert_eq!(report.get("raw_public"), "NetworkUnreachable");
+    // Phase `a_gate_that_cannot_start_refuses_rather_than_sharing_the_network`.
+    // (5) The degradation path: the gate needs no privilege or kernel
+    // feature `bwrap` doesn't already require, so what's simulated here
+    // is a failed socket bind. The launcher refuses rather than falling
+    // back to `--share-net`, which would apply a grant naming one host as
+    // "every host".
+    {
+        let policy = EgressPolicy::new(vec![ALLOWED_NAME.to_string()]);
+        // `/proc` is not writable, so creating the parent directory fails
+        // before any bind is attempted.
+        let impossible = PathBuf::from("/proc/tilo-netgate-nope/gate.sock");
+        let err = NetGate::start(&impossible, policy).expect_err("binding here must fail");
+
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("gate socket"),
+            "the error must name the gate so an operator can act on it: {rendered}"
+        );
+
+        // And the launch-level consequence: a refusal that says what was
+        // granted, and how to deliberately choose the unfiltered path.
+        let run_err = launcher::run::RunError::EgressGate {
+            hosts: vec![ALLOWED_NAME.to_string()],
+            source: err,
+        };
+        let msg = run_err.to_string();
+        assert!(
+            msg.contains("refusing to launch"),
+            "the launch must be refused, not downgraded: {msg}"
+        );
+        assert!(
+            msg.contains(launcher::run::NET_GATE_ENV),
+            "the refusal must name the explicit opt-out so the fallback is a decision on the \
+             record rather than a default: {msg}"
+        );
+    }
 }
 
-/// (3) An app granted `*` reaches both.
 #[test]
-fn a_grant_of_star_reaches_both() {
-    let allowed_port = serve("ALLOWED-SERVER");
-    let other_port = serve("OTHER-SERVER");
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn grants_decide_which_hosts_the_sandbox_reaches() {
+    // Phase `a_grant_naming_one_host_reaches_that_host_and_no_other`.
+    // (1) An app granted one host reaches it, and reaches nothing else.
+    {
+        let allowed_port = serve("ALLOWED-SERVER");
+        let other_port = serve("OTHER-SERVER");
 
-    let decision = EgressDecision::resolve("off", &[], &["*".to_string()]);
-    assert_eq!(
-        decision,
-        EgressDecision::Unrestricted,
-        "a grant for `*` is unrestricted and needs no gate"
-    );
+        let decision = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
+        let policy = decision.policy().expect("a named host is filtered").clone();
+        let (gate, socket) = start_gate("one-host", policy);
 
-    let report = run_probe(&decision, None, allowed_port, other_port, false);
-    report.dump("granted: *");
+        let report = run_probe(&decision, Some(&socket), allowed_port, other_port, true);
+        report.dump("granted: localhost");
 
-    assert_eq!(
-        report.get("raw_allowed"),
-        "BODY:ALLOWED-SERVER",
-        "`*` shares the host network, so both servers are reachable directly"
-    );
-    assert_eq!(report.get("raw_other"), "BODY:OTHER-SERVER");
-}
+        // Reaches the allowlisted host, end to end, by name.
+        assert_eq!(
+            report.get("gate_by_name"),
+            "BODY:ALLOWED-SERVER",
+            "a granted host must actually be reachable — a filter that denies everything is not \
+             enforcement, it is breakage"
+        );
+        // And via the relay, the path an unmodified HTTP client takes
+        // through ALL_PROXY.
+        assert_eq!(
+            report.get("relay_by_name"),
+            "BODY:ALLOWED-SERVER",
+            "the loopback relay must carry the same traffic the direct socket does"
+        );
 
-/// (4) The negative case is not vacuous: same sandbox, same servers,
-/// one variable changed (the allowlist). The connection refused in
-/// [`a_grant_naming_one_host_reaches_that_host_and_no_other`] now
-/// carries traffic.
-#[test]
-fn widening_the_allowlist_lets_the_refused_connection_through() {
-    let allowed_port = serve("ALLOWED-SERVER");
-    let other_port = serve("OTHER-SERVER");
+        // Does NOT reach the same server addressed as a literal — identical
+        // reachability, so a different outcome can only be the policy.
+        assert_eq!(
+            report.get("gate_by_literal"),
+            format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+            "an address literal must not satisfy a hostname grant, even when it is the very \
+             server the grant names — otherwise anyone who controls a DNS answer turns a \
+             name-scoped grant into an any-host grant"
+        );
+        assert_eq!(
+            report.get("relay_by_literal"),
+            format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+            "the relay must not be a way around the policy the direct socket enforces"
+        );
 
-    // Control: the exact request the strict policy refused.
-    let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
-    let (strict_gate, strict_socket) =
-        start_gate("breakage-strict", strict.policy().unwrap().clone());
-    let refused = run_probe(
-        &strict,
-        Some(&strict_socket),
-        allowed_port,
-        other_port,
-        false,
-    );
-    refused.dump("control: filter on");
-    assert_eq!(
-        refused.get("gate_by_literal"),
-        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE)
-    );
-    // Exactly the two by-name requests plus the four naming the
-    // literal/unlisted host — the control run (relay disabled) accounts
-    // for every connection.
-    assert_eq!(
-        strict_gate.stats().allowed(),
-        2,
-        "only the by-name requests (SOCKS5 and HTTP CONNECT) should have been allowed"
-    );
-    assert_eq!(
-        strict_gate.stats().denied(),
-        4,
-        "the literal and the unlisted name should have been denied on both protocols"
-    );
+        // Does not reach an unlisted name; the refusal is `HOST_UNREACHABLE`,
+        // the same as an unresolvable host, a state the app already handles.
+        assert_eq!(
+            report.get("gate_by_other_name"),
+            format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+            "an unlisted host must be refused as unreachable, not as forbidden"
+        );
 
-    // Filter disabled: allowlist permits everything, nothing else changed.
-    // Spelled `Filtered(["*"])`, not `Unrestricted`, which would take the
-    // `--share-net` path too.
-    let (open_gate, open_socket) =
-        start_gate("breakage-open", EgressPolicy::new(vec!["*".to_string()]));
-    let open_decision = EgressDecision::Filtered(EgressPolicy::new(vec!["*".to_string()]));
-    let passed = run_probe(
-        &open_decision,
-        Some(&open_socket),
-        allowed_port,
-        other_port,
-        false,
-    );
+        // The same three answers over HTTP CONNECT — the path a client with no
+        // SOCKS support takes, so the policy must hold there too.
+        assert_eq!(
+            report.get("http_by_name"),
+            "BODY:ALLOWED-SERVER",
+            "HTTP CONNECT must reach a granted host — it is the only proxy protocol an \
+             unmodified HTTP client speaks without an opt-in feature"
+        );
+        assert_eq!(
+            report.get("http_by_literal"),
+            "STATUS:502",
+            "the literal must be refused over HTTP too, or the SOCKS-side rule is bypassable by \
+             switching protocol"
+        );
+        assert_eq!(
+            report.get("http_by_other_name"),
+            "STATUS:502",
+            "an unlisted host must be refused over HTTP too, and as a gateway that could not \
+             reach it rather than as a forbidden request"
+        );
 
-    passed.dump("breakage: filter off");
-    assert_eq!(
-        passed.get("gate_by_literal"),
-        "BODY:ALLOWED-SERVER",
-        "with the filter open, the previously-refused connection must carry traffic — if it \
-         still failed, the negative assertion above was proving nothing"
-    );
-    // A refused host and an unreachable one answer identically — the app
-    // must not tell a policy decision from an absence of network.
-    assert_eq!(
-        passed.get("gate_by_other_name"),
-        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-        "an unresolvable name is unreachable, the same answer a refused one gets"
-    );
-    // Same experiment on the HTTP path: the refusal (502) becomes 200 for
-    // the reachable host and stays 502 for the unresolvable one.
-    assert_eq!(
-        passed.get("http_by_literal"),
-        "BODY:ALLOWED-SERVER",
-        "the HTTP refusal must also have been the policy: {}",
-        passed.get("http_by_literal")
-    );
-    assert_eq!(
-        passed.get("http_by_other_name"),
-        "STATUS:502",
-        "and an unresolvable host stays a bad gateway whether or not the policy would have \
-         allowed it"
-    );
-    assert!(
-        open_gate.stats().allowed() > strict_gate.stats().allowed(),
-        "the open gate must have allowed strictly more than the strict one: {} vs {}",
-        open_gate.stats().allowed(),
-        strict_gate.stats().allowed()
-    );
-}
+        // No route beside the gate.
+        assert_eq!(
+            report.get("raw_public"),
+            "NetworkUnreachable",
+            "the namespace must stay empty — the gate is the only way out"
+        );
+        assert!(
+            report.get("raw_allowed").starts_with("ERR:"),
+            "even the allowed server must be unreachable by raw TCP: {}",
+            report.get("raw_allowed")
+        );
 
-/// (5) The degradation path: the gate needs no privilege or kernel
-/// feature `bwrap` doesn't already require, so what's simulated here
-/// is a failed socket bind. The launcher refuses rather than falling
-/// back to `--share-net`, which would apply a grant naming one host as
-/// "every host".
-#[test]
-fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
-    let policy = EgressPolicy::new(vec![ALLOWED_NAME.to_string()]);
-    // `/proc` is not writable, so creating the parent directory fails
-    // before any bind is attempted.
-    let impossible = PathBuf::from("/proc/tilo-netgate-nope/gate.sock");
-    let err = NetGate::start(&impossible, policy).expect_err("binding here must fail");
+        // The gate itself agrees about what it did.
+        assert!(
+            gate.stats().allowed() >= 3,
+            "gate should have allowed the by-name connections on both protocols, saw {}",
+            gate.stats().allowed()
+        );
+        assert!(
+            gate.stats().denied() >= 5,
+            "gate should have denied both literals and the unlisted name over both protocols, saw {}",
+            gate.stats().denied()
+        );
+    }
+    // Phase `a_grant_of_nothing_reaches_nothing`.
+    // (2) An app granted nothing reaches neither host.
+    {
+        let allowed_port = serve("ALLOWED-SERVER");
+        let other_port = serve("OTHER-SERVER");
 
-    let rendered = err.to_string();
-    assert!(
-        rendered.contains("gate socket"),
-        "the error must name the gate so an operator can act on it: {rendered}"
-    );
+        let decision = EgressDecision::resolve("off", &[], &[]);
+        assert_eq!(
+            decision,
+            EgressDecision::Blocked,
+            "no manifest network and no grant must resolve to blocked"
+        );
 
-    // And the launch-level consequence: a refusal that says what was
-    // granted, and how to deliberately choose the unfiltered path.
-    let run_err = launcher::run::RunError::EgressGate {
-        hosts: vec![ALLOWED_NAME.to_string()],
-        source: err,
-    };
-    let msg = run_err.to_string();
-    assert!(
-        msg.contains("refusing to launch"),
-        "the launch must be refused, not downgraded: {msg}"
-    );
-    assert!(
-        msg.contains(launcher::run::NET_GATE_ENV),
-        "the refusal must name the explicit opt-out so the fallback is a decision on the \
-         record rather than a default: {msg}"
-    );
+        // Blocked means no gate is started at all, so there is no socket to
+        // bind into the sandbox.
+        let report = run_probe(&decision, None, allowed_port, other_port, false);
+        report.dump("granted: nothing");
+
+        for key in ["raw_allowed", "raw_other"] {
+            assert!(
+                report.get(key).starts_with("ERR:"),
+                "an app granted nothing must reach no server: {key} = {}",
+                report.get(key)
+            );
+        }
+        assert_eq!(report.get("raw_public"), "NetworkUnreachable");
+    }
+    // Phase `a_grant_of_star_reaches_both`.
+    // (3) An app granted `*` reaches both.
+    {
+        let allowed_port = serve("ALLOWED-SERVER");
+        let other_port = serve("OTHER-SERVER");
+
+        let decision = EgressDecision::resolve("off", &[], &["*".to_string()]);
+        assert_eq!(
+            decision,
+            EgressDecision::Unrestricted,
+            "a grant for `*` is unrestricted and needs no gate"
+        );
+
+        let report = run_probe(&decision, None, allowed_port, other_port, false);
+        report.dump("granted: *");
+
+        assert_eq!(
+            report.get("raw_allowed"),
+            "BODY:ALLOWED-SERVER",
+            "`*` shares the host network, so both servers are reachable directly"
+        );
+        assert_eq!(report.get("raw_other"), "BODY:OTHER-SERVER");
+    }
+    // Phase `widening_the_allowlist_lets_the_refused_connection_through`.
+    // (4) The negative case is not vacuous: same sandbox, same servers,
+    // one variable changed (the allowlist). The connection refused in
+    // the `a_grant_naming_one_host_reaches_that_host_and_no_other` phase now
+    // carries traffic.
+    {
+        let allowed_port = serve("ALLOWED-SERVER");
+        let other_port = serve("OTHER-SERVER");
+
+        // Control: the exact request the strict policy refused.
+        let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
+        let (strict_gate, strict_socket) =
+            start_gate("breakage-strict", strict.policy().unwrap().clone());
+        let refused = run_probe(
+            &strict,
+            Some(&strict_socket),
+            allowed_port,
+            other_port,
+            false,
+        );
+        refused.dump("control: filter on");
+        assert_eq!(
+            refused.get("gate_by_literal"),
+            format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE)
+        );
+        // Exactly the two by-name requests plus the four naming the
+        // literal/unlisted host — the control run (relay disabled) accounts
+        // for every connection.
+        assert_eq!(
+            strict_gate.stats().allowed(),
+            2,
+            "only the by-name requests (SOCKS5 and HTTP CONNECT) should have been allowed"
+        );
+        assert_eq!(
+            strict_gate.stats().denied(),
+            4,
+            "the literal and the unlisted name should have been denied on both protocols"
+        );
+
+        // Filter disabled: allowlist permits everything, nothing else changed.
+        // Spelled `Filtered(["*"])`, not `Unrestricted`, which would take the
+        // `--share-net` path too.
+        let (open_gate, open_socket) =
+            start_gate("breakage-open", EgressPolicy::new(vec!["*".to_string()]));
+        let open_decision = EgressDecision::Filtered(EgressPolicy::new(vec!["*".to_string()]));
+        let passed = run_probe(
+            &open_decision,
+            Some(&open_socket),
+            allowed_port,
+            other_port,
+            false,
+        );
+
+        passed.dump("breakage: filter off");
+        assert_eq!(
+            passed.get("gate_by_literal"),
+            "BODY:ALLOWED-SERVER",
+            "with the filter open, the previously-refused connection must carry traffic — if it \
+             still failed, the negative assertion above was proving nothing"
+        );
+        // A refused host and an unreachable one answer identically — the app
+        // must not tell a policy decision from an absence of network.
+        assert_eq!(
+            passed.get("gate_by_other_name"),
+            format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+            "an unresolvable name is unreachable, the same answer a refused one gets"
+        );
+        // Same experiment on the HTTP path: the refusal (502) becomes 200 for
+        // the reachable host and stays 502 for the unresolvable one.
+        assert_eq!(
+            passed.get("http_by_literal"),
+            "BODY:ALLOWED-SERVER",
+            "the HTTP refusal must also have been the policy: {}",
+            passed.get("http_by_literal")
+        );
+        assert_eq!(
+            passed.get("http_by_other_name"),
+            "STATUS:502",
+            "and an unresolvable host stays a bad gateway whether or not the policy would have \
+             allowed it"
+        );
+        assert!(
+            open_gate.stats().allowed() > strict_gate.stats().allowed(),
+            "the open gate must have allowed strictly more than the strict one: {} vs {}",
+            open_gate.stats().allowed(),
+            strict_gate.stats().allowed()
+        );
+    }
 }
 
 // Device-local is network: Tilo's own services (e.g. the collaboration
@@ -1041,120 +1048,122 @@ fn run_device_local_probe(
     report_from(&output)
 }
 
-/// An app denied the network cannot reach a service on this device — not
-/// on loopback, and not on the machine's own LAN address either.
 #[test]
-fn an_app_denied_the_network_cannot_reach_a_device_local_service() {
-    let loopback_port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
-    let loopback = format!("127.0.0.1:{loopback_port}");
-    let lan = host_lan_addr().map(|ip| {
-        let port = serve_on(ip, "BROKER-STANDIN");
-        format!("{ip}:{port}")
-    });
+fn device_local_services_stay_out_of_reach_without_an_exact_grant() {
+    // Phase `an_app_denied_the_network_cannot_reach_a_device_local_service`.
+    // An app denied the network cannot reach a service on this device — not
+    // on loopback, and not on the machine's own LAN address either.
+    {
+        let loopback_port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
+        let loopback = format!("127.0.0.1:{loopback_port}");
+        let lan = host_lan_addr().map(|ip| {
+            let port = serve_on(ip, "BROKER-STANDIN");
+            format!("{ip}:{port}")
+        });
 
-    let decision = EgressDecision::resolve("off", &[], &[]);
-    assert_eq!(decision, EgressDecision::Blocked);
+        let decision = EgressDecision::resolve("off", &[], &[]);
+        assert_eq!(decision, EgressDecision::Blocked);
 
-    let report = run_device_local_probe(&decision, None, &loopback, lan.as_deref(), None);
-    report.dump("denied: device-local");
+        let report = run_device_local_probe(&decision, None, &loopback, lan.as_deref(), None);
+        report.dump("denied: device-local");
 
-    assert!(
-        report.get("raw_loopback").starts_with("ERR:"),
-        "a sandbox with no network capability must not reach a service on the host's \
-         loopback — that is where the collaboration broker lives: {}",
-        report.get("raw_loopback")
-    );
-    if lan.is_some() {
         assert!(
-            report.get("raw_lan").starts_with("ERR:"),
-            "nor on the host's own LAN address, which is the same machine by another name: {}",
-            report.get("raw_lan")
+            report.get("raw_loopback").starts_with("ERR:"),
+            "a sandbox with no network capability must not reach a service on the host's \
+             loopback — that is where the collaboration broker lives: {}",
+            report.get("raw_loopback")
         );
+        if lan.is_some() {
+            assert!(
+                report.get("raw_lan").starts_with("ERR:"),
+                "nor on the host's own LAN address, which is the same machine by another name: {}",
+                report.get("raw_lan")
+            );
+        }
+
+        // Not vacuous: the same probe and listeners, with the network shared,
+        // reach both — so the failures above are the namespace, not a dead
+        // service.
+        let shared = run_device_local_probe(
+            &EgressDecision::Unrestricted,
+            None,
+            &loopback,
+            lan.as_deref(),
+            None,
+        );
+        shared.dump("shared: device-local");
+        assert_eq!(
+            shared.get("raw_loopback"),
+            "BODY:BROKER-STANDIN",
+            "with the host network shared the loopback service is reachable, so the listener \
+             works and the denial above was real"
+        );
+        if lan.is_some() {
+            assert_eq!(shared.get("raw_lan"), "BODY:BROKER-STANDIN");
+        }
     }
+    // Phase `a_grant_that_merely_covers_a_local_name_does_not_reach_this_device`.
+    // An app with a *host allowlist* has a gate resolving names in the
+    // host namespace, so a name pointing at this device is the bypass —
+    // closed unless the grant names that host exactly. One variable
+    // changes: the spelling of the grant.
+    {
+        let port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
+        let loopback = format!("127.0.0.1:{port}");
 
-    // Not vacuous: the same probe and listeners, with the network shared,
-    // reach both — so the failures above are the namespace, not a dead
-    // service.
-    let shared = run_device_local_probe(
-        &EgressDecision::Unrestricted,
-        None,
-        &loopback,
-        lan.as_deref(),
-        None,
-    );
-    shared.dump("shared: device-local");
-    assert_eq!(
-        shared.get("raw_loopback"),
-        "BODY:BROKER-STANDIN",
-        "with the host network shared the loopback service is reachable, so the listener \
-         works and the denial above was real"
-    );
-    if lan.is_some() {
-        assert_eq!(shared.get("raw_lan"), "BODY:BROKER-STANDIN");
+        // `.localhost` covers `localhost` for the access decision — but it is
+        // not the user pointing at this machine.
+        let covered = EgressPolicy::new(vec![".localhost".to_string()]);
+        assert!(
+            covered.permits("localhost"),
+            "the grant must cover the name, or the refusal below proves nothing about \
+             device-local filtering"
+        );
+        let (covered_gate, covered_socket) = start_gate("device-local-covered", covered.clone());
+        let refused = run_device_local_probe(
+            &EgressDecision::Filtered(covered),
+            Some(&covered_socket),
+            &loopback,
+            None,
+            Some("localhost"),
+        );
+        refused.dump("covered grant");
+        assert_eq!(
+            refused.get("gate_by_name"),
+            format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+            "a name that resolves to this device must be unreachable through the gate when the \
+             grant only covers it"
+        );
+        assert_eq!(
+            refused.get("http_by_name"),
+            "STATUS:502",
+            "and over HTTP CONNECT too, or the rule is bypassable by switching protocol"
+        );
+        assert!(
+            refused.get("raw_loopback").starts_with("ERR:"),
+            "the namespace is still empty, so there is no route beside the gate: {}",
+            refused.get("raw_loopback")
+        );
+        let _ = covered_gate;
+
+        // Same everything, an exact grant: the service is reached. So the
+        // refusal above was the device-local rule and not a broken fixture.
+        let named = EgressPolicy::new(vec!["localhost".to_string()]);
+        let (named_gate, named_socket) = start_gate("device-local-named", named.clone());
+        let allowed = run_device_local_probe(
+            &EgressDecision::Filtered(named),
+            Some(&named_socket),
+            &loopback,
+            None,
+            Some("localhost"),
+        );
+        allowed.dump("exact grant");
+        assert_eq!(
+            allowed.get("gate_by_name"),
+            "BODY:BROKER-STANDIN",
+            "an exact grant for a device-local host must reach it — the rule narrows what a \
+             pattern covers, it does not ban local services outright"
+        );
+        let _ = named_gate;
     }
-}
-
-/// An app with a *host allowlist* has a gate resolving names in the
-/// host namespace, so a name pointing at this device is the bypass —
-/// closed unless the grant names that host exactly. One variable
-/// changes: the spelling of the grant.
-#[test]
-fn a_grant_that_merely_covers_a_local_name_does_not_reach_this_device() {
-    let port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
-    let loopback = format!("127.0.0.1:{port}");
-
-    // `.localhost` covers `localhost` for the access decision — but it is
-    // not the user pointing at this machine.
-    let covered = EgressPolicy::new(vec![".localhost".to_string()]);
-    assert!(
-        covered.permits("localhost"),
-        "the grant must cover the name, or the refusal below proves nothing about \
-         device-local filtering"
-    );
-    let (covered_gate, covered_socket) = start_gate("device-local-covered", covered.clone());
-    let refused = run_device_local_probe(
-        &EgressDecision::Filtered(covered),
-        Some(&covered_socket),
-        &loopback,
-        None,
-        Some("localhost"),
-    );
-    refused.dump("covered grant");
-    assert_eq!(
-        refused.get("gate_by_name"),
-        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-        "a name that resolves to this device must be unreachable through the gate when the \
-         grant only covers it"
-    );
-    assert_eq!(
-        refused.get("http_by_name"),
-        "STATUS:502",
-        "and over HTTP CONNECT too, or the rule is bypassable by switching protocol"
-    );
-    assert!(
-        refused.get("raw_loopback").starts_with("ERR:"),
-        "the namespace is still empty, so there is no route beside the gate: {}",
-        refused.get("raw_loopback")
-    );
-    let _ = covered_gate;
-
-    // Same everything, an exact grant: the service is reached. So the
-    // refusal above was the device-local rule and not a broken fixture.
-    let named = EgressPolicy::new(vec!["localhost".to_string()]);
-    let (named_gate, named_socket) = start_gate("device-local-named", named.clone());
-    let allowed = run_device_local_probe(
-        &EgressDecision::Filtered(named),
-        Some(&named_socket),
-        &loopback,
-        None,
-        Some("localhost"),
-    );
-    allowed.dump("exact grant");
-    assert_eq!(
-        allowed.get("gate_by_name"),
-        "BODY:BROKER-STANDIN",
-        "an exact grant for a device-local host must reach it — the rule narrows what a \
-         pattern covers, it does not ban local services outright"
-    );
-    let _ = named_gate;
 }

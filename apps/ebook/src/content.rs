@@ -605,47 +605,168 @@ mod tests {
         env
     }
 
+    /// The bundled sample and real files parse; junk is rejected and detailed imports keep the parser reason.
     #[test]
-    fn bundled_sample_parses_into_a_real_book() {
-        let b = bundled_sample().expect("the embedded starter epub parses");
-        assert!(!b.title.is_empty(), "has a title");
-        assert!(!b.chapters.is_empty(), "has chapters");
-        assert!(b.block_count() > 0, "has readable content");
+    fn epub_sources_parse_or_report_the_parser_reason() {
+        // --- phase: bundled_sample_parses_into_a_real_book ---
+        {
+            let b = bundled_sample().expect("the embedded starter epub parses");
+            assert!(!b.title.is_empty(), "has a title");
+            assert!(!b.chapters.is_empty(), "has chapters");
+            assert!(b.block_count() > 0, "has readable content");
+        }
+
+        // --- phase: open_epub_path_reads_a_real_file_and_rejects_junk ---
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let good = tmp.path().join("book.epub");
+            std::fs::write(&good, SAMPLE_EPUB).unwrap();
+            assert!(open_epub_path(&good).is_some(), "a real epub opens by path");
+
+            let bad = tmp.path().join("bad.epub");
+            std::fs::write(&bad, b"definitely not a zip").unwrap();
+            assert!(
+                open_epub_path(&bad).is_none(),
+                "a corrupt file is rejected, not panicked on"
+            );
+
+            let missing = tmp.path().join("gone.epub");
+            assert!(
+                open_epub_path(&missing).is_none(),
+                "a missing file is rejected"
+            );
+        }
+
+        // --- phase: detailed_import_keeps_the_parser_reason_for_the_visible_error_state ---
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let bad = tmp.path().join("damaged.epub");
+            std::fs::write(&bad, b"definitely not a zip").unwrap();
+
+            let error = import_path_detailed(&mut AutoCommit::new(), &bad)
+                .expect_err("a corrupt EPUB does not import");
+            assert!(
+                error.contains("open epub zip"),
+                "the UI receives the actual parse reason, not a generic failure: {error}"
+            );
+        }
     }
 
+    /// A fresh library is empty; paths are recorded natively, imported once, rehydrated after restart and auto-imported from watched folders.
     #[test]
     #[serial]
-    fn a_fresh_library_is_empty() {
-        // No recorded books and nothing watched → a genuinely empty shelf. The
-        // app never fabricates a starter book.
-        let tmp = tempfile::tempdir().unwrap();
-        let mut library_env = tilo_test_env::ScopedEnv::new();
-        library_env.set(LIBRARY_DIR_ENV, tmp.path());
-        let mut doc = AutoCommit::new();
-        let lib = load_library(&mut doc, &[], &HashMap::new());
-        drop(library_env);
-        assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
-    }
+    fn local_library_imports_and_watches_paths() {
+        // --- phase: a_fresh_library_is_empty ---
+        {
+            // No recorded books and nothing watched → a genuinely empty shelf. The
+            // app never fabricates a starter book.
+            let tmp = tempfile::tempdir().unwrap();
+            let mut library_env = tilo_test_env::ScopedEnv::new();
+            library_env.set(LIBRARY_DIR_ENV, tmp.path());
+            let mut doc = AutoCommit::new();
+            let lib = load_library(&mut doc, &[], &HashMap::new());
+            drop(library_env);
+            assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
+        }
 
-    #[test]
-    #[serial]
-    fn watched_path_list_preserves_native_paths() {
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let a = first.path().join("Bücher eins.epub");
-        let b = second.path().join("second.epub");
-        std::fs::write(&a, SAMPLE_EPUB).unwrap();
-        std::fs::write(&b, SAMPLE_EPUB).unwrap();
-        let mut library_env = tilo_test_env::ScopedEnv::new();
-        library_env.set(
-            LIBRARY_DIR_ENV,
-            std::env::join_paths([first.path(), second.path()]).unwrap(),
-        );
-        let paths = watched_epub_paths(&[]);
-        drop(library_env);
-        assert_eq!(paths.len(), 2);
-        assert!(paths.contains(&a));
-        assert!(paths.contains(&b));
+        // --- phase: watched_path_list_preserves_native_paths ---
+        {
+            let first = tempfile::tempdir().unwrap();
+            let second = tempfile::tempdir().unwrap();
+            let a = first.path().join("Bücher eins.epub");
+            let b = second.path().join("second.epub");
+            std::fs::write(&a, SAMPLE_EPUB).unwrap();
+            std::fs::write(&b, SAMPLE_EPUB).unwrap();
+            let mut library_env = tilo_test_env::ScopedEnv::new();
+            library_env.set(
+                LIBRARY_DIR_ENV,
+                std::env::join_paths([first.path(), second.path()]).unwrap(),
+            );
+            let paths = watched_epub_paths(&[]);
+            drop(library_env);
+            assert_eq!(paths.len(), 2);
+            assert!(paths.contains(&a));
+            assert!(paths.contains(&b));
+        }
+
+        // --- phase: importing_a_path_adds_one_recorded_book ---
+        {
+            let workspace = tempfile::tempdir().unwrap();
+            let _workspace = workspace_env(workspace.path());
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("book.epub");
+            std::fs::write(&path, SAMPLE_EPUB).unwrap();
+            let mut library_env = tilo_test_env::ScopedEnv::new();
+            library_env.set(LIBRARY_DIR_ENV, tmp.path());
+            let mut doc = AutoCommit::new();
+
+            let book = import_path(&mut doc, &path).expect("a real epub imports");
+            assert!(
+                book.id.starts_with("book:"),
+                "the import produced a content id"
+            );
+            // Recorded once, and hydrating the library yields exactly that book.
+            assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
+            let lib = load_library(&mut doc, &[], &HashMap::new());
+            drop(library_env);
+            assert_eq!(lib.len(), 1, "the imported book is on the shelf");
+            assert_eq!(lib[0].book.id, book.id);
+            assert_eq!(lib[0].path, workspace_book_path(&book.id));
+            let bytes = doc.save();
+            let stored = String::from_utf8_lossy(&bytes);
+            assert!(
+                !stored.contains(path.to_string_lossy().as_ref()),
+                "the local source path stays outside shared state"
+            );
+
+            // Importing the very same file again does not duplicate the shelf entry.
+            import_path(&mut doc, &path).unwrap();
+            assert_eq!(
+                BooksDoc::read_library_entries(&doc).len(),
+                1,
+                "same file → one entry"
+            );
+        }
+
+        // --- phase: device_local_source_rehydrates_a_one_off_import_after_restart ---
+        {
+            // A regular file cannot contain a `Books` directory, deterministically
+            // modelling a host without the collaborative-workspace capability.
+            let workspace = tempfile::NamedTempFile::new().unwrap();
+            let _workspace = workspace_env(workspace.path());
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("one-off.epub");
+            std::fs::write(&path, SAMPLE_EPUB).unwrap();
+            let mut doc = AutoCommit::new();
+            let book = import_path(&mut doc, &path).unwrap();
+            let mut local_books = HashMap::new();
+            local_books.insert(book.id.clone(), path.clone());
+
+            let restored = load_library(&mut doc, &[], &local_books);
+            assert_eq!(restored.len(), 1);
+            assert_eq!(restored[0].book.id, book.id);
+            assert_eq!(restored[0].path, path);
+        }
+
+        // --- phase: a_watched_folder_auto_imports_new_books ---
+        {
+            let watched = tempfile::tempdir().unwrap();
+            std::fs::write(watched.path().join("alpha.epub"), SAMPLE_EPUB).unwrap();
+            let sub = watched.path().join("nested");
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join("beta.EPUB"), SAMPLE_EPUB).unwrap();
+            std::fs::write(watched.path().join("readme.txt"), b"not a book").unwrap();
+
+            let mut doc = AutoCommit::new();
+            let lib = load_library(&mut doc, &[watched.path().to_path_buf()], &HashMap::new());
+            // Both epubs are the *same bytes*, so they share a content id and collapse
+            // to a single library entry — the non-epub is ignored.
+            assert_eq!(
+                lib.len(),
+                1,
+                "watched epubs imported (deduped by content), .txt ignored"
+            );
+        }
     }
 
     #[cfg(windows)]
@@ -662,233 +783,117 @@ mod tests {
         assert!(share_to_workspace(&mut AutoCommit::new(), &path).is_none());
     }
 
+    /// Workspace books are shared, shared parses materialise first, and sharing keeps identity without overwriting unrelated files.
     #[test]
     #[serial]
-    fn importing_a_path_adds_one_recorded_book() {
-        let workspace = tempfile::tempdir().unwrap();
-        let _workspace = workspace_env(workspace.path());
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("book.epub");
-        std::fs::write(&path, SAMPLE_EPUB).unwrap();
-        let mut library_env = tilo_test_env::ScopedEnv::new();
-        library_env.set(LIBRARY_DIR_ENV, tmp.path());
-        let mut doc = AutoCommit::new();
+    fn workspace_sharing_keeps_identity_and_never_overwrites() {
+        // --- phase: a_book_on_the_workspace_is_shared_others_are_local ---
+        {
+            let ws = tempfile::tempdir().unwrap();
+            let _workspace = workspace_env(ws.path());
+            let books_dir = workspace_books_dir();
+            std::fs::create_dir_all(&books_dir).unwrap();
+            let shared = books_dir.join("shared.epub");
+            std::fs::write(&shared, SAMPLE_EPUB).unwrap();
 
-        let book = import_path(&mut doc, &path).expect("a real epub imports");
-        assert!(
-            book.id.starts_with("book:"),
-            "the import produced a content id"
-        );
-        // Recorded once, and hydrating the library yields exactly that book.
-        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
-        let lib = load_library(&mut doc, &[], &HashMap::new());
-        drop(library_env);
-        assert_eq!(lib.len(), 1, "the imported book is on the shelf");
-        assert_eq!(lib[0].book.id, book.id);
-        assert_eq!(lib[0].path, workspace_book_path(&book.id));
-        let bytes = doc.save();
-        let stored = String::from_utf8_lossy(&bytes);
-        assert!(
-            !stored.contains(path.to_string_lossy().as_ref()),
-            "the local source path stays outside shared state"
-        );
+            let local = tempfile::tempdir().unwrap();
+            let local_path = local.path().join("local.epub");
 
-        // Importing the very same file again does not duplicate the shelf entry.
-        import_path(&mut doc, &path).unwrap();
-        assert_eq!(
-            BooksDoc::read_library_entries(&doc).len(),
-            1,
-            "same file → one entry"
-        );
-    }
+            assert!(is_shared(&shared), "a /workspace/Books path is shared");
+            assert!(!is_shared(&local_path), "a book elsewhere is device-local");
+            assert!(
+                !is_shared(&workspace_root().join("Books/../../private/book.epub")),
+                "lexical traversal cannot spoof workspace membership"
+            );
+        }
 
-    #[test]
-    #[serial]
-    fn device_local_source_rehydrates_a_one_off_import_after_restart() {
-        // A regular file cannot contain a `Books` directory, deterministically
-        // modelling a host without the collaborative-workspace capability.
-        let workspace = tempfile::NamedTempFile::new().unwrap();
-        let _workspace = workspace_env(workspace.path());
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("one-off.epub");
-        std::fs::write(&path, SAMPLE_EPUB).unwrap();
-        let mut doc = AutoCommit::new();
-        let book = import_path(&mut doc, &path).unwrap();
-        let mut local_books = HashMap::new();
-        local_books.insert(book.id.clone(), path.clone());
+        // --- phase: shared_parse_materialises_content_before_the_library_row_is_written ---
+        {
+            let ws = tempfile::tempdir().unwrap();
+            let _workspace = workspace_env(ws.path());
+            let local = tempfile::tempdir().unwrap();
+            let source = local.path().join("peer-readable.epub");
+            std::fs::write(&source, SAMPLE_EPUB).unwrap();
 
-        let restored = load_library(&mut doc, &[], &local_books);
-        assert_eq!(restored.len(), 1);
-        assert_eq!(restored[0].book.id, book.id);
-        assert_eq!(restored[0].path, path);
-    }
+            let (book, destination) = parse_shared_path_detailed(&source).unwrap();
+            assert!(is_shared(&destination));
+            assert!(destination.is_file());
+            assert_eq!(book.id, content_id(SAMPLE_EPUB));
 
-    #[test]
-    #[serial]
-    fn a_watched_folder_auto_imports_new_books() {
-        let watched = tempfile::tempdir().unwrap();
-        std::fs::write(watched.path().join("alpha.epub"), SAMPLE_EPUB).unwrap();
-        let sub = watched.path().join("nested");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("beta.EPUB"), SAMPLE_EPUB).unwrap();
-        std::fs::write(watched.path().join("readme.txt"), b"not a book").unwrap();
+            // The parser/materialiser owns no CRDT authority; the UI worker is
+            // free to discard a superseded result without leaving a ghost shelf
+            // row behind.
+            let mut doc = AutoCommit::new();
+            let recorded = record_imported_book(&mut doc, &destination, book);
+            let entries = BooksDoc::read_library_entries(&doc);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].id, recorded.id);
+            assert!(entries[0].shared);
+            assert!(
+                std::fs::read_dir(workspace_books_dir())
+                    .unwrap()
+                    .flatten()
+                    .all(|entry| entry.path().extension().is_none_or(|ext| ext != "part")),
+                "atomic publication removes its private staging file"
+            );
+        }
 
-        let mut doc = AutoCommit::new();
-        let lib = load_library(&mut doc, &[watched.path().to_path_buf()], &HashMap::new());
-        // Both epubs are the *same bytes*, so they share a content id and collapse
-        // to a single library entry — the non-epub is ignored.
-        assert_eq!(
-            lib.len(),
-            1,
-            "watched epubs imported (deduped by content), .txt ignored"
-        );
-    }
+        // --- phase: sharing_copies_the_book_onto_the_workspace_keeping_its_identity ---
+        {
+            let ws = tempfile::tempdir().unwrap();
+            let _workspace = workspace_env(ws.path());
+            let home = tempfile::tempdir().unwrap();
+            let src = home.path().join("mine.epub");
+            std::fs::write(&src, SAMPLE_EPUB).unwrap();
 
-    #[test]
-    #[serial]
-    fn a_book_on_the_workspace_is_shared_others_are_local() {
-        let ws = tempfile::tempdir().unwrap();
-        let _workspace = workspace_env(ws.path());
-        let books_dir = workspace_books_dir();
-        std::fs::create_dir_all(&books_dir).unwrap();
-        let shared = books_dir.join("shared.epub");
-        std::fs::write(&shared, SAMPLE_EPUB).unwrap();
+            let mut doc = AutoCommit::new();
+            let before = import_path(&mut doc, &src).unwrap();
+            assert!(!is_shared(&src));
 
-        let local = tempfile::tempdir().unwrap();
-        let local_path = local.path().join("local.epub");
+            let (after, dest) = share_to_workspace(&mut doc, &src).expect("share succeeds");
+            assert!(is_shared(&dest), "the copy lands on the workspace");
+            assert!(dest.exists(), "the file was actually copied");
+            assert_eq!(
+                after.id, before.id,
+                "identity (and thus annotations/progress) is preserved"
+            );
+            // The library records canonical shared availability, not a workspace
+            // root that might mean something different on another device.
+            let entries = BooksDoc::read_library_entries(&doc);
+            assert_eq!(entries.len(), 1);
+            assert!(entries[0].shared, "the shared copy is discoverable by id");
+        }
 
-        assert!(is_shared(&shared), "a /workspace/Books path is shared");
-        assert!(!is_shared(&local_path), "a book elsewhere is device-local");
-        assert!(
-            !is_shared(&workspace_root().join("Books/../../private/book.epub")),
-            "lexical traversal cannot spoof workspace membership"
-        );
-    }
+        // --- phase: sharing_never_overwrites_an_unrelated_same_named_workspace_file ---
+        {
+            let ws = tempfile::tempdir().unwrap();
+            let _workspace = workspace_env(ws.path());
+            let home = tempfile::tempdir().unwrap();
+            let src = home.path().join("book.epub");
+            std::fs::write(&src, SAMPLE_EPUB).unwrap();
 
-    #[test]
-    #[serial]
-    fn shared_parse_materialises_content_before_the_library_row_is_written() {
-        let ws = tempfile::tempdir().unwrap();
-        let _workspace = workspace_env(ws.path());
-        let local = tempfile::tempdir().unwrap();
-        let source = local.path().join("peer-readable.epub");
-        std::fs::write(&source, SAMPLE_EPUB).unwrap();
+            let books = workspace_books_dir();
+            std::fs::create_dir_all(&books).unwrap();
+            // This is the name older versions of sharing would have used. It must
+            // survive, even though its contents are not an EPUB at all.
+            let old_destination = books.join("book.epub");
+            std::fs::write(&old_destination, b"another reader's file").unwrap();
 
-        let (book, destination) = parse_shared_path_detailed(&source).unwrap();
-        assert!(is_shared(&destination));
-        assert!(destination.is_file());
-        assert_eq!(book.id, content_id(SAMPLE_EPUB));
-
-        // The parser/materialiser owns no CRDT authority; the UI worker is
-        // free to discard a superseded result without leaving a ghost shelf
-        // row behind.
-        let mut doc = AutoCommit::new();
-        let recorded = record_imported_book(&mut doc, &destination, book);
-        let entries = BooksDoc::read_library_entries(&doc);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].id, recorded.id);
-        assert!(entries[0].shared);
-        assert!(
-            std::fs::read_dir(workspace_books_dir())
-                .unwrap()
-                .flatten()
-                .all(|entry| entry.path().extension().is_none_or(|ext| ext != "part")),
-            "atomic publication removes its private staging file"
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn sharing_copies_the_book_onto_the_workspace_keeping_its_identity() {
-        let ws = tempfile::tempdir().unwrap();
-        let _workspace = workspace_env(ws.path());
-        let home = tempfile::tempdir().unwrap();
-        let src = home.path().join("mine.epub");
-        std::fs::write(&src, SAMPLE_EPUB).unwrap();
-
-        let mut doc = AutoCommit::new();
-        let before = import_path(&mut doc, &src).unwrap();
-        assert!(!is_shared(&src));
-
-        let (after, dest) = share_to_workspace(&mut doc, &src).expect("share succeeds");
-        assert!(is_shared(&dest), "the copy lands on the workspace");
-        assert!(dest.exists(), "the file was actually copied");
-        assert_eq!(
-            after.id, before.id,
-            "identity (and thus annotations/progress) is preserved"
-        );
-        // The library records canonical shared availability, not a workspace
-        // root that might mean something different on another device.
-        let entries = BooksDoc::read_library_entries(&doc);
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].shared, "the shared copy is discoverable by id");
-    }
-
-    #[test]
-    #[serial]
-    fn sharing_never_overwrites_an_unrelated_same_named_workspace_file() {
-        let ws = tempfile::tempdir().unwrap();
-        let _workspace = workspace_env(ws.path());
-        let home = tempfile::tempdir().unwrap();
-        let src = home.path().join("book.epub");
-        std::fs::write(&src, SAMPLE_EPUB).unwrap();
-
-        let books = workspace_books_dir();
-        std::fs::create_dir_all(&books).unwrap();
-        // This is the name older versions of sharing would have used. It must
-        // survive, even though its contents are not an EPUB at all.
-        let old_destination = books.join("book.epub");
-        std::fs::write(&old_destination, b"another reader's file").unwrap();
-
-        let mut doc = AutoCommit::new();
-        let (_book, destination) = share_to_workspace(&mut doc, &src).expect("share succeeds");
-        assert_ne!(
-            destination, old_destination,
-            "share uses a content-addressed name"
-        );
-        assert_eq!(
-            std::fs::read(&old_destination).unwrap(),
-            b"another reader's file",
-            "an unrelated same-named file was not overwritten"
-        );
-        assert!(
-            destination.exists(),
-            "the shared content was written separately"
-        );
-    }
-
-    #[test]
-    fn open_epub_path_reads_a_real_file_and_rejects_junk() {
-        let tmp = tempfile::tempdir().unwrap();
-        let good = tmp.path().join("book.epub");
-        std::fs::write(&good, SAMPLE_EPUB).unwrap();
-        assert!(open_epub_path(&good).is_some(), "a real epub opens by path");
-
-        let bad = tmp.path().join("bad.epub");
-        std::fs::write(&bad, b"definitely not a zip").unwrap();
-        assert!(
-            open_epub_path(&bad).is_none(),
-            "a corrupt file is rejected, not panicked on"
-        );
-
-        let missing = tmp.path().join("gone.epub");
-        assert!(
-            open_epub_path(&missing).is_none(),
-            "a missing file is rejected"
-        );
-    }
-
-    #[test]
-    fn detailed_import_keeps_the_parser_reason_for_the_visible_error_state() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bad = tmp.path().join("damaged.epub");
-        std::fs::write(&bad, b"definitely not a zip").unwrap();
-
-        let error = import_path_detailed(&mut AutoCommit::new(), &bad)
-            .expect_err("a corrupt EPUB does not import");
-        assert!(
-            error.contains("open epub zip"),
-            "the UI receives the actual parse reason, not a generic failure: {error}"
-        );
+            let mut doc = AutoCommit::new();
+            let (_book, destination) = share_to_workspace(&mut doc, &src).expect("share succeeds");
+            assert_ne!(
+                destination, old_destination,
+                "share uses a content-addressed name"
+            );
+            assert_eq!(
+                std::fs::read(&old_destination).unwrap(),
+                b"another reader's file",
+                "an unrelated same-named file was not overwritten"
+            );
+            assert!(
+                destination.exists(),
+                "the shared content was written separately"
+            );
+        }
     }
 }

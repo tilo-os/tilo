@@ -130,15 +130,79 @@ fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
 }
 
 #[test]
-fn odt_parses_real_file_into_crdt_model() {
-    let d = import(&OdtCodec, SAMPLE_ODT);
-    assert_sample_structure(&d.materialize(), "odt");
-}
+fn real_office_files_parse_edit_and_diff_as_crdt() {
+    // Phase `odt_parses_real_file_into_crdt_model`.
+    {
+        let d = import(&OdtCodec, SAMPLE_ODT);
+        assert_sample_structure(&d.materialize(), "odt");
+    }
+    // Phase `docx_parses_real_file_into_crdt_model`.
+    {
+        let d = import(&DocxCodec, SAMPLE_DOCX);
+        assert_sample_structure(&d.materialize(), "docx");
+    }
+    // Phase `odt_edit_as_crdt_op_survives_reopen`.
+    {
+        edit_and_reopen(&OdtCodec, SAMPLE_ODT, "odt");
+    }
+    // Phase `docx_edit_as_crdt_op_survives_reopen`.
+    {
+        edit_and_reopen(&DocxCodec, SAMPLE_DOCX, "docx");
+    }
+    // Phase `version_diff_reports_structural_changes_on_real_docx`.
+    {
+        let mut d = import(&DocxCodec, SAMPLE_DOCX);
+        let v1 = d.materialize();
 
-#[test]
-fn docx_parses_real_file_into_crdt_model() {
-    let d = import(&DocxCodec, SAMPLE_DOCX);
-    assert_sample_structure(&d.materialize(), "docx");
+        let heading_id = d
+            .blocks_in_order()
+            .into_iter()
+            .find(|id| d.block_kind(id).as_deref() == Some("heading"))
+            .unwrap();
+        let hlen = d
+            .block_text(&heading_id)
+            .unwrap_or_default()
+            .chars()
+            .count();
+        d.splice_text(&heading_id, hlen, 0, " (DRAFT)");
+        let last = d.blocks_in_order().pop().unwrap();
+        let np = d.insert_block(Some(&last), "paragraph");
+        d.splice_text(&np, 0, 0, "New section");
+        let v2 = d.materialize();
+
+        let diff = diff_snapshots(&v1, &v2);
+        assert_eq!(diff.summary.added, 1, "one paragraph added");
+        assert_eq!(diff.summary.removed, 0, "nothing removed");
+        assert_eq!(diff.summary.changed, 1, "the heading changed");
+
+        let ch = diff
+            .blocks
+            .iter()
+            .find(|b| b.op == BlockOp::Changed)
+            .unwrap();
+        assert_eq!(ch.id, heading_id);
+        assert_eq!(ch.old_text.as_deref(), Some("Quarterly Report"));
+        assert_eq!(ch.new_text.as_deref(), Some("Quarterly Report (DRAFT)"));
+        assert!(
+            ch.runs
+                .iter()
+                .any(|r| r.op == RunOp::Insert && r.text.contains("DRAFT")),
+            "run diff must show the inserted text"
+        );
+        assert!(
+            ch.runs
+                .iter()
+                .any(|r| r.op == RunOp::Equal && r.text.contains("Quarterly Report")),
+            "run diff must keep the shared prefix"
+        );
+
+        let added = diff.blocks.iter().find(|b| b.op == BlockOp::Added).unwrap();
+        assert_eq!(added.new_text.as_deref(), Some("New section"));
+        assert!(added.old_text.is_none());
+
+        let json = serde_json::to_string(&diff).expect("diff serializes to JSON");
+        assert!(json.contains("New section") && json.contains("DRAFT"));
+    }
 }
 
 /// Apply two edits as real CRDT operations (a text splice into the
@@ -246,143 +310,79 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
 }
 
 #[test]
-fn odt_edit_as_crdt_op_survives_reopen() {
-    edit_and_reopen(&OdtCodec, SAMPLE_ODT, "odt");
-}
-
-#[test]
-fn docx_edit_as_crdt_op_survives_reopen() {
-    edit_and_reopen(&DocxCodec, SAMPLE_DOCX, "docx");
-}
-
-#[test]
-fn version_diff_reports_structural_changes_on_real_docx() {
-    let mut d = import(&DocxCodec, SAMPLE_DOCX);
-    let v1 = d.materialize();
-
-    let heading_id = d
-        .blocks_in_order()
-        .into_iter()
-        .find(|id| d.block_kind(id).as_deref() == Some("heading"))
-        .unwrap();
-    let hlen = d
-        .block_text(&heading_id)
-        .unwrap_or_default()
-        .chars()
-        .count();
-    d.splice_text(&heading_id, hlen, 0, " (DRAFT)");
-    let last = d.blocks_in_order().pop().unwrap();
-    let np = d.insert_block(Some(&last), "paragraph");
-    d.splice_text(&np, 0, 0, "New section");
-    let v2 = d.materialize();
-
-    let diff = diff_snapshots(&v1, &v2);
-    assert_eq!(diff.summary.added, 1, "one paragraph added");
-    assert_eq!(diff.summary.removed, 0, "nothing removed");
-    assert_eq!(diff.summary.changed, 1, "the heading changed");
-
-    let ch = diff
-        .blocks
-        .iter()
-        .find(|b| b.op == BlockOp::Changed)
-        .unwrap();
-    assert_eq!(ch.id, heading_id);
-    assert_eq!(ch.old_text.as_deref(), Some("Quarterly Report"));
-    assert_eq!(ch.new_text.as_deref(), Some("Quarterly Report (DRAFT)"));
-    assert!(
-        ch.runs
-            .iter()
-            .any(|r| r.op == RunOp::Insert && r.text.contains("DRAFT")),
-        "run diff must show the inserted text"
-    );
-    assert!(
-        ch.runs
-            .iter()
-            .any(|r| r.op == RunOp::Equal && r.text.contains("Quarterly Report")),
-        "run diff must keep the shared prefix"
-    );
-
-    let added = diff.blocks.iter().find(|b| b.op == BlockOp::Added).unwrap();
-    assert_eq!(added.new_text.as_deref(), Some("New section"));
-    assert!(added.old_text.is_none());
-
-    let json = serde_json::to_string(&diff).expect("diff serializes to JSON");
-    assert!(json.contains("New section") && json.contains("DRAFT"));
-}
-
-#[test]
-fn zip_bomb_is_rejected_not_inflated() {
-    // The production codec path must reject a decompression bomb, fast,
-    // without OOMing. The fixture is ~300 KB on disk but declares a
-    // 300 MiB part — over the 256 MiB per-part cap.
-    let mut d = Document::new();
-    let err = DocxCodec
-        .import(
-            ZIPBOMB_DOCX,
-            &mut d.as_mut(),
-            &mut tilo_content::ContentInputs::new(),
-        )
-        .expect_err("zip bomb must be rejected");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("limit") || msg.contains("bomb"),
-        "expected a bounded-size rejection, got: {msg}"
-    );
-}
-
-#[test]
-fn xxe_dtd_is_rejected_in_both_formats() {
-    // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected
-    // outright (defence in depth against XXE/entity-expansion), both codecs.
-    let mut d = Document::new();
-    let err = DocxCodec
-        .import(
-            XXE_DOCX,
-            &mut d.as_mut(),
-            &mut tilo_content::ContentInputs::new(),
-        )
-        .expect_err("docx XXE must be rejected");
-    assert!(
-        format!("{err}").contains("DTD"),
-        "docx: expected a DTD rejection, got: {err}"
-    );
-
-    let mut d2 = Document::new();
-    let err2 = OdtCodec
-        .import(
-            XXE_ODT,
-            &mut d2.as_mut(),
-            &mut tilo_content::ContentInputs::new(),
-        )
-        .expect_err("odt XXE must be rejected");
-    assert!(
-        format!("{err2}").contains("DTD"),
-        "odt: expected a DTD rejection, got: {err2}"
-    );
-}
-
-#[test]
-fn garbage_input_is_rejected_cleanly() {
-    // Non-zip garbage must fail as a clean error, never a panic.
-    let mut d = Document::new();
-    assert!(
-        DocxCodec
+fn hostile_office_inputs_are_rejected() {
+    // Phase `zip_bomb_is_rejected_not_inflated`.
+    {
+        // The production codec path must reject a decompression bomb, fast,
+        // without OOMing. The fixture is ~300 KB on disk but declares a
+        // 300 MiB part — over the 256 MiB per-part cap.
+        let mut d = Document::new();
+        let err = DocxCodec
             .import(
-                b"not a zip at all",
+                ZIPBOMB_DOCX,
                 &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new()
+                &mut tilo_content::ContentInputs::new(),
             )
-            .is_err()
-    );
-    assert!(
-        OdtCodec
+            .expect_err("zip bomb must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("limit") || msg.contains("bomb"),
+            "expected a bounded-size rejection, got: {msg}"
+        );
+    }
+    // Phase `xxe_dtd_is_rejected_in_both_formats`.
+    {
+        // A `<!DOCTYPE ... <!ENTITY ...>>` in a modeled XML part is rejected
+        // outright (defence in depth against XXE/entity-expansion), both codecs.
+        let mut d = Document::new();
+        let err = DocxCodec
             .import(
-                &[0xff, 0x00, 0x13, 0x37],
+                XXE_DOCX,
                 &mut d.as_mut(),
-                &mut tilo_content::ContentInputs::new()
+                &mut tilo_content::ContentInputs::new(),
             )
-            .is_err()
-    );
+            .expect_err("docx XXE must be rejected");
+        assert!(
+            format!("{err}").contains("DTD"),
+            "docx: expected a DTD rejection, got: {err}"
+        );
+
+        let mut d2 = Document::new();
+        let err2 = OdtCodec
+            .import(
+                XXE_ODT,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .expect_err("odt XXE must be rejected");
+        assert!(
+            format!("{err2}").contains("DTD"),
+            "odt: expected a DTD rejection, got: {err2}"
+        );
+    }
+    // Phase `garbage_input_is_rejected_cleanly`.
+    {
+        // Non-zip garbage must fail as a clean error, never a panic.
+        let mut d = Document::new();
+        assert!(
+            DocxCodec
+                .import(
+                    b"not a zip at all",
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new()
+                )
+                .is_err()
+        );
+        assert!(
+            OdtCodec
+                .import(
+                    &[0xff, 0x00, 0x13, 0x37],
+                    &mut d.as_mut(),
+                    &mut tilo_content::ContentInputs::new()
+                )
+                .is_err()
+        );
+    }
 }
 
 /// Build a large book-length document in the CRDT model, export +

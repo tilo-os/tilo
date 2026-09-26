@@ -332,100 +332,191 @@ mod tests {
     }
 
     #[test]
-    fn buckets_never_span_two_frames_at_common_rates() {
-        // 33ms at 30fps would let 12.999s and 13.020s — different pictures —
-        // land in one bucket. The real invariant: consecutive frame times
-        // differ by at least one bucket. Each frame interval is written out
-        // in whole milliseconds rather than recomputed from the frame rate,
-        // so the expected value is stated rather than derived from the code
-        // under test.
-        for (fps, frame_interval_ms) in [
-            (24.0, 42u64),
-            (25.0, 40),
-            (30.0, 33),
-            (50.0, 20),
-            (60.0, 17),
-        ] {
-            let b = bucket_ms_for_fps(fps);
-            assert!(b >= 1);
+    fn bucket_space_and_read_ahead_stay_in_bounds() {
+        // Phase `buckets_never_span_two_frames_at_common_rates`.
+        {
+            // 33ms at 30fps would let 12.999s and 13.020s — different pictures —
+            // land in one bucket. The real invariant: consecutive frame times
+            // differ by at least one bucket. Each frame interval is written out
+            // in whole milliseconds rather than recomputed from the frame rate,
+            // so the expected value is stated rather than derived from the code
+            // under test.
+            for (fps, frame_interval_ms) in [
+                (24.0, 42u64),
+                (25.0, 40),
+                (30.0, 33),
+                (50.0, 20),
+                (60.0, 17),
+            ] {
+                let b = bucket_ms_for_fps(fps);
+                assert!(b >= 1);
+                assert!(
+                    b <= frame_interval_ms,
+                    "bucket {b}ms must not exceed the {frame_interval_ms}ms frame interval at {fps}fps"
+                );
+                // Two consecutive frames must fall in different buckets.
+                let t0 = 12_000u64;
+                let t1 = t0 + frame_interval_ms;
+                assert_ne!(
+                    bucket_of(t0, b),
+                    bucket_of(t1, b),
+                    "consecutive frames collide at {fps}fps with a {b}ms bucket"
+                );
+            }
+        }
+        // Phase `a_degenerate_frame_rate_does_not_produce_a_zero_bucket`.
+        {
+            // A zero bucket would divide by zero in `bucket_of`.
+            assert_eq!(bucket_ms_for_fps(0.0), 1);
+            assert_eq!(bucket_ms_for_fps(f64::NAN), 1);
+            assert_eq!(bucket_ms_for_fps(-30.0), 1);
+            assert_eq!(
+                bucket_of(500, 0),
+                500,
+                "a zero bucket is clamped, not divided by"
+            );
+        }
+        // Phase `read_ahead_skips_what_is_already_cached_and_follows_the_direction`.
+        {
+            let mut c = FrameCache::new(64, 1 << 30);
+            let src: SourceKey = Arc::from("a");
+            let bucket_ms = bucket_ms_for_fps(30.0);
+            // Playhead at bucket 100; 101 already decoded.
+            c.insert(
+                FrameKey {
+                    source: src.clone(),
+                    bucket: 101,
+                },
+                rgba_frame(8, 8, 0),
+            );
+
+            let fwd = read_ahead_targets(&c, &src, 100 * bucket_ms, bucket_ms, 1, 3);
+            assert_eq!(fwd.len(), 3);
             assert!(
-                b <= frame_interval_ms,
-                "bucket {b}ms must not exceed the {frame_interval_ms}ms frame interval at {fps}fps"
+                !fwd.contains(&(101 * bucket_ms)),
+                "an already-cached time is not re-decoded: {fwd:?}"
             );
-            // Two consecutive frames must fall in different buckets.
-            let t0 = 12_000u64;
-            let t1 = t0 + frame_interval_ms;
-            assert_ne!(
-                bucket_of(t0, b),
-                bucket_of(t1, b),
-                "consecutive frames collide at {fps}fps with a {b}ms bucket"
+            assert_eq!(fwd[0], 102 * bucket_ms, "nearest uncached first");
+
+            let back = read_ahead_targets(&c, &src, 100 * bucket_ms, bucket_ms, -1, 2);
+            assert_eq!(
+                back,
+                vec![99 * bucket_ms, 98 * bucket_ms],
+                "scrubbing back reads behind"
+            );
+        }
+        // Phase `read_ahead_does_not_run_off_the_start_of_the_stream`.
+        {
+            let c = FrameCache::new(8, 1 << 30);
+            let src: SourceKey = Arc::from("a");
+            let back = read_ahead_targets(&c, &src, 0, 33, -1, 4);
+            assert!(back.is_empty(), "nothing precedes t=0, got {back:?}");
+        }
+        // Phase `read_ahead_does_not_run_off_the_end_of_the_bucket_space`.
+        {
+            // A playhead at the top of the `u64` millisecond range — a "seek to
+            // the end" sentinel, or a duration that was never resolved. The
+            // read-ahead planner used to route the bucket index through `i64`
+            // and multiply it back out into milliseconds; both steps break here.
+            let c = FrameCache::new(8, 1 << 30);
+            let src: SourceKey = Arc::from("a");
+
+            // 1 ms buckets put the playhead in bucket `u64::MAX`, which as an
+            // `i64` reads as -1 — so *forward* read-ahead came back with the
+            // start of the stream, and the decoder would fetch t=0 while the
+            // playhead sat at the end.
+            let fwd = read_ahead_targets(&c, &src, u64::MAX, 1, 1, 4);
+            assert!(
+                fwd.iter().all(|t| *t >= u64::MAX.saturating_sub(4)),
+                "forward read-ahead must stay ahead of the playhead, got {fwd:?}"
+            );
+
+            // At a realistic 33 ms bucket the same position overflows the
+            // bucket→milliseconds multiplication outright.
+            let fwd = read_ahead_targets(&c, &src, u64::MAX, 33, 1, 4);
+            assert!(
+                fwd.iter().all(|t| *t >= u64::MAX.saturating_sub(66)),
+                "forward read-ahead must stay ahead of the playhead, got {fwd:?}"
             );
         }
     }
 
     #[test]
-    fn a_degenerate_frame_rate_does_not_produce_a_zero_bucket() {
-        // A zero bucket would divide by zero in `bucket_of`.
-        assert_eq!(bucket_ms_for_fps(0.0), 1);
-        assert_eq!(bucket_ms_for_fps(f64::NAN), 1);
-        assert_eq!(bucket_ms_for_fps(-30.0), 1);
-        assert_eq!(
-            bucket_of(500, 0),
-            500,
-            "a zero bucket is clamped, not divided by"
-        );
-    }
-
-    #[test]
-    fn a_step_back_after_a_step_forward_is_a_hit_not_a_re_decode() {
-        // The exact scrubbing pattern the cache exists for.
-        let mut c = FrameCache::new(8, 1 << 30);
-        c.insert(key("a", 10), rgba_frame(16, 16, 333));
-        c.insert(key("a", 11), rgba_frame(16, 16, 366));
-        assert!(
-            c.get(&key("a", 10)).is_some(),
-            "stepping back hits the cache"
-        );
-        assert!(c.get(&key("a", 11)).is_some());
-        let (hits, misses) = c.stats();
-        assert_eq!((hits, misses), (2, 0));
-        assert!(
-            c.get(&key("a", 12)).is_none(),
-            "an unvisited time is a miss"
-        );
-        assert_eq!(c.stats(), (2, 1));
-    }
-
-    #[test]
-    fn the_entry_bound_evicts_the_least_recently_used_not_the_oldest_inserted() {
-        let mut c = FrameCache::new(2, 1 << 30);
-        c.insert(key("a", 1), rgba_frame(8, 8, 0));
-        c.insert(key("a", 2), rgba_frame(8, 8, 1));
-        // Touch 1 so 2 becomes the least recently used.
-        assert!(c.get(&key("a", 1)).is_some());
-        c.insert(key("a", 3), rgba_frame(8, 8, 2));
-        assert_eq!(c.len(), 2);
-        assert!(c.contains(&key("a", 1)), "recently used survives");
-        assert!(c.contains(&key("a", 3)));
-        assert!(!c.contains(&key("a", 2)), "least recently used was evicted");
-    }
-
-    #[test]
-    fn the_byte_budget_binds_before_the_entry_count_on_large_frames() {
-        // Three 1080p RGBA frames are ~24 MB; a 16 MB budget must hold two or
-        // fewer even though the entry cap allows 64.
-        let budget = 16 * 1024 * 1024;
-        let mut c = FrameCache::new(64, budget);
-        for i in 0..3u64 {
-            c.insert(key("a", i), rgba_frame(1920, 1080, i));
+    fn cache_hits_evicts_and_accounts_bytes_by_recency() {
+        // Phase `a_step_back_after_a_step_forward_is_a_hit_not_a_re_decode`.
+        {
+            // The exact scrubbing pattern the cache exists for.
+            let mut c = FrameCache::new(8, 1 << 30);
+            c.insert(key("a", 10), rgba_frame(16, 16, 333));
+            c.insert(key("a", 11), rgba_frame(16, 16, 366));
+            assert!(
+                c.get(&key("a", 10)).is_some(),
+                "stepping back hits the cache"
+            );
+            assert!(c.get(&key("a", 11)).is_some());
+            let (hits, misses) = c.stats();
+            assert_eq!((hits, misses), (2, 0));
+            assert!(
+                c.get(&key("a", 12)).is_none(),
+                "an unvisited time is a miss"
+            );
+            assert_eq!(c.stats(), (2, 1));
         }
-        assert!(
-            c.bytes() <= budget,
-            "byte budget respected: {} > {budget}",
-            c.bytes()
-        );
-        assert!(c.len() < 3, "the byte budget evicted, not the entry cap");
-        assert!(!c.is_empty(), "at least the newest frame is retained");
+        // Phase `the_entry_bound_evicts_the_least_recently_used_not_the_oldest_inserted`.
+        {
+            let mut c = FrameCache::new(2, 1 << 30);
+            c.insert(key("a", 1), rgba_frame(8, 8, 0));
+            c.insert(key("a", 2), rgba_frame(8, 8, 1));
+            // Touch 1 so 2 becomes the least recently used.
+            assert!(c.get(&key("a", 1)).is_some());
+            c.insert(key("a", 3), rgba_frame(8, 8, 2));
+            assert_eq!(c.len(), 2);
+            assert!(c.contains(&key("a", 1)), "recently used survives");
+            assert!(c.contains(&key("a", 3)));
+            assert!(!c.contains(&key("a", 2)), "least recently used was evicted");
+        }
+        // Phase `the_byte_budget_binds_before_the_entry_count_on_large_frames`.
+        {
+            // Three 1080p RGBA frames are ~24 MB; a 16 MB budget must hold two or
+            // fewer even though the entry cap allows 64.
+            let budget = 16 * 1024 * 1024;
+            let mut c = FrameCache::new(64, budget);
+            for i in 0..3u64 {
+                c.insert(key("a", i), rgba_frame(1920, 1080, i));
+            }
+            assert!(
+                c.bytes() <= budget,
+                "byte budget respected: {} > {budget}",
+                c.bytes()
+            );
+            assert!(c.len() < 3, "the byte budget evicted, not the entry cap");
+            assert!(!c.is_empty(), "at least the newest frame is retained");
+        }
+        // Phase `replacing_a_key_does_not_double_count_its_bytes`.
+        {
+            let mut c = FrameCache::new(8, 1 << 30);
+            c.insert(key("a", 1), rgba_frame(64, 64, 0));
+            let once = c.bytes();
+            c.insert(key("a", 1), rgba_frame(64, 64, 1));
+            assert_eq!(c.bytes(), once, "the old entry's bytes were released");
+            assert_eq!(c.len(), 1);
+        }
+        // Phase `invalidating_one_source_leaves_the_others_intact`.
+        {
+            let mut c = FrameCache::new(16, 1 << 30);
+            c.insert(key("a", 1), rgba_frame(8, 8, 0));
+            c.insert(key("a", 2), rgba_frame(8, 8, 1));
+            c.insert(key("b", 1), rgba_frame(8, 8, 2));
+            c.invalidate_source("a");
+            assert!(!c.contains(&key("a", 1)));
+            assert!(!c.contains(&key("a", 2)));
+            assert!(c.contains(&key("b", 1)), "another source is untouched");
+            assert_eq!(c.len(), 1);
+            assert!(
+                c.bytes() > 0,
+                "the surviving entry still accounts for its bytes"
+            );
+        }
     }
 
     #[test]
@@ -457,99 +548,6 @@ mod tests {
         assert!(
             c.bytes() <= 4 * 1024 * 1024,
             "dmabufs are evicted under the budget too"
-        );
-    }
-
-    #[test]
-    fn replacing_a_key_does_not_double_count_its_bytes() {
-        let mut c = FrameCache::new(8, 1 << 30);
-        c.insert(key("a", 1), rgba_frame(64, 64, 0));
-        let once = c.bytes();
-        c.insert(key("a", 1), rgba_frame(64, 64, 1));
-        assert_eq!(c.bytes(), once, "the old entry's bytes were released");
-        assert_eq!(c.len(), 1);
-    }
-
-    #[test]
-    fn invalidating_one_source_leaves_the_others_intact() {
-        let mut c = FrameCache::new(16, 1 << 30);
-        c.insert(key("a", 1), rgba_frame(8, 8, 0));
-        c.insert(key("a", 2), rgba_frame(8, 8, 1));
-        c.insert(key("b", 1), rgba_frame(8, 8, 2));
-        c.invalidate_source("a");
-        assert!(!c.contains(&key("a", 1)));
-        assert!(!c.contains(&key("a", 2)));
-        assert!(c.contains(&key("b", 1)), "another source is untouched");
-        assert_eq!(c.len(), 1);
-        assert!(
-            c.bytes() > 0,
-            "the surviving entry still accounts for its bytes"
-        );
-    }
-
-    #[test]
-    fn read_ahead_skips_what_is_already_cached_and_follows_the_direction() {
-        let mut c = FrameCache::new(64, 1 << 30);
-        let src: SourceKey = Arc::from("a");
-        let bucket_ms = bucket_ms_for_fps(30.0);
-        // Playhead at bucket 100; 101 already decoded.
-        c.insert(
-            FrameKey {
-                source: src.clone(),
-                bucket: 101,
-            },
-            rgba_frame(8, 8, 0),
-        );
-
-        let fwd = read_ahead_targets(&c, &src, 100 * bucket_ms, bucket_ms, 1, 3);
-        assert_eq!(fwd.len(), 3);
-        assert!(
-            !fwd.contains(&(101 * bucket_ms)),
-            "an already-cached time is not re-decoded: {fwd:?}"
-        );
-        assert_eq!(fwd[0], 102 * bucket_ms, "nearest uncached first");
-
-        let back = read_ahead_targets(&c, &src, 100 * bucket_ms, bucket_ms, -1, 2);
-        assert_eq!(
-            back,
-            vec![99 * bucket_ms, 98 * bucket_ms],
-            "scrubbing back reads behind"
-        );
-    }
-
-    #[test]
-    fn read_ahead_does_not_run_off_the_start_of_the_stream() {
-        let c = FrameCache::new(8, 1 << 30);
-        let src: SourceKey = Arc::from("a");
-        let back = read_ahead_targets(&c, &src, 0, 33, -1, 4);
-        assert!(back.is_empty(), "nothing precedes t=0, got {back:?}");
-    }
-
-    #[test]
-    fn read_ahead_does_not_run_off_the_end_of_the_bucket_space() {
-        // A playhead at the top of the `u64` millisecond range — a "seek to
-        // the end" sentinel, or a duration that was never resolved. The
-        // read-ahead planner used to route the bucket index through `i64`
-        // and multiply it back out into milliseconds; both steps break here.
-        let c = FrameCache::new(8, 1 << 30);
-        let src: SourceKey = Arc::from("a");
-
-        // 1 ms buckets put the playhead in bucket `u64::MAX`, which as an
-        // `i64` reads as -1 — so *forward* read-ahead came back with the
-        // start of the stream, and the decoder would fetch t=0 while the
-        // playhead sat at the end.
-        let fwd = read_ahead_targets(&c, &src, u64::MAX, 1, 1, 4);
-        assert!(
-            fwd.iter().all(|t| *t >= u64::MAX.saturating_sub(4)),
-            "forward read-ahead must stay ahead of the playhead, got {fwd:?}"
-        );
-
-        // At a realistic 33 ms bucket the same position overflows the
-        // bucket→milliseconds multiplication outright.
-        let fwd = read_ahead_targets(&c, &src, u64::MAX, 33, 1, 4);
-        assert!(
-            fwd.iter().all(|t| *t >= u64::MAX.saturating_sub(66)),
-            "forward read-ahead must stay ahead of the playhead, got {fwd:?}"
         );
     }
 }

@@ -471,153 +471,155 @@ fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn windows_compilation_uses_real_emoji_glyphs() {
-        let parts = WorldParts::new();
-        let world = TypstWorld::new(parts, "= Native Grün 🌍");
-        let output = typst::compile::<PagedDocument>(&world)
-            .output
-            .expect("emoji document compiles");
-        let mut frames: Vec<_> = output.pages.iter().map(|page| &page.frame).collect();
-        let mut glyph_count = 0;
-        while let Some(frame) = frames.pop() {
-            for (_, item) in frame.items() {
-                match item {
-                    FrameItem::Group(group) => frames.push(&group.frame),
-                    FrameItem::Text(text) => {
-                        glyph_count += text.glyphs.len();
-                        assert!(
-                            text.glyphs.iter().all(|glyph| glyph.id != 0),
-                            "compiled text contains a missing glyph"
-                        );
+    fn compile_extracts_text_glyphs_and_pdf_bytes() {
+        // Case `windows_compilation_uses_real_emoji_glyphs`.
+        #[cfg(target_os = "windows")]
+        {
+            let parts = WorldParts::new();
+            let world = TypstWorld::new(parts, "= Native Grün 🌍");
+            let output = typst::compile::<PagedDocument>(&world)
+                .output
+                .expect("emoji document compiles");
+            let mut frames: Vec<_> = output.pages.iter().map(|page| &page.frame).collect();
+            let mut glyph_count = 0;
+            while let Some(frame) = frames.pop() {
+                for (_, item) in frame.items() {
+                    match item {
+                        FrameItem::Group(group) => frames.push(&group.frame),
+                        FrameItem::Text(text) => {
+                            glyph_count += text.glyphs.len();
+                            assert!(
+                                text.glyphs.iter().all(|glyph| glyph.id != 0),
+                                "compiled text contains a missing glyph"
+                            );
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+            assert!(glyph_count > 0, "the production compiler emitted no text");
         }
-        assert!(glyph_count > 0, "the production compiler emitted no text");
-    }
+        // Case `compile_extracts_positioned_text`:
+        // A clean compile renders a page, records its point size, and extracts
+        // selectable glyph cells whose left-to-right x positions increase — the
+        // geometry the preview's text selection hit-tests against.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, "= Hello\n\nSome body text here.\n", 2.0);
+            assert!(out.ok, "clean source compiles");
+            assert_eq!(out.error_count(), 0);
+            assert!(!out.pages.is_empty(), "produced a page");
+            assert!(
+                out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0,
+                "point size set"
+            );
 
-    /// A clean compile renders a page, records its point size, and extracts
-    /// selectable glyph cells whose left-to-right x positions increase — the
-    /// geometry the preview's text selection hit-tests against.
-    #[test]
-    fn compile_extracts_positioned_text() {
-        let parts = WorldParts::new();
-        let out = compile_source(&parts, "= Hello\n\nSome body text here.\n", 2.0);
-        assert!(out.ok, "clean source compiles");
-        assert_eq!(out.error_count(), 0);
-        assert!(!out.pages.is_empty(), "produced a page");
-        assert!(
-            out.pages[0].width_pt > 0.0 && out.pages[0].height_pt > 0.0,
-            "point size set"
-        );
+            let cells: usize = out
+                .page_text
+                .iter()
+                .flat_map(|p| p.iter())
+                .map(|r| r.cells.len())
+                .sum();
+            assert!(cells > 0, "extracted glyph cells for the text layer");
 
-        let cells: usize = out
-            .page_text
-            .iter()
-            .flat_map(|p| p.iter())
-            .map(|r| r.cells.len())
-            .sum();
-        assert!(cells > 0, "extracted glyph cells for the text layer");
-
-        // Within any run, glyph cells advance left-to-right.
-        for run in out.page_text.iter().flat_map(|p| p.iter()) {
-            for w in run.cells.windows(2) {
-                assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+            // Within any run, glyph cells advance left-to-right.
+            for run in out.page_text.iter().flat_map(|p| p.iter()) {
+                for w in run.cells.windows(2) {
+                    assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+                }
+                assert!(run.bottom > run.top, "run line box has positive height");
             }
-            assert!(run.bottom > run.top, "run line box has positive height");
+        }
+        // Case `compile_pdf_produces_pdf_bytes`:
+        // Exporting a clean document yields a real PDF: the byte stream opens with
+        // the `%PDF` magic and carries substantive content.
+        {
+            let parts = WorldParts::new();
+            let bytes = compile_pdf(&parts, "= Export me\n\nA body paragraph to typeset.\n")
+                .expect("a clean source exports to PDF");
+            assert!(
+                bytes.starts_with(b"%PDF"),
+                "exported bytes begin with the %PDF magic (got {:?})",
+                &bytes[..bytes.len().min(8)]
+            );
+            assert!(
+                bytes.len() > 400,
+                "a real single-page PDF is more than a stub"
+            );
         }
     }
 
-    /// A reference to an undefined variable is surfaced as an error with a
-    /// resolvable span whose end column is strictly past the start.
     #[test]
-    fn error_carries_resolvable_span() {
-        let parts = WorldParts::new();
-        let out = compile_source(&parts, "Text #missing_var more.\n", 2.0);
-        assert!(out.error_count() >= 1, "unknown variable is an error");
-        let d = out
-            .diagnostics
-            .iter()
-            .find(|d| d.kind == DiagKind::Error)
-            .expect("an error diagnostic");
-        assert!(d.line.is_some() && d.col.is_some(), "start resolved");
-        assert!(d.end_line.is_some() && d.end_col.is_some(), "end resolved");
-        assert!(
-            d.end_col.unwrap() > d.col.unwrap(),
-            "span has positive width: {:?}..{:?}",
-            d.col,
-            d.end_col
-        );
-        assert_eq!(d.line, Some(1), "on the first line");
-    }
+    fn compile_errors_carry_spans_and_both_severities() {
+        // Case `error_carries_resolvable_span`:
+        // A reference to an undefined variable is surfaced as an error with a
+        // resolvable span whose end column is strictly past the start.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, "Text #missing_var more.\n", 2.0);
+            assert!(out.error_count() >= 1, "unknown variable is an error");
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == DiagKind::Error)
+                .expect("an error diagnostic");
+            assert!(d.line.is_some() && d.col.is_some(), "start resolved");
+            assert!(d.end_line.is_some() && d.end_col.is_some(), "end resolved");
+            assert!(
+                d.end_col.unwrap() > d.col.unwrap(),
+                "span has positive width: {:?}..{:?}",
+                d.col,
+                d.end_col
+            );
+            assert_eq!(d.line, Some(1), "on the first line");
+        }
+        // Case `compile_pdf_reports_errors_instead_of_writing_garbage`:
+        // A source that can't compile can't export — the PDF path reports the same
+        // blocking error the preview would show, not a truncated/empty file.
+        {
+            let parts = WorldParts::new();
+            let err = compile_pdf(&parts, "Body #undefined_var end.\n")
+                .expect_err("a broken source must not produce PDF bytes");
+            assert!(
+                err.iter().any(|d| d.kind == DiagKind::Error),
+                "the blocking error is surfaced to the caller"
+            );
+        }
+        // Case `error_and_warning_fixture_surfaces_both_severities`:
+        // The bundled error+warning fixture drives the whole diagnostics surface:
+        // the real compiler returns **both** an error and a warning, each resolved
+        // to a distinct source line so the panel, the inline squiggles, and
+        // click-to-jump all have real spans to act on.
+        {
+            let parts = WorldParts::new();
+            let out = compile_source(&parts, crate::samples::ERROR_WARNING, 2.0);
+            assert!(out.error_count() >= 1, "fixture carries a blocking error");
+            assert!(out.warning_count() >= 1, "fixture carries a warning");
 
-    /// Exporting a clean document yields a real PDF: the byte stream opens with
-    /// the `%PDF` magic and carries substantive content.
-    #[test]
-    fn compile_pdf_produces_pdf_bytes() {
-        let parts = WorldParts::new();
-        let bytes = compile_pdf(&parts, "= Export me\n\nA body paragraph to typeset.\n")
-            .expect("a clean source exports to PDF");
-        assert!(
-            bytes.starts_with(b"%PDF"),
-            "exported bytes begin with the %PDF magic (got {:?})",
-            &bytes[..bytes.len().min(8)]
-        );
-        assert!(
-            bytes.len() > 400,
-            "a real single-page PDF is more than a stub"
-        );
-    }
-
-    /// A source that can't compile can't export — the PDF path reports the same
-    /// blocking error the preview would show, not a truncated/empty file.
-    #[test]
-    fn compile_pdf_reports_errors_instead_of_writing_garbage() {
-        let parts = WorldParts::new();
-        let err = compile_pdf(&parts, "Body #undefined_var end.\n")
-            .expect_err("a broken source must not produce PDF bytes");
-        assert!(
-            err.iter().any(|d| d.kind == DiagKind::Error),
-            "the blocking error is surfaced to the caller"
-        );
-    }
-
-    /// The bundled error+warning fixture drives the whole diagnostics surface:
-    /// the real compiler returns **both** an error and a warning, each resolved
-    /// to a distinct source line so the panel, the inline squiggles, and
-    /// click-to-jump all have real spans to act on.
-    #[test]
-    fn error_and_warning_fixture_surfaces_both_severities() {
-        let parts = WorldParts::new();
-        let out = compile_source(&parts, crate::samples::ERROR_WARNING, 2.0);
-        assert!(out.error_count() >= 1, "fixture carries a blocking error");
-        assert!(out.warning_count() >= 1, "fixture carries a warning");
-
-        let err = out
-            .diagnostics
-            .iter()
-            .find(|d| d.kind == DiagKind::Error)
-            .expect("an error diagnostic");
-        let warn = out
-            .diagnostics
-            .iter()
-            .find(|d| d.kind == DiagKind::Warning)
-            .expect("a warning diagnostic");
-        assert!(
-            err.line.is_some() && err.col.is_some(),
-            "error span resolved"
-        );
-        assert!(
-            warn.line.is_some() && warn.col.is_some(),
-            "warning span resolved"
-        );
-        assert_ne!(
-            err.line, warn.line,
-            "the two diagnostics sit on different lines so a jump is observable"
-        );
-        assert_eq!(warn.line, Some(1), "the font warning is on line 1");
+            let err = out
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == DiagKind::Error)
+                .expect("an error diagnostic");
+            let warn = out
+                .diagnostics
+                .iter()
+                .find(|d| d.kind == DiagKind::Warning)
+                .expect("a warning diagnostic");
+            assert!(
+                err.line.is_some() && err.col.is_some(),
+                "error span resolved"
+            );
+            assert!(
+                warn.line.is_some() && warn.col.is_some(),
+                "warning span resolved"
+            );
+            assert_ne!(
+                err.line, warn.line,
+                "the two diagnostics sit on different lines so a jump is observable"
+            );
+            assert_eq!(warn.line, Some(1), "the font warning is on line 1");
+        }
     }
 }

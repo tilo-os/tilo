@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Replace simulated/default browsing with a Chromium engine on macOS and Linux, with native blocking and verified navigation to sandbox.example.
+**Goal:** Replace simulated/default browsing with a Chromium engine on macOS and Linux, with native blocking and verified navigation to tilo.so.
 
 **Architecture:** Native CEF process communicates with Rust WebViewEngine over framed pipes. Native blocking uses a Rust static library linked into the helper; CEF distributions are independently cached.
 

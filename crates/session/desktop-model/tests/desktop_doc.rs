@@ -90,141 +90,143 @@ fn seeded() -> (DesktopTree, AutoCommit) {
 }
 
 #[test]
-fn a_seeded_document_reads_back_as_the_same_desktop() {
-    let (tree, doc) = seeded();
-    let back = read_back(&doc);
-    assert_eq!(back.active, tree.active);
-    assert_eq!(layout(&back), layout(&tree));
-    let ws = &back.workspaces[0];
-    assert_eq!(ws.room, tree.workspaces[0].room);
-    assert_eq!(ws.owner.as_deref(), Some("ada"));
-    assert_eq!(ws.capabilities, tree.workspaces[0].capabilities);
-    // Presentation state is this device's and is not in the document.
-    assert!(!ws.strips[0].window_groups[0].maximized);
-    assert_eq!(ws.strips[0].window_groups[0].width, WindowWidth::Normal);
+fn desktop_document_round_trips_the_desktop_and_governance() {
+    // Phase `a_seeded_document_reads_back_as_the_same_desktop`.
+    {
+        let (tree, doc) = seeded();
+        let back = read_back(&doc);
+        assert_eq!(back.active, tree.active);
+        assert_eq!(layout(&back), layout(&tree));
+        let ws = &back.workspaces[0];
+        assert_eq!(ws.room, tree.workspaces[0].room);
+        assert_eq!(ws.owner.as_deref(), Some("ada"));
+        assert_eq!(ws.capabilities, tree.workspaces[0].capabilities);
+        // Presentation state is this device's and is not in the document.
+        assert!(!ws.strips[0].window_groups[0].maximized);
+        assert_eq!(ws.strips[0].window_groups[0].width, WindowWidth::Normal);
+    }
+    // Phase `rebuilding_keeps_local_presentation_for_known_groups`.
+    {
+        let (mut tree, doc) = seeded();
+        desktop_doc::rebuild(&doc, &mut tree);
+        assert!(tree.workspaces[0].strips[0].window_groups[0].maximized);
+    }
+    // Phase `governance_edits_round_trip`.
+    {
+        let (_, mut doc) = seeded();
+        let cap = CapOverride::grant(
+            Subject::app("org.example.App"),
+            Scope::FsPath("/srv".into()),
+            Verb::Read,
+        )
+        .with_id("cap-x");
+        assert!(desktop_doc::insert_capability(
+            &mut doc,
+            WorkspaceId(1),
+            &cap
+        ));
+        assert!(desktop_doc::set_owner(&mut doc, WorkspaceId(1), "bob"));
+        let ws = &read_back(&doc).workspaces[0];
+        assert!(ws.capabilities.iter().any(|c| c.id == "cap-x"));
+        assert_eq!(ws.owner.as_deref(), Some("bob"));
+
+        assert!(desktop_doc::revoke_capability(
+            &mut doc,
+            WorkspaceId(1),
+            "cap-x"
+        ));
+        assert!(
+            !read_back(&doc).workspaces[0]
+                .capabilities
+                .iter()
+                .any(|c| c.id == "cap-x")
+        );
+        assert!(!desktop_doc::set_owner(&mut doc, WorkspaceId(9), "eve"));
+    }
 }
 
 #[test]
-fn rebuilding_keeps_local_presentation_for_known_groups() {
-    let (mut tree, doc) = seeded();
-    desktop_doc::rebuild(&doc, &mut tree);
-    assert!(tree.workspaces[0].strips[0].window_groups[0].maximized);
-}
+fn topology_edits_are_mirrored_into_the_document() {
+    // Phase `a_cross_strip_move_is_mirrored_exactly`.
+    {
+        let (mut tree, mut doc) = seeded();
+        let target = DropTarget::ExistingGroup {
+            group_id: 20,
+            tab_index: 1,
+        };
+        let moved = tree
+            .move_tab_across_strips(StripId(1), StripId(2), 110, 99, target)
+            .unwrap();
+        assert!(desktop_doc::apply_tab_move(
+            &mut doc,
+            StripId(1),
+            StripId(2),
+            &moved
+        ));
+        assert_eq!(layout(&read_back(&doc)), layout(&tree));
+    }
+    // Phase `a_split_is_mirrored_and_a_stale_move_leaves_the_document_alone`.
+    {
+        let (mut tree, mut doc) = seeded();
+        let mut ids = IdMinter::resume(0, 500);
+        let moved = tree
+            .split_tab_into_new_group(StripId(1), 101, 2, &mut ids)
+            .unwrap();
+        assert!(desktop_doc::apply_tab_move(
+            &mut doc,
+            StripId(1),
+            StripId(1),
+            &moved
+        ));
+        assert_eq!(layout(&read_back(&doc)), layout(&tree));
 
-#[test]
-fn a_cross_strip_move_is_mirrored_exactly() {
-    let (mut tree, mut doc) = seeded();
-    let target = DropTarget::ExistingGroup {
-        group_id: 20,
-        tab_index: 1,
-    };
-    let moved = tree
-        .move_tab_across_strips(StripId(1), StripId(2), 110, 99, target)
-        .unwrap();
-    assert!(desktop_doc::apply_tab_move(
-        &mut doc,
-        StripId(1),
-        StripId(2),
-        &moved
-    ));
-    assert_eq!(layout(&read_back(&doc)), layout(&tree));
-}
+        let before = layout(&read_back(&doc));
+        let mut stale = moved;
+        stale.source_group = 404;
+        assert!(!desktop_doc::apply_tab_move(
+            &mut doc,
+            StripId(1),
+            StripId(2),
+            &stale
+        ));
+        assert_eq!(layout(&read_back(&doc)), before);
+    }
+    // Phase `reorders_removals_and_appends_follow_the_tree`.
+    {
+        let (mut tree, mut doc) = seeded();
 
-#[test]
-fn a_split_is_mirrored_and_a_stale_move_leaves_the_document_alone() {
-    let (mut tree, mut doc) = seeded();
-    let mut ids = IdMinter::resume(0, 500);
-    let moved = tree
-        .split_tab_into_new_group(StripId(1), 101, 2, &mut ids)
-        .unwrap();
-    assert!(desktop_doc::apply_tab_move(
-        &mut doc,
-        StripId(1),
-        StripId(1),
-        &moved
-    ));
-    assert_eq!(layout(&read_back(&doc)), layout(&tree));
+        let (moved, dest) = tree.reorder_group_within_strip(StripId(1), 10, 5).unwrap();
+        assert!(desktop_doc::reorder_group(
+            &mut doc,
+            StripId(1),
+            &moved,
+            dest
+        ));
+        let tabs = tree.reorder_tab_within_group(10, 0, 1).unwrap();
+        assert!(desktop_doc::rewrite_group_tabs(&mut doc, 10, &tabs));
+        assert_eq!(layout(&read_back(&doc)), layout(&tree));
 
-    let before = layout(&read_back(&doc));
-    let mut stale = moved;
-    stale.source_group = 404;
-    assert!(!desktop_doc::apply_tab_move(
-        &mut doc,
-        StripId(1),
-        StripId(2),
-        &stale
-    ));
-    assert_eq!(layout(&read_back(&doc)), before);
-}
-
-#[test]
-fn reorders_removals_and_appends_follow_the_tree() {
-    let (mut tree, mut doc) = seeded();
-
-    let (moved, dest) = tree.reorder_group_within_strip(StripId(1), 10, 5).unwrap();
-    assert!(desktop_doc::reorder_group(
-        &mut doc,
-        StripId(1),
-        &moved,
-        dest
-    ));
-    let tabs = tree.reorder_tab_within_group(10, 0, 1).unwrap();
-    assert!(desktop_doc::rewrite_group_tabs(&mut doc, 10, &tabs));
-    assert_eq!(layout(&read_back(&doc)), layout(&tree));
-
-    assert!(desktop_doc::remove_tab(
-        &mut doc,
-        StripId(1),
-        10,
-        101,
-        false
-    ));
-    assert!(desktop_doc::remove_tab(&mut doc, StripId(2), 20, 200, true));
-    assert!(desktop_doc::append_tab(
-        &mut doc,
-        WorkspaceId(1),
-        None,
-        300,
-        "new".into(),
-        Vec::new(),
-    ));
-    // A fresh reader learns strips through their groups, so the emptied
-    // strip 2 does not appear.
-    let back = layout(&read_back(&doc));
-    assert_eq!(back, vec![(1, vec![(11, vec![110, 300]), (10, vec![100])])]);
-}
-
-#[test]
-fn governance_edits_round_trip() {
-    let (_, mut doc) = seeded();
-    let cap = CapOverride::grant(
-        Subject::app("org.example.App"),
-        Scope::FsPath("/srv".into()),
-        Verb::Read,
-    )
-    .with_id("cap-x");
-    assert!(desktop_doc::insert_capability(
-        &mut doc,
-        WorkspaceId(1),
-        &cap
-    ));
-    assert!(desktop_doc::set_owner(&mut doc, WorkspaceId(1), "bob"));
-    let ws = &read_back(&doc).workspaces[0];
-    assert!(ws.capabilities.iter().any(|c| c.id == "cap-x"));
-    assert_eq!(ws.owner.as_deref(), Some("bob"));
-
-    assert!(desktop_doc::revoke_capability(
-        &mut doc,
-        WorkspaceId(1),
-        "cap-x"
-    ));
-    assert!(
-        !read_back(&doc).workspaces[0]
-            .capabilities
-            .iter()
-            .any(|c| c.id == "cap-x")
-    );
-    assert!(!desktop_doc::set_owner(&mut doc, WorkspaceId(9), "eve"));
+        assert!(desktop_doc::remove_tab(
+            &mut doc,
+            StripId(1),
+            10,
+            101,
+            false
+        ));
+        assert!(desktop_doc::remove_tab(&mut doc, StripId(2), 20, 200, true));
+        assert!(desktop_doc::append_tab(
+            &mut doc,
+            WorkspaceId(1),
+            None,
+            300,
+            "new".into(),
+            Vec::new(),
+        ));
+        // A fresh reader learns strips through their groups, so the emptied
+        // strip 2 does not appear.
+        let back = layout(&read_back(&doc));
+        assert_eq!(back, vec![(1, vec![(11, vec![110, 300]), (10, vec![100])])]);
+    }
 }
 
 fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {

@@ -115,8 +115,11 @@ mod launch_tests {
         )
     }
 
+    /// The production launch spec installs the root History definition; a
+    /// missing or foreign declaration is not admitted.
     #[test]
-    fn production_launch_spec_installs_the_root_history_definition() {
+    fn launch_admits_only_the_root_history_declaration() {
+        // Production launch spec installs the root history definition.
         let spec = launch_spec(inert_root).open_app_global_state(memory_state);
         spec.validate_history_declaration().unwrap();
         let mut app = spec.build_controlled_app_for_test().unwrap();
@@ -135,10 +138,8 @@ mod launch_tests {
                 .iter()
                 .any(|(_, node)| node.label() == Some("History"))
         );
-    }
 
-    #[test]
-    fn missing_and_foreign_launch_declarations_are_not_admitted() {
+        // Missing and foreign launch declarations are not admitted.
         let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
         assert_eq!(
             missing.validate_history_declaration(),

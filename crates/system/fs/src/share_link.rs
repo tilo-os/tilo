@@ -317,14 +317,94 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_is_canonical_and_secret_exists_only_in_fragment() {
-        let link = fixture();
-        let uri = link.encode_uri_at(NOW).unwrap();
-        let (route, fragment) = uri.split_once('#').unwrap();
-        assert!(!route.contains(&hex::encode(link.secret)));
-        assert_eq!(fragment, hex::encode(link.secret));
-        assert_eq!(FileShareLinkV2::decode_uri_at(&uri, NOW).unwrap(), link);
-        assert_eq!(link.encode_uri_at(NOW).unwrap(), uri);
+    fn share_links_round_trip_canonically_and_reject_tampering_expiry_and_oversize() {
+        // Phase `roundtrip_is_canonical_and_secret_exists_only_in_fragment`.
+        {
+            let link = fixture();
+            let uri = link.encode_uri_at(NOW).unwrap();
+            let (route, fragment) = uri.split_once('#').unwrap();
+            assert!(!route.contains(&hex::encode(link.secret)));
+            assert_eq!(fragment, hex::encode(link.secret));
+            assert_eq!(FileShareLinkV2::decode_uri_at(&uri, NOW).unwrap(), link);
+            assert_eq!(link.encode_uri_at(NOW).unwrap(), uri);
+        }
+        // Phase `endpoint_token_and_secret_tampering_fail`.
+        {
+            let link = fixture();
+            let mut wire = WireV2 {
+                version: VERSION,
+                endpoint: link.endpoint.clone(),
+                invite: link.invite.clone(),
+                endpoint_binding_signature: link.endpoint_binding_signature,
+            };
+            wire.endpoint = wire
+                .endpoint
+                .with_ip_addr("127.0.0.1:9999".parse().unwrap());
+            assert!(matches!(
+                FileShareLinkV2::decode_uri_at(&uri_for(&wire, link.secret), NOW),
+                Err(FileShareLinkError::BadEndpointBinding(_))
+            ));
+            wire.endpoint = link.endpoint.clone();
+            wire.invite.record_id = FileRecordId::new();
+            assert!(matches!(
+                FileShareLinkV2::decode_uri_at(&uri_for(&wire, link.secret), NOW),
+                Err(FileShareLinkError::Invite(FileInviteError::BadSignature(_)))
+            ));
+            wire.invite = link.invite;
+            assert!(matches!(
+                FileShareLinkV2::decode_uri_at(&uri_for(&wire, [99; 32]), NOW),
+                Err(FileShareLinkError::WrongSecret)
+            ));
+        }
+        // Phase `expiry_legacy_routeless_and_oversize_are_explicit`.
+        {
+            let link = fixture();
+            let uri = link.encode_uri_at(NOW).unwrap();
+            assert!(matches!(
+                FileShareLinkV2::decode_uri_at(&uri, 10_000),
+                Err(FileShareLinkError::Invite(FileInviteError::Expired))
+            ));
+            assert!(matches!(
+                FileShareLinkV2::decode_uri_at("tilo-file://v1/00#00", NOW),
+                Err(FileShareLinkError::LegacyTokenOnlyV1)
+            ));
+            let oversized = format!(
+                "{FILE_SHARE_LINK_V2_PREFIX}{}#{}",
+                "00".repeat(MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES + 1),
+                "00".repeat(32)
+            );
+            assert!(matches!(
+                FileShareLinkV2::decode_uri_at(&oversized, NOW),
+                Err(FileShareLinkError::PayloadTooLarge)
+            ));
+
+            let issuer = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+            let mut rng = StdRng::seed_from_u64(8);
+            let bearer = mint_bearer_file_invite(
+                FileInviteSpec {
+                    workspace_id: Uuid::new_v4(),
+                    record_id: FileRecordId::new(),
+                    subject: FileInviteSubject::Bearer {
+                        secret_hash: [0; 32],
+                    },
+                    permission: FilePermission::View,
+                    expires_at_ms: Some(10_000),
+                    max_redemptions: None,
+                },
+                &issuer,
+                &mut rng,
+            )
+            .unwrap();
+            assert!(matches!(
+                FileShareLinkV2::bind_at(
+                    EndpointAddr::new(iroh::SecretKey::from_bytes(&[44; 32]).public()),
+                    bearer,
+                    &issuer,
+                    NOW
+                ),
+                Err(FileShareLinkError::EndpointHasNoRoute)
+            ));
+        }
     }
 
     fn uri_for(wire: &WireV2, secret: [u8; 32]) -> String {
@@ -334,84 +414,5 @@ mod tests {
             hex::encode(payload),
             hex::encode(secret)
         )
-    }
-
-    #[test]
-    fn endpoint_token_and_secret_tampering_fail() {
-        let link = fixture();
-        let mut wire = WireV2 {
-            version: VERSION,
-            endpoint: link.endpoint.clone(),
-            invite: link.invite.clone(),
-            endpoint_binding_signature: link.endpoint_binding_signature,
-        };
-        wire.endpoint = wire
-            .endpoint
-            .with_ip_addr("127.0.0.1:9999".parse().unwrap());
-        assert!(matches!(
-            FileShareLinkV2::decode_uri_at(&uri_for(&wire, link.secret), NOW),
-            Err(FileShareLinkError::BadEndpointBinding(_))
-        ));
-        wire.endpoint = link.endpoint.clone();
-        wire.invite.record_id = FileRecordId::new();
-        assert!(matches!(
-            FileShareLinkV2::decode_uri_at(&uri_for(&wire, link.secret), NOW),
-            Err(FileShareLinkError::Invite(FileInviteError::BadSignature(_)))
-        ));
-        wire.invite = link.invite;
-        assert!(matches!(
-            FileShareLinkV2::decode_uri_at(&uri_for(&wire, [99; 32]), NOW),
-            Err(FileShareLinkError::WrongSecret)
-        ));
-    }
-
-    #[test]
-    fn expiry_legacy_routeless_and_oversize_are_explicit() {
-        let link = fixture();
-        let uri = link.encode_uri_at(NOW).unwrap();
-        assert!(matches!(
-            FileShareLinkV2::decode_uri_at(&uri, 10_000),
-            Err(FileShareLinkError::Invite(FileInviteError::Expired))
-        ));
-        assert!(matches!(
-            FileShareLinkV2::decode_uri_at("tilo-file://v1/00#00", NOW),
-            Err(FileShareLinkError::LegacyTokenOnlyV1)
-        ));
-        let oversized = format!(
-            "{FILE_SHARE_LINK_V2_PREFIX}{}#{}",
-            "00".repeat(MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES + 1),
-            "00".repeat(32)
-        );
-        assert!(matches!(
-            FileShareLinkV2::decode_uri_at(&oversized, NOW),
-            Err(FileShareLinkError::PayloadTooLarge)
-        ));
-
-        let issuer = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
-        let mut rng = StdRng::seed_from_u64(8);
-        let bearer = mint_bearer_file_invite(
-            FileInviteSpec {
-                workspace_id: Uuid::new_v4(),
-                record_id: FileRecordId::new(),
-                subject: FileInviteSubject::Bearer {
-                    secret_hash: [0; 32],
-                },
-                permission: FilePermission::View,
-                expires_at_ms: Some(10_000),
-                max_redemptions: None,
-            },
-            &issuer,
-            &mut rng,
-        )
-        .unwrap();
-        assert!(matches!(
-            FileShareLinkV2::bind_at(
-                EndpointAddr::new(iroh::SecretKey::from_bytes(&[44; 32]).public()),
-                bearer,
-                &issuer,
-                NOW
-            ),
-            Err(FileShareLinkError::EndpointHasNoRoute)
-        ));
     }
 }

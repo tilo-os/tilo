@@ -3683,21 +3683,30 @@ mod tests {
         app
     }
 
+    /// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,
+    /// the breakpoint boundary is inclusive, Panels never collapses, and crossing the
+    /// breakpoint restores the mode default. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn screen_mode_follows_the_breakpoint_and_preset() {
+        wide_changes_screen_is_docked();
+        narrow_master_detail_screen_is_overlay_closed();
+        breakpoint_boundary_is_inclusive_docked();
+        panels_screen_never_collapses();
+        crossing_breakpoint_restores_mode_default();
+    }
+
     fn wide_changes_screen_is_docked() {
         let app = app_at(1280.0, Screen::Changes);
         assert_eq!(app.layout_mode(), SplitLayout::Docked);
         assert!(app.flap_open(), "docked list column is open by default");
     }
 
-    #[test]
     fn narrow_master_detail_screen_is_overlay_closed() {
         let app = app_at(680.0, Screen::Changes);
         assert_eq!(app.layout_mode(), SplitLayout::Overlay);
         assert!(!app.flap_open(), "narrow overlay flap is closed by default");
     }
 
-    #[test]
     fn breakpoint_boundary_is_inclusive_docked() {
         assert_eq!(
             app_at(NARROW_BREAKPOINT, Screen::Changes).layout_mode(),
@@ -3709,7 +3718,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn panels_screen_never_collapses() {
         // The full-width dashboard has no list column, so it stays docked even
         // on a narrow window — no flap, scrim or hamburger.
@@ -3717,7 +3725,17 @@ mod tests {
         assert_eq!(app.layout_mode(), SplitLayout::Docked);
     }
 
+    /// The overlay flap: the hamburger toggles it, a scrim click dismisses it, a click
+    /// inside keeps it open, and while open it hides and blocks background controls.
+    /// Each phase is a former test with its own fresh fixture.
     #[test]
+    fn overlay_flap_toggles_dismisses_and_blocks_the_background() {
+        hamburger_click_toggles_overlay_flap();
+        scrim_click_dismisses_open_overlay_flap();
+        click_inside_open_flap_does_not_dismiss_it();
+        open_overlay_hides_and_blocks_background_controls();
+    }
+
     fn hamburger_click_toggles_overlay_flap() {
         let mut app = app_at(680.0, Screen::Changes);
         assert!(!app.flap_open());
@@ -3729,7 +3747,6 @@ mod tests {
         assert!(!app.flap_open(), "hamburger dismisses it again");
     }
 
-    #[test]
     fn scrim_click_dismisses_open_overlay_flap() {
         let mut app = app_at(680.0, Screen::Changes);
         app.flap.snap(true); // open overlay flap
@@ -3739,7 +3756,6 @@ mod tests {
         assert!(!app.flap_open(), "clicking the scrim closes the flap");
     }
 
-    #[test]
     fn click_inside_open_flap_does_not_dismiss_it() {
         let mut app = app_at(680.0, Screen::Changes);
         app.flap.snap(true);
@@ -3751,7 +3767,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn open_overlay_hides_and_blocks_background_controls() {
         let mut app = app_at(680.0, Screen::Changes);
         app.flap.snap(true);
@@ -3779,7 +3794,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn crossing_breakpoint_restores_mode_default() {
         // Open the flap while docked-wide, then narrow past the breakpoint:
         // the stale preference clears and the overlay default (closed) wins.
@@ -3795,11 +3809,21 @@ mod tests {
         assert!(app.flap_open(), "docked default restores the open column");
     }
 
+    /// Semantic parity: the app-bar diff-layout toggle equals the palette action,
+    /// semantic open-repository and text edits reach their inputs, and synthetic
+    /// accessibility controls sit at their drawn rects. Each phase is a former test with its own fresh fixture.
+    #[test]
+    fn affordances_and_semantic_controls_reach_the_production_actions() {
+        appbar_diff_layout_toggle_matches_the_palette_action();
+        semantic_open_repository_binds_the_entered_repository();
+        semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs();
+        synthetic_accessibility_controls_are_addressable_at_their_drawn_rects();
+    }
+
     /// The affordance == `ActionSpec` covenant on the *real* production path:
     /// the app-bar diff-layout control mutates the shared document, records one
     /// undo boundary, and dispatches the byte-identical `EncodedAction` the
     /// Ctrl+K palette would — one source of truth, not two code paths.
-    #[test]
     fn appbar_diff_layout_toggle_matches_the_palette_action() {
         let (model, diffs) = crate::sample::model();
         let mut app = GitClientApp::from_model(model, diffs);
@@ -3847,7 +3871,17 @@ mod tests {
         );
     }
 
+    /// App-bar geometry: controls stay visible and separate at narrow widths, inside
+    /// the window without overlap, on one centre line per row, and a wrapped bar
+    /// moves the body down. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn appbar_controls_lay_out_inside_the_window_without_overlap() {
+        appbar_controls_stay_visible_and_separate_at_narrow_widths();
+        appbar_controls_stay_inside_the_window_and_never_overlap();
+        appbar_controls_share_one_centre_line_per_row();
+        wrapped_appbar_moves_the_body_down_with_it();
+    }
+
     fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
         let mut text = TextRenderer::new();
         for width in [320.0, 460.0, 680.0, 1280.0] {
@@ -3882,7 +3916,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn semantic_open_repository_binds_the_entered_repository() {
         let directory = tempfile::tempdir().unwrap();
         let _repository = git2::Repository::init(directory.path()).unwrap();
@@ -3901,7 +3934,6 @@ mod tests {
         assert_eq!(app.test_last_error(), None);
     }
 
-    #[test]
     fn semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs() {
         let mut app = GitClientApp::open_empty();
         let mut doc = automerge::AutoCommit::new();
@@ -3924,7 +3956,6 @@ mod tests {
         assert!(app.test_awaiting_repo(), "editing a path must not open it");
     }
 
-    #[test]
     fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
         let mut app = app_at(1_280.0, Screen::Changes);
         app.tab_rects = vec![
@@ -4000,7 +4031,6 @@ mod tests {
         a.area() > 0.0 && b.area() > 0.0 && a.intersect(b).area() > 0.0
     }
 
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
@@ -4076,7 +4106,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn appbar_controls_share_one_centre_line_per_row() {
         let mut app = app_at(1280.0, Screen::Changes);
         draw_frame(&mut app);
@@ -4101,7 +4130,6 @@ mod tests {
         assert!((1280.0 - app.settings_syn.x1 - APPBAR_GUTTER).abs() < 0.01);
     }
 
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"

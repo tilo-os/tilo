@@ -471,12 +471,13 @@ pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option
             cache.images.clear();
         }
     }
-    let file = cache
-        .records
-        .iter()
-        .find(|record| record.workspace_id == workspace_id && record.target == target)?
-        .cache_file
-        .clone();
+    let file = crate::portal::desktop_services::wallpaper_record_for(
+        &cache.records,
+        workspace_id,
+        target,
+    )?
+    .cache_file
+    .clone();
     if !safe_cache_name(&file) {
         return None;
     }
@@ -736,32 +737,36 @@ impl Widget for DesktopBackdrop {
 mod tests {
     use super::*;
 
-    /// The backdrop's baked noise texture must exist and have the right
-    /// byte-size (64×64 RGBA8 = 16384 bytes). Guards against someone
-    /// accidentally dropping the noise-generation path.
     #[test]
-    fn noise_buffer_is_populated() {
-        let backdrop = DesktopBackdrop::new();
-        let expected = (NOISE_SIZE as usize) * (NOISE_SIZE as usize) * 4;
-        assert_eq!(backdrop.noise_bytes_len(), expected);
-        assert_eq!(backdrop.noise.image.width, NOISE_SIZE);
-        assert_eq!(backdrop.noise.image.height, NOISE_SIZE);
-    }
+    fn noise_buffer_is_populated_visible_and_deterministic() {
+        /// The backdrop's baked noise texture must exist and have the right
+        /// byte-size (64×64 RGBA8 = 16384 bytes). Guards against someone
+        /// accidentally dropping the noise-generation path.
+        fn noise_buffer_is_populated() {
+            let backdrop = DesktopBackdrop::new();
+            let expected = (NOISE_SIZE as usize) * (NOISE_SIZE as usize) * 4;
+            assert_eq!(backdrop.noise_bytes_len(), expected);
+            assert_eq!(backdrop.noise.image.width, NOISE_SIZE);
+            assert_eq!(backdrop.noise.image.height, NOISE_SIZE);
+        }
 
-    /// The noise should actually have some non-zero alpha pixels; a
-    /// buffer of all zeros would render nothing and silently regress the
-    /// overlay without tripping the size assertion above.
-    #[test]
-    fn noise_buffer_has_nonzero_alpha() {
-        let bytes = generate_noise_bytes();
-        let any_visible = bytes.chunks_exact(4).any(|px| px[3] > 0);
-        assert!(any_visible, "generated noise has no visible specks");
-    }
+        /// The noise should actually have some non-zero alpha pixels; a
+        /// buffer of all zeros would render nothing and silently regress the
+        /// overlay without tripping the size assertion above.
+        fn noise_buffer_has_nonzero_alpha() {
+            let bytes = generate_noise_bytes();
+            let any_visible = bytes.chunks_exact(4).any(|px| px[3] > 0);
+            assert!(any_visible, "generated noise has no visible specks");
+        }
 
-    /// The PRNG must be deterministic — regenerating must produce the
-    /// same bytes. Keeps headless render snapshots stable.
-    #[test]
-    fn noise_generation_is_deterministic() {
-        assert_eq!(generate_noise_bytes(), generate_noise_bytes());
+        /// The PRNG must be deterministic — regenerating must produce the
+        /// same bytes. Keeps headless render snapshots stable.
+        fn noise_generation_is_deterministic() {
+            assert_eq!(generate_noise_bytes(), generate_noise_bytes());
+        }
+
+        noise_buffer_is_populated();
+        noise_buffer_has_nonzero_alpha();
+        noise_generation_is_deterministic();
     }
 }

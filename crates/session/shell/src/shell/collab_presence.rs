@@ -78,62 +78,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_local_variants_survive_the_typed_peer_boundary() {
-        let key = PresenceKey::surface_pointer("editor/document-7");
-        let variants = vec![
-            PresencePayload::Pointer { x: 1.25, y: 9.5 },
-            PresencePayload::Caret { pos: 17 },
-            PresencePayload::Selection { start: 4, end: 11 },
-            PresencePayload::Typing { start: 6, end: 8 },
-            PresencePayload::Arrived,
-            PresencePayload::Left,
-            PresencePayload::Following {
-                target: Some("peer@7".into()),
-            },
-            PresencePayload::Following { target: None },
-            PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
-                version: tilo_actions::INTERACTION_VERSION,
-                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
-                sequence: 2,
-                actor: tilo_actions::InteractionActor {
-                    id: "quill".into(),
-                    kind: tilo_actions::InteractionActorKind::Agent,
+    fn presence_variants_cross_the_typed_peer_boundary_and_bad_keys_fail_closed() {
+        fn all_local_variants_survive_the_typed_peer_boundary() {
+            let key = PresenceKey::surface_pointer("editor/document-7");
+            let variants = vec![
+                PresencePayload::Pointer { x: 1.25, y: 9.5 },
+                PresencePayload::Caret { pos: 17 },
+                PresencePayload::Selection { start: 4, end: 11 },
+                PresencePayload::Typing { start: 6, end: 8 },
+                PresencePayload::Arrived,
+                PresencePayload::Left,
+                PresencePayload::Following {
+                    target: Some("peer@7".into()),
                 },
-                phase: tilo_actions::InteractionPhase::Committed,
-                action: tilo_actions::InteractionAction {
-                    id: "rename".into(),
-                    label: "Rename".into(),
-                    app: None,
+                PresencePayload::Following { target: None },
+                PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
+                    version: tilo_actions::INTERACTION_VERSION,
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
+                    sequence: 2,
+                    actor: tilo_actions::InteractionActor {
+                        id: "quill".into(),
+                        kind: tilo_actions::InteractionActorKind::Agent,
+                    },
+                    phase: tilo_actions::InteractionPhase::Committed,
+                    action: tilo_actions::InteractionAction {
+                        id: "rename".into(),
+                        label: "Rename".into(),
+                        app: None,
+                    },
+                    resource: tilo_actions::ActionResource {
+                        id: "file:draft".into(),
+                        kind: "files.entry".into(),
+                        label: "Draft.md".into(),
+                    },
+                    anchor: tilo_actions::InteractionAnchor::ListItems {
+                        ids: vec!["file:draft".into()],
+                    },
+                    group: None,
+                })),
+                PresencePayload::Status {
+                    text: "Reviewing Q2 assumptions".into(),
+                    automatic: true,
                 },
-                resource: tilo_actions::ActionResource {
-                    id: "file:draft".into(),
-                    kind: "files.entry".into(),
-                    label: "Draft.md".into(),
-                },
-                anchor: tilo_actions::InteractionAnchor::ListItems {
-                    ids: vec!["file:draft".into()],
-                },
-                group: None,
-            })),
-            PresencePayload::Status {
-                text: "Reviewing Q2 assumptions".into(),
-                automatic: true,
-            },
-        ];
-        for payload in variants {
-            let wire = to_peer(&key, &payload).expect("encode typed presence");
-            let bytes = wire.to_bytes().expect("canonical peer bytes");
-            let decoded = PeerPresence::from_bytes(&bytes).expect("decode canonical peer bytes");
-            assert_eq!(from_peer(decoded), Some((key.clone(), payload)));
+            ];
+            for payload in variants {
+                let wire = to_peer(&key, &payload).expect("encode typed presence");
+                let bytes = wire.to_bytes().expect("canonical peer bytes");
+                let decoded =
+                    PeerPresence::from_bytes(&bytes).expect("decode canonical peer bytes");
+                assert_eq!(from_peer(decoded), Some((key.clone(), payload)));
+            }
         }
-    }
 
-    #[test]
-    fn malformed_key_bytes_fail_closed() {
-        let wire = PeerPresence {
-            key: vec![0xff, 0xff],
-            payload: PeerPresencePayload::Arrived,
-        };
-        assert!(from_peer(wire).is_none());
+        fn malformed_key_bytes_fail_closed() {
+            let wire = PeerPresence {
+                key: vec![0xff, 0xff],
+                payload: PeerPresencePayload::Arrived,
+            };
+            assert!(from_peer(wire).is_none());
+        }
+
+        all_local_variants_survive_the_typed_peer_boundary();
+        malformed_key_bytes_fail_closed();
     }
 }

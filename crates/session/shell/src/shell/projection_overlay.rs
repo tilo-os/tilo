@@ -999,7 +999,7 @@ impl ProjectionOverlay {
     /// Height of the Keep/Revert band: a title line and a status line with
     /// the two buttons beside them.
     fn confirm_band_height() -> f64 {
-        76.0
+        crate::shell::display_confirm::band_height()
     }
 
     /// Receiver rows are 56 px with an 8 px gap between them.
@@ -1293,78 +1293,26 @@ impl ProjectionOverlay {
             top + Self::confirm_band_height(),
         );
         if self.confirming() {
-            let radius = ui::chrome::ChromeRole::Control.radius(theme, band.height());
-            let floor = colors.lift(0.35);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                floor,
-                None,
-                &RoundedRect::from_rect(band, radius),
+            let status = crate::shell::display_confirm::countdown_status(
+                self.displays.seconds_left(tilo_clock::unix_now_ms()),
             );
-            text_renderer.draw_text_weighted(
+            let focus = match self.focus {
+                SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
+                SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
+                SheetFocus::Layout(_) | SheetFocus::Receivers => None,
+            };
+            let buttons = crate::shell::display_confirm::paint_keep_revert_band(
                 scene,
+                transform,
+                text_renderer,
+                theme,
+                band,
                 &t("display-confirm-title"),
-                type_scale.sm,
-                colors.text_primary,
-                transform.pre_translate((band.x0 + 14.0, band.y0 + 12.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 190.0)),
-                TextWeight::Medium,
-            );
-            let status = self
-                .displays
-                .seconds_left(tilo_clock::unix_now_ms())
-                .map_or_else(
-                    || t("display-confirm-applying"),
-                    |seconds| {
-                        let seconds = f64::from(u32::try_from(seconds).unwrap_or(u32::MAX));
-                        t_args(
-                            "display-confirm-countdown",
-                            &[("seconds", ArgValue::Number(seconds))],
-                        )
-                    },
-                );
-            text_renderer.draw_text(
-                scene,
                 &status,
-                type_scale.xs,
-                colors.text_dim,
-                transform.pre_translate((band.x0 + 14.0, band.y0 + 42.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 190.0)),
+                focus,
             );
-            self.revert_rect = Rect::new(
-                band.x1 - 86.0,
-                band.y0 + 20.0,
-                band.x1 - 12.0,
-                band.y1 - 20.0,
-            );
-            self.keep_rect = Rect::new(
-                self.revert_rect.x0 - 82.0,
-                band.y0 + 20.0,
-                self.revert_rect.x0 - 8.0,
-                band.y1 - 20.0,
-            );
-            let keep = t("display-confirm-keep");
-            let revert = t("display-confirm-revert");
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(self.keep_rect, &keep)
-                    .style(ui::widget::ButtonStyle::Primary)
-                    .text_size(type_scale.sm)
-                    .focused(self.focus == SheetFocus::Keep),
-            );
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(self.revert_rect, &revert)
-                    .text_size(type_scale.sm)
-                    .focused(self.focus == SheetFocus::Revert),
-            );
+            self.keep_rect = buttons.keep;
+            self.revert_rect = buttons.revert;
         } else if let Some(reason) = self.displays.rejection() {
             let message = t_args("display-rejected", &[("reason", ArgValue::Text(reason))]);
             text_renderer.draw_text(
@@ -1868,29 +1816,74 @@ mod tests {
 
     use super::*;
 
-    /// HIG §9.5: the sheet's Panel border on its ground, and the derived edge
-    /// of its lift-floor rows, must register on every palette.
     #[test]
-    fn sheet_cells_keep_an_edge_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = ui::chrome::shell::panel_ground(&theme);
-            let floor = theme.tokens.colors.lift(0.35);
-            for (what, edge, fill) in [
-                (
-                    "panel border",
-                    ui::chrome::shell::panel_border(&theme),
-                    ground,
-                ),
-                ("layout / device row", ui::surface::edge_on(floor), floor),
-            ] {
-                let delta = ui::surface::edge_delta(edge, fill);
-                assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
-                    theme.name
-                );
+    fn projection_sheet_owns_its_geometry_options_and_close_intent() {
+        /// HIG §9.5: the sheet's Panel border on its ground, and the derived edge
+        /// of its lift-floor rows, must register on every palette.
+        fn sheet_cells_keep_an_edge_on_every_palette() {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let ground = ui::chrome::shell::panel_ground(&theme);
+                let floor = theme.tokens.colors.lift(0.35);
+                for (what, edge, fill) in [
+                    (
+                        "panel border",
+                        ui::chrome::shell::panel_border(&theme),
+                        ground,
+                    ),
+                    ("layout / device row", ui::surface::edge_on(floor), floor),
+                ] {
+                    let delta = ui::surface::edge_delta(edge, fill);
+                    assert!(
+                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
+                        theme.name
+                    );
+                }
             }
         }
+
+        fn airplay_selection_owns_masked_pairing_geometry() {
+            let mut overlay = overlay_with(Vec::new());
+            overlay.controller.devices = vec![airplay_device()];
+            overlay.controller.selected = 0;
+            assert!(overlay.airplay_selected());
+            assert!(overlay.credential_input.is_secret());
+            let expected = overlay.wireless_top() + 214.0;
+            assert!((overlay.device_rows_top() - expected).abs() < f64::EPSILON);
+        }
+
+        fn keyboard_controls_update_owned_options_and_close_intent() {
+            let mut overlay = overlay_with(Vec::new());
+            let none = Modifiers::default();
+            let old_audio = overlay.controller.options.audio;
+            assert!(
+                overlay
+                    .handle_key(&Key::Named(NamedKey::Space), none)
+                    .consumed
+            );
+            assert_ne!(overlay.controller.options.audio, old_audio);
+            let old_fps = overlay.controller.options.stream_policy.max_fps;
+            overlay.handle_key(&Key::Character("f".into()), none);
+            assert_ne!(overlay.controller.options.stream_policy.max_fps, old_fps);
+            assert!(
+                overlay
+                    .handle_key(&Key::Named(NamedKey::Escape), none)
+                    .close_requested
+            );
+        }
+
+        fn outside_click_requests_host_owned_visibility_close() {
+            let mut overlay = overlay_with(Vec::new());
+            assert_eq!(
+                overlay.handle_click(Point::new(10.0, 10.0)),
+                EventOutcome::close()
+            );
+        }
+
+        sheet_cells_keep_an_edge_on_every_palette();
+        airplay_selection_owns_masked_pairing_geometry();
+        keyboard_controls_update_owned_options_and_close_intent();
+        outside_click_requests_host_owned_visibility_close();
     }
 
     fn airplay_device() -> crate::shell::projection::ProjectionDevice {
@@ -1948,38 +1941,6 @@ mod tests {
     }
 
     #[test]
-    fn airplay_selection_owns_masked_pairing_geometry() {
-        let mut overlay = overlay_with(Vec::new());
-        overlay.controller.devices = vec![airplay_device()];
-        overlay.controller.selected = 0;
-        assert!(overlay.airplay_selected());
-        assert!(overlay.credential_input.is_secret());
-        let expected = overlay.wireless_top() + 214.0;
-        assert!((overlay.device_rows_top() - expected).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn keyboard_controls_update_owned_options_and_close_intent() {
-        let mut overlay = overlay_with(Vec::new());
-        let none = Modifiers::default();
-        let old_audio = overlay.controller.options.audio;
-        assert!(
-            overlay
-                .handle_key(&Key::Named(NamedKey::Space), none)
-                .consumed
-        );
-        assert_ne!(overlay.controller.options.audio, old_audio);
-        let old_fps = overlay.controller.options.stream_policy.max_fps;
-        overlay.handle_key(&Key::Character("f".into()), none);
-        assert_ne!(overlay.controller.options.stream_policy.max_fps, old_fps);
-        assert!(
-            overlay
-                .handle_key(&Key::Named(NamedKey::Escape), none)
-                .close_requested
-        );
-    }
-
-    #[test]
     fn super_p_cycles_through_every_layout_the_displays_allow() {
         let mut overlay = overlay_with(two_displays());
         overlay.focus = SheetFocus::Layout(DisplayLayoutMode::Extend);
@@ -2027,15 +1988,6 @@ mod tests {
         assert_eq!(
             overlay.focus,
             SheetFocus::Layout(DisplayLayoutMode::ExternalOnly)
-        );
-    }
-
-    #[test]
-    fn outside_click_requests_host_owned_visibility_close() {
-        let mut overlay = overlay_with(Vec::new());
-        assert_eq!(
-            overlay.handle_click(Point::new(10.0, 10.0)),
-            EventOutcome::close()
         );
     }
 }

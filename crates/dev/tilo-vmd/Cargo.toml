@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-vmd"
 version = "0.1.0"
 edition = "2024"
@@ -21,6 +22,8 @@ clap.workspace = true
 hex.workspace = true
 libc.workspace = true
 serde.workspace = true
+# The display settings contract the Settings app uses, for --outputs layouts.
+settings-store = { path = "../../system/settings-store" }
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
@@ -30,6 +33,10 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

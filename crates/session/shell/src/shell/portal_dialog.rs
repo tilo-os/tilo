@@ -29,6 +29,7 @@ use winit::keyboard::PhysicalKey;
 use crate::portal::desktop_services::{
     AppChooserService, ApplicationChoice, ApplicationChoiceRequest, PortalResult,
 };
+use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -121,6 +122,99 @@ pub enum AuthenticationDecision {
     Cancelled,
 }
 
+/// How a network-secret field checks its value before the sheet may close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretFieldRule {
+    /// Anything, including nothing when the field is optional.
+    Any,
+    /// A WPA passphrase: 8–63 characters, or 64 hexadecimal digits.
+    WpaPassphrase,
+}
+
+impl SecretFieldRule {
+    fn accepts(self, value: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::WpaPassphrase => {
+                let chars = value.chars().count();
+                (8..=63).contains(&chars)
+                    || (chars == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
+            }
+        }
+    }
+}
+
+/// One field of a network-secrets sheet, e.g. a Wi-Fi password or an
+/// 802.1X user name. A masked field never carries a starting value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretFieldSpec {
+    /// NetworkManager's key for the value, e.g. `psk` or `identity`.
+    pub key: String,
+    pub label: String,
+    /// Drawn as bullets and never reported by `state-dump`.
+    pub masked: bool,
+    pub required: bool,
+    /// What the field starts with; always empty for a masked field.
+    pub initial: String,
+    pub rule: SecretFieldRule,
+}
+
+impl std::fmt::Debug for SecretFieldSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretFieldSpec")
+            .field("key", &self.key)
+            .field("label", &self.label)
+            .field("masked", &self.masked)
+            .field("required", &self.required)
+            .field("rule", &self.rule)
+            .finish_non_exhaustive()
+    }
+}
+
+/// NetworkManager needs secrets to connect. Drawn only by the compositor,
+/// so no application can imitate the sheet or read what is typed into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkSecretsRequest {
+    pub handle: String,
+    pub title: String,
+    pub detail: String,
+    pub fields: Vec<SecretFieldSpec>,
+    /// `Some(default)` offers "Remember on this device", starting ticked
+    /// or not; `None` when these secrets cannot be kept.
+    pub remember: Option<bool>,
+}
+
+/// The answer to a [`NetworkSecretsRequest`]: one value per field, in order.
+pub enum NetworkSecretsDecision {
+    Answered {
+        values: Vec<zeroize::Zeroizing<String>>,
+        remember: bool,
+    },
+    Cancelled,
+}
+
+impl std::fmt::Debug for NetworkSecretsDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Answered { values, remember } => f
+                .debug_struct("Answered")
+                .field("values", &values.len())
+                .field("remember", remember)
+                .finish(),
+            Self::Cancelled => f.write_str("Cancelled"),
+        }
+    }
+}
+
+/// A field of a network-secrets sheet as drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretFieldView {
+    pub key: String,
+    pub label: String,
+    pub masked: bool,
+    pub required: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutBindingRow {
     pub id: String,
@@ -167,6 +261,14 @@ enum PendingDialog {
     Authentication {
         request: AuthenticationRequest,
         reply: oneshot::Sender<AuthenticationDecision>,
+    },
+    NetworkSecrets {
+        request: NetworkSecretsRequest,
+        reply: oneshot::Sender<NetworkSecretsDecision>,
+    },
+    ActionGrant {
+        request: AppActionConsentRequest,
+        reply: oneshot::Sender<AppActionConsent>,
     },
 }
 
@@ -310,6 +412,70 @@ impl PortalDialogQueue {
         }
     }
 
+    /// Queue a network-secrets sheet. A masked field's starting value is
+    /// dropped: a secret is never shown back to the person.
+    pub fn enqueue_network_secrets(
+        &self,
+        mut request: NetworkSecretsRequest,
+    ) -> Result<oneshot::Receiver<NetworkSecretsDecision>, String> {
+        if request.fields.is_empty() {
+            return Err("a network-secrets sheet needs at least one field".into());
+        }
+        for field in &mut request.fields {
+            if field.masked {
+                field.initial.clear();
+            }
+        }
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::NetworkSecrets { request, reply },
+        );
+        Ok(receiver)
+    }
+
+    fn finish_network_secrets(&self, handle: &str, decision: NetworkSecretsDecision) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::NetworkSecrets { reply, .. }) => {
+                let _ = reply.send(decision);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// A live network-secrets sheet's fields as queued.
+    fn network_fields(&self, handle: &str) -> (Vec<SecretFieldSpec>, Option<bool>) {
+        let Ok(inner) = self.inner.lock() else {
+            return (Vec::new(), None);
+        };
+        match inner.pending.get(handle) {
+            Some(PendingDialog::NetworkSecrets { request, .. }) => {
+                (request.fields.clone(), request.remember)
+            }
+            _ => (Vec::new(), None),
+        }
+    }
+
     /// Queue a USB sheet with independent device toggles.  The selection
     /// lives in compositor memory, never in the requesting process.
     pub fn enqueue_usb_devices(
@@ -361,6 +527,50 @@ impl PortalDialogQueue {
             PendingDialog::ShortcutBindings { request, reply },
         );
         Ok(receiver)
+    }
+
+    /// Queue the sheet asking whether one application may use another's
+    /// action. The answer is the person's alone: the asking application
+    /// never sees the sheet, only whether its call went ahead.
+    pub fn enqueue_action_grant(
+        &self,
+        request: AppActionConsentRequest,
+    ) -> Result<oneshot::Receiver<AppActionConsent>, String> {
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::ActionGrant { request, reply },
+        );
+        Ok(receiver)
+    }
+
+    fn finish_action_grant(&self, handle: &str, answer: AppActionConsent) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::ActionGrant { reply, .. }) => {
+                let _ = reply.send(answer);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
     }
 
     fn next_handle(&self) -> Option<String> {
@@ -424,6 +634,36 @@ impl PortalDialogQueue {
                 },
                 identity: request.identity,
                 echo: request.echo,
+            }),
+            PendingDialog::NetworkSecrets { request, .. } => Some(DialogView::NetworkSecrets {
+                handle: request.handle.clone(),
+                title: request.title.clone(),
+                detail: request.detail.clone(),
+                fields: request
+                    .fields
+                    .iter()
+                    .map(|field| SecretFieldView {
+                        key: field.key.clone(),
+                        label: field.label.clone(),
+                        masked: field.masked,
+                        required: field.required,
+                    })
+                    .collect(),
+                remember_offered: request.remember.is_some(),
+            }),
+            PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
+                handle: request.handle.clone(),
+                title: format!(
+                    "{} wants to use {}",
+                    friendly_app_name(&request.app_id),
+                    friendly_app_name(&request.target_app)
+                ),
+                action: request.action_label.clone(),
+                detail: action_grant_detail(request),
+                choices: AppActionConsent::ALLOWING
+                    .iter()
+                    .map(|answer| answer.label().to_string())
+                    .collect(),
             }),
             PendingDialog::UsbDevices {
                 request, selected, ..
@@ -497,8 +737,16 @@ impl PortalDialogQueue {
                 true
             }
             Some(PendingDialog::ShortcutBindings { .. }) => true,
+            Some(PendingDialog::ActionGrant { reply, .. }) => {
+                let _ = reply.send(AppActionConsent::Deny);
+                true
+            }
             Some(PendingDialog::Authentication { reply, .. }) => {
                 let _ = reply.send(AuthenticationDecision::Cancelled);
+                true
+            }
+            Some(PendingDialog::NetworkSecrets { reply, .. }) => {
+                let _ = reply.send(NetworkSecretsDecision::Cancelled);
                 true
             }
             Some(PendingDialog::LauncherReview { request, reply }) => {
@@ -785,6 +1033,16 @@ pub enum DialogView {
         confirm_label: String,
         devices: Vec<UsbDeviceViewRow>,
     },
+    /// Whether one application may use another's action, and for how
+    /// long. The allowing answers are the choices; Cancel denies.
+    ActionGrant {
+        handle: String,
+        title: String,
+        /// The action, as its publisher labels it.
+        action: String,
+        detail: String,
+        choices: Vec<String>,
+    },
     /// Administrator authentication for polkit. Drawn only by the
     /// compositor, so no application can imitate it or read the secret.
     Authentication {
@@ -795,6 +1053,15 @@ pub enum DialogView {
         identities: Vec<String>,
         identity: usize,
         echo: bool,
+    },
+    /// Secrets NetworkManager needs to connect. Drawn only by the
+    /// compositor; the typed values live in the controller, not here.
+    NetworkSecrets {
+        handle: String,
+        title: String,
+        detail: String,
+        fields: Vec<SecretFieldView>,
+        remember_offered: bool,
     },
 }
 
@@ -813,7 +1080,9 @@ impl DialogView {
             | Self::ShortcutBindings { handle, .. }
             | Self::LauncherReview { handle, .. }
             | Self::UsbDevices { handle, .. }
-            | Self::Authentication { handle, .. } => handle,
+            | Self::ActionGrant { handle, .. }
+            | Self::Authentication { handle, .. }
+            | Self::NetworkSecrets { handle, .. } => handle,
         }
     }
     pub fn title(&self) -> String {
@@ -823,7 +1092,9 @@ impl DialogView {
             Self::ShortcutBindings { .. } => "Set global shortcuts".into(),
             Self::LauncherReview { title, .. } => title.clone(),
             Self::UsbDevices { title, .. } => title.clone(),
+            Self::ActionGrant { title, .. } => title.clone(),
             Self::Authentication { title, .. } => title.clone(),
+            Self::NetworkSecrets { title, .. } => title.clone(),
         }
     }
     pub fn app_name(&self) -> &str {
@@ -833,7 +1104,9 @@ impl DialogView {
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
             | Self::UsbDevices { app_name, .. } => app_name,
+            Self::ActionGrant { action, .. } => action,
             Self::Authentication { .. } => "Administrator access",
+            Self::NetworkSecrets { .. } => "Network",
         }
     }
     pub fn detail(&self) -> &str {
@@ -844,17 +1117,20 @@ impl DialogView {
             }
             Self::LauncherReview { detail, .. } => detail,
             Self::UsbDevices { detail, .. } => detail,
+            Self::ActionGrant { detail, .. } => detail,
             Self::Authentication { detail, .. } => detail,
+            Self::NetworkSecrets { detail, .. } => detail,
         }
     }
     pub fn choices(&self) -> &[String] {
         match self {
-            Self::AppChoice { choices, .. } => choices,
+            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices,
             Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
             | Self::ShortcutBindings { .. }
             | Self::LauncherReview { .. }
-            | Self::UsbDevices { .. } => &[],
+            | Self::UsbDevices { .. }
+            | Self::NetworkSecrets { .. } => &[],
         }
     }
     pub fn shortcut_rows(&self) -> &[ShortcutBindingRow] {
@@ -864,16 +1140,37 @@ impl DialogView {
             | Self::Review { .. }
             | Self::LauncherReview { .. }
             | Self::UsbDevices { .. }
-            | Self::Authentication { .. } => &[],
+            | Self::ActionGrant { .. }
+            | Self::Authentication { .. }
+            | Self::NetworkSecrets { .. } => &[],
+        }
+    }
+    /// The fields of a network-secrets sheet.
+    pub fn secret_fields(&self) -> &[SecretFieldView] {
+        match self {
+            Self::NetworkSecrets { fields, .. } => fields,
+            _ => &[],
+        }
+    }
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::AppChoice { .. } => "app_choice",
+            Self::Review { .. } => "review",
+            Self::ShortcutBindings { .. } => "shortcut_bindings",
+            Self::LauncherReview { .. } => "launcher_review",
+            Self::UsbDevices { .. } => "usb_devices",
+            Self::Authentication { .. } => "authentication",
+            Self::NetworkSecrets { .. } => "network_secrets",
+            Self::ActionGrant { .. } => "action_grant",
         }
     }
     pub fn selectable_count(&self) -> usize {
         match self {
             Self::ShortcutBindings { rows, .. } => rows.len(),
-            Self::AppChoice { choices, .. } => choices.len(),
+            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
             Self::Authentication { identities, .. } => identities.len(),
-            Self::Review { .. } | Self::LauncherReview { .. } => 0,
+            Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
         }
     }
     pub fn confirm_label(&self) -> &str {
@@ -883,7 +1180,17 @@ impl DialogView {
             Self::ShortcutBindings { .. } => "Save shortcuts",
             Self::LauncherReview { confirm_label, .. } => confirm_label,
             Self::UsbDevices { confirm_label, .. } => confirm_label,
+            Self::ActionGrant { .. } => "Allow",
             Self::Authentication { .. } => "Authenticate",
+            Self::NetworkSecrets { .. } => "Connect",
+        }
+    }
+
+    /// The label of the button that answers no.
+    pub fn cancel_label(&self) -> &'static str {
+        match self {
+            Self::ActionGrant { .. } => AppActionConsent::Deny.label(),
+            _ => "Cancel",
         }
     }
 
@@ -933,6 +1240,19 @@ pub struct DialogLayout {
     pub launcher_icons: Vec<Rect>,
     /// The secret field of an authentication sheet.
     pub secret: Option<Rect>,
+    /// The fields of a network-secrets sheet, in order.
+    pub secret_fields: Vec<Rect>,
+    /// The "Remember on this device" row of a network-secrets sheet.
+    pub remember: Option<Rect>,
+}
+
+/// A network-secrets field as drawn: its label and what shows in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretFieldDisplay {
+    pub label: String,
+    /// The typed value, or bullets for a masked field.
+    pub shown: String,
+    pub focused: bool,
 }
 
 pub struct PortalDialogController {
@@ -945,6 +1265,15 @@ pub struct PortalDialogController {
     /// What has been typed into an authentication sheet. Cleared whenever
     /// the sheet closes, whichever way.
     secret: String,
+    /// What has been typed into each field of a network-secrets sheet;
+    /// wiped like `secret`.
+    entries: Vec<String>,
+    /// The focused network-secrets field; one past the last is the
+    /// "Remember" row.
+    entry_focus: usize,
+    remember: bool,
+    /// Why the network-secrets sheet refused to close.
+    entry_error: Option<&'static str>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -965,9 +1294,21 @@ impl PortalDialogController {
             launcher_icon: 0,
             launcher_field: 0,
             secret: String::new(),
+            entries: Vec::new(),
+            entry_focus: 0,
+            remember: false,
+            entry_error: None,
         }
     }
     pub fn pump(&mut self) -> bool {
+        // A sheet its requester withdrew (a portal `Close`, polkit's or
+        // NetworkManager's cancel) is gone from the queue: let go of it and
+        // of anything typed into it, so the next sheet can show.
+        let withdrawn = self.active.is_some() && self.view().is_none();
+        if withdrawn {
+            self.active = None;
+            self.forget_secret();
+        }
         if self.active.is_none() {
             self.active = self.queue.next_handle();
             self.selected = 0;
@@ -977,11 +1318,22 @@ impl PortalDialogController {
             if let Some(DialogView::Authentication { identity, .. }) = self.view() {
                 self.selected = identity;
             }
+            if let Some(handle) = self.active.clone() {
+                let (fields, remember) = self.queue.network_fields(&handle);
+                // Start on the first field still to fill in.
+                self.entry_focus = fields
+                    .iter()
+                    .position(|field| field.required && field.initial.is_empty())
+                    .or_else(|| fields.iter().position(|field| field.initial.is_empty()))
+                    .unwrap_or(0);
+                self.entries = fields.into_iter().map(|field| field.initial).collect();
+                self.remember = remember.unwrap_or(false);
+            }
             self.launcher_name = self
                 .view()
                 .and_then(|view| view.launcher_editor().map(|editor| editor.name.to_owned()))
                 .unwrap_or_default();
-            self.active.is_some()
+            self.active.is_some() || withdrawn
         } else {
             false
         }
@@ -998,6 +1350,20 @@ impl PortalDialogController {
         let Some(view) = self.view() else {
             return false;
         };
+        if let DialogView::NetworkSecrets {
+            fields,
+            remember_offered,
+            ..
+        } = &view
+        {
+            let len = fields.len() + usize::from(*remember_offered);
+            self.entry_focus = if reverse {
+                (self.entry_focus + len - 1) % len
+            } else {
+                (self.entry_focus + 1) % len
+            };
+            return true;
+        }
         if let Some(editor) = view.launcher_editor()
             && editor.editable_icon
         {
@@ -1045,6 +1411,9 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Confirmed),
+            DialogView::ActionGrant { .. } => AppActionConsent::ALLOWING
+                .get(self.selected)
+                .is_some_and(|answer| self.queue.finish_action_grant(view.handle(), *answer)),
             DialogView::Authentication {
                 identities,
                 identity,
@@ -1059,6 +1428,40 @@ impl PortalDialogController {
                 self.queue.finish_authentication(
                     view.handle(),
                     AuthenticationDecision::Answered { identity, secret },
+                )
+            }
+            DialogView::NetworkSecrets { .. } => {
+                let (fields, _) = self.queue.network_fields(view.handle());
+                let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
+                    |(index, (field, value))| {
+                        if value.is_empty() {
+                            field
+                                .required
+                                .then_some((index, "Fill in every required field."))
+                        } else if !field.rule.accepts(value) {
+                            Some((
+                                index,
+                                "A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.",
+                            ))
+                        } else {
+                            None
+                        }
+                    },
+                );
+                if let Some((index, reason)) = refusal {
+                    self.entry_focus = index;
+                    self.entry_error = Some(reason);
+                    return false;
+                }
+                let values = std::mem::take(&mut self.entries)
+                    .into_iter()
+                    .map(zeroize::Zeroizing::new)
+                    .collect();
+                let remember = self.remember;
+                self.forget_secret();
+                self.queue.finish_network_secrets(
+                    view.handle(),
+                    NetworkSecretsDecision::Answered { values, remember },
                 )
             }
         };
@@ -1086,10 +1489,18 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Cancelled),
+            DialogView::ActionGrant { .. } => self
+                .queue
+                .finish_action_grant(view.handle(), AppActionConsent::Deny),
             DialogView::Authentication { .. } => {
                 self.forget_secret();
                 self.queue
                     .finish_authentication(view.handle(), AuthenticationDecision::Cancelled)
+            }
+            DialogView::NetworkSecrets { .. } => {
+                self.forget_secret();
+                self.queue
+                    .finish_network_secrets(view.handle(), NetworkSecretsDecision::Cancelled)
             }
         };
         if done {
@@ -1106,7 +1517,18 @@ impl PortalDialogController {
             usize::from(editor.editable_name) + usize::from(editor.editable_icon)
         });
         let secret_rows = usize::from(matches!(view, DialogView::Authentication { .. }));
-        let height = 190.0 + small_count_as_f64(row_count + launcher_rows + secret_rows) * 48.0;
+        let (network_fields, remember_row) = match &view {
+            DialogView::NetworkSecrets {
+                fields,
+                remember_offered,
+                ..
+            } => (fields.len().min(6), usize::from(*remember_offered)),
+            _ => (0, 0),
+        };
+        let height = 190.0
+            + small_count_as_f64(
+                row_count + launcher_rows + secret_rows + network_fields + remember_row,
+            ) * 48.0;
         let sheet = Rect::new(
             bounds.center().x - width / 2.0,
             bounds.center().y - height / 2.0,
@@ -1166,6 +1588,12 @@ impl PortalDialogController {
             let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
         });
+        let field_row = |index: usize| {
+            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count + index) * 48.0;
+            Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
+        };
+        let secret_fields = (0..network_fields).map(field_row).collect();
+        let remember = (remember_row > 0).then(|| field_row(network_fields));
         Some(DialogLayout {
             sheet,
             choices,
@@ -1174,9 +1602,24 @@ impl PortalDialogController {
             launcher_name,
             launcher_icons,
             secret,
+            secret_fields,
+            remember,
         })
     }
     pub fn click(&mut self, point: vello::kurbo::Point, layout: &DialogLayout) -> bool {
+        if let Some(index) = layout
+            .secret_fields
+            .iter()
+            .position(|rect| rect.contains(point))
+        {
+            self.entry_focus = index;
+            return true;
+        }
+        if layout.remember.is_some_and(|rect| rect.contains(point)) {
+            self.entry_focus = self.entries.len();
+            self.remember = !self.remember;
+            return true;
+        }
         if let Some(index) = layout.choices.iter().position(|rect| rect.contains(point)) {
             let visible_start = self.visible_selection_start();
             self.selected = visible_start + index;
@@ -1299,33 +1742,136 @@ impl PortalDialogController {
     pub fn edit_secret(&mut self, logical_key: &winit::keyboard::Key) -> bool {
         use winit::keyboard::{Key, NamedKey};
 
+        if self.is_network_secrets() {
+            if self.entry_focus >= self.entries.len() {
+                // The "Remember" row: Space toggles it, nothing else types.
+                if matches!(logical_key, Key::Named(NamedKey::Space)) {
+                    self.remember = !self.remember;
+                }
+                return true;
+            }
+            self.entry_error = None;
+            let Some(entry) = self.entries.get_mut(self.entry_focus) else {
+                return true;
+            };
+            edit_text(entry, logical_key);
+            return true;
+        }
         if !self.is_authentication() {
             return false;
         }
-        match logical_key {
-            Key::Named(NamedKey::Backspace) => {
-                if let Some((index, _)) = self.secret.char_indices().next_back() {
-                    self.secret.truncate(index);
-                }
-                true
-            }
-            Key::Named(NamedKey::Space) => {
-                self.secret.push(' ');
-                true
-            }
-            Key::Character(text) => {
-                let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
-                if self.secret.len().saturating_add(accepted.len()) <= 512 {
-                    self.secret.push_str(&accepted);
-                }
-                true
-            }
-            _ => false,
-        }
+        edit_text(&mut self.secret, logical_key)
     }
 
     pub fn is_authentication(&self) -> bool {
         matches!(self.view(), Some(DialogView::Authentication { .. }))
+    }
+
+    pub fn is_network_secrets(&self) -> bool {
+        matches!(self.view(), Some(DialogView::NetworkSecrets { .. }))
+    }
+
+    /// Whether the sheet up takes typed secrets, so every key belongs to it.
+    pub fn is_secret_entry(&self) -> bool {
+        self.is_authentication() || self.is_network_secrets()
+    }
+
+    /// The fields of a network-secrets sheet as drawn: masked values as
+    /// bullets.
+    pub fn secret_field_displays(&self) -> Vec<SecretFieldDisplay> {
+        let Some(view) = self.view() else {
+            return Vec::new();
+        };
+        view.secret_fields()
+            .iter()
+            .zip(&self.entries)
+            .enumerate()
+            .map(|(index, (field, value))| SecretFieldDisplay {
+                label: field.label.clone(),
+                shown: if field.masked {
+                    "•".repeat(value.chars().count())
+                } else {
+                    value.clone()
+                },
+                focused: index == self.entry_focus,
+            })
+            .collect()
+    }
+
+    /// Whether "Remember on this device" is ticked and focused, when the
+    /// sheet offers it.
+    pub fn remember_display(&self) -> Option<(bool, bool)> {
+        match self.view()? {
+            DialogView::NetworkSecrets {
+                remember_offered: true,
+                ..
+            } => Some((self.remember, self.entry_focus >= self.entries.len())),
+            _ => None,
+        }
+    }
+
+    /// Why the network-secrets sheet did not close, when it refused.
+    pub fn entry_error(&self) -> Option<&'static str> {
+        self.entry_error
+    }
+
+    /// The sheet up, for `state-dump`: what the person sees, with every
+    /// masked value reduced to its length.
+    pub fn state_json(&self) -> serde_json::Value {
+        let Some(view) = self.view() else {
+            return serde_json::Value::Null;
+        };
+        let mut state = serde_json::json!({
+            "kind": view.kind(),
+            "handle": view.handle(),
+            "title": view.title(),
+            "app_name": view.app_name(),
+            "detail": view.detail(),
+            "confirm_label": view.confirm_label(),
+            "choices": view.choices(),
+            "selected": self.selected,
+        });
+        match &view {
+            DialogView::Authentication { echo, .. } => {
+                state["secret_len"] = self.secret.chars().count().into();
+                if *echo {
+                    state["secret"] = self.secret.clone().into();
+                }
+            }
+            DialogView::NetworkSecrets {
+                fields,
+                remember_offered,
+                ..
+            } => {
+                state["fields"] = fields
+                    .iter()
+                    .zip(&self.entries)
+                    .enumerate()
+                    .map(|(index, (field, value))| {
+                        let mut entry = serde_json::json!({
+                            "key": field.key,
+                            "label": field.label,
+                            "masked": field.masked,
+                            "required": field.required,
+                            "length": value.chars().count(),
+                            "focused": index == self.entry_focus,
+                        });
+                        if !field.masked {
+                            entry["value"] = value.clone().into();
+                        }
+                        entry
+                    })
+                    .collect();
+                state["remember"] = if *remember_offered {
+                    self.remember.into()
+                } else {
+                    serde_json::Value::Null
+                };
+                state["error"] = self.entry_error.into();
+            }
+            _ => {}
+        }
+        state
     }
 
     /// The secret field as drawn: bullets unless the prompt echoes.
@@ -1343,6 +1889,12 @@ impl PortalDialogController {
         let mut bytes = std::mem::take(&mut self.secret).into_bytes();
         bytes.iter_mut().for_each(|byte| *byte = 0);
         std::hint::black_box(&bytes);
+        for entry in std::mem::take(&mut self.entries) {
+            drop(zeroize::Zeroizing::new(entry));
+        }
+        self.entry_focus = 0;
+        self.remember = false;
+        self.entry_error = None;
     }
 
     pub fn launcher_name(&self) -> Option<&str> {
@@ -1362,6 +1914,34 @@ impl PortalDialogController {
             view.launcher_editor()
                 .is_some_and(|editor| editor.editable_name && self.launcher_field == 0)
         })
+    }
+}
+
+/// Apply one key to a secret being typed; `true` when the key was text.
+fn edit_text(buffer: &mut String, logical_key: &winit::keyboard::Key) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+
+    match logical_key {
+        Key::Named(NamedKey::Backspace) => {
+            if let Some((index, _)) = buffer.char_indices().next_back() {
+                buffer.truncate(index);
+            }
+            true
+        }
+        Key::Named(NamedKey::Space) => {
+            if buffer.len() < 512 {
+                buffer.push(' ');
+            }
+            true
+        }
+        Key::Character(text) => {
+            let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
+            if buffer.len().saturating_add(accepted.len()) <= 512 {
+                buffer.push_str(&accepted);
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1396,6 +1976,16 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         subject
     )
 }
+/// The action's consequences, as the grant sheet states them.
+fn action_grant_detail(request: &AppActionConsentRequest) -> String {
+    let risk = crate::shell::app_action_consent::risk_label(request.risk);
+    if request.needs_confirmation {
+        format!("{risk}\nIt still asks you to confirm each time it runs.")
+    } else {
+        format!("{risk}\nIt runs without asking you again.")
+    }
+}
+
 fn friendly_app_name(app_id: &str) -> String {
     crate::shell::launcher::display_name_for_app_id(app_id).unwrap_or_else(|| {
         app_id
@@ -1411,105 +2001,137 @@ mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, ModifiersState};
     #[test]
-    fn action_buttons_share_the_choice_rows_gutter() {
-        let q = PortalDialogQueue::default();
-        let service = ShellAppChooserService::with_queue(q.clone());
-        let (tx, _rx) = oneshot::channel();
-        assert!(matches!(
-            service.enqueue(
-                ApplicationChoiceRequest {
-                    handle: "/r/layout".into(),
-                    app_id: "org.example.Reader".into(),
-                    choices: vec!["one".into(), "two".into()],
-                    last_choice: None,
-                    content_type: None,
-                    uri: None,
-                    filename: None,
-                    activation_token: None
-                },
-                tx
-            ),
-            PortalResult::Success(())
-        ));
-        let mut c = PortalDialogController::new(q);
-        assert!(c.pump());
-        let layout = c
-            .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
-            .expect("an active sheet");
-        let row = layout.choices[0];
-        // Confirm's right edge is the rows' right edge; the row above used
-        // to end 4 px short of the buttons below it.
-        assert_eq!(layout.confirm.x1, row.x1);
-        assert_eq!(layout.confirm.x1, layout.sheet.x1 - 24.0);
-        assert_eq!(
-            layout.cancel.x1 + 12.0,
-            layout.confirm.x0,
-            "buttons keep their 12 px gap"
-        );
-        assert_eq!(layout.cancel.width(), 92.0);
-        assert_eq!(layout.confirm.width(), 84.0);
-        assert!(layout.cancel.height() >= 32.0 && layout.confirm.height() >= 32.0);
-        assert_eq!(layout.cancel.y0, layout.confirm.y0);
-        assert_eq!(layout.cancel.y1, layout.confirm.y1);
-    }
-    #[test]
-    fn choice_updates_reach_the_live_controller() {
-        let q = PortalDialogQueue::default();
-        let service = ShellAppChooserService::with_queue(q.clone());
-        let (tx, rx) = oneshot::channel();
-        assert!(matches!(
-            service.enqueue(
-                ApplicationChoiceRequest {
-                    handle: "/r/1".into(),
-                    app_id: "org.example.Reader".into(),
-                    choices: vec!["one".into()],
-                    last_choice: None,
-                    content_type: None,
-                    uri: None,
-                    filename: None,
-                    activation_token: None
-                },
-                tx
-            ),
-            PortalResult::Success(())
-        ));
-        let mut c = PortalDialogController::new(q.clone());
-        assert!(c.pump());
-        assert!(matches!(
-            service.update_choices("/r/1", &["two".into()]),
-            PortalResult::Success(())
-        ));
-        assert_eq!(c.view().unwrap().choices(), ["two"]);
-        assert!(c.confirm());
-        assert!(matches!(
-            rx.blocking_recv(),
-            Ok(PortalResult::Success(ApplicationChoice { choice, .. })) if choice == "two"
-        ));
-    }
-    #[test]
-    fn cancel_completes_the_async_request() {
-        let q = PortalDialogQueue::default();
-        let (tx, rx) = oneshot::channel();
-        assert!(matches!(
-            q.enqueue_choice(
-                ApplicationChoiceRequest {
-                    handle: "/r/2".into(),
-                    app_id: "x".into(),
-                    choices: vec!["one".into()],
-                    last_choice: None,
-                    content_type: None,
-                    uri: None,
-                    filename: None,
-                    activation_token: None
-                },
-                tx
-            ),
-            PortalResult::Success(())
-        ));
-        let mut c = PortalDialogController::new(q);
-        c.pump();
-        assert!(c.cancel());
-        assert!(matches!(rx.blocking_recv(), Ok(PortalResult::Cancelled)));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn portal_choice_dialog_updates_the_controller_and_completes_on_cancel_or_review() {
+        fn action_buttons_share_the_choice_rows_gutter() {
+            let q = PortalDialogQueue::default();
+            let service = ShellAppChooserService::with_queue(q.clone());
+            let (tx, _rx) = oneshot::channel();
+            assert!(matches!(
+                service.enqueue(
+                    ApplicationChoiceRequest {
+                        handle: "/r/layout".into(),
+                        app_id: "org.example.Reader".into(),
+                        choices: vec!["one".into(), "two".into()],
+                        last_choice: None,
+                        content_type: None,
+                        uri: None,
+                        filename: None,
+                        activation_token: None
+                    },
+                    tx
+                ),
+                PortalResult::Success(())
+            ));
+            let mut c = PortalDialogController::new(q);
+            assert!(c.pump());
+            let layout = c
+                .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
+                .expect("an active sheet");
+            let row = layout.choices[0];
+            // Confirm's right edge is the rows' right edge; the row above used
+            // to end 4 px short of the buttons below it.
+            assert_eq!(layout.confirm.x1, row.x1);
+            assert_eq!(layout.confirm.x1, layout.sheet.x1 - 24.0);
+            assert_eq!(
+                layout.cancel.x1 + 12.0,
+                layout.confirm.x0,
+                "buttons keep their 12 px gap"
+            );
+            assert_eq!(layout.cancel.width(), 92.0);
+            assert_eq!(layout.confirm.width(), 84.0);
+            assert!(layout.cancel.height() >= 32.0 && layout.confirm.height() >= 32.0);
+            assert_eq!(layout.cancel.y0, layout.confirm.y0);
+            assert_eq!(layout.cancel.y1, layout.confirm.y1);
+        }
+
+        fn choice_updates_reach_the_live_controller() {
+            let q = PortalDialogQueue::default();
+            let service = ShellAppChooserService::with_queue(q.clone());
+            let (tx, rx) = oneshot::channel();
+            assert!(matches!(
+                service.enqueue(
+                    ApplicationChoiceRequest {
+                        handle: "/r/1".into(),
+                        app_id: "org.example.Reader".into(),
+                        choices: vec!["one".into()],
+                        last_choice: None,
+                        content_type: None,
+                        uri: None,
+                        filename: None,
+                        activation_token: None
+                    },
+                    tx
+                ),
+                PortalResult::Success(())
+            ));
+            let mut c = PortalDialogController::new(q.clone());
+            assert!(c.pump());
+            assert!(matches!(
+                service.update_choices("/r/1", &["two".into()]),
+                PortalResult::Success(())
+            ));
+            assert_eq!(c.view().unwrap().choices(), ["two"]);
+            assert!(c.confirm());
+            assert!(matches!(
+                rx.blocking_recv(),
+                Ok(PortalResult::Success(ApplicationChoice { choice, .. })) if choice == "two"
+            ));
+        }
+
+        fn cancel_completes_the_async_request() {
+            let q = PortalDialogQueue::default();
+            let (tx, rx) = oneshot::channel();
+            assert!(matches!(
+                q.enqueue_choice(
+                    ApplicationChoiceRequest {
+                        handle: "/r/2".into(),
+                        app_id: "x".into(),
+                        choices: vec!["one".into()],
+                        last_choice: None,
+                        content_type: None,
+                        uri: None,
+                        filename: None,
+                        activation_token: None
+                    },
+                    tx
+                ),
+                PortalResult::Success(())
+            ));
+            let mut c = PortalDialogController::new(q);
+            c.pump();
+            assert!(c.cancel());
+            assert!(matches!(rx.blocking_recv(), Ok(PortalResult::Cancelled)));
+        }
+
+        fn review_keeps_the_exact_reason_and_needs_confirmation() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_review(ReviewRequest {
+                    handle: "/r/review".into(),
+                    app_id: "org.example.Backup".into(),
+                    title: "Share backup".into(),
+                    reason: "Send an encrypted archive to your provider.".into(),
+                    resource: "backup-2026.zip".into(),
+                    confirm_label: "Share".into(),
+                })
+                .expect("a unique request queues");
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            let view = controller.view().expect("visible review");
+            assert!(view.detail().contains("encrypted archive"));
+            assert!(view.detail().contains("backup-2026.zip"));
+            assert!(controller.confirm());
+            assert_eq!(receiver.blocking_recv(), Ok(ReviewDecision::Confirmed));
+        }
+
+        action_buttons_share_the_choice_rows_gutter();
+        choice_updates_reach_the_live_controller();
+        cancel_completes_the_async_request();
+        review_keeps_the_exact_reason_and_needs_confirmation();
     }
 
     fn authentication_request(identities: &[&str]) -> AuthenticationRequest {
@@ -1609,242 +2231,232 @@ mod tests {
     }
 
     #[test]
-    fn review_keeps_the_exact_reason_and_needs_confirmation() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_review(ReviewRequest {
-                handle: "/r/review".into(),
-                app_id: "org.example.Backup".into(),
-                title: "Share backup".into(),
-                reason: "Send an encrypted archive to your provider.".into(),
-                resource: "backup-2026.zip".into(),
-                confirm_label: "Share".into(),
-            })
-            .expect("a unique request queues");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        let view = controller.view().expect("visible review");
-        assert!(view.detail().contains("encrypted archive"));
-        assert!(view.detail().contains("backup-2026.zip"));
-        assert!(controller.confirm());
-        assert_eq!(receiver.blocking_recv(), Ok(ReviewDecision::Confirmed));
-    }
-
-    #[test]
-    fn usb_sheet_returns_only_the_individually_selected_subset() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_usb_devices(UsbDeviceRequest {
-                review: ReviewRequest {
-                    handle: "/r/usb".into(),
-                    app_id: "org.example.Camera".into(),
-                    title: "Choose USB devices".into(),
-                    reason: "Review each device.".into(),
-                    resource: "Access is temporary.".into(),
-                    confirm_label: "Allow selected".into(),
-                },
-                devices: vec![
-                    UsbDeviceRow {
-                        id: "camera".into(),
-                        label: "Conference camera".into(),
-                        writable: false,
+    fn usb_sheet_returns_only_individually_selected_devices_on_every_page() {
+        fn usb_sheet_returns_only_the_individually_selected_subset() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_usb_devices(UsbDeviceRequest {
+                    review: ReviewRequest {
+                        handle: "/r/usb".into(),
+                        app_id: "org.example.Camera".into(),
+                        title: "Choose USB devices".into(),
+                        reason: "Review each device.".into(),
+                        resource: "Access is temporary.".into(),
+                        confirm_label: "Allow selected".into(),
                     },
-                    UsbDeviceRow {
-                        id: "flash".into(),
-                        label: "Firmware drive".into(),
-                        writable: true,
-                    },
-                ],
-            })
-            .unwrap();
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        let view = controller.view().unwrap();
-        assert_eq!(view.usb_devices().len(), 2);
-        assert!(view.usb_devices()[0].selected);
-        assert!(view.usb_devices()[1].writable);
-        assert!(controller.select_next(false));
-        assert!(controller.toggle_selected_usb_device());
-        assert!(controller.confirm());
-        assert_eq!(
-            receiver.blocking_recv(),
-            Ok(UsbDeviceDecision {
-                decision: ReviewDecision::Confirmed,
-                approved: vec!["camera".into()],
-            })
-        );
-    }
-
-    #[test]
-    fn usb_rows_after_the_first_page_remain_selectable() {
-        let queue = PortalDialogQueue::default();
-        let devices = (0..7)
-            .map(|index| UsbDeviceRow {
-                id: format!("device-{index}"),
-                label: format!("Device {index}"),
-                writable: false,
-            })
-            .collect();
-        let receiver = queue
-            .enqueue_usb_devices(UsbDeviceRequest {
-                review: ReviewRequest {
-                    handle: "/r/usb-pages".into(),
-                    app_id: "org.example.Usb".into(),
-                    title: "Choose USB devices".into(),
-                    reason: String::new(),
-                    resource: String::new(),
-                    confirm_label: "Allow selected".into(),
-                },
-                devices,
-            })
-            .unwrap();
-        let mut controller = PortalDialogController::new(queue);
-        controller.pump();
-        for _ in 0..6 {
+                    devices: vec![
+                        UsbDeviceRow {
+                            id: "camera".into(),
+                            label: "Conference camera".into(),
+                            writable: false,
+                        },
+                        UsbDeviceRow {
+                            id: "flash".into(),
+                            label: "Firmware drive".into(),
+                            writable: true,
+                        },
+                    ],
+                })
+                .unwrap();
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            let view = controller.view().unwrap();
+            assert_eq!(view.usb_devices().len(), 2);
+            assert!(view.usb_devices()[0].selected);
+            assert!(view.usb_devices()[1].writable);
             assert!(controller.select_next(false));
+            assert!(controller.toggle_selected_usb_device());
+            assert!(controller.confirm());
+            assert_eq!(
+                receiver.blocking_recv(),
+                Ok(UsbDeviceDecision {
+                    decision: ReviewDecision::Confirmed,
+                    approved: vec!["camera".into()],
+                })
+            );
         }
-        assert_eq!(controller.visible_selection_start(), 6);
-        assert!(controller.toggle_selected_usb_device());
-        assert!(controller.confirm());
-        let decision = receiver.blocking_recv().unwrap();
-        assert_eq!(decision.approved.len(), 6);
-        assert!(!decision.approved.contains(&"device-6".into()));
+
+        fn usb_rows_after_the_first_page_remain_selectable() {
+            let queue = PortalDialogQueue::default();
+            let devices = (0..7)
+                .map(|index| UsbDeviceRow {
+                    id: format!("device-{index}"),
+                    label: format!("Device {index}"),
+                    writable: false,
+                })
+                .collect();
+            let receiver = queue
+                .enqueue_usb_devices(UsbDeviceRequest {
+                    review: ReviewRequest {
+                        handle: "/r/usb-pages".into(),
+                        app_id: "org.example.Usb".into(),
+                        title: "Choose USB devices".into(),
+                        reason: String::new(),
+                        resource: String::new(),
+                        confirm_label: "Allow selected".into(),
+                    },
+                    devices,
+                })
+                .unwrap();
+            let mut controller = PortalDialogController::new(queue);
+            controller.pump();
+            for _ in 0..6 {
+                assert!(controller.select_next(false));
+            }
+            assert_eq!(controller.visible_selection_start(), 6);
+            assert!(controller.toggle_selected_usb_device());
+            assert!(controller.confirm());
+            let decision = receiver.blocking_recv().unwrap();
+            assert_eq!(decision.approved.len(), 6);
+            assert!(!decision.approved.contains(&"device-6".into()));
+        }
+
+        usb_sheet_returns_only_the_individually_selected_subset();
+        usb_rows_after_the_first_page_remain_selectable();
     }
 
     #[test]
-    fn launcher_editor_returns_only_the_shell_reviewed_name_and_icon_choice() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_launcher_review(LauncherReviewRequest {
-                review: ReviewRequest {
-                    handle: "/r/launcher".into(),
-                    app_id: "org.example.Web".into(),
-                    title: "Install this web app?".into(),
-                    reason: "Reviewed by Tilo.".into(),
-                    resource: "https://example.test".into(),
-                    confirm_label: "Add launcher".into(),
-                },
-                name: "Example".into(),
-                editable_name: true,
-                editable_icon: true,
-                icon_choices: vec!["supplied".into(), "monogram".into()],
-            })
-            .expect("a unique launcher request queues");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        assert!(controller.edit_launcher_name(&winit::keyboard::Key::Character("!".into())));
-        assert!(controller.select_next(false));
-        assert_eq!(controller.launcher_icon(), Some(1));
-        assert!(controller.confirm());
-        assert_eq!(
-            receiver.blocking_recv(),
-            Ok(LauncherReviewDecision {
-                decision: ReviewDecision::Confirmed,
-                name: "Example!".into(),
-                icon_choice: 1,
-            })
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn launcher_and_shortcut_editors_return_only_reviewed_choices() {
+        fn launcher_editor_returns_only_the_shell_reviewed_name_and_icon_choice() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_launcher_review(LauncherReviewRequest {
+                    review: ReviewRequest {
+                        handle: "/r/launcher".into(),
+                        app_id: "org.example.Web".into(),
+                        title: "Install this web app?".into(),
+                        reason: "Reviewed by Tilo.".into(),
+                        resource: "https://example.test".into(),
+                        confirm_label: "Add launcher".into(),
+                    },
+                    name: "Example".into(),
+                    editable_name: true,
+                    editable_icon: true,
+                    icon_choices: vec!["supplied".into(), "monogram".into()],
+                })
+                .expect("a unique launcher request queues");
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            assert!(controller.edit_launcher_name(&winit::keyboard::Key::Character("!".into())));
+            assert!(controller.select_next(false));
+            assert_eq!(controller.launcher_icon(), Some(1));
+            assert!(controller.confirm());
+            assert_eq!(
+                receiver.blocking_recv(),
+                Ok(LauncherReviewDecision {
+                    decision: ReviewDecision::Confirmed,
+                    name: "Example!".into(),
+                    icon_choice: 1,
+                })
+            );
+        }
 
-    #[test]
-    fn launcher_close_cancels_and_never_leaves_a_waiter() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_launcher_review(LauncherReviewRequest {
-                review: ReviewRequest {
-                    handle: "/r/launcher-close".into(),
-                    app_id: "org.example.Web".into(),
-                    title: "Add launcher?".into(),
-                    reason: String::new(),
-                    resource: "Example".into(),
-                    confirm_label: "Add".into(),
-                },
-                name: "Example".into(),
-                editable_name: false,
-                editable_icon: false,
-                icon_choices: vec!["supplied".into()],
-            })
-            .expect("a unique launcher request queues");
-        assert!(queue.cancel("/r/launcher-close"));
-        assert_eq!(
-            receiver.blocking_recv(),
-            Ok(LauncherReviewDecision {
-                decision: ReviewDecision::Cancelled,
-                name: "Example".into(),
-                icon_choice: 0,
-            })
-        );
-    }
+        fn launcher_close_cancels_and_never_leaves_a_waiter() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_launcher_review(LauncherReviewRequest {
+                    review: ReviewRequest {
+                        handle: "/r/launcher-close".into(),
+                        app_id: "org.example.Web".into(),
+                        title: "Add launcher?".into(),
+                        reason: String::new(),
+                        resource: "Example".into(),
+                        confirm_label: "Add".into(),
+                    },
+                    name: "Example".into(),
+                    editable_name: false,
+                    editable_icon: false,
+                    icon_choices: vec!["supplied".into()],
+                })
+                .expect("a unique launcher request queues");
+            assert!(queue.cancel("/r/launcher-close"));
+            assert_eq!(
+                receiver.blocking_recv(),
+                Ok(LauncherReviewDecision {
+                    decision: ReviewDecision::Cancelled,
+                    name: "Example".into(),
+                    icon_choice: 0,
+                })
+            );
+        }
 
-    #[test]
-    fn shortcut_editor_records_a_physical_chord_and_can_clear_it() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_shortcut_bindings(ShortcutBindingRequest {
-                handle: "/r/shortcuts".into(),
-                app_id: "org.example.Recorder".into(),
-                rows: vec![ShortcutBindingRow {
-                    id: "toggle".into(),
-                    description: "Toggle recording".into(),
-                    accelerator: None,
-                    status: None,
-                }],
-            })
-            .expect("a unique request queues");
-        let mut controller = PortalDialogController::new(queue);
-        assert!(controller.pump());
-        assert!(controller.key(
-            &PhysicalKey::Code(KeyCode::KeyK),
-            Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT),
-        ));
-        assert_eq!(
-            controller.view().unwrap().shortcut_rows()[0]
-                .accelerator
-                .as_deref(),
-            Some("CTRL+SHIFT+KEYK")
-        );
-        assert!(controller.clear_selected_shortcut());
-        assert!(controller.confirm());
-        assert_eq!(
-            receiver.blocking_recv().unwrap().rows[0].accelerator,
-            None,
-            "clearing a row means it is not globally registered"
-        );
-    }
+        fn shortcut_editor_records_a_physical_chord_and_can_clear_it() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_shortcut_bindings(ShortcutBindingRequest {
+                    handle: "/r/shortcuts".into(),
+                    app_id: "org.example.Recorder".into(),
+                    rows: vec![ShortcutBindingRow {
+                        id: "toggle".into(),
+                        description: "Toggle recording".into(),
+                        accelerator: None,
+                        status: None,
+                    }],
+                })
+                .expect("a unique request queues");
+            let mut controller = PortalDialogController::new(queue);
+            assert!(controller.pump());
+            assert!(controller.key(
+                &PhysicalKey::Code(KeyCode::KeyK),
+                Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT),
+            ));
+            assert_eq!(
+                controller.view().unwrap().shortcut_rows()[0]
+                    .accelerator
+                    .as_deref(),
+                Some("CTRL+SHIFT+KEYK")
+            );
+            assert!(controller.clear_selected_shortcut());
+            assert!(controller.confirm());
+            assert_eq!(
+                receiver.blocking_recv().unwrap().rows[0].accelerator,
+                None,
+                "clearing a row means it is not globally registered"
+            );
+        }
 
-    #[test]
-    fn shortcut_editor_explains_reserved_chords_without_accepting_them() {
-        let queue = PortalDialogQueue::default();
-        let receiver = queue
-            .enqueue_shortcut_bindings(ShortcutBindingRequest {
-                handle: "/r/reserved".into(),
-                app_id: "org.example.Recorder".into(),
-                rows: vec![ShortcutBindingRow {
-                    id: "toggle".into(),
-                    description: String::new(),
-                    accelerator: None,
-                    status: None,
-                }],
-            })
-            .unwrap();
-        let mut controller = PortalDialogController::new(queue);
-        controller.pump();
-        assert!(controller.key(
-            &PhysicalKey::Code(KeyCode::KeyK),
-            Modifiers::from(ModifiersState::SUPER),
-        ));
-        let view = controller.view().unwrap();
-        let row = &view.shortcut_rows()[0];
-        assert!(row.accelerator.is_none());
-        assert!(
-            row.status
-                .as_deref()
-                .is_some_and(|text| text.contains("Reserved"))
-        );
-        assert!(controller.cancel());
-        assert!(
-            receiver.blocking_recv().is_err(),
-            "cancel drops the binding reply"
-        );
+        fn shortcut_editor_explains_reserved_chords_without_accepting_them() {
+            let queue = PortalDialogQueue::default();
+            let receiver = queue
+                .enqueue_shortcut_bindings(ShortcutBindingRequest {
+                    handle: "/r/reserved".into(),
+                    app_id: "org.example.Recorder".into(),
+                    rows: vec![ShortcutBindingRow {
+                        id: "toggle".into(),
+                        description: String::new(),
+                        accelerator: None,
+                        status: None,
+                    }],
+                })
+                .unwrap();
+            let mut controller = PortalDialogController::new(queue);
+            controller.pump();
+            assert!(controller.key(
+                &PhysicalKey::Code(KeyCode::KeyK),
+                Modifiers::from(ModifiersState::SUPER),
+            ));
+            let view = controller.view().unwrap();
+            let row = &view.shortcut_rows()[0];
+            assert!(row.accelerator.is_none());
+            assert!(
+                row.status
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Reserved"))
+            );
+            assert!(controller.cancel());
+            assert!(
+                receiver.blocking_recv().is_err(),
+                "cancel drops the binding reply"
+            );
+        }
+
+        launcher_editor_returns_only_the_shell_reviewed_name_and_icon_choice();
+        launcher_close_cancels_and_never_leaves_a_waiter();
+        shortcut_editor_records_a_physical_chord_and_can_clear_it();
+        shortcut_editor_explains_reserved_chords_without_accepting_them();
     }
 }

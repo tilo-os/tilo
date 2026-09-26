@@ -180,63 +180,38 @@ mod tests {
     use tilo_app_package::pack::SigningIdentity;
 
     #[test]
-    fn load_reads_manifest_and_id() {
+    fn tapps_load_and_verify_only_against_their_real_publisher_and_id() {
         let identity = SigningIdentity::generate();
+        let publisher = identity.public_key_bytes();
         let (bytes, id) = signed_tapp(&identity);
+
+        // Load reads the manifest and id.
         let meta = load(&bytes).unwrap();
         assert_eq!(meta.package_id, id);
         assert_eq!(meta.manifest.package.id, "so.tilo.editor");
         assert_eq!(meta.manifest.package.version, "1.0.0");
         assert!(meta.tapp.is_complete());
-    }
 
-    #[test]
-    fn verify_accepts_the_real_publisher() {
-        let identity = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&identity);
-        assert_eq!(
-            verify_bytes(&bytes, id, identity.public_key_bytes()).unwrap(),
-            id
-        );
-    }
+        // Verify accepts the real publisher, and rejects a publisher the entry
+        // claims but the tapp was NOT signed by, and a mismatched package id.
+        assert_eq!(verify_bytes(&bytes, id, publisher).unwrap(), id);
+        let other = SigningIdentity::generate().public_key_bytes();
+        assert!(verify_bytes(&bytes, id, other).is_err());
+        let wrong = PackageId::from_bytes([3u8; 32]);
+        assert!(verify_bytes(&bytes, wrong, publisher).is_err());
 
-    #[test]
-    fn verify_accepts_a_thin_archive_on_its_metadata() {
-        let identity = SigningIdentity::generate();
+        // A thin archive verifies on its metadata but has no payload.
         let packed = signed_package(&identity);
         let thin = tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap();
         assert_eq!(
-            verify_bytes(&thin, packed.id(), identity.public_key_bytes()).unwrap(),
+            verify_bytes(&thin, packed.id(), publisher).unwrap(),
             packed.id()
         );
         assert!(validate_payload_shape(&load(&thin).unwrap()).is_err());
-    }
 
-    #[test]
-    fn verify_rejects_a_different_expected_publisher() {
-        let identity = SigningIdentity::generate();
-        let (bytes, id) = signed_tapp(&identity);
-        // A publisher the entry claims but the tapp was NOT signed by.
-        let other = SigningIdentity::generate().public_key_bytes();
-        assert!(verify_bytes(&bytes, id, other).is_err());
-    }
-
-    #[test]
-    fn verify_rejects_a_mismatched_package_id() {
-        let identity = SigningIdentity::generate();
-        let (bytes, _id) = signed_tapp(&identity);
-        let wrong = PackageId::from_bytes([3u8; 32]);
-        assert!(verify_bytes(&bytes, wrong, identity.public_key_bytes()).is_err());
-    }
-
-    #[test]
-    fn verify_rejects_a_tampered_signature() {
-        let identity = SigningIdentity::generate();
-        let packed = signed_package(&identity);
-
-        // Rebuild the package with one bit of the signature flipped. Its
-        // (now different) package id is consistent throughout, so verify
-        // reaches — and fails — the signature check.
+        // Rebuild the package with one bit of the signature flipped. Its (now
+        // different) package id is consistent throughout, so verify reaches —
+        // and fails — the signature check.
         let mut root = packed.meta.root.clone();
         let mut sig = root.signature.unwrap();
         sig[0] ^= 0xff;
@@ -248,6 +223,6 @@ mod tests {
         )
         .unwrap();
         let bytes = tilo_app_package::tapp::to_bytes(&tampered, Some(&packed)).unwrap();
-        assert!(verify_bytes(&bytes, tampered.id, identity.public_key_bytes()).is_err());
+        assert!(verify_bytes(&bytes, tampered.id, publisher).is_err());
     }
 }

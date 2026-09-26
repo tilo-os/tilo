@@ -162,37 +162,38 @@ mod tests {
     }
 
     #[test]
-    fn import_export_roundtrip_via_provider() {
-        let p = DummyMd;
-        let mut d = Document::new();
-        p.import(
-            b"# Hello",
-            &mut d.as_mut(),
-            &mut tilo_content::ContentInputs::new(),
-        )
-        .unwrap();
-        let out = p.export(d.as_ref(), &tilo_content::NoContent).unwrap();
-        assert_eq!(out, b"# Hello");
-    }
-
-    #[test]
-    fn registry_resolves_highest_tier() {
-        let mut r = Registry::new();
-        r.register("md", ProviderTier::Ephemeral, Box::new(DummyMd));
-        r.register("md", ProviderTier::Builtin, Box::new(BuiltinMd));
-        let prov = r.provider_for_ext("md").unwrap();
-        // Builtin wins → its export returns b"builtin".
-        let d = Document::new();
-        assert_eq!(
-            prov.export(d.as_ref(), &tilo_content::NoContent).unwrap(),
-            b"builtin"
-        );
-    }
-
-    #[test]
-    fn detect_distinguishes_content() {
-        let p = DummyMd;
-        assert_eq!(p.detect(b"# Title"), Confidence::High);
-        assert_eq!(p.detect(b"plain"), Confidence::Low);
+    fn format_providers_detect_resolve_and_roundtrip() {
+        // Phase `import_export_roundtrip_via_provider`.
+        {
+            let p = DummyMd;
+            let mut d = Document::new();
+            p.import(
+                b"# Hello",
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+            let out = p.export(d.as_ref(), &tilo_content::NoContent).unwrap();
+            assert_eq!(out, b"# Hello");
+        }
+        // Phase `registry_resolves_highest_tier`.
+        {
+            let mut r = Registry::new();
+            r.register("md", ProviderTier::Ephemeral, Box::new(DummyMd));
+            r.register("md", ProviderTier::Builtin, Box::new(BuiltinMd));
+            let prov = r.provider_for_ext("md").unwrap();
+            // Builtin wins → its export returns b"builtin".
+            let d = Document::new();
+            assert_eq!(
+                prov.export(d.as_ref(), &tilo_content::NoContent).unwrap(),
+                b"builtin"
+            );
+        }
+        // Phase `detect_distinguishes_content`.
+        {
+            let p = DummyMd;
+            assert_eq!(p.detect(b"# Title"), Confidence::High);
+            assert_eq!(p.detect(b"plain"), Confidence::Low);
+        }
     }
 }

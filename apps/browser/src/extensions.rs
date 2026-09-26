@@ -395,136 +395,149 @@ mod tests {
         buf.into_inner()
     }
 
+    /// Installing XPI and CRX3, listing and rejecting invalid archives.
     #[test]
-    fn installs_xpi_and_reads_manifest() {
-        let root = tempfile::tempdir().unwrap();
-        let info = install_from_bytes(&fixture_zip(), root.path()).unwrap();
-        assert_eq!(info.id, "addon@darkreader.org");
-        assert_eq!(info.name, "Dark Reader");
-        assert_eq!(info.manifest_version, 2);
-        assert!(info.permissions.contains(&"storage".to_string()));
-        assert!(info.path.join("background.js").exists());
-    }
-
-    #[test]
-    fn installs_crx3_by_stripping_header() {
-        let zip_data = fixture_zip();
-        let mut crx = Vec::new();
-        crx.extend_from_slice(b"Cr24");
-        crx.extend_from_slice(&3u32.to_le_bytes());
-        let header = [0xAAu8; 20]; // opaque protobuf header, length 20
-        crx.extend_from_slice(&(header.len() as u32).to_le_bytes());
-        crx.extend_from_slice(&header);
-        crx.extend_from_slice(&zip_data);
-
-        let root = tempfile::tempdir().unwrap();
-        let info = install_from_bytes(&crx, root.path()).unwrap();
-        assert_eq!(info.name, "Dark Reader");
-    }
-
-    #[test]
-    fn lists_installed_extensions() {
-        let root = tempfile::tempdir().unwrap();
-        install_from_bytes(&fixture_zip(), root.path()).unwrap();
-        let listed = list_in(root.path());
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "Dark Reader");
-    }
-
-    #[test]
-    fn rejects_zip_without_manifest() {
-        let mut buf = Cursor::new(Vec::new());
+    fn extension_archives_install_list_and_reject_invalid_packages() {
+        // Phase `installs_xpi_and_reads_manifest`.
         {
-            let mut zip = zip::ZipWriter::new(&mut buf);
-            let opts = zip::write::SimpleFileOptions::default();
-            zip.start_file("readme.txt", opts).unwrap();
-            zip.write_all(b"hi").unwrap();
-            zip.finish().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let info = install_from_bytes(&fixture_zip(), root.path()).unwrap();
+            assert_eq!(info.id, "addon@darkreader.org");
+            assert_eq!(info.name, "Dark Reader");
+            assert_eq!(info.manifest_version, 2);
+            assert!(info.permissions.contains(&"storage".to_string()));
+            assert!(info.path.join("background.js").exists());
         }
-        let root = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            install_from_bytes(&buf.into_inner(), root.path()),
-            Err(ExtensionError::Manifest(_))
-        ));
+
+        // Phase `installs_crx3_by_stripping_header`.
+        {
+            let zip_data = fixture_zip();
+            let mut crx = Vec::new();
+            crx.extend_from_slice(b"Cr24");
+            crx.extend_from_slice(&3u32.to_le_bytes());
+            let header = [0xAAu8; 20]; // opaque protobuf header, length 20
+            crx.extend_from_slice(&(header.len() as u32).to_le_bytes());
+            crx.extend_from_slice(&header);
+            crx.extend_from_slice(&zip_data);
+
+            let root = tempfile::tempdir().unwrap();
+            let info = install_from_bytes(&crx, root.path()).unwrap();
+            assert_eq!(info.name, "Dark Reader");
+        }
+
+        // Phase `lists_installed_extensions`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            install_from_bytes(&fixture_zip(), root.path()).unwrap();
+            let listed = list_in(root.path());
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].name, "Dark Reader");
+        }
+
+        // Phase `rejects_zip_without_manifest`.
+        {
+            let mut buf = Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("readme.txt", opts).unwrap();
+                zip.write_all(b"hi").unwrap();
+                zip.finish().unwrap();
+            }
+            let root = tempfile::tempdir().unwrap();
+            assert!(matches!(
+                install_from_bytes(&buf.into_inner(), root.path()),
+                Err(ExtensionError::Manifest(_))
+            ));
+        }
+
+        // Phase `oversized_archive_is_rejected_before_parsing`.
+        {
+            let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
+            assert!(matches!(
+                install_from_bytes(&bytes, std::path::Path::new("/unused")),
+                Err(ExtensionError::Archive(_))
+            ));
+        }
     }
 
+    /// Identifier fallbacks, path containment and manifest bounds.
     #[test]
-    fn slug_fallback_for_manifests_without_gecko_id() {
-        let manifest = r#"{"manifest_version": 3, "name": "My Cool Tool!", "version": "1.0"}"#;
-        let info = parse_manifest(manifest).unwrap();
-        assert_eq!(info.id, "my-cool-tool");
-        assert_eq!(info.manifest_version, 3);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn extension_identifiers_and_manifests_are_safe_and_bounded() {
+        // Phase `slug_fallback_for_manifests_without_gecko_id`.
+        {
+            let manifest = r#"{"manifest_version": 3, "name": "My Cool Tool!", "version": "1.0"}"#;
+            let info = parse_manifest(manifest).unwrap();
+            assert_eq!(info.id, "my-cool-tool");
+            assert_eq!(info.manifest_version, 3);
+        }
 
-    #[test]
-    fn manifest_identifier_cannot_escape_extension_root() {
-        let manifest = r#"{
-            "manifest_version": 3,
-            "name": "Safe Name",
-            "version": "1.0",
-            "browser_specific_settings": {"gecko": {"id": "../../outside"}}
-        }"#;
-        let info = parse_manifest(manifest).unwrap();
-        assert_eq!(info.id, "safe-name");
-        assert!(!info.id.contains('/'));
-    }
+        // Phase `manifest_identifier_cannot_escape_extension_root`.
+        {
+            let manifest = r#"{
+                "manifest_version": 3,
+                "name": "Safe Name",
+                "version": "1.0",
+                "browser_specific_settings": {"gecko": {"id": "../../outside"}}
+            }"#;
+            let info = parse_manifest(manifest).unwrap();
+            assert_eq!(info.id, "safe-name");
+            assert!(!info.id.contains('/'));
+        }
 
-    #[test]
-    fn non_ascii_name_gets_a_nonempty_safe_fallback_identifier() {
-        let manifest = r#"{"manifest_version": 3, "name": "🌙", "version": "1.0"}"#;
-        let info = parse_manifest(manifest).unwrap();
-        assert!(info.id.starts_with("extension-"));
-        assert!(info.id.len() > "extension-".len());
-        assert_eq!(
-            resource_id(&info.id),
-            format!("browser.extension:{}", info.id)
-        );
-    }
+        // Phase `non_ascii_name_gets_a_nonempty_safe_fallback_identifier`.
+        {
+            let manifest = r#"{"manifest_version": 3, "name": "🌙", "version": "1.0"}"#;
+            let info = parse_manifest(manifest).unwrap();
+            assert!(info.id.starts_with("extension-"));
+            assert!(info.id.len() > "extension-".len());
+            assert_eq!(
+                resource_id(&info.id),
+                format!("browser.extension:{}", info.id)
+            );
+        }
 
-    #[test]
-    fn inventory_skips_manifests_larger_than_the_install_limit() {
-        let root = tempfile::tempdir().unwrap();
-        let extension = root.path().join("oversized");
-        std::fs::create_dir(&extension).unwrap();
-        std::fs::write(
-            extension.join("manifest.json"),
-            vec![b' '; MAX_MANIFEST_BYTES as usize + 1],
-        )
-        .unwrap();
+        // Phase `inventory_skips_manifests_larger_than_the_install_limit`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let extension = root.path().join("oversized");
+            std::fs::create_dir(&extension).unwrap();
+            std::fs::write(
+                extension.join("manifest.json"),
+                vec![b' '; MAX_MANIFEST_BYTES as usize + 1],
+            )
+            .unwrap();
 
-        assert!(list_in(root.path()).is_empty());
-    }
+            assert!(list_in(root.path()).is_empty());
+        }
 
-    #[test]
-    fn manifest_fields_and_permission_lists_are_bounded() {
-        let oversized_name = "a".repeat(MAX_EXTENSION_NAME_BYTES + 1);
-        let manifest =
-            format!(r#"{{"manifest_version": 3, "name": "{oversized_name}", "version": "1.0"}}"#);
-        assert!(matches!(
-            parse_manifest(&manifest),
-            Err(ExtensionError::Manifest(_))
-        ));
+        // Phase `manifest_fields_and_permission_lists_are_bounded`.
+        {
+            let oversized_name = "a".repeat(MAX_EXTENSION_NAME_BYTES + 1);
+            let manifest = format!(
+                r#"{{"manifest_version": 3, "name": "{oversized_name}", "version": "1.0"}}"#
+            );
+            assert!(matches!(
+                parse_manifest(&manifest),
+                Err(ExtensionError::Manifest(_))
+            ));
 
-        let permissions = std::iter::repeat_n("tabs", MAX_EXTENSION_PERMISSIONS + 1)
-            .map(|permission| format!("\"{permission}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        let manifest = format!(
-            r#"{{"manifest_version": 3, "name": "Safe", "version": "1.0", "permissions": [{permissions}]}}"#
-        );
-        assert!(matches!(
-            parse_manifest(&manifest),
-            Err(ExtensionError::Manifest(_))
-        ));
-    }
-
-    #[test]
-    fn oversized_archive_is_rejected_before_parsing() {
-        let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
-        assert!(matches!(
-            install_from_bytes(&bytes, std::path::Path::new("/unused")),
-            Err(ExtensionError::Archive(_))
-        ));
+            let permissions = std::iter::repeat_n("tabs", MAX_EXTENSION_PERMISSIONS + 1)
+                .map(|permission| format!("\"{permission}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            let manifest = format!(
+                r#"{{"manifest_version": 3, "name": "Safe", "version": "1.0", "permissions": [{permissions}]}}"#
+            );
+            assert!(matches!(
+                parse_manifest(&manifest),
+                Err(ExtensionError::Manifest(_))
+            ));
+        }
     }
 }
 

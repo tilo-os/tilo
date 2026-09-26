@@ -941,145 +941,164 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic(expected = "missing-control")]
-    fn scenario_cannot_report_success_after_a_missing_click() {
-        let mut driver = crate::headless::Driver::new(
-            crate::State::new(),
-            Box::new(crate::widget::Text::new("Root")),
-            (400, 300),
-        );
-        let scenario = PerfScenario {
-            name: "missing-target".into(),
-            viewport: (400, 300),
-            warmup: 1,
-            steps: vec![
-                PerfStep::ClickNamed("missing-control".into()),
-                PerfStep::Frames(10),
-            ],
-        };
-        run_scenario(&mut driver, &scenario);
+    fn stats_summaries_use_nearest_rank_and_handle_empty_input() {
+        // Case `percentile_is_nearest_rank`.
+        {
+            let v: Vec<u64> = (1..=100).collect();
+            assert_eq!(percentile(&v, 50.0), 50);
+            assert_eq!(percentile(&v, 95.0), 95);
+            assert_eq!(percentile(&v, 0.0), 1);
+            assert_eq!(percentile(&v, 100.0), 100);
+        }
+
+        // Case `stat_summary_captures_spread`.
+        {
+            let s = StatSummary::of(&[10, 20, 30, 40, 50]);
+            assert_eq!(s.count, 5);
+            assert_eq!(s.mean_us, 30);
+            assert_eq!(s.p50_us, 30);
+            assert_eq!(s.min_us, 10);
+            assert_eq!(s.max_us, 50);
+        }
+
+        // Case `empty_stats_are_zero_not_a_panic`.
+        {
+            let s = StatSummary::of(&[]);
+            assert_eq!(s.count, 0);
+            assert_eq!(s.max_us, 0);
+        }
     }
 
     #[test]
-    fn scenario_named_click_reaches_the_real_control() {
-        let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
-        let observed = clicks.clone();
-        let root = crate::widget::Button::new("activate", "Activate", None)
-            .on_click(move || observed.set(observed.get() + 1));
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(root), (400, 300));
-        let scenario = PerfScenario {
-            name: "real-click".into(),
-            viewport: (400, 300),
-            warmup: 1,
-            steps: vec![PerfStep::ClickNamed("activate".into()), PerfStep::Frames(2)],
-        };
-        let report = run_scenario(&mut driver, &scenario);
-        assert_eq!(clicks.get(), 1);
-        assert!(report.frames >= 2);
-    }
+    fn profiler_records_passes_commits_and_over_budget_frames() {
+        // Case `profiler_records_passes_and_commits`.
+        {
+            let mut p = FrameProfiler::for_capture();
+            p.record(Pass::Sync, Duration::from_micros(100));
+            p.record(Pass::BuildLayout, Duration::from_micros(200));
+            p.record(Pass::ApplyLayout, Duration::from_micros(50));
+            p.record(Pass::Draw, Duration::from_micros(400));
+            p.record(Pass::HandleEvent, Duration::from_micros(80));
+            p.commit_frame_summed();
 
-    #[test]
-    fn percentile_is_nearest_rank() {
-        let v: Vec<u64> = (1..=100).collect();
-        assert_eq!(percentile(&v, 50.0), 50);
-        assert_eq!(percentile(&v, 95.0), 95);
-        assert_eq!(percentile(&v, 0.0), 1);
-        assert_eq!(percentile(&v, 100.0), 100);
-    }
+            let samples = p.take_capture();
+            assert_eq!(samples.len(), 1);
+            let f = samples[0];
+            assert_eq!(f.sync_us, 100);
+            assert_eq!(f.build_layout_us, 200);
+            assert_eq!(f.apply_layout_us, 50);
+            assert_eq!(f.draw_us, 400);
+            assert_eq!(f.handle_event_us, 80);
+            assert_eq!(f.total_us, 830);
+            assert!(!f.over_budget());
+        }
 
-    #[test]
-    fn stat_summary_captures_spread() {
-        let s = StatSummary::of(&[10, 20, 30, 40, 50]);
-        assert_eq!(s.count, 5);
-        assert_eq!(s.mean_us, 30);
-        assert_eq!(s.p50_us, 30);
-        assert_eq!(s.min_us, 10);
-        assert_eq!(s.max_us, 50);
-    }
+        // Case `diagnostic_passes_accumulate_serialize_and_reset`.
+        {
+            let mut profiler = FrameProfiler::for_capture();
+            profiler.record(Pass::ResourceAvailability, Duration::from_micros(11));
+            profiler.record(Pass::ResourceAvailability, Duration::from_micros(7));
+            profiler.record(Pass::ScenePoolWait, Duration::from_micros(23));
+            profiler.record(Pass::PresenceOverlay, Duration::from_micros(31));
+            profiler.record(Pass::HandleEvent, Duration::from_micros(5));
+            profiler.commit_frame_summed();
+            profiler.commit_frame_summed();
+            let samples = profiler.take_capture();
+            assert_eq!(samples[0].total_us, 77);
+            assert_eq!(samples[1].total_us, 0);
+            let json = serde_json::to_value(samples[0]).expect("serialize frame");
+            assert_eq!(json["resource_availability_us"], 18);
+            assert_eq!(json["scene_pool_wait_us"], 23);
+            assert_eq!(json["presence_overlay_us"], 31);
+            let report = PerfReport::from_samples("diagnostic", samples.clone(), FRAME_BUDGET_US);
+            assert_eq!(report.resource_availability.max_us, 18);
+            assert_eq!(report.scene_pool_wait.max_us, 23);
+            assert_eq!(report.presence_overlay.max_us, 31);
 
-    #[test]
-    fn empty_stats_are_zero_not_a_panic() {
-        let s = StatSummary::of(&[]);
-        assert_eq!(s.count, 0);
-        assert_eq!(s.max_us, 0);
-    }
+            let dir = tempfile::tempdir().expect("temporary profile directory");
+            let path = dir.path().join("frames.csv");
+            let mut writer = DumpWriter::open(&path).expect("open profile dump");
+            writer.write(&samples[0]);
+            writer.write(&samples[1]);
+            drop(writer);
+            let csv = std::fs::read_to_string(path).expect("read profile dump");
+            let mut lines = csv.lines();
+            let names: Vec<_> = lines.next().expect("header").split(',').collect();
+            let values: Vec<_> = lines.next().expect("frame").split(',').collect();
+            assert_eq!(names.len(), values.len());
+            for (name, value) in names.iter().zip(values) {
+                assert_eq!(
+                    json[*name].as_u64(),
+                    Some(value.parse().expect("CSV number"))
+                );
+            }
+            assert_eq!(lines.count(), 1, "one header, two frames");
+        }
 
-    #[test]
-    fn profiler_records_passes_and_commits() {
-        let mut p = FrameProfiler::for_capture();
-        p.record(Pass::Sync, Duration::from_micros(100));
-        p.record(Pass::BuildLayout, Duration::from_micros(200));
-        p.record(Pass::ApplyLayout, Duration::from_micros(50));
-        p.record(Pass::Draw, Duration::from_micros(400));
-        p.record(Pass::HandleEvent, Duration::from_micros(80));
-        p.commit_frame_summed();
+        // Case `over_budget_frames_are_counted_in_the_report`.
+        {
+            let mk = |total: u64| FrameTiming {
+                total_us: total,
+                draw_us: total,
+                ..Default::default()
+            };
+            let samples = vec![mk(5_000), mk(20_000), mk(8_000), mk(30_000)];
+            let r = PerfReport::from_samples("t", samples, FRAME_BUDGET_US);
+            assert_eq!(r.frames, 4);
+            assert_eq!(r.over_budget, 2); // 20ms and 30ms exceed 16.6ms
+            assert_eq!(r.draw.max_us, 30_000);
+        }
 
-        let samples = p.take_capture();
-        assert_eq!(samples.len(), 1);
-        let f = samples[0];
-        assert_eq!(f.sync_us, 100);
-        assert_eq!(f.build_layout_us, 200);
-        assert_eq!(f.apply_layout_us, 50);
-        assert_eq!(f.draw_us, 400);
-        assert_eq!(f.handle_event_us, 80);
-        assert_eq!(f.total_us, 830);
-        assert!(!f.over_budget());
-    }
+        // Case `scenario_named_click_reaches_the_real_control`.
+        {
+            let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = clicks.clone();
+            let root = crate::widget::Button::new("activate", "Activate", None)
+                .on_click(move || observed.set(observed.get() + 1));
+            let mut driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(root), (400, 300));
+            let scenario = PerfScenario {
+                name: "real-click".into(),
+                viewport: (400, 300),
+                warmup: 1,
+                steps: vec![PerfStep::ClickNamed("activate".into()), PerfStep::Frames(2)],
+            };
+            let report = run_scenario(&mut driver, &scenario);
+            assert_eq!(clicks.get(), 1);
+            assert!(report.frames >= 2);
+        }
 
-    #[test]
-    fn diagnostic_passes_accumulate_serialize_and_reset() {
-        let mut profiler = FrameProfiler::for_capture();
-        profiler.record(Pass::ResourceAvailability, Duration::from_micros(11));
-        profiler.record(Pass::ResourceAvailability, Duration::from_micros(7));
-        profiler.record(Pass::ScenePoolWait, Duration::from_micros(23));
-        profiler.record(Pass::PresenceOverlay, Duration::from_micros(31));
-        profiler.record(Pass::HandleEvent, Duration::from_micros(5));
-        profiler.commit_frame_summed();
-        profiler.commit_frame_summed();
-        let samples = profiler.take_capture();
-        assert_eq!(samples[0].total_us, 77);
-        assert_eq!(samples[1].total_us, 0);
-        let json = serde_json::to_value(samples[0]).expect("serialize frame");
-        assert_eq!(json["resource_availability_us"], 18);
-        assert_eq!(json["scene_pool_wait_us"], 23);
-        assert_eq!(json["presence_overlay_us"], 31);
-        let report = PerfReport::from_samples("diagnostic", samples.clone(), FRAME_BUDGET_US);
-        assert_eq!(report.resource_availability.max_us, 18);
-        assert_eq!(report.scene_pool_wait.max_us, 23);
-        assert_eq!(report.presence_overlay.max_us, 31);
-
-        let dir = tempfile::tempdir().expect("temporary profile directory");
-        let path = dir.path().join("frames.csv");
-        let mut writer = DumpWriter::open(&path).expect("open profile dump");
-        writer.write(&samples[0]);
-        writer.write(&samples[1]);
-        drop(writer);
-        let csv = std::fs::read_to_string(path).expect("read profile dump");
-        let mut lines = csv.lines();
-        let names: Vec<_> = lines.next().expect("header").split(',').collect();
-        let values: Vec<_> = lines.next().expect("frame").split(',').collect();
-        assert_eq!(names.len(), values.len());
-        for (name, value) in names.iter().zip(values) {
-            assert_eq!(
-                json[*name].as_u64(),
-                Some(value.parse().expect("CSV number"))
+        // Case `scenario_cannot_report_success_after_a_missing_click`: the run
+        // panics naming the control it could not click (formerly
+        // `#[should_panic(expected = "missing-control")]`).
+        {
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut driver = crate::headless::Driver::new(
+                    crate::State::new(),
+                    Box::new(crate::widget::Text::new("Root")),
+                    (400, 300),
+                );
+                let scenario = PerfScenario {
+                    name: "missing-target".into(),
+                    viewport: (400, 300),
+                    warmup: 1,
+                    steps: vec![
+                        PerfStep::ClickNamed("missing-control".into()),
+                        PerfStep::Frames(10),
+                    ],
+                };
+                run_scenario(&mut driver, &scenario);
+            }))
+            .expect_err("a scenario with a missing click must not report success");
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or_default();
+            assert!(
+                message.contains("missing-control"),
+                "panic message: {message}"
             );
         }
-        assert_eq!(lines.count(), 1, "one header, two frames");
-    }
-
-    #[test]
-    fn over_budget_frames_are_counted_in_the_report() {
-        let mk = |total: u64| FrameTiming {
-            total_us: total,
-            draw_us: total,
-            ..Default::default()
-        };
-        let samples = vec![mk(5_000), mk(20_000), mk(8_000), mk(30_000)];
-        let r = PerfReport::from_samples("t", samples, FRAME_BUDGET_US);
-        assert_eq!(r.frames, 4);
-        assert_eq!(r.over_budget, 2); // 20ms and 30ms exceed 16.6ms
-        assert_eq!(r.draw.max_us, 30_000);
     }
 }

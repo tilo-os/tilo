@@ -593,30 +593,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalise_passes_through_schemes() {
-        assert_eq!(
-            normalise_url("https://example.org/a"),
-            "https://example.org/a"
-        );
-        assert_eq!(normalise_url("http://example.org"), "http://example.org");
-        assert_eq!(normalise_url("about:blank"), "about:blank");
-    }
-
-    #[test]
-    fn normalise_prepends_https_for_hosts() {
-        assert_eq!(normalise_url("example.org"), "https://example.org");
-        assert_eq!(normalise_url("localhost:8080"), "https://localhost:8080");
-    }
-
-    #[test]
-    fn normalise_searches_for_queries() {
-        assert_eq!(
-            normalise_url("rust webview"),
-            "https://duckduckgo.com/?q=rust+webview"
-        );
-        assert_eq!(
-            normalise_url("what is Tilo?"),
-            "https://duckduckgo.com/?q=what+is+Tilo%3F"
-        );
+    fn normalise_keeps_schemes_prepends_https_and_searches_queries() {
+        // phase: normalise_passes_through_schemes
+        {
+            assert_eq!(
+                normalise_url("https://example.org/a"),
+                "https://example.org/a"
+            );
+            assert_eq!(normalise_url("http://example.org"), "http://example.org");
+            assert_eq!(normalise_url("about:blank"), "about:blank");
+        }
+        // phase: normalise_prepends_https_for_hosts
+        {
+            assert_eq!(normalise_url("example.org"), "https://example.org");
+            assert_eq!(normalise_url("localhost:8080"), "https://localhost:8080");
+        }
+        // phase: normalise_searches_for_queries
+        {
+            assert_eq!(
+                normalise_url("rust webview"),
+                "https://duckduckgo.com/?q=rust+webview"
+            );
+            assert_eq!(
+                normalise_url("what is Tilo?"),
+                "https://duckduckgo.com/?q=what+is+Tilo%3F"
+            );
+        }
     }
 }
