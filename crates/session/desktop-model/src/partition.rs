@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{GroupId, StripId};
 use crate::layout::Strip;
+use crate::serde_ids::deserialize_id_btree_map;
 use crate::workspace::Workspace;
 
 /// A display as the partition knows it: the backend's stable output id and
@@ -55,11 +56,11 @@ impl Display {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputPartition {
     /// The display each group is shown on.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_id_btree_map")]
     pub home: BTreeMap<GroupId, u32>,
     /// Groups moved off a display that went away, and that display. They
     /// return when it comes back, unless they were moved since.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_id_btree_map")]
     pub origin: BTreeMap<GroupId, u32>,
     /// The displays last reconciled against, primary first. Remembered so a
     /// display missing at the next start still has a position to find the
@@ -440,5 +441,28 @@ mod tests {
         assert_eq!(p.focused, Some(0));
         assert_eq!(p.neighbour(0, 1), Some(1));
         assert_eq!(p.neighbour(0, -1), None);
+    }
+
+    #[test]
+    fn a_saved_partition_loads_inside_a_flattened_tree() {
+        // The shell's persisted tree flattens the desktop into itself, which
+        // hands the id-keyed maps their keys as strings.
+        #[derive(Serialize, Deserialize)]
+        struct Saved {
+            #[serde(flatten)]
+            partition: OutputPartition,
+        }
+        let mut ws = workspace(&[1, 2]);
+        let mut p = OutputPartition::default();
+        p.reconcile(&mut ws, &docked());
+        p.home.insert(1, 0);
+        p.home.insert(2, 1);
+        p.origin.insert(2, 0);
+        let json = serde_json::to_string(&Saved {
+            partition: p.clone(),
+        })
+        .expect("saves");
+        let loaded: Saved = serde_json::from_str(&json).expect("loads");
+        assert_eq!(loaded.partition, p);
     }
 }
