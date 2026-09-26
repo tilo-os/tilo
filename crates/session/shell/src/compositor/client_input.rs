@@ -1390,10 +1390,7 @@ fn route_keyboard_input(
     // them again.
     if key.repeat {
         let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
-        let configured_shortcut = fb
-            .host()
-            .configured_shortcut_action(&key.logical_key, modifiers)
-            .is_some();
+        let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
             || configured_shortcut
             || is_shell_chord(event, &modifiers, overlay_open)
@@ -1413,11 +1410,8 @@ fn route_keyboard_input(
     // client-first boundary. Without the host-side check, a valid binding
     // such as Alt+G is shown and saved by Settings but disappears whenever a
     // real app holds focus because that app consumes the press first.
-    let configured_shortcut = pressed
-        && fb
-            .host()
-            .configured_shortcut_action(&key.logical_key, modifiers)
-            .is_some();
+    let configured_shortcut =
+        pressed && fb.host().owns_configured_chord(&key.logical_key, modifiers);
     let shell_chord = configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
     // An approved GlobalShortcuts grant fires over whatever app holds
     // focus: shell chords win, then the grant, then the client. Its release

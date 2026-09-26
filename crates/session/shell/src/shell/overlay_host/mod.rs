@@ -33,6 +33,7 @@ mod controller;
 mod device_fabric;
 mod history;
 mod notification_center;
+mod shortcut_triggers;
 mod shortcuts;
 
 pub use controller::{ControllerDelivery, ControllerKey};
@@ -59,9 +60,10 @@ use notification_center::{NotificationRowControl, notification_row_controls};
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_chord_from_event,
-    shortcut_guide_chord, shortcut_reference_columns, shortcut_reference_group_height,
-    shortcut_reference_rows, shortcut_reference_step,
+    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
+    shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
+    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
+    shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -1436,6 +1438,7 @@ struct OverlayInputs {
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     collaboration_preferences: CollaborationPreferences,
     shortcut_config: settings_store::hardware::ShortcutConfig,
+    shortcut_triggers: crate::shell::automation_triggers::TriggerHost,
     desktop_controls: DesktopControlsSource,
     qs_root: QuickSettingsRoot,
     qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
@@ -1485,6 +1488,8 @@ pub struct ShellOverlayHost {
     /// router must consult this same snapshot rather than reconstructing the
     /// default chord set on its own.
     shortcut_config: settings_store::hardware::ShortcutConfig,
+    /// What starts saved shortcuts from a chord or on schedule.
+    shortcut_triggers: shortcut_triggers::ShortcutTriggerState,
     content: Box<dyn Widget>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
@@ -3015,6 +3020,7 @@ impl ShellOverlayHost {
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
         self.room_activity.attach_task_broker(broker.clone());
+        self.attach_shortcut_trigger_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
@@ -3123,6 +3129,7 @@ impl ShellOverlayHost {
                 room_records,
                 collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+                shortcut_triggers: crate::shell::automation_triggers::TriggerHost::for_session(),
                 desktop_controls: DesktopControlsSource::Persisted(
                     settings_store::hardware::DesktopControlsConfig::load(),
                 ),
@@ -3180,6 +3187,10 @@ impl ShellOverlayHost {
                     &serde_json::Map::new(),
                 ),
                 shortcut_config: settings_store::hardware::ShortcutConfig::default(),
+                shortcut_triggers: crate::shell::automation_triggers::TriggerHost::new(
+                    std::sync::Arc::new(crate::shell::automation_triggers::SystemClock),
+                    None,
+                ),
                 desktop_controls: DesktopControlsSource::Explicit(
                     settings_store::hardware::DesktopControlsConfig::default(),
                 ),
@@ -3230,6 +3241,9 @@ impl ShellOverlayHost {
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
             shortcut_config: inputs.shortcut_config,
+            shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
+                inputs.shortcut_triggers,
+            ),
             desktop_controls: inputs.desktop_controls,
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
@@ -11439,8 +11453,12 @@ impl ShellOverlayHost {
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey => {
                     "F1 and Print Screen are reserved by the desktop.".into()
                 }
-                settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                settings_store::hardware::ShortcutConfigError::InvalidChord
+                | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
                     "That shortcut is not supported. Press another shortcut.".into()
+                }
+                settings_store::hardware::ShortcutConfigError::TakenByAction => {
+                    "Already used to run an action. Press another shortcut.".into()
                 }
             });
             return;
@@ -11542,8 +11560,12 @@ impl ShellOverlayHost {
                     "A default is already used to {}. Change that shortcut first.",
                     shortcut_action_label(other)
                 ),
+                settings_store::hardware::ShortcutConfigError::TakenByAction => {
+                    "A default now runs an action. Change that shortcut first.".into()
+                }
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey
-                | settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                | settings_store::hardware::ShortcutConfigError::InvalidChord
+                | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
                     "Could not restore the default shortcuts.".into()
                 }
             });
@@ -12011,6 +12033,13 @@ impl ShellOverlayHost {
             if !repeat && let Some(chrome) = self.chrome.clone() {
                 chrome.borrow_mut().toggle_quick_settings();
             }
+            *handled = true;
+            return true;
+        }
+        // Chords bound to published actions, a saved shortcut's keyboard
+        // trigger among them. Saving refuses every fixed chord below, so
+        // order only matters for a chord nothing else claims.
+        if self.handle_action_chord(logical_key, modifiers, repeat) {
             *handled = true;
             return true;
         }
@@ -16227,6 +16256,7 @@ impl Widget for ShellOverlayHost {
         }
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
+        self.tick_shortcut_triggers();
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -18094,6 +18124,9 @@ impl Widget for ShellOverlayHost {
                     let essential_summary = shortcut_reference_rows(shortcuts)
                         .into_iter()
                         .map(|(label, chord)| format!("{label}: {chord}"))
+                        .chain(shortcut_action_rows(shortcuts).into_iter().map(
+                            |(label, chord)| format!("{label}: {chord}"),
+                        ))
                         .collect::<Vec<_>>()
                         .join("; ");
                     root.children.push(
@@ -20487,6 +20520,18 @@ impl ShellOverlayHost {
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
+                    if let Some(summary) = shortcut_action_summary(shortcuts)
+                        && pointer_y + 40.0 < body.y1
+                    {
+                        text_renderer.draw_text(
+                            scene,
+                            &summary,
+                            theme.tokens.typography.scale.xs,
+                            colors.text_primary,
+                            transform.pre_translate((body.x0, pointer_y + 32.0).into()),
+                            Some(f64_to_f32_lossy(body.width())),
+                        );
+                    }
                     if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
                         text_renderer.draw_text(
                             scene,
