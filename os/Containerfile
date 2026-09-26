@@ -1259,8 +1259,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # Tilo backend (Sandbox Phase 4.3).
+#
+# `dconf` and `gsettings-desktop-schemas` let unsandboxed GTK/GNOME host apps
+# read the OS appearance the compositor mirrors into
+# org.gnome.desktop.interface; without the dconf backend GSettings falls back
+# to an in-memory store and every host app keeps its own defaults.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
+    dconf \
+    gsettings-desktop-schemas \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
