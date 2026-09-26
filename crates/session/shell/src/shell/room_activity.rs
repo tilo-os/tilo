@@ -522,51 +522,6 @@ mod resume_card_tests {
                 .expect("resume card handles its click");
             assert_eq!(outcome.open_target, pane.resume_target);
         }
-
-        // Phase `app_native_handoff_focuses_the_exact_version_without_marking_it_unseen`.
-        {
-            let (mut tree, workspace, _) = busy_room();
-            let mut pane = pane_over(&mut tree);
-            let unread_before = pane.passive_unread;
-            let id = HistoryEntryId::from_bytes([9; 16]);
-            let resource = "signed-file-record".to_string();
-            let context = ui::tilo_actions::ActionContext::for_resource(
-                "Edited",
-                resource.clone(),
-                "files.entry",
-                "Launch brief.md",
-            )
-            .with_app("org.tilo.Files", "Files");
-            pane.open_external_entry(HistoryEntry {
-                id,
-                author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
-                op_class: collab_types::OpClass::Compaction,
-                artifact_kind: ArtifactKind::File,
-                timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
-                summary: "Edited · Launch brief.md".into(),
-                text_delta: None,
-                diff_payload: None,
-                redaction: None,
-                context: Some(context),
-            });
-            pane.apply_deep_link(crate::shell::chrome_state::ActivityFocus {
-                entry_id: Some(*id.as_bytes()),
-                resource_id: Some(resource.clone()),
-                resource_version: Some(*id.as_bytes()),
-                ..crate::shell::chrome_state::ActivityFocus::default()
-            });
-
-            assert_eq!(pane.view(), ActivityView::Explore);
-            assert_eq!(pane.lens, LensSelection::Resource(resource));
-            let (selected, _) = pane.timeline.selection().expect("exact version selected");
-            assert_eq!(pane.timeline.entries()[selected].id, id);
-            assert_eq!(
-                pane.timeline.visible_entry(0).map(|entry| entry.id),
-                Some(id)
-            );
-            assert_eq!(pane.passive_unread, unread_before);
-            assert_eq!(pane.glance_signal(workspace.raw()).1, unread_before);
-        }
     }
 }
 
@@ -9459,6 +9414,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn app_native_handoff_focuses_the_exact_version_without_marking_it_unseen() {
+        let (mut tree, workspace, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let unread_before = pane.passive_unread;
+        let id = HistoryEntryId::from_bytes([9; 16]);
+        let resource = "signed-file-record".to_string();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "Edited",
+            resource.clone(),
+            "files.entry",
+            "Launch brief.md",
+        )
+        .with_app("org.tilo.Files", "Files");
+        pane.open_external_entry(HistoryEntry {
+            id,
+            author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
+            op_class: collab_types::OpClass::Compaction,
+            artifact_kind: ArtifactKind::File,
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
+            summary: "Edited · Launch brief.md".into(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context: Some(context),
+        });
+        pane.apply_deep_link(crate::shell::chrome_state::ActivityFocus {
+            entry_id: Some(*id.as_bytes()),
+            resource_id: Some(resource.clone()),
+            resource_version: Some(*id.as_bytes()),
+            ..crate::shell::chrome_state::ActivityFocus::default()
+        });
+
+        assert_eq!(pane.view(), ActivityView::Explore);
+        assert_eq!(pane.lens, LensSelection::Resource(resource));
+        let (selected, _) = pane.timeline.selection().expect("exact version selected");
+        assert_eq!(pane.timeline.entries()[selected].id, id);
+        assert_eq!(
+            pane.timeline.visible_entry(0).map(|entry| entry.id),
+            Some(id)
+        );
+        assert_eq!(pane.passive_unread, unread_before);
+        assert_eq!(pane.glance_signal(workspace.raw()).1, unread_before);
     }
 
     /// A second workspace with its own governance, interleaved in one document.

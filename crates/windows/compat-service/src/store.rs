@@ -1103,7 +1103,7 @@ mod tests {
                 ));
                 match replacement {
                     "symlink" => {
-                        assert_eq!(fs::read_link(&mapping).unwrap(), Path::new("/outside"))
+                        assert_eq!(fs::read_link(&mapping).unwrap(), Path::new("/outside"));
                     }
                     "file" => assert_eq!(fs::read_to_string(&mapping).unwrap(), "retained"),
                     _ => assert!(mapping.is_dir()),
