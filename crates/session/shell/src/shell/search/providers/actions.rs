@@ -1671,6 +1671,18 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         self.inner.set_mute(muted)
     }
+
+    fn brightness(&self) -> Result<f32, String> {
+        self.inner.brightness()
+    }
+
+    fn keyboard_backlight(&self) -> Result<os_actions::KeyboardBacklight, String> {
+        self.inner.keyboard_backlight()
+    }
+
+    fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
+        self.inner.set_keyboard_backlight(level)
+    }
 }
 
 fn quick_settings_contract() -> tilo_actions::ActionContract {

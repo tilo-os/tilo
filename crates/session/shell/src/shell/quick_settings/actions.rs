@@ -128,6 +128,15 @@ impl QsActions for UnavailableQsActions {
     fn set_mute(&self, _muted: bool) -> Result<(), String> {
         Err("Quick Settings service is unavailable".into())
     }
+    fn brightness(&self) -> Result<f32, String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn keyboard_backlight(&self) -> Result<os_actions::KeyboardBacklight, String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_keyboard_backlight(&self, _level: u32) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
 }
 
 #[cfg(test)]

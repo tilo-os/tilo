@@ -182,6 +182,8 @@ pub struct InputSettings {
     pub left_handed: bool,
     pub flat_acceleration: bool,
     pub touchpad_gestures: bool,
+    /// Whether touchpads send events at all; the touchpad-toggle key flips it.
+    pub touchpad_enabled: bool,
 }
 
 impl Default for InputSettings {
@@ -205,6 +207,7 @@ impl Default for InputSettings {
             left_handed: false,
             flat_acceleration: false,
             touchpad_gestures: true,
+            touchpad_enabled: true,
         }
     }
 }
@@ -274,6 +277,10 @@ impl InputSettings {
                 .and_then(serde_json::Value::as_str)
                 == Some("flat"),
             touchpad_gestures: bool_at("touchpad_gestures", d.touchpad_gestures),
+            touchpad_enabled: bool_at(
+                settings_store::hardware::TOUCHPAD_ENABLED_KEY,
+                d.touchpad_enabled,
+            ),
         }
     }
 
@@ -448,6 +455,9 @@ pub struct DevicePlan {
     pub accel_speed_milli: Option<i32>,
     pub left_handed: Option<bool>,
     pub flat_acceleration: Option<bool>,
+    /// Whether the device sends events. Asked only of touchpads: a mouse or
+    /// keyboard is never switched off by the touchpad key.
+    pub send_events: Option<bool>,
 }
 
 impl DevicePlan {
@@ -488,6 +498,7 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         flat_acceleration: caps
             .supports_flat_acceleration
             .then_some(settings.flat_acceleration),
+        send_events: caps.is_touchpad().then_some(settings.touchpad_enabled),
     }
 }
 
@@ -699,6 +710,24 @@ mod tests {
             "disable-while-typing is what makes defaulting tap on safe"
         );
         assert_eq!(plan.middle_emulation, Some(true));
+    }
+
+    #[test]
+    fn the_touchpad_toggle_switches_off_touchpads_and_nothing_else() {
+        assert_eq!(
+            plan_for(&InputSettings::default(), &touchpad()).send_events,
+            Some(true),
+            "an absent preference leaves the touchpad on"
+        );
+        let off = InputSettings::from_section(&section(json!({"touchpad_enabled": false})));
+        assert!(!off.touchpad_enabled);
+        assert_eq!(plan_for(&off, &touchpad()).send_events, Some(false));
+        assert_eq!(
+            plan_for(&off, &mouse()).send_events,
+            None,
+            "a mouse is never switched off by the touchpad key"
+        );
+        assert_eq!(plan_for(&off, &keyboard()).send_events, None);
     }
 
     #[test]
