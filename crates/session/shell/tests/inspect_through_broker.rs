@@ -110,9 +110,12 @@ fn app(path: &std::path::Path) -> ui::App {
 
 /// Pump the app until `done` holds, failing after a few seconds.
 fn pump_until(app: &mut ui::App, mut done: impl FnMut() -> bool, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let started = Instant::now();
     while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "timed out waiting for {what}"
+        );
         app.pump_collab_presence();
         std::thread::sleep(Duration::from_millis(5));
     }
