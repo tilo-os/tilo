@@ -50,6 +50,9 @@ pub const FEEDBACK_CHANNEL: &str = "c_feedback";
 /// The payload key carrying the resource address; writer and reader must agree
 /// on it, and a chat build adopts it when it grows a chip of its own.
 const REFERENCE_KEY: &str = "reference";
+/// The payload key carrying the further references of a remark about several
+/// things.
+const ALSO_KEY: &str = "references";
 /// The payload key carrying the routing decision.
 const DELIVERY_KEY: &str = "delivery";
 /// Chat's `attachment` field, and the variant of chat's `Attachment` enum a
@@ -72,6 +75,11 @@ pub struct Remark {
     /// destination room; see [`crate::record`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<RecordAttachment>,
+    /// Further things the remark is about, beside [`Self::reference`], which
+    /// stays the primary: several picked controls, or a region swept across
+    /// them. Each is an address in its own right, never folded into prose.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<ResourceRef>,
 }
 
 impl Remark {
@@ -82,7 +90,15 @@ impl Remark {
             mentions: Vec::new(),
             destination,
             attachment: None,
+            also: Vec::new(),
         }
+    }
+
+    /// The same remark about `also` as well as its primary reference.
+    #[must_use]
+    pub fn with_also(mut self, also: Vec<ResourceRef>) -> Self {
+        self.also = also;
+        self
     }
 
     /// The same remark carrying `attachment`.
@@ -218,6 +234,12 @@ impl Remark {
             DELIVERY_KEY.into(),
             serde_json::to_value(delivery).expect("Delivery is serializable"),
         );
+        if !self.also.is_empty() {
+            fields.insert(
+                ALSO_KEY.into(),
+                serde_json::to_value(&self.also).expect("ResourceRef is serializable"),
+            );
+        }
         if !self.mentions.is_empty() {
             fields.insert(
                 "mentions".into(),
@@ -282,6 +304,8 @@ pub struct ReceivedRemark {
     pub mentions: Vec<MentionRef>,
     /// The record shown with it, when one was attached.
     pub attachment: Option<RecordAttachment>,
+    /// Further references beside the primary one.
+    pub also: Vec<ResourceRef>,
     pub author: Id,
     pub ts: i64,
 }
@@ -317,6 +341,10 @@ pub fn read_chat_action(encoded: &EncodedAction) -> Option<ReceivedRemark> {
         delivery,
         mentions,
         attachment,
+        also: fields
+            .get(ALSO_KEY)
+            .and_then(|also| serde_json::from_value(also.clone()).ok())
+            .unwrap_or_default(),
         author: fields.get("author")?.as_str()?.to_string(),
         ts: fields.get("ts")?.as_i64()?,
     })
@@ -369,6 +397,38 @@ mod tests {
             }
         );
         assert_eq!(got.author, "u_me");
+    }
+
+    #[test]
+    fn a_remark_about_several_things_carries_each_address() {
+        let second = ResourceRef::whole("tilo.ui.control", "ui:discard", "Discard");
+        let remark = Remark::new("these two are misaligned", run_sheet(), general())
+            .with_also(vec![second.clone()]);
+        let got = read_chat_action(&remark.to_chat_action("m_1", "u_me", 42).unwrap()).unwrap();
+        assert_eq!(
+            got.reference,
+            run_sheet(),
+            "the first pick stays the primary"
+        );
+        assert_eq!(got.also, vec![second]);
+        let plain = read_chat_action(
+            &Remark::new("one thing", run_sheet(), general())
+                .to_chat_action("m_2", "u_me", 42)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(plain.also.is_empty());
+        let v: Value = serde_json::from_slice(
+            &Remark::new("one thing", run_sheet(), general())
+                .to_chat_action("m_2", "u_me", 42)
+                .unwrap()
+                .payload,
+        )
+        .unwrap();
+        assert!(
+            v["SendMessage"].get("references").is_none(),
+            "a remark about one thing adds no field chat has never seen"
+        );
     }
 
     #[test]
