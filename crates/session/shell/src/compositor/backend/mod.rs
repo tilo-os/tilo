@@ -228,10 +228,17 @@ pub enum BackendEvent {
     /// navigation it means. Never also delivered as [`Self::Gesture`].
     ShellGesture(crate::compositor::backend::drm::gestures::GestureAction),
     /// A touch point, for forwarding to the focused client over
-    /// `wl_touch`. The same touch is *also* delivered as pointer
-    /// [`Self::Input`] events so the shell chrome — which has no touch
-    /// path — responds to a finger.
+    /// `wl_touch`. The shell receives the same contact as raw
+    /// `WindowEvent::Touch` through [`Self::Input`].
     Touch(TouchEvent),
+    /// A confirmed one-finger tap ended at this global position. The
+    /// compositor turns it into a pointer click only when the tap's touch
+    /// sequence did not already reach a client over `wl_touch`; otherwise
+    /// the client would be activated once per protocol.
+    TouchTap {
+        x: f64,
+        y: f64,
+    },
     Redraw,
     Focus(bool),
 }

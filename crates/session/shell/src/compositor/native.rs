@@ -2139,6 +2139,27 @@ fn dispatch_synth_event(
     );
 }
 
+/// The pointer click a confirmed one-finger tap at `(x, y)` stands for, for
+/// taps that did not already reach a client over `wl_touch`.
+fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
+    [
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(x, y),
+        },
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    ]
+}
+
 /// Build the shell-side raw touch event for the test-control adapter. The
 /// adapter delegates ownership to [`DirectTouchOwnership`]; this merely puts
 /// that decision on the same chrome event wire as DRM's `touch_input_event`.
@@ -2252,23 +2273,12 @@ fn dispatch_test_control_touch(
                 if to_client {
                     forward_test_control_touch(state, fb, BackendTouchEvent::Up { slot: id });
                 }
-                if emulate_pointer {
-                    for event in [
-                        WindowEvent::CursorMoved {
-                            device_id: unsafe { std::mem::zeroed() },
-                            position: PhysicalPosition::new(last_x, last_y),
-                        },
-                        WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
-                            state: ElementState::Pressed,
-                            button: MouseButton::Left,
-                        },
-                        WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
-                            state: ElementState::Released,
-                            button: MouseButton::Left,
-                        },
-                    ] {
+                if emulate_pointer
+                    && state
+                        .as_deref()
+                        .is_none_or(State::touch_tap_needs_pointer_click)
+                {
+                    for event in touch_tap_pointer_events(last_x, last_y) {
                         dispatch_synth_event(&event, fb, ctx, state);
                     }
                 }
@@ -5888,7 +5898,8 @@ pub fn run() {
     });
     // Reused per-iteration scratch so backend events process *after*
     // `poll_events` returns — the input arm needs `&mut backend` (for `set_dpms`), unborrowable inside the poll closure.
-    let mut pending_events: Vec<BackendEvent> = Vec::new();
+    let mut pending_events: std::collections::VecDeque<BackendEvent> =
+        std::collections::VecDeque::new();
 
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
@@ -6042,7 +6053,7 @@ pub fn run() {
         // nested DRM/libinput and test-control fds. Drain the backend now,
         // before any frame decision, so its level-triggered poll fd is cleared
         // in this same iteration instead of immediately waking calloop again.
-        backend.poll_events(&mut |event| pending_events.push(event));
+        backend.poll_events(&mut |event| pending_events.push_back(event));
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
             tracing::warn!(
@@ -6158,15 +6169,11 @@ pub fn run() {
                 AccessibilityRequest::Deactivated => {}
             }
         }
-        // `drain`, not `into_iter`: `pending_events` is declared once outside
-        // this loop and reused every tick to avoid a per-frame allocation on
-        // this hot path — `into_iter` would consume it, forcing a fresh `Vec` next iteration.
-        #[allow(
-            clippy::iter_with_drain,
-            reason = "pending_events is reused across ticks precisely to avoid a per-frame \
-                      allocation; into_iter() would consume it and defeat that"
-        )]
-        for event in pending_events.drain(..) {
+        // Popped rather than consumed: `pending_events` is declared once
+        // outside this loop and reused every tick to avoid a per-frame
+        // allocation on this hot path, and an event may expand into further
+        // events that must run next, before anything the backend queued later.
+        while let Some(event) = pending_events.pop_front() {
             match event {
                 BackendEvent::CloseRequested => {
                     close_requested = true;
@@ -6455,6 +6462,18 @@ pub fn run() {
                             );
                         }
                         state.forward_client_touch(touch, target);
+                    } else if matches!(touch, crate::compositor::backend::TouchEvent::Down { .. }) {
+                        state.note_touch_down_withheld_from_clients();
+                    }
+                }
+                BackendEvent::TouchTap { x, y } => {
+                    // A tap whose touch sequence reached a client is that
+                    // client's alone. Otherwise it becomes one ordinary click,
+                    // processed right now through the physical pointer path.
+                    if state.touch_tap_needs_pointer_click() {
+                        for event in touch_tap_pointer_events(x, y).into_iter().rev() {
+                            pending_events.push_front(BackendEvent::Input(event));
+                        }
                     }
                 }
                 BackendEvent::Focus(focused) => {
