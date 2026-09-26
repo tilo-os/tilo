@@ -4,7 +4,7 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
@@ -3856,6 +3856,9 @@ enum PriorityRoute {
     VtSwitch(i32),
     RemoteInputKillSwitch,
     LockSession,
+    /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
+    /// focus, since the person who needs it may have no other pointer.
+    ToggleMouseKeys,
     /// Nothing claims the event ahead of spatial forwarding, input capture
     /// and ordinary client/chrome routing.
     Continue,
@@ -3888,6 +3891,8 @@ fn priority_route(
         PriorityRoute::RemoteInputKillSwitch
     } else if is_lock_chord(event, modifiers, shortcuts) {
         PriorityRoute::LockSession
+    } else if is_mouse_keys_toggle(event, modifiers) {
+        PriorityRoute::ToggleMouseKeys
     } else if let Some(key) = media_key {
         PriorityRoute::MediaKey(key)
     } else {
@@ -6678,6 +6683,16 @@ pub fn run() {
                                 &mut screen_dimmer,
                             );
                         }
+                    } else if route == PriorityRoute::ToggleMouseKeys {
+                        // The compositor applies the flipped preference on its
+                        // next settings poll; the readout confirms it now.
+                        if let Some(osd) = settings_store::settings_path()
+                            .as_deref()
+                            .and_then(crate::shell::media_keys::toggle_mouse_keys)
+                        {
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+                            session_changed = true;
+                        }
                     } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
                         // whichever client holds focus — handled before client routing for that
@@ -6915,6 +6930,10 @@ pub fn run() {
                             spatial_control = None;
                         }
                     }
+                }
+                BackendEvent::VisualAlert => {
+                    frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
+                    session_changed = true;
                 }
                 BackendEvent::Redraw => {
                     // Redraw is implicit: the native loop paints every tick.
@@ -9084,7 +9103,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
         | crate::shell::osd::OsdKind::Touchpad { .. }
-        | crate::shell::osd::OsdKind::PointerHeld { .. } => {}
+        | crate::shell::osd::OsdKind::PointerHeld { .. }
+        | crate::shell::osd::OsdKind::MouseKeys { .. } => {}
     }
 }
 
@@ -11804,6 +11824,28 @@ mod vt_chord_tests {
         assert_eq!(
             route(&character("l"), ModifiersState::SUPER, false),
             PriorityRoute::LockSession
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::ToggleMouseKeys
+        );
+        assert_eq!(
+            route(&key(NamedKey::NumLock, ElementState::Pressed), none, false),
+            PriorityRoute::Continue,
+            "a bare Num Lock is the client's"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "the lock keeps the chord"
         );
         assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
     }

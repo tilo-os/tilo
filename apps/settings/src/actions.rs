@@ -218,6 +218,9 @@ pub enum InputOperation {
     SetMiddleEmulation { enabled: bool },
     SetLeftHanded { enabled: bool },
     SetTouchpadGestures { enabled: bool },
+    SetTouchpadClickMethod { method: String },
+    SetTouchpadScrollMethod { method: String },
+    SetScrollSpeed { value: f64 },
     SetAccelerationProfile { profile: String },
     SetComposeKey { key: String },
     SetActiveSource { label: String },
@@ -772,6 +775,7 @@ fn input_number_operation(template: &InputOperation, value: f64) -> InputOperati
             InputOperation::SetMousePointerSpeed { value }
         }
         InputOperation::SetKeyRepeat { .. } => InputOperation::SetKeyRepeat { value },
+        InputOperation::SetScrollSpeed { .. } => InputOperation::SetScrollSpeed { value },
         _ => unreachable!("input number resources only contain numeric operations"),
     }
 }
@@ -847,6 +851,7 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.color_filter"
         | "a11y.magnifier"
         | "a11y.switch_keys"
+        | "a11y.bounce_delay"
         | "a11y.switch_scan"
         | "a11y.reader_rate"
         | "a11y.reader_voice" => text(),
@@ -857,6 +862,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.large_cursor"
         | "a11y.sticky_keys"
         | "a11y.slow_keys"
+        | "a11y.bounce_keys"
+        | "a11y.bounce_keys_alert"
+        | "a11y.mouse_keys"
         | "a11y.on_screen_keyboard"
         | "a11y.visual_alerts"
         | "a11y.screen_reader"
@@ -3109,6 +3117,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Set key-repeat rate",
             InputOperation::SetKeyRepeat { value: 0.0 },
         ),
+        (
+            "scroll-speed",
+            "Set scroll speed",
+            InputOperation::SetScrollSpeed { value: 0.0 },
+        ),
     ] {
         let operation = operation;
         sec = sec.with_action(
@@ -3135,6 +3148,24 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             .with_contract(local_operation_contract(&["device-local", "input"])),
         );
     }
+    sec = sec.with_action(input_choice_spec(
+        "touchpad-click-method",
+        "Set touchpad click method",
+        &crate::panes::mouse_keyboard::CLICK_METHOD_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetTouchpadClickMethod { method: choice },
+    ));
+    sec = sec.with_action(input_choice_spec(
+        "touchpad-scroll-method",
+        "Set touchpad scroll method",
+        &crate::panes::mouse_keyboard::SCROLL_METHOD_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetTouchpadScrollMethod { method: choice },
+    ));
     sec = sec.with_action(input_choice_spec(
         "acceleration-profile",
         "Set pointer acceleration profile",
@@ -3527,6 +3558,21 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Set slow keys",
         ),
         (
+            "bounce-keys",
+            panes::accessibility::BOUNCE_KEYS_KEY,
+            "Set bounce keys",
+        ),
+        (
+            "bounce-keys-alert",
+            panes::accessibility::BOUNCE_ALERT_KEY,
+            "Set bounce keys alert",
+        ),
+        (
+            "mouse-keys",
+            panes::accessibility::MOUSE_KEYS_KEY,
+            "Set mouse keys",
+        ),
+        (
             "visual-alerts",
             panes::accessibility::VISUAL_ALERTS_KEY,
             "Set visual alerts",
@@ -3605,6 +3651,16 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
                 3 => "3×",
                 _ => "Off",
             },
+        ),
+        (
+            "bounce-delay",
+            "Set bounce keys delay",
+            panes::accessibility::BOUNCE_DELAY_KEY,
+            "100 ms, 200 ms, 300 ms, 500 ms, 800 ms",
+            &["100 ms", "200 ms", "300 ms", "500 ms", "800 ms"][..],
+            crate::prefs::AccessibilityPrefs::bounce_delay_label(
+                d.accessibility.bounce_keys_delay_ms,
+            ),
         ),
         (
             "switch-keys",
@@ -5350,6 +5406,9 @@ mod tests {
             "middle-emulation",
             "left-handed",
             "touchpad-gestures",
+            "touchpad-click-method",
+            "touchpad-scroll-method",
+            "scroll-speed",
             "spell-checking",
             "auto-correct",
             "acceleration-profile",

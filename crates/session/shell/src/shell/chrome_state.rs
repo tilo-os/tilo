@@ -1879,8 +1879,7 @@ impl ChromeState {
             return id;
         }
         if visual_notification_alerts_enabled() {
-            self.visual_alert_until =
-                std::time::Instant::now().checked_add(std::time::Duration::from_millis(450));
+            self.flash_visual_alert(std::time::Instant::now());
         }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
@@ -1890,6 +1889,13 @@ impl ChromeState {
         }
         self.bump();
         id
+    }
+
+    /// Start the accessibility edge flash now. Notifications raise it when
+    /// visual alerts are on; bounce keys raises it for a swallowed press.
+    pub fn flash_visual_alert(&mut self, now: std::time::Instant) {
+        self.visual_alert_until = now.checked_add(std::time::Duration::from_millis(450));
+        self.bump();
     }
 
     /// Whether shell chrome should paint the accessibility edge flash this
