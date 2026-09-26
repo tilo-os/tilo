@@ -119,6 +119,17 @@ impl<T: Clone + PartialEq> NavStack<T> {
     pub fn future(&self) -> &[T] {
         &self.future
     }
+
+    /// Rebuild a stack from an exported history. `past` is oldest first and
+    /// `future` is nearest-first, matching [`past`](Self::past) and
+    /// [`future`](Self::future).
+    pub fn from_parts(past: Vec<T>, current: T, future: Vec<T>) -> Self {
+        Self {
+            past,
+            current,
+            future,
+        }
+    }
 }
 
 /// Arms when a press starts within `edge_width` of the left edge, fires

@@ -8,9 +8,13 @@ cargo run -p tilo-app-cli --bin tilo-app -- new reading-list --dev
 ```
 
 Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
-opens it, and watches both app code and the local toolkit. A successful edit
-replaces the running process; a failed build leaves the last good app open and
-waits for the next save. Press Ctrl-C to stop.
+opens it, and watches both app code and the local toolkit. A successful Rust or
+asset edit replaces the running process. Before the old process exits it writes
+the open document, route, and caret, and the new process restores them. Another
+save while that compile is still running cancels it and builds the newest
+source. Edits to a graph screen's `ui/*.json` still update that screen in place.
+A failed build leaves the last good app open and waits for the next save. Press
+Ctrl-C to stop.
 
 The same stages remain available separately for automation and focused work:
 
