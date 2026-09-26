@@ -16,9 +16,9 @@ toolchain, and it is unsealed. Two ways that could leak into production:
    * its Rust compiler must be the release rust-toolchain.toml pins, taken from
      a digest-pinned tilo-builder image, never a floating tag;
    * every script or workflow that builds os/Containerfile.dev may tag and push
-     it only under a `tilo-vm` name, never code.podesta.ai/qos/tilo or
+     it only under a `tilo-vm` name, never code.tilo.so/tilo/tilo or
      localhost/tilo;
-   * production container policy must reject code.podesta.ai/qos/tilo-vm, so a
+   * production container policy must reject code.tilo.so/tilo/tilo-vm, so a
      production machine never switches to a dev image.
 2. A production Containerfile builds or installs a dev-only piece: a dev-only
    component of os/components.toml (its layer, bins, packages or paths), a dev
@@ -42,9 +42,9 @@ DEV_CONTAINERFILE = "os/Containerfile.dev"
 # The CI workflows that build a dev image: the OS lane that gates on it and the
 # disk workflow for images that already exist.
 DEV_IMAGE_WORKFLOWS = (".forgejo/workflows/build-image.yml", ".forgejo/workflows/dev-disk.yml")
-DEV_REPOSITORY = "code.podesta.ai/qos/tilo-vm"
+DEV_REPOSITORY = "code.tilo.so/tilo/tilo-vm"
 # Unsigned OS images from main integration builds; dev disks build on them.
-INTEGRATION_REPOSITORY = "code.podesta.ai/qos/tilo-ci"
+INTEGRATION_REPOSITORY = "code.tilo.so/tilo/tilo-ci"
 RERUN = "python3 tools/policy/check_dev_image_contract.py   (or tools/policy/run.sh)"
 WHY_FLAVOUR = ("the dev image accepts a fixed lock-screen password, opens a session-driving socket and "
                "runs sshd; if it is ever tagged, pushed or installed as the production image, every "
@@ -58,7 +58,7 @@ DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-vmd/data", "os/scripts/unseal-r
                "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev")
 WHY_TOOLCHAIN = ("the dev image and in-VM builds must compile with the compiler CI checks the workspace with; "
                  "Fedora's rust package, or a floating image tag, changes version whenever it is refreshed")
-PRODUCTION_NAME = re.compile(r"(?:code\.podesta\.ai/qos/tilo|localhost/tilo)(?=[:@\s\"']|$)")
+PRODUCTION_NAME = re.compile(r"(?:code\.tilo\.so/tilo/tilo|localhost/tilo)(?=[:@\s\"']|$)")
 
 
 @dataclass(frozen=True)
@@ -158,12 +158,12 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
                       if (m := re.fullmatch(r"ARG RUST_TOOLCHAIN_IMAGE=(\S+)", t))), None)
     if toolchain is None:
         findings.append(Finding(shown, "declares no `ARG RUST_TOOLCHAIN_IMAGE=<pinned tilo-builder>`",
-                                WHY_TOOLCHAIN, "add `ARG RUST_TOOLCHAIN_IMAGE=code.podesta.ai/qos/tilo-builder@sha256:<digest>` "
+                                WHY_TOOLCHAIN, "add `ARG RUST_TOOLCHAIN_IMAGE=code.tilo.so/tilo/tilo-builder@sha256:<digest>` "
                                 "before the first FROM and install the toolchain from its `rust-toolchain` stage."))
-    elif not re.fullmatch(r"code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}", toolchain[1]):
+    elif not re.fullmatch(r"code\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}", toolchain[1]):
         findings.append(Finding(f"{shown}:{toolchain[0]}", f"RUST_TOOLCHAIN_IMAGE is not a digest-pinned "
                                 f"tilo-builder image ({toolchain[1]})", WHY_TOOLCHAIN,
-                                "pin code.podesta.ai/qos/tilo-builder@sha256:<digest> of an index built from this "
+                                "pin code.tilo.so/tilo/tilo-builder@sha256:<digest> of an index built from this "
                                 "rust-toolchain.toml."))
     if not any("rust-toolchain.toml" in t and "/tilo/" in t for _, t in lines if t.startswith("COPY ")):
         findings.append(Finding(shown, "does not stage rust-toolchain.toml for the dev-toolchain stage", WHY_TOOLCHAIN,

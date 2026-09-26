@@ -30,8 +30,8 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "crates/session/qos-ntfs-helper",
-    "crates/session/qos-ntfs-protocol",
+    "crates/session/tilo-ntfs-helper",
+    "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
     # Core product surfaces
     "crates/session/shell",

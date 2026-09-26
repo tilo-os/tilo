@@ -24,7 +24,7 @@ REPO = Path(__file__).parents[2]
 
 
 def run_main(argv, created=None):
-    created = created or {"number": 8, "html_url": "https://forge.invalid/qos/qos/pulls/8"}
+    created = created or {"number": 8, "html_url": "https://forge.invalid/tilo/tilo/pulls/8"}
     with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
             mock.patch.object(sys, "argv", argv), \
             mock.patch.object(MODULE, "find_open", return_value=None), \
@@ -34,8 +34,8 @@ def run_main(argv, created=None):
 
 
 class KernelSnapshotPullRequestTests(unittest.TestCase):
-    x86_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "a" * 64
-    arm_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64
+    x86_ref = "code.tilo.so/tilo/tilo-kernel@sha256:" + "a" * 64
+    arm_ref = "code.tilo.so/tilo/tilo-kernel@sha256:" + "b" * 64
 
     def setUp(self):
         contents = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
@@ -52,7 +52,7 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
         values.update(overrides)
         return [
             str(SCRIPT), "--server", "https://forge.invalid",
-            "--repository", "qos/qos", "--branch", values["branch"],
+            "--repository", "tilo/tilo", "--branch", values["branch"],
             "--snapshot-digest", values["digest"], "kernel",
             "--x86-ref", values["x86"], "--arm-ref", values["arm"],
         ]
@@ -60,13 +60,13 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
     def test_finds_existing_open_pull_from_same_repository(self):
         pulls = [{
             "number": 7,
-            "html_url": "https://forge.invalid/qos/qos/pulls/7",
-            "head": {"ref": self.branch, "repo": {"full_name": "qos/qos"}},
+            "html_url": "https://forge.invalid/tilo/tilo/pulls/7",
+            "head": {"ref": self.branch, "repo": {"full_name": "tilo/tilo"}},
             "base": {"ref": "main"},
         }]
         with mock.patch.object(MODULE, "request", return_value=pulls):
             self.assertEqual(
-                MODULE.find_open("https://forge.invalid", "qos/qos", "secret", self.branch),
+                MODULE.find_open("https://forge.invalid", "tilo/tilo", "secret", self.branch),
                 pulls[0],
             )
 
@@ -82,13 +82,13 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
     def test_ignores_same_named_branch_from_fork(self):
         pulls = [{
             "number": 9,
-            "html_url": "https://forge.invalid/qos/qos/pulls/9",
-            "head": {"ref": self.branch, "repo": {"full_name": "attacker/qos"}},
+            "html_url": "https://forge.invalid/tilo/tilo/pulls/9",
+            "head": {"ref": self.branch, "repo": {"full_name": "attacker/tilo"}},
             "base": {"ref": "main"},
         }]
         with mock.patch.object(MODULE, "request", return_value=pulls):
             self.assertIsNone(
-                MODULE.find_open("https://forge.invalid", "qos/qos", "secret", self.branch)
+                MODULE.find_open("https://forge.invalid", "tilo/tilo", "secret", self.branch)
             )
 
     def test_rejects_branch_not_bound_to_snapshot(self):
@@ -104,7 +104,7 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
     def test_rejects_shared_or_mutable_native_ref(self):
         cases = (
             {"arm": self.x86_ref},
-            {"arm": "code.podesta.ai/qos/tilo-kernel:latest"},
+            {"arm": "code.tilo.so/tilo/tilo-kernel:latest"},
         )
         for overrides in cases:
             with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
@@ -112,14 +112,14 @@ class KernelSnapshotPullRequestTests(unittest.TestCase):
 
 
 class TokenFailureReportingTests(unittest.TestCase):
-    x86_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "a" * 64
-    arm_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64
+    x86_ref = "code.tilo.so/tilo/tilo-kernel@sha256:" + "a" * 64
+    arm_ref = "code.tilo.so/tilo/tilo-kernel@sha256:" + "b" * 64
 
     def argv(self):
         contents = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
         digest = hashlib.sha256(contents.encode()).hexdigest()
         return [
-            str(SCRIPT), "--server", "https://forge.invalid", "--repository", "qos/qos",
+            str(SCRIPT), "--server", "https://forge.invalid", "--repository", "tilo/tilo",
             "--branch", "automation/kernel-snapshot-" + digest[:16],
             "--snapshot-digest", digest, "kernel",
             "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
@@ -144,7 +144,7 @@ class TokenFailureReportingTests(unittest.TestCase):
             with self.subTest(code=code):
                 result, stderr = self.run_with_listing_error(code)
                 self.assertEqual(result, 1)
-                self.assertIn("token cannot read pull requests on qos/qos", stderr)
+                self.assertIn("token cannot read pull requests on tilo/tilo", stderr)
                 self.assertIn("RELEASE_TOKEN", stderr)
                 self.assertNotIn("Traceback", stderr)
 
@@ -175,7 +175,7 @@ class TokenFailureReportingTests(unittest.TestCase):
 
 
 class RpmSnapshotPullRequestTests(unittest.TestCase):
-    rpms_ref = "code.podesta.ai/qos/rpms@sha256:" + "d" * 64
+    rpms_ref = "code.tilo.so/tilo/rpms@sha256:" + "d" * 64
     source = "c" * 40
 
     def setUp(self):
@@ -189,7 +189,7 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
         values.update(overrides)
         return [
             str(SCRIPT), "--server", "https://forge.invalid",
-            "--repository", "qos/qos", "--branch", values["branch"],
+            "--repository", "tilo/tilo", "--branch", values["branch"],
             "--snapshot-digest", values["digest"], "rpms", "--rpms-ref", values["ref"],
             "--source-revision", values["source"],
         ]
@@ -226,8 +226,8 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
         self.assertNotIn("rpms-snapshot.env", kernel)
 
     def test_rejects_mutable_or_foreign_ref(self):
-        for ref in ("code.podesta.ai/qos/rpms:latest",
-                    "code.podesta.ai/qos/tilo-kernel@sha256:" + "d" * 64):
+        for ref in ("code.tilo.so/tilo/rpms:latest",
+                    "code.tilo.so/tilo/tilo-kernel@sha256:" + "d" * 64):
             with self.subTest(ref=ref), self.assertRaises(SystemExit):
                 run_main(self.argv(ref=ref))
 
@@ -236,9 +236,9 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
             run_main(self.argv(source="c" * 12))
 
     def test_kernel_pins_no_longer_carry_an_rpm_snapshot(self):
-        x86 = "code.podesta.ai/qos/tilo-kernel@sha256:" + "a" * 64
-        arm = "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64
-        argv = [str(SCRIPT), "--server", "https://forge.invalid", "--repository", "qos/qos",
+        x86 = "code.tilo.so/tilo/tilo-kernel@sha256:" + "a" * 64
+        arm = "code.tilo.so/tilo/tilo-kernel@sha256:" + "b" * 64
+        argv = [str(SCRIPT), "--server", "https://forge.invalid", "--repository", "tilo/tilo",
                 "--branch", self.branch, "--snapshot-digest", self.digest, "kernel",
                 "--x86-ref", x86, "--arm-ref", arm, "--rpms-ref", self.rpms_ref]
         with self.assertRaises(SystemExit):
@@ -255,7 +255,7 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
 
         def request(server, repository, token, path, method="GET", payload=None):
             calls.append((path, method, payload))
-            return {"number": 8, "html_url": "https://forge.invalid/qos/qos/pulls/8"}
+            return {"number": 8, "html_url": "https://forge.invalid/tilo/tilo/pulls/8"}
 
         with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
                 mock.patch.object(sys, "argv", argv), \
@@ -286,8 +286,8 @@ class RpmSnapshotPullRequestTests(unittest.TestCase):
 
 
 class WpeSnapshotPullRequestTests(unittest.TestCase):
-    x86_ref = "code.podesta.ai/qos/tilo-wpe-buildroot@sha256:" + "a" * 64
-    arm_ref = "code.podesta.ai/qos/tilo-wpe-buildroot@sha256:" + "b" * 64
+    x86_ref = "code.tilo.so/tilo/tilo-wpe-buildroot@sha256:" + "a" * 64
+    arm_ref = "code.tilo.so/tilo/tilo-wpe-buildroot@sha256:" + "b" * 64
 
     def setUp(self):
         contents = MODULE.wpe_contents(self.x86_ref, self.arm_ref)
@@ -300,7 +300,7 @@ class WpeSnapshotPullRequestTests(unittest.TestCase):
         values.update(overrides)
         return [
             str(SCRIPT), "--server", "https://forge.invalid",
-            "--repository", "qos/qos", "--branch", values["branch"],
+            "--repository", "tilo/tilo", "--branch", values["branch"],
             "--snapshot-digest", values["digest"], "wpe",
             "--x86-ref", values["x86"], "--arm-ref", values["arm"],
         ]
@@ -336,8 +336,8 @@ class WpeSnapshotPullRequestTests(unittest.TestCase):
     def test_rejects_shared_mutable_or_foreign_ref(self):
         cases = (
             {"arm": self.x86_ref},
-            {"arm": "code.podesta.ai/qos/tilo-wpe-buildroot:latest"},
-            {"arm": "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64},
+            {"arm": "code.tilo.so/tilo/tilo-wpe-buildroot:latest"},
+            {"arm": "code.tilo.so/tilo/tilo-kernel@sha256:" + "b" * 64},
         )
         for overrides in cases:
             with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
@@ -351,8 +351,8 @@ class WpeSnapshotPullRequestTests(unittest.TestCase):
 
 
 class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
-    x86_ref = "code.podesta.ai/qos/tilo-kernel-buildroot@sha256:" + "a" * 64
-    arm_ref = "code.podesta.ai/qos/tilo-kernel-buildroot@sha256:" + "b" * 64
+    x86_ref = "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "a" * 64
+    arm_ref = "code.tilo.so/tilo/tilo-kernel-buildroot@sha256:" + "b" * 64
 
     def setUp(self):
         contents = MODULE.kernel_buildroot_contents(self.x86_ref, self.arm_ref)
@@ -365,7 +365,7 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
         values.update(overrides)
         return [
             str(SCRIPT), "--server", "https://forge.invalid",
-            "--repository", "qos/qos", "--branch", values["branch"],
+            "--repository", "tilo/tilo", "--branch", values["branch"],
             "--snapshot-digest", values["digest"], "kernel-buildroot",
             "--x86-ref", values["x86"], "--arm-ref", values["arm"],
         ]
@@ -404,9 +404,9 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
     def test_rejects_shared_mutable_or_foreign_ref(self):
         cases = (
             {"arm": self.x86_ref},
-            {"arm": "code.podesta.ai/qos/tilo-kernel-buildroot:latest"},
-            {"arm": "code.podesta.ai/qos/tilo-wpe-buildroot@sha256:" + "b" * 64},
-            {"arm": "code.podesta.ai/qos/rpms@sha256:" + "b" * 64},
+            {"arm": "code.tilo.so/tilo/tilo-kernel-buildroot:latest"},
+            {"arm": "code.tilo.so/tilo/tilo-wpe-buildroot@sha256:" + "b" * 64},
+            {"arm": "code.tilo.so/tilo/rpms@sha256:" + "b" * 64},
         )
         for overrides in cases:
             with self.subTest(overrides=overrides), self.assertRaises(SystemExit):

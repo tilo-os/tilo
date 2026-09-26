@@ -40,14 +40,14 @@ class OfflineTargetTest(unittest.TestCase):
         signature["annotations"] = {"kind": "dev.cosignproject.cosign/sigs"}
         (layout / "index.json").write_text(json.dumps({
             "schemaVersion": 2, "manifests": [target, signature]}))
-        self.ref = "code.podesta.ai/qos/tilo@" + target["digest"]
+        self.ref = "code.tilo.so/tilo/tilo@" + target["digest"]
         (self.root / "target.json").write_text(json.dumps({
             "schema": "tilo.installer-offline-target.v1",
             "target_ref": self.ref,
             "target_digest": target["digest"],
             "architecture": "aarch64",
             "hardware_profile": "lenovo-83ed",
-            "update_origin": "code.podesta.ai/qos/tilo:lenovo-83ed-" + "a" * 40,
+            "update_origin": "code.tilo.so/tilo/tilo:lenovo-83ed-" + "a" * 40,
         }))
 
     def test_valid_target_and_copy(self):
@@ -60,7 +60,7 @@ class OfflineTargetTest(unittest.TestCase):
         metadata_path = self.root / "target.json"
         metadata = json.loads(metadata_path.read_text())
         metadata["hardware_profile"] = "generic"
-        metadata["update_origin"] = "code.podesta.ai/qos/tilo:gen7"
+        metadata["update_origin"] = "code.tilo.so/tilo/tilo:gen7"
         metadata_path.write_text(json.dumps(metadata))
         self.assertEqual(offline.verify(self.root)["hardware_profile"], "generic")
 
@@ -101,7 +101,7 @@ class OfflineTargetTest(unittest.TestCase):
         metadata_path = self.root / "target.json"
         metadata = json.loads(metadata_path.read_text())
         metadata["target_digest"] = target["digest"]
-        metadata["target_ref"] = "code.podesta.ai/qos/tilo@" + target["digest"]
+        metadata["target_ref"] = "code.tilo.so/tilo/tilo@" + target["digest"]
         metadata_path.write_text(json.dumps(metadata))
         with self.assertRaisesRegex(ValueError, "Linux ARM64"):
             offline.verify(self.root)

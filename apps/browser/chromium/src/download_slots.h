@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace qos {
+namespace tilo {
 class DownloadSlots {
  public:
   static constexpr size_t kLimit=32;

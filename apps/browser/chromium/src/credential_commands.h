@@ -2,7 +2,7 @@
 #include <set>
 #include <string>
 #include <vector>
-namespace qos {
+namespace tilo {
 // Public chrome/native IPC never accepts a password or a fill username. Those
 // values travel exclusively through renderer messages and Keychain results.
 inline bool CredentialFieldsValid(const std::string& action,const std::vector<std::string>& fields) {

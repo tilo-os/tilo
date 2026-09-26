@@ -14,7 +14,7 @@ Run by os/Containerfile.dev as its last content step:
   clamp to their commit's time; `tilo-vm vm upgrade` refuses to move a VM onto
   a dev image whose base is older than the one it runs.
 * /etc/containers/policy.json lets the dev VM `bootc switch`/`upgrade` onto
-  code.podesta.ai/qos/tilo-vm, which is deliberately unsigned. Production
+  code.tilo.so/tilo/tilo-vm, which is deliberately unsigned. Production
   policy rejects that repository outright (os/etc/containers/policy.json), so
   this rewrites exactly that one scope and nothing else; the signed production
   repository keeps its sigstore requirement.
@@ -32,8 +32,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEV_REPOSITORY = "code.podesta.ai/qos/tilo-vm"
-PRODUCTION_REPOSITORY = "code.podesta.ai/qos/tilo"
+DEV_REPOSITORY = "code.tilo.so/tilo/tilo-vm"
+PRODUCTION_REPOSITORY = "code.tilo.so/tilo/tilo"
 
 
 def fail(message: str) -> None:

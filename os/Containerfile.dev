@@ -5,7 +5,7 @@
 # NEVER A PRODUCTION IMAGE. It ships an SSH server, binaries built with the
 # `dev-overrides` feature (they honour a fixed lock-screen password and a
 # session-driving socket from the environment), the build toolchain and an
-# unsealed /usr. It is published only as code.podesta.ai/qos/tilo-vm, which
+# unsealed /usr. It is published only as code.tilo.so/tilo/tilo-vm, which
 # production policy rejects (os/etc/containers/policy.json), and built locally
 # as localhost/tilo-vm. tools/policy/check_dev_image_contract.py enforces
 # that, and keeps everything this file adds out of os/Containerfile.
@@ -39,7 +39,7 @@
 # Build context: the repository root. Only BASE_IMAGE has to be given:
 #
 #     podman build -f os/Containerfile.dev \
-#         --build-arg BASE_IMAGE=code.podesta.ai/qos/tilo:<tag> \
+#         --build-arg BASE_IMAGE=code.tilo.so/tilo/tilo:<tag> \
 #         -t localhost/tilo-vm:latest .
 #
 # os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
@@ -49,7 +49,7 @@
 # ============================================================================
 
 # The production image to derive from: `localhost/tilo:latest` (./os/build.sh),
-# a CI image (code.podesta.ai/qos/tilo:<tag> or @sha256:...), or the unsealed
+# a CI image (code.tilo.so/tilo/tilo:<tag> or @sha256:...), or the unsealed
 # `rootfs` target of os/Containerfile.
 ARG BASE_IMAGE=localhost/tilo:latest
 # The frozen RPM snapshot the production image was built from. Like
@@ -57,7 +57,7 @@ ARG BASE_IMAGE=localhost/tilo:latest
 # .forgejo/workflows/dev-disk.yml pass RPMS_REF from os/rpms-snapshot.env, so a
 # build of any commit installs what that commit's production builder installed.
 ARG RPMS_REF
-# Where the Rust toolchain comes from: a code.podesta.ai/qos/tilo-builder index,
+# Where the Rust toolchain comes from: a code.tilo.so/tilo/tilo-builder index,
 # pinned by digest. .forgejo/workflows/build-builder-image.yml installs the
 # channel rust-toolchain.toml names into it, through dist/ci/install-build-deps.sh's
 # checksum-pinned rustup bootstrap, for both architectures. The dev-toolchain
@@ -65,7 +65,7 @@ ARG RPMS_REF
 # when the image lacks it, so a toolchain bump that forgets this pin cannot
 # build a dev image with a different compiler. Fedora's rust package is not an
 # option: its version moves whenever the RPM snapshot is refreshed.
-ARG RUST_TOOLCHAIN_IMAGE=code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+ARG RUST_TOOLCHAIN_IMAGE=code.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 FROM ${RPMS_REF} AS rpms
 FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain

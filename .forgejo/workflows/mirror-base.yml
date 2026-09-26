@@ -1,6 +1,6 @@
 name: Snapshot / Fedora base
 
-# Copies the upstream Fedora bootc base into code.podesta.ai and prints the
+# Copies the upstream Fedora bootc base into code.tilo.so and prints the
 # digest to pin. Sibling of snapshot-rpms: that job freezes the package set,
 # this one freezes the base underneath it — together they are what makes a
 # rebuild months later produce the same image.
@@ -42,7 +42,7 @@ jobs:
       - name: Read the upstream base tag we track
         run: grep '^BASE_SOURCE=' os/base-snapshot.env >> "$GITHUB_ENV"
 
-      - name: Log in to the code.podesta.ai registry
+      - name: Log in to the code.tilo.so registry
         env:
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASS: ${{ secrets.REGISTRY_TOKEN }}
@@ -50,7 +50,7 @@ jobs:
           printf '%s' "$REGISTRY_PASS" | skopeo login \
             --username "$REGISTRY_USER" --password-stdin \
             --authfile /tmp/mirror-auth.json \
-            code.podesta.ai
+            code.tilo.so
 
       - name: Copy the base image (multi-arch index preserved)
         run: |
@@ -66,7 +66,7 @@ jobs:
           # missing blobs.
           # A second mirror on the same day must not take the first one's tag: the
           # registry drops an index that loses its last tag, and BASE_REF pins it.
-          dst="code.podesta.ai/qos/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          dst="code.tilo.so/tilo/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           skopeo copy --all --preserve-digests --retry-times 5 \
             --dest-authfile /tmp/mirror-auth.json \
             "docker://$BASE_SOURCE" "docker://$dst"
@@ -99,7 +99,7 @@ jobs:
           # back through the digest we are about to publish, not the tag.
           want="fc${BASE_SOURCE##*:}"
           osver="$(skopeo inspect --no-tags --authfile /tmp/mirror-auth.json \
-            "docker://code.podesta.ai/qos/fedora-bootc@${digest}" \
+            "docker://code.tilo.so/tilo/fedora-bootc@${digest}" \
             | jq -r '.Labels["ostree.linux"] // ""')"
           case "$osver" in
             *"$want"*) ;;
@@ -113,7 +113,7 @@ jobs:
 
       - name: Report the pinned BASE_REF to commit
         run: |
-          ref="code.podesta.ai/qos/fedora-bootc@${BASE_DIGEST}"
+          ref="code.tilo.so/tilo/fedora-bootc@${BASE_DIGEST}"
           echo "::notice::Base image mirrored. Set os/base-snapshot.env to: BASE_REF=$ref"
           {
             echo "## Base image mirrored"

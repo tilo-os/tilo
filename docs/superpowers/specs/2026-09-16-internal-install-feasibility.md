@@ -14,7 +14,7 @@ boot path.
   tree and a second unpacked image in container storage. The Anaconda ISO path
   was removed. `apps/imager/packaging/package-install-medium.sh` converts the
   qcow2 to a compressed raw whole-disk image, `.img.zst`.
-- `os/Containerfile.installer` embeds `qos.install` in the UKI command line.
+- `os/Containerfile.installer` embeds `tilo.install` in the UKI command line.
   `os/dev/disk-image.sh` constructs the partitioned image using systemd-repart
   and bootc. Moving its files or partitions requires proving the root/UKI
   identity bindings; image mounting or extraction alone is insufficient.
@@ -24,13 +24,13 @@ boot path.
   Reuse this transport and trust boundary; add explicit internal-bundle purpose,
   layout and compatibility metadata rather than treating any raw image as an
   internal installation payload.
-- `os/usr/libexec/qos-install` validates disk size, device number, optional
+- `os/usr/libexec/tilo-install` validates disk size, device number, optional
   serial/WWN, partition identity and available capacity. Prepared alongside
   requires a clean FAT ESP of at least 2 GiB with 1 GiB available and a root
   partition of at least 32 GiB without an existing filesystem signature. Guided
   alongside creates partitions only in reviewed unallocated space.
 - The installer currently rejects **every target on the live medium's physical
-  disk**, in `qos-install` near `LIVE_MAJ_MIN` (lines 514–535 at investigation).
+  disk**, in `tilo-install` near `LIVE_MAJ_MIN` (lines 514–535 at investigation).
   `crates/session/installer/src/disks.rs` also disables live-system disk ancestors
   through `device_tree_has_live_system_mount`. Single-disk internal installation
   needs a narrow protected-partition/non-overlap protocol in both layers. Keep
@@ -39,17 +39,17 @@ boot path.
   localization and account-name fields. It explicitly rejects unknown fields,
   including destructive target choices. It is useful validation scaffolding,
   not an authorization channel for a reviewed disk plan.
-- `os/usr/libexec/qos-install-boot-menu` snapshots/restores BootOrder and BootNext.
+- `os/usr/libexec/tilo-install-boot-menu` snapshots/restores BootOrder and BootNext.
   It does not create the proposed one-time internal-installer boot entry.
   Its systemd-boot shortcuts address foreign EFI loaders on the same ESP only;
-  installations using a dedicated qOS ESP retain foreign systems in firmware's
+  installations using a dedicated Tilo ESP retain foreign systems in firmware's
   picker. A consistent cross-ESP startup choice remains work to design and test.
-- The recovery receipt in `qos-install`, near `write_install_marker` (line 935),
+- The recovery receipt in `tilo-install`, near `write_install_marker` (line 935),
   is published after root formatting and resides in the destination. It cannot
   authenticate or resume earlier partition mutations. An external durable
   transaction and owner recovery mechanism are still missing.
 - `docs/security/boot-chain.md` documents unsigned systemd-boot and a locally
-  rebuilt kernel: the existing qOS chain does not boot under factory Secure Boot
+  rebuilt kernel: the existing Tilo chain does not boot under factory Secure Boot
   keys. Owner enrollment requires firmware setup/key changes. Do not advertise
   generic Secure Boot compatibility or silently change firmware key policy.
 
@@ -61,7 +61,7 @@ a real retained Linux installation. This is a test target, not an advertised
 support row. Do not mutate the active developer VM to construct it.
 
 Use a dedicated staging root and staging EFI area outside the retained OS and
-future qOS destination partitions. Stage a verified bootc live root and matching
+future Tilo destination partitions. Stage a verified bootc live root and matching
 EFI boot artifacts. Retain the running bootc image and `bootc image
 copy-to-storage` installation approach. This initially costs approximately the
 live image's 40 GiB root allocation in addition to target space; sparse download
@@ -93,7 +93,7 @@ proof or CPU architecture.
 
 Deliver a versioned internal-boot bundle contract, build/export tooling and a
 disposable VM round-trip harness. The acceptance test must start in an actual
-retained OS, boot the staged real qOS installer from the same virtual disk, and
+retained OS, boot the staged real Tilo installer from the same virtual disk, and
 then cold-boot the retained OS with unchanged persistent default. It need not
 perform target formatting yet.
 

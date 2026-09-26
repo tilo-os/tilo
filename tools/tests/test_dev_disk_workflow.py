@@ -87,11 +87,11 @@ class DevDiskWorkflowTests(unittest.TestCase):
         verify = step(build, "Resolve and verify the same-commit base")
         self.assertIn('cosign verify --key keys/cosign.pub "$top"', verify)
         self.assertIn('cosign verify --key keys/cosign.pub "$child"', verify)
-        self.assertIn('"git+ssh://code.podesta.ai/qos/qos@" + $source', verify)
+        self.assertIn('"git+ssh://code.tilo.so/tilo/tilo@" + $source', verify)
         # A dev-trust base skips signatures only because its repository says
         # so, and must still name the exact source revision.
-        self.assertIn("release) repository=code.podesta.ai/qos/tilo ;;", verify)
-        self.assertIn("integration) repository=code.podesta.ai/qos/tilo-ci ;;", verify)
+        self.assertIn("release) repository=code.tilo.so/tilo/tilo ;;", verify)
+        self.assertIn("integration) repository=code.tilo.so/tilo/tilo-ci ;;", verify)
         self.assertIn('.Labels["org.opencontainers.image.revision"] // empty', verify)
         self.assertIn('== "$SOURCE_REVISION"', verify)
         image = step(build, "Build the dev image FROM the verified base")
@@ -160,7 +160,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn('TILO_SKIP_BUILD: "1"', disk)
         self.assertIn("./os/dev/build-image.sh", disk)
         self.assertIn(
-            "TILO_TARGET_IMGREF: code.podesta.ai/qos/tilo-vm:${{ needs.plan.outputs.tag }}",
+            "TILO_TARGET_IMGREF: code.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}",
             disk,
         )
         smoke = step(build, "Boot the disk and reach tilo-vmd over SSH")
@@ -230,8 +230,8 @@ class PublishScriptTests(unittest.TestCase):
         self.assertIn('did not converge on the published children', self.source)
 
     def test_integration_bases_publish_only_ci_tags(self) -> None:
-        self.assertIn("integration:code.podesta.ai/qos/tilo-ci) [[ $DEV_TAG == *-ci ]]", self.source)
-        self.assertIn("release:code.podesta.ai/qos/tilo) ;;", self.source)
+        self.assertIn("integration:code.tilo.so/tilo/tilo-ci) [[ $DEV_TAG == *-ci ]]", self.source)
+        self.assertIn("release:code.tilo.so/tilo/tilo) ;;", self.source)
 
     def test_latest_moves_only_forward_on_the_channel(self) -> None:
         self.assertIn("[[ $CHANNEL == true ]] || exit 0", self.source)
@@ -298,7 +298,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
         self.assertIn("steps.release-mode.outputs.dev-gate == 'true'", publish)
         self.assertIn("steps.dev-image.outcome == 'success'", publish)
         self.assertIn("./os/dev/publish-dev-disk.sh", publish)
-        self.assertIn("BASE_REPOSITORY: code.podesta.ai/qos/tilo-ci", publish)
+        self.assertIn("BASE_REPOSITORY: code.tilo.so/tilo/tilo-ci", publish)
         self.assertIn("BASE_TRUST: integration", publish)
         self.assertIn("DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci", publish)
         self.assertIn("DISK_TOOLING_REVISION: ${{ github.sha }}", publish)
@@ -311,7 +311,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
         push = step(self.lane, "Publish the dev-trust integration image")
         self.assertIn("steps.release-mode.outputs.dev-series != ''", push)
         self.assertIn("continue-on-error: true", push)
-        self.assertIn('ref="code.podesta.ai/qos/tilo-ci:$DEV_SERIES-$ARCH"', push)
+        self.assertIn('ref="code.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"', push)
         self.assertNotRegex(push, r"cosign (?:sign|attest)")
         mode = step(self.lane, "Select build, validation, or publication mode")
         self.assertIn('series="main-${GITHUB_SHA:0:7}"', mode)
@@ -321,7 +321,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
         request = step(self.lane, "Request this architecture's dev disk from the signed child")
         self.assertIn("steps.release-mode.outputs.publish == 'true'", request)
         self.assertIn("continue-on-error: true", request)
-        self.assertIn("IMAGE: code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}", request)
+        self.assertIn("IMAGE: code.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}", request)
         self.assertIn("architectures:$arch", request)
         self.assertIn("actions/workflows/dev-disk.yml/dispatches", request)
         self.assertLess(

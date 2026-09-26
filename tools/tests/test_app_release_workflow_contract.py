@@ -72,7 +72,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertIn('BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}', preparation_step)
         self.assertNotIn('tools/', preparation_step)
         self.assertIn('/usr/bin/git fetch --no-tags --no-write-fetch-head', preparation_step)
-        self.assertIn('GIT_CONFIG_KEY_0=http.https://code.podesta.ai/.extraheader', preparation_step)
+        self.assertIn('GIT_CONFIG_KEY_0=http.https://code.tilo.so/.extraheader', preparation_step)
         selection_step = plan[selection:]
         self.assertNotIn('SOURCE_TOKEN', selection_step)
         self.assertNotIn('github.token', selection_step)
@@ -421,7 +421,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
              '        run: python3 tools/ci/resolve_builder.py'),
             ('    needs: [plan, authorize-publish]', '    needs: other'),
             ('      image: ${{ needs.plan.outputs.builder_image }}',
-             '      image: code.podesta.ai/qos/tilo-builder:latest'),
+             '      image: code.tilo.so/tilo/tilo-builder:latest'),
         ):
             with self.subTest(before=before):
                 self.assertIn(before, source)

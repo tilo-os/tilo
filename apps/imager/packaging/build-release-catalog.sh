@@ -12,7 +12,7 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
 release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
 release_server="${TILO_RELEASE_SERVER:-https://github.com}"
-internal_owner="${TILO_INTERNAL_BUNDLE_OWNER:-qos}"
+internal_owner="${TILO_INTERNAL_BUNDLE_OWNER:-tilo}"
 require_internal="${TILO_REQUIRE_INTERNAL_BUNDLE:-0}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
@@ -24,7 +24,7 @@ require_internal="${TILO_REQUIRE_INTERNAL_BUNDLE:-0}"
   || { printf 'TILO_REQUIRE_INTERNAL_BUNDLE must be 0 or 1\n' >&2; exit 2; }
 release_prefix="${release_server}/${release_repository}/releases/download/${GITHUB_REF_NAME}/"
 # The Imager accepts internal manifests from this origin only (release.rs).
-internal_prefix="https://code.podesta.ai/api/packages/${internal_owner}/generic/tilo-internal-installer/${GITHUB_REF_NAME}/"
+internal_prefix="https://code.tilo.so/api/packages/${internal_owner}/generic/tilo-internal-installer/${GITHUB_REF_NAME}/"
 root="${1:-release-assets}"
 out="${2:-dist/tilo-installer-catalog}"
 mkdir -p "$out"
@@ -93,7 +93,7 @@ jq -e --arg prefix "$release_prefix" --arg internal_prefix "$internal_prefix" \
       (.provenance.source_image_id | test("^sha256:[0-9a-f]{64}$")) and
       (.provenance.input_qcow2_sha256 | test("^[0-9a-f]{64}$")) and
       (.provenance.hardware_profile_sha256 | test("^[0-9a-f]{64}$")) and
-      (.provenance.target_update_ref | test("^code\\.podesta\\.ai/qos/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
+      (.provenance.target_update_ref | test("^code\\.tilo\\.so/tilo/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
     end)) and
   ([$internal[] | .arch] | length == (unique | length)) and
   all($internal[];

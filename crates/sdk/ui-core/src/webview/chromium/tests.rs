@@ -85,15 +85,15 @@ fn bounded_identity_events_decode_and_reject_oversize_favicons() {
 #[test]
 fn maps_navigation_and_load_errors_without_simulating_pages() {
     assert_eq!(
-        decode_event(&json!({"event":"uri","url":"https://podesta.ai"})),
-        Some(WebViewEvent::UriChanged("https://podesta.ai".into()))
+        decode_event(&json!({"event":"uri","url":"https://tilo.so"})),
+        Some(WebViewEvent::UriChanged("https://tilo.so".into()))
     );
     assert_eq!(
         decode_event(
-            &json!({"event":"error","url":"https://podesta.ai","message":"certificate error"})
+            &json!({"event":"error","url":"https://tilo.so","message":"certificate error"})
         ),
         Some(WebViewEvent::LoadFailed {
-            uri: "https://podesta.ai".into(),
+            uri: "https://tilo.so".into(),
             error: "certificate error".into()
         })
     );
@@ -167,14 +167,14 @@ fn private_helper_gets_incognito_flag_and_owned_root_is_removed_after_exit() {
 
 #[cfg(unix)]
 fn private_root() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("qos-browser-private-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("tilo-browser-private-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     std::fs::write(
-        root.join(".qos-private-root-v1"),
-        "qos-browser-owned-private-root-v1\n",
+        root.join(".tilo-private-root-v1"),
+        "tilo-browser-owned-private-root-v1\n",
     )
     .unwrap();
-    std::fs::write(root.join(".qos-private-root.lock"), "private-root-lock\n").unwrap();
+    std::fs::write(root.join(".tilo-private-root.lock"), "private-root-lock\n").unwrap();
     root.canonicalize().unwrap()
 }
 
@@ -193,7 +193,7 @@ fn private_startup_failures_remove_owned_roots_after_reaping() {
 
     let missing_root = private_root();
     assert!(
-        ChromiumEngine::with_private_host(Path::new("/missing/qos-host"), &missing_root).is_err()
+        ChromiumEngine::with_private_host(Path::new("/missing/tilo-host"), &missing_root).is_err()
     );
     assert!(!missing_root.exists());
 
@@ -210,7 +210,7 @@ fn private_startup_failures_remove_owned_roots_after_reaping() {
 #[ignore = "child entry point for isolated packaged-helper discovery"]
 #[cfg(unix)]
 fn private_packaged_helper_discovery_failure_child() {
-    let root = PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
+    let root = PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").unwrap());
     let result = ChromiumEngine::new_private(&root);
     assert!(
         result.is_err(),
@@ -235,9 +235,9 @@ fn private_packaged_helper_discovery_failure_removes_root() {
             "webview::chromium::tests::private_packaged_helper_discovery_failure_child",
             "--ignored",
         ])
-        .env_remove("QOS_CHROMIUM_HOST")
-        .env("QOS_TEST_CHROMIUM_DISCOVERY_EXE", isolated_executable)
-        .env("QOS_TEST_PRIVATE_ROOT", &root)
+        .env_remove("TILO_CHROMIUM_HOST")
+        .env("TILO_TEST_CHROMIUM_DISCOVERY_EXE", isolated_executable)
+        .env("TILO_TEST_PRIVATE_ROOT", &root)
         .status()
         .unwrap();
     assert!(result.success());
@@ -262,8 +262,8 @@ fn private_helper_crash_removes_root_while_engine_handle_remains() {
 #[ignore = "child entry point for the real process-lifecycle regression"]
 #[cfg(unix)]
 fn private_process_lifecycle_child() {
-    let host = std::env::var_os("QOS_TEST_PRIVATE_HOST").unwrap();
-    let root = PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
+    let host = std::env::var_os("TILO_TEST_PRIVATE_HOST").unwrap();
+    let root = PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").unwrap());
     let engine = ChromiumEngine::with_private_host(Path::new(&host), &root).unwrap();
     assert!(root.exists());
     drop(engine);
@@ -280,8 +280,8 @@ fn private_process_exit_waits_for_helper_and_root_cleanup() {
             "webview::chromium::tests::private_process_lifecycle_child",
             "--ignored",
         ])
-        .env("QOS_TEST_PRIVATE_HOST", &host)
-        .env("QOS_TEST_PRIVATE_ROOT", &root)
+        .env("TILO_TEST_PRIVATE_HOST", &host)
+        .env("TILO_TEST_PRIVATE_ROOT", &root)
         .status()
         .unwrap();
     assert!(result.success());
@@ -291,9 +291,9 @@ fn private_process_exit_waits_for_helper_and_root_cleanup() {
 #[test]
 fn unavailable_engine_reports_failure_without_page_pixels() {
     let engine = UnavailableEngine::new("Runtime missing".into());
-    engine.send(WebViewCommand::Navigate("https://podesta.ai".into()));
+    engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
     assert!(engine.frames().lock().unwrap().is_none());
-    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {uri,error} if uri == "https://podesta.ai" && error == "Runtime missing")));
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {uri,error} if uri == "https://tilo.so" && error == "Runtime missing")));
 }
 
 #[test]
@@ -372,7 +372,7 @@ fn pointer_bursts_coalesce_and_keep_navigation_order() {
         queue.push(json!({"op":"mouse_move","x":x,"y":0})).unwrap();
     }
     queue
-        .push(json!({"op":"navigate","url":"https://podesta.ai"}))
+        .push(json!({"op":"navigate","url":"https://tilo.so"}))
         .unwrap();
     queue.close();
     assert_eq!(queue.pop().unwrap()["x"], 9999);

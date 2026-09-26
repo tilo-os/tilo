@@ -7,21 +7,21 @@ fn selected_context_requires_exact_original_authenticated_bytes_and_asset_url() 
     let bytes = manifest();
     let release = InternalRelease::transport_fixture(
         &bytes,
-        "https://code.podesta.ai/releases/manifest.json",
+        "https://code.tilo.so/releases/manifest.json",
     );
     assert!(SelectedManifest::from_bytes(&release, bytes.clone()).is_ok());
     let mut changed = bytes.clone();
     changed.push(b' ');
     assert!(SelectedManifest::from_bytes(&release, changed).is_err());
     for url in [
-        "https://code.podesta.ai/releases/",
-        "https://code.podesta.ai",
-        "http://code.podesta.ai/m",
+        "https://code.tilo.so/releases/",
+        "https://code.tilo.so",
+        "http://code.tilo.so/m",
         "https://evil.test/m",
-        "https://code.podesta.ai:444/m",
-        "https://user@code.podesta.ai/m",
-        "https://code.podesta.ai/m?q=1",
-        "https://code.podesta.ai/m#f",
+        "https://code.tilo.so:444/m",
+        "https://user@code.tilo.so/m",
+        "https://code.tilo.so/m?q=1",
+        "https://code.tilo.so/m#f",
     ] {
         let release = InternalRelease::transport_fixture(&bytes, url);
         assert!(
@@ -874,7 +874,7 @@ fn manifest_maximum_boundary_and_selection_mismatch_are_authenticated() {
     let mut value = super::super::internal_bundle::tests::fixture();
     value["release_id"] = serde_json::json!("different");
     let bytes = serde_json::to_vec(&value).unwrap();
-    let release = InternalRelease::transport_fixture(&bytes, "https://code.podesta.ai/m");
+    let release = InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/m");
     assert!(SelectedManifest::from_bytes(&release, bytes).is_err());
 }
 #[test]

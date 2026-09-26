@@ -21,7 +21,7 @@
 namespace {
 constexpr size_t kMaxMediaFrames=64;
 void TraceCredential(const char* stage,int browser=0) {
-  static const bool enabled=[] {const char* value=std::getenv("QOS_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
+  static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
   static unsigned count=0;
   if(enabled && count++<64) std::fprintf(stderr,"[chromium-credential-renderer] pid=%d browser=%d %s\n",int(getpid()),browser,stage);
 }
@@ -38,7 +38,7 @@ class MediaStateHandler final : public CefV8Handler {
  public: MediaStateHandler(CefRefPtr<CefFrame> frame,uint64_t token):frame_(frame),token_(token) {}
   bool Execute(const CefString&,CefRefPtr<CefV8Value>,const CefV8ValueList& args,CefRefPtr<CefV8Value>&,CefString&) override {
     if(!frame_ || !frame_->IsValid() || args.size()!=1 || !args[0]->IsBool()) return false;
-    auto message=CefProcessMessage::Create("qos.media_state");message->GetArgumentList()->SetBool(0,args[0]->GetBoolValue());message->GetArgumentList()->SetDouble(1,static_cast<double>(token_));frame_->SendProcessMessage(PID_BROWSER,message);return true;
+    auto message=CefProcessMessage::Create("tilo.media_state");message->GetArgumentList()->SetBool(0,args[0]->GetBoolValue());message->GetArgumentList()->SetDouble(1,static_cast<double>(token_));frame_->SendProcessMessage(PID_BROWSER,message);return true;
   }
  private: CefRefPtr<CefFrame> frame_;uint64_t token_; IMPLEMENT_REFCOUNTING(MediaStateHandler);
 };
@@ -57,7 +57,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       CefRefPtr<CefV8Value> forms;
       CefRefPtr<CefV8Exception> exception;
       if(context->Enter()) {
-        context->Eval(qos::kCredentialForms,frame->GetURL(),0,forms,exception);
+        context->Eval(tilo::kCredentialForms,frame->GetURL(),0,forms,exception);
         context->Exit();
       }
       TraceCredential(forms && forms->IsObject()?"forms-created":"forms-unavailable");
@@ -72,21 +72,21 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     // main frame cannot identify the top-level origin. Ask the browser for a
     // document-correlated policy instead of applying the previous page's cache.
     const auto filter_token=++filter_sequence_;filter_tokens_[frame->GetIdentifier().ToString()]=filter_token;
-    auto config_request=CefProcessMessage::Create("qos.config");config_request->GetArgumentList()->SetDouble(0,static_cast<double>(filter_token));frame->SendProcessMessage(PID_BROWSER,config_request);
+    auto config_request=CefProcessMessage::Create("tilo.config");config_request->GetArgumentList()->SetDouble(0,static_cast<double>(filter_token));frame->SendProcessMessage(PID_BROWSER,config_request);
     {
       auto& browser_media=media_contexts[browser->GetIdentifier()];
       const auto key=frame->GetIdentifier().ToString();
       if(browser_media.find(key)==browser_media.end()) {
         const bool has_main=std::any_of(browser_media.begin(),browser_media.end(),[](const auto& entry){return entry.second.main;});
         if(!frame->IsMain() && browser_media.size()>=kMaxMediaFrames-(has_main?0:1)) return;
-        if(frame->IsMain() && browser_media.size()>=kMaxMediaFrames) {auto victim=std::find_if(browser_media.begin(),browser_media.end(),[](const auto& entry){return !entry.second.main;});if(victim==browser_media.end())return;auto closed=CefProcessMessage::Create("qos.media_context_closed");closed->GetArgumentList()->SetDouble(0,static_cast<double>(victim->second.token));victim->second.frame->SendProcessMessage(PID_BROWSER,closed);browser_media.erase(victim);}
+        if(frame->IsMain() && browser_media.size()>=kMaxMediaFrames) {auto victim=std::find_if(browser_media.begin(),browser_media.end(),[](const auto& entry){return !entry.second.main;});if(victim==browser_media.end())return;auto closed=CefProcessMessage::Create("tilo.media_context_closed");closed->GetArgumentList()->SetDouble(0,static_cast<double>(victim->second.token));victim->second.frame->SendProcessMessage(PID_BROWSER,closed);browser_media.erase(victim);}
       }
       const uint64_t token=++media_context_counter_;
       browser_media[key]={browser,context,frame,token,frame->IsMain()};
-      auto media_context=CefProcessMessage::Create("qos.media_context");media_context->GetArgumentList()->SetDouble(0,static_cast<double>(token));frame->SendProcessMessage(PID_BROWSER,media_context);
-      context->Enter();context->GetGlobal()->SetValue("__qosMediaState",CefV8Value::CreateFunction("__qosMediaState",new MediaStateHandler(frame,token)),V8_PROPERTY_ATTRIBUTE_DONTDELETE);
+      auto media_context=CefProcessMessage::Create("tilo.media_context");media_context->GetArgumentList()->SetDouble(0,static_cast<double>(token));frame->SendProcessMessage(PID_BROWSER,media_context);
+      context->Enter();context->GetGlobal()->SetValue("__tiloMediaState",CefV8Value::CreateFunction("__tiloMediaState",new MediaStateHandler(frame,token)),V8_PROPERTY_ATTRIBUTE_DONTDELETE);
       CefRefPtr<CefV8Value> result;CefRefPtr<CefV8Exception> exception;
-      context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__qosMediaState(next)}};for(const event of ['play','playing','canplay','pause','ended','emptied'])addEventListener(event,update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
+      context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__tiloMediaState(next)}};for(const event of ['play','playing','canplay','pause','ended','emptied'])addEventListener(event,update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
     }
   }
   void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override {
@@ -96,14 +96,14 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto credential=credential_contexts_.find(browser->GetIdentifier());
     if(credential!=credential_contexts_.end() && credential->second.browser->IsSame(browser))
       credential_contexts_.erase(credential);
-    qos::EraseMediaBrowserContexts(media_contexts,browser);configs_.erase(browser->GetIdentifier());
+    tilo::EraseMediaBrowserContexts(media_contexts,browser);configs_.erase(browser->GetIdentifier());
   }
   void OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefV8Context> context) override {
     auto credential=credential_contexts_.find(browser->GetIdentifier());
     if(credential!=credential_contexts_.end() && credential->second.context->IsSame(context)) {
       if(!credential->second.generation.empty()) {
-        auto message=CefProcessMessage::Create("qos.credential_context_closed");
+        auto message=CefProcessMessage::Create("tilo.credential_context_closed");
         auto args=message->GetArgumentList();args->SetString(0,credential->second.generation);
         args->SetString(1,credential->second.token);args->SetString(2,frame->GetURL());
         frame->SendProcessMessage(PID_BROWSER,message);
@@ -113,7 +113,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     }
     auto key=frame->GetIdentifier().ToString();
     auto browser_media=media_contexts.find(browser->GetIdentifier());
-    if(browser_media!=media_contexts.end()) {auto media=browser_media->second.find(key);if(media!=browser_media->second.end() && media->second.context->IsSame(context)) {auto message=CefProcessMessage::Create("qos.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second.token));frame->SendProcessMessage(PID_BROWSER,message);browser_media->second.erase(media);}if(browser_media->second.empty())media_contexts.erase(browser_media);}
+    if(browser_media!=media_contexts.end()) {auto media=browser_media->second.find(key);if(media!=browser_media->second.end() && media->second.context->IsSame(context)) {auto message=CefProcessMessage::Create("tilo.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second.token));frame->SendProcessMessage(PID_BROWSER,message);browser_media->second.erase(media);}if(browser_media->second.empty())media_contexts.erase(browser_media);}
     filter_tokens_.erase(key);
     auto cosmetic=cosmetics_.find(key);
     if(cosmetic!=cosmetics_.end() && cosmetic->second.context->IsSame(context)) cosmetics_.erase(cosmetic);
@@ -124,36 +124,36 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,
                                 CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_BROWSER) return false;
-    if(message->GetName()=="qos.credential_action") {
+    if(message->GetName()=="tilo.credential_action") {
       CredentialAction(browser,frame,message->GetArgumentList());return true;
     }
-    if(message->GetName()=="qos.credential_probe") {
+    if(message->GetName()=="tilo.credential_probe") {
       TraceCredential("probe-received",browser->GetIdentifier());
       auto args=message->GetArgumentList();
       auto found=credential_contexts_.find(browser->GetIdentifier());
       if(!frame || !frame->IsMain() || !frame->IsValid() || args->GetSize()!=2 ||
          args->GetType(0)!=VTYPE_STRING || args->GetType(1)!=VTYPE_STRING ||
-         !qos::ValidCredentialCounter(args->GetString(0).ToString()) ||
+         !tilo::ValidCredentialCounter(args->GetString(0).ToString()) ||
          args->GetString(1)!=frame->GetURL() || found==credential_contexts_.end()) {
-        TraceCredential(!frame?"probe-no-frame":!frame->IsMain()?"probe-not-main":!frame->IsValid()?"probe-invalid-frame":args->GetSize()!=2?"probe-argument-count":args->GetType(0)!=VTYPE_STRING?"probe-generation-type":args->GetType(1)!=VTYPE_STRING?"probe-url-type":!qos::ValidCredentialCounter(args->GetString(0).ToString())?"probe-invalid-generation":args->GetString(1)!=frame->GetURL()?"probe-url-mismatch":"probe-missing-forms");return true;}
+        TraceCredential(!frame?"probe-no-frame":!frame->IsMain()?"probe-not-main":!frame->IsValid()?"probe-invalid-frame":args->GetSize()!=2?"probe-argument-count":args->GetType(0)!=VTYPE_STRING?"probe-generation-type":args->GetType(1)!=VTYPE_STRING?"probe-url-type":!tilo::ValidCredentialCounter(args->GetString(0).ToString())?"probe-invalid-generation":args->GetString(1)!=frame->GetURL()?"probe-url-mismatch":"probe-missing-forms");return true;}
       auto live=frame->GetV8Context();
       if(!found->second.browser->IsSame(browser) || !live || !live->IsValid() || !found->second.context->IsSame(live) ||
          found->second.frame->GetIdentifier()!=frame->GetIdentifier()) {
         TraceCredential(!live?"probe-no-context":!live->IsValid()?"probe-invalid-context":!found->second.context->IsSame(live)?"probe-context-mismatch":"probe-frame-mismatch");return true;}
       TraceCredential("probe-accepted");
       found->second.generation=args->GetString(0).ToString();
-      auto response=CefProcessMessage::Create("qos.credential_context");
+      auto response=CefProcessMessage::Create("tilo.credential_context");
       auto fields=response->GetArgumentList();fields->SetString(0,found->second.generation);
       fields->SetString(1,found->second.token);fields->SetString(2,frame->GetURL());
       frame->SendProcessMessage(PID_BROWSER,response);return true;
     }
     auto& config=configs_[browser->GetIdentifier()];
-    if(message->GetName()=="qos.filters") {
+    if(message->GetName()=="tilo.filters") {
       auto args=message->GetArgumentList();auto found=filter_tokens_.find(frame->GetIdentifier().ToString());
       if(found==filter_tokens_.end() || args->GetString(4)!=frame->GetURL() || (args->GetDouble(5)>0 && static_cast<uint64_t>(args->GetDouble(5))!=found->second))return true;
       config.filters=args->Copy();ApplyFilters(frame,config.filters);return true;
     }
-    if(message->GetName()!="qos.scripts") return false;
+    if(message->GetName()!="tilo.scripts") return false;
     config.scripts.clear();auto args=message->GetArgumentList();
     for(size_t i=0;i<args->GetSize();++i) config.scripts.push_back(args->GetString(i));
     ApplyScripts(frame,config.scripts);return true;
@@ -172,8 +172,8 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     if(!frame || !frame->IsMain() || !frame->IsValid() || args->GetSize()!=4 ||
        args->GetType(0)!=VTYPE_STRING || args->GetType(1)!=VTYPE_STRING ||
        args->GetType(2)!=VTYPE_STRING || args->GetType(3)!=VTYPE_DICTIONARY ||
-       !qos::ValidCredentialCounter(args->GetString(0).ToString()) ||
-       !qos::ValidCredentialCounter(args->GetString(2).ToString()))return;
+       !tilo::ValidCredentialCounter(args->GetString(0).ToString()) ||
+       !tilo::ValidCredentialCounter(args->GetString(2).ToString()))return;
     auto found=credential_contexts_.find(browser->GetIdentifier());
     if(found==credential_contexts_.end())return;
     // Copy ref-counted context state before calling JS, which can navigate and
@@ -183,7 +183,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     if(!bound.browser->IsSame(browser) || bound.generation!=args->GetString(0).ToString() || bound.token!=args->GetString(1).ToString() ||
        !live || !live->IsValid() || !bound.context->IsSame(live) ||
        bound.frame->GetIdentifier()!=frame->GetIdentifier() ||
-       !qos::Origin(frame->GetURL()).starts_with("https://"))return;
+       !tilo::Origin(frame->GetURL()).starts_with("https://"))return;
     auto command=args->GetDictionary(3);
     if(command->GetType("action")!=VTYPE_STRING)return;
     const auto action=command->GetString("action").ToString();
@@ -202,7 +202,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     }
     CefV8ValueList arguments;
     if(!discover) {
-      if(command->GetType("form")!=VTYPE_STRING || !qos::ValidCredentialCounter(command->GetString("form").ToString()))return;
+      if(command->GetType("form")!=VTYPE_STRING || !tilo::ValidCredentialCounter(command->GetString("form").ToString()))return;
     }
     if(fill) {
       if(command->GetType("username")!=VTYPE_STRING || command->GetString("username").length()>1024 ||
@@ -240,7 +240,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       for(int i=0;i<value->GetArrayLength();++i) {
         auto item=value->GetValue(i);if(!item || !item->IsObject()){valid=false;break;}
         auto id=item->GetValue("id");
-        if(!id || !id->IsString() || !qos::ValidCredentialCounter(id->GetStringValue().ToString())){valid=false;break;}
+        if(!id || !id->IsString() || !tilo::ValidCredentialCounter(id->GetStringValue().ToString())){valid=false;break;}
         auto entry=CefDictionaryValue::Create();entry->SetString("id",id->GetStringValue());
         if(action=="discover") {
           auto username=item->GetValue("username"),kind=item->GetValue("kind");
@@ -264,7 +264,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto current=credential_contexts_.find(browser->GetIdentifier());
     if(current==credential_contexts_.end() || current->second.generation!=bound.generation ||
        current->second.token!=bound.token || !bound.context->IsValid())return;
-    auto reply=CefProcessMessage::Create("qos.credential_result");auto fields=reply->GetArgumentList();
+    auto reply=CefProcessMessage::Create("tilo.credential_result");auto fields=reply->GetArgumentList();
     fields->SetString(0,bound.generation);fields->SetString(1,bound.token);
     fields->SetString(2,args->GetString(2));fields->SetDictionary(3,result);
     frame->SendProcessMessage(PID_BROWSER,reply);
@@ -301,7 +301,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     if(applied.context && applied.context->IsSame(context) && applied.cleanup) applied.cleanup->ExecuteFunction(nullptr,{});
     applied={context,nullptr,rules,enabled};
     if(enabled) {
-      if(!blocker_ || rules!=rules_) { blocker_=std::make_shared<qos::Blocker>(rules);rules_=rules; }
+      if(!blocker_ || rules!=rules_) { blocker_=std::make_shared<tilo::Blocker>(rules);rules_=rules; }
       if(blocker_->Valid()) {
         CefRefPtr<CefV8Value> factory;CefRefPtr<CefV8Exception> exception;
         auto resources=blocker_->Cosmetics(frame->GetURL(),"[]","[]");
@@ -309,8 +309,8 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
           const auto script=resources->GetString("injected_script").ToString();
           if(!script.empty()) context->Eval("(function(){const scriptletGlobals={};\n"+script+"\n})()",frame->GetURL(),0,factory,exception);
         }
-        if(context->Eval(qos::kCosmetics,frame->GetURL(),0,factory,exception) && factory && factory->IsFunction()) {
-          auto query=CefV8Value::CreateFunction("query",new qos::CosmeticQuery(blocker_,frame->GetURL()));
+        if(context->Eval(tilo::kCosmetics,frame->GetURL(),0,factory,exception) && factory && factory->IsFunction()) {
+          auto query=CefV8Value::CreateFunction("query",new tilo::CosmeticQuery(blocker_,frame->GetURL()));
           applied.cleanup=factory->ExecuteFunction(nullptr,{query});
         }
       }
@@ -319,7 +319,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   }
   struct CosmeticApplied { CefRefPtr<CefV8Context> context;CefRefPtr<CefV8Value> cleanup;std::string rules;bool enabled; };
   std::map<std::string,CosmeticApplied> cosmetics_;
-  std::shared_ptr<qos::Blocker> blocker_;std::string rules_;
+  std::shared_ptr<tilo::Blocker> blocker_;std::string rules_;
   struct Applied { CefRefPtr<CefV8Context> context; std::vector<CefString> scripts; };
   std::map<std::string,Applied> applied_;
   IMPLEMENT_REFCOUNTING(Renderer);

@@ -322,7 +322,7 @@ impl OwnedTemporary {
         }
         for _ in 0..128 {
             let name = OsString::from(format!(
-                ".qos-copy-{}-{}",
+                ".tilo-copy-{}-{}",
                 std::process::id(),
                 NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
             ));

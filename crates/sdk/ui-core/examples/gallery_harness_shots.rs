@@ -13,7 +13,7 @@
 //! Out:  `$GALLERY_HARNESS_OUT` or the first argument (default
 //!       `/tmp/gallery_harness`) — `gallery-dark.png`, `gallery-light.png`,
 //!       `gallery-dark.inspection.json`, `gallery-light.inspection.json`.
-//! Scale: `QOS_SHOTS_TEXT_SCALE=2` renders the large-text variant (the same
+//! Scale: `TILO_SHOTS_TEXT_SCALE=2` renders the large-text variant (the same
 //! switch every other capture honours).
 
 use std::path::PathBuf;
@@ -39,7 +39,7 @@ pub fn run(args: &[String]) {
         eprintln!("gallery_harness: cannot create {}: {error}", out.display());
         std::process::exit(2);
     }
-    let environment_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     let text_scale = tilo_ui::launch::shot_text_scale(None, environment_scale.as_deref());
 
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {

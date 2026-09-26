@@ -16,7 +16,7 @@ SPEC = importlib.util.spec_from_file_location("offline_target", SCRIPT)
 target = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(target)
 SOURCE = "a" * 40
-UPDATE = "code.podesta.ai/qos/tilo:lenovo-83ed-" + SOURCE
+UPDATE = "code.tilo.so/tilo/tilo:lenovo-83ed-" + SOURCE
 
 
 class OfflineTargetTests(unittest.TestCase):
@@ -40,7 +40,7 @@ class OfflineTargetTests(unittest.TestCase):
                 "digest": digest, "size": len(manifest),
                 "annotations": {"kind": "dev.cosignproject.cosign/image"}}]}))
         metadata = {"schema": "tilo.installer-offline-target.v1",
-                    "target_ref": "code.podesta.ai/qos/tilo@" + digest,
+                    "target_ref": "code.tilo.so/tilo/tilo@" + digest,
                     "target_digest": digest, "architecture": "aarch64",
                     "hardware_profile": "lenovo-83ed", "update_origin": UPDATE}
         (root / "target.json").write_text(json.dumps(metadata))
@@ -53,14 +53,14 @@ class OfflineTargetTests(unittest.TestCase):
                                                 "firmwareManifestSha256": "b" * 64},
                          "internalParameters": {"expectedReleaseDigest": digest},
                          "resolvedDependencies": [
-                             {"uri": "git+ssh://code.podesta.ai/qos/qos@" + SOURCE},
-                             {"uri": "code.podesta.ai/qos/tilo-lenovo-83ed-firmware@sha256:" + "c" * 64}]},
+                             {"uri": "git+ssh://code.tilo.so/tilo/tilo@" + SOURCE},
+                             {"uri": "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:" + "c" * 64}]},
                          "runDetails": {"builder": {"id": target.BUILDER},
                                         "metadata": {"invocationId": "12345"},
                                         "byproducts": [{"name": "independent-rebuild",
                                                         "uri": "urn:tilo:verification:manifest-digest-equal"}]}}}
         signature = json.dumps([{"critical": {
-            "identity": {"docker-reference": "code.podesta.ai/qos/tilo"},
+            "identity": {"docker-reference": "code.tilo.so/tilo/tilo"},
             "image": {"docker-manifest-digest": digest}}}])
         attestation = json.dumps([{"payload": base64.b64encode(json.dumps(statement).encode()).decode()}])
         return root, metadata, signature, attestation
@@ -99,7 +99,7 @@ class OfflineTargetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, metadata, _, attestation = self.fixture(directory)
             metadata["hardware_profile"] = "generic"
-            metadata["update_origin"] = "code.podesta.ai/qos/tilo:gen2"
+            metadata["update_origin"] = "code.tilo.so/tilo/tilo:gen2"
             (root / "target.json").write_text(json.dumps(metadata))
             target.read_target(root)
             wrapper = json.loads(attestation)[0]
@@ -113,7 +113,7 @@ class OfflineTargetTests(unittest.TestCase):
             provenance = target.checked_provenance(signed, metadata)
             self.assertEqual(provenance["generation"], 2)
             self.assertIsNone(provenance["firmware_candidate"])
-            metadata["update_origin"] = "code.podesta.ai/qos/tilo:gen3"
+            metadata["update_origin"] = "code.tilo.so/tilo/tilo:gen3"
             with self.assertRaisesRegex(ValueError, "SLSA"):
                 target.checked_provenance(signed, metadata)
 

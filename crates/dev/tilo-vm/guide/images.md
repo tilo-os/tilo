@@ -28,12 +28,12 @@ slot's session, including other agents'.
 ## From a CI build: `--from ci:<tag>` / `--from sha:<commit>`
 
 Every main build pushes its OS image, unsigned, to
-`code.podesta.ai/qos/tilo-ci:main-<sha7>-<arch>` (`sha:<commit>` is short for
+`code.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>` (`sha:<commit>` is short for
 `ci:main-<sha7>`). `vm upgrade` then takes, in order, the first of these that
 exists:
 
 1. the dev image CI published for that build,
-   `code.podesta.ai/qos/tilo-vm:main-<sha7>-ci` (or `:main-<sha7>` from a signed
+   `code.tilo.so/tilo/tilo-vm:main-<sha7>-ci` (or `:main-<sha7>` from a signed
    release). The VM pulls it with its own registry login: nothing is built or
    sent from this host;
 2. the integration image itself (then the signed `tilo:main-<sha7>`). It is
@@ -43,7 +43,7 @@ exists:
    local image.
 
 Nothing on this host rebuilds the production image. To see which builds
-exist: `skopeo list-tags docker://code.podesta.ai/qos/tilo-ci`.
+exist: `skopeo list-tags docker://code.tilo.so/tilo/tilo-ci`.
 
 ## Building the base here
 
@@ -92,7 +92,7 @@ insecure-registry setting to add to the image.
 
 ```sh
 tilo-vm vm upgrade --from local --rebuild-base        # rebuild the base even if it looks current
-tilo-vm vm upgrade --from local --base code.podesta.ai/qos/tilo:main-1a2b3c4   # a CI base, as it is
+tilo-vm vm upgrade --from local --base code.tilo.so/tilo/tilo:main-1a2b3c4   # a CI base, as it is
 tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built; no build
 tilo-vm vm upgrade --from local --no-reboot            # stage only; boots at the next restart
 ```
@@ -104,7 +104,7 @@ deployment. `tilo-vm vm rollback-image` makes it the default and reboots;
 running it again returns to the newer one. `bootc status` in the VM
 (`tilo-vm vm ssh -- bootc status`) shows both. An older image than that is
 gone; rebuild it or upgrade to a published one:
-`tilo-vm vm upgrade --image code.podesta.ai/qos/tilo-vm:<tag>`.
+`tilo-vm vm upgrade --image code.tilo.so/tilo/tilo-vm:<tag>`.
 
 ## Storage
 
@@ -116,7 +116,7 @@ is safe: the next upgrade sends the whole image once.
 ## When it refuses
 
 - **not named as a dev image** or **not a dev image**: a production image
-  (`localhost/tilo:latest`, `code.podesta.ai/qos/tilo:*`) is sealed and has no
+  (`localhost/tilo:latest`, `code.tilo.so/tilo/tilo:*`) is sealed and has no
   sshd or tilo-vmd. Build the dev image FROM it: `--from local`.
 - **is sealed**: the image carries a UKI; only `os/Containerfile.dev` output
   (which unseals its base) can go into a dev VM.

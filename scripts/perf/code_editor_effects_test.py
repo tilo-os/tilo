@@ -17,7 +17,7 @@ class CodeEditorEffectsTests(unittest.TestCase):
         manifest = dict(schema_version=1, hash_algorithm='sha256', editor_id='editor_view',
                         lines=100, body_hash=digest(source), body_bytes=len(source),
                         prefixed_x_hash=digest(b'x' + source), prefixed_x_bytes=len(source)+1)
-        state = dict(app='dev.qos.code-editor', editor_id='editor_view', hash_algorithm='sha256',
+        state = dict(app='dev.tilo.code-editor', editor_id='editor_view', hash_algorithm='sha256',
                      buffer_id='file:fixture.rs', ready=True, body_hash=manifest['body_hash'],
                      body_bytes=len(source), editor_focused=True, caret_line=0, caret_column=0,
                      caret_count=1, selection_chars=0, offset_x=0.0, offset_y=0.0,
@@ -33,9 +33,9 @@ class CodeEditorEffectsTests(unittest.TestCase):
 
     @staticmethod
     def lines(effects, frames=()):
-        return (['qos-native-window '+json.dumps(dict(scale_factor=1.0, physical_width=800, physical_height=600))]
-                + ['qos-native-effect '+json.dumps(row) for row in effects]
-                + ['qos-native-frame '+json.dumps(row) for row in frames])
+        return (['tilo-native-window '+json.dumps(dict(scale_factor=1.0, physical_width=800, physical_height=600))]
+                + ['tilo-native-effect '+json.dumps(row) for row in effects]
+                + ['tilo-native-frame '+json.dumps(row) for row in frames])
 
     def test_exact_hash_caret_and_focus_transitions(self):
         scenario,effects,manifest=self.fixture()
@@ -124,7 +124,7 @@ class CodeEditorEffectsTests(unittest.TestCase):
         scenario,effects,manifest=self.scroll_fixture()
         scenario['steps'][0].update(x=1200,y=400)
         lines=self.lines(effects)
-        lines[0]='qos-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
+        lines[0]='tilo-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
         self.assertEqual(validate_code_editor_scroll(scenario,lines,manifest),2)
         # Physically inside the logical rectangle is insufficient: after /2,
         # x=150 lands outside the editor's logical left edge at200.
@@ -136,7 +136,7 @@ class CodeEditorEffectsTests(unittest.TestCase):
         scenario,effects,manifest=self.fixture()
         scenario['steps'][0]=dict(kind='click',x=1200,y=400)
         lines=self.lines(effects)
-        lines[0]='qos-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
+        lines[0]='tilo-native-window '+json.dumps(dict(scale_factor=2.0,physical_width=1600,physical_height=1200))
         self.assertEqual(validate_code_editor_typing(scenario,lines,manifest),2)
         scenario['steps'][0]['x']=300
         with self.assertRaises(ValueError):
@@ -150,10 +150,10 @@ class CodeEditorEffectsTests(unittest.TestCase):
                 validate_code_editor_scroll(scenario,bad,manifest)
         for value in [None,True,0,-1,float('nan'),float('inf'),'2']:
             bad=list(lines)
-            bad[0]='qos-native-window '+json.dumps(dict(scale_factor=value))
+            bad[0]='tilo-native-window '+json.dumps(dict(scale_factor=value))
             with self.subTest(scale=value),self.assertRaises(ValueError):
                 validate_code_editor_scroll(scenario,bad,manifest)
-        bad=list(lines);bad[0]='qos-native-window {}'
+        bad=list(lines);bad[0]='tilo-native-window {}'
         with self.assertRaises(ValueError):
             validate_code_editor_scroll(scenario,bad,manifest)
 
@@ -186,7 +186,7 @@ class CodeEditorEffectsTests(unittest.TestCase):
 
     def test_malformed_json_and_records_fail_closed(self):
         scenario,_,manifest=self.fixture()
-        for lines in [['qos-native-effect {'],['qos-native-effect null']*3]:
+        for lines in [['tilo-native-effect {'],['tilo-native-effect null']*3]:
             with self.assertRaises(ValueError):
                 validate_code_editor_typing(scenario,lines,manifest)
 

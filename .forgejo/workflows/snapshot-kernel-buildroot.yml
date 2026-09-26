@@ -76,14 +76,14 @@ jobs:
           cache-architecture: ${{ matrix.arch }}
       - name: Load the mirrored Fedora base
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
-      - name: Log in to code.podesta.ai
+      - name: Log in to code.tilo.so
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           printf '%s' "$REGISTRY_PASSWORD" | \
             os/dev/login-registry-with-retry.sh \
-              docker code.podesta.ai "$REGISTRY_USERNAME"
+              docker code.tilo.so "$REGISTRY_USERNAME"
       - uses: ./.forgejo/actions/setup-buildx
       - name: Resolve, build and publish the native buildroot
         id: buildroot
@@ -98,14 +98,14 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: code.podesta.ai/qos/tilo-kernel-buildroot:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: code.tilo.so/tilo/tilo-kernel-buildroot:${{ matrix.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Audit the immutable buildroot
         env:
           DIGEST: ${{ steps.buildroot.outputs.digest }}
         run: |
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          ref="code.podesta.ai/qos/tilo-kernel-buildroot@$DIGEST"
+          ref="code.tilo.so/tilo/tilo-kernel-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/kernel-buildroot-arch)"
           test "$actual_arch" = '${{ matrix.arch }}'
           actual_base="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/kernel-buildroot-base)"
@@ -156,7 +156,7 @@ jobs:
           if-no-files-found: error
       - name: Revoke local registry credentials
         if: always()
-        run: docker logout code.podesta.ai || true
+        run: docker logout code.tilo.so || true
 
   promote:
     timeout-minutes: 60
@@ -189,14 +189,14 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Log in to code.podesta.ai
+      - name: Log in to code.tilo.so
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           printf '%s' "$REGISTRY_PASSWORD" | \
             os/dev/login-registry-with-retry.sh \
-              docker code.podesta.ai "$REGISTRY_USERNAME"
+              docker code.tilo.so "$REGISTRY_USERNAME"
       # Protected main accepts no direct pushes. Commit both pins on the
       # current main tip, push a branch named after the pin file's digest, and
       # open a pull request so the required checks and merge policy apply.
@@ -214,7 +214,7 @@ jobs:
           . "$x86"
           . "$arm"
           for ref in "$KERNEL_BUILDROOT_X86_64_REF" "$KERNEL_BUILDROOT_AARCH64_REF"; do
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
+            [[ "$ref" =~ ^code\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
             cosign verify --key keys/cosign.pub "$ref" >/dev/null
           done
           [ "$KERNEL_BUILDROOT_X86_64_REF" != "$KERNEL_BUILDROOT_AARCH64_REF" ] || {
@@ -255,4 +255,4 @@ jobs:
             --arm-ref "$KERNEL_BUILDROOT_AARCH64_REF" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Revoke local registry credentials
         if: always()
-        run: docker logout code.podesta.ai || true
+        run: docker logout code.tilo.so || true

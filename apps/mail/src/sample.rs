@@ -210,7 +210,7 @@ fn insert_standalone_inbox_items(
             from: correspondents.ci,
             to: vec![me.clone()],
             subject: "Build #4821 failed on shell --lib",
-            body: "Pipeline qos/qos run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
+            body: "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
 error: process didn't exit successfully: SIGSEGV (parallel wgpu instance \
 contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
             ago_min: 14,

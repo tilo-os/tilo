@@ -19,7 +19,7 @@ cat > "$output" <<EOF
 [tilo-fedora-44]
 name=Tilo Desktop session (Fedora 44)
 # Bootstrap /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc from desktop-v${version}.
-baseurl=https://code.podesta.ai/api/packages/qos/rpm/fedora/44
+baseurl=https://code.tilo.so/api/packages/tilo/rpm/fedora/44
 enabled=1
 gpgcheck=1
 repo_gpgcheck=0

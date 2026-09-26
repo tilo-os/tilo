@@ -22,7 +22,7 @@ When retrying a failed payload build that did not change SDK requirements,
 checks the immutable reference in the registry before using it.
 
 The separate retained x86 guest currently available at
-`code.podesta.ai/qos/tilo-development-windows-guest@sha256:592518b08a4c88395b7054c293eab9aeb52750869aba3a59dbe87d98556ae765`
+`code.tilo.so/tilo/tilo-development-windows-guest@sha256:592518b08a4c88395b7054c293eab9aeb52750869aba3a59dbe87d98556ae765`
 is also a development candidate. Before using it for an ARM OS image, verify
 that its traditional Wine pair, source pins, DXVK payload and loader layout
 pass the current `windows_provider.py` consumer checks. Its producer records

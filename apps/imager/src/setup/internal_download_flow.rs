@@ -770,7 +770,7 @@ impl SelectionPreference {
         let root = xdg_paths::data_local_dir()
             .ok_or("A device-local settings folder is unavailable on this computer.")?;
         Ok(Self::at(
-            root.join("qos")
+            root.join("tilo")
                 .join("setup")
                 .join("internal-download-selection.json"),
         ))
@@ -860,7 +860,7 @@ mod tests {
 
     fn release() -> InternalRelease {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        InternalRelease::transport_fixture(&bytes, "https://code.podesta.ai/releases/manifest.json")
+        InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json")
     }
 
     fn supported() -> Capabilities {

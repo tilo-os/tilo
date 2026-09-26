@@ -1658,7 +1658,7 @@ impl ShellDriver {
         // The reply receiver is dropped: a screenshot has nobody to hand the
         // answer to, and the sheet does not care until it is answered.
         let _rx = prompts.enqueue(
-            PortalCaller::new(WorkspaceId(1), "dev.qos.camera"),
+            PortalCaller::new(WorkspaceId(1), "dev.tilo.camera"),
             Capability::Camera {
                 scope: Expiry::EndOfSession,
             },

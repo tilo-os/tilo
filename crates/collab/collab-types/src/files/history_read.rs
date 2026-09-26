@@ -3,7 +3,7 @@ use super::{FileRecordId, FileVersionId, FileVersionV1};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const HISTORY_READ_XATTR: &str = "user.qos.hread.v1";
+pub const HISTORY_READ_XATTR: &str = "user.tilo.hread.v1";
 pub const MAX_HISTORY_READ_BYTES: usize = 60 * 1024;
 pub const MAX_HISTORY_PAGE_VERSIONS: usize = 12;
 

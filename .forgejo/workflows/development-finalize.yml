@@ -113,7 +113,7 @@ jobs:
           persist-credentials: false
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Finalize only, with operator-bound external signing

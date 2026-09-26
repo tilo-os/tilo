@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = aarch64
           if [[ -n "$BUILDROOT_CANDIDATE" ]]; then
-            [[ "$BUILDROOT_CANDIDATE" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]] || {
+            [[ "$BUILDROOT_CANDIDATE" =~ ^code\.tilo\.so/tilo/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]] || {
               echo '::error::buildroot_candidate must be a retained immutable ARM buildroot digest'; exit 1;
             }
             docker buildx imagetools inspect --raw "$BUILDROOT_CANDIDATE" \
@@ -67,7 +67,7 @@ jobs:
           fi
           source os/base-snapshot.env
           bash os/dev/cache-github-assets.sh nasm-2.16.03.tar.xz
-          tag="code.podesta.ai/qos/tilo-fex-buildroot-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          tag="code.tilo.so/tilo/tilo-fex-buildroot-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker buildx build --platform linux/arm64 --push --provenance=false \
             --metadata-file buildroot-metadata.json --file os/Containerfile.fex-buildroot \
             --build-arg "BASE_REF=$BASE_REF" \
@@ -76,7 +76,7 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --tag "$tag" .
           digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' buildroot-metadata.json)"
-          echo "ref=code.podesta.ai/qos/tilo-fex-buildroot-candidate@$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=code.tilo.so/tilo/tilo-fex-buildroot-candidate@$digest" >> "$GITHUB_OUTPUT"
 
   sdk:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
@@ -90,7 +90,7 @@ jobs:
           persist-credentials: false
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
@@ -102,7 +102,7 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = x86_64
           if [[ -n "$SDK_CANDIDATE" ]]; then
-            [[ "$SDK_CANDIDATE" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]] || {
+            [[ "$SDK_CANDIDATE" =~ ^code\.tilo\.so/tilo/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]] || {
               echo '::error::sdk_candidate must be a retained immutable x86 SDK digest'; exit 1;
             }
             docker buildx imagetools inspect --raw "$SDK_CANDIDATE" \
@@ -112,7 +112,7 @@ jobs:
             exit 0
           fi
           source os/base-snapshot.env
-          tag="code.podesta.ai/qos/tilo-fex-x86-sdk-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          tag="code.tilo.so/tilo/tilo-fex-x86-sdk-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker buildx build --platform linux/amd64 --push --provenance=false \
             --metadata-file sdk-metadata.json --file os/Containerfile.fex-x86-sdk \
             --build-arg "BASE_REF=$BASE_REF" \
@@ -120,7 +120,7 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --tag "$tag" .
           digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' sdk-metadata.json)"
-          echo "ref=code.podesta.ai/qos/tilo-fex-x86-sdk-candidate@$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=code.tilo.so/tilo/tilo-fex-x86-sdk-candidate@$digest" >> "$GITHUB_OUTPUT"
 
   payload:
     needs: [buildroot, sdk]
@@ -133,7 +133,7 @@ jobs:
           persist-credentials: false
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - uses: ./.forgejo/actions/setup-buildx
@@ -150,17 +150,17 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
-          [[ "$FEX_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]]
-          [[ "$FEX_X86_SDK_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]]
+          [[ "$FEX_BUILDROOT_REF" =~ ^code\.tilo\.so/tilo/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]]
+          [[ "$FEX_X86_SDK_REF" =~ ^code\.tilo\.so/tilo/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]]
           if [[ -n "$FEX_PAYLOAD_CANDIDATE" ]]; then
-            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^code\.podesta\.ai/qos/tilo-fex-payload-candidate@sha256:[0-9a-f]{64}$ \
+            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^code\.tilo\.so/tilo/tilo-fex-payload-candidate@sha256:[0-9a-f]{64}$ \
                && "$FEX_PAYLOAD_REPOSITORY_REVISION" =~ ^[0-9a-f]{40}$ \
                && "$FEX_PAYLOAD_BUILD_RUN_ID" =~ ^[1-9][0-9]*$ \
                && "$BUILDROOT_CANDIDATE" == "$FEX_BUILDROOT_REF" \
                && "$SDK_CANDIDATE" == "$FEX_X86_SDK_REF" ]] || {
               echo '::error::payload recovery requires the exact digest, original revision/run, and retained input digests'; exit 1;
             }
-            original_tag="code.podesta.ai/qos/tilo-fex-payload-candidate:${FEX_PAYLOAD_REPOSITORY_REVISION}-${FEX_PAYLOAD_BUILD_RUN_ID}"
+            original_tag="code.tilo.so/tilo/tilo-fex-payload-candidate:${FEX_PAYLOAD_REPOSITORY_REVISION}-${FEX_PAYLOAD_BUILD_RUN_ID}"
             tag_pull="$(docker pull --platform linux/arm64 "$original_tag")"
             grep -Fx "Digest: ${FEX_PAYLOAD_CANDIDATE##*@}" <<< "$tag_pull"
             docker pull --platform linux/arm64 "$FEX_PAYLOAD_CANDIDATE"
@@ -194,7 +194,7 @@ jobs:
           fi
           echo "::notice::FEX payload build jobs=$payload_jobs (bounded by runner CPUs and 16 GiB Docker memory)"
           bash os/dev/fetch-fex-source.sh "$RUNNER_TEMP/fex-source"
-          tag="code.podesta.ai/qos/tilo-fex-payload-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          tag="code.tilo.so/tilo/tilo-fex-payload-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker buildx build --platform linux/arm64 --push --provenance=false \
             --metadata-file fex-metadata.json --file os/Containerfile.fex-payload \
             --build-arg "FEX_BUILDROOT_REF=$FEX_BUILDROOT_REF" \
@@ -205,7 +205,7 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --tag "$tag" .
           digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' fex-metadata.json)"
-          echo "ref=code.podesta.ai/qos/tilo-fex-payload-candidate@$digest" >> "$GITHUB_OUTPUT"
+          echo "ref=code.tilo.so/tilo/tilo-fex-payload-candidate@$digest" >> "$GITHUB_OUTPUT"
       - name: Install pinned Cosign
         run: bash os/dev/install-cached-cosign.sh
       - name: Sign candidate and record its limited provenance
@@ -232,12 +232,12 @@ jobs:
                 externalParameters: {developmentOnly: true, runtimeAcceptanceVerified: false,
                   recoveredUnsignedCandidate: ($recovered != "")},
                 resolvedDependencies: [
-                  {uri: ("git+ssh://code.podesta.ai/qos/qos@" + $source)},
+                  {uri: ("git+ssh://code.tilo.so/tilo/tilo@" + $source)},
                   {uri: $buildroot}, {uri: $sdk}
                 ]
               },
               runDetails: {
-                builder: {id: "https://code.podesta.ai/qos/forgejo/actions/development-fex-v1"},
+                builder: {id: "https://code.tilo.so/tilo/forgejo/actions/development-fex-v1"},
                 metadata: {invocationId: $run, signingInvocationId: $signer_run, output: $payload}
               }
             }' > fex-provenance.json

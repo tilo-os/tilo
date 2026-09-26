@@ -3,15 +3,15 @@ from frame_presentation import analyze
 
 
 def receipt(frame=1, lo=10.0, hi=10.001, pid=42):
-    return ('qos-webview-received', dict(process_id=pid, frame_id=frame, tab_id=1,
+    return ('tilo-webview-received', dict(process_id=pid, frame_id=frame, tab_id=1,
         host_clock='mach_absolute_seconds', received_host_lo_s=lo, received_host_hi_s=hi))
 
 def scene(cpu=5, ids=None, **kwargs):
-    return ('qos-webview-scene', dict(process_id=42, cpu_frame_id=cpu,
+    return ('tilo-webview-scene', dict(process_id=42, cpu_frame_id=cpu,
         webview_frame_ids=[1] if ids is None else ids, overflow=False) | kwargs)
 
 def display(cpu=5, time=10.017):
-    return ('qos-display-frame', dict(cpu_frame_id=cpu, worker_id=1, worker_frame_ix=cpu,
+    return ('tilo-display-frame', dict(cpu_frame_id=cpu, worker_id=1, worker_frame_ix=cpu,
         drawable_id=cpu, presented_time_s=time, backend='metal'))
 
 class FramePresentationTests(unittest.TestCase):

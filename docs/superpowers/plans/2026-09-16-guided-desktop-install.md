@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the guided Desktop choice install an authenticated qOS session on supported Linux hosts while preserving the current desktop.
+**Goal:** Make the guided Desktop choice install an authenticated Tilo session on supported Linux hosts while preserving the current desktop.
 
 **Architecture:** Read-only host discovery selects an exact package from a catalog authenticated by the signed setup application. An elevated helper independently validates that choice, copies verified package bytes into private root-owned staging, and invokes the native package manager. The UI reports package-manager outcomes and directs the user to the existing login-session chooser.
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Desktop keeps the Linux installation and adds a qOS session.
+- Desktop keeps the Linux installation and adds a Tilo session.
 - Do not present an unavailable Desktop choice as actionable.
 - Backend revalidation remains required immediately before privileged operations.
 - Source deletion is never part of a one-time copy.
@@ -160,10 +160,10 @@ never treats a screenshot fixture as production capability evidence.
   into the UI off its thread. Bound event handling; do not block on worker joins.
   Report download cancellation separately from a begun native transaction,
   whose terminal outcome must remain tracked when the view closes.
-- [ ] After installation, explain how to select qOS at the next login; do not
+- [ ] After installation, explain how to select Tilo at the next login; do not
   log out the current desktop automatically or change its default. Matching
   already-installed packages still require the helper's session verification.
-- [ ] Replace Desktop's fabricated /home/qos destination estimates with explicit
+- [ ] Replace Desktop's fabricated /home/tilo destination estimates with explicit
   unresolved destination state or a real user-resolved, visibly reviewed
   destination. This task must not start copying before Task5 has resolved and
   authorized the actual target. Preserve the actual selected folders/modes for
@@ -195,7 +195,7 @@ logic. Persisted choices are not filesystem authority.
   in its trusted first-login boundary. Never provision identity from a host app
   window, start import before trusted completion, or export migration state
   into collaborative documents.
-- [ ] Resolve the real current-user qOS destination, show source/destination and
+- [ ] Resolve the real current-user Tilo destination, show source/destination and
   collisions, and begin Copy only after both reviewed endpoints are resolved
   and revalidated. Keep local Copy distinct from Connected. A source edit,
   unavailable mount or destination substitution must remain a pending/error
@@ -220,7 +220,7 @@ verification scripts. Production catalog entries are separate authenticated
 release artifacts and remain absent until their evidence is genuine.
 
 - [ ] Rebuild and install the real final package in disposable supported guests.
-  Log into qOS through the display manager, finish trusted identity setup,
+  Log into Tilo through the display manager, finish trusted identity setup,
   continue the selected real folder import and verify source/destination bytes.
 - [ ] Log out and return to the original desktop. Confirm prior session files,
   default selection, portal environment and original files still work. Retain

@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 import shutil
 
-REF = re.compile(r"code\.podesta\.ai/qos/tilo@(sha256:[0-9a-f]{64})\Z")
+REF = re.compile(r"code\.tilo\.so/tilo/tilo@(sha256:[0-9a-f]{64})\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 IMAGE = {"application/vnd.oci.image.manifest.v1+json",
          "application/vnd.docker.distribution.manifest.v2+json"}
@@ -52,10 +52,10 @@ def verify(directory):
             and metadata["architecture"] == "aarch64"
             and metadata["hardware_profile"] in ("generic", "lenovo-83ed")
             and isinstance(metadata["update_origin"], str)
-            and (re.fullmatch(r"code\.podesta\.ai/qos/tilo:lenovo-83ed-[0-9a-f]{40}",
+            and (re.fullmatch(r"code\.tilo\.so/tilo/tilo:lenovo-83ed-[0-9a-f]{40}",
                               metadata["update_origin"]) is not None
                  if metadata["hardware_profile"] == "lenovo-83ed"
-                 else re.fullmatch(r"code\.podesta\.ai/qos/tilo:gen[1-9][0-9]*",
+                 else re.fullmatch(r"code\.tilo\.so/tilo/tilo:gen[1-9][0-9]*",
                                    metadata["update_origin"]) is not None),
             "target metadata does not pin a supported CI ARM64 child")
     layout = directory / "oci"

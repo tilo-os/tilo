@@ -44,7 +44,7 @@ if [ "$rpms" = 1 ]; then
   . os/base-snapshot.env
   # shellcheck disable=SC1091
   . os/rpms-snapshot.env
-  [[ "${RPMS_REF:-}" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
+  [[ "${RPMS_REF:-}" =~ ^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
     || fail "RPMS_REF is not the digest-pinned Tilo RPM repository"
   cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null || fail "RPMS_REF signature does not verify"
   work="$(mktemp -d)"

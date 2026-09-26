@@ -97,7 +97,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
 
             receipt_path = tree / 'final-publication-receipt.json'
             receipt_hash = producer.channel.sha(receipt_path)
-            url = 'https://code.podesta.ai/api/packages/qos/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'
+            url = 'https://code.tilo.so/api/packages/tilo/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'
             output = tree / 'published-receipt.json'
             bound = final.bind(receipt_path, receipt_hash, archive, url, policy_path, policy_hash, output)
             self.assertEqual(bound['publication']['status'], 'published')
@@ -157,7 +157,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
         # publisher runs in the immutable public release-tools image.
         self.assertRegex(
             publish,
-            r'image: code\.podesta\.ai/public/tilo-release-tools@sha256:[0-9a-f]{64}\n',
+            r'image: code\.tilo\.so/public/tilo-release-tools@sha256:[0-9a-f]{64}\n',
         )
         self.assertIn('vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256', publish)
         self.assertLess(publish.index('tools/apps/final_app_receipt.py'), publish.index('bundle_upload='))

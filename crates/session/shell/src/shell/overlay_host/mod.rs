@@ -34711,7 +34711,7 @@ mod resync_strips_tests {
                             state.tree_mut().native_document_tabs.insert(
                                 tab,
                                 crate::shell::state::NativeDocumentReference {
-                                    provider_id: "dev.qos.notes".into(),
+                                    provider_id: "dev.tilo.notes".into(),
                                     path: "/untouched/original.txt".into(),
                                 },
                             );

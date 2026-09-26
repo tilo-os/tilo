@@ -86,7 +86,7 @@ def build_proof(args):
         selected = json.loads(receipt_path.read_text(encoding="utf-8"))
         require(selected.get("schema") == "tilo.installer-offline-target.v1"
                 and selected.get("target_digest") == installed_digest
-                and selected.get("target_ref") == "code.podesta.ai/qos/tilo@" + installed_digest
+                and selected.get("target_ref") == "code.tilo.so/tilo/tilo@" + installed_digest
                 and installed_origin == "ostree-unverified-image:docker://" + selected.get("update_origin", ""),
                 "installed deployment differs from the independently signed offline target")
     else:

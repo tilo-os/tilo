@@ -114,11 +114,11 @@ pub struct ChromiumEngine {
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
-const PRIVATE_ROOT_PREFIX: &str = "qos-browser-private-";
-const PRIVATE_ROOT_MARKER: &str = ".qos-private-root-v1";
-const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1\n";
-const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
-const PRIVATE_ROOT_LOCK: &str = ".qos-private-root.lock";
+const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
+const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
+const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
+const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
+const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
 
 struct PrivateRootCleanup(Option<PathBuf>);
 impl PrivateRootCleanup {
@@ -317,20 +317,20 @@ impl WebViewEngine for UnavailableEngine {
 }
 
 fn host_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("QOS_CHROMIUM_HOST") {
+    if let Some(path) = std::env::var_os("TILO_CHROMIUM_HOST") {
         return Ok(path.into());
     }
     #[cfg(test)]
-    let executable = std::env::var_os("QOS_TEST_CHROMIUM_DISCOVERY_EXE")
+    let executable = std::env::var_os("TILO_TEST_CHROMIUM_DISCOVERY_EXE")
         .map(PathBuf::from)
         .map_or_else(std::env::current_exe, Ok)
         .map_err(|error| error.to_string())?;
     #[cfg(not(test))]
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let binary_name = if cfg!(target_os = "macos") {
-        "Browser Engine.app/Contents/MacOS/qos-chromium-host"
+        "Browser Engine.app/Contents/MacOS/tilo-chromium-host"
     } else {
-        "qos-chromium-host"
+        "tilo-chromium-host"
     };
     for parent in executable.ancestors().skip(1).take(4) {
         for candidate in [
@@ -342,7 +342,7 @@ fn host_path() -> Result<PathBuf, String> {
             }
         }
     }
-    Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set QOS_CHROMIUM_HOST to its executable.".into())
+    Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
 }
 
 fn spawn_command_writer(
@@ -565,9 +565,9 @@ impl ChromiumEngine {
     ///
     /// Returns an error for invalid extensions, unavailable runtime/profile, or helper initialization failure.
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
-        let profile = std::env::var_os("QOS_CHROMIUM_PROFILE")
+        let profile = std::env::var_os("TILO_CHROMIUM_PROFILE")
             .map(PathBuf::from)
-            .or_else(|| xdg_paths::data_dir().map(|path| path.join("qos-browser/chromium")))
+            .or_else(|| xdg_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
         Self::with_host_extensions(&host_path()?, &profile, extensions, None)
     }

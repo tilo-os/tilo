@@ -42,7 +42,7 @@ allow = [
     "Unlicense",
     "0BSD",
     "CDLA-Permissive-2.0",
-    # qos-ntfs-helper statically links the pinned GPL-2.0-or-later ntfs-3g
+    # tilo-ntfs-helper statically links the pinned GPL-2.0-or-later ntfs-3g
     # reader and is distributed with its corresponding source. We exercise the
     # "or later" option as GPLv3 when combining it with the AGPLv3 system.
     "GPL-2.0-or-later",

@@ -14,7 +14,7 @@ class TypingEffectsTests(unittest.TestCase):
         return scenario, [dict(id=0, before=a, after=b), dict(id=1, before=b, after=a)]
 
     def validate(self, scenario, effects):
-        return validate_typing_effects(scenario, ['qos-native-effect '+json.dumps(r) for r in effects])
+        return validate_typing_effects(scenario, ['tilo-native-effect '+json.dumps(r) for r in effects])
 
     def test_exact_unicode_edit_and_backspace(self):
         self.assertEqual(self.validate(*self.fixture()), 2)
@@ -55,7 +55,7 @@ class TypingEffectsTests(unittest.TestCase):
         for effect in effects:
             for state in (effect['before'], effect['after']):
                 state['offset_y'] = 0.0
-        lines = lambda: ['qos-native-effect '+json.dumps(r) for r in effects]
+        lines = lambda: ['tilo-native-effect '+json.dumps(r) for r in effects]
         self.assertEqual(validate_typing_effects(scenario, lines(), expected_offset_y=0.0), 2)
         for value in (1.0, None, True, float('nan')):
             effects[0]['before']['offset_y'] = value

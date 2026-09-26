@@ -4,7 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `xdg_paths::data_dir()/qos-browser/history.json`.
+//! `xdg_paths::data_dir()/tilo-browser/history.json`.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -360,7 +360,7 @@ fn bounded_text(value: &str, limit: usize) -> String {
 }
 
 /// Absolute path to the history file:
-/// `xdg_paths::data_dir()/qos-browser/history.json`. `None` when the platform
+/// `xdg_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
 /// exposes no data directory. The legacy directory remains the canonical
 /// default until storage migration is explicit and crash-safe.
 pub fn history_path() -> Option<PathBuf> {
@@ -650,7 +650,7 @@ mod tests {
     fn history_path_preserves_the_existing_browser_data_root() {
         // Only assert the tail so the test is host-agnostic.
         if let Some(p) = history_path() {
-            assert!(p.ends_with("qos-browser/history.json"), "path was {p:?}");
+            assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
         }
     }
 }

@@ -19,18 +19,18 @@ import tempfile
 import urllib.request
 
 
-SOURCE_REPOSITORY = "code.podesta.ai/qos/tilo-builder"
+SOURCE_REPOSITORY = "code.tilo.so/tilo/tilo-builder"
 REGIONAL_REPOSITORIES = {
-    "code.podesta.ai/public/runner-image": "public/runner-image",
-    "code.podesta.ai/qos/ci-fast": "qos/ci-fast",
-    "code.podesta.ai/qos/tilo-builder": "qos/tilo-builder",
-    "code.podesta.ai/qos/tilo-release-tools": "qos/tilo-release-tools",
-    "code.podesta.ai/public/tilo-release-tools": "qos/tilo-release-tools",
-    "code.podesta.ai/qos/tilo-registry-server": "qos/tilo-registry-server",
+    "code.tilo.so/public/runner-image": "public/runner-image",
+    "code.tilo.so/tilo/ci-fast": "tilo/ci-fast",
+    "code.tilo.so/tilo/tilo-builder": "tilo/tilo-builder",
+    "code.tilo.so/tilo/tilo-release-tools": "tilo/tilo-release-tools",
+    "code.tilo.so/public/tilo-release-tools": "tilo/tilo-release-tools",
+    "code.tilo.so/tilo/tilo-registry-server": "tilo/tilo-registry-server",
     "docker.io/library/python": "dockerhub/library/python",
 }
-OIDC_ISSUER = "https://code.podesta.ai/api/actions"
-OIDC_SUBJECT = "repo:qos-11/qos-23:ref:refs/heads/main"
+OIDC_ISSUER = "https://code.tilo.so/api/actions"
+OIDC_SUBJECT = "repo:tilo-11/tilo-23:ref:refs/heads/main"
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 

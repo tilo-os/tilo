@@ -2,10 +2,10 @@ name: Set up buildx with the runner pool's registries
 description: >-
   Start a docker-container buildx builder whose buildkitd.toml combines the
   runner pool's registry configuration (/etc/buildkit/buildkitd.toml, when
-  the pool provides one: a pull-through mirror of code.podesta.ai with
+  the pool provides one: a pull-through mirror of code.tilo.so with
   upstream fallback and the pool's layer-cache registry) with the caller's
   own daemon settings. Exports TILO_LAYER_CACHE_REGISTRY, the registry that
-  holds this pool's BuildKit layer caches (code.podesta.ai when the pool
+  holds this pool's BuildKit layer caches (code.tilo.so when the pool
   names none).
 
 inputs:
@@ -39,7 +39,7 @@ runs:
           : > "$config"
         fi
         printf '\n%s\n' "$EXTRA_CONFIG" >> "$config"
-        registry="${CI_LAYER_CACHE_REGISTRY:-code.podesta.ai}"
+        registry="${CI_LAYER_CACHE_REGISTRY:-code.tilo.so}"
         [[ $registry =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]] || {
           echo "::error::invalid layer-cache registry: $registry"; exit 1;
         }

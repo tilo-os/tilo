@@ -18,18 +18,18 @@ int main() {
       {7, {{"old-child", {old, 10}}, {"new-main", {replacement, 20}},
            {"new-child", {replacement, 21}}}},
       {8, {{"other-main", {unrelated, 30}}}}};
-  qos::EraseMediaBrowserContexts(contexts, old);
+  tilo::EraseMediaBrowserContexts(contexts, old);
   assert(contexts.contains(7));
   assert(contexts.at(7).size() == 2);
   assert(contexts.at(7).at("new-main").token == 20);
   assert(contexts.at(7).at("new-child").token == 21);
   assert(contexts.at(8).at("other-main").token == 30);
   // Repeated obsolete destruction must also preserve the replacement.
-  qos::EraseMediaBrowserContexts(contexts, old);
+  tilo::EraseMediaBrowserContexts(contexts, old);
   assert(contexts.at(7).size() == 2);
-  qos::EraseMediaBrowserContexts(contexts, replacement);
+  tilo::EraseMediaBrowserContexts(contexts, replacement);
   assert(!contexts.contains(7));
   assert(contexts.contains(8));
-  qos::EraseMediaBrowserContexts(contexts, unrelated);
+  tilo::EraseMediaBrowserContexts(contexts, unrelated);
   assert(contexts.empty());
 }

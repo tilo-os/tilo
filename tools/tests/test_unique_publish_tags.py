@@ -58,7 +58,7 @@ class ShellPushTests(unittest.TestCase):
 
     def test_kernel_retry_pushes_the_unique_tag(self):
         text = self.read("build-kernel.yml")
-        self.assertIn("UNIQUE_TAG: code.podesta.ai/qos/tilo-kernel:native-${{ github.sha }}-"
+        self.assertIn("UNIQUE_TAG: code.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-"
                       "${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}", text)
         self.assertIn('done <<< "$UNIQUE_TAG', text)
 
@@ -67,7 +67,7 @@ class ShellPushTests(unittest.TestCase):
         self.assertIn('tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"', text)
         self.assertIn('tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
         self.assertIn('$repository:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
-        self.assertIn('"docker://code.podesta.ai/qos/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
+        self.assertIn('"docker://code.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
 
     def test_release_tools_child_and_indexes_are_unique(self):
         text = self.read("build-release-tools-image.yml")

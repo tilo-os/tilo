@@ -26,7 +26,7 @@ def fixture():
             if ix and name=='handoff_log_after':t=100.12
             if ix and name not in ('handoff_log_before','handoff_log_after'):t=100.3+offset*.01
             point(row,'previous_'+name,t)
-        result.extend([('qos-native-worker',worker),('qos-native-worker-handoff',row)])
+        result.extend([('tilo-native-worker',worker),('tilo-native-worker-handoff',row)])
     return result
 
 def encode(rows):return [p+' '+json.dumps(r) for p,r in rows]

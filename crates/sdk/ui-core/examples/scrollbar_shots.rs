@@ -186,14 +186,14 @@ pub fn run(_args: &[String]) {
     }
 }
 
-/// The palettes to shoot: `QOS_SHOTS_THEME` names one (its tag is the name,
+/// The palettes to shoot: `TILO_SHOTS_THEME` names one (its tag is the name,
 /// lower-cased, non-alphanumerics as `-`); unset shoots dark and light. An
 /// unknown name is an error, never an empty run that exits 0.
 fn shot_themes() -> Vec<(Theme, String)> {
-    match std::env::var("QOS_SHOTS_THEME") {
+    match std::env::var("TILO_SHOTS_THEME") {
         Ok(name) => {
             let Some(theme) = Theme::named(&name) else {
-                eprintln!("ui-shots: unknown QOS_SHOTS_THEME `{name}`");
+                eprintln!("ui-shots: unknown TILO_SHOTS_THEME `{name}`");
                 std::process::exit(2)
             };
             let tag = name

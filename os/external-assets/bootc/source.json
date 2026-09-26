@@ -8,6 +8,6 @@
   "patch": "0001-probe-missing-partition-metadata.patch",
   "patch_sha256": "b8bd058f6a10010421d7847cd8ad36f91b224d7f8758b986ca8abab6c0fc2a3e",
   "rust_toolchain": "1.97.1",
-  "build_image": "code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9",
+  "build_image": "code.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9",
   "build_command": "cargo build --locked --release -p bootc"
 }

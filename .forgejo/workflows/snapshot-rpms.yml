@@ -57,7 +57,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: code.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -148,10 +148,10 @@ jobs:
           echo "PACKAGES=$pkgs" >> "$GITHUB_ENV"
           echo "packages: $pkgs"
 
-      - name: Log in to the code.podesta.ai registry
+      - name: Log in to the code.tilo.so registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
@@ -168,7 +168,7 @@ jobs:
           file: os/Containerfile.rpms
           platforms: ${{ matrix.platform }}
           push: true
-          tags: code.podesta.ai/qos/rpms:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+          tags: code.tilo.so/tilo/rpms:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           . os/dev/configure-cosign-kms.sh
-          cosign sign --yes --key "$COSIGN_KEY_REF" "code.podesta.ai/qos/rpms@${CHILD_DIGEST}"
+          cosign sign --yes --key "$COSIGN_KEY_REF" "code.tilo.so/tilo/rpms@${CHILD_DIGEST}"
           mkdir -p native-child
           python3 - <<'PY'
           import json, os
@@ -237,10 +237,10 @@ jobs:
             echo '::error::main already pins an RPM snapshot at least as new as this one'
             exit 1
           fi
-      - name: Log in to code.podesta.ai
+      - name: Log in to code.tilo.so
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install publication tools
@@ -268,7 +268,7 @@ jobs:
           printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' \
             "$storage" "$storage" > "$CONTAINERS_STORAGE_CONF"
           python3 os/dev/promote-native-index.py \
-            --repository code.podesta.ai/qos/rpms --tag "$GITHUB_SHA" \
+            --repository code.tilo.so/tilo/rpms --tag "$GITHUB_SHA" \
             --revision "$GITHUB_SHA" --descriptors native-children \
             --signing-key "$COSIGN_KEY_REF" --output rpms-index.txt
           echo "RPMS_REF=$(cat rpms-index.txt)" >> "$GITHUB_STEP_SUMMARY"
@@ -299,7 +299,7 @@ jobs:
           package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
           package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
           digest="${ref##*@}"
-          jq -n --arg source "git+ssh://code.podesta.ai/qos/qos@$GITHUB_SHA" \
+          jq -n --arg source "git+ssh://code.tilo.so/tilo/tilo@$GITHUB_SHA" \
             --arg digest "$digest" --arg base "$BASE_REF" \
             --arg package_amd64_sha256 "$package_amd64_sha256" --arg package_arm64_sha256 "$package_arm64_sha256" \
             --arg package_set_sha256 "$package_set_sha256" '
@@ -315,7 +315,7 @@ jobs:
                   resolvedDependencies: [{uri: $source}, {uri: $base}]
                 },
                 runDetails: {
-                  builder: {id: "https://code.podesta.ai/qos/forgejo/actions/rpm-snapshot-v1"},
+                  builder: {id: "https://code.tilo.so/tilo/forgejo/actions/rpm-snapshot-v1"},
                   metadata: {invocationId: env.GITHUB_RUN_ID}
                 }
               }
@@ -365,7 +365,7 @@ jobs:
         run: |
           set -euo pipefail
           ref="$RPMS_INDEX_REF"
-          [[ "$ref" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]
+          [[ "$ref" =~ ^code\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]
           # The pin is consistent on its own, so it lands whenever it is newer
           # than main's; if inputs moved meanwhile, the next refresh is
           # requested below and supersedes it.
@@ -434,7 +434,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: code.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

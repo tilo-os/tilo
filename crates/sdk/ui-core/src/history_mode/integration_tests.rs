@@ -77,7 +77,7 @@ fn managed_bound_history_resolves_real_owner_instead_of_outer_state() {
 }
 
 pub(crate) static RESTORABLE: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.restore-fixture",
+    app_id: "dev.tilo.restore-fixture",
     scopes: &[HistoryScopeDefinition {
         key: "document",
         title: "Notebook",

@@ -47,7 +47,7 @@ cat > "$work/debian/control" <<'EOF'
 Source: tilo-session
 Section: x11
 Priority: optional
-Maintainer: Tilo contributors <tilo@code.podesta.ai>
+Maintainer: Tilo contributors <tilo@code.tilo.so>
 
 Package: tilo-session
 Architecture: any
@@ -68,7 +68,7 @@ Version: $version-$revision
 Section: x11
 Priority: optional
 Architecture: $arch
-Maintainer: Tilo contributors <tilo@code.podesta.ai>
+Maintainer: Tilo contributors <tilo@code.tilo.so>
 Installed-Size: $(installed_size "$main")
 Depends: $shlib_deps, libpam0g, libvulkan1, libegl1, bubblewrap, systemd, xdg-desktop-portal, xdg-dbus-proxy, python3
 Recommends: mesa-vulkan-drivers, xwayland-satellite, greetd | gdm3 | sddm
@@ -82,7 +82,7 @@ Version: $version-$revision
 Section: x11
 Priority: optional
 Architecture: all
-Maintainer: Tilo contributors <tilo@code.podesta.ai>
+Maintainer: Tilo contributors <tilo@code.tilo.so>
 Installed-Size: $(installed_size "$dev")
 Depends: tilo-session (= $version-$revision), coreutils, grep
 Description: developer session entry for Tilo

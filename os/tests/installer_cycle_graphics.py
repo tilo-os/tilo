@@ -40,7 +40,7 @@ class CycleGraphicsTests(unittest.TestCase):
                     env.pop('TILO_EXPECTED_INSTALLED_REF', None)
                     if signed:
                         args.append('--guided-alongside')
-                        env['TILO_EXPECTED_INSTALLED_REF'] = 'code.podesta.ai/qos/tilo@sha256:' + 'a' * 64
+                        env['TILO_EXPECTED_INSTALLED_REF'] = 'code.tilo.so/tilo/tilo@sha256:' + 'a' * 64
                     result = subprocess.run(args, text=True, capture_output=True, env=env)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     tpm_flag = '--tpm' if tpm else '--no-tpm'

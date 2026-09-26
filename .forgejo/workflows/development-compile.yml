@@ -42,7 +42,7 @@ on:
         description: Reviewed immutable native tools and application builder
         required: true
         type: string
-        default: code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+        default: code.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
       mode:
         description: 'Cache proof, reusable native applications, or full OS assembly'
         required: true
@@ -214,7 +214,7 @@ jobs:
                   name == 'KERNEL_CANDIDATE' and os.environ['ARCHITECTURE'] == 'aarch64'
                   and os.environ['COMPILE_MODE'] == 'full-build')
               if (required or value) and not re.fullmatch(
-                  r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', value):
+                  r'code\.tilo\.so/tilo/[a-z0-9-]+@sha256:[0-9a-f]{64}', value):
                   raise ValueError(name + ' requires a reviewed immutable image')
           PY
           bash os/dev/install-cached-cosign.sh
@@ -264,7 +264,7 @@ jobs:
       - name: Authenticate input pulls
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Run selected cache proof or full compilation
@@ -455,7 +455,7 @@ jobs:
           docker cp "$cache_secrets/." "$name:/run/tilo-cache-secrets/"
           python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
           import json, os, sys
-          registry = 'code.podesta.ai'
+          registry = 'code.tilo.so'
           credentials = json.load(open(sys.argv[1]))['auths'][registry]
           descriptor = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
           with os.fdopen(descriptor, 'w') as stream:

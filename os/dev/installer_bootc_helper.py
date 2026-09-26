@@ -16,7 +16,7 @@ SOURCE_COMMIT = "3e76c16556c55e6d15d31bd47602b231e2131cb2"
 PATCH_SHA256 = "b8bd058f6a10010421d7847cd8ad36f91b224d7f8758b986ca8abab6c0fc2a3e"
 SOURCE_CARGO_LOCK_SHA256 = "2f5ac1f48ea43b8fd6d1f5cfa031a85c3c4ed812ea7ccbae71b8ffe3683eebaf"
 RUST_TOOLCHAIN = "1.97.1"
-BUILD_IMAGE = ("code.podesta.ai/qos/tilo-builder@sha256:"
+BUILD_IMAGE = ("code.tilo.so/tilo/tilo-builder@sha256:"
                "568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9")
 BOOTC_VERSION = "1.16.10"
 BUILD_COMMAND = "cargo build --locked --release -p bootc"

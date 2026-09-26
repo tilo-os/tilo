@@ -89,7 +89,7 @@ class CatalogSelectionTests(unittest.TestCase):
                 entry["provenance"] = {"source_image_id": "sha256:" + "a" * 64,
                                        "input_qcow2_sha256": "c" * 64,
                                        "hardware_profile_sha256": "d" * 64,
-                                       "target_update_ref": "code.podesta.ai/qos/tilo:lenovo-fixture"}
+                                       "target_update_ref": "code.tilo.so/tilo/tilo:lenovo-fixture"}
             entries.append(entry)
         return {"schema": 2, "tag": "imager-v1.2.3", "releases": entries}
 
@@ -134,13 +134,13 @@ class CatalogSelectionTests(unittest.TestCase):
         data = self.media_fixture()
         entry = {"purpose": "tilo-internal-installer", "layout": "internal-bundle-v2",
                  "release_id": "imager-v1.2.3", "arch": "x86_64",
-                 "manifest_url": "https://code.podesta.ai/api/packages/qos/generic/tilo-internal-installer/"
+                 "manifest_url": "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/"
                                  "imager-v1.2.3/tilo-internal-installer-x86_64.json",
                  "manifest_sha256": "e" * 64, "manifest_size": 4096}
         data["releases"].append(entry)
         self.assertEqual(len(catalog.media(data, self.root)), 3)
         for field, bad in (("layout", "internal-bundle-v1"), ("release_id", "imager-v9.9.9"),
-                           ("manifest_url", entry["manifest_url"].replace("code.podesta.ai", "github.com")),
+                           ("manifest_url", entry["manifest_url"].replace("code.tilo.so", "github.com")),
                            ("manifest_sha256", "E" * 64), ("manifest_size", 65537), ("hardware_profile", "generic")):
             with self.subTest(field=field):
                 changed = copy.deepcopy(data)
