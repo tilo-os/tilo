@@ -22,9 +22,9 @@ lands through branch protection's required checks like any other PR, and the
 first one to pass wins; the rest become obsolete or are replayed on the next
 push.
 
-FORGEJO_TOKEN must read, comment on, close and merge pull requests
-(secrets.RELEASE_TOKEN in the workflows). Pushes use the checkout's git
-credentials.
+FORGEJO_TOKEN must read, close and merge pull requests (secrets.RELEASE_TOKEN
+in the workflows); a comment explaining a close is added when it may also
+write issues. Pushes use the checkout's git credentials.
 """
 
 from __future__ import annotations
@@ -112,8 +112,11 @@ class Forge:
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read()
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = response.read()
+        except urllib.error.HTTPError as error:
+            raise ReconcileError(f"{method} {path}: HTTP {error.code}") from error
         return json.loads(body) if body else None
 
     def open_pins(self) -> list[dict]:
@@ -134,9 +137,15 @@ class Forge:
         if self.dry_run:
             print(f"would close #{number}: {reason}")
             return
-        self.call(f"/issues/{number}/comments", "POST", {"body": reason})
+        # Closing needs only pull-request write, which the pin token has; the
+        # explanatory comment is an issue write it may lack, so it is best
+        # effort and follows the close.
         self.call(f"/pulls/{number}", "PATCH", {"state": "closed"})
         print(f"closed #{number}: {reason}")
+        try:
+            self.call(f"/issues/{number}/comments", "POST", {"body": reason})
+        except ReconcileError as error:
+            print(f"::warning::could not comment on #{number} ({error})", file=sys.stderr)
 
     def schedule_merge(self, number: int) -> None:
         """Forgejo merges it once branch protection's required checks pass."""
@@ -149,10 +158,10 @@ class Forge:
                 "merge_when_checks_succeed": True,
                 "delete_branch_after_merge": True,
             })
-        except urllib.error.HTTPError as error:
-            # 405/409: already scheduled, or mergeable only after a push; the
-            # next reconcile run schedules it again.
-            print(f"::warning::could not schedule #{number} to merge (HTTP {error.code})", file=sys.stderr)
+        except ReconcileError as error:
+            # 409: already scheduled; 405: not mergeable until a push. The next
+            # reconcile run schedules it again.
+            print(f"::warning::could not schedule #{number} to merge ({error})", file=sys.stderr)
             return
         print(f"#{number} merges when its checks succeed")
 
@@ -171,8 +180,12 @@ def reconcile(forge: Forge, main: str = "HEAD") -> int:
         number, branch = pull["number"], pull["head"]["ref"]
         ref = f"refs/remotes/origin/{branch}"
         if classify(pin_source(ref), main_source) == "obsolete":
-            forge.close(number, f"Obsolete: main already pins an RPM snapshot built from "
-                                f"{main_source or 'a later commit'}, at least as new as this one.")
+            try:
+                forge.close(number, f"Obsolete: main already pins an RPM snapshot built from "
+                                    f"{main_source or 'a later commit'}, at least as new as this one.")
+            except ReconcileError as error:
+                print(f"::error::#{number}: could not close ({error})", file=sys.stderr)
+                failures += 1
             continue
         try:
             if not applies_to(main_commit, ref):
