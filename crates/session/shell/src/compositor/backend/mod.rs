@@ -357,6 +357,10 @@ pub trait Backend {
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
 
+    /// Show `image` as the pointer. Default no-op: a hosted backend's
+    /// pointer belongs to the host and a headless one has none.
+    fn set_pointer_image(&mut self, _image: crate::compositor::cursor::PointerImage) {}
+
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
     fn cancel_touch(&mut self) {}

@@ -308,6 +308,26 @@ impl Backend for WinitBackend {
         true
     }
 
+    /// The host draws the pointer, so pass it the name of the shape; a
+    /// client-drawn cursor shows as the host's arrow.
+    fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        use crate::compositor::cursor::{CursorShape, PointerImage};
+        let Some(window) = self.inner.window.as_ref() else {
+            return;
+        };
+        match image {
+            PointerImage::Hidden => window.set_cursor_visible(false),
+            PointerImage::Shape(shape) => {
+                window.set_cursor_visible(true);
+                window.set_cursor(shape.icon());
+            }
+            PointerImage::Client(_) => {
+                window.set_cursor_visible(true);
+                window.set_cursor(CursorShape::Default.icon());
+            }
+        }
+    }
+
     /// Inline presentation fallback — only reached when
     /// [`Backend::take_presenter`] was never called or already took the
     /// render state.

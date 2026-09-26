@@ -51,7 +51,9 @@ use smithay::wayland::fractional_scale::{
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::output::Output as SmithayOutput;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
     InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
 };
@@ -73,8 +75,9 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
-    delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit, delegate_output,
+    delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
+    delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit,
+    delegate_output,
     delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
@@ -600,6 +603,11 @@ pub struct State {
     /// clients bind it per pointer. Delivering to the focused surface is
     /// gated on routing local libinput input through the seat (today local input drives shell chrome, not client surfaces).
     pub pointer_gestures_state: PointerGesturesState,
+    /// `wp_cursor_shape_manager_v1`: clients name a cursor and the
+    /// compositor draws it, instead of each shipping its own theme.
+    pub cursor_shape_state: CursorShapeManagerState,
+    /// The cursor the pointer-focused client asked for.
+    pub client_cursor: crate::compositor::client_cursor::ClientCursor,
     /// Local-input → client-surface routing state: the live foreign-surface
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
@@ -913,6 +921,7 @@ impl State {
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         // Clipboard + primary selection + drag-and-drop, advertised before
         // the struct literal (which moves `display_handle`). Selection
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
@@ -975,6 +984,8 @@ impl State {
             session_lock_state,
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
+            cursor_shape_state,
+            client_cursor: crate::compositor::client_cursor::ClientCursor::default(),
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
@@ -2945,6 +2956,8 @@ impl CompositorHandler for State {
                 fs.set_preferred_scale(scale);
             });
         });
+        let session_scale = self.scale;
+        self.client_cursor.surface_committed(surface, session_scale);
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
         let is_shared = {
@@ -4132,10 +4145,16 @@ impl SeatHandler for State {
     fn cursor_image(
         &mut self,
         _seat: &Seat<Self>,
-        _image: smithay::input::pointer::CursorImageStatus,
+        image: smithay::input::pointer::CursorImageStatus,
     ) {
+        let scale = self.scale;
+        self.client_cursor.set(image, scale);
     }
 }
+
+// Tablet tools may carry a cursor shape too; with no tablet-specific cursor
+// they share the pointer's.
+impl TabletSeatHandler for State {}
 
 impl InputMethodHandler for State {
     fn new_popup(&mut self, surface: InputMethodPopupSurface) {
@@ -4229,6 +4248,7 @@ delegate_text_input_manager!(State);
 delegate_input_method_manager!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
+delegate_cursor_shape!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
