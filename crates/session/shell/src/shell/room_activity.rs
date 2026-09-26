@@ -831,6 +831,28 @@ impl RoomActivityPane {
         self.task_broker = Some(broker);
     }
 
+    /// Whether `agent` is admitted to `room` and holds a live task
+    /// subscription right now. Without a broker no agent is ever present.
+    pub fn agent_is_present_in(&self, room: &str, agent: &str) -> bool {
+        self.task_broker
+            .as_ref()
+            .is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
+    }
+
+    /// Dispatch a queued task in `room` to its assigned live agent, for
+    /// surfaces outside Task Center that hand work over directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no broker is attached or the assigned agent
+    /// cannot accept the task.
+    pub fn dispatch_task_in(&self, room: &str, task_id: &str) -> Result<u64, String> {
+        self.task_broker
+            .as_ref()
+            .ok_or_else(|| "agent task dispatch is unavailable".to_string())?
+            .dispatch_task(room, task_id)
+    }
+
     fn detail_action_label(&self, action: DetailAction) -> &'static str {
         if action == DetailAction::Open
             && self.selection_detail().is_some_and(|detail| {
