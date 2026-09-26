@@ -159,6 +159,8 @@ mod surface_substream_e2e;
 mod system_monitor_test;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "toplevel_configure_states.rs"]
+mod toplevel_configure_states;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "wayland_test.rs"]
