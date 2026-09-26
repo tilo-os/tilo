@@ -38,14 +38,14 @@ containerfile="$repo/os/Containerfile"
 # synced-worktree git defaults (/etc/gitconfig and its snippet) are part of the
 # payload, as is the room store volume: its helper, the unit that prepares it
 # before fs.service and the loop unit of image-backed stores. The signature
-# attachment lookup for the code.tilo.so OS repository is staged with the
-# other trust inputs. Sorting
+# attachment lookups for the code.tilo.so OS repository and the
+# registry.tilo.so owner namespace are staged with the other trust inputs. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=cf64c3edbe64ae9a4d6b9542e564ff94084269ee5022320598e4be3573e48a97
+expected_contract=f1f99632696fd4cbfdfa469057dca0104a27e5192dd05df74cc210b515d4a7f4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
