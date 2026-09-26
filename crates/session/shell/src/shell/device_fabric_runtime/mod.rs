@@ -1537,6 +1537,10 @@ impl DeviceFabricRuntime {
             policy.permits(ContinuityCapability::Media),
             self.local_app_focus.as_ref(),
         );
+        crate::shell::speaker_group_runtime::pump(
+            network,
+            policy.permits(ContinuityCapability::Media),
+        );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         if policy.permits(ContinuityCapability::FileTransfer) {
@@ -1778,6 +1782,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
+                continue;
+            }
+            if crate::shell::speaker_group_runtime::handle_action(network, &envelope) {
                 continue;
             }
             if handle_device_health_action(network, &envelope, received_monotonic_us) {
@@ -3432,6 +3439,12 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteAudioStop { .. }
         | PersonalFabricAction::RemoteAudioKeepalive { .. }
         | PersonalFabricAction::RemoteAudioCancel { .. }
+        | PersonalFabricAction::SpeakerGroupInvite { .. }
+        | PersonalFabricAction::SpeakerGroupDecision { .. }
+        | PersonalFabricAction::SpeakerGroupLeave { .. }
+        | PersonalFabricAction::SpeakerGroupSessionOffer { .. }
+        | PersonalFabricAction::SpeakerGroupSessionDecision { .. }
+        | PersonalFabricAction::SpeakerGroupSessionStop { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }
@@ -4629,6 +4642,62 @@ pub fn remote_audio_view(
     crate::shell::remote_audio::snapshot(focus)
 }
 
+/// Route one live-audio picker source to a speaker group instead of a
+/// single device. Each member admits the session under its own consent.
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled, the group is not
+/// available, or none of its speakers is ready.
+pub fn request_speaker_group_audio(
+    network: &ShellNetwork,
+    source_token: u64,
+    group: crate::shell::speaker_group::SpeakerGroupId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
+    crate::shell::speaker_group_runtime::start_session(
+        network,
+        group,
+        crate::shell::speaker_group_runtime::GroupAudioSource::PickerToken(source_token),
+    )
+}
+
+/// Play one local media session on a speaker group. The media keeps
+/// decoding here; only its sound moves to the group.
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled, the session is not
+/// playing here, or the group is not available.
+pub fn play_media_on_speaker_group(
+    network: &ShellNetwork,
+    session_id: &str,
+    group: crate::shell::speaker_group::SpeakerGroupId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
+    if !media::handoff::playback_sessions()
+        .iter()
+        .any(|session| session.id == session_id)
+    {
+        return Err("that media session is no longer available".into());
+    }
+    crate::shell::speaker_group_runtime::start_session(
+        network,
+        group,
+        crate::shell::speaker_group_runtime::GroupAudioSource::MediaSession(session_id.into()),
+    )
+}
+
+/// Guard for every speaker-group edit and consent: all of it is media
+/// continuity.
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled on this device.
+pub fn require_speaker_groups() -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)
+}
+
 /// Send one file or folder to an authenticated exact target. Files up to
 /// 48 KiB use the inline fast path; everything else is staged immutably into
 /// the durable resumable object spool.
@@ -5645,6 +5714,11 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         local_outputs,
         transfers,
         remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
+        speaker_groups: if policy.permits(ContinuityCapability::Media) {
+            crate::shell::speaker_group_runtime::view(network)
+        } else {
+            crate::shell::speaker_group_runtime::SpeakerGroupsView::default()
+        },
         device_health,
         calibration_proposals,
         revertible_calibrations,
@@ -7128,6 +7202,12 @@ fn build_local_snapshot(
         settings,
         wifi,
         display,
+        speakers: crate::shell::speaker_group_runtime::authored_state(
+            device,
+            previous.map(|state| &state.speakers),
+            stamp,
+            policy.permits(ContinuityCapability::Media),
+        ),
     };
     preserve_unchanged_stamps(&mut snapshot, previous);
     snapshot
@@ -7149,6 +7229,7 @@ fn policy_capabilities(
         roaming_settings: policy.permits(ContinuityCapability::WifiSettings),
         secret_store: policy.permits(ContinuityCapability::WifiSettings),
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
+        audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
     }
 }
 
@@ -7203,6 +7284,12 @@ fn stamp_snapshot(snapshot: &mut DeviceFabricSnapshot, stamp: &FabricStamp, now_
     }
     if let Some(display) = snapshot.display.as_mut() {
         display.stamp = stamp.clone();
+    }
+    for item in &mut snapshot.speakers.groups {
+        item.stamp = stamp.clone();
+    }
+    for item in &mut snapshot.speakers.memberships {
+        item.stamp = stamp.clone();
     }
 }
 
@@ -7890,6 +7977,7 @@ mod tests {
                 .collect(),
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -8788,6 +8876,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         };
         let stamp = FabricStamp { counter: 9, device };
         stamp_snapshot(&mut snapshot, &stamp, 42);
@@ -8823,6 +8912,7 @@ mod tests {
             }],
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         };
         let next_stamp = FabricStamp { counter: 9, device };
         let applied_remote = BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]);

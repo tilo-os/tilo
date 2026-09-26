@@ -7016,6 +7016,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
 
