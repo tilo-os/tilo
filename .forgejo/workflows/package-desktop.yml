@@ -187,6 +187,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          filter: blob:none
       - name: Materialize the architecture-specific compiler cache client
         uses: ./.forgejo/actions/cache-github-assets
         with:
@@ -361,6 +362,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
+          filter: blob:none
       - name: Require this exact commit to be checked on main
         shell: bash
         run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
