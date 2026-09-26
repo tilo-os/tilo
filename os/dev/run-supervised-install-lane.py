@@ -30,7 +30,7 @@ import installer_bootc_helper
 
 
 DISK_IMAGE = ('registry.tilo.so/tilo/tilo-development-finalization-tools-aarch64@'
-              'sha256:a8481a3265c2f4e47287a11163ab8cc13f31b070bba3566d62191c173b54d612')
+              'sha256:454c4bbf89adc975ffb7030d1bbef8a6ce06f8a28eb4df38ec671ab358c4d9c2')
 VM_IMAGE = ('registry.tilo.so/tilo/tilo-development-arm-qemu-tools@'
             'sha256:b0509e08595c64c149bb96382e4fad5ca4e4ef2120ee372c966463892b4270bc')
 PROFILE_ENCODER_SHA256 = '423fdd3a5cde30972cad0dd809cf8b278b2b7950ee3609ac08a2166e10e99b25'
