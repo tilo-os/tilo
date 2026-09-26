@@ -130,7 +130,7 @@ pub enum ChannelEvent {
     ///
     /// Carries the MLS commit bytes surviving members must process to
     /// advance their epoch (removal produces a commit, not a Welcome). Shape
-    /// mirrors [`MemberAdded`] so the broker code path stays symmetric.
+    /// mirrors `MemberAdded` so the broker code path stays symmetric.
     ///
     /// `channel_crypto::ChannelGroup::remove_member` produces these commit
     /// bytes. The authoritative broker must durably append and fan them out

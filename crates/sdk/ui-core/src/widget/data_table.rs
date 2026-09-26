@@ -965,7 +965,7 @@ impl<Row> DataTable<Row> {
         self.resize = None;
     }
 
-    /// Enables the [`visible_row_range`] windowing so only rows intersecting
+    /// Enables the `visible_row_range` windowing so only rows intersecting
     /// the viewport (plus overscan) are rendered.
     pub fn set_viewport(&mut self, height_px: f32, row_height_px: f32) {
         self.authored_row_height = Some(f64::from(row_height_px));

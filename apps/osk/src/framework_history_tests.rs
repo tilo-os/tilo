@@ -743,7 +743,7 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     let key_probe = keys.clone();
     let tool_probe = tools.clone();
     let root = keyboard()
-        .on_key(move |_| key_probe.set(key_probe.get() + 1))
+        .on_output(move |_| key_probe.set(key_probe.get() + 1))
         .on_toolbar(move |_| tool_probe.set(tool_probe.get() + 1));
     let (doc, selected) = document();
     let mut f = driver(doc, root);
@@ -760,7 +760,7 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     }
     let runtime = |root: &OskWidget| {
         (
-            root.pending_text.clone(),
+            root.pending_text().to_owned(),
             root.key_log.clone(),
             root.toolbar_log.clone(),
             root.predictor.predict_next(Some("private"), ""),
@@ -775,9 +775,10 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     };
     let before = runtime(&f.keyboard.borrow());
     let key_calls = keys.get();
-    let callback =
-        std::ptr::from_ref::<dyn FnMut(KeyAction)>(f.keyboard.borrow().on_key.as_deref().unwrap())
-            .cast::<()>();
+    let callback_of = |k: &OskWidget| {
+        std::ptr::from_ref::<dyn FnMut(crate::output::OskOutput)>(k.on_output.as_deref().unwrap())
+    };
+    let callback = callback_of(&f.keyboard.borrow()).cast::<()>();
     let predictor = std::ptr::from_ref(&f.keyboard.borrow().predictor);
     let heads = f.driver.state_mut().doc.get_heads();
     let bytes = f.driver.state_mut().doc.save();
@@ -811,11 +812,7 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     assert_eq!(runtime(&f.keyboard.borrow()), before);
     f.driver.click_named("history-back-live").unwrap();
     assert_eq!(runtime(&f.keyboard.borrow()), before);
-    assert_eq!(
-        std::ptr::from_ref::<dyn FnMut(KeyAction)>(f.keyboard.borrow().on_key.as_deref().unwrap())
-            .cast::<()>(),
-        callback
-    );
+    assert_eq!(callback_of(&f.keyboard.borrow()).cast::<()>(), callback);
     assert_eq!(
         std::ptr::from_ref(&f.keyboard.borrow().predictor),
         predictor

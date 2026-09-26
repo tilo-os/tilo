@@ -6,7 +6,7 @@
 //! that the room has one open, and the honest local answer is to open
 //! one too — with the app id and peer name it carries, checked against
 //! the room owner's `Write` grant on `ResourceRef::App(id)` via
-//! [`admits`], and launched through [`crate::shell::launcher`], binding
+//! `admits`, and launched through [`crate::shell::launcher`], binding
 //! into the existing tab. `PeerWindow::note` labels the card and marks
 //! the decision made, so a refusal or launch is not re-run on every sync.
 

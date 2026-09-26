@@ -24,6 +24,7 @@ pub(crate) mod broker_services;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;
+pub mod codec_pack_notice;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
@@ -440,7 +441,7 @@ impl Shell {
 
     /// Canonical entry point for shell-level global hotkeys — both the
     /// production path ([`Shell::handle_window_event`]) and tests
-    /// ([`shell::test_support::key_press`]) funnel through here. Returns
+    /// (`shell::test_support::key_press`) funnel through here. Returns
     /// `true` if the press matched a global binding, `false` if it should
     /// fall through to the focused widget tree.
     // `press` is only ever read here, but narrowing to `&KeyPress` would
@@ -564,7 +565,7 @@ impl Shell {
         self.toasts.len()
     }
 
-    /// [`ToastKind`] of every active toast in push order.
+    /// `ToastKind` of every active toast in push order.
     #[cfg(any(test, debug_assertions))]
     pub fn toast_kinds(&self) -> Vec<ui::widget::toast::ToastKind> {
         self.toasts.iter().map(|t| t.kind).collect()
@@ -1189,7 +1190,7 @@ pub fn build_tilo_overlay_host_with_options(
     build_tilo_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
 }
 
-/// Extracted so [`ShellOverlayHost::resync_strips_from_tree`] can reach for
+/// Extracted so `ShellOverlayHost::resync_strips_from_tree` can reach for
 /// the same conversion when splicing freshly-added groups into a live
 /// [`GroupRow`].
 pub fn to_ui_window_group(g: &state::WindowGroup, records: &ui::record::RecordStore) -> UiGroup {
@@ -1367,7 +1368,7 @@ pub(crate) fn open_document_from_files(
         .map_err(|error| error.user_message())
 }
 
-/// The production entry point: threads the *shared* [`WorkspaceTreeHandle`]
+/// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
 /// (the same `Arc<RwLock<_>>` the portal's `GrantStoreHandle` and
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget

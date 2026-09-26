@@ -3,7 +3,7 @@
 //! use.
 //!
 //! Most rows are nullary — "toggle the overview" needs nothing but the
-//! instruction. [`Action::params`] lets one take a typed value instead,
+//! instruction. `Action::params` lets one take a typed value instead,
 //! for an action whose input (the text to insert, say) isn't discoverable
 //! from the chrome and has to be supplied and declared, so enumeration
 //! tells a caller what to pass rather than leaving it to be inferred.

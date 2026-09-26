@@ -14,13 +14,13 @@
 //!
 //! Each refresh assembles the tree from two sources, so a node carries both
 //! what it is and what you can do to it: the
-//! [`Widget::accessibility`](crate::widget::Widget::accessibility) walk
+//! [`Widget::accessibility`] walk
 //! (roles/names/values/state, collapsing presentational widgets like the
 //! AccessKit bridge does) contributes generic verbs (focus, activate, …);
 //! the app's [`resources()`](crate::widget::Widget::resources) forest from
 //! the Tilo [action model](tilo_actions) contributes
 //! [`SemanticActionKind::App`] affordances carrying the exact
-//! [`EncodedAction`](tilo_actions::EncodedAction) the click action sends —
+//! [`EncodedAction`] the click action sends —
 //! so invoking one by name drives the same replayable action through the
 //! one audited dispatch path, letting an assistive client operate the tree,
 //! not just read it.
@@ -113,7 +113,7 @@ impl SemanticId {
 pub enum SemanticActionKind {
     /// A generic accessibility verb ([`Action`]) — focus, activate,
     /// increment/decrement, expand/collapse, set-value. Routed through
-    /// [`Widget::perform_action`](crate::widget::Widget::perform_action) with the
+    /// [`Widget::perform_action`] with the
     /// `App`'s generic focus/click fallback, exactly like an AccessKit
     /// `ActionRequest`.
     Verb(Action),
@@ -293,8 +293,8 @@ impl SemanticTree {
     /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
-    /// ([`Widget::resources`](crate::widget::Widget::resources)); each
-    /// exported [`ActionSpec`](tilo_actions::ActionSpec) becomes an invokable
+    /// ([`Widget::resources`]); each
+    /// exported [`ActionSpec`] becomes an invokable
     /// affordance.
     pub fn refresh(
         &mut self,

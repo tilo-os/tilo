@@ -19,7 +19,7 @@
 //! - **full** — metadata plus every distinct payload blob, for offline
 //!   transfer and for sources that cannot serve blobs.
 //!
-//! Both directions stream. [`write`] reads payload bytes from a
+//! Both directions stream. [`write()`] reads payload bytes from a
 //! [`BlobSource`] as it emits them, and [`read`] hands each carried blob to
 //! a [`BlobSink`] as it arrives and checks the blob's hash after the sink
 //! has consumed it. Metadata entries precede blobs, so the reader knows the
@@ -337,7 +337,7 @@ pub fn write<W: Write>(
 ///
 /// # Errors
 ///
-/// See [`write`].
+/// See [`write()`].
 pub fn to_bytes(
     meta: &PackageMeta,
     payload: Option<&dyn BlobSource>,

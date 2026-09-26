@@ -4,7 +4,7 @@
 //! fan messages to it.
 //!
 //! Replication is per room — a peer invited to one workspace gets nothing
-//! of any other, since [`WorkspaceTree::export_room_changes_since`] never
+//! of any other, since `WorkspaceTree::export_room_changes_since` never
 //! exports anything else in the first place.
 //!
 //! Protocol: `SyncReq{since,room}` for a room we're in → `SyncResp` with
@@ -30,7 +30,7 @@ use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
 use crate::shell::state::{PeerOrigin, RoomId};
 
-/// Replica-side glue: a (shared) [`WorkspaceTree`] **handle**, a peer id,
+/// Replica-side glue: a (shared) `WorkspaceTree` **handle**, a peer id,
 /// and a FIFO queue of messages to broadcast on its behalf.
 ///
 /// The tree is a [`WorkspaceTreeHandle`]

@@ -17,7 +17,7 @@
 //! A spec also carries a **serializable projection of itself**: a typed
 //! [`params`](ActionSpec::params) list and a builder that turns bound
 //! [`ActionArgs`] into that same [`EncodedAction`]. That is what lets a caller
-//! with no window enumerate the surface (see [`crate::wire`]) and invoke it by
+//! with no window enumerate the surface (see `crate::wire`) and invoke it by
 //! name — the presentation stays local, but a faithful *description* of it can
 //! now cross.
 //!
@@ -1536,7 +1536,7 @@ pub trait ResourceProvider {
     /// Resolve one stable resource id without requiring it to be present in
     /// the eagerly published open-resource snapshot.
     ///
-    /// Providers with large child collections should keep [`resources`]
+    /// Providers with large child collections should keep `resources`
     /// contextual and override this hook with an indexed lookup. The default
     /// preserves the original behaviour for small providers.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {

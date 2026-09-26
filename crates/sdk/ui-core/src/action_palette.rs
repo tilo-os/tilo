@@ -4,7 +4,7 @@
 //! focused app instance publishes a tree of open [`Resource`]s, each
 //! exporting [`ActionSpec`](tilo_actions::ActionSpec)s — the operations
 //! Ctrl+K offers. An app can also fold in *searchable content* via
-//! [`SearchProvider`](crate::search::SearchProvider)s (contacts, files, …);
+//! [`SearchProvider`]s (contacts, files, …);
 //! their hits can address an exported resource action and therefore enter the
 //! same broker path; legacy opaque navigation ids remain supported during
 //! migration. Search providers are discovery-only: a provider-returned
@@ -13,8 +13,8 @@
 //! activation.
 //!
 //! One registry, one renderer, one flow: input is the shared
-//! [`SearchField`](crate::widget::SearchField); results render through
-//! [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind.
+//! [`SearchField`]; results render through
+//! [`SearchResultsView`], grouped by kind.
 //! An action row resolves to its [`EncodedAction`] and
 //! [`dispatch_with_context`](tilo_actions::dispatch_with_context)es through `tilo_actions` — the same
 //! path a remote peer replays — with a

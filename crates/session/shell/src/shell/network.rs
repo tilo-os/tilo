@@ -1419,7 +1419,7 @@ fn spawn_lan_discovery_forwarding(
 
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
-    /// shared [`WorkspaceTree`] in a [`WorkspaceTreeReplica`], and
+    /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
     /// return a handle the shell can use to drive sync. The keypair is
     /// loaded if it already exists, otherwise a fresh ed25519 key is
     /// generated and persisted.
@@ -1788,7 +1788,7 @@ impl ShellNetwork {
 
     /// Live session handles and their admitted display names for one room.
     /// Unlike [`Self::peer_labels`], this projection is deliberately
-    /// ephemeral: [`WorkspaceTree::retire_session`] removes a device as soon
+    /// ephemeral: `WorkspaceTree::retire_session` removes a device as soon
     /// as the transport reports departure. Presence cleanup uses it to avoid
     /// erasing a person's status when another device of theirs is still here.
     pub fn active_session_labels(
@@ -2444,7 +2444,7 @@ impl ShellNetwork {
 
     /// Subscribe the actor to every durable room currently in the tree, plus
     /// the compatibility/control topic. Rooms accepted later are joined by
-    /// [`Self::publish_message`].
+    /// `Self::publish_message`.
     pub fn join_default_workspace(&self) -> bool {
         let mut topics = vec![DEFAULT_WS_TOPIC];
         if let Ok(replica) = self.replica.lock() {

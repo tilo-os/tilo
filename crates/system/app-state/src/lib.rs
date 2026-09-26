@@ -307,7 +307,7 @@ impl DocStore {
     /// # Errors
     ///
     /// Returns an error if `TILO_PACKAGE_ID` is not a valid single directory
-    /// name (see [`validate_package_id`]), or if the package's state
+    /// name (see `validate_package_id`), or if the package's state
     /// directory can't be created, inspected or locked.
     pub fn open() -> Result<Self, StoreError> {
         Self::open_for(&cli::package_id())
@@ -320,7 +320,7 @@ impl DocStore {
     /// # Errors
     ///
     /// Returns an error if the resolved id is not a valid single directory
-    /// name (see [`validate_package_id`]), or if the package's state
+    /// name (see `validate_package_id`), or if the package's state
     /// directory can't be created, inspected or locked.
     pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
         let id = std::env::var("TILO_PACKAGE_ID")
@@ -342,7 +342,7 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if `package_id` fails [`validate_package_id`], or if
+    /// Returns an error if `package_id` fails `validate_package_id`, or if
     /// the package's state directory can't be created, inspected or locked.
     pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
@@ -357,8 +357,8 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if `package_id` fails [`validate_package_id`] or
-    /// `record_key` fails [`validate_record_key`], or if the record's state
+    /// Returns an error if `package_id` fails `validate_package_id` or
+    /// `record_key` fails `validate_record_key`, or if the record's state
     /// directory can't be created, inspected or locked.
     pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
@@ -400,8 +400,8 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if `package_id` fails [`validate_package_id`] or
-    /// `room_key` fails [`validate_record_key`], or if the room's state
+    /// Returns an error if `package_id` fails `validate_package_id` or
+    /// `room_key` fails `validate_record_key`, or if the room's state
     /// directory can't be created, inspected or locked.
     pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;

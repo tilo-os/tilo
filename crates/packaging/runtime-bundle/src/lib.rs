@@ -382,7 +382,7 @@ impl Identity {
         }
     }
 
-    /// Serialise as the same JSON shape [`load`] reads.
+    /// Serialise as the same JSON shape `load` reads.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         let hex = hex::encode(self.signing_key.to_bytes());
         format!("{{\"secret_key_hex\":\"{hex}\"}}\n").into_bytes()

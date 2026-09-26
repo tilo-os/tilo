@@ -1,14 +1,14 @@
 //! [`InstallerApp`] — the root installer widget + wizard state machine.
 //!
 //! Structured like the greeter: a root widget owning a single composed child (a
-//! [`Card`]) and delegating the five `Widget` passes into it.
+//! `Card`) and delegating the five `Widget` passes into it.
 //!
 //! Focus handling: the App discovers focusable widgets by walking the
 //! widget tree (`Widget::children`) in lock-step with the taffy tree.
 //! Any intermediate taffy node MUST have a matching widget in
 //! `children()`, or the recursion derails and inputs never enter
 //! `focusable_order` — breaking Tab / arrow navigation. The card is a
-//! [`Card`] widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
+//! `Card` widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
 //! taffy tree exactly.
 //!
 //! Keyboard-focus continuity across the per-step rebuild is handled by
@@ -137,6 +137,11 @@ fn fs_path(i: usize) -> String {
 fn fido2_path(i: usize) -> String {
     format!("installer.fido2.{i}")
 }
+/// Per-choice selection flag path for the media codecs opt-in:
+/// `installer.codecs.<index>` (index 0 = not now, 1 = install).
+fn codecs_path(i: usize) -> String {
+    format!("installer.codecs.{i}")
+}
 /// Rising-edge flag toggling the "I've saved my recovery key" acknowledgement.
 const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
 
@@ -144,6 +149,19 @@ const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
 /// is the default; index 1 enrolls a hardware security key as an extra
 /// unlock factor. Only shown when encryption is on.
 pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
+
+/// Labels for the media codecs opt-in, in display order. Index 0 (not now) is
+/// the default: the owner must choose to download third-party codecs.
+pub const CODECS_LABELS: [&str; 2] = ["Not now", "Install media codecs"];
+
+/// What installing media codecs does and where they come from, shown under
+/// the choice. The installer only records the choice; the installed system
+/// downloads the packages directly from their publishers.
+pub const CODECS_DESCRIPTION: &str = "Enables hardware video on AMD and Intel graphics and \
+H.264/HEVC playback and encoding for videos, screen sharing and calls. After the first start, this \
+computer downloads them directly from RPM Fusion and Cisco (OpenH264) under their own licences, as \
+soon as it is online; Tilo does not host or distribute them. You can install or remove them later \
+in Settings, Updates.";
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
@@ -437,7 +455,7 @@ pub enum InstallState {
 /// The step reached by pressing Next from `step`, if any. `Review` →
 /// `Install` is intentionally gated behind the explicit Begin button, so
 /// callers must not auto-advance into `Install` via Next (see
-/// [`InstallerApp::go_next`]).
+/// `InstallerApp::go_next`).
 pub fn next_step(step: Step) -> Option<Step> {
     match step {
         Step::Keyboard => Some(Step::Network),
@@ -1170,6 +1188,9 @@ pub struct InstallerApp {
     /// Enroll a FIDO2 security key as an extra unlock factor (only with
     /// encryption). Default `false`.
     fido2: bool,
+    /// Owner opted in to the third-party media codecs pack, installed by the
+    /// new system once it is online. Default `false`.
+    codecs: bool,
     /// User has acknowledged they will save the install-time recovery key.
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
@@ -1387,6 +1408,7 @@ impl InstallerApp {
             supported_filesystems: [true; FILESYSTEMS.len()],
             filesystem_policy_error: None,
             fido2: false,
+            codecs: false,
             recovery_ack: false,
             tpm2: has_tpm2(),
             secure_boot: secure_boot_enabled(),
@@ -1620,7 +1642,7 @@ impl InstallerApp {
     /// Seed a non-default keyboard layout (by display name) for a
     /// `--shots --step keyboard` render, so the visual preview clearly
     /// shows remapped keys. The value is seeded into the CRDT on the first
-    /// `sync` via [`Self::bootstrap_crdt`].
+    /// `sync` via `Self::bootstrap_crdt`.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;
         self.keymap = display_name.to_string();
@@ -1882,6 +1904,7 @@ impl InstallerApp {
             } else {
                 String::new()
             },
+            codecs: self.codecs,
         }
     }
 
@@ -1982,6 +2005,12 @@ impl InstallerApp {
         }
         for i in 0..FIDO2_LABELS.len() {
             let p = fido2_path(i);
+            if state.get(root, p.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, p.as_str(), false);
+            }
+        }
+        for i in 0..CODECS_LABELS.len() {
+            let p = codecs_path(i);
             if state.get(root, p.as_str()).ok().flatten().is_none() {
                 let _ = state.put(root, p.as_str(), false);
             }
@@ -2865,6 +2894,10 @@ impl InstallerApp {
         children.push(nav_row(Step::Keyboard, NEXT_PATH, "Next", false));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear list of the Options step's choices, each with its explanation"
+    )]
     fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let xl = theme.tokens.typography.scale.xl;
@@ -2951,6 +2984,22 @@ impl InstallerApp {
                     .with_color(dim),
             ));
         }
+
+        children.push(Box::new(Text::new("Media codecs").with_size(base)));
+        children.push(Box::new(
+            SegChoice::new(
+                CODECS_LABELS
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                (0..CODECS_LABELS.len()).map(codecs_path).collect(),
+                usize::from(self.codecs),
+            )
+            .with_test_id("codecs_choice"),
+        ));
+        children.push(Box::new(
+            Text::new(CODECS_DESCRIPTION).with_size(sm).with_color(dim),
+        ));
 
         children.push(nav_row(
             Step::Options,
@@ -3129,6 +3178,15 @@ impl InstallerApp {
         children.push(summary_row(theme, "Hostname", self.hostname.trim()));
         children.push(summary_row(theme, "Time zone", self.timezone.trim()));
         children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
+        children.push(summary_row(
+            theme,
+            "Media codecs",
+            if self.codecs {
+                "Download from RPM Fusion and Cisco once the new system is online"
+            } else {
+                "Not installed (available later in Settings, Updates)"
+            },
+        ));
         children.push(summary_row(theme, "Username", self.username.trim()));
         if !self.full_name.trim().is_empty() {
             children.push(summary_row(theme, "Name", self.full_name.trim()));
@@ -3841,6 +3899,19 @@ impl InstallerApp {
                     root,
                     op::OPTIONS,
                     "set-security-key",
+                    args(serde_json::json!({ "enabled": i == 1 })),
+                    None,
+                );
+            }
+        }
+
+        for i in 0..CODECS_LABELS.len() {
+            if Self::take_flag(state, root, codecs_path(i).as_str()) {
+                self.invoke_control(
+                    state,
+                    root,
+                    op::OPTIONS,
+                    "set-media-codecs",
                     args(serde_json::json!({ "enabled": i == 1 })),
                     None,
                 );
@@ -4699,6 +4770,53 @@ mod tests {
         assert!(!app.filesystem_policy_ready());
         app.step = Step::Options;
         assert!(app.validate_current_step_details().is_err());
+    }
+
+    #[test]
+    fn media_codecs_are_an_explicit_opt_in_that_threads_into_install_options() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Options;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        assert!(!app.codecs, "media codecs are not selected by default");
+        assert!(!app.install_options().codecs);
+        let _ = doc.put(&root, codecs_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(app.codecs);
+        assert!(app.install_options().codecs);
+        let _ = doc.put(&root, codecs_path(0).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(!app.codecs, "the choice can be withdrawn");
+    }
+
+    #[test]
+    fn options_step_explains_the_media_codecs_choice_and_review_repeats_it() {
+        let mut app = InstallerApp::for_shot(Step::Options);
+        let _ = build(&mut app);
+        let composed = app.composed.as_deref().unwrap();
+        assert!(has_test_id(composed, "codecs_choice"));
+        for needle in [
+            "RPM Fusion",
+            "Cisco",
+            "AMD and Intel",
+            "screen sharing and calls",
+        ] {
+            assert!(CODECS_DESCRIPTION.contains(needle), "{needle}");
+        }
+        app.codecs = true;
+        app.step = Step::Review;
+        app.dirty_structure = true;
+        let _ = build(&mut app);
+        let review = app.composed.as_deref().unwrap();
+        assert!(
+            find_accessible(
+                review,
+                "Download from RPM Fusion and Cisco once the new system is online"
+            )
+            .is_some(),
+            "Review repeats the codecs choice"
+        );
     }
 
     #[test]

@@ -1003,7 +1003,7 @@ impl CollaborationManager {
     ///
     /// The manager announces nothing on its own: send a
     /// [`CollabRequest::Hello`] to name the primary route. The route becomes
-    /// [`Self::primary_route`] only once the transport reports the remote
+    /// `Self::primary_route` only once the transport reports the remote
     /// end's acknowledgement through
     /// [`CollabTransport::take_primary_route_result`], observed by
     /// [`Self::poll`]. The transport is handed a wake callback that schedules
@@ -1759,7 +1759,7 @@ fn auto_hello_env() -> (String, Uuid) {
 /// 4. `/var/lib/tilo/user-identity/pubkey.bin`.
 /// 5. The OS account name, then a constant.
 ///
-/// Not memoised — see [`auto_hello_env_uncached`]: a process hosting
+/// Not memoised — see `auto_hello_env_uncached`: a process hosting
 /// more than one identity must not be frozen into the first one.
 pub fn local_user_id() -> crate::permissions::UserId {
     crate::permissions::UserId(resolve_local_user_id())

@@ -96,7 +96,7 @@
 //! since "no route" is a state every client already handles by backing
 //! off, while "forbidden" sends the user to fix a permission they can't
 //! reach from inside the app. A refusal is instant; a genuinely
-//! unroutable host may take until [`CONNECT_TIMEOUT`].
+//! unroutable host may take until `CONNECT_TIMEOUT`.
 //!
 //! ## What this does not constrain
 //!

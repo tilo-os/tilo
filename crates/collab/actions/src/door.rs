@@ -391,7 +391,7 @@ fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
 
 /// Perform the operation `address` names, attributed to `actor`.
 /// Resolve, bind, decode through the app's own registry, then
-/// [`dispatch_by`] honouring the action's locus. `actor` is the caller's
+/// [`dispatch_by`](crate::executor::dispatch_by) honouring the action's locus. `actor` is the caller's
 /// Automerge actor bytes, so the room's history names who asked.
 ///
 /// `resources` must be a tree built *now*, not the one an earlier
@@ -406,7 +406,7 @@ fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
 ///
 /// Returns any error [`encode`] documents; [`DoorError::UnregisteredType`]
 /// if `registry` has no decoder for the encoded action's type; or
-/// [`DoorError::Failed`] if [`dispatch_by`] fails once decoded.
+/// [`DoorError::Failed`] if [`dispatch_by`](crate::executor::dispatch_by) fails once decoded.
 pub fn invoke(
     doc: &mut crate::action::Doc,
     resources: &[Resource],

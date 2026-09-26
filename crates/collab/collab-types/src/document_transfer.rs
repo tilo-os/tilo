@@ -1,6 +1,6 @@
 //! Segmented document transfer over the signed-op envelope.
 //!
-//! One [`SignedOp`](crate::SignedOp) carries at most
+//! One [`SignedOp`] carries at most
 //! [`MAX_DOCUMENT_MUTATION_BYTES`] of Automerge data. A larger snapshot or
 //! incremental change set is split into [`DocumentSegment`] frames. Every
 //! segment travels as its own signed envelope, so brokers validate each one

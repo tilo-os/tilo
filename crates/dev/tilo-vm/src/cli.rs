@@ -273,7 +273,7 @@ pub struct InstallScenarioArgs {
     /// Graphics for both boots: gl (virgl, what the installed desktop needs) or software.
     #[arg(long, value_enum, default_value = "gl")]
     pub graphics: crate::scenario::Graphics,
-    /// Artifact directory (default: target/tilo-vm-scenarios/scenario-install-<time>).
+    /// Artifact directory (default: `target/tilo-vm-scenarios/scenario-install-<time>`).
     #[arg(long)]
     pub out: Option<PathBuf>,
     /// Longest the install itself may take, in seconds.
@@ -574,7 +574,7 @@ pub struct UpgradeArgs {
     pub image: Option<String>,
     /// `local`: build this worktree's dev image (localhost/tilo-vm:latest) and
     /// move onto it. `local:<image>`: an image already in podman's storage.
-    /// `ci:<tag>` or `sha:<commit>`: a CI build of main (tag main-<sha7>): its
+    /// `ci:<tag>` or `sha:<commit>`: a CI build of main (tag `main-<sha7>`): its
     /// published dev image, or a dev image built here FROM its integration image.
     #[arg(long)]
     pub from: Option<String>,

@@ -474,7 +474,7 @@ impl TextInput {
         self.local_author = author;
     }
 
-    /// After binding, [`sync`] reads from `obj` regardless of the string-path mode.
+    /// After binding, `sync` reads from `obj` regardless of the string-path mode.
     pub fn bind_text(&mut self, obj: ObjId) {
         self.local_state = None;
         self.bound_text = Some(obj);
@@ -1320,7 +1320,7 @@ impl TextInput {
         Rect::new(x, text_y, x + theme.caret_width, text_y + line_height)
     }
 
-    /// Single-line only; multiline callers use [`selection_rects`].
+    /// Single-line only; multiline callers use `selection_rects`.
     pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
         if (!self.multiline || self.multiline_shaped)
             && !self.masked()
@@ -2686,7 +2686,7 @@ impl TextInput {
         self.secret
     }
 
-    /// Only meaningful together with [`with_secret`].
+    /// Only meaningful together with `with_secret`.
     #[must_use]
     pub fn with_reveal(mut self, on: bool) -> Self {
         self.reveal = on;
@@ -2850,7 +2850,7 @@ impl TextInput {
         }
     }
 
-    /// Read the signal with [`take_submit`].
+    /// Read the signal with `take_submit`.
     #[must_use]
     pub fn with_enter_submits(mut self, on: bool) -> Self {
         self.enter_submits = on;

@@ -199,7 +199,7 @@ impl NotificationPortalHandle {
 
 /// Emit portal `ActionInvoked` signals from compositor toast clicks. The
 /// generic freedesktop notification server has its own independent consumer;
-/// [`NotificationBridge::add_action_tap`] prevents either side from racing to
+/// `NotificationBridge::add_action_tap` prevents either side from racing to
 /// drain the shared action mailbox.
 #[cfg(target_os = "linux")]
 pub fn spawn_action_emitter(

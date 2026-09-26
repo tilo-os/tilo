@@ -329,7 +329,7 @@ impl WifiSecurity {
 pub struct WifiNetworkInfo {
     pub ssid: String,
     /// Signal-strength bucket in `[0, 4]`. Mapped from the nmcli percentage via
-    /// [`signal_pct_to_bucket`].
+    /// `signal_pct_to_bucket`.
     pub signal: u8,
     /// `true` when the row's SECURITY column is non-empty (i.e. not `"--"`).
     pub secure: bool,

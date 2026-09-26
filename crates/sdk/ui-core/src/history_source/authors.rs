@@ -189,7 +189,7 @@ pub fn actor_handle(actor_hex: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// First [`SHORT_LEN`] hex characters of an actor id, for the dim monospace
+/// First `SHORT_LEN` hex characters of an actor id, for the dim monospace
 /// label next to the name. Short ids are returned whole.
 pub fn short_id(actor_hex: &str) -> String {
     actor_hex.chars().take(SHORT_LEN).collect()

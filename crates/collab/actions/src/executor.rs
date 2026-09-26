@@ -148,7 +148,7 @@ fn abort_pinned_change(doc: &mut Doc, prev_actor: automerge::ActorId) {
 ///
 /// # Errors
 ///
-/// Returns whatever [`Action::apply`](crate::action::Action::apply) returns
+/// Returns whatever [`Action::apply`] returns
 /// for `action` — typically [`ActionError::Automerge`] for a document
 /// write failure, or [`ActionError::Refused`] if the app declined the action.
 pub fn apply_local(
@@ -283,7 +283,7 @@ impl Dispatched {
 }
 
 /// The locus-aware front door, routing `action` per its
-/// [`ExecutionLocus`](crate::action::ExecutionLocus): `ClientLocal` →
+/// [`ExecutionLocus`]: `ClientLocal` →
 /// [`apply_local`] then `transport.replicate`; `ServerPreferred` →
 /// `transport.submit_to_host`, refusing when no authoritative host is
 /// reachable. The envelope's id/timestamp are fixed before submission.

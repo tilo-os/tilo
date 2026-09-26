@@ -264,7 +264,7 @@ impl Workspace {
     }
 
     /// Ids of the capabilities backing app `app_id`'s grants, in the
-    /// same order [`Self::grants`] renders them, so a Revoke button
+    /// same order `Self::grants` renders them, so a Revoke button
     /// that knows a row index can name the capability it removes.
     pub fn app_grant_ids_at(&self, app_id: &str, now: u64) -> Vec<String> {
         let live_at = Some(now);

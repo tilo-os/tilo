@@ -74,7 +74,7 @@ pub fn open(manifest_id: &str) -> (State, DocWriter) {
 }
 
 /// Open the index for one collaboration room.  Record-aware applications use
-/// this instead of [`open`]: their package-global document used to be the
+/// this instead of [`open()`]: their package-global document used to be the
 /// room index, which let two rooms hydrate and overwrite each other's record
 /// references after a restart.
 ///
@@ -143,7 +143,7 @@ pub fn open_room_in(
     })
 }
 
-/// [`open`], plus a one-time import of a document an older release of this
+/// [`open()`], plus a one-time import of a document an older release of this
 /// app left at `legacy`.
 ///
 /// The legacy document is *merged*, so state written since the upgrade is
@@ -174,7 +174,7 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, DocWriter) {
     })
 }
 
-/// [`open`] without the swallow-and-log fallback.
+/// [`open()`] without the swallow-and-log fallback.
 ///
 /// # Errors
 ///
@@ -338,7 +338,7 @@ fn in_memory_fallback() -> (State, DocWriter) {
     )
 }
 
-/// Convenience for tests and tools: same as [`open`] but for an explicit
+/// Convenience for tests and tools: same as [`open()`] but for an explicit
 /// package id rather than `TILO_PACKAGE_ID`.
 ///
 /// # Errors
@@ -366,7 +366,7 @@ pub fn open_in(
     )?))
 }
 
-/// The debounce window the native store applies to [`open`]'s writes.
+/// The debounce window the native store applies to [`open()`]'s writes.
 pub const DEBOUNCE: Duration = DEFAULT_DEBOUNCE;
 
 #[cfg(test)]

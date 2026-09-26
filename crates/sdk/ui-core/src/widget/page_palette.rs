@@ -1,7 +1,7 @@
 //! `PageJumpPalette` — Cmd-K / Ctrl-K fullscreen-ish page jump
 //! affordance used by the notes app.
 //!
-//! Conceptually a thinner cousin of [`crate::widget::CommandPalette`]
+//! Conceptually a thinner cousin of `crate::widget::CommandPalette`
 //! — the `CommandPalette` has a concept-locked filter strip + footer
 //! row that doesn't fit the notes app's "just jump to a page" mental
 //! model. `PageJumpPalette` ships only the input row + the filtered

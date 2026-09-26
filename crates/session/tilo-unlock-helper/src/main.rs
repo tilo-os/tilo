@@ -17,7 +17,7 @@
 //! contract around it.
 //!
 //! Configuration:
-//! * argv[1] — username (falls back to `$USER` when absent/empty).
+//! * argv`1` — username (falls back to `$USER` when absent/empty).
 //! * `TILO_UNLOCK_PAM_SERVICE` — PAM service name (default `login`).
 //! * `TILO_PAM_LIB` — libpam soname to dlopen (default `libpam.so.0`).
 

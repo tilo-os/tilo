@@ -185,7 +185,7 @@ impl WinitBackend {
 /// Presentation half of [`WinitBackend`], moved onto the render thread by
 /// [`Backend::take_presenter`]. Everything here is `Send`; winit's
 /// `EventLoop` isn't (must be pumped from its creating thread), which is
-/// why the split sits at the [`RenderState`] boundary.
+/// why the split sits at the `RenderState` boundary.
 pub struct WinitPresenter {
     render: RenderState,
     base_color: Color,

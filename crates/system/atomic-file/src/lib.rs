@@ -11,7 +11,7 @@
 //! power loss can leave the directory entry pointing at a file whose data blocks were never
 //! written.
 //!
-//! On Unix, [`write`] writes and flushes a sibling file, renames it, and flushes
+//! On Unix, [`write()`] writes and flushes a sibling file, renames it, and flushes
 //! the held containing directory. On admitted local NTFS, it creates a native
 //! write-through sibling, flushes it, renames through the held parent using
 //! extended POSIX semantics, then flushes the same retained writable file.
@@ -130,19 +130,19 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Atomically save a user document, following an existing symbolic link and
-/// retaining the existing target's Unix permission bits. Other [`write`]
+/// retaining the existing target's Unix permission bits. Other [`write()`]
 /// consumers retain their directory-entry replacement semantics.
 ///
 /// Existing targets must be writable regular files. Dangling links and Unix
 /// multiply-linked files fail closed rather than replacing a link or detaching
-/// another name from the edited document. New paths use [`write`] defaults.
-/// As with [`write`], callers must control the containing directory: resolution
+/// another name from the edited document. New paths use [`write()`] defaults.
+/// As with [`write()`], callers must control the containing directory: resolution
 /// is not a defense against concurrent hostile namespace changes. This retains
 /// permission bits, not extended ACLs, ownership, or other inode metadata.
 ///
 /// # Errors
 /// Returns resolution/access errors, rejects unsupported targets, and propagates
-/// [`write`] durability errors (which may occur after publication).
+/// [`write()`] durability errors (which may occur after publication).
 pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return write(path, bytes),
@@ -181,7 +181,7 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write(&target, bytes)
 }
 
-/// [`write`], creating the parent directory first when it is missing.
+/// [`write()`], creating the parent directory first when it is missing.
 ///
 /// Unix opens/creates the entire parent chain, fsyncs every held directory
 /// leaf-to-root, and publishes relative to the held leaf. Existing aliases are
@@ -191,7 +191,7 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if the parent directory can't be created, or any error [`write`] documents.
+/// Returns an error if the parent directory can't be created, or any error [`write()`] documents.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -268,18 +268,18 @@ fn create_private_parent(path: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-/// [`write`], with the temp file opened by `open_temp` instead of this crate —
+/// [`write()`], with the temp file opened by `open_temp` instead of this crate —
 /// for callers that must validate the opened object (owner, access, not a link)
 /// before trusting it with their bytes.
 ///
 /// `open_temp` receives a fresh hidden sibling path and must create it
 /// **exclusively** (`create_new`); an `AlreadyExists` error makes the next
 /// name be tried. The file is synced, renamed over `path` and the directory
-/// synced exactly as [`write`] does.
+/// synced exactly as [`write()`] does.
 ///
 /// # Errors
 ///
-/// Returns `open_temp`'s error, or any error [`write`] documents.
+/// Returns `open_temp`'s error, or any error [`write()`] documents.
 pub fn write_with_temp_opener(
     path: &Path,
     bytes: &[u8],
@@ -347,14 +347,14 @@ fn create_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// [`write`], with unix permission bits applied to the temp file **before** it is renamed
+/// [`write()`], with unix permission bits applied to the temp file **before** it is renamed
 /// into place, so the file is never visible at its final path with wider permissions than
 /// intended — what a secret needs, since creating then `chmod`ing leaves a window where
 /// another user can open it.
 ///
 /// # Errors
 ///
-/// Returns any error [`write`] documents. On Windows, only `0o600` is supported
+/// Returns any error [`write()`] documents. On Windows, only `0o600` is supported
 /// and maps to [`Privacy::OwnerOnly`]; other raw modes fail before mutation.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     #[cfg(any(unix, windows))]

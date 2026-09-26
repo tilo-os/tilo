@@ -1882,7 +1882,7 @@ impl ChromeState {
     }
 
     /// Called each frame by
-    /// [`crate::shell::notification::NotificationStack::update`].
+    /// `crate::shell::notification::NotificationStack::update`.
     /// Expired toasts from a D-Bus `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
         let mut expired: Vec<Notification> = Vec::new();
@@ -2085,7 +2085,7 @@ impl ChromeState {
 
     /// Queue a lock requested by the in-compositor power menu.  This is an
     /// edge, rather than a second source of truth for whether the session is
-    /// locked: the native loop drains it into [`SessionManager`].
+    /// locked: the native loop drains it into [`SessionManager`](crate::compositor::idle::SessionManager).
     pub fn request_session_lock(&mut self) {
         self.session_lock_requested = true;
     }

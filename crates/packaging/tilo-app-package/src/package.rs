@@ -10,7 +10,7 @@
 //! [`PackageMeta::from_parts`] checks every hash link, so holding a
 //! `PackageMeta` means the manifest and collection are exactly the ones the
 //! root commits to. Whether the root's signature is trusted is a separate
-//! question, answered by [`crate::verify`].
+//! question, answered by [`crate::verify()`].
 
 use crate::blobs::{BlobHash, Collection, CollectionDecodeError};
 use crate::id::PackageId;

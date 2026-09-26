@@ -23,11 +23,15 @@
 //! the keyboard, but its taps deliberately do not take keyboard focus from the
 //! edited field.
 //!
-//! Typed and swiped text follows the protocol-clean `commit_string` path. A
-//! narrowly gated virtual keyboard handles Backspace because winit's current
-//! `text-input-v3` client does not consume `delete_surrounding_text`. On other
-//! compositors, the binary may use its standalone virtual-keyboard fallback;
-//! Tilo never advertises that privileged global on its public display.
+//! The in-progress word is shown as input-method preedit and committed with
+//! `commit_string` at word boundaries. A narrowly gated virtual keyboard sends
+//! the editing keys — Backspace outside a composing word (winit's
+//! `text-input-v3` client does not consume `delete_surrounding_text`) and
+//! Return, so single-line fields submit. [`osk::OrderedRouter`] keeps the two
+//! connections in order. On other compositors, the binary may use its
+//! standalone virtual-keyboard fallback, which types the composing word
+//! directly; Tilo never advertises that privileged global on its public
+//! display.
 //!
 //! Swipe decoding and prediction are live: the real FUTO model is selected
 //! when its runtime assets are available, otherwise the in-tree geometric
@@ -63,11 +67,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use osk::InputPurpose;
-use osk::OskWidget;
 use osk::imclient::{ImState, InputMethodClient, try_input_method};
-use osk::inject::default_injector;
+use osk::inject::{TextInjector, default_injector};
 use osk::input_purpose_name;
+use osk::{InputPurpose, OrderedRouter, OskOutput, OskWidget, PreeditEmulator, Step};
 use ui::app::UserEvent;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
@@ -171,8 +174,9 @@ fn run_always_visible(args: &LaunchArgs, purpose: Option<InputPurpose>) -> Resul
         .build_root_with_history(|| {
             let mut injector = default_injector();
             tracing::info!("osk: text-injection backend = {}", injector.backend_name());
-            let mut widget = OskWidget::new().on_key(move |action| {
-                injector.key_action(&action);
+            let mut emulator = PreeditEmulator::new();
+            let mut widget = OskWidget::new().on_output(move |output| {
+                injector.send(&emulator.symbols(&output));
             });
             if let Some(purpose) = purpose {
                 widget.set_purpose(purpose);
@@ -263,36 +267,30 @@ fn finish_prepared_app(
 /// reducer into a minimal show/hide/purpose command, which it sends to the
 /// winit loop via the `EventLoopProxy` as a [`UserEvent::External`] string the
 /// widget understands (`osk:show`, `osk:hide`, `osk:purpose:<name>`).
-/// Typed/swiped text is committed back to the focused app via the same input
-/// method (`commit_string`).
+/// The widget's output is delivered in order through [`deliver`]: preedit and
+/// commits on the input method, editing keys on the virtual keyboard.
 fn run_auto_show(
     args: &LaunchArgs,
     im: InputMethodClient,
     purpose: Option<InputPurpose>,
 ) -> Result<(), LaunchError> {
     let prepared = launch_spec().prepare_native(args)?;
+    // The IM client is shared: the winit thread's `on_output` callback commits
+    // typed text through it, while the background thread reads focus events.
     let im = Arc::new(Mutex::new(im));
-    let im_for_keys = Arc::clone(&im);
+    let im_for_output = Arc::clone(&im);
     let mut app = prepared
         .build_root_with_history(|| {
             let mut editing_keys = default_injector();
-            let mut widget = OskWidget::new()
-                .on_key(move |action| {
-                    if matches!(action, osk::KeyAction::Backspace) {
-                        editing_keys.key_action(&action);
-                        return;
-                    }
-                    if let Some(text) = osk::inject::action_symbols(&action)
-                        .into_iter()
-                        .map(symbol_to_commit_text)
-                        .collect::<Option<String>>()
-                        && !text.is_empty()
-                        && let Ok(mut im) = im_for_keys.lock()
-                    {
-                        im.commit_text(&text);
-                    }
-                })
-                .hidden();
+            let mut router = OrderedRouter::new();
+            let mut widget = OskWidget::new().hidden().on_output(move |output| {
+                let Ok(mut im) = im_for_output.lock() else {
+                    return;
+                };
+                deliver(&mut router, &mut im, editing_keys.as_mut(), output);
+            });
+            // A `--purpose` override still applies as the initial layout; the
+            // field's content_type will replace it once focus lands.
             if let Some(purpose) = purpose {
                 widget.set_purpose(purpose);
             }
@@ -312,7 +310,7 @@ fn run_auto_show(
             let mut model = ImState::new();
             loop {
                 // Poll without blocking, then release the lock immediately so the
-                // winit thread's `on_key` callback can take it to commit typed
+                // winit thread's `on_output` callback can take it to commit typed
                 // text. (Blocking on the socket while holding the lock would
                 // deadlock against that callback.) Focus changes are rare and
                 // not latency-critical, so a short sleep between polls is fine.
@@ -324,6 +322,13 @@ fn run_auto_show(
                 };
                 for ev in events {
                     let t = model.reduce(ev);
+                    if t.field_changed
+                        && proxy
+                            .send_event(UserEvent::External("osk:field".to_string()))
+                            .is_err()
+                    {
+                        return;
+                    }
                     // Purpose first, so the first mapped frame already has
                     // the correct layout instead of flashing the text layout.
                     if let Some(p) = t.purpose_changed {
@@ -349,17 +354,22 @@ fn run_auto_show(
     Ok(())
 }
 
-/// The text a single [`osk::Symbol`] inserts when committed through the input
-/// method, or `None` for symbols that aren't a plain inserted character (so the
-/// whole commit is skipped — e.g. Backspace, handled by the guarded virtual
-/// keyboard fallback).
-fn symbol_to_commit_text(sym: osk::Symbol) -> Option<char> {
-    match sym {
-        osk::Symbol::Unicode(c) => Some(c),
-        osk::Symbol::Space => Some(' '),
-        osk::Symbol::Return => Some('\n'),
-        osk::Symbol::Tab => Some('\t'),
-        osk::Symbol::BackSpace => None,
+/// Deliver one widget output, keeping it ordered after everything delivered
+/// before it even when it travels on the other Wayland connection.
+fn deliver(
+    router: &mut OrderedRouter,
+    im: &mut InputMethodClient,
+    keys: &mut dyn TextInjector,
+    output: OskOutput,
+) {
+    for step in router.route(output) {
+        match step {
+            Step::Preedit(text) => im.set_preedit(&text),
+            Step::Commit(text) => im.commit_text(&text),
+            Step::Key(symbol) => keys.send(&[symbol]),
+            Step::Barrier(osk::Channel::InputMethod) => im.sync(),
+            Step::Barrier(osk::Channel::Keys) => keys.sync(),
+        }
     }
 }
 
@@ -492,7 +502,7 @@ mod launch_tests {
                 let count = calls.clone();
                 let mut root =
                     OskWidget::new_with_swipe_model(Box::new(osk::GeometricSwipeModel::english()))
-                        .on_key(move |_| count.set(count.get() + 1));
+                        .on_output(move |_| count.set(count.get() + 1));
                 for (name, canonical) in [("qwerty", q), ("azerty", a)] {
                     if !canonical {
                         let mut layout = osk::KeyboardLayout::by_name(name).unwrap();
@@ -741,7 +751,7 @@ mod launch_tests {
                 let key_count = keys.clone();
                 let mut root =
                     OskWidget::new_with_swipe_model(Box::new(osk::GeometricSwipeModel::english()))
-                        .on_key(move |_| key_count.set(key_count.get() + 1));
+                        .on_output(move |_| key_count.set(key_count.get() + 1));
                 root.set_suggestions_enabled(false);
                 let scope = ui::WakeScope::new();
                 let _entry = scope.enter();

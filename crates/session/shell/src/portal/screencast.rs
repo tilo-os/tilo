@@ -11,8 +11,8 @@
 //! persist — returns fresh standard `restore_data` so the next share can skip
 //! the prompt.
 //!
-//! [`ScreenCastStreamProvisioner`] lets tests substitute a
-//! [`MockScreenCastProvisioner`] for the `PipeWire` connection.
+//! [`ScreenCastStreamProvisioner`](crate::portal::screencast_pipewire::ScreenCastStreamProvisioner) lets tests substitute a
+//! [`MockScreenCastProvisioner`](crate::portal::screencast_pipewire::MockScreenCastProvisioner) for the `PipeWire` connection.
 
 #![allow(
     clippy::used_underscore_binding,

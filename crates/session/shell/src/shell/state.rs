@@ -605,7 +605,7 @@ impl WorkspaceAuthority for Workspace {
 
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
-/// Process-wide counter behind [`FreshId::new`] and [`next_id`] — this
+/// Process-wide counter behind [`FreshId::new`] and `next_id` — this
 /// compositor's host-side [`tilo_desktop_model::IdMinter`], kept as two
 /// atomics because every subsystem mints through it concurrently.
 /// [`WorkspaceTree::seed_next_id_from_self`] advances it past the highest
@@ -616,7 +616,7 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 /// workspaces with the same id into one.
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// High-16-bit peer salt for every id [`next_id`] mints. Default `0`
+/// High-16-bit peer salt for every id `next_id` mints. Default `0`
 /// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
 /// it at startup with a hash of the local Iroh key. `Relaxed`: written
 /// once at boot, nothing piggy-backs on visibility.
@@ -812,7 +812,7 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub room_peer_identities:
         HashMap<RoomId, std::collections::BTreeMap<String, GovernedPeerIdentity>>,
-    /// For a joined room, the [`NEXT_ID`] value at the moment of
+    /// For a joined room, the `NEXT_ID` value at the moment of
     /// joining — windows minted before that aren't projected in, or
     /// accepting an invite would publish every window already open. A
     /// counter, not a timestamp, so the line survives a restart.
@@ -1004,7 +1004,7 @@ impl WorkspaceTree {
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
     }
 
-    /// Set the process-wide peer salt [`next_id`] stamps into the high
+    /// Set the process-wide peer salt `next_id` stamps into the high
     /// 16 bits of every freshly-allocated id. Default `0` keeps
     /// `WorkspaceId(1)`-style test literals working; two peers under
     /// distinct salts can never collide. Takes `&mut self` even though
@@ -1031,7 +1031,7 @@ impl WorkspaceTree {
     }
 
     /// The salt replication treats as this tree's own — the id range
-    /// this tree may write and sweep. [`Self::peer_salt_override`]
+    /// this tree may write and sweep. `Self::peer_salt_override`
     /// first, the process-wide salt otherwise.
     pub fn local_salt(&self) -> u16 {
         self.desktop
@@ -1041,12 +1041,12 @@ impl WorkspaceTree {
 
     /// Give this tree a salt without touching the process-wide one, for
     /// holding two trees at once. The caller must mint matching ids
-    /// itself; [`next_id`] reads the static.
+    /// itself; `next_id` reads the static.
     pub fn set_salt_override(&mut self, salt: u16) {
         self.desktop.peer_salt_override = Some(salt);
     }
 
-    /// Walk every id and advance [`NEXT_ID`] past the highest counter
+    /// Walk every id and advance `NEXT_ID` past the highest counter
     /// stamped by the local peer salt — idempotent, called after
     /// deserializing. The counter restarts at `1` each process, so
     /// without this it collides with persisted ids. Only local-salt ids
@@ -1119,7 +1119,7 @@ impl WorkspaceTree {
 
     /// Apply a batch of opaque change-blobs received from a peer. After
     /// applying, the cache fields are rebuilt via
-    /// [`Self::rebuild_cache_from_doc`] so subsequent reads observe the
+    /// `Self::rebuild_cache_from_doc` so subsequent reads observe the
     /// merged state.
     ///
     /// # Errors

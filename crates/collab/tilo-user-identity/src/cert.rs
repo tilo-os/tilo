@@ -108,7 +108,7 @@ impl DeviceCapabilities {
 ///
 /// The signature is Ed25519, produced by the *user root* signing
 /// key over `blake3(DEVCERT_PREIMAGE_TAG || postcard(view))`, where
-/// `view` is the [`DeviceCertView`] omitting the `signature` field.
+/// `view` is the `DeviceCertView` omitting the `signature` field.
 ///
 /// Cert chain: for anything the device does to be trusted by a
 /// peer, that peer must (a) verify this signature under

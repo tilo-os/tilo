@@ -438,7 +438,7 @@ impl Button {
         }
     }
 
-    /// The counterpart to [`TextInput::apply_layout_external`] for an app
+    /// The counterpart to `TextInput::apply_layout_external` for an app
     /// that hand-positions a shared control over its own painted chrome;
     /// the button still owns its focus / a11y / activation contract, only
     /// its geometry is caller-driven.
@@ -1271,7 +1271,7 @@ impl Widget for Button {
     /// A default-sized button pins both dimensions as `length`, so taffy
     /// never consults `measure` for it (both axes are known before the leaf
     /// is reached). The label is measured here instead, after each pass,
-    /// and the node grown to [`Self::measured_default_footprint`] when it
+    /// and the node grown to `Self::measured_default_footprint` when it
     /// does not hold the label — at 1× that is `DEFAULT_SIZE` for every
     /// label narrower than the face, so nothing shipped moves.
     fn adjust_layout_with_measure(

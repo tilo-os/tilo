@@ -63,11 +63,11 @@ pub enum LineSignal {
     SelectBlockUp {
         caret: usize,
     },
-    /// Mirror of [`SelectBlockUp`] extending down.
+    /// Mirror of `SelectBlockUp` extending down.
     SelectBlockDown {
         caret: usize,
     },
-    /// User typed `[[`; parent opens a [`LinkPopover`] anchored at
+    /// User typed `[[`; parent opens a [`LinkPopover`](crate::widget::link_popover::LinkPopover) anchored at
     /// `open_at`. Brackets fall through to the inner input — the popover's
     /// commit-link logic strips them.
     LinkOpen {
@@ -462,7 +462,7 @@ impl RichTextLine {
         self.inner.selection_rect(theme, start, end)
     }
 
-    /// Inverse of [`pixel_x_for_byte`], using the shaped caret stops.
+    /// Inverse of `pixel_x_for_byte`, using the shaped caret stops.
     pub fn byte_for_pixel_x(&self, _theme: &Theme, x: f64) -> usize {
         self.inner
             .byte_at_point(Point::new(x, self.inner.get_rect().center().y))

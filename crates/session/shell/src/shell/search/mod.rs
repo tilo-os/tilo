@@ -2,7 +2,7 @@
 //!
 //! The shell's global palette fans out to any number of [`SearchProvider`]s,
 //! each owning a domain (shell actions, notes, filesystem, an app's own
-//! resources). Providers answer a single [`query`] call per keystroke — no
+//! resources). Providers answer a single `query` call per keystroke — no
 //! re-query per resource kind, so a network-backed provider gets exactly one
 //! round-trip per input. [`SearchScope::ActiveApp`] narrows the fanout to
 //! whichever provider owns the focused tab ([`SearchProvider::owns_tab`]);
@@ -775,7 +775,7 @@ impl SearchRegistry {
     }
 
     /// Union of every registered provider's [`ResourceKind`]s, ordered by
-    /// [`ResourceKind::sort_key`] — one chip per kind in the palette.
+    /// `ResourceKind::sort_key` — one chip per kind in the palette.
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
         let mut out: Vec<ResourceKind> = Vec::new();
         for provider in self.enabled_providers() {

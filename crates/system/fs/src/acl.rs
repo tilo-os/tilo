@@ -328,7 +328,7 @@ impl WorkspaceAcl {
     /// network counterpart of [`Self::permits`] (which is `false` for every
     /// peer, since it only answers for the mount's own identity). Same list,
     /// same `decide_capability`, same deny-bias; only the actor differs — for
-    /// a peer it's [`peer_actor`], unless a binding exists *for* that peer.
+    /// a peer it's `peer_actor`, unless a binding exists *for* that peer.
     pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
         let direct = self.entries.iter().any(|e| {
             &e.identity == peer

@@ -55,7 +55,7 @@ fn init() -> Result<(), RealtimeError> {
     INIT.get_or_init(|| gst::init().map_err(|e| e.to_string()))
         .clone()
         .map_err(RealtimeError::Pipeline)?;
-    rescan_if_extensions_changed();
+    crate::extensions::refresh_registry();
     Ok(())
 }
 
@@ -63,45 +63,11 @@ fn registry_has(name: &str) -> bool {
     gst::ElementFactory::find(name).is_some()
 }
 
-/// Where merged system extensions announce themselves. The optional
-/// additional-codecs pack is delivered as a `systemd-sysext` image, so its
-/// plugins appear under `/usr` exactly when a file appears here.
-const EXTENSION_RELEASE_DIR: &str = "/usr/lib/extension-release.d";
-
-/// The merged extensions, as names and modification times.
-type ExtensionStamp = Vec<(std::ffi::OsString, Option<std::time::SystemTime>)>;
-
-fn extension_stamp() -> ExtensionStamp {
-    let Ok(dir) = std::fs::read_dir(EXTENSION_RELEASE_DIR) else {
-        return Vec::new();
-    };
-    let mut out: Vec<_> = dir
-        .filter_map(Result::ok)
-        .map(|e| (e.file_name(), e.metadata().and_then(|m| m.modified()).ok()))
-        .collect();
-    out.sort();
-    out
-}
-
-/// Rescan the registry when the set of merged extensions changed since the
-/// last look, so enabling or removing the codec pack changes what the next
-/// encoder or decoder can choose without restarting the process.
-fn rescan_if_extensions_changed() {
-    static LAST: Mutex<Option<ExtensionStamp>> = Mutex::new(None);
-    let now = extension_stamp();
-    let Ok(mut last) = LAST.lock() else {
-        return;
-    };
-    let changed = last.as_ref().is_some_and(|prev| *prev != now);
-    *last = Some(now);
-    drop(last);
-    if changed {
-        rescan_registry();
-    }
-}
-
-/// Rescan the plugin registry so elements that appeared since start-up (the
-/// additional-codecs pack being enabled, a driver update) become candidates.
+/// Rebuild the plugin registry from the files on disk now, whether or not the
+/// merged extensions changed, so elements that appeared since start-up become
+/// candidates. Changes to the codec pack are picked up automatically by every
+/// encoder and decoder construction ([`crate::extensions`]); this is for a
+/// caller that knows something else changed (a driver update).
 ///
 /// Encoders and decoders never cache their choice across constructions, so
 /// the next one built after this sees the new registry. A plugin that was
@@ -112,10 +78,7 @@ fn rescan_if_extensions_changed() {
 /// afterwards. Until then selection falls through to the next candidate, as
 /// it does for any listed element that fails its start-up probe.
 pub fn rescan_registry() {
-    if gst::init().is_ok() {
-        let updated = gst::Registry::update().is_ok();
-        tracing::info!(updated, "media: real-time codec registry rescanned");
-    }
+    crate::extensions::rebuild_registry();
 }
 
 /// What this machine can encode and decode right now, read from the registry.

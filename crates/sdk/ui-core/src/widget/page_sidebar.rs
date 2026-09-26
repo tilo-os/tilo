@@ -9,7 +9,7 @@
 //! selection ring, index number, reflow gap, drag ghost, scrollbar, menu).
 //!
 //! The host is imperative (draws into a `Scene` each frame), so the primary
-//! API is [`PageSidebar::begin_frame`] / [`render`](Self::render) / pointer-
+//! API is [`PageSidebar::begin_frame`] / `render` / pointer-
 //! event methods; the [`Widget`] impl is a thin shim for the e2e harness.
 
 use std::collections::HashMap;

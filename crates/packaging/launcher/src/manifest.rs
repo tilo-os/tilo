@@ -55,7 +55,7 @@ pub struct MinimalManifest {
     pub version: String,
     /// `[package].kind` — what the package *is*: `app` is something a user
     /// opens; `service`/`plugin`/`format-provider`/`runtime` are
-    /// system-used. Separate from [`Entrypoint::entry_type`] since a
+    /// system-used. Separate from `Entrypoint::entry_type` since a
     /// package can draw and still not belong in a launcher (the on-screen
     /// keyboard). Defaults to `app`.
     pub kind: String,

@@ -102,7 +102,7 @@ impl WindowWidth {
     }
 
     /// Migrate a width persisted by the pixel model — see
-    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`].
+    /// `LEGACY_PIXEL_REFERENCE_WIDTH`.
     pub fn from_legacy_pixels(px: u32) -> Self {
         WindowWidth::Fraction(permille_for_px(
             f64::from(px),

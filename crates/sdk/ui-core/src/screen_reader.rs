@@ -2,7 +2,7 @@
 //!
 //! Narrates the semantic tree ([`crate::a11y::AccessNode`]) through an
 //! offline TTS stack. Focus changes interrupt the previous utterance;
-//! everything funnels through one [`SpeechQueue`](tts::SpeechQueue), so a
+//! everything funnels through one [`SpeechQueue`], so a
 //! focus storm coalesces to the latest utterance instead of backing up.
 //!
 //! [`describe`] is the pure core (`AccessNode -> String`, no I/O) —
@@ -12,7 +12,7 @@
 //! presentational nodes collapsed) via [`ScreenReader::read_all`] /
 //! `read_next` / `read_prev`.
 //!
-//! Narration vocabulary resolves through [`i18n!`](crate::i18n) bundles;
+//! Narration vocabulary resolves through [`i18n!`](macro@crate::i18n) bundles;
 //! with none loaded it falls back to English so headless builds narrate
 //! unchanged.
 
@@ -348,7 +348,7 @@ impl Default for ScreenReader {
 impl ScreenReader {
     /// Speaks through the current host's [`crate::host::SpeechFactory`].
     /// Never panics: with no speech available this is a
-    /// [`NullSpeaker`](tts::NullSpeaker) and narration is silently dropped.
+    /// [`NullSpeaker`] and narration is silently dropped.
     pub fn new() -> Self {
         Self::with_speaker(crate::host::current().speech.make())
     }

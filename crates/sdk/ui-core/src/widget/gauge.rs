@@ -4,7 +4,7 @@
 //! crossing into the warning / danger band recolours automatically.
 //!
 //! The ring sweeps clockwise from 12 o'clock (`-π/2`) using a round-capped
-//! [`kurbo::Arc`] over a faint full-circle track; the bar fills a rounded
+//! `kurbo::Arc` over a faint full-circle track; the bar fills a rounded
 //! track left-to-right. Track, label and threshold colours all come from
 //! the [`Theme`] — nothing is hard-coded.
 

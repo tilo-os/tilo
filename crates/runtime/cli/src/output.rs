@@ -7,7 +7,7 @@
 use std::fmt;
 use std::io::{self, IsTerminal, Write};
 
-/// Chainable builder returned by [`crate::output`].
+/// Chainable builder returned by [`crate::output()`].
 pub struct OutputBuilder {
     hyperlinks: bool,
     stream: Stream,

@@ -7,13 +7,14 @@
 //! shift state, so a custom draw + hit-test keeps the geometry honest and
 //! the taffy tree a single node.
 //!
-//! ## Output channels (two ways, mirroring `FilePicker`)
-//! Compositor text injection (`input-method-v2`) is **not** wired here.
-//! Until it is, what the user "types" is observable two ways:
-//! * [`OskWidget::on_key`] — an imperative callback fired per activation.
-//! * [`OskWidget::pending_text`] / [`OskWidget::take_pending_text`] — a
-//!   buffer of the resulting text (peek + drain, like
-//!   `FilePicker::outcome` / `FilePicker::take_outcome`).
+//! ## Output
+//! Every activation reduces to an ordered stream of [`OskOutput`]s: the
+//! in-progress word is composed as preedit and committed at a word boundary;
+//! editing keys (Backspace outside a word, Return) are keysyms. The host
+//! receives them through [`OskWidget::on_output`] (or drains
+//! [`OskWidget::take_output`]) and delivers them in order — see
+//! [`crate::output`]. [`OskWidget::pending_text`] mirrors what the focused
+//! field holds after that stream, for tests and diagnostics.
 //!
 //! ## Swipe-to-type + prediction (wired here)
 //! The widget captures each pointer drag as a path. On release a short,
@@ -21,15 +22,13 @@
 //! path that travelled across multiple keys is treated as a **swipe** and run
 //! through the [`crate::swipe`] decoder. The top candidate is auto-inserted
 //! (replacing the in-progress word); the ranked alternatives appear as
-//! tappable chips in a **suggestion bar** above the keys. After any word
-//! commits (space, swipe, or chip), [`crate::predict`] fills the bar with
-//! next-word predictions; tapping a next-word chip inserts the word + a space.
+//! tappable chips in a **suggestion bar** above the keys. The swiped word stays
+//! composing, so a chip replaces it in place; the next swipe or letter commits
+//! it with a trailing space. After any word commits, [`crate::predict`] fills
+//! the bar with next-word predictions; tapping a chip commits the word + a
+//! space.
 //!
-//! ## Seams for later work
-//! * **IM injection:** a host will drain [`OskWidget::take_pending_text`]
-//!   (and observe [`OskWidget::on_key`]) and forward commit-strings through a
-//!   `zwp_input_method_v2` client to the focused surface. Nothing in this
-//!   widget assumes a particular sink.
+//! ## Seams
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
 //!   [`crate::swipe::GeometricSwipeModel`]; a future FUTO/ExecuTorch
@@ -56,7 +55,9 @@ use ui::tilo_actions::{OperationKind, Resource};
 use ui::widget::Widget;
 
 use crate::futo::FutoSwipeModel;
-use crate::layout::{InputPurpose, KeyAction, KeyId, KeyboardLayout, ShiftState};
+use crate::inject::Symbol;
+use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState};
+use crate::output::{OskOutput, TextMirror};
 use crate::predict::Predictor;
 use crate::suggest::Suggestion;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
@@ -74,6 +75,7 @@ pub fn default_swipe_model() -> Box<dyn SwipeModel> {
 }
 use crate::presentation::{KeyboardPresentation, keyboard_geometry};
 use crate::toolbar::{OskToolbarAction, OskToolbarItem};
+use crate::touch_model::{NextKeyCache, TouchKey, TouchModel};
 
 /// Default target height of a single key row, in logical px. Responsive
 /// sizing keeps the *width* filling the surface and uses this for height —
@@ -87,9 +89,10 @@ pub const DEFAULT_TOOLBAR_HEIGHT: f32 = 48.0;
 pub const DEFAULT_SUGGESTION_HEIGHT: f32 = 40.0;
 /// How many suggestion chips to show at once.
 pub(crate) const MAX_SUGGESTIONS: usize = 5;
-/// The diagnostic mirror is deliberately bounded: the live injector is the
-/// delivery path, while this buffer exists only for hosts/tests that drain it.
+/// The diagnostic mirror is deliberately bounded: `on_output` is the delivery
+/// path, while this buffer exists only for hosts/tests that inspect it.
 pub const MAX_PENDING_TEXT_BYTES: usize = 16 * 1024;
+const MAX_OUTPUT_ENTRIES: usize = 1_024;
 const MAX_KEY_LOG_ENTRIES: usize = 1_024;
 const MAX_TOOLBAR_LOG_ENTRIES: usize = 128;
 const MAX_GESTURE_POINTS: usize = 256;
@@ -167,25 +170,36 @@ pub struct OskWidget {
     /// predictions). Empty → the bar collapses to a hint row.
     suggestions: Vec<Suggestion>,
     /// The in-progress word at the caret (letters since the last word
-    /// boundary). Used to replace-on-suggestion and to feed prefix completion.
+    /// boundary). It is the field's preedit text: shown, not yet committed.
     current_word: String,
+    /// Whether `current_word` came from a swipe. A swiped word is replaced as
+    /// a whole (chip correction, Backspace) and is followed by an automatic
+    /// space when the next word starts.
+    word_from_swipe: bool,
     /// Once a word exceeds the predictor cap, do not begin tracking another
     /// suffix of that same word. It resets only at a real word boundary.
     current_word_overflowed: bool,
     /// The previously committed word, for bigram next-word context.
     prev_word: Option<String>,
+    /// Where this user tends to hit each letter; adapts tap resolution.
+    touch_model: TouchModel,
+    /// Next-letter probabilities for the current typing context.
+    next_key: NextKeyCache,
+    /// Last pointer position over the widget (logical px).
+    pointer: Option<Point>,
     /// While the left button is down, the captured pointer path (logical px).
     /// `Some` between press and release; `None` otherwise.
     gesture_path: Option<Vec<Point>>,
 
     // --- output ---
-    pending_text: String,
-    pending_text_dropped_bytes: usize,
+    mirror: TextMirror,
+    output: VecDeque<OskOutput>,
+    dropped_outputs: usize,
     key_log: VecDeque<KeyAction>,
     dropped_key_actions: usize,
     toolbar_log: VecDeque<OskToolbarAction>,
     dropped_toolbar_actions: usize,
-    on_key: Option<Box<dyn FnMut(KeyAction)>>,
+    on_output: Option<Box<dyn FnMut(OskOutput)>>,
     on_toolbar: Option<Box<dyn FnMut(OskToolbarAction)>>,
 
     // --- dirty tracking ---
@@ -261,16 +275,21 @@ impl OskWidget {
             predictor: Predictor::english(),
             suggestions: Vec::new(),
             current_word: String::new(),
+            word_from_swipe: false,
             current_word_overflowed: false,
             prev_word: None,
+            touch_model: TouchModel::new(),
+            next_key: NextKeyCache::default(),
+            pointer: None,
             gesture_path: None,
-            pending_text: String::new(),
-            pending_text_dropped_bytes: 0,
+            mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
+            output: VecDeque::new(),
+            dropped_outputs: 0,
             key_log: VecDeque::new(),
             dropped_key_actions: 0,
             toolbar_log: VecDeque::new(),
             dropped_toolbar_actions: 0,
-            on_key: None,
+            on_output: None,
             on_toolbar: None,
             structure_dirty: false,
             drafts: PreferenceDrafts::default(),
@@ -338,11 +357,10 @@ impl OskWidget {
         self
     }
 
-    /// Imperative per-activation callback. Receives the *emitted* action
-    /// (already shift-cased for letters).
+    /// Receives every [`OskOutput`] in the order the field must apply it.
     #[must_use]
-    pub fn on_key<F: FnMut(KeyAction) + 'static>(mut self, f: F) -> Self {
-        self.on_key = Some(Box::new(f));
+    pub fn on_output<F: FnMut(OskOutput) + 'static>(mut self, f: F) -> Self {
+        self.on_output = Some(Box::new(f));
         self
     }
 
@@ -355,16 +373,24 @@ impl OskWidget {
 
     // --- output accessors ----------------------------------------------
 
-    /// Peek at the accumulated typed text (mirror of `FilePicker::outcome`).
+    /// What the focused field holds after the emitted output: committed text
+    /// followed by the composing word.
     pub fn pending_text(&self) -> &str {
-        &self.pending_text
+        self.mirror.text()
     }
 
-    /// Drain the accumulated typed text (mirror of
-    /// `FilePicker::take_outcome`). The host calls this and injects the
-    /// returned string into the focused surface.
-    pub fn take_pending_text(&mut self) -> String {
-        std::mem::take(&mut self.pending_text)
+    /// Drain the emitted output, oldest first (for hosts without an
+    /// [`on_output`](Self::on_output) callback, and tests).
+    pub fn take_output(&mut self) -> Vec<OskOutput> {
+        self.output.drain(..).collect()
+    }
+
+    /// Number of oldest outputs evicted from the bounded [`take_output`]
+    /// queue. `on_output` still received them.
+    ///
+    /// [`take_output`]: Self::take_output
+    pub fn dropped_outputs(&self) -> usize {
+        self.dropped_outputs
     }
 
     /// Drain the log of emitted key actions (for hosts/tests that want the
@@ -379,10 +405,9 @@ impl OskWidget {
     }
 
     /// Bytes that could not fit in the bounded diagnostic text mirror. Live
-    /// key delivery still reached `on_key`; callers that rely on this mirror
-    /// must drain it promptly instead of treating it as an unbounded transcript.
+    /// delivery still reached `on_output`.
     pub fn pending_text_dropped_bytes(&self) -> usize {
-        self.pending_text_dropped_bytes
+        self.mirror.dropped_bytes()
     }
 
     /// Number of oldest raw key events evicted from the bounded diagnostic log.
@@ -429,6 +454,7 @@ impl OskWidget {
         self.personalization_enabled = enabled;
         if !enabled {
             self.predictor.clear_learned();
+            self.touch_model.clear();
         }
         self.refresh_next_word_suggestions();
         self.drafts.stage(Preference::Personalization(enabled));
@@ -438,6 +464,7 @@ impl OskWidget {
     /// preference. This has no effect on the bundled dictionary/bigram model.
     pub fn clear_personalization(&mut self) {
         self.predictor.clear_learned();
+        self.touch_model.clear();
     }
 
     // --- runtime configuration -----------------------------------------
@@ -666,6 +693,7 @@ impl OskWidget {
         self.personalization_enabled = enabled;
         if !enabled {
             self.predictor.clear_learned();
+            self.touch_model.clear();
         }
         self.refresh_next_word_suggestions();
     }
@@ -694,64 +722,32 @@ impl OskWidget {
             .unwrap_or_else(|| unreachable!("OskWidget always registers at least one layout"))
     }
 
-    /// Apply an emitted [`KeyAction`]: update text/state, log it, fire the
-    /// callback. Also maintains the in-progress **current word** buffer and
-    /// refreshes the suggestion bar (prefix completion while typing; next-word
-    /// predictions after a boundary).
+    /// Apply an emitted [`KeyAction`]: update keyboard state, reduce it into
+    /// [`OskOutput`]s and log it. Letters extend the composing word; spaces,
+    /// punctuation and Return commit it; Backspace edits it while it exists
+    /// and becomes a real key press otherwise.
     fn apply_action(&mut self, action: KeyAction) {
         match &action {
             KeyAction::Char(s) => {
-                self.append_pending_text(s);
                 // One-shot shift resets after a character; caps is sticky.
                 if self.shift == ShiftState::Shift {
                     self.shift = ShiftState::Off;
                 }
-                // Track the current word: letters extend it, punctuation ends
-                // it (commits a word boundary).
-                if s.chars().all(char::is_alphabetic) {
-                    if !self.current_word_overflowed
-                        && self
-                            .current_word
-                            .chars()
-                            .count()
-                            .saturating_add(s.chars().count())
-                            <= MAX_TRACKED_WORD_SCALARS
-                    {
-                        self.current_word.push_str(s);
-                        self.refresh_completion_suggestions();
-                    } else {
-                        // Keep delivery intact but stop retaining a hostile or
-                        // accidental mega-token solely for prediction.
-                        self.current_word.clear();
-                        self.current_word_overflowed = true;
-                        self.suggestions.clear();
-                    }
+                if !s.is_empty() && s.chars().all(char::is_alphabetic) {
+                    self.extend_word(s);
                 } else {
-                    self.commit_current_word();
+                    self.finish_word(s);
                 }
             }
-            KeyAction::Space => {
-                self.append_pending_text(" ");
-                self.commit_current_word();
-            }
+            KeyAction::Space => self.finish_word(" "),
             KeyAction::Enter => {
-                self.append_pending_text("\n");
-                self.commit_current_word();
-                // A newline clears next-word context.
+                self.finish_word("");
+                self.emit(OskOutput::Key(Symbol::Return));
+                // A new line clears next-word context.
                 self.prev_word = None;
                 self.suggestions.clear();
             }
-            KeyAction::Backspace => {
-                self.pending_text.pop();
-                // Keep the current-word buffer in sync with a backspace.
-                if self.current_word.pop().is_none() {
-                    // Backspaced past the word start — context is now stale.
-                    self.prev_word = None;
-                    self.suggestions.clear();
-                } else {
-                    self.refresh_completion_suggestions();
-                }
-            }
+            KeyAction::Backspace => self.backspace(),
             KeyAction::Shift => {
                 self.shift = self.shift.cycle();
             }
@@ -767,26 +763,100 @@ impl OskWidget {
             self.key_log.pop_front();
             self.dropped_key_actions = self.dropped_key_actions.saturating_add(1);
         }
-        self.key_log.push_back(action.clone());
-        if let Some(cb) = &mut self.on_key {
-            cb(action);
+        self.key_log.push_back(action);
+    }
+
+    /// Send one output to the field (callback, bounded queue, mirror).
+    fn emit(&mut self, output: OskOutput) {
+        self.mirror.apply(&output);
+        if self.output.len() == MAX_OUTPUT_ENTRIES {
+            self.output.pop_front();
+            self.dropped_outputs = self.dropped_outputs.saturating_add(1);
+        }
+        self.output.push_back(output.clone());
+        if let Some(cb) = &mut self.on_output {
+            cb(output);
         }
     }
 
-    /// Finish the in-progress word (at a space/punctuation/enter boundary):
-    /// it becomes the bigram context for next-word prediction, and the bar is
-    /// refilled with predictions.
-    fn commit_current_word(&mut self) {
-        if !self.current_word.is_empty() {
-            let committed = self.current_word.to_lowercase();
+    /// Add typed letters to the composing word. A swiped word in front of them
+    /// is committed first with a separating space.
+    fn extend_word(&mut self, letters: &str) {
+        if self.word_from_swipe {
+            self.finish_word(" ");
+        }
+        let fits = self
+            .current_word
+            .chars()
+            .count()
+            .saturating_add(letters.chars().count())
+            <= MAX_TRACKED_WORD_SCALARS;
+        if !self.current_word_overflowed && fits {
+            self.current_word.push_str(letters);
+            self.emit(OskOutput::SetPreedit(self.current_word.clone()));
+            self.refresh_completion_suggestions();
+        } else {
+            // Keep delivery intact but stop composing (and predicting from) a
+            // hostile or accidental mega-token.
+            let mut text = std::mem::take(&mut self.current_word);
+            text.push_str(letters);
+            self.emit(OskOutput::Commit(text));
+            self.current_word_overflowed = true;
+            self.suggestions.clear();
+        }
+    }
+
+    /// Commit the composing word followed by `tail` (a space, punctuation, or
+    /// nothing before an editing key). The word becomes the bigram context for
+    /// next-word prediction and the bar is refilled with predictions.
+    fn finish_word(&mut self, tail: &str) {
+        let word = std::mem::take(&mut self.current_word);
+        if !word.is_empty() || !tail.is_empty() {
+            let mut text = word.clone();
+            text.push_str(tail);
+            self.emit(OskOutput::Commit(text));
+        }
+        self.word_from_swipe = false;
+        self.current_word_overflowed = false;
+        if !word.is_empty() {
+            let committed = word.to_lowercase();
             if self.personalization_enabled {
                 self.predictor
                     .learn_transition(self.prev_word.as_deref(), &committed);
             }
             self.prev_word = Some(committed);
-            self.current_word.clear();
         }
+        self.refresh_next_word_suggestions();
+    }
+
+    /// Backspace edits the composing word (a swiped word goes as a whole);
+    /// with nothing composing it is a real key press.
+    fn backspace(&mut self) {
+        if self.current_word.is_empty() {
+            self.emit(OskOutput::Key(Symbol::BackSpace));
+            // Backspaced past the word start — context is now stale.
+            self.prev_word = None;
+            self.suggestions.clear();
+            return;
+        }
+        if self.word_from_swipe {
+            self.current_word.clear();
+            self.word_from_swipe = false;
+        } else {
+            self.current_word.pop();
+        }
+        self.emit(OskOutput::SetPreedit(self.current_word.clone()));
+        self.refresh_completion_suggestions();
+    }
+
+    /// Drop the composition and next-word context. The focused field changed
+    /// (or went away), so neither belongs to what the user edits next.
+    pub fn reset_composition(&mut self) {
+        self.current_word.clear();
+        self.word_from_swipe = false;
         self.current_word_overflowed = false;
+        self.prev_word = None;
+        self.mirror.clear();
         self.refresh_next_word_suggestions();
     }
 
@@ -827,89 +897,50 @@ impl OskWidget {
             .collect();
     }
 
-    /// Replace the in-progress word in `pending_text` with `word`. Used when a
-    /// swipe auto-inserts its top candidate and when the user taps a chip that
-    /// completes/corrects the current word. The replaced word becomes the
-    /// next-word context, and the bar is refilled with predictions.
-    fn replace_current_word(&mut self, word: &str) {
-        // Strip the in-progress word's letters from the tail of pending_text.
-        let drop = self.current_word.chars().count();
-        for _ in 0..drop {
-            self.pending_text.pop();
-        }
-        self.append_pending_text(word);
-        self.current_word.clear();
-        self.current_word_overflowed = false;
-        let committed = word.to_lowercase();
-        if self.personalization_enabled {
-            self.predictor
-                .learn_transition(self.prev_word.as_deref(), &committed);
-        }
-        self.prev_word = Some(committed);
-        self.refresh_next_word_suggestions();
-    }
-
-    /// Activate a suggestion chip by index. Two cases:
-    ///
-    /// * **completion/candidate** (there is an in-progress word) → replace it.
-    /// * **next-word** (no in-progress word) → insert the word + a space.
+    /// Activate a suggestion chip by index. A chip correcting a swiped word
+    /// replaces it and keeps it composing, so the alternatives stay available;
+    /// any other chip commits its word plus a space, replacing whatever was
+    /// composing.
     ///
     /// Returns whether a chip was activated.
     pub fn activate_suggestion(&mut self, index: usize) -> bool {
         let Some(s) = self.suggestions.get(index).cloned() else {
             return false;
         };
-        if self.current_word.is_empty() {
-            // Next-word pick: insert "word ".
-            self.append_pending_text(&s.word);
-            self.append_pending_text(" ");
-            let committed = s.word.to_lowercase();
-            if self.personalization_enabled {
-                self.predictor
-                    .learn_transition(self.prev_word.as_deref(), &committed);
-            }
-            self.prev_word = Some(committed);
-            self.current_word_overflowed = false;
-            self.refresh_next_word_suggestions();
+        self.current_word = s.word;
+        if self.word_from_swipe {
+            self.emit(OskOutput::SetPreedit(self.current_word.clone()));
         } else {
-            self.replace_current_word(&s.word);
+            self.finish_word(" ");
         }
         true
     }
 
     /// Decode a captured gesture `path` as a swipe. If it yields candidates,
-    /// auto-insert the top one (replacing any in-progress word) and show the
-    /// ranked alternatives in the bar. Returns whether the swipe produced a
-    /// word.
+    /// compose the top one (replacing a partly typed word, committing a
+    /// previously swiped one with a space) and show the ranked alternatives in
+    /// the bar. Returns whether the swipe produced a word.
     fn decode_and_apply_swipe(&mut self, path: &[Point]) -> bool {
         let layout = self.current_layout().clone();
         let cands = self
             .swipe_model
             .decode(path, &self.key_geom, &layout, MAX_SUGGESTIONS);
-        // `cands.first()` also covers the empty case, so this doubles as the
-        // emptiness check.
         let Some(top_cand) = cands.first() else {
             return false;
         };
-        // The swipe inserts a fresh word: if mid-word (rare, e.g. a swipe
-        // started after some taps) replace it; otherwise just append.
         let top = top_cand.word.clone();
-        if self.current_word.is_empty() {
-            // Auto-insert acts like a completed word.
-            self.append_pending_text(&top);
-            self.prev_word = Some(top.to_lowercase());
-        } else {
-            self.replace_current_word(&top);
+        if self.word_from_swipe {
+            self.finish_word(" ");
         }
-        // Show the ranked candidates so the user can correct the auto-pick.
+        self.current_word = top;
+        self.word_from_swipe = true;
+        self.current_word_overflowed = false;
+        self.emit(OskOutput::SetPreedit(self.current_word.clone()));
+        // Show the ranked candidates so the user can correct the pick.
         self.suggestions = cands
             .into_iter()
             .map(|c| Suggestion::new(c.word, c.score))
             .collect();
-        // After a swipe the word is committed; the next tap on a chip should
-        // *correct* it, so keep current_word empty but remember the candidates.
-        self.current_word.clear();
-        self.current_word_overflowed = false;
         true
     }
 
@@ -925,6 +956,39 @@ impl OskWidget {
             .map(|(_, r)| (r.width() + r.height()) * 0.5)
             .sum();
         sum / self.key_geom.len() as f64
+    }
+
+    /// Resolve a tap on letter key `hit` at `p` to the letter the user most
+    /// likely meant (see [`crate::touch_model`]). Non-letter keys, and letter
+    /// keys without a known pointer position, resolve to themselves.
+    fn resolve_letter_tap(&mut self, hit: KeyId, p: Option<Point>) -> KeyId {
+        let Some(p) = p else { return hit };
+        let layout = self.current_layout();
+        if !layout.key(hit).is_some_and(Key::is_letter) {
+            return hit;
+        }
+        let keys: Vec<TouchKey> = self
+            .key_geom
+            .iter()
+            .filter_map(|&(id, rect)| {
+                let key = layout.key(id).filter(|k| k.is_letter())?;
+                let ch = key.label.chars().next()?.to_lowercase().next()?;
+                Some(TouchKey { id, ch, rect })
+            })
+            .collect();
+        let predictor = &self.predictor;
+        let (prev, word) = (self.prev_word.as_deref(), self.current_word.as_str());
+        let p_next = self
+            .next_key
+            .get(prev, word, || predictor.next_key_distribution(prev, word));
+        let target =
+            crate::touch_model::resolve(p, &keys, p_next, &self.touch_model).unwrap_or(hit);
+        if self.personalization_enabled
+            && let Some(k) = keys.iter().find(|k| k.id == target)
+        {
+            self.touch_model.learn(k.ch, p, k.rect);
+        }
+        target
     }
 
     fn key_at(&self, p: Point) -> Option<KeyId> {
@@ -946,25 +1010,6 @@ impl OskWidget {
             .iter()
             .find(|(_, r)| r.contains(p))
             .map(|(i, _)| *i)
-    }
-
-    fn append_pending_text(&mut self, text: &str) {
-        let remaining = MAX_PENDING_TEXT_BYTES.saturating_sub(self.pending_text.len());
-        if remaining == 0 {
-            self.pending_text_dropped_bytes =
-                self.pending_text_dropped_bytes.saturating_add(text.len());
-            return;
-        }
-        let mut end = remaining.min(text.len());
-        while end > 0 && !text.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        if let Some(prefix) = text.get(..end) {
-            self.pending_text.push_str(prefix);
-        }
-        self.pending_text_dropped_bytes = self
-            .pending_text_dropped_bytes
-            .saturating_add(text.len().saturating_sub(end));
     }
 }
 
@@ -1190,6 +1235,7 @@ impl Widget for OskWidget {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer = Some(p);
                 // While the button is held over the keys, accumulate the
                 // gesture path for swipe decoding.
                 if let Some(path) = self.gesture_path.as_mut() {
@@ -1268,8 +1314,10 @@ impl Widget for OskWidget {
                             self.activate_key(id);
                         }
                     } else if self.hovered_key == Some(id) {
-                        // A short tap stays a normal key press.
-                        self.activate_key(id);
+                        // A short tap is a key press; a letter tap resolves to
+                        // the letter most likely meant near that point.
+                        let target = self.resolve_letter_tap(id, self.pointer);
+                        self.activate_key(target);
                     }
                     *handled = true;
                 } else if let Some(i) = self.pressed_sugg.take() {
@@ -1445,6 +1493,8 @@ impl Widget for OskWidget {
     /// shows/hides and re-layouts in step with the focused field:
     ///
     /// * `osk:show` / `osk:hide` — apply the compositor's show/hide decision.
+    /// * `osk:field` — a text field gained or lost focus; drop the composition
+    ///   that belonged to the previous one.
     /// * `osk:purpose:<name>` — switch to the layout for an [`InputPurpose`]
     ///   (`text`, `number`, `decimal`, `phone`, `url`, `email`, `pin`,
     ///   `password`, `date`, `time`). An unknown name is ignored.
@@ -1455,6 +1505,7 @@ impl Widget for OskWidget {
         match payload {
             "osk:show" => self.set_visible(true),
             "osk:hide" => self.set_visible(false),
+            "osk:field" => self.reset_composition(),
             other => {
                 if let Some(name) = other.strip_prefix("osk:purpose:")
                     && let Some(purpose) = input_purpose_from_name(name)
@@ -1592,13 +1643,95 @@ mod tests {
         let mut osk = {
             let seen = seen.clone();
             OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
-                .on_key(move |a| seen.borrow_mut().push(a))
+                .on_output(move |o| seen.borrow_mut().push(o))
         };
         lay_out(&mut osk, 800.0, 360.0);
         osk.activate_label("a");
         let log = osk.take_key_actions();
         assert_eq!(log, vec![KeyAction::Char("a".into())]);
-        assert_eq!(*seen.borrow(), vec![KeyAction::Char("a".into())]);
+        assert_eq!(*seen.borrow(), vec![pre("a")]);
+    }
+
+    fn pre(s: &str) -> OskOutput {
+        OskOutput::SetPreedit(s.into())
+    }
+
+    fn commit(s: &str) -> OskOutput {
+        OskOutput::Commit(s.into())
+    }
+
+    #[test]
+    fn typed_word_composes_as_preedit_and_commits_at_space() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 800.0, 360.0);
+        osk.activate_label("h");
+        osk.activate_label("i");
+        osk.activate_label("space");
+        osk.activate_label("m");
+        assert_eq!(
+            osk.take_output(),
+            vec![pre("h"), pre("hi"), commit("hi "), pre("m")]
+        );
+        assert_eq!(osk.pending_text(), "hi m");
+    }
+
+    #[test]
+    fn punctuation_commits_the_word_with_it() {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("o".into()));
+        osk.apply_action(KeyAction::Char("k".into()));
+        osk.apply_action(KeyAction::Char(",".into()));
+        osk.apply_action(KeyAction::Char(".".into()));
+        assert_eq!(
+            osk.take_output(),
+            vec![pre("o"), pre("ok"), commit("ok,"), commit(".")]
+        );
+    }
+
+    #[test]
+    fn enter_commits_the_word_before_the_return_key() {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("g".into()));
+        osk.apply_action(KeyAction::Char("o".into()));
+        osk.apply_action(KeyAction::Enter);
+        osk.apply_action(KeyAction::Enter);
+        assert_eq!(
+            osk.take_output(),
+            vec![
+                pre("g"),
+                pre("go"),
+                commit("go"),
+                OskOutput::Key(Symbol::Return),
+                OskOutput::Key(Symbol::Return),
+            ]
+        );
+        assert_eq!(osk.pending_text(), "go\n\n");
+    }
+
+    #[test]
+    fn backspace_edits_the_preedit_then_becomes_a_key() {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("a".into()));
+        osk.apply_action(KeyAction::Space);
+        osk.apply_action(KeyAction::Char("n".into()));
+        osk.apply_action(KeyAction::Char("o".into()));
+        osk.take_output();
+        osk.apply_action(KeyAction::Backspace);
+        osk.apply_action(KeyAction::Backspace);
+        // Nothing composing: the next Backspace deletes committed text, which
+        // only a key press can do.
+        osk.apply_action(KeyAction::Backspace);
+        osk.apply_action(KeyAction::Char("t".into()));
+        assert_eq!(
+            osk.take_output(),
+            vec![
+                pre("n"),
+                pre(""),
+                OskOutput::Key(Symbol::BackSpace),
+                pre("t"),
+            ]
+        );
+        assert_eq!(osk.pending_text(), "at");
     }
 
     #[test]
@@ -1663,14 +1796,14 @@ mod tests {
     }
 
     #[test]
-    fn space_and_take_pending_text_drains() {
+    fn take_output_drains() {
         let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut osk, 800.0, 360.0);
         osk.activate_label("h");
-        osk.activate_label("i");
         osk.activate_label("space");
-        assert_eq!(osk.take_pending_text(), "hi ");
-        assert_eq!(osk.pending_text(), "", "drained");
+        assert_eq!(osk.take_output(), vec![pre("h"), commit("h ")]);
+        assert!(osk.take_output().is_empty(), "drained");
+        assert_eq!(osk.pending_text(), "h ");
     }
 
     #[test]
@@ -1904,8 +2037,9 @@ mod tests {
         lay_out(&mut osk, 720.0, 360.0);
         let path = path_through(&osk, "quick");
         assert!(osk.swipe(&path), "swipe decoded a word");
-        // Top candidate auto-inserted.
+        // Top candidate composed in the field.
         assert_eq!(osk.pending_text(), "quick");
+        assert_eq!(osk.take_output(), vec![pre("quick")]);
         // The suggestion bar shows the candidates, with "quick" present.
         let words: Vec<&str> = osk.suggestions().iter().map(|s| s.word.as_str()).collect();
         assert!(!words.is_empty(), "suggestion bar populated");
@@ -1925,11 +2059,99 @@ mod tests {
         assert_eq!(osk.current_word(), "th");
         let chips: Vec<String> = osk.suggestions().iter().map(|s| s.word.clone()).collect();
         assert!(!chips.is_empty(), "completions shown for 'th': {chips:?}");
-        // Tap the top chip; it replaces the in-progress word with the full word.
+        // Tap the top chip; it replaces the in-progress word with the full
+        // word and a space, committed in one step.
         let top = chips[0].clone();
+        osk.take_output();
         assert!(osk.activate_suggestion(0));
-        assert_eq!(osk.pending_text(), top, "chip replaced 'th' with '{top}'");
+        assert_eq!(osk.take_output(), vec![commit(&format!("{top} "))]);
+        assert_eq!(osk.pending_text(), format!("{top} "));
         assert_eq!(osk.current_word(), "", "word committed after chip tap");
+    }
+
+    #[test]
+    fn chip_corrects_a_swiped_word_in_place() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        let chips: Vec<String> = osk.suggestions().iter().map(|s| s.word.clone()).collect();
+        assert!(chips.len() > 1, "swipe offers alternatives: {chips:?}");
+        osk.take_output();
+        assert!(osk.activate_suggestion(1));
+        assert_eq!(osk.take_output(), vec![pre(&chips[1])]);
+        assert_eq!(osk.pending_text(), chips[1]);
+        // The alternatives stay up for another correction.
+        assert_eq!(osk.suggestions().len(), chips.len());
+    }
+
+    #[test]
+    fn next_swipe_commits_the_previous_word_with_a_space() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let first = path_through(&osk, "quick");
+        let second = path_through(&osk, "the");
+        assert!(osk.swipe(&first));
+        let swiped = osk.current_word().to_string();
+        assert!(osk.swipe(&second));
+        let out = osk.take_output();
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[1], commit(&format!("{swiped} ")));
+        assert!(matches!(&out[2], OskOutput::SetPreedit(w) if !w.is_empty()));
+    }
+
+    #[test]
+    fn typing_after_a_swipe_starts_a_new_word() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        let swiped = osk.current_word().to_string();
+        osk.take_output();
+        osk.apply_action(KeyAction::Char("a".into()));
+        assert_eq!(
+            osk.take_output(),
+            vec![commit(&format!("{swiped} ")), pre("a")]
+        );
+    }
+
+    #[test]
+    fn backspace_removes_a_swiped_word_whole() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        osk.take_output();
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(osk.take_output(), vec![pre("")]);
+        assert_eq!(osk.pending_text(), "");
+    }
+
+    #[test]
+    fn swipe_replaces_a_partly_typed_word() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.apply_action(KeyAction::Char("x".into()));
+        let path = path_through(&osk, "quick");
+        assert!(osk.swipe(&path));
+        let out = osk.take_output();
+        assert_eq!(out[0], pre("x"));
+        assert_eq!(out.len(), 2, "no commit of the replaced prefix: {out:?}");
+        assert_eq!(osk.pending_text(), osk.current_word());
+    }
+
+    #[test]
+    fn field_change_drops_the_composition() {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("h".into()));
+        let mut doc = AutoCommit::new();
+        osk.on_external_event("osk:field", &mut doc, &automerge::ROOT);
+        assert_eq!(osk.current_word(), "");
+        osk.apply_action(KeyAction::Backspace);
+        assert_eq!(
+            osk.take_output().last(),
+            Some(&OskOutput::Key(Symbol::BackSpace))
+        );
     }
 
     #[test]
@@ -2388,6 +2610,16 @@ mod tests {
         osk.apply_action(KeyAction::Char("x".repeat(MAX_PENDING_TEXT_BYTES + 11)));
         assert_eq!(osk.pending_text().len(), MAX_PENDING_TEXT_BYTES);
         assert_eq!(osk.pending_text_dropped_bytes(), 11);
+        assert_eq!(
+            osk.take_output().len(),
+            1,
+            "an overlong word is committed, not composed"
+        );
+        for _ in 0..(MAX_OUTPUT_ENTRIES + 3) {
+            osk.apply_action(KeyAction::Enter);
+        }
+        assert_eq!(osk.output.len(), MAX_OUTPUT_ENTRIES);
+        assert_eq!(osk.dropped_outputs(), 3);
 
         for _ in 0..(MAX_KEY_LOG_ENTRIES + 5) {
             osk.apply_action(KeyAction::Shift);

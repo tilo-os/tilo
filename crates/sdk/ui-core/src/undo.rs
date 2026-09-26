@@ -20,7 +20,7 @@
 //! * **Widget → host.** A widget records an [`UndoRequest`], and the host
 //!   drains it via
 //!   [`Widget::take_undo_request`](crate::widget::Widget::take_undo_request)
-//!   and performs it through [`App::perform_undo`](crate::app::App::perform_undo)
+//!   and performs it through `App::perform_undo`
 //!   — the *same* method the Ctrl+Z key handler calls. There is one undo
 //!   implementation, so a button and the shortcut cannot drift apart.
 //!

@@ -1,6 +1,6 @@
 //! wgpu state, asked for in a size this machine can give.
 //!
-//! This module exists for one line: [`RenderContext::new_device`] requests the
+//! This module exists for one line: `RenderContext::new_device` requests the
 //! device with [`wgpu::MemoryHints::Manual`] instead of the default.
 //!
 //! `vello::util::RenderContext` defaults to `MemoryHints::Performance` — right

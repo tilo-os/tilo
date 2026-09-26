@@ -142,6 +142,9 @@ pub struct ImTransition {
     pub visibility_changed: Option<bool>,
     /// `Some(p)` → the active purpose changed to `p`.
     pub purpose_changed: Option<InputPurpose>,
+    /// A text field gained or lost focus, so any composition in progress
+    /// belonged to the previous field.
+    pub field_changed: bool,
 }
 
 impl ImState {
@@ -170,6 +173,7 @@ impl ImState {
     pub fn reduce(&mut self, event: ImEvent) -> ImTransition {
         let was_visible = self.visible;
         let prev_purpose = self.purpose;
+        let field_changed = matches!(event, ImEvent::Activate | ImEvent::Deactivate);
 
         match event {
             ImEvent::Activate => {
@@ -196,6 +200,7 @@ impl ImState {
         ImTransition {
             visibility_changed: (self.visible != was_visible).then_some(self.visible),
             purpose_changed: (self.purpose != prev_purpose).then_some(self.purpose),
+            field_changed,
         }
     }
 }
@@ -387,17 +392,32 @@ mod wayland {
             self.rx.try_iter().collect()
         }
 
-        /// Send committed text to the focused application and apply it. This is
-        /// the clean input-method path: `commit_string(text)` stages the text and
-        /// `commit(serial)` applies it, where `serial` is the number of `done`
-        /// events seen so far (the protocol's required echo).
+        /// Replace the composing word with `text` and make it final:
+        /// `commit_string(text)` stages it and `commit(serial)` applies it,
+        /// where `serial` is the number of `done` events seen so far (the
+        /// protocol's required echo). Applying a commit also removes the
+        /// preedit, so an empty `text` still ends the composition.
         pub fn commit_text(&mut self, text: &str) {
-            if text.is_empty() {
-                return;
-            }
             self.input_method.commit_string(text.to_string());
             self.input_method.commit(self.state.serial);
             let _ = self.queue.flush();
+        }
+
+        /// Show `text` as the composing (preedit) word, cursor at its end.
+        /// An empty `text` clears the preedit.
+        pub fn set_preedit(&mut self, text: &str) {
+            let end = i32::try_from(text.len()).unwrap_or(i32::MAX);
+            self.input_method
+                .set_preedit_string(text.to_string(), end, end);
+            self.input_method.commit(self.state.serial);
+            let _ = self.queue.flush();
+        }
+
+        /// Wait until the compositor has processed every request sent so far.
+        /// Needed before a request on another connection that must land after
+        /// them.
+        pub fn sync(&mut self) {
+            let _ = self.queue.roundtrip(&mut self.state);
             // Keep the connection field live alongside the queue it feeds.
             let _ = &self.conn;
         }

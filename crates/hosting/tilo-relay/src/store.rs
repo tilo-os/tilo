@@ -675,7 +675,7 @@ impl WorkspaceStore {
     }
 
     /// Drain the pending queue immediately. Primarily useful for offline
-    /// maintenance and tests; live delivery uses [`Self::load_pending`] so a
+    /// maintenance and tests; live delivery uses `Self::load_pending` so a
     /// failed replay remains recoverable.
     ///
     /// # Errors

@@ -18,7 +18,7 @@
 //! **Both** methods go through [`flow::resolve`], including
 //! `PreparePrint`: the printer list is itself the disclosure an app
 //! could otherwise harvest without ever calling `Print`. See
-//! [`PrintBackend::prepare_print`].
+//! `PrintBackend::prepare_print`.
 
 #![allow(
     clippy::used_underscore_binding,

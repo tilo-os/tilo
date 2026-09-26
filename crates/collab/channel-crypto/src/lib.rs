@@ -19,10 +19,10 @@
 //! commit for existing members; [`ChannelGroup::process_welcome_with_history`]
 //! joins with the full key history; [`ChannelGroup::seal_content`] /
 //! [`ChannelGroup::open_content`] seal and open op payloads (any epoch the
-//! member holds a key for, any number of times); [`process_commit`] advances
+//! member holds a key for, any number of times); `process_commit` advances
 //! existing members; [`ChannelGroup::remove_member`] emits the removal commit
 //! after which the removed member derives no further content keys.
-//! [`ChannelGroup::encrypt`]/[`decrypt`] remain for version-1 MLS
+//! [`ChannelGroup::encrypt`]/`decrypt` remain for version-1 MLS
 //! application messages.
 //!
 //! This crate does not support external commits or joins, epoch rotation

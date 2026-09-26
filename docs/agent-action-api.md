@@ -196,11 +196,17 @@ application's declared product function. The agent does not inspect a document
 and guess which bytes it represents. Missing content, the wrong resource kind,
 or more than one content result stops the sequence rather than selecting one.
 
-This is deliberately not a workflow language: there are no named variables,
-JSONPath expressions, graphs or implicit reuse of an older result. The narrow
-one-step hand-off is enough to express a cross-app operation such as
+This hand-off is deliberately not a workflow language: there are no named
+variables, JSONPath expressions, graphs or implicit reuse of an older result.
+The narrow one-step hand-off is enough to express a cross-app operation such as
 “rotate the photograph, then place the result in the document”, while keeping
 the origin of the content mechanically checkable.
+
+Saved, multi-step pipelines are shortcuts (`crates/collab/automation`,
+`tilo-automation`): named steps with typed bindings between them, checked at
+save time against the same descriptors this API enumerates and run through
+the same `ActionHost` door as the invoking person, inside the shortcut's own
+grant.
 
 ## Source of truth
 
@@ -212,6 +218,7 @@ the origin of the content mechanically checkable.
 | Capability gate + policy | `crates/session/shell/src/shell/search/visibility.rs` |
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
 | Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
+| Shortcut pipelines (check + run) | `crates/collab/automation` |
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |

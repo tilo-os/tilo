@@ -683,7 +683,7 @@ impl CommandPalette {
         self.text_scale
     }
 
-    /// Matches the size [`build_layout`] requests from taffy.
+    /// Matches the size `build_layout` requests from taffy.
     pub fn desired_size(&self) -> (f64, f64) {
         // Sized off the row plan, not a row count, since headers and entries
         // have different heights; clamped so a big hit count doesn't grow
@@ -955,7 +955,7 @@ impl CommandPalette {
         self.hide_filter_strip = on;
     }
 
-    /// See [`Self::host_filter_strip`].
+    /// See `Self::host_filter_strip`.
     pub fn set_host_filter_strip(&mut self, on: bool) {
         self.host_filter_strip = on;
         if on {
@@ -1196,7 +1196,7 @@ impl CommandPalette {
         )
     }
 
-    /// One [`FILTER_STRIP_HEIGHT`] row tall unless a host asked for more
+    /// One `FILTER_STRIP_HEIGHT` row tall unless a host asked for more
     /// ([`Self::set_host_filter_strip_rows`]).
     pub fn filter_strip_rect(&self) -> Rect {
         let row = self.input_row_rect();

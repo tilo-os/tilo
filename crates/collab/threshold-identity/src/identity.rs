@@ -8,7 +8,7 @@
 //! ## Two internal modes
 //!
 //! `frost-ed25519`'s key generation requires `min_signers ≥ 2`, but the
-//! first-device bootstrap is genuinely 1-of-1. [`InnerKey::SingleDevice`]
+//! first-device bootstrap is genuinely 1-of-1. `InnerKey::SingleDevice`
 //! carries a plain `ed25519_dalek::SigningKey` for that case; signing
 //! produces a regular RFC-8032 Ed25519 signature, byte-compatible with
 //! the threshold output by design.
@@ -23,7 +23,7 @@
 //! [`ThresholdIdentity::single_device_seed`] hands out exactly the bytes
 //! the record needs.
 //!
-//! [`InnerKey::Threshold`] takes over once the first DKG runs; from then
+//! `InnerKey::Threshold` takes over once the first DKG runs; from then
 //! any signing requires `threshold` shares combined via the round-1 /
 //! round-2 API.
 //!

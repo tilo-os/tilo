@@ -1,6 +1,6 @@
 //! `SearchResultsView` — the shared results overlay for Tilo global search.
 //!
-//! Renders the ranked, kind-grouped [`SearchResult`](crate::search::SearchResult)s
+//! Renders the ranked, kind-grouped [`SearchResult`]s
 //! that a [`SearchRegistry`](crate::search::SearchRegistry) produces: one
 //! section per kind, then keyboard- and pointer-navigable rows. Activating a
 //! row latches its opaque `action_id`, which the host drains with

@@ -433,9 +433,9 @@ fn genesis() -> &'static [u8] {
 
 /// Give `doc` the canonical schema under `root`, and resolve the containers.
 ///
-/// At the document root the schema is *adopted* from the shared [`genesis`]
+/// At the document root the schema is *adopted* from the shared `genesis`
 /// rather than minted, so two replicas that each open the same file are editing
-/// one document and not two that merge lossily (see [`GENESIS_ACTOR`]).
+/// one document and not two that merge lossily (see `GENESIS_ACTOR`).
 /// Idempotent: a document that already carries the schema is returned as it
 /// stands, because minting a second set of containers is the same conflict
 /// arrived at from one process instead of two.
@@ -1408,7 +1408,7 @@ thread_local! {
     static ORDERED_KEYS_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The number of full container scans this thread has performed (see [`ORDERED_KEYS_SCANS`]). Sample it
+/// The number of full container scans this thread has performed (see `ORDERED_KEYS_SCANS`). Sample it
 /// around a bulk insert to prove the order index kept work near-constant rather than O(n).
 pub fn ordered_keys_scan_count() -> u64 {
     ORDERED_KEYS_SCANS.with(std::cell::Cell::get)
@@ -1583,7 +1583,7 @@ fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
     }
 }
 
-/// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`]), or any other string property name a codec stashed. `None` if unset.
+/// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)), or any other string property name a codec stashed. `None` if unset.
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
     match doc.get(&props, name) {
@@ -1890,7 +1890,7 @@ pub fn has_mark_over(
 
 /// All preserved parts (the lossless preservation layer — verbatim bytes a codec stashed for content it
 /// doesn't model), as `(key, bytes)`. Reconstructed exactly from however the part is stored — the legacy
-/// single-`Bytes` scalar form, or the per-atom segmented `Map` form (see [`PRESERVED_SEGMENTS`]) — by concatenating segments in stored order.
+/// single-`Bytes` scalar form, or the per-atom segmented `Map` form (see `PRESERVED_SEGMENTS`) — by concatenating segments in stored order.
 ///
 /// A part preserved as a content reference is read from `content`; one whose content is missing there
 /// is left out (and logged), since there are no bytes to re-emit.
@@ -3246,7 +3246,7 @@ impl DocMut<'_> {
     }
 
     /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/`modified`/`generator` — see
-    /// [`DOC_PROP_KEYS`]). Each is its own scalar register in `meta.props`, so replicas editing different properties field-level merge.
+    /// [`DOC_PROP_KEYS`](crate::schema::DOC_PROP_KEYS)). Each is its own scalar register in `meta.props`, so replicas editing different properties field-level merge.
     pub fn set_doc_prop(&mut self, name: &str, value: &str) {
         let props = self.props_map();
         let _ = self.doc.put(&props, name, value);

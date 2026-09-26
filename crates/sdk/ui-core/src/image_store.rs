@@ -2,7 +2,7 @@
 //! thumbnails on the UI thread would jank every frame, so loads run off the
 //! UI thread — fetched through a caller-supplied [`Fetcher`] and decoded as
 //! [`crate::background::Background`] jobs, or fetched by the host through a
-//! [`HostImageLoader`] — and the decoded [`peniko::ImageData`] is cached and
+//! [`HostImageLoader`] — and the decoded `peniko::ImageData` is cached and
 //! handed back on a later frame; until then the caller paints a placeholder.
 //!
 //! No networking here — the toolkit stays HTTP-free, and a no-op fetcher

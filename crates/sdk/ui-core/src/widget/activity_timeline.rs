@@ -1218,7 +1218,7 @@ impl ActivityTimeline {
         Rect::new(painted.x0, y0, painted.x1, y1.max(y0))
     }
 
-    /// `(name, restore)` pointer targets — see [`Self::hit_rect_within`].
+    /// `(name, restore)` pointer targets — see `Self::hit_rect_within`.
     /// `restore` is `None` when nothing in the range can be restored to.
     /// `(name, restore)`. `name` is zero-sized without a naming callback;
     /// `restore` is `None` without a restore callback or restorable change.
