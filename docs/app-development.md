@@ -1535,6 +1535,38 @@ mistaking a model refresh for user intent. Use `with_on_change_path` or
 those paths preserve Automerge authorship, collaboration, persistence, and
 undo behavior.
 
+### Using other apps' actions
+
+An app that builds on what other apps publish — a shortcut editor, a
+launcher — reaches the same door the palette and agents use with
+`ui::RemoteActions`. The broker decides every request for the **app**, under
+its own identity, never under the ambient authority of the person using it:
+
+- the app always reaches what it owns: its own surface, and actions the
+  session publishes under its package id;
+- reading the catalogue (`catalogue`) needs the manifest to declare it;
+- invoking another app's action (`invoke`) needs the manifest to declare it
+  **and** the workspace to grant it to the app, like any collaborator grant.
+  Without a grant it is refused.
+
+```toml
+[actions]
+query = true    # read the catalogue of actions the person is offered
+invoke = false  # invoke other apps' actions as this app
+```
+
+```rust
+let remote = ui::RemoteActions::current();
+let page = remote.catalogue(CatalogueQuery::default()); // LocalState<CatalogueCall>
+let run = remote.invoke(row.target().unwrap(), InvokeArgument::None, None);
+```
+
+Answers arrive as `LocalState`s, so a bound view updates and an idle window
+wakes. The root that owns the client returns it from
+`Widget::collaborative_mut` (a `Decorator` can), which is how its requests
+reach the connection. Tests stand in for the session with
+`RemoteActions::enter(host, caller)` and an in-process `ActionHost`.
+
 ### Localization
 
 `tilo-app new` creates `locales/en-US.ftl` and an embedded locale registry

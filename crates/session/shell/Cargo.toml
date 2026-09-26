@@ -202,6 +202,7 @@ tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, 
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
 
 # The host's own applications: `.desktop` entries the compositor reads
