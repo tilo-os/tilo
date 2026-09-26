@@ -133,6 +133,8 @@ mod portal_test;
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
 mod real_apps_visual;
+#[path = "remark_e2e.rs"]
+mod remark_e2e;
 #[path = "recorder_test.rs"]
 mod recorder_test;
 #[path = "recording_frames_test.rs"]

@@ -1309,8 +1309,15 @@ pub fn build_tilo_overlay_host_with_handle(
 /// its records live under this package in the compositor's own state dir.
 pub const SHELL_RECORDS_PACKAGE: &str = "org.tilo.Shell";
 
+/// The compositor's own records, owner-backed so it can mint records (a
+/// remark's reviewed recording) as well as open them.
 pub fn session_record_store() -> ui::record::RecordStore {
-    ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
+    ui::record::RecordOwners::native()
+        .open_launched(SHELL_RECORDS_PACKAGE)
+        .unwrap_or_else(|error| {
+            tracing::warn!(?error, "the session's records could not be opened; they stay in memory");
+            ui::record::RecordStore::in_memory()
+        })
 }
 
 /// Backdrop, topbar, and one [`GroupRow`] per strip of the tree's active

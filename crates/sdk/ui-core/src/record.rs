@@ -1351,20 +1351,7 @@ impl RecordSet {
     ///
     /// The host's workspace (else cluster) id scopes the records.
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        let environment = crate::host::environment();
-        let identity = &environment.identity;
-        let package_id = identity
-            .package_id
-            .clone()
-            .unwrap_or_else(|| manifest_id.into());
-        let home = identity
-            .workspace_id
-            .clone()
-            .or_else(|| identity.cluster_id.clone())
-            // A launcher-less process still gets an explicit, non-routable
-            // scope.  It may not collaborate (the broker rejects nil), but
-            // it must never fall back to the historical package-global file.
-            .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+        let (package_id, home) = launch_scope(manifest_id.into());
         Self::open_in(app_state::DocStore::native_store(), package_id, home)
     }
 
@@ -2041,6 +2028,24 @@ impl RecordSet {
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
+/// The package and room the process environment scopes records to: the
+/// host's package id always wins over `manifest_id`, and the host's
+/// workspace (else cluster) id is the room.
+fn launch_scope(manifest_id: String) -> (String, String) {
+    let environment = crate::host::environment();
+    let identity = &environment.identity;
+    let package_id = identity.package_id.clone().unwrap_or(manifest_id);
+    let home = identity
+        .workspace_id
+        .clone()
+        .or_else(|| identity.cluster_id.clone())
+        // A launcher-less process still gets an explicit, non-routable
+        // scope.  It may not collaborate (the broker rejects nil), but
+        // it must never fall back to the historical package-global file.
+        .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+    (package_id, home)
+}
+
 /// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
 pub struct RecordOwners {
     store: Rc<dyn DurableStore>,
@@ -2052,6 +2057,26 @@ impl RecordOwners {
     /// Owners persisting under a local profile directory.
     pub fn new(profile_state_root: PathBuf) -> Self {
         Self::with_store(Rc::new(app_state::FsStore::new(profile_state_root)))
+    }
+
+    /// Owners persisting in the native store ([`app_state::DocStore::native_store`]),
+    /// where [`RecordSet::open`] keeps a launched process's records.
+    pub fn native() -> Self {
+        Self::with_store(app_state::DocStore::native_store())
+    }
+
+    /// The owner of the records the process environment scopes to (see
+    /// [`RecordSet::open`]): the same documents, owner-backed, so records
+    /// can also be reserved and minted.
+    ///
+    /// # Errors
+    /// Rejects an invalid package or workspace.
+    pub fn open_launched(
+        &mut self,
+        manifest_id: impl Into<String>,
+    ) -> Result<RecordStore, RecordOpenError> {
+        let (package_id, home) = launch_scope(manifest_id.into());
+        self.open(&package_id, &home)
     }
 
     /// Owners persisting through a host-provided store.
