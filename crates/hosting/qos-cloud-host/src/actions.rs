@@ -1,6 +1,9 @@
 //! Bounded native application operations. No arbitrary effects or shell commands.
 use super::*;
-use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability};
+#[cfg(test)]
+use collab_types::caps::Principal;
+use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+#[cfg(test)]
 use qos_actions::ActionRegistry;
 mod media;
 #[cfg(test)]
@@ -8,7 +11,6 @@ pub(crate) mod media_tests;
 #[cfg(test)]
 mod policy_time_tests;
 /// Addressed application protocol, separate from workspace fan-out.
-pub const ACTION_ALPN: &[u8] = b"qos-cloud-actions/1";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionRequest {
@@ -22,12 +24,6 @@ pub struct ActionRequest {
 pub enum NativeOperation {
     /// Return the bounded catalogue of native app operations.
     Catalogue,
-    /// Explicit link-scoped dispatch to another admitted machine.
-    Remote {
-        link_id: String,
-        target_machine_id: String,
-        operation: Box<NativeOperation>,
-    },
     /// One bounded plain-text completion through the managed machine gateway.
     ModelComplete {
         text: String,
@@ -36,13 +32,10 @@ pub enum NativeOperation {
     Status {
         invocation_id: String,
     },
-    /// Insert into the canonical Writer body's first paragraph using the real app action.
+    /// Test fixture: insert into the canonical Writer body's first paragraph
+    /// through the real app action and the owner's permission checks.
+    #[cfg(test)]
     WriterInsert {
-        text: String,
-    },
-    /// Send a message to an existing real Chat channel as the certified person.
-    ChatSend {
-        channel: String,
         text: String,
     },
     /// Cancel an invocation before it has committed; completion cannot be undone by retry.
@@ -102,94 +95,7 @@ impl Store {
             bail!("invalid action identity")
         }
         let (before, mut peer) = self.peer_transition_at(now)?;
-        let (role, caps, _person, actor) = action_permissions(&peer, source, request, now)?;
-        if matches!(request.operation, NativeOperation::Catalogue) {
-            let mut operations =
-                vec![serde_json::json!({"kind":"status","parameters":{"invocation_id":"string"}})];
-            for (app, record, descriptor) in [
-                (
-                    crate::seeded_app_id(
-                        &peer,
-                        word_processor::definition().app_id,
-                        crate::WRITER_RECORD,
-                    ),
-                    crate::WRITER_RECORD,
-                    serde_json::json!({"kind":"writer_insert","parameters":{"text":"string"}}),
-                ),
-                (
-                    crate::seeded_app_id(&peer, chat::definition().app_id, ""),
-                    "",
-                    serde_json::json!({"kind":"chat_send","parameters":{"channel":"string","text":"string"}}),
-                ),
-            ] {
-                let subject = actor.clone().with_principal(Principal::App(app.into()));
-                let resource = ResourceRef::Artifact {
-                    app: Some(app.into()),
-                    kind: collab_types::ArtifactKind::Note,
-                    instance: collab_types::document_artifact_id(app, &self.state.room, record),
-                };
-                if decide_capability(
-                    &subject,
-                    &resource,
-                    Verb::Write,
-                    &caps,
-                    Some(now / 1_000_000_000),
-                ) == CapDecision::Allow
-                {
-                    operations.push(descriptor);
-                }
-            }
-            if decide_capability(
-                &actor,
-                &ResourceRef::Room(self.state.room.clone()),
-                Verb::Write,
-                &caps,
-                Some(now / 1_000_000_000),
-            ) == CapDecision::Allow
-            {
-                operations.push(
-                    serde_json::json!({"kind":"cancel","parameters":{"invocation_id":"string"}}),
-                );
-            }
-            if matches!(role, collab_types::Role::Owner) {
-                operations.extend([
-                    serde_json::json!({"kind":"collaboration_invite","parameters":{"role":"viewer|commenter|editor","recipient_user_public_key":"optional 32-byte key","invitee_name":"optional string","expires_at_ns":"u64"}}),
-                    serde_json::json!({"kind":"collaboration_cancel_invitation","parameters":{"invite_id":"32-byte digest"}}),
-                    serde_json::json!({"kind":"collaboration_list_invitations","parameters":{}}),
-                    serde_json::json!({"kind":"collaboration_set_role","parameters":{"user_public_key":"32-byte key","role":"viewer|commenter|editor"}}),
-                    serde_json::json!({"kind":"collaboration_remove","parameters":{"user_public_key":"32-byte key"}}),
-                ]);
-            }
-            return Ok(ActionReceipt {
-                invocation_id: request.invocation_id.clone(),
-                status: "completed".into(),
-                error: None,
-                output: Some(serde_json::json!({"operations":operations})),
-            });
-        }
-        if let NativeOperation::Status { invocation_id } = &request.operation {
-            let scope = format!("{}:{}", hex::encode(source), invocation_id);
-            return Ok(ActionReceipt {
-                invocation_id: request.invocation_id.clone(),
-                status: "completed".into(),
-                error: None,
-                output: Some(serde_json::to_value(
-                    self.state
-                        .receipts
-                        .get(&scope)
-                        .map(|(_, receipt)| receipt.clone())
-                        .or_else(|| {
-                            self.state
-                                .pending_models
-                                .get(&scope)
-                                .map(|_| model::pending_receipt(invocation_id))
-                        }),
-                )?),
-            });
-        }
-        if matches!(request.operation, NativeOperation::ModelComplete { .. }) {
-            self.authorize_model(source, now)?;
-        }
+        action_permissions(&peer, source, request, now)?;
         let scope = format!("{}:{}", hex::encode(source), request.invocation_id);
         let digest = blake3::hash(&serde_json::to_vec(request)?)
             .to_hex()
@@ -199,10 +105,6 @@ impl Store {
                 return Ok(receipt.clone());
             }
             bail!("invocation substitution")
-        }
-        if let NativeOperation::ModelComplete { text } = &request.operation {
-            model::validate_text(text)?;
-            return self.begin_model(source, request, digest, None);
         }
         if self.state.pending_models.contains_key(&scope) {
             bail!("invocation substitution")
@@ -242,44 +144,6 @@ impl Store {
                 status: "completed".into(),
                 error: None,
                 output: Some(serde_json::to_value(result)?),
-            };
-            state.receipts.insert(scope, (digest, receipt.clone()));
-            self.commit(state)?;
-            return Ok(receipt);
-        }
-        if let NativeOperation::Cancel { invocation_id } = &request.operation {
-            if invocation_id.is_empty() || invocation_id.len() > 128 {
-                bail!("invalid cancellation")
-            }
-            let target = format!("{}:{}", hex::encode(source), invocation_id);
-            let receipt = if state.receipts.contains_key(&target)
-                || state.pending_models.contains_key(&target)
-            {
-                ActionReceipt {
-                    invocation_id: request.invocation_id.clone(),
-                    status: "failed".into(),
-                    output: None,
-                    error: Some("invocation already dispatched or terminal".into()),
-                }
-            } else {
-                state.receipts.insert(
-                    target,
-                    (
-                        "cancelled".into(),
-                        ActionReceipt {
-                            invocation_id: invocation_id.clone(),
-                            status: "cancelled".into(),
-                            error: None,
-                            output: None,
-                        },
-                    ),
-                );
-                ActionReceipt {
-                    invocation_id: request.invocation_id.clone(),
-                    status: "completed".into(),
-                    error: None,
-                    output: None,
-                }
             };
             state.receipts.insert(scope, (digest, receipt.clone()));
             self.commit(state)?;
@@ -552,18 +416,42 @@ impl Store {
             );
             return Ok(receipt);
         }
+        #[cfg(test)]
+        return self
+            .fixture_document_action(source, request, now, before, peer, state, scope, digest);
+        #[cfg(not(test))]
+        bail!("unsupported operation")
+    }
+    /// Test fixture: the owner-side document effect behind the retired bounded
+    /// actions, kept so owner permission and durability tests keep a real
+    /// Writer mutation.
+    #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fixture continues the dispatcher's own locals"
+    )]
+    fn fixture_document_action(
+        &mut self,
+        source: [u8; 32],
+        request: &ActionRequest,
+        now: u64,
+        before: StatePeer,
+        mut peer: StatePeer,
+        mut state: State,
+        scope: String,
+        digest: String,
+    ) -> Result<ActionReceipt> {
         let (current, record) = match &request.operation {
             NativeOperation::WriterInsert { .. } => {
                 (word_processor::definition().app_id, crate::WRITER_RECORD)
             }
-            NativeOperation::ChatSend { .. } => (chat::definition().app_id, ""),
             _ => bail!("unsupported operation"),
         };
         let app = crate::seeded_app_id(&peer, current, record);
         #[cfg(test)]
         policy_time_tests::before_document();
         let now = self.policy_now_or(now)?;
-        let (_, caps, person, actor) = action_permissions(&peer, source, request, now)?;
+        let (_, caps, _person, actor) = action_permissions(&peer, source, request, now)?;
         let app_actor = actor.with_principal(Principal::App(app.into()));
         let artifact = ResourceRef::Artifact {
             app: Some(app.into()),
@@ -580,7 +468,7 @@ impl Store {
         {
             bail!("native document capability forbidden")
         }
-        let result = execute(&mut peer, &self.key(), source, &person, request, now);
+        let result = execute(&mut peer, &self.key(), source, request, now);
         let receipt = match result {
             Ok(live_document_delta) => {
                 state
@@ -619,6 +507,7 @@ impl Store {
         Ok(receipt)
     }
 }
+
 fn action_permissions(
     peer: &StatePeer,
     source: [u8; 32],
@@ -638,9 +527,7 @@ fn action_permissions(
         Verb::Admin
     } else if matches!(
         request.operation,
-        NativeOperation::Catalogue
-            | NativeOperation::Status { .. }
-            | NativeOperation::CollaborationListInvitations
+        NativeOperation::CollaborationListInvitations
     ) {
         Verb::Read
     } else {
@@ -659,22 +546,20 @@ fn action_permissions(
     Ok((role, caps, person, actor))
 }
 
+#[cfg(test)]
 fn execute(
     peer: &mut StatePeer,
     key: &SigningKey,
     source: [u8; 32],
-    person: &str,
     r: &ActionRequest,
     now: u64,
 ) -> Result<NeighbourMsg> {
     let mut registry = ActionRegistry::new();
     word_processor::actions::register(&mut registry);
-    chat::actions::register(&mut registry);
     let (current, record) = match &r.operation {
         NativeOperation::WriterInsert { .. } => {
             (word_processor::definition().app_id, crate::WRITER_RECORD)
         }
-        NativeOperation::ChatSend { .. } => (chat::definition().app_id, ""),
         _ => bail!("unsupported operation"),
     };
     let app = crate::seeded_app_id(peer, current, record);
@@ -703,26 +588,6 @@ fn execute(
                     ins: text.clone(),
                 },
             )
-        }
-        NativeOperation::ChatSend { channel, text } => {
-            if text.is_empty() || text.len() > 64 * 1024 || channel.len() > 128 {
-                bail!("invalid message")
-            };
-            if !chat::doc::ChatDoc::list_channels(&doc).iter().any(|c| {
-                c.id == *channel && !c.archived && c.kind == chat::model::ChannelKind::Text
-            }) {
-                bail!("channel unavailable")
-            };
-            chat::actions::encode(&chat::actions::send_message_action(
-                channel,
-                &r.invocation_id,
-                person,
-                (now / 1_000_000) as i64,
-                text,
-                None,
-                None,
-                vec![],
-            ))
         }
         _ => bail!("unsupported operation"),
     };

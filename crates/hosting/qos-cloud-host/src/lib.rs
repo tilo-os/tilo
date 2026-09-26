@@ -17,7 +17,6 @@ use std::{
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
 };
-pub mod action_server;
 pub mod actions;
 mod agent_documents;
 mod agent_history;
@@ -1135,9 +1134,7 @@ impl Store {
             &qos_relay::daemon::relay_service_node_id(&key),
         )?)
         .with_relay_url(packet_url.clone());
-        let action_address = iroh_base::EndpointAddr::new(self.action_key().public())
-            .with_relay_url(packet_url.clone());
-        let result = serde_json::json!({"version":1,"action_address":action_address,"certificate":r.browser_certificate,"root_public_key":r.browser_certificate.user_public_key,"host_certificate":r.host_certificate,"relay_address":address,"packet_relay":packet_url,"revocations":bootstrap_revocations,"bootstrap":{"room":state.room,"workspace_id":workspace.to_string(),"directory_update":directory_update,"directory_author":r.host_certificate,"certified_roster":[r.host_certificate.clone(),r.browser_certificate.clone()]}});
+        let result = serde_json::json!({"version":1,"certificate":r.browser_certificate,"root_public_key":r.browser_certificate.user_public_key,"host_certificate":r.host_certificate,"relay_address":address,"packet_relay":packet_url,"revocations":bootstrap_revocations,"bootstrap":{"room":state.room,"workspace_id":workspace.to_string(),"directory_update":directory_update,"directory_author":r.host_certificate,"certified_roster":[r.host_certificate.clone(),r.browser_certificate.clone()]}});
         let messages =
             durable_bootstrap_messages(&mut peer, &key, now_time(now), self.next_generation()?)?;
         if let Some(before) = before {

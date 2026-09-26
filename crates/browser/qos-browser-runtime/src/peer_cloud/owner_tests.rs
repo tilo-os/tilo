@@ -60,7 +60,7 @@ fn store_reply(request: &identity::cloud_enrollment::EnrollmentRequest, now: u64
         .unwrap();
     let directory_update = view.sync_incremental(&host_key(), now).unwrap();
     serde_json::to_string(&serde_json::json!({
-        "version": 1, "action_address": null, "certificate": browser,
+        "version": 1, "certificate": browser,
         "root_public_key": browser.user_public_key, "host_certificate": host,
         "relay_address": null, "packet_relay": null, "revocations": [],
         "bootstrap": {"room": ROOM, "workspace_id": workspace.to_string(),

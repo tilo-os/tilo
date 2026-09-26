@@ -1,6 +1,5 @@
 //! Durable model admission and finalization; neither transaction performs network I/O.
 use super::*;
-use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,51 +24,6 @@ pub(crate) fn validate_text(text: &str) -> Result<()> {
     Ok(())
 }
 impl Store {
-    pub(crate) fn authorize_model(&self, source: [u8; 32], now: u64) -> Result<()> {
-        self.ensure_reconciled()?;
-        let bound = self
-            .state
-            .bound
-            .as_ref()
-            .ok_or_else(|| anyhow!("workspace not enrolled"))?;
-        if !active_roster(
-            &bound.roster,
-            bound.root,
-            &revocations(&bound.revocations)?,
-            now,
-        )?
-        .iter()
-        .any(|c| c.device_public_key == source)
-        {
-            bail!("model device not admitted")
-        }
-        let (role, caps, person) = self
-            .peer_at(now)?
-            .permissions(source, now_time(now))
-            .map_err(anyhow::Error::msg)?;
-        let actor = Actor::person(Some(role), person.as_str())
-            .in_room(self.state.room.clone())
-            .with_principal(Principal::App("dev.qos.model".into()));
-        for resource in [
-            ResourceRef::Room(self.state.room.clone()),
-            ResourceRef::Action {
-                app: "dev.qos.model".into(),
-                action: "model_complete".into(),
-            },
-        ] {
-            if decide_capability(
-                &actor,
-                &resource,
-                Verb::Write,
-                &caps,
-                Some(now / 1_000_000_000),
-            ) != CapDecision::Allow
-            {
-                bail!("model capability forbidden")
-            }
-        }
-        Ok(())
-    }
     pub(crate) fn begin_model(
         &mut self,
         source: [u8; 32],
@@ -108,18 +62,6 @@ impl Store {
             self.commit(state)?;
         }
         Ok(pending_receipt(&request.invocation_id))
-    }
-    pub(crate) fn finish_model(
-        &mut self,
-        source: [u8; 32],
-        request: &ActionRequest,
-        expected: &PendingModel,
-        outcome: gateway::Outcome,
-        now: u64,
-    ) -> Result<ActionReceipt> {
-        self.ensure_reconciled()?;
-        self.authorize_model(source, now)?;
-        self.finish_model_authorized(source, request, expected, outcome, None)
     }
     pub(crate) fn finish_model_authorized(
         &mut self,
@@ -181,52 +123,4 @@ impl Store {
         self.commit(state)?;
         Ok(receipt)
     }
-}
-
-/// The external phase is outside every Store scope, including retry and reload.
-pub(crate) async fn invoke<F, Fut>(
-    root: &Path,
-    machine: &str,
-    source: [u8; 32],
-    request: &ActionRequest,
-    now: u64,
-    dispatch: F,
-) -> Result<ActionReceipt>
-where
-    F: FnOnce(PendingModel, String) -> Fut,
-    Fut: std::future::Future<Output = gateway::Outcome>,
-{
-    let (pending, text) = {
-        let mut store = Store::open(root, machine)?;
-        let receipt = store.action(source, request, now)?;
-        if receipt.status != "pending" {
-            return Ok(receipt);
-        }
-        let NativeOperation::ModelComplete { text } = &request.operation else {
-            bail!("not a model request")
-        };
-        let scope = format!("{}:{}", hex::encode(source), request.invocation_id);
-        (
-            store
-                .state
-                .pending_models
-                .get(&scope)
-                .ok_or_else(|| anyhow!("missing model admission"))?
-                .clone(),
-            text.clone(),
-        )
-    };
-    // Refresh mutable admission immediately before network dispatch.
-    {
-        Store::open(root, machine)?
-            .authorize_model(source, tilo_delivery_protocol::clock::now_ns())?;
-    }
-    let outcome = dispatch(pending.clone(), text).await;
-    Store::open(root, machine)?.finish_model(
-        source,
-        request,
-        &pending,
-        outcome,
-        tilo_delivery_protocol::clock::now_ns(),
-    )
 }

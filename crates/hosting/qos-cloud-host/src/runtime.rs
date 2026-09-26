@@ -248,13 +248,7 @@ where
                 .await
                 .context("relay offline")?;
         }
-        let action_router = crate::action_server::start_with_access_updates(
-            root,
-            machine,
-            mode.clone(),
-            access_updates.clone(),
-        )
-        .await?;
+        let mesh_router = crate::mesh::start(root, machine, mode.clone()).await?;
         let owner_result: Result<()> = async {
             {
                 let mut store = Store::open(root, machine)?;
@@ -431,7 +425,7 @@ where
             session.close().await;
             session_result
         }.await;
-        let shutdown_result = action_router.shutdown().await;
+        let shutdown_result = mesh_router.shutdown().await;
         owner_result.and(shutdown_result.map_err(anyhow::Error::from))
     }.await;
     relay.shutdown().await;

@@ -16,8 +16,6 @@ pub(crate) enum Outcome {
 pub struct Gateway {
     path: PathBuf,
     client: Option<reqwest::Client>,
-    #[cfg(test)]
-    test_prefix: Option<String>,
 }
 impl std::fmt::Debug for Gateway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,12 +47,7 @@ impl Gateway {
             .no_proxy()
             .build()
             .ok();
-        Self {
-            path,
-            client,
-            #[cfg(test)]
-            test_prefix: None,
-        }
+        Self { path, client }
     }
     pub fn from_environment() -> Self {
         Self::new(
@@ -119,24 +112,10 @@ impl Gateway {
         }
         Some(value)
     }
-    #[cfg(test)]
-    pub(crate) fn test_model(prefix: &str) -> Self {
-        let mut value = Self::from_environment();
-        value.test_prefix = Some(prefix.into());
-        value
-    }
     pub(crate) fn available(&self, machine: &str, now: u64) -> bool {
-        #[cfg(test)]
-        if self.test_prefix.is_some() {
-            return true;
-        }
         self.client.is_some() && self.credential(machine, now).is_some()
     }
     pub(crate) async fn complete(&self, machine: &str, id: &str, text: &str) -> Outcome {
-        #[cfg(test)]
-        if let Some(prefix) = &self.test_prefix {
-            return Outcome::Completed(format!("{prefix}{text}"));
-        }
         self.complete_with(
             machine,
             id,

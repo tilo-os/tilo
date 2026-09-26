@@ -237,75 +237,6 @@ fn native_writer_action_is_attributed_durable_and_idempotent() {
     );
 }
 #[test]
-fn cancellation_and_failure_are_terminal_and_chat_uses_real_document() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[7; 32]);
-    let device = SigningKey::from_bytes(&[8; 32]);
-    let source = device.verifying_key().to_bytes();
-    let mut store = Store::open(dir.path(), "machine-a").unwrap();
-    let r = approved(store.inspect(10).unwrap(), &root, &device);
-    store.apply(&r, 11).unwrap();
-    let request = |id: &str, operation| ActionRequest {
-        version: 1,
-        room: r.challenge.room.clone(),
-        invocation_id: id.into(),
-        operation,
-    };
-    let before = store.peer().unwrap().rows();
-    store
-        .action(
-            source,
-            &request(
-                "cancel",
-                NativeOperation::Cancel {
-                    invocation_id: "never".into(),
-                },
-            ),
-            12,
-        )
-        .unwrap();
-    assert_eq!(
-        store
-            .action(
-                source,
-                &request(
-                    "never",
-                    NativeOperation::WriterInsert {
-                        text: "must not execute".into()
-                    }
-                ),
-                13
-            )
-            .unwrap()
-            .status,
-        "cancelled"
-    );
-    assert_eq!(before, store.peer().unwrap().rows());
-    let bad = request(
-        "bad",
-        NativeOperation::ChatSend {
-            channel: "c_general".into(),
-            text: String::new(),
-        },
-    );
-    assert_eq!(store.action(source, &bad, 14).unwrap().status, "failed");
-    assert_eq!(before, store.peer().unwrap().rows());
-    let good = request(
-        "chat",
-        NativeOperation::ChatSend {
-            channel: "c_general".into(),
-            text: "native message".into(),
-        },
-    );
-    assert_eq!(store.action(source, &good, 15).unwrap().status, "completed");
-    assert_ne!(before, store.peer().unwrap().rows());
-    let mut substitute = good.clone();
-    substitute.operation = NativeOperation::WriterInsert {
-        text: "substitute".into(),
-    };
-    assert!(store.action(source, &substitute, 16).is_err());
-}
-#[test]
 fn second_device_joins_existing_state_and_revocation_survives_restart() {
     use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let dir = tempfile::tempdir().unwrap();
@@ -364,114 +295,6 @@ fn second_device_joins_existing_state_and_revocation_survives_restart() {
     );
 }
 
-#[tokio::test]
-async fn addressed_native_action_requires_device_proof_and_returns_private_receipt() {
-    use iroh::{Endpoint, RelayMode, endpoint::presets};
-    use qos_relay::{
-        auth,
-        framing::{read_frame, write_frame},
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        let dir = tempfile::tempdir().unwrap();
-        let root = SigningKey::from_bytes(&[7; 32]);
-        let device = SigningKey::from_bytes(&[8; 32]);
-        let now = tilo_delivery_protocol::clock::now_ns();
-        let r = {
-            let mut store = Store::open(dir.path(), "network-test").unwrap();
-            let r = approved(store.inspect(now).unwrap(), &root, &device);
-            store.apply(&r, now).unwrap();
-            r
-        };
-        let router = action_server::start(dir.path(), "network-test", RelayMode::Disabled)
-            .await
-            .unwrap();
-        let port = router
-            .endpoint()
-            .bound_sockets()
-            .iter()
-            .find(|s| s.is_ipv4())
-            .unwrap()
-            .port();
-        let address = iroh_base::EndpointAddr::new(router.endpoint().id())
-            .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
-        let client = Endpoint::builder(presets::Minimal)
-            .relay_mode(RelayMode::Disabled)
-            .bind()
-            .await
-            .unwrap();
-        for valid in [false, true] {
-            let connection = client
-                .connect(address.clone(), actions::ACTION_ALPN)
-                .await
-                .unwrap();
-            let (mut send, mut recv) = connection.open_bi().await.unwrap();
-            let nonce = [17; 32];
-            write_frame(
-                &mut send,
-                &postcard::to_stdvec(&auth::Hello {
-                    cert: r.browser_certificate.clone(),
-                    client_nonce: nonce,
-                })
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-            let ack: auth::HelloAck =
-                postcard::from_bytes(&read_frame(&mut recv, 8192).await.unwrap()).unwrap();
-            assert_eq!(ack.cert, r.host_certificate);
-            auth::verify_pinned_host_ack(
-                auth::AuthDomain::LegacyQos,
-                &ack,
-                &RevocationList::new(),
-                now,
-                &nonce,
-            )
-            .unwrap();
-            let key = if valid {
-                device.clone()
-            } else {
-                SigningKey::from_bytes(&[99; 32])
-            };
-            write_frame(
-                &mut send,
-                &postcard::to_stdvec(&auth::build_hello_ack2(
-                    auth::AuthDomain::LegacyQos,
-                    &key,
-                    &ack.server_nonce,
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-            let command = ActionRequest {
-                version: 1,
-                room: r.challenge.room.clone(),
-                invocation_id: "network-native".into(),
-                operation: NativeOperation::WriterInsert {
-                    text: "addressed native".into(),
-                },
-            };
-            let sent = write_frame(&mut send, &serde_json::to_vec(&command).unwrap()).await;
-            if valid {
-                sent.unwrap();
-                let receipt: ActionReceipt =
-                    serde_json::from_slice(&read_frame(&mut recv, 64 * 1024).await.unwrap())
-                        .unwrap();
-                assert_eq!(receipt.status, "completed");
-            } else if sent.is_ok() {
-                assert!(read_frame(&mut recv, 64 * 1024).await.is_err());
-            }
-            connection.close(0u32.into(), b"done");
-        }
-        let store = Store::open(dir.path(), "network-test").unwrap();
-        assert_eq!(store.state.receipts.len(), 1);
-        drop(store);
-        client.close().await;
-        router.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
 #[test]
 fn initial_records_pass_the_real_browser_owner_admission() {
     use qos_desktop::{WorkspaceTree, projection::RoomProjection};
@@ -765,25 +588,6 @@ fn addressed_actions_honor_native_artifact_restrictions() {
             .is_err()
     );
     assert_eq!(before, store.peer().unwrap().rows());
-    let catalogue = store
-        .action(
-            device.verifying_key().to_bytes(),
-            &ActionRequest {
-                version: 1,
-                room: command.room,
-                invocation_id: "catalogue".into(),
-                operation: NativeOperation::Catalogue,
-            },
-            14,
-        )
-        .unwrap();
-    assert!(
-        !catalogue.output.unwrap()["operations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|op| op["kind"] == "writer_insert")
-    );
 }
 
 #[test]
@@ -1153,198 +957,6 @@ fn expiry_cleanup_publishes_room_delta_while_preserving_encrypted_metadata() {
         "authenticated encrypted metadata must survive cleanup publication"
     );
 }
-#[test]
-fn model_pending_survives_restart_and_rejects_substitution_and_foreign_actor() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[7; 32]);
-    let device = SigningKey::from_bytes(&[8; 32]);
-    let mut store = Store::open(dir.path(), "machine-a").unwrap();
-    let enrollment = approved(store.inspect(10).unwrap(), &root, &device);
-    store.apply(&enrollment, 11).unwrap();
-    let command: ActionRequest = serde_json::from_value(serde_json::json!({
-        "version":1,"room":enrollment.challenge.room,"invocation_id":"model-1",
-        "operation":{"kind":"model_complete","text":"Explain gravity"}
-    }))
-    .expect("bounded native completion must be supported");
-    let source = device.verifying_key().to_bytes();
-    let first = store.action(source, &command, 12).unwrap();
-    assert_eq!(first.status, "pending");
-    drop(store);
-    let mut store = Store::open(dir.path(), "machine-a").unwrap();
-    assert_eq!(first, store.action(source, &command, 13).unwrap());
-    let mut altered = serde_json::to_value(&command).unwrap();
-    altered["operation"]["text"] = "Substitution".into();
-    assert!(
-        store
-            .action(source, &serde_json::from_value(altered).unwrap(), 14)
-            .is_err()
-    );
-    assert!(store.action([99; 32], &command, 14).is_err());
-    let status = ActionRequest {
-        invocation_id: "status-1".into(),
-        operation: NativeOperation::Status {
-            invocation_id: "model-1".into(),
-        },
-        ..command.clone()
-    };
-    assert_eq!(
-        store.action(source, &status, 15).unwrap().output.unwrap()["status"],
-        "pending"
-    );
-    let cancel = ActionRequest {
-        invocation_id: "cancel-1".into(),
-        operation: NativeOperation::Cancel {
-            invocation_id: "model-1".into(),
-        },
-        ..command
-    };
-    assert_eq!(store.action(source, &cancel, 16).unwrap().status, "failed");
-}
-
-#[tokio::test]
-async fn model_network_releases_store_lock_and_reuses_request_id_until_terminal() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[7; 32]);
-    let device = SigningKey::from_bytes(&[8; 32]);
-    let source = device.verifying_key().to_bytes();
-    let command = {
-        let mut store = Store::open(dir.path(), "model-machine").unwrap();
-        let r = approved(store.inspect(10).unwrap(), &root, &device);
-        store.apply(&r, 11).unwrap();
-        ActionRequest {
-            version: 1,
-            room: r.challenge.room,
-            invocation_id: "completion".into(),
-            operation: NativeOperation::ModelComplete {
-                text: "Hello".into(),
-            },
-        }
-    };
-    let captured = std::sync::Mutex::new(None);
-    for outcome in [
-        gateway::Outcome::Pending,
-        gateway::Outcome::Completed("Real completion".into()),
-    ] {
-        let captured = &captured;
-        let dir = &dir;
-        let dispatched_outcome = outcome.clone();
-        let receipt = model::invoke(
-            dir.path(),
-            "model-machine",
-            source,
-            &command,
-            12,
-            |pending, text| async move {
-                let lock = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(dir.path().join("state.lock"))
-                    .unwrap();
-                let lock = advisory_lock::FileLock::try_exclusive(lock)
-                    .expect("model network must run outside Store lock");
-                drop(lock);
-                assert_eq!(text, "Hello");
-                let mut previous = captured.lock().unwrap();
-                if let Some(id) = previous.as_ref() {
-                    assert_eq!(id, &pending.gateway_id)
-                } else {
-                    *previous = Some(pending.gateway_id.clone())
-                };
-                let parsed = uuid::Uuid::parse_str(&pending.gateway_id).unwrap();
-                assert_eq!(parsed.get_version_num(), 8);
-                dispatched_outcome
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            receipt.status,
-            if matches!(outcome, gateway::Outcome::Pending) {
-                "pending"
-            } else {
-                "completed"
-            }
-        );
-    }
-    let replay = model::invoke(
-        dir.path(),
-        "model-machine",
-        source,
-        &command,
-        13,
-        |_, _| async { panic!("terminal replay must not dispatch") },
-    )
-    .await
-    .unwrap();
-    assert_eq!(replay.output.unwrap()["text"], "Real completion");
-}
-
-#[test]
-fn model_finalization_is_first_terminal_wins_and_rechecks_revocation() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[7; 32]);
-    let device = SigningKey::from_bytes(&[8; 32]);
-    let source = device.verifying_key().to_bytes();
-    let mut store = Store::open(dir.path(), "model-machine").unwrap();
-    let r = approved(store.inspect(10).unwrap(), &root, &device);
-    store.apply(&r, 11).unwrap();
-    let request = ActionRequest {
-        version: 1,
-        room: r.challenge.room,
-        invocation_id: "same".into(),
-        operation: NativeOperation::ModelComplete {
-            text: "Hello".into(),
-        },
-    };
-    store.action(source, &request, 12).unwrap();
-    let scope = format!("{}:same", hex::encode(source));
-    let pending = store.state.pending_models[&scope].clone();
-    let first = store
-        .finish_model(
-            source,
-            &request,
-            &pending,
-            gateway::Outcome::Completed("First".into()),
-            13,
-        )
-        .unwrap();
-    assert_eq!(
-        store
-            .finish_model(
-                source,
-                &request,
-                &pending,
-                gateway::Outcome::Failed("late_failure"),
-                14
-            )
-            .unwrap(),
-        first
-    );
-    assert_eq!(
-        store
-            .finish_model(source, &request, &pending, gateway::Outcome::Pending, 15)
-            .unwrap(),
-        first
-    );
-    store
-        .state
-        .bound
-        .as_mut()
-        .unwrap()
-        .roster
-        .retain(|c| c.device_public_key != source);
-    assert!(
-        store
-            .finish_model(
-                source,
-                &request,
-                &pending,
-                gateway::Outcome::Completed("Unauthorized".into()),
-                16
-            )
-            .is_err()
-    );
-}
 
 #[test]
 fn model_journal_migrates_v1_without_losing_receipts_and_never_defaults_missing_v2_pending() {
@@ -1405,150 +1017,6 @@ fn v3_publication_outbox_migrates_to_explicit_checkpoint_kinds() {
             .outbox
             .iter()
             .all(|publication| publication.kind == PublicationKind::Checkpoint)
-    );
-}
-
-#[test]
-fn model_replay_rechecks_current_model_action_capability() {
-    use automerge::{ReadDoc, transaction::Transactable};
-    use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[7; 32]);
-    let device = SigningKey::from_bytes(&[8; 32]);
-    let source = device.verifying_key().to_bytes();
-    let mut store = Store::open(dir.path(), "model-policy").unwrap();
-    let r = approved(store.inspect(10).unwrap(), &root, &device);
-    store.apply(&r, 11).unwrap();
-    let request = ActionRequest {
-        version: 1,
-        room: r.challenge.room,
-        invocation_id: "same".into(),
-        operation: NativeOperation::ModelComplete {
-            text: "Hello".into(),
-        },
-    };
-    store.action(source, &request, 12).unwrap();
-    let pending = store.state.pending_models[&format!("{}:same", hex::encode(source))].clone();
-    store
-        .finish_model(
-            source,
-            &request,
-            &pending,
-            gateway::Outcome::Completed("Private".into()),
-            13,
-        )
-        .unwrap();
-    let mut peer = store.peer().unwrap();
-    let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
-        unreachable!()
-    };
-    let mut governance = qos_peer_state::room::candidate(None, &changes).unwrap();
-    let caps = governance
-        .get(automerge::ROOT, "capabilities")
-        .unwrap()
-        .unwrap()
-        .1;
-    let restriction = CapOverride::new(
-        Subject::User(collab_types::Ed25519PublicKey::from_bytes(
-            root.verifying_key().to_bytes(),
-        )),
-        Scope::Action {
-            app: "dev.qos.model".into(),
-            action: "model_complete".into(),
-        },
-        Effect::Restrict,
-        Verb::Read,
-    );
-    governance
-        .put(
-            &caps,
-            "deny-model",
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&restriction).unwrap()),
-        )
-        .unwrap();
-    governance.commit();
-    let changes = governance
-        .get_changes(&[])
-        .iter()
-        .map(|c| c.raw_bytes().to_vec())
-        .collect();
-    peer.receive_from(
-        TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
-        NeighbourMsg::SyncResp {
-            room: peer.room().into(),
-            changes,
-        },
-        now_time(14),
-    )
-    .unwrap();
-    let mut state = store.state.clone();
-    state.bound.as_mut().unwrap().peer = peer.durable().unwrap();
-    store.commit(state).unwrap();
-    assert!(
-        store.action(source, &request, 15).is_err(),
-        "terminal replay must obey current model restrictions"
-    );
-}
-
-#[tokio::test]
-async fn model_catalogue_requires_valid_private_config_and_current_actor() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[7; 32]);
-    let device = SigningKey::from_bytes(&[8; 32]);
-    let source = device.verifying_key().to_bytes();
-    let request = {
-        let mut store = Store::open(dir.path(), "catalogue-machine").unwrap();
-        let r = approved(store.inspect(10).unwrap(), &root, &device);
-        store.apply(&r, 11).unwrap();
-        ActionRequest {
-            version: 1,
-            room: r.challenge.room,
-            invocation_id: "catalogue".into(),
-            operation: NativeOperation::Catalogue,
-        }
-    };
-    let path = dir.path().join("ai.json");
-    let gateway = gateway::Gateway::new(path.clone());
-    let absent =
-        action_server::respond(dir.path(), "catalogue-machine", &gateway, source, &request)
-            .await
-            .unwrap();
-    assert!(
-        !absent.output.unwrap()["operations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|op| op["kind"] == "model_complete")
-    );
-    let now = tilo_delivery_protocol::clock::now_ns() / 1_000_000_000;
-    let token = format!("tilo-ai-{}", "z".repeat(43));
-    atomic_file::write_with_mode(&path,&serde_json::to_vec(&serde_json::json!({"machineId":"catalogue-machine","endpoint":"https://api.example/api/machines/catalogue-machine/ai/v1/chat/completions","model":"gpt-4.1-mini-2025-04-14","token":token,"expiresAt":now+1000})).unwrap(),0o600).unwrap();
-    let available =
-        action_server::respond(dir.path(), "catalogue-machine", &gateway, source, &request)
-            .await
-            .unwrap();
-    assert!(
-        available.output.unwrap()["operations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|op| op["kind"] == "model_complete")
-    );
-    assert!(
-        action_server::respond(
-            dir.path(),
-            "catalogue-machine",
-            &gateway,
-            [99; 32],
-            &request
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        !std::fs::read_to_string(dir.path().join("state.json"))
-            .unwrap()
-            .contains(&token)
     );
 }
 
@@ -2630,15 +2098,10 @@ fn rival_valid_challenges_report_the_invitation_as_consumed() {
 }
 
 #[tokio::test]
-async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
-    use iroh::{Endpoint, RelayMode, endpoint::presets};
+async fn guest_authenticated_action_rejects_forced_owner_operation() {
     use qos_peer_state::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, decode_and_verify_invitation_text,
         sign_join_proof,
-    };
-    use qos_relay::{
-        auth,
-        framing::{read_frame, write_frame},
     };
 
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -2709,57 +2172,6 @@ async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
             (enrollment, guest_cert)
         };
 
-        let router = action_server::start(dir.path(), "forced-admin", RelayMode::Disabled)
-            .await
-            .unwrap();
-        let port = router
-            .endpoint()
-            .bound_sockets()
-            .iter()
-            .find(|socket| socket.is_ipv4())
-            .unwrap()
-            .port();
-        let address = iroh_base::EndpointAddr::new(router.endpoint().id())
-            .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
-        let client = Endpoint::builder(presets::Minimal)
-            .relay_mode(RelayMode::Disabled)
-            .bind()
-            .await
-            .unwrap();
-        let connection = client.connect(address, actions::ACTION_ALPN).await.unwrap();
-        let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let nonce = [36; 32];
-        write_frame(
-            &mut send,
-            &postcard::to_stdvec(&auth::Hello {
-                cert: guest_cert,
-                client_nonce: nonce,
-            })
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        let ack: auth::HelloAck =
-            postcard::from_bytes(&read_frame(&mut recv, 8192).await.unwrap()).unwrap();
-        auth::verify_pinned_host_ack(
-            auth::AuthDomain::LegacyQos,
-            &ack,
-            &RevocationList::new(),
-            now + 5,
-            &nonce,
-        )
-        .unwrap();
-        write_frame(
-            &mut send,
-            &postcard::to_stdvec(&auth::build_hello_ack2(
-                auth::AuthDomain::LegacyQos,
-                &guest_device,
-                &ack.server_nonce,
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
         let forced = ActionRequest {
             version: 1,
             room: enrollment.challenge.room,
@@ -2771,18 +2183,11 @@ async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
                 expires_at_ns: now + 600_000_000_000,
             },
         };
-        write_frame(&mut send, &serde_json::to_vec(&forced).unwrap())
-            .await
-            .unwrap();
-        let receipt: ActionReceipt =
-            serde_json::from_slice(&read_frame(&mut recv, 64 * 1024).await.unwrap()).unwrap();
-        assert_eq!(receipt.status, "rejected");
-        assert!(
-            receipt
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("Owner authority"))
-        );
+        let error = Store::open(dir.path(), "forced-admin")
+            .unwrap()
+            .action(guest_cert.device_public_key, &forced, now + 5)
+            .unwrap_err();
+        assert!(error.to_string().contains("Owner authority"));
         assert!(
             !Store::open(dir.path(), "forced-admin")
                 .unwrap()
@@ -2791,9 +2196,6 @@ async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
                 .keys()
                 .any(|key| key.ends_with(":forced-owner-invite"))
         );
-        connection.close(0u32.into(), b"done");
-        client.close().await;
-        router.shutdown().await.unwrap();
     })
     .await
     .unwrap();

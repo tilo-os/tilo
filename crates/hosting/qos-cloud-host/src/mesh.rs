@@ -170,13 +170,6 @@ impl Store {
             serde_json::json!({"version":1,"machine_id":self.state.machine_id,"links":links,"capabilities":{"protocol":"qos-cloud-mesh-actions/1","model_complete":available,"remote_actions":if available {vec!["model_complete"]}else{vec![]},"agent_execution":false,"private_workspace_access":false,"max_concurrent":8,"max_input_bytes":32768,"max_output_tokens":2048},"runtime_readiness":"requires_live_action_probe"}),
         )
     }
-    pub(crate) fn remote_descriptors(&self) -> Result<Vec<serde_json::Value>> {
-        self.ensure_reconciled()?;
-        Ok(self.state.mesh.links.iter().filter(|(_,l)|l.active).map(|(id,l)| {
-            let remote=if l.grant.source.machine_id==self.state.machine_id {&l.grant.target}else{&l.grant.source};
-            serde_json::json!({"kind":"remote","link_id":id,"target_machine_id":remote.machine_id,"parameters":{"operation":"native_action"},"allowed_actions":l.grant.allowed_actions,"readiness":"probe_remote_catalogue","private_workspace_access":false})
-        }).collect())
-    }
     fn mesh_peer(&self, id: &str, machine: &str, now: u64) -> Result<MeshChallenge> {
         self.ensure_reconciled()?;
         let link = self
@@ -398,7 +391,7 @@ where
 
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use qos_relay::{
-    auth::{self, Hello, HelloAck, HelloAck2},
+    auth::{self, Hello, HelloAck2},
     framing::{read_frame, write_frame},
 };
 #[derive(Debug)]
@@ -538,145 +531,27 @@ impl Handler {
         .await
     }
 }
-/// Forward from the existing authenticated browser Action service to the exact linked host.
-pub(crate) async fn forward(
+/// Serve the mesh endpoint under the machine's mesh identity.
+pub(crate) async fn start(
     root: &Path,
     machine: &str,
-    endpoint: &iroh::Endpoint,
-    source: [u8; 32],
-    request: &ActionRequest,
-) -> Result<ActionReceipt> {
-    let NativeOperation::Remote {
-        link_id,
-        target_machine_id,
-        operation,
-    } = &request.operation
-    else {
-        bail!("not remote")
-    };
-    let (peer, key, cert, call) = {
-        let store = Store::open(root, machine)?;
-        if request.version != 1
-            || request.room != store.state.room
-            || request.invocation_id.is_empty()
-            || request.invocation_id.len() > 128
-        {
-            bail!("invalid action identity")
-        }
-        store.authorize_model(source, tilo_delivery_protocol::clock::now_ns())?;
-        if !matches!(
-            operation.as_ref(),
-            NativeOperation::ModelComplete { .. }
-                | NativeOperation::Catalogue
-                | NativeOperation::Status { .. }
-                | NativeOperation::Cancel { .. }
-        ) {
-            bail!("action outside mesh grant")
-        }
-        if let NativeOperation::ModelComplete { text } = operation.as_ref() {
-            model::validate_text(text)?;
-        }
-        let peer = store.mesh_peer(
-            link_id,
-            target_machine_id,
-            tilo_delivery_protocol::clock::now_ns(),
-        )?;
-        let call = MeshAction {
-            version: 1,
-            link_id: link_id.clone(),
-            source_machine_id: machine.into(),
-            target_machine_id: target_machine_id.clone(),
-            source_device_public_key: source,
-            request: ActionRequest {
-                version: 1,
-                room: format!("mesh:{link_id}"),
-                invocation_id: request.invocation_id.clone(),
-                operation: *operation.clone(),
-            },
-        };
-        (
-            peer,
-            store.key(),
-            store
-                .state
-                .bound
-                .as_ref()
-                .ok_or_else(|| anyhow!("not enrolled"))?
-                .authority
-                .clone(),
-            call,
-        )
-    };
-    let connection = endpoint
-        .connect(
-            serde_json::from_str::<iroh_base::EndpointAddr>(&peer.action_address)?,
-            MESH_ALPN,
-        )
+    mode: iroh::RelayMode,
+) -> Result<iroh::protocol::Router> {
+    let key = { Store::open(root, machine)?.action_key() };
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(key)
+        .relay_mode(mode)
+        .bind()
         .await?;
-    let result = exchange(&connection, &key, cert, &peer, &call).await;
-    connection.close(0u32.into(), b"done");
-    // Revocation during an in-flight call prevents delivery of its result.
-    {
-        let store = Store::open(root, machine)?;
-        store.authorize_model(source, tilo_delivery_protocol::clock::now_ns())?;
-        store.mesh_peer(
-            link_id,
-            target_machine_id,
-            tilo_delivery_protocol::clock::now_ns(),
-        )?;
-    }
-    result
-}
-async fn exchange(
-    connection: &iroh::endpoint::Connection,
-    key: &SigningKey,
-    cert: DeviceCert,
-    peer: &MeshChallenge,
-    call: &MeshAction,
-) -> Result<ActionReceipt> {
-    let (mut send, mut recv) = connection.open_bi().await?;
-    let mut nonce = [0; 32];
-    rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
-    write_frame(
-        &mut send,
-        &postcard::to_stdvec(&Hello {
-            cert,
-            client_nonce: nonce,
-        })?,
-    )
-    .await?;
-    let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, 8192).await?)?;
-    if ack.cert != peer.host_certificate {
-        bail!("target host certificate substituted")
-    }
-    auth::verify_pinned_host_ack(
-        auth::AuthDomain::LegacyQos,
-        &ack,
-        &RevocationList::new(),
-        tilo_delivery_protocol::clock::now_ns(),
-        &nonce,
-    )?;
-    write_frame(
-        &mut send,
-        &postcard::to_stdvec(&auth::build_hello_ack2(
-            auth::AuthDomain::LegacyQos,
-            key,
-            &ack.server_nonce,
-        ))?,
-    )
-    .await?;
-    write_frame(&mut send, &serde_json::to_vec(call)?).await?;
-    let receipt: ActionReceipt = serde_json::from_slice(&read_frame(&mut recv, 128 * 1024).await?)?;
-    if receipt.invocation_id != call.request.invocation_id
-        || !matches!(
-            receipt.status.as_str(),
-            "completed" | "failed" | "rejected" | "pending" | "cancelled"
-        )
-    {
-        bail!("invalid remote receipt")
-    }
-    send.finish()?;
-    Ok(receipt)
+    let handler = std::sync::Arc::new(Handler {
+        root: root.into(),
+        machine: machine.into(),
+        slots: tokio::sync::Semaphore::new(8),
+        gateway: gateway::Gateway::from_environment(),
+    });
+    Ok(iroh::protocol::Router::builder(endpoint)
+        .accept(MESH_ALPN, handler)
+        .spawn())
 }
 
 fn link_status(state: &MeshState, machine: &str) -> Vec<serde_json::Value> {

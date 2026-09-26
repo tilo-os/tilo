@@ -601,9 +601,7 @@ struct EnrollmentReply {
     host_certificate: identity::DeviceCert,
     revocations: Vec<identity::RevocationEntry>,
     bootstrap: EnrollmentRoom,
-    // These legacy routes are inert and are never passed to a transport.
-    #[serde(rename = "action_address")]
-    _action: serde::de::IgnoredAny,
+    // These relay routes are inert and are never passed to a transport.
     #[serde(rename = "relay_address")]
     _relay: serde::de::IgnoredAny,
     #[serde(rename = "packet_relay")]

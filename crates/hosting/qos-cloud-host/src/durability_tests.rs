@@ -171,51 +171,6 @@ fn poison(store: &mut Store) {
 }
 
 #[test]
-fn durability_cached_model_admission_and_completion_require_reconciliation() {
-    for completed in [false, true] {
-        let (dir, mut store, device, _) = enrolled();
-        let source = device.verifying_key().to_bytes();
-        let request = ActionRequest {
-            operation: NativeOperation::ModelComplete {
-                text: "one request".into(),
-            },
-            ..insert(&store, "model")
-        };
-        store.action(source, &request, 12).unwrap();
-        let expected = store.state.pending_models.values().next().unwrap().clone();
-        if completed {
-            store
-                .finish_model(
-                    source,
-                    &request,
-                    &expected,
-                    gateway::Outcome::Completed("saved".into()),
-                    13,
-                )
-                .unwrap();
-        }
-        poison(&mut store);
-        let saved = std::fs::read(dir.path().join("state.json")).unwrap();
-        let result = if completed {
-            store.finish_model_authorized(
-                source,
-                &request,
-                &expected,
-                gateway::Outcome::Completed("must not replace".into()),
-                None,
-            )
-        } else {
-            store.begin_model(source, &request, expected.digest.clone(), None)
-        };
-        assert!(
-            result.is_err(),
-            "cached model branch returned success from poisoned Store"
-        );
-        assert!(store.authorize_model(source, 14).is_err());
-        assert_eq!(std::fs::read(dir.path().join("state.json")).unwrap(), saved);
-    }
-}
-#[test]
 fn durability_cached_mesh_challenge_and_catalogue_require_reconciliation() {
     let (dir, mut store, _, _) = enrolled();
     store.mesh_inspect(12).unwrap();
@@ -327,106 +282,6 @@ fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
         result,
         JoinTransportResponse::Error { code: 400, .. }
     ));
-}
-
-async fn addressed_request(
-    address: iroh_base::EndpointAddr,
-    enrollment: &EnrollmentRequest,
-    device: &SigningKey,
-    request: &ActionRequest,
-) -> Result<ActionReceipt> {
-    use qos_relay::{
-        auth,
-        framing::{read_frame, write_frame},
-    };
-    let client = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind()
-        .await?;
-    let connection = client.connect(address, actions::ACTION_ALPN).await?;
-    let result: Result<ActionReceipt> = async {
-        let (mut send, mut recv) = connection.open_bi().await?;
-        let nonce = [17; 32];
-        write_frame(
-            &mut send,
-            &postcard::to_stdvec(&auth::Hello {
-                cert: enrollment.browser_certificate.clone(),
-                client_nonce: nonce,
-            })?,
-        )
-        .await?;
-        let ack: auth::HelloAck = postcard::from_bytes(&read_frame(&mut recv, 8192).await?)?;
-        auth::verify_pinned_host_ack(
-            auth::AuthDomain::LegacyQos,
-            &ack,
-            &RevocationList::new(),
-            tilo_delivery_protocol::clock::now_ns(),
-            &nonce,
-        )?;
-        write_frame(
-            &mut send,
-            &postcard::to_stdvec(&auth::build_hello_ack2(
-                auth::AuthDomain::LegacyQos,
-                device,
-                &ack.server_nonce,
-            ))?,
-        )
-        .await?;
-        write_frame(&mut send, &serde_json::to_vec(request)?).await?;
-        Ok(serde_json::from_slice(
-            &read_frame(&mut recv, 64 * 1024).await?,
-        )?)
-    }
-    .await;
-    connection.close(0u32.into(), b"test complete");
-    client.close().await;
-    result
-}
-#[test]
-fn durability_addressed_exchange_does_not_report_uncertain_commit_as_rejected() {
-    let (dir, store, device, enrollment) = enrolled();
-    let request = insert(&store, "network");
-    drop(store);
-    let runtime = runtime();
-    let router = runtime
-        .block_on(action_server::start(
-            dir.path(),
-            "durability",
-            iroh::RelayMode::Disabled,
-        ))
-        .unwrap();
-    let port = router
-        .endpoint()
-        .bound_sockets()
-        .iter()
-        .find(|s| s.is_ipv4())
-        .unwrap()
-        .port();
-    let address = iroh_base::EndpointAddr::new(router.endpoint().id())
-        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
-    let result = with_failure(Checkpoint::BeforeCommit, || {
-        runtime.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                addressed_request(address, &enrollment, &device, &request),
-            )
-            .await
-            .unwrap()
-        })
-    });
-    runtime.block_on(router.shutdown()).unwrap();
-    assert!(
-        result.is_err(),
-        "owner failure became a terminal wire receipt: {result:?}"
-    );
-    let mut store = Store::open(dir.path(), "durability").unwrap();
-    assert_eq!(
-        store
-            .action(device.verifying_key().to_bytes(), &request, 16)
-            .unwrap()
-            .status,
-        "completed"
-    );
 }
 
 pub(super) fn document_message(store: &Store, device: &SigningKey) -> NeighbourMsg {
@@ -813,15 +668,6 @@ fn durability_populated_current_state_and_typed_publications_survive_uncertain_r
         )
         .unwrap();
     store.mesh_inspect(now).unwrap();
-    let model = ActionRequest {
-        operation: NativeOperation::ModelComplete {
-            text: "pending survives".into(),
-        },
-        ..insert(&store, "pending")
-    };
-    store
-        .action(device.verifying_key().to_bytes(), &model, now)
-        .unwrap();
     let writer = insert(&store, "preserved-write");
     store
         .action(device.verifying_key().to_bytes(), &writer, now)
@@ -844,7 +690,6 @@ fn durability_populated_current_state_and_typed_publications_survive_uncertain_r
     for field in [
         "consumed",
         "receipts",
-        "pending_models",
         "canonical_intents",
         "invitations",
         "join_challenges",

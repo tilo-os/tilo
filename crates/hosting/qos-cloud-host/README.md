@@ -68,26 +68,11 @@ challenge and proof-of-possession refresh, so they do not consume or recreate an
 
 `qos-relay/1` remains unchanged. Real admitted CRDT state uses retained checkpoints
 and deltas. Startup republishes canonical snapshots so a crash between sending and
-relay persistence cannot strand the workspace. Native application commands use the
-separate addressed `qos-cloud-actions/1` endpoint returned as `action_address`:
-
-1. One bidirectional stream, four-byte little-endian length framing.
-2. Native postcard `Hello` / `HelloAck` / `HelloAck2` mutual certificate nonce handshake.
-3. One UTF-8 JSON request, at most 64 KiB: `{version:1,room,invocation_id,operation}`.
-4. One JSON receipt: `{invocation_id,status,error,output}`. Client closes the connection.
-
-Supported legacy operations are `catalogue`, `status {invocation_id}`, `cancel {invocation_id}`,
-`writer_insert {text}` (first body paragraph), `chat_send {channel,text}`, and
-`model_complete {text}` when managed inference is configured and permitted.
-Certificates, current governed membership and capability permissions are checked at
-invocation time. Idempotence is scoped to the certified device and invocation ID;
-changing arguments under an existing ID is rejected. Cancellation wins only before
-commit. Already completed actions cannot be cancelled. Invocation arguments and
-receipts never travel through broadcast state or presence messages. The committed
-application document changes are shared normally.
-
-There is no arbitrary shell/effect invocation. Unsupported app operations are absent
-from the catalogue. The model operation is one plain-text completion, not agent execution.
+relay persistence cannot strand the workspace. Application commands, collaboration
+administration and media governance all arrive through the certified action broker
+(the private relay lane and `/peer/v3/private`); there is no separate addressed action
+endpoint. Invocation arguments and receipts never travel through broadcast state or
+presence messages. The committed application document changes are shared normally.
 
 Managed inference privately reloads the five-field `{machineId,endpoint,model,token,expiresAt}`
 credential from the trusted refresh helper for each dispatch. It accepts only a regular owned
