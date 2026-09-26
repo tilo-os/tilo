@@ -62,6 +62,9 @@ jobs:
       - name: Repository policy suite
         run: bash tools/policy/run.sh
 
+      - name: Tilo app lints
+        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph
 
