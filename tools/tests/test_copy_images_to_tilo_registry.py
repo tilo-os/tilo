@@ -70,14 +70,23 @@ class CopyPlanTests(unittest.TestCase):
         self.assertEqual(resign, ['re-sign        registry.tilo.so/tilo/tilo@<digest of :latest>'])
 
     def test_apply_without_destination_credentials_is_refused(self):
+        # A stub registry client that records any use: the refusal must come
+        # before a registry is contacted, whatever the host has installed.
+        stubs = self.root / 'stub-bin'
+        stubs.mkdir()
+        calls = self.root / 'skopeo-calls'
+        (stubs / 'skopeo').write_text(f'#!/bin/sh\necho "$@" >> {calls}\nexit 1\n')
+        (stubs / 'skopeo').chmod(0o755)
         environment = dict(os.environ, SCAN_ROOT=str(self.root), SOURCE_REGISTRY='old.example',
-                           OWNER_MOVES='legacy:tilo', APPLY='1')
+                           OWNER_MOVES='legacy:tilo', APPLY='1',
+                           PATH=f'{stubs}{os.pathsep}{os.environ["PATH"]}')
         for name in ('DEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'):
             environment.pop(name, None)
         result = subprocess.run(['bash', str(SCRIPT)], env=environment, text=True,
                                 capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('enable-openid-connect', result.stderr)
+        self.assertFalse(calls.exists(), 'registry client ran before credentials were checked')
 
     def test_owner_moves_are_required(self):
         environment = dict(os.environ, SCAN_ROOT=str(self.root))
