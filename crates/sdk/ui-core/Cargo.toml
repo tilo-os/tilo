@@ -349,3 +349,7 @@ path = "examples/manual_composition_shots.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
+
+[[example]]
+name = "block-editor-typing"
+path = "examples/block_editor_typing.rs"
