@@ -20,8 +20,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::process::Command;
 #[path = "tests/allocations.rs"]
 mod allocations;
+#[path = "tests/fresh_admin.rs"]
+mod fresh_admin;
 
-fn xfs_fixture() -> tempfile::TempDir {
+fn private_root() -> tempfile::TempDir {
     let base = std::env::var_os("TILO_PRIVATE_ACTIONS_XFS_FIXTURES")
         .expect("qualification requires an explicit task-private XFS fixture root");
     let held = File::open(&base).unwrap();
@@ -56,7 +58,7 @@ fn acl(path: &std::path::Path, entries: &str) {
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_actual_xfs_admission_and_masked_named_acl() {
     use allocations::measure;
-    let root = xfs_fixture();
+    let root = private_root();
     let foreign = if rustix::process::geteuid().as_raw() == 65534 {
         65533
     } else {
@@ -78,7 +80,7 @@ fn bounded_linux_actual_xfs_admission_and_masked_named_acl() {
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_inherited_default_acl_keeps_actual_stage_private() {
     use allocations::measure;
-    let root = xfs_fixture();
+    let root = private_root();
     let foreign = if rustix::process::geteuid().as_raw() == 65534 {
         65533
     } else {
@@ -121,7 +123,7 @@ fn bounded_linux_inherited_default_acl_keeps_actual_stage_private() {
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_current_objects_and_names_are_rechecked() {
     use allocations::measure;
-    let root = xfs_fixture();
+    let root = private_root();
     let path = root.path().join("data");
     fs::write(&path, b"secret").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -165,7 +167,7 @@ fn bounded_linux_current_objects_and_names_are_rechecked() {
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_child_uses_retained_root_and_current_identity() {
     use allocations::measure;
-    let root = xfs_fixture();
+    let root = private_root();
     let parent = root.path().join("parent");
     fs::create_dir(&parent).unwrap();
     fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
@@ -211,7 +213,7 @@ fn bounded_linux_child_uses_retained_root_and_current_identity() {
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_linux_retry_keeps_original_errors_and_rechecks_parent_and_file() {
     use crate::test_support::{Checkpoint, ExistingCheckpoint, with_existing_hooks, with_failure};
-    let root = xfs_fixture();
+    let root = private_root();
     let held = BoundedOwnerDirectory::admit(StorageDirectory::open(root.path()).unwrap()).unwrap();
     let error = with_failure(Checkpoint::BeforeCommit, || {
         held.publish(OsStr::new("data"), b"original", crate::PublishMode::Replace)
@@ -259,7 +261,7 @@ fn bounded_linux_descriptor_and_filesystem_refusals_do_not_allocate() {
         panic!("procfs admitted")
     };
     assert_eq!(error.io_error().kind(), io::ErrorKind::Unsupported);
-    let root = xfs_fixture();
+    let root = private_root();
     let descriptor = rustix::fs::open(
         root.path(),
         rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
@@ -274,7 +276,7 @@ fn bounded_linux_descriptor_and_filesystem_refusals_do_not_allocate() {
 fn bounded_linux_existing_sentinel_has_real_exclusive_lease() {
     use crate::lease::{AcquireError, FileLease, LeaseMode};
     use allocations::measure;
-    let root = xfs_fixture();
+    let root = private_root();
     let path = root.path().join("writer.lock");
     fs::write(&path, b"").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -296,277 +298,10 @@ fn bounded_linux_existing_sentinel_has_real_exclusive_lease() {
     assert!(!root.path().join("absent").exists());
 }
 
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_creates_from_actual_retained_root() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    let original = StorageDirectory::open(temp.path()).unwrap();
-    let root_identity = original.identity().unwrap();
-    let root = measure(0, || BoundedOwnerDirectory::admit(original)).unwrap();
-    let fresh = measure(0, || root.create_fresh_child(OsStr::new("sender")))
-        .unwrap_or_else(|error| panic!("actual bounded root must create fresh child: {error:?}"));
-    let child = measure(0, || fresh.normalize_and_commit()).unwrap();
-    assert_eq!(root.identity().unwrap(), root_identity);
-    assert_eq!(
-        fs::metadata(temp.path().join("sender"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-    assert!(
-        fs::read_dir(temp.path().join("sender"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
-    assert_eq!(
-        child.identity().unwrap(),
-        root.open_directory_child(OsStr::new("sender"))
-            .unwrap()
-            .identity()
-            .unwrap()
-    );
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_existing_names_are_never_adopted() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    fs::create_dir(temp.path().join("directory")).unwrap();
-    fs::set_permissions(
-        temp.path().join("directory"),
-        fs::Permissions::from_mode(0o750),
-    )
-    .unwrap();
-    fs::write(temp.path().join("file"), b"preserve").unwrap();
-    std::os::unix::fs::symlink("directory", temp.path().join("link")).unwrap();
-    let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-    for name in ["directory", "file", "link"] {
-        let Err(error) = measure(0, || root.create_fresh_child(OsStr::new(name))) else {
-            panic!("adopted existing name")
-        };
-        assert_eq!(error.state(), FreshChildState::NotCreated);
-        assert_eq!(error.io_error().kind(), std::io::ErrorKind::AlreadyExists);
-        assert!(error.retry_normalize_and_commit().is_err());
-    }
-    assert_eq!(
-        fs::metadata(temp.path().join("directory"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o750
-    );
-    assert_eq!(fs::read(temp.path().join("file")).unwrap(), b"preserve");
-    assert!(
-        fs::symlink_metadata(temp.path().join("link"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_parent_change_prevents_submission() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o750)).unwrap();
-    let Err(error) = measure(0, || root.create_fresh_child(OsStr::new("absent"))) else {
-        panic!("created under widened parent")
-    };
-    assert_eq!(error.state(), FreshChildState::NotCreated);
-    assert_eq!(
-        error.io_error().kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    assert!(!temp.path().join("absent").exists());
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_renamed_root_keeps_original_parent_barrier() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    let original = temp.path().join("original");
-    let moved = temp.path().join("moved");
-    fs::create_dir(&original).unwrap();
-    fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
-    let root = BoundedOwnerDirectory::admit(StorageDirectory::open(&original).unwrap()).unwrap();
-    fs::rename(&original, &moved).unwrap();
-    fs::create_dir(&original).unwrap();
-    let fresh = measure(0, || root.create_fresh_child(OsStr::new("sender"))).unwrap();
-    measure(0, || fresh.normalize_and_commit()).unwrap();
-    assert!(moved.join("sender").is_dir());
-    assert!(!original.join("sender").exists());
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_custody() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-    let fresh = measure(0, || root.create_fresh_child(OsStr::new("sender"))).unwrap();
-    let Err(error) = super::fresh::with_failure(super::fresh::FreshCheckpoint::Child, || {
-        fresh.normalize_and_commit()
-    }) else {
-        panic!("missing child barrier failure")
-    };
-    assert_eq!(error.state(), FreshChildState::CreatedUncommitted);
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o750)).unwrap();
-    let Err(error) = measure(0, || error.retry_normalize_and_commit()) else {
-        panic!("retry ignored changed parent")
-    };
-    assert_eq!(
-        error.io_error().kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(temp.path().join("sender/.new"), b"preserve").unwrap();
-    let Err(error) = measure(0, || error.retry_normalize_and_commit()) else {
-        panic!("retry reused EOF or erased new entry")
-    };
-    assert_eq!(
-        error.io_error().kind(),
-        std::io::ErrorKind::DirectoryNotEmpty
-    );
-    assert_eq!(
-        fs::read(temp.path().join("sender/.new")).unwrap(),
-        b"preserve"
-    );
-    fs::remove_file(temp.path().join("sender/.new")).unwrap();
-    let child = measure(0, || error.retry_normalize_and_commit()).unwrap();
-    assert_eq!(
-        child.identity().unwrap(),
-        root.open_directory_child(OsStr::new("sender"))
-            .unwrap()
-            .identity()
-            .unwrap()
-    );
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_replaced_child_is_not_normalized() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-    let fresh = root.create_fresh_child(OsStr::new("sender")).unwrap();
-    fs::rename(temp.path().join("sender"), temp.path().join("old")).unwrap();
-    fs::create_dir(temp.path().join("sender")).unwrap();
-    fs::set_permissions(
-        temp.path().join("sender"),
-        fs::Permissions::from_mode(0o750),
-    )
-    .unwrap();
-    let Err(error) = measure(0, || fresh.normalize_and_commit()) else {
-        panic!("adopted replacement child")
-    };
-    assert_eq!(error.state(), FreshChildState::CreatedUncommitted);
-    assert_eq!(
-        fs::metadata(temp.path().join("sender"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o750
-    );
-    assert!(measure(0, || error.retry_normalize_and_commit()).is_err());
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_ambiguous_mkdir_never_recovers_by_name() {
-    use allocations::measure;
-    let temp = xfs_fixture();
-    let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-    let Err(error) = super::fresh::with_failure(super::fresh::FreshCheckpoint::AfterMkdir, || {
-        root.create_fresh_child(OsStr::new("sender"))
-    }) else {
-        panic!("missing mkdir uncertainty")
-    };
-    assert!(temp.path().join("sender").is_dir());
-    assert_eq!(error.state(), FreshChildState::CreationUnknown);
-    let Err(error) = measure(0, || error.retry_normalize_and_commit()) else {
-        panic!("adopted unknown child")
-    };
-    assert_eq!(error.state(), FreshChildState::CreationUnknown);
-    assert!(measure(0, || root.create_fresh_child(OsStr::new("sender"))).is_err());
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_each_barrier_failure_retries_original_child() {
-    use allocations::measure;
-    for at in [
-        super::fresh::FreshCheckpoint::Child,
-        super::fresh::FreshCheckpoint::Parent,
-    ] {
-        let temp = xfs_fixture();
-        let root =
-            BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-        let fresh = root.create_fresh_child(OsStr::new("sender")).unwrap();
-        let before = root
-            .open_directory_child(OsStr::new("sender"))
-            .unwrap()
-            .identity()
-            .unwrap();
-        let Err(error) = super::fresh::with_failure(at, || fresh.normalize_and_commit()) else {
-            panic!("missing barrier refusal")
-        };
-        assert_eq!(error.state(), FreshChildState::CreatedUncommitted);
-        let child = measure(0, || error.retry_normalize_and_commit()).unwrap();
-        assert_eq!(child.identity().unwrap(), before);
-    }
-}
-
-#[test]
-#[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
-fn bounded_fresh_admin_nonempty_child_preserves_each_entry() {
-    use allocations::measure;
-    for (name, directory) in [
-        ("ordinary".to_owned(), false),
-        (".hidden".to_owned(), false),
-        ("subdirectory".to_owned(), true),
-        ("x".repeat(255), false),
-    ] {
-        let temp = xfs_fixture();
-        let root =
-            BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-        let fresh = root.create_fresh_child(OsStr::new("sender")).unwrap();
-        let entry = temp.path().join("sender").join(name);
-        if directory {
-            fs::create_dir(&entry).unwrap();
-        } else {
-            fs::write(&entry, b"untouched").unwrap();
-        }
-        let Err(error) = measure(0, || fresh.normalize_and_commit()) else {
-            panic!("normalized nonempty child")
-        };
-        assert_eq!(
-            error.io_error().kind(),
-            std::io::ErrorKind::DirectoryNotEmpty
-        );
-        drop(error);
-        if directory {
-            assert!(entry.is_dir());
-        } else {
-            assert_eq!(fs::read(entry).unwrap(), b"untouched");
-        }
-    }
-}
-
-#[test]
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
     use allocations::measure;
-    let temp = xfs_fixture();
+    let temp = private_root();
     let foreign = if rustix::process::geteuid().as_raw() == 65534 {
         65533
     } else {
@@ -619,7 +354,7 @@ fn bounded_fresh_admin_linux_inherited_acl_is_preserved_and_masked() {
 #[ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"]
 fn bounded_fresh_admin_linux_widened_child_refuses_before_chmod() {
     use allocations::measure;
-    let temp = xfs_fixture();
+    let temp = private_root();
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
     let fresh = root.create_fresh_child(OsStr::new("sender")).unwrap();
     fs::set_permissions(
