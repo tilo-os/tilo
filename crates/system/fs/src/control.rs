@@ -17,9 +17,10 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
+use wire_frame::{FrameError, Framing};
 
 use crate::acl::{Access, AclHandle, IdentityKey};
 use crate::namespace::{ContentAuthority, Namespace};
@@ -77,25 +78,23 @@ pub enum Resp {
     Changed,
 }
 
-async fn write_msg<W: AsyncWriteExt + Unpin>(w: &mut W, msg: &Resp) -> std::io::Result<()> {
-    let bytes = postcard::to_allocvec(msg).map_err(std::io::Error::other)?;
-    let len = u32::try_from(bytes.len())
-        .map_err(|_| std::io::Error::other("control frame too large to length-prefix"))?;
-    w.write_all(&len.to_le_bytes()).await?;
-    w.write_all(&bytes).await?;
-    Ok(())
+/// Every control message, in both directions, is one frame: a little-endian
+/// `u32` length, then the postcard-encoded request or response.
+const CONTROL_FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024);
+
+async fn write_msg<W: AsyncWrite + Unpin, T: Serialize + Sync>(
+    w: &mut W,
+    msg: &T,
+) -> std::io::Result<()> {
+    Ok(CONTROL_FRAMING.write_value_async(w, msg).await?)
 }
 
-async fn read_msg<R: AsyncReadExt + Unpin, T: DeserializeOwned>(r: &mut R) -> std::io::Result<T> {
-    let mut len = [0u8; 4];
-    r.read_exact(&mut len).await?;
-    let n = u32::from_le_bytes(len) as usize;
-    if n > 16 * 1024 * 1024 {
-        return Err(std::io::Error::other("control frame too large"));
-    }
-    let mut buf = vec![0u8; n];
-    r.read_exact(&mut buf).await?;
-    postcard::from_bytes(&buf).map_err(std::io::Error::other)
+/// The next message; a stream that closes before it is `UnexpectedEof`.
+async fn read_msg<R: AsyncRead + Unpin, T: DeserializeOwned>(r: &mut R) -> std::io::Result<T> {
+    CONTROL_FRAMING
+        .read_value_async(r)
+        .await?
+        .ok_or_else(|| FrameError::Closed.into())
 }
 
 /// The access decision for one handle: `Ok(())`, `Err(Resp::NotFound)` outside the view, or `Err(Resp::Err(READ_ONLY))` if not writable.
@@ -331,11 +330,7 @@ impl Client {
     }
 
     async fn request(&mut self, req: &Req) -> std::io::Result<Resp> {
-        let bytes = postcard::to_allocvec(req).map_err(std::io::Error::other)?;
-        let len = u32::try_from(bytes.len())
-            .map_err(|_| std::io::Error::other("control frame too large to length-prefix"))?;
-        self.stream.write_all(&len.to_le_bytes()).await?;
-        self.stream.write_all(&bytes).await?;
+        write_msg(&mut self.stream, req).await?;
         loop {
             match read_msg(&mut self.stream).await? {
                 Resp::Changed => {} // skip pushes; this is a request/response
@@ -438,6 +433,35 @@ mod tests {
     use super::*;
     use crate::WorkspaceAcl;
     use crate::namespace::ROOT_INO;
+
+    #[tokio::test]
+    async fn control_frames_are_little_endian_length_then_postcard() {
+        let mut wire = Vec::new();
+        write_msg(&mut wire, &Resp::Opened { ino: 300 })
+            .await
+            .unwrap();
+        assert_eq!(wire, [3, 0, 0, 0, 0, 0xac, 0x02]);
+        write_msg(&mut wire, &Req::Snapshot { ino: 7 })
+            .await
+            .unwrap();
+        assert_eq!(&wire[7..], [2, 0, 0, 0, 1, 7]);
+
+        let req: Req = read_msg(&mut &[2, 0, 0, 0, 1, 9][..]).await.unwrap();
+        assert!(matches!(req, Req::Snapshot { ino: 9 }));
+        let resp: Resp = read_msg(&mut &[1, 0, 0, 0, 6][..]).await.unwrap();
+        assert!(matches!(resp, Resp::Changed));
+    }
+
+    #[tokio::test]
+    async fn control_frames_reject_oversized_truncated_and_closed_streams() {
+        let oversized = (16_u32 * 1024 * 1024 + 1).to_le_bytes();
+        let error = read_msg::<_, Resp>(&mut &oversized[..]).await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        for wire in [&[][..], &[1, 0][..], &[2, 0, 0, 0, 1][..]] {
+            let error = read_msg::<_, Resp>(&mut &wire[..]).await.unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof, "{wire:?}");
+        }
+    }
 
     /// Two apps open the same document over the socket and both edit it — each sees the other's edit (collaborative editing via the FS).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
