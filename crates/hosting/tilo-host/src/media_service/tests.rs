@@ -1,4 +1,5 @@
 use super::*;
+use crate::committed_authority::Observation;
 use ed25519_dalek::{Signer, SigningKey};
 use qos_moq::relay::Direction;
 use web_time::SystemTime;

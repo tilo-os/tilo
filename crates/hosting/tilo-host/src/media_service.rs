@@ -2,7 +2,7 @@
 //! this module: durable call policy and native control routing are host-owned.
 use crate::{
     SessionOwner,
-    committed_authority::{CommittedAuthority, Observation},
+    committed_authority::CommittedAuthority,
     media_authority::*,
 };
 use ed25519_dalek::Signer;
@@ -24,10 +24,8 @@ use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
 use web_time::SystemTime;
 
 mod authority;
-pub use authority::{
-    MediaAuthoritySource, MediaAuthorityTurn, MediaObservation, MediaSigningInput,
-    NativeAuthoritySource, RoomMediaPolicy,
-};
+pub use crate::owner_turn::{HostOwner, NativeOwner, Observed, OwnerTurn};
+pub use authority::{MediaSigningInput, RoomMediaPolicy};
 
 const MAX_SESSIONS: usize = 8;
 const PROOF_BYTES: usize = 129;
@@ -35,11 +33,7 @@ const PROOF_BYTES: usize = 129;
 const CONTENTION_WAIT: Duration = Duration::from_millis(100);
 const CONTENTION_RETRY: Duration = Duration::from_micros(250);
 #[cfg(test)]
-thread_local! { static CURRENT_TURNS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
-#[cfg(test)]
-fn record_current_turn() {
-    CURRENT_TURNS.with(|count| count.set(count.get() + 1));
-}
+use crate::owner_turn::CURRENT_TURNS;
 #[derive(Serialize, Deserialize)]
 struct Submission {
     version: u8,
@@ -118,7 +112,7 @@ struct Core {
     authority: MediaAuthority,
     sessions: BTreeMap<[u8; 32], Slot>,
 }
-struct Shared<S: MediaAuthoritySource> {
+struct Shared<S: HostOwner> {
     source: S,
     host_certificate: tilo_user_identity::DeviceCert,
     workspace: u64,
@@ -128,8 +122,8 @@ struct Shared<S: MediaAuthoritySource> {
     room: String,
     clock: Instant,
 }
-pub struct MediaService<S: MediaAuthoritySource = NativeAuthoritySource>(Arc<Shared<S>>);
-impl<S: MediaAuthoritySource> Clone for MediaService<S> {
+pub struct MediaService<S: HostOwner = NativeOwner>(Arc<Shared<S>>);
+impl<S: HostOwner> Clone for MediaService<S> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
@@ -144,7 +138,7 @@ pub(crate) struct RelayChallenge {
 /// change needs no new session. Only publishers admitted into the same call
 /// can publish there, and each offered namespace is re-authorized every
 /// relay observation.
-struct Permit<S: MediaAuthoritySource> {
+struct Permit<S: HostOwner> {
     shared: Arc<Shared<S>>,
     continuity: u64,
     id: [u8; 32],
@@ -165,16 +159,16 @@ impl MediaService {
         if !owner.permits_publication() {
             return Err(MediaError::Unauthorized);
         }
-        Self::from_source(NativeAuthoritySource::new(owner, committed), audience)
+        Self::from_source(NativeOwner::new(owner, committed), audience)
     }
 }
-impl<S: MediaAuthoritySource> MediaService<S> {
+impl<S: HostOwner> MediaService<S> {
     /// Construction alone is not a capability/installation receipt. The owner
     /// supplies a live guarded source; the configured origin is checked again
     /// against the original authenticated HTTP binding during control.
     pub fn from_source(source: S, audience: &str) -> Result<Self, MediaError> {
-        let MediaObservation::Current((room, certificate, workspace, continuity)) = source
-            .with_current(|turn| {
+        let Observed::Current((room, certificate, workspace, continuity)) =
+            source.with_current(|turn| {
                 (
                     turn.peer().room().to_owned(),
                     turn.peer().authority().clone(),
@@ -244,7 +238,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
     pub(crate) fn with_current_patient<R>(
         &self,
         action: impl FnOnce(&S::Turn<'_>) -> R,
-    ) -> MediaObservation<R> {
+    ) -> Observed<R> {
         let deadline = Instant::now() + CONTENTION_WAIT;
         let mut action = Some(action);
         loop {
@@ -253,7 +247,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
                 .source
                 .with_current(|turn| (action.take().expect("observed once"))(turn));
             match observed {
-                MediaObservation::Busy if action.is_some() && Instant::now() < deadline => {
+                Observed::Busy if action.is_some() && Instant::now() < deadline => {
                     std::thread::sleep(CONTENTION_RETRY);
                 }
                 other => return other,
@@ -277,9 +271,9 @@ impl<S: MediaAuthoritySource> MediaService<S> {
             self.0.source.with_current(observe)
         };
         match observed {
-            MediaObservation::Current(result) => result,
-            MediaObservation::Busy => Err(TurnFailure::Busy),
-            MediaObservation::Denied => {
+            Observed::Current(result) => result,
+            Observed::Busy => Err(TurnFailure::Busy),
+            Observed::Denied => {
                 tracing::debug!(reason = "owner-denied", "media turn unavailable");
                 Err(TurnFailure::Media(MediaError::Unauthorized))
             }
@@ -334,7 +328,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
         }
         action(
             turn.peer(),
-            turn.policy(),
+            turn.media_policy(),
             &mut core,
             SystemTime::UNIX_EPOCH + Duration::from_nanos(turn.now_ns()),
         )
@@ -464,7 +458,7 @@ impl MediaService {
         self.0.source.committed.invalidate();
     }
 }
-impl<S: MediaAuthoritySource> Shared<S> {
+impl<S: HostOwner> Shared<S> {
     fn matches(&self, turn: &S::Turn<'_>) -> bool {
         turn.peer().room() == self.room
             && turn.peer().authority() == &self.host_certificate
@@ -493,7 +487,7 @@ enum TurnFailure {
     Busy,
     Media(MediaError),
 }
-impl<S: MediaAuthoritySource> RelayAuthority for MediaService<S> {
+impl<S: HostOwner> RelayAuthority for MediaService<S> {
     fn admit(&self, bytes: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         self.try_admit(bytes).map_err(|_| Denied)
     }
@@ -573,7 +567,7 @@ impl<S: MediaAuthoritySource> RelayAuthority for MediaService<S> {
         })
     }
 }
-impl<S: MediaAuthoritySource> Permit<S> {
+impl<S: HostOwner> Permit<S> {
     /// An offered subscribe namespace: exact, syntactically valid, in this
     /// session's own call, and never its own publication.
     fn offered(&self, name: &str) -> Option<MediaNamespace> {
@@ -626,7 +620,7 @@ impl<S: MediaAuthoritySource> Permit<S> {
                 return AuthorizationStatus::Denied;
             };
             let now = SystemTime::UNIX_EPOCH + Duration::from_nanos(turn.now_ns());
-            let (peer, policy) = (turn.peer(), turn.policy());
+            let (peer, policy) = (turn.peer(), turn.media_policy());
             if core
                 .authority
                 .authorize_session(peer, policy, &slot.session, now)
@@ -701,16 +695,16 @@ impl<S: MediaAuthoritySource> Permit<S> {
             return AuthorizationStatus::Denied;
         }
         match observed {
-            MediaObservation::Current(status) => status,
-            MediaObservation::Busy => self.contended("owner-updating", expires_at),
-            MediaObservation::Denied => {
+            Observed::Current(status) => status,
+            Observed::Busy => self.contended("owner-updating", expires_at),
+            Observed::Denied => {
                 tracing::debug!(reason = "owner-denied", "media relay observation denied");
                 AuthorizationStatus::Denied
             }
         }
     }
 }
-impl<S: MediaAuthoritySource> SessionAuthorization for Permit<S> {
+impl<S: HostOwner> SessionAuthorization for Permit<S> {
     fn publication(&self) -> Option<&str> {
         self.publish.as_deref()
     }

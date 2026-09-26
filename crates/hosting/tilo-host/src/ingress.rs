@@ -4,8 +4,7 @@ pub use crate::host_bytes::{ByteCredit, HostBytes};
 pub use crate::https::{BufferedRequest, ResponseCredits, Route};
 #[cfg(feature = "media")]
 pub use crate::media_service::{
-    MediaAuthoritySource, MediaAuthorityTurn, MediaObservation, MediaService, MediaSigningInput,
-    RoomMediaPolicy,
+    HostOwner, MediaService, MediaSigningInput, Observed, OwnerTurn, RoomMediaPolicy,
 };
 #[cfg(feature = "media")]
 pub use crate::private_http::{

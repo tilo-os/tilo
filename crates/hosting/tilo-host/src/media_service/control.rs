@@ -39,16 +39,16 @@ impl MediaService {
                 Ok(owner.identity.native.sign(input.digest()).to_bytes())
             })
         }) {
-            MediaObservation::Current(result) => result,
-            MediaObservation::Busy => {
+            Observed::Current(result) => result,
+            Observed::Busy => {
                 tracing::debug!(reason = "owner-contended", "media control unavailable");
                 Err(MediaError::Unauthorized)
             }
-            MediaObservation::Denied => Err(MediaError::Unauthorized),
+            Observed::Denied => Err(MediaError::Unauthorized),
         }
     }
 }
-impl<S: MediaAuthoritySource> MediaService<S> {
+impl<S: HostOwner> MediaService<S> {
     /// The original registry and this control operation must share the actual
     /// owner turn. This method never reacquires that owner's lock or retains
     /// its signer/current peer after returning.

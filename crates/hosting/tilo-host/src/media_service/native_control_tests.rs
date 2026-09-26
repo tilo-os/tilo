@@ -207,7 +207,7 @@ impl Fixture {
                         .encode()
                         .unwrap()
                 });
-                let MediaObservation::Current(bytes) = observed else {
+                let Observed::Current(bytes) = observed else {
                     panic!("actual owner turn");
                 };
                 bytes

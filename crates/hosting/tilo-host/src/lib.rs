@@ -37,6 +37,9 @@ mod publication;
 pub(crate) mod media_service;
 
 #[cfg(feature = "media")]
+pub mod owner_turn;
+
+#[cfg(feature = "media")]
 mod room_media_policy;
 
 #[cfg(feature = "media")]

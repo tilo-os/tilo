@@ -606,6 +606,64 @@ impl CloudStoreSource {
         })
     }
 }
+/// One Cloud Store turn seen through the shared owner seam. The media policy is
+/// derived from the committed peer only when a service asks for it, so live
+/// permission observations never pay for it.
+pub(crate) struct CloudOwnerTurn<'a> {
+    turn: &'a CloudStoreTurn,
+    policy: std::cell::OnceCell<tilo_host::ingress::RoomMediaPolicy>,
+    now: u64,
+}
+impl<'a> CloudOwnerTurn<'a> {
+    /// View `turn` at `now`, an instant the caller sampled from this turn's clock.
+    pub(crate) fn at(turn: &'a CloudStoreTurn, now: u64) -> Self {
+        Self {
+            turn,
+            policy: std::cell::OnceCell::new(),
+            now,
+        }
+    }
+}
+impl tilo_host::owner_turn::OwnerTurn for CloudOwnerTurn<'_> {
+    fn peer(&self) -> &StatePeer {
+        self.turn.peer()
+    }
+    fn media_policy(&self) -> &tilo_host::ingress::RoomMediaPolicy {
+        self.policy
+            .get_or_init(|| tilo_host::ingress::RoomMediaPolicy::from_committed(self.turn.peer()))
+    }
+    fn workspace(&self) -> u64 {
+        self.turn.workspace()
+    }
+    fn continuity(&self) -> u64 {
+        self.turn.continuity()
+    }
+    fn now_ns(&self) -> u64 {
+        self.now
+    }
+    fn fresh_now_ns(&self) -> Option<u64> {
+        self.turn.fresh_now_ns().ok()
+    }
+}
+impl tilo_host::owner_turn::HostOwner for CloudStoreSource {
+    type Turn<'a> = CloudOwnerTurn<'a>;
+    fn with_current<R>(
+        &self,
+        action: impl FnOnce(&Self::Turn<'_>) -> R,
+    ) -> tilo_host::owner_turn::Observed<R> {
+        use tilo_host::owner_turn::Observed;
+        match CloudStoreSource::with_current(self, |turn| {
+            action(&CloudOwnerTurn::at(turn, turn.now_ns()))
+        }) {
+            Current::Current(value) => Observed::Current(value),
+            Current::Busy => Observed::Busy,
+            Current::Denied => Observed::Denied,
+        }
+    }
+    fn now_ns(&self) -> Option<u64> {
+        self.policy_now_ns().ok()
+    }
+}
 impl CloudStoreTurn {
     pub(crate) fn policy_time(&self) -> Result<PolicyTime> {
         self.fresh_now_ns()?;
