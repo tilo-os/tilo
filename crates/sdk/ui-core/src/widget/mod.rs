@@ -2732,7 +2732,7 @@ pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
     CapturePreview, CaptureStudio, CaptureTarget, PipLayout, RecordingCommand, ReplayCommand,
-    ScreenshotCommand, SourceMode,
+    ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
 };
 pub mod screenshot_markup;
 pub use screenshot_markup::{

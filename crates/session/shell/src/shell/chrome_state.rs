@@ -716,6 +716,9 @@ pub struct ChromeState {
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
+    /// "Send…" requests for the last screenshot from the action door,
+    /// drained into the capture studio by the overlay host.
+    screenshot_sends: Vec<ui::widget::ScreenshotSendTarget>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -857,6 +860,7 @@ impl ChromeState {
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
+            screenshot_sends: Vec::new(),
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -954,6 +958,14 @@ impl ChromeState {
 
     pub fn take_presence_requests(&mut self) -> Vec<PresenceRequest> {
         std::mem::take(&mut self.presence_requests)
+    }
+
+    pub fn push_screenshot_send(&mut self, target: ui::widget::ScreenshotSendTarget) {
+        self.screenshot_sends.push(target);
+    }
+
+    pub fn take_screenshot_sends(&mut self) -> Vec<ui::widget::ScreenshotSendTarget> {
+        std::mem::take(&mut self.screenshot_sends)
     }
 
     pub(crate) fn take_peer_sync_request_result(
