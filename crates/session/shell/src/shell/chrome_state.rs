@@ -714,6 +714,11 @@ pub struct ChromeState {
     viewport_size: Option<(f64, f64)>,
     /// The offer to continue a tab from another of this person's devices.
     continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
+    /// Recently closed tabs, for `tab.reopen` and the close toast's Undo.
+    closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
+    /// Close toasts still offering Undo: notification id -> closed entry.
+    /// They never enter notification history.
+    undo_toasts: BTreeMap<u64, u64>,
 }
 
 #[derive(Debug)]
@@ -831,6 +836,8 @@ impl ChromeState {
             viewport_size: None,
             continuity_suggestions:
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
+            closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
+            undo_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -1400,6 +1407,86 @@ impl ChromeState {
         Some(suggestion)
     }
 
+    /// Remember a close so it can be undone, and say so with a short toast
+    /// whose activation puts the tab back.
+    pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
+        use crate::shell::i18n::{t, t_args};
+
+        let heading = if entry.tabs.len() > 1 {
+            t_args(
+                "tab-closed-group-toast",
+                &[("count", entry.tabs.len().into())],
+            )
+        } else {
+            t_args("tab-closed-toast", &[("title", entry.title().into())])
+        };
+        let hint = settings_store::hardware::ShortcutConfig::load()
+            .bindings
+            .get(&settings_store::hardware::ShortcutAction::ReopenClosedTab)
+            .map_or_else(
+                || t("tab-closed-undo-hint-unbound"),
+                |chord| t_args("tab-closed-undo-hint", &[("chord", chord.display().into())]),
+            );
+        let serial = self.closed_tabs.push(entry);
+        let mut toast = Notification::new(heading, hint)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Generic);
+        toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
+        toast.actions = vec![("default".into(), t("tab-closed-undo"))];
+        // A direct answer to the person's own action, not an interruption.
+        toast.bypass_dnd = true;
+        toast.show_on_lock_screen = false;
+        let id = toast.id;
+        self.undo_toasts.insert(id, serial);
+        self.push_notification_full(toast);
+        serial
+    }
+
+    /// Reopen the most recently closed tab in the active workspace, at its
+    /// old group and index, and focus it.
+    pub fn reopen_closed_tab(&mut self) -> Option<crate::shell::state::TabId> {
+        let handle = self.tree_handle.clone();
+        let tree = handle.read();
+        let workspace = tree.desktop.active;
+        let entry = self.closed_tabs.pop_for(&tree, workspace);
+        drop(tree);
+        self.restore_closed_tab(entry?)
+    }
+
+    /// The close toast's Undo: reopen exactly that close.
+    pub fn undo_closed_tab(&mut self, serial: u64) -> Option<crate::shell::state::TabId> {
+        let entry = self.closed_tabs.take(serial)?;
+        self.restore_closed_tab(entry)
+    }
+
+    fn restore_closed_tab(
+        &mut self,
+        entry: crate::shell::closed_tabs::ClosedTab,
+    ) -> Option<crate::shell::state::TabId> {
+        let serial = entry.serial;
+        let reopened = {
+            let mut tree = self.tree_mut();
+            let reopened = crate::shell::closed_tabs::restore(&mut tree, entry);
+            if reopened.is_some() {
+                tree.flush_to_disk();
+            }
+            reopened
+        };
+        // The toast would now undo nothing.
+        let stale: Vec<u64> = self
+            .undo_toasts
+            .iter()
+            .filter(|(_, candidate)| **candidate == serial)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            self.undo_toasts.remove(&id);
+            self.notifications.retain(|toast| toast.id != id);
+        }
+        self.bump();
+        reopened
+    }
+
     /// Routes into the active workspace's first strip/group via
     /// [`super::workspace_drop::apply_workspace_drop_from_path`].
     /// Returns the new tab id, or `None` if the path has no filename.
@@ -1800,6 +1887,10 @@ impl ChromeState {
     /// Every path that removes a toast (and the DND-suppression path)
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
+        // An Undo that has lapsed is not something to find later.
+        if self.undo_toasts.remove(&n.id).is_some() {
+            return;
+        }
         self.notification_history.push(n);
         while self.notification_history.len() > MAX_HISTORY {
             self.notification_history.remove(0);
@@ -1874,6 +1965,11 @@ impl ChromeState {
         let Some(pos) = self.notifications.iter().position(|n| n.id == id) else {
             return false;
         };
+        if let Some(serial) = self.undo_toasts.remove(&id) {
+            self.notifications.remove(pos);
+            self.undo_closed_tab(serial);
+            return true;
+        }
         let removed = self.notifications.remove(pos);
         if let Some(command) = removed
             .default_action_key()
