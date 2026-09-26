@@ -1530,6 +1530,67 @@ mod tests {
     }
 
     #[test]
+    fn a_retained_mirrored_notification_routes_its_action_back_to_its_device() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let projection = live_remote_projection(8, "Reply later");
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let ui_id = chrome.borrow().notifications()[0].id;
+        // The banner times out locally; the origin still holds it.
+        let later = Instant::now() + Duration::from_secs(120);
+        chrome.borrow_mut().update_notification_lifecycle(later);
+        assert!(bridge.drain_continuity_command_egress().is_empty());
+        assert_eq!(chrome.borrow().notification_history()[0].id, ui_id);
+
+        let outcome = chrome.borrow_mut().activate_history_notification(ui_id);
+        assert_eq!(
+            outcome,
+            crate::shell::notification_history::HistoryActivation::Invoked
+        );
+        let commands = bridge.drain_continuity_command_egress();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].target_device, "phone");
+        assert_eq!(
+            commands[0].command,
+            crate::notifications::ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            }
+        );
+        assert!(
+            bridge.drain_action_events().is_empty(),
+            "no local D-Bus route"
+        );
+        assert!(chrome.borrow().notification_history().is_empty());
+    }
+
+    #[test]
+    fn a_restored_notification_opens_its_verified_app() {
+        let chrome = new_chrome();
+        let mut restored = Notification::new("Invoice", "");
+        restored.app_id = Some("org.mail".into());
+        restored.app_name = Some("Mail".into());
+        chrome.borrow_mut().set_dnd(true);
+        let id = chrome.borrow_mut().push_notification_full(restored);
+        assert_eq!(
+            chrome.borrow_mut().activate_history_notification(id),
+            crate::shell::notification_history::HistoryActivation::OpenApp {
+                app_id: "org.mail".into(),
+                label: "Mail".into(),
+            }
+        );
+        let system = chrome.borrow_mut().push_notification("Backup", "");
+        assert_eq!(
+            chrome.borrow_mut().activate_history_notification(system),
+            crate::shell::notification_history::HistoryActivation::Unavailable,
+            "a shell notification with nothing to act on stays retained"
+        );
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+    }
+
+    #[test]
     fn origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
