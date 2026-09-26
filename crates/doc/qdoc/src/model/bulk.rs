@@ -19,12 +19,11 @@
 //!   place.
 
 use super::{BLOCK_ATTRS, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, DocMut, ObjType, Value, block_obj};
-use automerge::legacy;
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, TextEncoding, hydrate};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use tilo_automerge::ApplyIncoming;
+use tilo_resource::batch::{self, ChangeWriter};
 
 #[cfg(any(test, feature = "bulk-instrumentation"))]
 thread_local! {
@@ -425,148 +424,31 @@ fn apply_mark_op(doc: &mut AutoCommit, text: &ObjId, m: StagedMark) {
     let _ = doc.mark(text, mark, ExpandMark::After);
 }
 
-/// Staged content bigger than this many ops is split over several changes, bounding the memory the
-/// expanded ops take before they are encoded.
-const OPS_PER_CHANGE: usize = 1 << 16;
-
-fn legacy_obj(obj: &ObjId) -> legacy::ObjectId {
-    match obj {
-        ObjId::Root => legacy::ObjectId::Root,
-        ObjId::Id(counter, actor, _) => legacy::ObjectId::Id(legacy::OpId(*counter, actor.clone())),
+/// Write one staged block, whose map `root` already created, with `marks` on
+/// its text: the tree [`StagedBlock::into_value`] describes.
+fn write_block(
+    writer: &mut ChangeWriter,
+    block: &StagedBlock,
+    root: &batch::Created,
+    marks: &[&StagedMark],
+) {
+    let attrs = writer.make(root, BLOCK_ATTRS, ObjType::Map);
+    writer.put(root, BLOCK_KIND, block.kind.as_str().into());
+    writer.put(root, BLOCK_ORDER, ScalarValue::Bytes(block.order.clone()));
+    for (key, value) in &block.attrs {
+        writer.put(&attrs, key, value.clone());
     }
-}
-
-/// Builds the changes that write staged blocks, numbering ops as automerge will.
-struct ChangeWriter {
-    actor: automerge::ActorId,
-    seq: u64,
-    /// Counter of the next op.
-    next: u64,
-    /// Counter of the first op of the change being built.
-    start: std::num::NonZeroU64,
-    deps: Vec<automerge::ChangeHash>,
-    ops: Vec<legacy::Op>,
-}
-
-impl ChangeWriter {
-    fn push(
-        &mut self,
-        obj: legacy::ObjectId,
-        key: legacy::Key,
-        action: legacy::OpType,
-        insert: bool,
-    ) -> legacy::OpId {
-        let id = legacy::OpId(self.next, self.actor.clone());
-        self.next = self.next.saturating_add(1);
-        self.ops.push(legacy::Op {
-            action,
-            obj,
-            key,
-            pred: legacy::SortedVec::new(),
-            insert,
-        });
-        id
-    }
-
-    fn put(&mut self, obj: &legacy::OpId, key: &str, action: legacy::OpType) -> legacy::OpId {
-        self.push(
-            legacy::ObjectId::Id(obj.clone()),
-            legacy::Key::Map(key.into()),
-            action,
-            false,
-        )
-    }
-
-    /// Close the change being built; `None` if it has no ops.
-    fn seal(&mut self) -> Option<automerge::Change> {
-        if self.ops.is_empty() {
-            return None;
-        }
-        let change = automerge::Change::from(automerge::ExpandedChange {
-            operations: std::mem::take(&mut self.ops),
-            actor_id: self.actor.clone(),
-            hash: None,
-            seq: self.seq,
-            start_op: self.start,
-            time: 0,
-            message: None,
-            deps: std::mem::take(&mut self.deps),
-            extra_bytes: Vec::new(),
-            author: None,
-        });
-        self.deps = vec![change.hash()];
-        self.seq = self.seq.saturating_add(1);
-        // `next` only grows from `start`, which is at least one.
-        self.start = std::num::NonZeroU64::new(self.next).unwrap_or(self.start);
-        Some(change)
-    }
-
-    /// The ops that fill `block`, whose map `root` already created, and apply `marks` to its
-    /// text: the tree [`StagedBlock::into_value`] describes, then per mark a begin anchor after the character
-    /// before its start (not expanding) and an end anchor after the character before its end
-    /// (expanding), which is where a local [`ExpandMark::After`] mark puts them.
-    fn block(&mut self, block: &StagedBlock, root: &legacy::OpId, marks: &[&StagedMark]) {
-        let attrs = self.put(root, BLOCK_ATTRS, legacy::OpType::Make(ObjType::Map));
-        self.put(
-            root,
-            BLOCK_KIND,
-            legacy::OpType::Put(block.kind.as_str().into()),
-        );
-        self.put(
-            root,
-            BLOCK_ORDER,
-            legacy::OpType::Put(ScalarValue::Bytes(block.order.clone())),
-        );
-        for (key, value) in &block.attrs {
-            self.put(&attrs, key, legacy::OpType::Put(value.clone()));
-        }
-        let Some(text) = &block.text else {
-            return;
-        };
-        let text_id = self.put(root, BLOCK_TEXT, legacy::OpType::Make(ObjType::Text));
-        let obj = legacy::ObjectId::Id(text_id);
-        let first = self.next;
-        let mut prev = legacy::ElementId::Head;
-        for ch in text.chars() {
-            let id = self.push(
-                obj.clone(),
-                legacy::Key::Seq(prev),
-                legacy::OpType::Put(ch.into()),
-                true,
-            );
-            prev = legacy::ElementId::Id(id);
-        }
-        for m in marks {
-            let begin = self.anchor(first, m.start);
-            let end = self.anchor(first, m.end);
-            self.push(
-                obj.clone(),
-                legacy::Key::Seq(begin),
-                legacy::OpType::MarkBegin(legacy::MarkData {
-                    name: m.name.as_str().into(),
-                    value: m.value.clone(),
-                    expand: false,
-                }),
-                true,
-            );
-            self.push(
-                obj.clone(),
-                legacy::Key::Seq(end),
-                legacy::OpType::MarkEnd(true),
-                true,
-            );
-        }
-    }
-
-    /// The element a mark anchor at `pos` sits after, in a text whose character 0 has op counter
-    /// `first`: the character before `pos`, or the head.
-    fn anchor(&self, first: u64, pos: usize) -> legacy::ElementId {
-        match pos.checked_sub(1).and_then(|p| u64::try_from(p).ok()) {
-            Some(p) => {
-                legacy::ElementId::Id(legacy::OpId(first.saturating_add(p), self.actor.clone()))
-            }
-            None => legacy::ElementId::Head,
-        }
+    if let Some(text) = &block.text {
+        let marks: Vec<batch::TextMark> = marks
+            .iter()
+            .map(|m| batch::TextMark {
+                name: m.name.clone(),
+                value: m.value.clone(),
+                start: m.start,
+                end: m.end,
+            })
+            .collect();
+        writer.text(root, BLOCK_TEXT, text, &marks);
     }
 }
 
@@ -581,10 +463,9 @@ impl ChangeWriter {
     reason = "a change built on this document's own heads and objects must apply; see above"
 )]
 fn apply_sealed(doc: &mut AutoCommit, writer: &mut ChangeWriter) {
-    if let Some(change) = writer.seal() {
-        doc.apply_incoming([change])
-            .expect("a change continuing this document's history applies");
-    }
+    writer
+        .apply(doc)
+        .expect("a change continuing this document's history applies");
 }
 
 /// Commit, then write every staged block — with its text and the marks on it — as the ops of new
@@ -597,36 +478,9 @@ fn apply_sealed(doc: &mut AutoCommit, writer: &mut ChangeWriter) {
 /// blocks created before the scope, zero-width, or out of range — are applied locally afterwards;
 /// they share no text with a mark in the changes, or cover no character.
 fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[StagedMark]) -> bool {
-    if doc.text_encoding() != TextEncoding::UnicodeCodePoint {
-        return false;
-    }
-    let committed = doc.commit();
-    let actor = doc.get_actor().clone();
-    let last_seq = match committed {
-        Some(hash) => match doc.get_change_meta_by_hash(&hash) {
-            Some(meta) if meta.actor.as_ref() == &actor => meta.seq,
-            _ => return false,
-        },
-        None => doc
-            .get_changes_meta(&[])
-            .iter()
-            .filter(|meta| meta.actor.as_ref() == &actor)
-            .map(|meta| meta.seq)
-            .max()
-            .unwrap_or(0),
-    };
-    let heads = doc.get_heads();
-    let mut max_op = 0;
-    for h in &heads {
-        let Some(meta) = doc.get_change_meta_by_hash(h) else {
-            return false;
-        };
-        max_op = max_op.max(meta.max_op);
-    }
-    let Some(start) = std::num::NonZeroU64::new(max_op.saturating_add(1)) else {
+    let Some(mut writer) = ChangeWriter::continuing(doc) else {
         return false;
     };
-
     let staged: HashMap<(&ObjId, &str), &StagedBlock> = blocks
         .iter()
         .map(|b| ((&b.container, b.id.as_str()), b))
@@ -643,31 +497,14 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
         }
     }
 
-    let mut writer = ChangeWriter {
-        actor,
-        seq: last_seq.saturating_add(1),
-        next: start.get(),
-        start,
-        deps: heads,
-        ops: Vec::new(),
-    };
     // Every block map first, in a change of their own: the maps are entries of containers that
     // already hold blocks, sorted by key, so they integrate as one run only if one change carries
     // them all. What follows lives in objects new to the document and appends in order.
-    let roots: Vec<legacy::OpId> = blocks
+    let roots: Vec<batch::Created> = blocks
         .iter()
-        .map(|b| {
-            writer.push(
-                legacy_obj(&b.container),
-                legacy::Key::Map(b.id.as_str().into()),
-                legacy::OpType::Make(ObjType::Map),
-                false,
-            )
-        })
+        .map(|b| writer.make_in(&b.container, b.id.as_str(), ObjType::Map))
         .collect();
-    if let Some(change) = writer.seal()
-        && doc.apply_incoming([change]).is_err()
-    {
+    if writer.apply(doc).is_err() {
         return false;
     }
     // Each further change is applied as soon as it is sealed: automerge expands a change's ops in
@@ -677,8 +514,8 @@ fn write_as_changes(doc: &mut AutoCommit, blocks: &[StagedBlock], marks: &[Stage
         let on_block = in_change
             .get(block.id.as_str())
             .map_or(&[][..], Vec::as_slice);
-        writer.block(block, root, on_block);
-        if writer.ops.len() >= OPS_PER_CHANGE {
+        write_block(&mut writer, block, root, on_block);
+        if writer.pending() >= batch::OPS_PER_CHANGE {
             apply_sealed(doc, &mut writer);
         }
     }

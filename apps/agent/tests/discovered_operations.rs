@@ -300,9 +300,9 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
     // The refusal itself is still an attributed agent-authored document edit.
     let genesis = qdoc::model::schema_genesis_actor_hex();
     let seed = hex::encode("quinten");
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+    let actors: std::collections::HashSet<String> = tilo_resource::history::versions(&mut replica)
         .into_iter()
-        .map(|v| v.actor_hex)
+        .map(|v| v.actor)
         .filter(|a| *a != genesis && *a != seed)
         .collect();
     assert_eq!(
@@ -376,9 +376,9 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
     // the agent's local acknowledgement edit may retain its display actor.
     let genesis = qdoc::model::schema_genesis_actor_hex();
     let seed = hex::encode("quinten");
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+    let actors: std::collections::HashSet<String> = tilo_resource::history::versions(&mut replica)
         .into_iter()
-        .map(|v| v.actor_hex)
+        .map(|v| v.actor)
         .filter(|a| *a != genesis && *a != seed)
         .collect();
     let invocation_actor = invocation_actor.expect("the app received a broker invocation");

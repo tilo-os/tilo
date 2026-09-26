@@ -45,7 +45,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     alice.set_actor(ActorId::from("alice".as_bytes()));
     let c = qdoc::model::init(&mut alice, &ROOT);
     let mut alice_ids = qdoc::IdGen::new(alice.get_actor().to_hex_string());
-    qdoc::history::commit_stamped(&mut alice);
+    tilo_resource::history::commit_stamped(&mut alice);
 
     let title = {
         let mut dm = qdoc::DocMut {
@@ -57,7 +57,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         dm.splice_text(&id, 0, 0, "Quarterly report");
         id
     };
-    qdoc::history::commit_stamped(&mut alice);
+    tilo_resource::history::commit_stamped(&mut alice);
 
     let body = {
         let mut dm = qdoc::DocMut {
@@ -69,7 +69,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         dm.splice_text(&id, 0, 0, "Revenue held steady through the quarter.");
         id
     };
-    qdoc::history::commit_stamped(&mut alice);
+    tilo_resource::history::commit_stamped(&mut alice);
 
     // Bob syncs, edits under his own actor, and merges back.
     let mut bob = alice.fork();
@@ -83,7 +83,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         };
         dm.splice_text(&body, 40, 0, " Costs fell by four percent.");
     }
-    qdoc::history::commit_stamped(&mut bob);
+    tilo_resource::history::commit_stamped(&mut bob);
     alice.merge_incoming(&mut bob)?;
 
     // Alice renames the heading, adds a scratch note, then deletes it.
@@ -95,7 +95,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         };
         dm.splice_text(&title, 10, 6, "results");
     }
-    qdoc::history::commit_stamped(&mut alice);
+    tilo_resource::history::commit_stamped(&mut alice);
 
     let scratch = {
         let mut dm = qdoc::DocMut {
@@ -107,7 +107,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         dm.splice_text(&id, 0, 0, "TODO: check the headcount figure.");
         id
     };
-    qdoc::history::commit_stamped(&mut alice);
+    tilo_resource::history::commit_stamped(&mut alice);
 
     {
         let mut dm = qdoc::DocMut {
@@ -117,7 +117,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         };
         dm.remove_block(&scratch);
     }
-    qdoc::history::commit_stamped(&mut alice);
+    tilo_resource::history::commit_stamped(&mut alice);
 
     Ok(alice)
 }

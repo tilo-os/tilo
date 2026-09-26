@@ -1612,6 +1612,16 @@ pub trait Widget {
         None
     }
 
+    /// Whether the undo step this widget's last reported boundary opened
+    /// stays open for the actions that continue it — the rest of a word
+    /// typed a keystroke at a time. A hosted component then closes the step
+    /// at the widget's next boundary, or before an undo, a save or a merge,
+    /// instead of after this event. Answered by the widget itself, never its
+    /// children.
+    fn keeps_undo_step_open(&self) -> bool {
+        false
+    }
+
     /// Host → widget: the live state of the undo history, published once per
     /// frame to every laid-out widget.
     ///
