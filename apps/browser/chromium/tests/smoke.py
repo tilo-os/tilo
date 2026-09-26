@@ -13,7 +13,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('host', type=Path)
-parser.add_argument('--url', default='https://podesta.ai')
+parser.add_argument('--url', default='https://tilo.so')
 args = parser.parse_args()
 
 def read_exact(stream, length):
@@ -25,7 +25,7 @@ def read_exact(stream, length):
         chunks.extend(chunk)
     return bytes(chunks)
 
-with tempfile.TemporaryDirectory(prefix='qos-cef-smoke-') as profile:
+with tempfile.TemporaryDirectory(prefix='tilo-cef-smoke-') as profile:
     log = tempfile.TemporaryFile()
     host = subprocess.Popen([str(args.host.resolve()), '--profile=' + profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
     incoming = queue.Queue()

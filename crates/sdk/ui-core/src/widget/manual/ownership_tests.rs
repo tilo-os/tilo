@@ -40,10 +40,10 @@ impl Widget for BoundRoot {
 fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_run() {
     let temp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(temp.path().into());
-    let records = owners.open("dev.qos.manual-test", "A").unwrap();
+    let records = owners.open("dev.tilo.manual-test", "A").unwrap();
     let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
     let definition = ApplicationDefinition {
-        app_id: "dev.qos.manual-test",
+        app_id: "dev.tilo.manual-test",
         title: "Manual",
         icon: IconDescriptor::Glyph("M"),
         record_kind: RecordKind::new("manual"),

@@ -106,7 +106,7 @@ toolchain, architecture and builder image. It uploads only `bootc` and the
 receipt consumed by this contract:
 
 ```sh
-fgj workflow run development-installer-bootc-helper.yml -R qos/qos \
+fgj workflow run development-installer-bootc-helper.yml -R tilo/tilo \
   -r codex/tilo-install-ready -f architecture=aarch64
 ```
 

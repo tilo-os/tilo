@@ -185,7 +185,7 @@ impl Default for SetupApp {
 
 impl SetupApp {
     /// Start live setup with only capabilities backed by actual adapters.
-    /// Platform identity alone never enables Desktop or Full qOS. Full Tilo
+    /// Platform identity alone never enables Desktop or Full Tilo. Full Tilo
     /// becomes available only after the host probe passes, the catalog offers
     /// an internal release for this architecture and the product gate is open
     /// (design spec §5, §9).
@@ -2986,7 +2986,7 @@ fn fixture_desktop_release() -> DesktopRelease {
         distro_version: "44".into(),
         architecture: "aarch64".into(),
         package_format: PackageFormat::Rpm,
-        url: "https://code.podesta.ai/qos/releases/fixture.rpm".into(),
+        url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
         byte_size: 7,
         sha256: sha256.clone(),
         verified_runtime: Some(RuntimeEvidence {
@@ -3331,9 +3331,9 @@ mod tests {
     #[cfg(not(windows))]
     const TEST_SOURCE_ROOT: &str = "/setup-source";
     #[cfg(windows)]
-    const TEST_DEST_ROOT: &str = r"C:\qos-home";
+    const TEST_DEST_ROOT: &str = r"C:\tilo-home";
     #[cfg(not(windows))]
-    const TEST_DEST_ROOT: &str = "/home/qos";
+    const TEST_DEST_ROOT: &str = "/home/tilo";
     #[cfg(windows)]
     const TEST_SYSTEM_ROOT: &str = r"C:\Windows";
     #[cfg(not(windows))]
@@ -3651,7 +3651,7 @@ mod tests {
         assert_eq!(app.controller().folders().len(), 1);
     }
 
-    // Catches routing Full qOS through the Desktop installer or implying
+    // Catches routing Full Tilo through the Desktop installer or implying
     // installation is ready while the product gate is closed.
     #[test]
     fn full_os_review_has_a_distinct_download_surface_and_no_install_action() {
@@ -3691,7 +3691,7 @@ mod tests {
             .unwrap();
     }
 
-    // Catches a Full qOS button dispatching the Desktop installer instead of the internal worker.
+    // Catches a Full Tilo button dispatching the Desktop installer instead of the internal worker.
     #[test]
     fn full_os_download_command_routes_to_the_real_internal_worker_only() {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
@@ -3768,7 +3768,7 @@ mod tests {
         assert_eq!(app.status, "Kept for later");
     }
 
-    // Catches a forged or stale command starting a Full qOS download away from its review.
+    // Catches a forged or stale command starting a Full Tilo download away from its review.
     #[test]
     fn full_os_download_command_is_refused_outside_full_os_review() {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
@@ -3883,8 +3883,8 @@ mod tests {
         assert_eq!(server.requests().len(), 3);
     }
 
-    // Catches treating the setup plan's suggested qOS path as a mounted target
-    // before Full qOS installation and target-side volume resolution exist.
+    // Catches treating the setup plan's suggested Tilo path as a mounted target
+    // before Full Tilo installation and target-side volume resolution exist.
     #[test]
     fn full_os_review_keeps_folder_copy_pending() {
         let mut app = supported_fixture();
@@ -4121,7 +4121,7 @@ mod tests {
         app.apply_worker_message(WorkerMessage::ScanFinished {
             destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(FolderScan {
-                source: PathBuf::from("/var/home/qos/Documents"),
+                source: PathBuf::from("/var/home/tilo/Documents"),
                 file_count: 4,
                 bytes: 80,
                 empty_directory_count: 0,

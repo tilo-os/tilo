@@ -6,7 +6,7 @@
 
 **Architecture:** Add one resolved-text normalization boundary while preserving existing relative APIs. Repair EmptyState, rich editor, opt-in scrolling editor fill and measured actionable Toolbar overflow. App composition migrations consume existing Card/Actions/FormPage rather than inventing another layout system.
 
-**Tech Stack:** Rust, Taffy, cosmic-text, Vello and qOS Widget lifecycle.
+**Tech Stack:** Rust, Taffy, cosmic-text, Vello and Tilo Widget lifecycle.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-app-ui-balance.md`
 
@@ -20,7 +20,7 @@
 - Do not globally change primitive padding or reinterpret explicit fixed sizes.
 - Preserve unrelated working changes and untracked Scratchpad ownership.
 - No pushes, merges, publishing or dependency upgrades.
-- Existing linked worktree /Users/xaver/dev/qos-macos-shell; sequential implementers and scoped reviews.
+- Existing linked worktree /Users/xaver/dev/tilo-macos-shell; sequential implementers and scoped reviews.
 - Focused RED/GREEN behavior regressions before implementation; run relevant existing UI tests once before scoped commit. CARGO_BUILD_JOBS=4, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0.
 - Every task report includes exact commands/results, self-review, screenshot paths if requested, and remaining gaps. No subagents from implementers.
 

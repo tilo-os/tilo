@@ -60,7 +60,7 @@ triggering another complete compile. The full-build path stops at the raw-rootfs
 handoff and retains it before signing and sealing. Run 7025 passed the native
 registry, signature and historical-layer audit fixtures on both architectures.
 Each build must independently pass the scoped layer audit before publishing
-to `code.podesta.ai/qos/tilo-development-rootfs`. Publication uses registry layer
+to `registry.tilo.so/tilo/tilo-development-rootfs`. Publication uses registry layer
 deduplication instead of creating a second on-disk image archive. The audit scans
 all historical layers for the supplied private material and PEM private keys;
 it is not a universal secret detector. `retained-rootfs.json` binds the exact

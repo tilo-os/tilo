@@ -407,7 +407,6 @@ fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> 
         "SNAP",
         "SNAP_NAME",
         "container",
-        "QOS_IMAGER_FLATPAK",
         "TILO_IMAGER_FLATPAK",
     ]
     .into_iter()
@@ -900,7 +899,6 @@ mod tests {
             "SNAP",
             "SNAP_NAME",
             "container",
-            "QOS_IMAGER_FLATPAK",
             "TILO_IMAGER_FLATPAK",
         ] {
             let observations = HashMap::from([(marker, "")]);
@@ -1076,7 +1074,7 @@ mod tests {
         assert!(native::wayland_sessions(temp.path()).is_err());
         std::fs::write(
             temp.path().join("tilo.desktop"),
-            "[Desktop Entry]\nType=Application\nName=qOS\nExec=tilo-session\n",
+            "[Desktop Entry]\nType=Application\nName=Tilo\nExec=tilo-session\n",
         )
         .unwrap();
         assert!(native::wayland_sessions(temp.path()).is_err());
@@ -1137,7 +1135,7 @@ mod tests {
         super::super::desktop_catalog::parse_catalog(&serde_json::json!({
             "schema":1,"tag":"test", "releases":[{
                 "id":"fedora-44-aarch64", "version":"1.0-1", "distro_id":"fedora", "distro_version":"44", "architecture":"aarch64", "package_format":"rpm",
-                "url":"https://code.podesta.ai/qos/test.rpm", "byte_size":7, "sha256":"a".repeat(64),
+                "url":"https://code.tilo.so/tilo/test.rpm", "byte_size":7, "sha256":"a".repeat(64),
                 "verified_runtime":{"schema":1,"reference":"test-only-report", "package_sha256":"a".repeat(64), "graphical_login":true, "return_to_prior_session":true,"identity_setup":true,"selected_folder_import":true,"source_intact":true}
             }]
         }).to_string()).unwrap().remove(0)

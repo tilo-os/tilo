@@ -366,6 +366,11 @@ pub enum ServeRequest {
         rows: u16,
         #[serde(default)]
         term: Option<String>,
+        /// A program to run in the guest instead of the interactive shell.
+        /// It runs with exactly the guest's confinement, so asking for one
+        /// grants nothing a user typing it at the prompt would not have.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        command: Vec<String>,
     },
 }
 
@@ -530,7 +535,11 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     };
 
     let ServeRequest::OpenSession {
-        cols, rows, term, ..
+        cols,
+        rows,
+        term,
+        command,
+        ..
     } = req;
     let (master, slave) = open_pty(cols, rows)?;
 
@@ -540,7 +549,7 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
         term: term.unwrap_or_else(|| "xterm-256color".into()),
         ..SessionOptions::default()
     };
-    opts.command.clear();
+    opts.command = command;
 
     let session = Session::new(store.clone(), opts);
     let id = session.session_id.clone();
@@ -805,9 +814,28 @@ mod tests {
             cols: 80,
             rows: 24,
             term: None,
+            command: Vec::new(),
         };
         let err = decide_serve(&req).unwrap_err();
         assert!(err.contains("not a sandbox"), "{err}");
+    }
+
+    #[test]
+    fn a_session_request_may_name_a_program_and_defaults_to_the_shell() {
+        let shell: ServeRequest =
+            serde_json::from_str(r#"{"op":"open-session","profile":"ush"}"#).unwrap();
+        assert!(
+            matches!(shell, ServeRequest::OpenSession { ref command, .. } if command.is_empty())
+        );
+        let program: ServeRequest = serde_json::from_str(
+            r#"{"op":"open-session","profile":"ush","command":["htop","-d","5"]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            program,
+            ServeRequest::OpenSession { ref command, .. } if command == &["htop", "-d", "5"]
+        ));
+        assert_eq!(decide_serve(&program).unwrap(), Profile::Ush);
     }
 
     #[test]
@@ -818,6 +846,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 term: None,
+                command: Vec::new(),
             };
             assert_eq!(decide_serve(&req).unwrap(), Profile::Ush, "{name:?}");
         }

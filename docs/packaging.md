@@ -74,7 +74,7 @@ update it, then create a matching `desktop-vX.Y.Z` tag. Debian and Ubuntu receiv
 separate package revisions because each binary is linked and dependency-scanned
 inside its own distribution build root.
 
-## Install from code.podesta.ai
+## Install from code.tilo.so
 
 Tagged releases are uploaded both as release assets and to Forgejo's native
 package registries under the `tilo` organization. Once the organization is
@@ -83,9 +83,9 @@ repository with:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSL https://code.podesta.ai/api/packages/qos/debian/repository.key \
+sudo curl -fsSL https://code.tilo.so/api/packages/tilo/debian/repository.key \
   -o /etc/apt/keyrings/forgejo-tilo.asc
-echo "deb [signed-by=/etc/apt/keyrings/forgejo-tilo.asc] https://code.podesta.ai/api/packages/qos/debian noble main" \
+echo "deb [signed-by=/etc/apt/keyrings/forgejo-tilo.asc] https://code.tilo.so/api/packages/tilo/debian noble main" \
   | sudo tee /etc/apt/sources.list.d/tilo.list
 sudo apt update
 sudo apt install tilo-session
@@ -96,7 +96,7 @@ bootstrap the RPM release key and maintained repo definition from the exact
 `desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo
 file does not advertise a Tilo key or enable package verification; the release
 workflow publishes a repo definition with those settings already present:
-`https://code.podesta.ai/api/packages/qos/rpm/fedora/44.repo` is the upstream
+`https://code.tilo.so/api/packages/tilo/rpm/fedora/44.repo` is the upstream
 Forgejo-generated endpoint, retained for diagnostics and private-server
 fallbacks only.
 
@@ -105,10 +105,10 @@ TILO_DESKTOP_VERSION=0.1.7
 sudo install -d -m 0755 /etc/pki/rpm-gpg
 sudo curl --fail --location \
   --output /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+  "https://code.tilo.so/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo curl --fail --location \
   --output /etc/yum.repos.d/tilo.repo \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+  "https://code.tilo.so/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 ```
 
 `gpgcheck=1` makes DNF/rpm-ostree verify every Tilo RPM. Forgejo's native RPM
@@ -178,15 +178,15 @@ TILO_REPO=$(mktemp)
 TILO_KEY=$(mktemp)
 trap 'rm -f -- "$TILO_NETRC" "$TILO_REPO" "$TILO_KEY"' EXIT
 chmod 600 "$TILO_NETRC"
-printf 'machine code.podesta.ai login %s password %s\n' \
+printf 'machine code.tilo.so login %s password %s\n' \
   "$TILO_FORGEJO_USER" "$TILO_FORGEJO_TOKEN" > "$TILO_NETRC"
 TILO_DESKTOP_VERSION=0.1.7
 curl --fail --location --netrc-file "$TILO_NETRC" \
   --output "$TILO_REPO" \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+  "https://code.tilo.so/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 curl --fail --location --netrc-file "$TILO_NETRC" \
   --output "$TILO_KEY" \
-  "https://code.podesta.ai/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+  "https://code.tilo.so/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo install -o root -g root -m 0600 "$TILO_REPO" /etc/yum.repos.d/tilo.repo
 sudo install -o root -g root -m 0644 "$TILO_KEY" \
   /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc
@@ -221,17 +221,17 @@ the new key.
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
 ```ini
-[tilo.stable.code.podesta.ai]
+[tilo.stable.code.tilo.so]
 SigLevel = Required
-Server = https://code.podesta.ai/api/packages/qos/arch/stable/$arch
+Server = https://code.tilo.so/api/packages/tilo/arch/stable/$arch
 ```
 
 Import and locally trust the registry key once, then install normally:
 
 ```bash
-curl -fsSL https://code.podesta.ai/api/packages/qos/arch/repository.key -o tilo-forgejo.gpg
+curl -fsSL https://code.tilo.so/api/packages/tilo/arch/repository.key -o tilo-forgejo.gpg
 sudo pacman-key --add tilo-forgejo.gpg
-sudo pacman-key --lsign-key 'tilo@noreply.code.podesta.ai'
+sudo pacman-key --lsign-key 'tilo@noreply.code.tilo.so'
 sudo pacman -Sy tilo-session
 ```
 
@@ -244,7 +244,7 @@ The flake exposes both a package and a module:
 
 ```nix
 {
-  inputs.tilo.url = "git+https://code.podesta.ai/qos/qos";
+  inputs.tilo.url = "git+https://code.tilo.so/tilo/tilo";
   outputs = { nixpkgs, tilo, ... }: {
     nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
       modules = [

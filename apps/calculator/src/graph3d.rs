@@ -6,6 +6,7 @@
 //! function's series colour with a Lambert shade. Drag orbits, scroll zooms.
 
 use ui::ColorCompat;
+use ui::charts::ChartPalette;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
@@ -14,7 +15,6 @@ use vello::peniko::Color;
 
 use crate::draw::{self, Align};
 use crate::engine;
-use crate::graph2d::series_color;
 use crate::mathfield::MathField;
 use crate::model::CalcModel;
 use crate::zoom::ZoomAnim3d;
@@ -126,7 +126,7 @@ impl Default for Graph3dScreen {
 
 /// One painted quad of a surface. `series` selects the function's theme colour;
 /// `shade` is the Lambert factor. Both are theme-independent so a re-theme
-/// replays the cached geometry as `scale_rgb(series_color(theme, series), shade)`.
+/// replays the cached geometry as `scale_rgb(palette.categorical(series), shade)`.
 struct SurfaceCell {
     path: BezPath,
     series: usize,
@@ -600,6 +600,7 @@ impl Graph3dScreen {
         model: &CalcModel,
     ) {
         let c = &theme.tokens.colors;
+        let palette = ChartPalette::from_theme(theme);
         for i in 0..model.surfaces.len() {
             let (Some(f), Some(&r), Some(&edit), Some(&dr), Some(&vr)) = (
                 model.surfaces.get(i),
@@ -630,7 +631,7 @@ impl Graph3dScreen {
                 r.x0 + 26.0,
                 r.center().y + 7.0,
             );
-            let col = series_color(theme, i);
+            let col = palette.categorical(i);
             draw::fill_round(
                 scene,
                 t,
@@ -859,8 +860,9 @@ impl Graph3dScreen {
         );
         let wire = draw::with_alpha(theme.tokens.colors.neutral[0], 90);
         let wire_stroke = vello::kurbo::Stroke::new(0.6);
+        let palette = ChartPalette::from_theme(theme);
         for cell in &self.surface_cache.cells {
-            let color = scale_rgb(series_color(theme, cell.series), cell.shade);
+            let color = scale_rgb(palette.categorical(cell.series), cell.shade);
             scene.fill(vello::peniko::Fill::NonZero, tt, color, None, &cell.path);
             scene.stroke(&wire_stroke, tt, wire, None, &cell.path);
         }

@@ -317,7 +317,7 @@ impl Harness {
         }
     }
 
-    /// Place a painted surface at `rect` (compositor coordinates) through the
+    /// Place a painted surface at `rect` (logical desktop coordinates) through the
     /// production membership path, and return the enter/leave events the
     /// client received for it.
     pub fn place(
@@ -404,11 +404,12 @@ fn a_surface_enters_and_leaves_outputs_as_it_crosses_them() {
     );
 
     // Straddling the seam between the monitor and the laptop below it.
-    let seam = f64::from(bottom.position.1);
+    let bottom_rect = bottom.logical_rect();
+    let seam = bottom_rect.y0;
     let straddle = Rect::new(
-        f64::from(bottom.position.0) + 100.0,
+        bottom_rect.x0 + 100.0,
         seam - 200.0,
-        f64::from(bottom.position.0) + 900.0,
+        bottom_rect.x0 + 900.0,
         seam + 200.0,
     );
     assert_eq!(
@@ -417,7 +418,7 @@ fn a_surface_enters_and_leaves_outputs_as_it_crosses_them() {
     );
 
     let on_bottom = straddle + Vec2::new(0.0, 400.0);
-    assert!(on_bottom.y0 >= f64::from(top.position.1) + f64::from(top.size.1));
+    assert!(on_bottom.y0 >= top.logical_rect().y1);
     assert_eq!(
         h.place(&mut memberships, id, on_bottom),
         vec![SurfaceEvent::Leave(top_name)]
@@ -431,12 +432,8 @@ fn unplugging_an_output_leaves_it_before_its_global_goes() {
     let external_name = h.registry_name(1);
     let external = output(&h.outputs, 1).clone();
     let mut memberships = Memberships::default();
-    let on_external = Rect::new(
-        f64::from(external.position.0) + 10.0,
-        10.0,
-        f64::from(external.position.0) + 500.0,
-        500.0,
-    );
+    let external_x = external.logical_rect().x0;
+    let on_external = Rect::new(external_x + 10.0, 10.0, external_x + 500.0, 500.0);
     assert_eq!(
         h.place(&mut memberships, id, on_external),
         vec![SurfaceEvent::Enter(external_name)]

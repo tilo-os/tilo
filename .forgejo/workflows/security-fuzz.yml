@@ -14,10 +14,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -28,8 +25,6 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Resolve the CI builder
         id: resolve
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 tools/ci/resolve_builder.py
 
   fuzz:
@@ -38,9 +33,6 @@ jobs:
     timeout-minutes: 90
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"

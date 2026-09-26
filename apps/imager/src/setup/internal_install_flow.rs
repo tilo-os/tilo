@@ -1589,7 +1589,7 @@ pub(super) mod tests {
         let bytes = crate::setup::internal_bundle::tests::bytes(&manifest);
         let release = crate::release::InternalRelease::transport_fixture(
             &bytes,
-            "https://code.podesta.ai/releases/manifest.json",
+            "https://code.tilo.so/releases/manifest.json",
         );
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }

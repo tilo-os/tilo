@@ -67,7 +67,7 @@ mod native {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
         let release = InternalRelease::transport_fixture(
             &bytes,
-            "https://code.podesta.ai/releases/manifest.json",
+            "https://code.tilo.so/releases/manifest.json",
         );
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
@@ -77,7 +77,7 @@ mod native {
         tempfile::tempdir_in(xdg_paths::cache_dir().unwrap()).unwrap()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
-        path.join("qos-internal-install").join(s.manifest_sha256())
+        path.join("tilo-internal-install").join(s.manifest_sha256())
     }
     fn parts<'a>(path: &std::path::Path, s: &'a SelectedManifest) -> [Partial<'a>; 2] {
         fixture_acquire(path, s)
@@ -328,7 +328,7 @@ mod native {
                 "setup::internal_cache::windows::tests::native::lock_probe",
                 "--ignored",
             ])
-            .env("QOS_CACHE_LOCK_PROBE", dir.path())
+            .env("TILO_CACHE_LOCK_PROBE", dir.path())
             .status()
             .unwrap();
         assert!(status.success());
@@ -338,7 +338,7 @@ mod native {
     #[test]
     #[ignore = "subprocess fixture invoked with a held parent lease"]
     fn lock_probe() {
-        let dir = std::env::var_os("QOS_CACHE_LOCK_PROBE").expect("parent fixture path");
+        let dir = std::env::var_os("TILO_CACHE_LOCK_PROBE").expect("parent fixture path");
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }
@@ -953,7 +953,7 @@ mod native {
     ) {
         let manifest = root(cache, s);
         for path in [
-            cache.join("qos-internal-install"),
+            cache.join("tilo-internal-install"),
             manifest.clone(),
             manifest.join("payload"),
             manifest.join("journal-0"),
@@ -1031,13 +1031,13 @@ mod native {
         };
         assert!(error.contains("Unsafe cache ACL rights"), "{error}");
         assert_eq!(security_tree(dir.path()), before);
-        assert!(!dir.path().join("qos-internal-install").exists());
+        assert!(!dir.path().join("tilo-internal-install").exists());
     }
     #[test]
     #[ignore = "UNRUN: externally provision a dedicated SYSTEM-owned local ancestry with protected current-user/SYSTEM/Administrators full-access DACL; no account or privilege changes in fixture"]
     fn externally_provisioned_system_owned_ancestry_is_accepted() {
         let path = std::path::PathBuf::from(
-            std::env::var_os("QOS_WINDOWS_SYSTEM_ANCESTOR")
+            std::env::var_os("TILO_WINDOWS_SYSTEM_ANCESTOR")
                 .expect("externally provisioned SYSTEM-owned ancestry"),
         );
         let user = security_observation::user();
@@ -1056,10 +1056,10 @@ mod native {
     #[ignore = "UNRUN: externally provision a dedicated foreign-owner local ancestry, trusted-only full-access DACL and sole sentinel file; provide expected foreign SID; never change owner/accounts/privileges in fixture"]
     fn externally_provisioned_untrusted_owner_refuses_without_repair() {
         let path = std::path::PathBuf::from(
-            std::env::var_os("QOS_WINDOWS_FOREIGN_OWNER_ANCESTOR")
+            std::env::var_os("TILO_WINDOWS_FOREIGN_OWNER_ANCESTOR")
                 .expect("externally provisioned foreign-owner ancestry"),
         );
-        let expected = std::env::var("QOS_WINDOWS_FOREIGN_OWNER_SID")
+        let expected = std::env::var("TILO_WINDOWS_FOREIGN_OWNER_SID")
             .expect("expected externally provisioned owner SID");
         let user = security_observation::user();
         let facts = security_observation::inspect(&path);
@@ -1172,7 +1172,7 @@ mod native {
     #[ignore = "Requires an externally provisioned quota-limited NTFS/ReFS cache; never fill a host volume"]
     fn disk_full_does_not_acknowledge_or_delete_residue() {
         // Provision enough space for acquisition, but less than the 4096-byte payload.
-        let path = std::env::var_os("QOS_WINDOWS_QUOTA_CACHE").expect("qualified quota fixture");
+        let path = std::env::var_os("TILO_WINDOWS_QUOTA_CACHE").expect("qualified quota fixture");
         let s = selected();
         let [mut a, mut b] = parts(std::path::Path::new(&path), &s);
         prepare(&mut a, &s, 0);

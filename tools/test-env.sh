@@ -14,10 +14,10 @@
 # - Mesa's CPU Vulkan driver as the only adapter (VK_DRIVER_FILES, WGPU_BACKEND,
 #   WGPU_ADAPTER_NAME), the renderer the visual goldens are recorded with;
 # - TILO_PDFIUM_LIB when the image installed PDFium and it is not already set;
-# - QOS_NTFS_FIXTURES: the native NTFS images, generated once per fixture
+# - TILO_NTFS_FIXTURES: the native NTFS images, generated once per fixture
 #   generator revision and cached below TILO_TEST_CACHE_DIR (default
 #   ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env). An existing
-#   QOS_NTFS_FIXTURES is kept; TILO_TEST_NTFS_FIXTURES=0 skips generating them
+#   TILO_NTFS_FIXTURES is kept; TILO_TEST_NTFS_FIXTURES=0 skips generating them
 #   when the selected tests do not need them;
 # - a private software audio endpoint, via tools/with-headless-audio.sh.
 set -euo pipefail
@@ -43,7 +43,7 @@ if [[ -z ${TILO_PDFIUM_LIB:-} && -r /usr/lib64/libpdfium.so ]]; then
 fi
 
 ntfs_fixtures() {
-    local crate="$repo/crates/session/qos-ntfs-helper"
+    local crate="$repo/crates/session/tilo-ntfs-helper"
     local key root dir stage status=0
     # The generator, the build it drives (which pins the vendored source by
     # digest) and the C fixture writer determine the images.
@@ -73,9 +73,9 @@ ntfs_fixtures() {
         fi
     fi
     exec 9>&-
-    export QOS_NTFS_FIXTURES="$dir"
+    export TILO_NTFS_FIXTURES="$dir"
 }
-if [[ -z ${QOS_NTFS_FIXTURES:-} && ${TILO_TEST_NTFS_FIXTURES:-1} != 0 ]]; then
+if [[ -z ${TILO_NTFS_FIXTURES:-} && ${TILO_TEST_NTFS_FIXTURES:-1} != 0 ]]; then
     ntfs_fixtures
 fi
 

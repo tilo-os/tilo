@@ -2,7 +2,7 @@
 #include <cctype>
 #include <string>
 
-namespace qos {
+namespace tilo {
 // The IPC currently carries logical key names, not hardware scan codes. Use the
 // conventional US physical key for these names until the UI sends layout data.
 struct KeyMapping {
@@ -48,4 +48,4 @@ inline KeyMapping MapKey(const std::string& key) {
   // Character events still carry text for characters without a known US key.
   return {0,-1,0,character,character};
 }
-}  // namespace qos
+}  // namespace tilo

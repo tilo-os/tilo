@@ -13,14 +13,14 @@ use tilo_vm_protocol::{
     Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
     Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Owner, Policy,
     Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList,
-    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Swap, VM_SLOT, VmTools,
+    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Stick, Swap, VM_SLOT, VmTools,
 };
 
 use crate::build;
 use crate::ci;
 use crate::cli::{
-    Builder, Command, CreateArgs, InputCommand, ScenarioCommand, SeatCommand, SlotCommand,
-    UpgradeArgs, VmCommand,
+    Builder, Command, CreateArgs, GamepadCommand, InputCommand, PenCommand, ScenarioCommand,
+    SeatCommand, SlotCommand, TouchCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -257,34 +257,9 @@ pub fn describe_apply(result: &ApplyResult) -> String {
     text
 }
 
-/// The forge registry that publishes images and CI layers.
-pub const REGISTRY: &str = "code.podesta.ai";
-
-/// Output that means the registry refused our credentials.
-pub fn is_auth_failure(text: &str) -> bool {
-    text.contains("401") || text.contains("reqPackageAccess") || text.contains("unauthorized")
-}
-
-/// Preflight for anything that pulls from [`REGISTRY`] on this host.
-fn registry_login(runner: &mut dyn Runner) -> Result<String, CliError> {
-    let output = runner
-        .output(&CommandLine::new(
-            "podman",
-            &["login", "--get-login", REGISTRY],
-        ))
-        .map_err(|_| CliError::ToolMissing {
-            tool: "podman".into(),
-            purpose: format!("pull from {REGISTRY}"),
-        })?;
-    if output.success {
-        Ok(output.stdout.trim().to_owned())
-    } else {
-        Err(CliError::RegistryLogin {
-            place: "this host".into(),
-            registry: REGISTRY.into(),
-        })
-    }
-}
+/// The registry that publishes images and CI layers. Anyone may pull from
+/// it: no pull needs a login.
+pub const REGISTRY: &str = "registry.tilo.so";
 
 /// `path`, or its nearest ancestor that exists.
 fn existing_ancestor(path: &Path) -> &Path {
@@ -781,10 +756,7 @@ impl App {
         let facts = HostFacts::probe(&mut self.runner);
         let mut checks = doctor::host_checks(&facts);
         let token = disk::find_token();
-        checks.extend(doctor::credential_checks(
-            token.as_ref(),
-            registry_login(&mut self.runner),
-        ));
+        checks.extend(doctor::credential_checks(token.as_ref()));
         let root = self.base_dir();
         match self.manifest() {
             Ok(Some(_)) => checks.push(Check::ok("manifest", "os/components.toml found")),
@@ -1995,7 +1967,6 @@ impl App {
     /// pulled here so a dev image can be built on top of it.
     fn resolve_ci_upgrade(&mut self, tag: &str) -> Result<CiUpgrade, CliError> {
         let candidates = imageup::ci_candidates(tag, std::env::consts::ARCH);
-        registry_login(&mut self.runner)?;
         let runner = &mut self.runner;
         let found = self.receipt.phase("resolve", || -> Result<_, CliError> {
             for image in &candidates.dev_images {
@@ -2021,7 +1992,7 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
                 problem: format!("names no CI build this host can pull (tried {tried})"),
-                fix: "list the builds CI pushed: skopeo list-tags docker://code.podesta.ai/qos/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
         if let CiUpgrade::Base(base) = &found {
@@ -2069,9 +2040,6 @@ impl App {
                 None => ("registry", String::new()),
             },
         };
-        if transport == "registry" && imgref.starts_with(REGISTRY) {
-            registry_login(&mut self.runner)?;
-        }
         self.receipt.set("image", &imgref);
         let stage = Stage {
             transport,
@@ -2216,12 +2184,6 @@ impl App {
         };
         let staged = self.vm_locked(vm, endpoint, &words)?;
         if !staged.success {
-            if stage.transport == "registry" && is_auth_failure(&staged.stderr) {
-                return Err(CliError::RegistryLogin {
-                    place: format!("VM {}", vm.name),
-                    registry: REGISTRY.into(),
-                });
-            }
             return Err(CliError::CommandFailed {
                 command: words.join(" "),
                 status: staged.status,
@@ -2485,6 +2447,7 @@ impl App {
                 name,
                 headless: _,
                 headful,
+                outputs,
                 ..
             } => {
                 let name = self.slot_name(name)?;
@@ -2503,20 +2466,9 @@ impl App {
                     name: name.clone(),
                     kind,
                     owner,
+                    outputs,
                 })?;
-                let user = result.slot.user.clone().unwrap_or_default();
-                let text = if result.created {
-                    format!(
-                        "slot {name} created ({}); session started as {user} on the base image",
-                        kind.as_str()
-                    )
-                } else if result.actions.is_empty() {
-                    format!("slot {name} already exists and its session is running; nothing to do")
-                } else {
-                    format!(
-                        "slot {name} already existed; its session was not running and has been started"
-                    )
-                };
+                let text = slot_created_text(&name, kind, &result);
                 self.receipt.set("slot", &name);
                 Ok(Outcome::new(text, json!(result)).next(&[
                     "tilo-vm swap <component>",
@@ -2926,17 +2878,10 @@ impl App {
                     status: "unexpected result".into(),
                     stderr: "an app install instead of a layer".into(),
                 }),
-                Err(CliError::Remote(error)) if error.code == tilo_vm_protocol::code::AUTH => {
-                    Err(CliError::RegistryLogin {
-                        place: format!("VM {}", vm.name),
-                        registry: REGISTRY.into(),
-                    })
-                }
                 Err(error) => Err(error),
             };
         }
         // No podman in the VM: pull here, upload the layer.
-        registry_login(&mut self.runner)?;
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         let staging = build::Staging::new(&worktree)?;
         let arch = remote.hello.arch.clone();
@@ -3578,10 +3523,94 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
                 _ => None,
             },
         },
+        InputCommand::Touch(gesture) => touch_action(gesture),
+        InputCommand::Pen(PenCommand::Tap { x, y, pressure }) => {
+            InputAction::PenTap { x, y, pressure }
+        }
+        InputCommand::Pen(PenCommand::Drag {
+            x1,
+            y1,
+            x2,
+            y2,
+            duration,
+            pressure,
+        }) => InputAction::PenDrag {
+            from: (x1, y1),
+            to: (x2, y2),
+            duration_ms: duration,
+            pressure,
+        },
+        InputCommand::Gamepad(command) => gamepad_action(command)?,
     };
     let actions = vec![action];
     tilo_vm_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
     Ok(actions)
+}
+
+fn touch_action(gesture: TouchCommand) -> InputAction {
+    match gesture {
+        TouchCommand::Tap { x, y } => InputAction::TouchTap { x, y },
+        TouchCommand::Hold { x, y, duration } => InputAction::TouchHold {
+            x,
+            y,
+            duration_ms: duration,
+        },
+        TouchCommand::Drag {
+            x1,
+            y1,
+            x2,
+            y2,
+            duration,
+        } => InputAction::TouchDrag {
+            from: (x1, y1),
+            to: (x2, y2),
+            duration_ms: duration,
+        },
+        TouchCommand::Pinch {
+            x,
+            y,
+            from,
+            to,
+            duration,
+        } => InputAction::TouchPinch {
+            center: (x, y),
+            from_distance: from,
+            to_distance: to,
+            duration_ms: duration,
+        },
+    }
+}
+
+fn gamepad_action(command: GamepadCommand) -> Result<InputAction, CliError> {
+    Ok(match command {
+        GamepadCommand::Press { combos } => InputAction::GamepadPress { combos },
+        GamepadCommand::Dpad { directions } => {
+            if let Some(bad) = directions.iter().find(|d| {
+                !matches!(
+                    d.to_ascii_lowercase().as_str(),
+                    "up" | "down" | "left" | "right"
+                )
+            }) {
+                return Err(CliError::InvalidInput(format!(
+                    "'{bad}' is not a d-pad direction (up, down, left, right)"
+                )));
+            }
+            InputAction::GamepadPress { combos: directions }
+        }
+        GamepadCommand::Stick {
+            stick,
+            x,
+            y,
+            duration,
+        } => InputAction::GamepadStick {
+            stick: Stick::parse(&stick).ok_or_else(|| {
+                CliError::InvalidInput(format!("'{stick}' is not a stick (left, right)"))
+            })?,
+            x,
+            y,
+            duration_ms: duration,
+        },
+    })
 }
 
 fn describe_input(action: &InputAction) -> String {
@@ -3593,6 +3622,71 @@ fn describe_input(action: &InputAction) -> String {
             let at = at.map(|(x, y)| format!(" at {x},{y}")).unwrap_or_default();
             format!("clicked {button:?}{at}").to_lowercase()
         }
+        InputAction::TouchTap { x, y } => format!("tapped {x},{y}"),
+        InputAction::TouchHold { x, y, duration_ms } => {
+            format!("held a finger on {x},{y} for {duration_ms} ms")
+        }
+        InputAction::TouchDrag { from, to, .. } => {
+            format!(
+                "dragged a finger from {},{} to {},{}",
+                from.0, from.1, to.0, to.1
+            )
+        }
+        InputAction::TouchPinch {
+            center,
+            from_distance,
+            to_distance,
+            ..
+        } => format!(
+            "pinched at {},{} from {from_distance} to {to_distance} px apart",
+            center.0, center.1
+        ),
+        InputAction::PenTap { x, y, .. } => format!("tapped the pen at {x},{y}"),
+        InputAction::PenDrag { from, to, .. } => {
+            format!(
+                "drew with the pen from {},{} to {},{}",
+                from.0, from.1, to.0, to.1
+            )
+        }
+        InputAction::GamepadPress { combos } => format!("pressed gamepad {}", combos.join(" ")),
+        InputAction::GamepadStick { stick, x, y, .. } => {
+            format!("pushed the {stick:?} stick to {x},{y}").to_lowercase()
+        }
+    }
+}
+
+/// What `slot create` did, in a sentence or two.
+fn slot_created_text(
+    name: &str,
+    kind: SlotKind,
+    result: &tilo_vm_protocol::SlotCreateResult,
+) -> String {
+    let user = result.slot.user.clone().unwrap_or_default();
+    let set_outputs = result.actions.iter().find_map(|action| match action {
+        tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
+        _ => None,
+    });
+    let started = result
+        .actions
+        .iter()
+        .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
+    let text = if result.created {
+        format!(
+            "slot {name} created ({}); session started as {user} on the base image",
+            kind.as_str()
+        )
+    } else if started {
+        format!("slot {name} already existed; its session was not running and has been started")
+    } else if set_outputs.is_some() {
+        format!("slot {name} already exists and its session is running")
+    } else {
+        format!("slot {name} already exists and its session is running; nothing to do")
+    };
+    match set_outputs {
+        Some(outputs) => format!(
+            "{text}\noutputs {outputs} (left to right), set and confirmed through the display settings"
+        ),
+        None => text,
     }
 }
 
@@ -3605,8 +3699,16 @@ fn slot_line(info: &SlotInfo) -> String {
     let owner = describe_owner(&info.owner)
         .map(|o| format!(", owner {o}"))
         .unwrap_or_default();
+    let outputs = if info.outputs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", outputs {}",
+            tilo_vm_protocol::display::format_outputs(&info.outputs)
+        )
+    };
     format!(
-        "slot: {} ({}) generation {}, session {}{seat}{owner}",
+        "slot: {} ({}) generation {}, session {}{seat}{outputs}{owner}",
         info.name,
         info.kind.as_str(),
         info.generation,
@@ -3918,7 +4020,7 @@ pub fn connect_failure(
             true,
             match bootc {
                 Some(true) => vec![
-                    format!("tilo-vm vm upgrade {vm} --image code.podesta.ai/qos/tilo-vm:<tag>"),
+                    format!("tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>"),
                     ssh,
                 ],
                 Some(false) => vec!["tilo-vm vm create <name>".into(), ssh],
@@ -4487,17 +4589,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn registry_auth_failures_are_recognised() {
-        assert!(is_auth_failure(
-            "Error: reading manifest: unauthorized: reqPackageAccess"
-        ));
-        assert!(is_auth_failure(
-            "received unexpected HTTP status: 401 Unauthorized"
-        ));
-        assert!(!is_auth_failure("no space left on device"));
-    }
-
     fn app_with_empty_registry(dir: &Path) -> App {
         App {
             json: false,
@@ -4612,6 +4703,67 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains('ï'));
         assert!(error.hint().contains("tilo-vm input key"));
+    }
+
+    #[test]
+    fn touch_pen_and_gamepad_commands_become_actions() {
+        use clap::Parser as _;
+        let parse = |args: &[&str]| {
+            let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+            let Some(Command::Input { action, .. }) = cli.command else {
+                panic!("{args:?} is not an input command");
+            };
+            input_actions(action)
+        };
+        let pinch = parse(&[
+            "tilo-vm", "input", "touch", "pinch", "640", "400", "--from", "400", "--to", "100",
+        ])
+        .unwrap();
+        assert_eq!(
+            pinch,
+            [InputAction::TouchPinch {
+                center: (640, 400),
+                from_distance: 400,
+                to_distance: 100,
+                duration_ms: 400,
+            }]
+        );
+        assert_eq!(
+            describe_input(&pinch[0]),
+            "pinched at 640,400 from 400 to 100 px apart"
+        );
+        let stick = parse(&["tilo-vm", "input", "gamepad", "stick", "left", "0", "-100"]).unwrap();
+        assert_eq!(
+            stick,
+            [InputAction::GamepadStick {
+                stick: Stick::Left,
+                x: 0,
+                y: -100,
+                duration_ms: 300,
+            }]
+        );
+        let dpad = parse(&["tilo-vm", "input", "gamepad", "dpad", "down", "right"]).unwrap();
+        assert_eq!(
+            dpad,
+            [InputAction::GamepadPress {
+                combos: vec!["down".into(), "right".into()]
+            }]
+        );
+        let bad = parse(&["tilo-vm", "input", "gamepad", "dpad", "a"]).unwrap_err();
+        assert!(bad.to_string().contains("d-pad direction"), "{bad}");
+        let bad = parse(&["tilo-vm", "input", "gamepad", "press", "guide+zz"]).unwrap_err();
+        assert!(bad.to_string().contains("'zz'"), "{bad}");
+        let pen = parse(&[
+            "tilo-vm",
+            "input",
+            "pen",
+            "tap",
+            "1",
+            "2",
+            "--pressure",
+            "0",
+        ]);
+        assert!(pen.unwrap_err().to_string().contains("pressure"));
     }
 
     fn create_args(name: &str) -> CreateArgs {
@@ -4978,6 +5130,7 @@ mod tests {
             components: std::collections::BTreeMap::new(),
             session: "active".into(),
             seat: None,
+            outputs: Vec::new(),
             parity: None,
         }
     }

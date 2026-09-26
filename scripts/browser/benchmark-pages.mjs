@@ -210,7 +210,7 @@ class Host {
 }
 async function filterRules(directory) {
   const baseline =
-    "! qOS first-run baseline\n||doubleclick.net^\n||googlesyndication.com^\n||googleadservices.com^\n||adnxs.com^\n||adsrvr.org^\n||scorecardresearch.com^\n||outbrain.com^\n||taboola.com^\n";
+    "! Tilo first-run baseline\n||doubleclick.net^\n||googlesyndication.com^\n||googleadservices.com^\n||adnxs.com^\n||adsrvr.org^\n||scorecardresearch.com^\n||outbrain.com^\n||taboola.com^\n";
   const files = [
     "easylist.txt",
     "easyprivacy.txt",
@@ -251,7 +251,7 @@ async function filterRules(directory) {
 }
 const snapshotExpression = `(()=>{const n=performance.getEntriesByType('navigation')[0];return {url:location.href,title:document.title,readyState:document.readyState,scrollY,scrollHeight:document.scrollingElement?.scrollHeight,viewportHeight:innerHeight,viewportWidth:innerWidth,navigation:n?{domContentLoadedMs:n.domContentLoadedEventEnd,loadEventMs:n.loadEventEnd,responseStartMs:n.responseStart,transferBytes:n.transferSize}:null,firstContentfulPaintMs:performance.getEntriesByName('first-contentful-paint')[0]?.startTime??null};})()`;
 async function scrollTrial(cdp, host, index) {
-  await cdp.evaluate("window.__qosTrial=null;window.scrollTo(0,0)");
+  await cdp.evaluate("window.__tiloTrial=null;window.scrollTo(0,0)");
   await sleep(350);
   const before = await cdp.evaluate(snapshotExpression);
   if (before.scrollHeight <= before.viewportHeight + 1)
@@ -266,7 +266,7 @@ async function scrollTrial(cdp, host, index) {
   const listener = (event, at) => {
     if (
       event.method === "Runtime.bindingCalled" &&
-      event.params.name === "__qosScrollBench"
+      event.params.name === "__tiloScrollBench"
     ) {
       try {
         const payload = JSON.parse(event.params.payload);
@@ -279,7 +279,7 @@ async function scrollTrial(cdp, host, index) {
   };
   cdp.listeners.push(listener);
   try {
-    await cdp.evaluate(`window.__qosTrial=${JSON.stringify(token)}`);
+    await cdp.evaluate(`window.__tiloTrial=${JSON.stringify(token)}`);
     const sent = performance.now();
     await host.send({ op: "scroll", x: 640, y: 400, dx: 0, dy: -120 });
     try {
@@ -305,7 +305,7 @@ async function scrollTrial(cdp, host, index) {
     };
   } finally {
     cdp.listeners.splice(cdp.listeners.indexOf(listener), 1);
-    await cdp.evaluate("window.__qosTrial=null").catch(() => {});
+    await cdp.evaluate("window.__tiloTrial=null").catch(() => {});
   }
 }
 async function pacing(cdp, host) {
@@ -340,7 +340,7 @@ async function pacing(cdp, host) {
   };
 }
 async function benchmarkSite(site, options, filters) {
-  const profile = await mkdtemp(join(tmpdir(), "qos-page-bench-"));
+  const profile = await mkdtemp(join(tmpdir(), "tilo-page-bench-"));
   const port = await freePort();
   const host = new Host(
     options.host,
@@ -368,9 +368,9 @@ async function benchmarkSite(site, options, filters) {
     await cdp.connect();
     await cdp.call("Page.enable");
     await cdp.call("Runtime.enable");
-    await cdp.call("Runtime.addBinding", { name: "__qosScrollBench" });
+    await cdp.call("Runtime.addBinding", { name: "__tiloScrollBench" });
     await cdp.call("Page.addScriptToEvaluateOnNewDocument", {
-      source: `if(window===window.top)addEventListener('scroll',()=>{if(window.__qosTrial)window.__qosScrollBench(JSON.stringify({token:window.__qosTrial,y:scrollY}));},{passive:true});`,
+      source: `if(window===window.top)addEventListener('scroll',()=>{if(window.__tiloTrial)window.__tiloScrollBench(JSON.stringify({token:window.__tiloTrial,y:scrollY}));},{passive:true});`,
     });
     const setup = performance.now();
     await host.send({
@@ -518,7 +518,7 @@ async function main() {
     host: resolve(
       value(
         "--host",
-        "target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host",
+        "target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host",
       ),
     ),
     output: resolve(value("--output", "target/browser-page-benchmark")),
@@ -536,10 +536,10 @@ async function main() {
   const cache = value(
     "--filter-cache",
     platform() === "darwin"
-      ? join(homedir(), "Library/Caches/qos-browser/filters")
+      ? join(homedir(), "Library/Caches/tilo-browser/filters")
       : join(
           process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"),
-          "qos-browser/filters",
+          "tilo-browser/filters",
         ),
   );
   const filters = await filterRules(cache);

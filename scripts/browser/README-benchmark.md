@@ -45,7 +45,7 @@ not input latency. Retain the raw log alongside the JSON result.
 
 `scroll_presentation.py` additionally requires the controlled
 `fixtures/scroll-response.html` page, native scenario wheel-dispatch records, and
-frame tracing with `QOS_WEBVIEW_FRAME_TRACE` and `QOS_WEBVIEW_SCROLL_MARKER` enabled.
+frame tracing with `TILO_WEBVIEW_FRAME_TRACE` and `TILO_WEBVIEW_SCROLL_MARKER` enabled.
 The fixture changes a pixel marker only after the requested document scroll;
 unrelated animation alone cannot establish a response. The analyzer requires a
 single tab, 100% page zoom, and distinct wheel deltas, rejects markers already observed before

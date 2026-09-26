@@ -36,9 +36,11 @@ case "${1:-}" in
     valid_result "$affected_result" || { echo "invalid affected result: $affected_result" >&2; exit 2; }
     git rev-parse --verify "$sha^{commit}" >/dev/null
     git config user.name 'Tilo Forgejo CI'
-    git config user.email 'tilo@noreply.code.podesta.ai'
+    git config user.email 'tilo@noreply.code.tilo.so'
     # Several CI runs can record receipts at once. Refresh the notes tree and
     # retry a rejected push so each run retains notes written by the others.
+    # The delay doubles up to 8 s (about a minute in all) so a transient forge
+    # failure, not only a lost race, can pass before the receipt is abandoned.
     for attempt in {1..12}; do
       git fetch "$remote" "+$notes_ref:$notes_ref" 2>/dev/null || true
       git notes --ref=tilo-check-ci add -f \
@@ -51,7 +53,12 @@ case "${1:-}" in
         echo 'could not publish CI receipt after 12 attempts' >&2
         exit 1
       fi
-      sleep "0.$((200 + RANDOM % 400))"
+      delay_ms=$(( 200 << (attempt - 1) ))
+      if (( delay_ms > 8000 )); then
+        delay_ms=8000
+      fi
+      delay_ms=$(( delay_ms + RANDOM % 400 ))
+      sleep "$(( delay_ms / 1000 )).$(printf '%03d' $(( delay_ms % 1000 )))"
     done
     ;;
   verify)

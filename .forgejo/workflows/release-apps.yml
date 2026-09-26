@@ -151,13 +151,13 @@ jobs:
           from urllib.parse import quote, urlencode, urlparse
           from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-          RAW_ROOT = 'https://code.podesta.ai/api/v1/repos/tilo/tilo/raw/'
+          RAW_ROOT = 'https://code.tilo.so/api/v1/repos/tilo/tilo/raw/'
           FILES = (
               ('tools/app_packaging_qualification.py', 3650, 'c6fd766344d1b18d9c365b2f667627d2102df741a8ab1d1e18e7304240e14063'),
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4352, 'd376bc605d185b6a235db30dfac79d9f0825db96d38b19ac5e9f1e174a242a57'),
-              ('tools/ci/resolve_builder.py', 5467, '146234b76a510c29e4d66de0f6fbf9199b627517c46e493315f0763e4cec4bd4'),
+              ('tools/ci/resolve_builder.py', 7138, 'dd2642f1c7d54c94ef2daf25b18052918a9a9bc9784dff2c1a57ae1a315d1fb4'),
           )
 
           class NoRedirect(HTTPRedirectHandler):
@@ -229,10 +229,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
     outputs:
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
@@ -256,7 +253,6 @@ jobs:
         # PRs only select affected apps; no builder-dependent job runs for them.
         if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')"
         env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
         run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
       - name: Prepare exact release comparison history
@@ -282,15 +278,19 @@ jobs:
           fi
           [[ $base =~ ^[0-9a-f]{40}$ && $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
           origin=$(/usr/bin/git remote get-url origin)
-          [[ $origin == https://code.podesta.ai/qos/qos || \
-             $origin == https://code.podesta.ai/qos/qos.git ]]
+          [[ $GITHUB_SERVER_URL =~ ^https://[a-z0-9.-]+$ ]]
+          [[ $origin == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" || \
+             $origin == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" ]] || {
+            printf 'checkout origin is not %s/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >&2
+            exit 1
+          }
           token=$SOURCE_TOKEN
           unset SOURCE_TOKEN
           credential=$(printf 'x-access-token:%s' "$token" | \
             /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
           unset token
           auth=(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
-            GIT_CONFIG_KEY_0=http.https://code.podesta.ai/.extraheader \
+            GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader" \
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential")
           connected=false
           for depth in 2 32 128 512 2048; do
@@ -462,9 +462,6 @@ jobs:
     # resolving distro packages independently in every release job.
     container:
       image: ${{ needs.plan.outputs.builder_image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -579,9 +576,6 @@ jobs:
     timeout-minutes: 60
     container:
       image: ${{ needs.plan.outputs.builder_image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -659,7 +653,7 @@ jobs:
     container:
       # This public, immutable image is pulled before any release authorization.
       # It contains no compiler or build toolchain and needs no registry secret.
-      image: code.podesta.ai/public/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
     timeout-minutes: 60
     enable-openid-connect: true
     steps:

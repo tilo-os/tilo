@@ -6,11 +6,11 @@ class RenderBoundaryTests(unittest.TestCase):
     def fixture(self):
         identity=dict(cpu_frame_id=7,worker_id=1,worker_frame_ix=9)
         clock=dict(host_clock='mach_absolute_seconds')
-        values=[('qos-native-send',dict(clock,cpu_frame_id=7,send_ok=True,before_host_lo_s=100.,before_host_hi_s=100.,after_host_lo_s=100.003,after_host_hi_s=100.003)),
-                ('qos-native-worker',dict(clock,**identity,receive_host_lo_s=100.001,receive_host_hi_s=100.001,render_start_host_lo_s=100.002,render_start_host_hi_s=100.002,render_end_host_lo_s=100.005,render_end_host_hi_s=100.005,outcome='Presented')),
-                ('qos-native-present-call',dict(clock,**identity,before_host_lo_s=100.004,before_host_hi_s=100.004,after_host_lo_s=100.0041,after_host_hi_s=100.0041)),
-                ('qos-display-request',identity),
-                ('qos-display-frame',dict(identity,presented_time_s=100.024,backend='metal',drawable_id=42))]
+        values=[('tilo-native-send',dict(clock,cpu_frame_id=7,send_ok=True,before_host_lo_s=100.,before_host_hi_s=100.,after_host_lo_s=100.003,after_host_hi_s=100.003)),
+                ('tilo-native-worker',dict(clock,**identity,receive_host_lo_s=100.001,receive_host_hi_s=100.001,render_start_host_lo_s=100.002,render_start_host_hi_s=100.002,render_end_host_lo_s=100.005,render_end_host_hi_s=100.005,outcome='Presented')),
+                ('tilo-native-present-call',dict(clock,**identity,before_host_lo_s=100.004,before_host_hi_s=100.004,after_host_lo_s=100.0041,after_host_hi_s=100.0041)),
+                ('tilo-display-request',identity),
+                ('tilo-display-frame',dict(identity,presented_time_s=100.024,backend='metal',drawable_id=42))]
         return [prefix+' '+json.dumps(value) for prefix,value in values], [7]
 
     def change(self,lines,index,**values):
@@ -20,7 +20,7 @@ class RenderBoundaryTests(unittest.TestCase):
         lines,ids=self.fixture()
         row=json.loads(lines[1].split(' ',1)[1])
         row.update(cpu_frame_id=None,worker_frame_ix=10,outcome='Occluded')
-        report=summarize_render_boundaries(lines+['qos-native-worker '+json.dumps(row)],ids)
+        report=summarize_render_boundaries(lines+['tilo-native-worker '+json.dumps(row)],ids)
         self.assertEqual(len(report['frames']),1)
         with self.assertRaises(ValueError):
             summarize_render_boundaries(self.change(lines,1,outcome='Occluded'),ids)
@@ -76,17 +76,17 @@ class RenderBoundaryTests(unittest.TestCase):
         report=summarize_render_boundaries(lines+extra,ids)
         self.assertEqual([r['cpu_frame_id'] for r in report['frames']],[7])
         with self.assertRaises(ValueError):summarize_render_boundaries(lines+extra+[extra[0]],ids)
-        bad=list(extra);row=json.loads(bad[0].split(' ',1)[1]);row['receive_host_lo_s']=float('nan');bad[0]='qos-native-worker '+json.dumps(row)
+        bad=list(extra);row=json.loads(bad[0].split(' ',1)[1]);row['receive_host_lo_s']=float('nan');bad[0]='tilo-native-worker '+json.dumps(row)
         with self.assertRaises(ValueError):summarize_render_boundaries(lines+bad,ids)
 
     def test_unprofiled_surface_gone_before_render_has_no_render_brackets(self):
         lines,ids=self.fixture()
         row=json.loads(lines[1].split(' ',1)[1]);row.update(cpu_frame_id=None,worker_frame_ix=10,outcome='SurfaceGone')
         for field in ['render_start_host_lo_s','render_start_host_hi_s','render_end_host_lo_s','render_end_host_hi_s']:row[field]=None
-        extra='qos-native-worker '+json.dumps(row)
+        extra='tilo-native-worker '+json.dumps(row)
         report=summarize_render_boundaries(lines+[extra],ids)
         self.assertEqual(len(report['frames']),1)
         row['outcome']='Presented'
-        with self.assertRaises(ValueError):summarize_render_boundaries(lines+['qos-native-worker '+json.dumps(row)],ids)
+        with self.assertRaises(ValueError):summarize_render_boundaries(lines+['tilo-native-worker '+json.dumps(row)],ids)
 
 if __name__=='__main__':unittest.main()

@@ -25,7 +25,7 @@
 # Every `dnf install` below installs ONLY from this digest-pinned snapshot of
 # the exact RPM set (built by os/Containerfile.rpms / the snapshot-rpms CI
 # job), never live Fedora mirrors — so the same source rebuilds the same image
-# regardless of when. RPMS_REF (code.podesta.ai/qos/rpms@sha256:...) comes from
+# regardless of when. RPMS_REF (registry.tilo.so/tilo/rpms@sha256:...) comes from
 # os/rpms-snapshot.env via the build scripts.
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
 # new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
@@ -36,7 +36,7 @@
 # `base name (${…}) should not be blank` when the next FROM tries to
 # use it.
 #
-# BASE_REF (code.podesta.ai/qos/fedora-bootc@sha256:...) is the Fedora bootc
+# BASE_REF (registry.tilo.so/tilo/fedora-bootc@sha256:...) is the Fedora bootc
 # base, mirrored into our registry and pinned by digest — see
 # os/base-snapshot.env for why the mirror exists and how to refresh it. Every
 # fedora-bootc stage below uses it, so builder and final share one base and
@@ -1187,6 +1187,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # logind: `systemctl reboot` / `poweroff` issue the
 # `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
+# It also ships `polkit-agent-helper-1` (and its activation socket), which the
+# compositor's authentication agent drives to run PAM for administrator
+# prompts from pkexec, GNOME Disks, virt-manager and system Flatpak installs.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     greetd \
     fprintd \
@@ -1264,10 +1267,17 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # read the OS appearance the compositor mirrors into
 # org.gnome.desktop.interface; without the dconf backend GSettings falls back
 # to an in-memory store and every host app keeps its own defaults.
+# `xdg-utils` gives host apps `xdg-open`/`xdg-mime`, which read the
+# tilo-mimeapps.list the compositor publishes; `xdg-user-dirs` names the
+# Documents/Downloads/… folders host apps expect. `geoclue2` is the service
+# xdg-desktop-portal's Location portal asks; without it every request fails.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
     dconf \
     gsettings-desktop-schemas \
+    xdg-utils \
+    xdg-user-dirs \
+    geoclue2 \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
@@ -2344,8 +2354,7 @@ COPY --from=public-trust / /run/tilo-public-trust/
 # Install individual files below so existing parent-directory modes stay intact.
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
     os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
-    os/etc/containers/policy.json os/etc/containers/registries.d/code.podesta.ai.yaml \
-    os/etc/containers/registries.d/code.tilo.so.yaml \
+    os/etc/containers/policy.json os/etc/containers/registries.d/code.tilo.so.yaml \
     os/etc/containers/registries.d/registry.tilo.so.yaml \
     /run/tilo-trust-inputs/
 RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
@@ -2353,7 +2362,6 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
  && cp -a /run/tilo-trust-inputs/cosign.pub /run/tilo-trust-inputs/tpm2-pcr-signing.public.pem /run/tilo-official-trust/ \
  && cp -a /run/tilo-trust-inputs/*.py /run/tilo-trust-tools/ \
  && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
- && cp -a /run/tilo-trust-inputs/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml \
  && cp -a /run/tilo-trust-inputs/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml \
  && cp -a /run/tilo-trust-inputs/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml \
  && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
@@ -2365,10 +2373,10 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
  && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools /run/tilo-trust-inputs
 
 # Container signature policy: REQUIRE a valid cosign signature for
-# code.podesta.ai/qos/tilo (everything else stays permissive), so a tampered or
+# registry.tilo.so/tilo/tilo (everything else stays permissive), so a tampered or
 # unsigned OS image is refused at `bootc upgrade`. registries.d points the
 # verifier at cosign's sigstore attachment in the same repo. The unsigned dev
-# image repository (code.podesta.ai/qos/tilo-vm, os/Containerfile.dev, and its
+# image repository (registry.tilo.so/tilo/tilo-vm, os/Containerfile.dev, and its
 # former name tilo-dev) is rejected outright; only the dev image's own policy
 # admits it.
 
@@ -2389,7 +2397,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # we mount it alongside the frozen repo, write a two-repo dnf config on
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against the existing code.podesta.ai/qos/tilo-kernel repository
+# image is verified via cosign against the existing registry.tilo.so/tilo/tilo-kernel repository
 # (see os/etc/containers/policy.json).
 #
 # An initramfs is mandatory, and the static drivers do not remove the need

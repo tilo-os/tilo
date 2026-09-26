@@ -254,7 +254,7 @@ pub(in crate::setup::internal_cache::coordinator) mod fixture {
                 }
                 setup_event(index, "before-create")?;
                 check(cancel)?;
-                let leaf = ".qos-part-0123456789abcdef0123456789abcdef";
+                let leaf = ".tilo-part-0123456789abcdef0123456789abcdef";
                 let (mut provider, mut file) = if root.join(leaf).exists() {
                     if !root.join("journal").exists()
                         || fs::read_dir(root.join("journal")).unwrap().next().is_none()
@@ -500,7 +500,7 @@ fn both_partials_are_prepared_before_first_payload_and_each_resumes_own_range() 
     assert!(root.path().join("1/journal/record-1").exists());
     let release = InternalRelease::transport_fixture(
         &bytes,
-        "https://code.podesta.ai/releases/manifest.json",
+        "https://code.tilo.so/releases/manifest.json",
     );
     let selected = SelectedManifest::from_bytes(&release, bytes.clone()).unwrap();
     ROOT.with(|r| *r.borrow_mut() = root.path().to_owned());
@@ -557,7 +557,7 @@ fn invalid_second_prefix_prevents_any_first_payload_transfer() {
     assert_eq!(
         fs::read(
             root.path()
-                .join("0/.qos-part-0123456789abcdef0123456789abcdef")
+                .join("0/.tilo-part-0123456789abcdef0123456789abcdef")
         )
         .unwrap()
         .len(),
@@ -627,7 +627,7 @@ fn failures_before_and_after_each_initialization_retain_exact_residue() {
             assert_eq!(
                 root.path()
                     .join(format!(
-                        "{index}/.qos-part-0123456789abcdef0123456789abcdef"
+                        "{index}/.tilo-part-0123456789abcdef0123456789abcdef"
                     ))
                     .exists(),
                 stage != "before-create"
@@ -764,7 +764,7 @@ fn cancel_retains_partial_and_separate_authenticated_discard_uses_fresh_flag() {
     let old_flags = active_flags(&worker.shared);
     assert!(
         root.path()
-            .join("0/.qos-part-0123456789abcdef0123456789abcdef")
+            .join("0/.tilo-part-0123456789abcdef0123456789abcdef")
             .exists()
     );
     let cleanup = worker.discard(&t, server.release(&bytes)).unwrap();
@@ -775,7 +775,7 @@ fn cancel_retains_partial_and_separate_authenticated_discard_uses_fresh_flag() {
     assert!(
         !root
             .path()
-            .join("0/.qos-part-0123456789abcdef0123456789abcdef")
+            .join("0/.tilo-part-0123456789abcdef0123456789abcdef")
             .exists()
     );
     worker.shutdown();
@@ -805,7 +805,7 @@ fn discard_discloses_retained_finals_and_unknown_residue_is_never_removed() {
     fs::create_dir(unknown.path().join("0")).unwrap();
     let leaf = unknown
         .path()
-        .join("0/.qos-part-0123456789abcdef0123456789abcdef");
+        .join("0/.tilo-part-0123456789abcdef0123456789abcdef");
     fs::write(&leaf, b"unknown").unwrap();
     let mut worker = fixture_worker(unknown.path(), server.transport(), noop);
     worker.start(server.release(&bytes)).unwrap();
@@ -915,7 +915,7 @@ fn lost_reset_ack_does_not_truncate_until_fresh_reacquisition() {
     assert_eq!(
         fs::read(
             root.path()
-                .join("0/.qos-part-0123456789abcdef0123456789abcdef")
+                .join("0/.tilo-part-0123456789abcdef0123456789abcdef")
         )
         .unwrap(),
         vec![b'E'; 1024]
@@ -958,7 +958,7 @@ fn actual_initialization_failures_retire_no_unknown_files_and_cancel_wins() {
             assert!(
                 root.path()
                     .join(format!(
-                        "{index}/.qos-part-0123456789abcdef0123456789abcdef"
+                        "{index}/.tilo-part-0123456789abcdef0123456789abcdef"
                     ))
                     .exists()
             );
@@ -1272,7 +1272,7 @@ fn preparation_mutation_failure(cancel: bool) {
         let bytes = manifest();
         let release = InternalRelease::transport_fixture(
             &bytes,
-            "https://code.podesta.ai/releases/manifest.json",
+            "https://code.tilo.so/releases/manifest.json",
         );
         let selected = SelectedManifest::from_bytes(&release, bytes.clone()).unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -1308,7 +1308,7 @@ fn preparation_mutation_failure(cancel: bool) {
         }
         drop(selected);
         let dir = root.path().join(index.to_string());
-        let leaf = dir.join(".qos-part-0123456789abcdef0123456789abcdef");
+        let leaf = dir.join(".tilo-part-0123456789abcdef0123456789abcdef");
         assert_eq!(fs::metadata(&leaf).unwrap().len(), 1040);
         let record2 = fs::read(dir.join("journal/record-2")).unwrap();
         let record3 = fs::read(dir.join("journal/record-3")).unwrap();

@@ -1,0 +1,17 @@
+{
+  "provenance": "Synthetic exec envelope. Exercises a nested workdir and an explicit push ref. Not a captured session.",
+  "tool_name": "exec",
+  "session_id": "00000000-0000-4000-8000-000000000157",
+  "cwd": "C:/work/outer",
+  "tool_input": {
+    "code": "text(await tools.exec_command({cmd:\"git push origin HEAD:refs/heads/topic/child; git status --short\",\"workdir\":\"C:/work/child\",\"max_output_tokens\":1500}));\n"
+  },
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"exit_code\": 0, \"output\": \"push completed\", \"wall_time_seconds\": 1}"
+      }
+    ]
+  }
+}

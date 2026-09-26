@@ -32,6 +32,8 @@ use crate::shell::quick_settings::actions::QsActions as _;
 mod controller;
 mod device_fabric;
 mod history;
+mod notification_center;
+mod shortcut_triggers;
 mod shortcuts;
 
 pub use controller::{ControllerDelivery, ControllerKey};
@@ -51,16 +53,17 @@ use device_fabric::{
 use history::notification_severity_label;
 use history::{
     HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
-    clipboard_history_source_label, history_target_address,
-    notification_history_accessible_description, notification_history_relative_time,
+    clipboard_history_source_label, history_target_address, notification_history_relative_time,
 };
+use notification_center::{NotificationRowControl, notification_row_controls};
 #[cfg(test)]
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_chord_from_event,
-    shortcut_guide_chord, shortcut_reference_columns, shortcut_reference_group_height,
-    shortcut_reference_rows, shortcut_reference_step,
+    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
+    shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
+    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
+    shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -1337,6 +1340,7 @@ enum AccessibleOverlay {
     RoomActivity,
     QuickSettings,
     ShortcutHelp,
+    DisplayLayouts,
 }
 
 /// The result of asking whether the global Print Screen shortcut may change
@@ -1434,6 +1438,7 @@ struct OverlayInputs {
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     collaboration_preferences: CollaborationPreferences,
     shortcut_config: settings_store::hardware::ShortcutConfig,
+    shortcut_triggers: crate::shell::automation_triggers::TriggerHost,
     desktop_controls: DesktopControlsSource,
     qs_root: QuickSettingsRoot,
     qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
@@ -1483,6 +1488,8 @@ pub struct ShellOverlayHost {
     /// router must consult this same snapshot rather than reconstructing the
     /// default chord set on its own.
     shortcut_config: settings_store::hardware::ShortcutConfig,
+    /// What starts saved shortcuts from a chord or on schedule.
+    shortcut_triggers: shortcut_triggers::ShortcutTriggerState,
     content: Box<dyn Widget>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
@@ -1629,6 +1636,13 @@ pub struct ShellOverlayHost {
     qs_notification_wheel_remainder: f64,
     /// Synthetic accessibility focus: false is Clear all, true is Undo.
     qs_notification_action_focus: Option<bool>,
+    /// Keyboard selection in the notification centre, by row identity so it
+    /// stays on the same row when new notifications arrive above it.
+    qs_notification_selected: Option<crate::shell::notification_history::RowIdentity>,
+    /// A trailing control of the selected row holding focus, if any.
+    qs_notification_row_control: Option<NotificationRowControl>,
+    /// App groups the viewer folded in the notification centre.
+    qs_notification_collapsed: std::collections::BTreeSet<String>,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -1871,9 +1885,12 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
-    /// Complete wireless projection picker, including controller, editor,
-    /// animation, painted geometry, and event routing.
+    /// The Super+P display sheet, including controller, editor, animation,
+    /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
+    /// Numbered cards painted on every display when Settings asks which
+    /// screen is which.
+    display_identify: crate::shell::display_identify::DisplayIdentify,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -2446,17 +2463,10 @@ pub(crate) fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
 /// the whole shadow with room to spare.
 const STRIP_TRAILING_GUTTER_PX: f64 = WHEEL_TO_STRIP_GAP_PX;
 
-/// One display the compositor is painting across, in its combined
-/// coordinate space. The compositor renders one scene spanning every
-/// output's bounding box, so a window group's width must be resolved
-/// against its own display, not the combined desktop.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OutputGeometry {
-    /// Left edge in combined coordinates.
-    pub x: f64,
-    pub width: f64,
-    pub height: f64,
-}
+/// One display the shell lays out across, in the logical desktop. A window
+/// group's width is resolved against its own display, not the combined
+/// desktop.
+pub use crate::shell::output_scene::OutputGeometry;
 
 /// Duration of the quick-settings popover entry animation: short enough
 /// to feel snappy, long enough to register as motion.
@@ -2941,6 +2951,10 @@ impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(7);
         let flags = self.overlay_flags();
+        // The display sheet is modal and drawn above every other overlay.
+        if flags.projection {
+            order.push(AccessibleOverlay::DisplayLayouts);
+        }
         if self.tab_menu.is_open() {
             order.push(AccessibleOverlay::TabContextMenu);
         }
@@ -2999,6 +3013,7 @@ impl ShellOverlayHost {
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
         self.room_activity.attach_task_broker(broker.clone());
+        self.attach_shortcut_trigger_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
@@ -3093,7 +3108,7 @@ impl ShellOverlayHost {
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
         let (search_registry, room_records, qs_action_slot) =
             Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
-        Self::from_inputs(
+        let mut host = Self::from_inputs(
             content,
             OverlayInputs {
                 search_registry,
@@ -3107,6 +3122,7 @@ impl ShellOverlayHost {
                 room_records,
                 collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+                shortcut_triggers: crate::shell::automation_triggers::TriggerHost::for_session(),
                 desktop_controls: DesktopControlsSource::Persisted(
                     settings_store::hardware::DesktopControlsConfig::load(),
                 ),
@@ -3123,7 +3139,11 @@ impl ShellOverlayHost {
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 session_action_policy,
             },
-        )
+        );
+        // Offer Switch user only where the display manager can open a greeter
+        // beside this session; greetd cannot.
+        host.power_menu = PowerMenu::for_session(os_actions::user_switching_supported());
+        host
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
@@ -3160,6 +3180,10 @@ impl ShellOverlayHost {
                     &serde_json::Map::new(),
                 ),
                 shortcut_config: settings_store::hardware::ShortcutConfig::default(),
+                shortcut_triggers: crate::shell::automation_triggers::TriggerHost::new(
+                    std::sync::Arc::new(crate::shell::automation_triggers::SystemClock),
+                    None,
+                ),
                 desktop_controls: DesktopControlsSource::Explicit(
                     settings_store::hardware::DesktopControlsConfig::default(),
                 ),
@@ -3210,6 +3234,9 @@ impl ShellOverlayHost {
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
             shortcut_config: inputs.shortcut_config,
+            shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
+                inputs.shortcut_triggers,
+            ),
             desktop_controls: inputs.desktop_controls,
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
@@ -3263,6 +3290,9 @@ impl ShellOverlayHost {
             ),
             qs_notification_wheel_remainder: 0.0,
             qs_notification_action_focus: None,
+            qs_notification_selected: None,
+            qs_notification_row_control: None,
+            qs_notification_collapsed: std::collections::BTreeSet::new(),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -3342,6 +3372,7 @@ impl ShellOverlayHost {
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
+            display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -4534,6 +4565,32 @@ impl ShellOverlayHost {
         &self.outputs
     }
 
+    /// Start painting each display's number and name when Settings has
+    /// asked to identify displays since the last check. The compositor
+    /// calls this at its settings reload point.
+    pub fn poll_display_identify(&mut self) -> bool {
+        let outputs = if self.outputs.is_empty() {
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.rect.width(),
+                self.rect.height(),
+            )]
+        } else {
+            self.outputs.clone()
+        };
+        let started = self.display_identify.poll(&outputs, Instant::now());
+        if started && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        started
+    }
+
+    /// The identify cards on screen right now, one per display.
+    pub fn display_identify_labels(&self) -> Vec<crate::shell::display_identify::IdentifyLabel> {
+        self.display_identify.labels(Instant::now()).to_vec()
+    }
+
     /// Per-display strip widths: full extent plus width actually
     /// available to window groups, with the leftmost display giving up
     /// the wheel-disc slot and its gutter. Falls back to the host's own
@@ -4547,11 +4604,12 @@ impl ShellOverlayHost {
             if self.rect.width() <= 1.0 {
                 return Vec::new();
             }
-            vec![OutputGeometry {
-                x: 0.0,
-                width: self.rect.width(),
-                height: self.rect.height(),
-            }]
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.rect.width(),
+                self.rect.height(),
+            )]
         } else {
             self.outputs.clone()
         };
@@ -8030,6 +8088,9 @@ impl ShellOverlayHost {
             return false;
         };
         self.harvest_widget_only_groups_into_tree();
+        // A drop lands in the strip at an exact seam, which only a Tilo tile
+        // can honour; a host application opens its own window elsewhere, so
+        // drops it would handle stay with the shell's own document tile.
         let owned = matches!(
             crate::shell::doc_open::resolve(path),
             crate::shell::doc_open::DocumentTarget::App { .. }
@@ -9215,7 +9276,9 @@ impl ShellOverlayHost {
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
             QsLevel::Notifications => {
-                let total = state.notification_history().len();
+                let total = state
+                    .notification_history_rows(&self.qs_notification_collapsed)
+                    .len();
                 NotificationHistoryLayout::preferred_height(total.min(7), total, self.qs_type_px)
             }
             QsLevel::Clipboard => {
@@ -9242,10 +9305,7 @@ impl ShellOverlayHost {
     /// overlap the final body line on small displays or at enlarged text
     /// sizes; a history that fits ends on the panel padding instead.
     fn qs_notification_visible_rows(&self) -> usize {
-        let total = self
-            .chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        let total = self.qs_notification_rows().len();
         self.qs_notification_layout().visible_rows(total)
     }
 
@@ -9279,7 +9339,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let history_len = chrome.borrow().notification_history().len();
+        let history_len = self.qs_notification_rows().len();
         let max_start = self.qs_notification_max_start(history_len);
         let current = self.qs_notification_history_start.min(max_start);
         let next = if movement.is_negative() {
@@ -9388,11 +9448,16 @@ impl ShellOverlayHost {
     /// Keyboard navigation for the notification drill-in. It is deliberately
     /// available without pointer hover so the retained error history remains
     /// usable by keyboard and assistive-technology users.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match keeps every notification-centre key and its precedence over Clear/Undo visible together"
+    )]
     fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
-        let history_len = self
-            .chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        let rows = self.qs_notification_rows();
+        let history_len = rows.len();
+        let selected = self.chrome.as_ref().and_then(|chrome| {
+            self.qs_notification_selected_row(&rows, chrome.borrow().notification_history())
+        });
         let page = isize::try_from(self.qs_notification_visible_rows()).unwrap_or(isize::MAX);
         match logical_key {
             Key::Named(NamedKey::Enter | NamedKey::Space)
@@ -9403,6 +9468,43 @@ impl ShellOverlayHost {
                 }
                 self.qs_notification_action_focus = Some(true);
                 self.qs_notification_history_start = 0;
+                self.qs_notification_selected = None;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) if selected.is_some() => {
+                if let Some(index) = selected {
+                    let control = self.qs_notification_row_control;
+                    self.qs_activate_notification_row(index, control);
+                }
+            }
+            Key::Named(NamedKey::Delete) if selected.is_some() => {
+                if let Some(index) = selected {
+                    self.qs_dismiss_notification_row(index);
+                }
+            }
+            Key::Named(direction @ (NamedKey::ArrowRight | NamedKey::ArrowLeft))
+                if selected.is_some_and(|index| {
+                    matches!(rows.get(index), Some(crate::shell::notification_history::HistoryRow::Group { expanded, .. })
+                        if *expanded == (*direction == NamedKey::ArrowLeft))
+                }) =>
+            {
+                if let Some(index) = selected {
+                    self.qs_activate_notification_row(index, None);
+                }
+            }
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowLeft) if selected.is_some() => {}
+            Key::Named(NamedKey::ArrowDown) => self.qs_move_notification_selection(1),
+            Key::Named(NamedKey::ArrowUp) => self.qs_move_notification_selection(-1),
+            Key::Named(NamedKey::PageDown) if selected.is_some() => {
+                self.qs_move_notification_selection(page);
+            }
+            Key::Named(NamedKey::PageUp) if selected.is_some() => {
+                self.qs_move_notification_selection(page.saturating_neg());
+            }
+            Key::Named(NamedKey::Home) if selected.is_some() => {
+                self.qs_select_notification_row(0);
+            }
+            Key::Named(NamedKey::End) if selected.is_some() => {
+                self.qs_select_notification_row(usize::MAX);
             }
             Key::Named(NamedKey::Enter | NamedKey::Space)
                 if self.chrome.as_ref().is_some_and(|chrome| {
@@ -9420,12 +9522,6 @@ impl ShellOverlayHost {
                 }
                 self.qs_notification_history_start = 0;
                 self.qs_notification_wheel_remainder = 0.0;
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                let _ = self.scroll_qs_notification_history(1);
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                let _ = self.scroll_qs_notification_history(-1);
             }
             Key::Named(NamedKey::PageDown) => {
                 let _ = self.scroll_qs_notification_history(page);
@@ -9957,6 +10053,10 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::Vpn => self
                 .qs_vpn_pane
                 .semantic_rects(self.quick_settings_rect(), &state.quick_settings.vpns),
+            crate::shell::quick_settings::QsLevel::Notifications => {
+                drop(state);
+                self.notification_center_semantic_rects()
+            }
             _ => Vec::new(),
         }
     }
@@ -11134,7 +11234,27 @@ impl ShellOverlayHost {
                         || state.alt_key()
                         || state.shift_key()
                         || state.super_key());
-                if capture_chord {
+                if self.portal_dialogs.is_authentication() {
+                    // Every key belongs to the authentication sheet while it
+                    // is up; none reaches an application.
+                    match logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            self.portal_dialogs.confirm();
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.portal_dialogs.cancel();
+                        }
+                        Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                            self.portal_dialogs.select_next(false);
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.portal_dialogs.select_next(true);
+                        }
+                        _ => {
+                            self.portal_dialogs.edit_secret(logical_key);
+                        }
+                    }
+                } else if capture_chord {
                     self.portal_dialogs.key(physical_key, modifiers);
                 } else {
                     match logical_key {
@@ -11328,8 +11448,12 @@ impl ShellOverlayHost {
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey => {
                     "F1 and Print Screen are reserved by the desktop.".into()
                 }
-                settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                settings_store::hardware::ShortcutConfigError::InvalidChord
+                | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
                     "That shortcut is not supported. Press another shortcut.".into()
+                }
+                settings_store::hardware::ShortcutConfigError::TakenByAction => {
+                    "Already used to run an action. Press another shortcut.".into()
                 }
             });
             return;
@@ -11431,8 +11555,12 @@ impl ShellOverlayHost {
                     "A default is already used to {}. Change that shortcut first.",
                     shortcut_action_label(other)
                 ),
+                settings_store::hardware::ShortcutConfigError::TakenByAction => {
+                    "A default now runs an action. Change that shortcut first.".into()
+                }
                 settings_store::hardware::ShortcutConfigError::ReservedSystemKey
-                | settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                | settings_store::hardware::ShortcutConfigError::InvalidChord
+                | settings_store::hardware::ShortcutConfigError::Fixed(_) => {
                     "Could not restore the default shortcuts.".into()
                 }
             });
@@ -11903,6 +12031,13 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Chords bound to published actions, a saved shortcut's keyboard
+        // trigger among them. Saving refuses every fixed chord below, so
+        // order only matters for a chord nothing else claims.
+        if self.handle_action_chord(logical_key, modifiers, repeat) {
+            *handled = true;
+            return true;
+        }
         // Alt+Tab is the conventional window ring and remains a stable
         // fallback even when spatial navigation is rebound in Settings.
         // This also keeps first-run discoverability consistent with other
@@ -12033,6 +12168,7 @@ impl ShellOverlayHost {
             ShortcutAction::DetachTab,
             ShortcutAction::AttachTabLeft,
             ShortcutAction::AttachTabRight,
+            ShortcutAction::ReopenClosedTab,
         ];
         if let Some(action) = navigation
             .into_iter()
@@ -12063,6 +12199,11 @@ impl ShellOverlayHost {
                 ShortcutAction::AttachTabRight => {
                     if !repeat {
                         let _ = self.attach_focused_tab(1);
+                    }
+                }
+                ShortcutAction::ReopenClosedTab => {
+                    if !repeat && let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().reopen_closed_tab();
                     }
                 }
                 ShortcutAction::ResizeNarrower => {
@@ -12268,8 +12409,9 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Win+P — wireless display picker. Super specifically, so an
-        // application's Ctrl+P remains Print.
+        // Win+P — the display layout sheet. Super specifically, so an
+        // application's Ctrl+P remains Print. Once open, the sheet owns the
+        // chord itself: pressing it again moves to the next layout.
         if super_down
             && !shift_down
             && let Key::Character(s) = logical_key
@@ -12278,7 +12420,7 @@ impl ShellOverlayHost {
         {
             if !repeat {
                 let mut st = chrome.borrow_mut();
-                st.overlays.projection = !st.overlays.projection;
+                st.overlays.projection = true;
                 st.bump();
             }
             *handled = true;
@@ -13526,10 +13668,19 @@ impl ShellOverlayHost {
             && chrome.borrow().can_undo_notification_history_clear()
         {
             chrome.borrow_mut().undo_notification_history_clear();
-        } else if self.qs_notification_clear_rect().contains(p) {
+        } else if self.qs_notification_clear_rect().contains(p)
+            && !chrome.borrow().notification_history().is_empty()
+        {
             chrome.borrow_mut().clear_notification_history();
             self.qs_notification_history_start = 0;
             self.qs_notification_wheel_remainder = 0.0;
+            self.qs_notification_selected = None;
+        } else if let Some(hit) = self.qs_notification_row_hit(p) {
+            // A pointer press acts on the row without leaving a keyboard
+            // selection ring behind it.
+            self.qs_notification_selected = None;
+            self.qs_notification_row_control = None;
+            self.qs_activate_notification_row(hit.row, hit.control);
         }
     }
 
@@ -14685,7 +14836,13 @@ impl ShellOverlayHost {
                 st.bump();
             }
             RootAction::Changed(pending) => {
-                chrome.borrow_mut().bump();
+                {
+                    let mut st = chrome.borrow_mut();
+                    if let Some(on) = pending.do_not_disturb {
+                        st.set_dnd(on);
+                    }
+                    st.bump();
+                }
                 self.dispatch_quick_settings_toggle_actions(
                     pending.wifi,
                     pending.bluetooth,
@@ -15981,7 +16138,26 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
         ) {
             return None;
         }
-        match child_path {
+        if let [0, 0, row, rest @ ..] = child_path {
+            let rows = state.notification_history_rows(&host.qs_notification_collapsed);
+            let start = host.qs_notification_history_start;
+            let index = start.saturating_add(*row);
+            let identity = rows
+                .get(index)
+                .and_then(|row| row.identity(state.notification_history()));
+            drop(state);
+            let control = match rest {
+                [] => None,
+                [0] => Some(NotificationRowControl::Dismiss),
+                [1] => Some(NotificationRowControl::HandToAgent),
+                _ => return None,
+            };
+            host.qs_notification_selected = Some(identity?);
+            host.qs_notification_row_control = control;
+            host.qs_notification_action_focus = None;
+            return Some(None);
+        }
+        let focus = match child_path {
             [0, 1] if !state.notification_history().is_empty() => Some(false),
             [0, index]
                 if state.can_undo_notification_history_clear()
@@ -15995,10 +16171,17 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
                 Some(true)
             }
             _ => None,
-        }
+        };
+        focus.map(Some)
     });
-    if let Some(undo) = notification_focus {
-        host.qs_notification_action_focus = Some(undo);
+    if let Some(action) = notification_focus {
+        if let Some(undo) = action {
+            host.qs_notification_action_focus = Some(undo);
+            host.qs_notification_selected = None;
+        }
+        if let Some(chrome) = host.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
         true
     } else {
         host.chrome.as_ref().is_some_and(|chrome| {
@@ -16068,10 +16251,12 @@ impl Widget for ShellOverlayHost {
         }
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
+        self.tick_shortcut_triggers();
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
             state.expire_notification_history_clear(Instant::now());
+            state.flush_notification_history();
         }
         let mut search_index_ready = false;
         // Retained search indexes are maintained on the compositor tick,
@@ -16629,6 +16814,12 @@ impl Widget for ShellOverlayHost {
             theme.tokens.typography.scale.sm,
         );
         if let Some(chrome) = self.chrome.as_ref() {
+            // A live projection holds notification banners back so their
+            // contents never reach the room.
+            chrome.borrow_mut().set_presenting(matches!(
+                self.projection_overlay.controller().status,
+                crate::shell::projection::ProjectionStatus::Connected { .. }
+            ));
             let state = chrome.borrow();
             let available_height = (self.rect.height() - 64.0).max(1.0);
             self.qs_root
@@ -17262,7 +17453,9 @@ impl Widget for ShellOverlayHost {
                             state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Notifications
                         ) {
-                            let total = state.notification_history().len();
+                            let total = state
+                                .notification_history_rows(&self.qs_notification_collapsed)
+                                .len();
                             let visible = self.qs_notification_visible_rows();
                             let start = self.qs_notification_history_start.min(total.saturating_sub(visible));
                             let shown = visible.min(total.saturating_sub(start));
@@ -17270,7 +17463,7 @@ impl Widget for ShellOverlayHost {
                                 "No retained notifications.".to_string()
                             } else {
                                 format!(
-                                    "Showing newest notifications {} through {} of {total}. Use Up and Down to move one notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification.",
+                                    "Showing newest rows {} through {} of {total}, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.",
                                     start.saturating_add(1),
                                     start.saturating_add(shown),
                                 )
@@ -17281,25 +17474,8 @@ impl Widget for ShellOverlayHost {
                             // compositor crosses a relative-time boundary while
                             // constructing the accessibility tree.
                             let now = Instant::now();
-                            let items = state
-                                .notification_history()
-                                .iter()
-                                .rev()
-                                .skip(start)
-                                .take(shown)
-                                .enumerate()
-                                .map(|(index, notification)| {
-                                    AccessNode::new(Role::ListItem)
-                                        .with_name(notification.title.clone())
-                                        .with_description(
-                                            notification_history_accessible_description(
-                                                notification,
-                                                now,
-                                            ),
-                                        )
-                                        .with_position(index.saturating_add(1), shown)
-                                })
-                                .collect();
+                            let _ = shown;
+                            let items = self.qs_notification_accessibility_rows(now);
                             let history = AccessNode::new(Role::List)
                                 .with_name("Retained notifications")
                                 .with_children(items);
@@ -17929,6 +18105,9 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
+                AccessibleOverlay::DisplayLayouts => {
+                    root.children.push(self.projection_overlay.accessibility());
+                }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
@@ -17940,6 +18119,9 @@ impl Widget for ShellOverlayHost {
                     let essential_summary = shortcut_reference_rows(shortcuts)
                         .into_iter()
                         .map(|(label, chord)| format!("{label}: {chord}"))
+                        .chain(shortcut_action_rows(shortcuts).into_iter().map(
+                            |(label, chord)| format!("{label}: {chord}"),
+                        ))
                         .collect::<Vec<_>>()
                         .join("; ");
                     root.children.push(
@@ -18065,6 +18247,16 @@ impl Widget for ShellOverlayHost {
                     }
                     match child_path {
                         [0] => Some(self.quick_settings_rect()),
+                        [0, 0, row, rest @ ..] => {
+                            let items = self.qs_notification_accessibility_rows(Instant::now());
+                            let item = items.get(*row)?;
+                            let node = match rest {
+                                [] => item,
+                                [control] => item.children.get(*control)?,
+                                _ => return None,
+                            };
+                            node.bounds.map(ui::a11y::AccessBounds::to_rect)
+                        }
                         [0, 1] if !state.notification_history().is_empty() => {
                             Some(self.qs_notification_clear_rect())
                         }
@@ -18121,7 +18313,9 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => None,
             },
-            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
+            AccessibleOverlay::MemberSheet
+            | AccessibleOverlay::ShortcutHelp
+            | AccessibleOverlay::DisplayLayouts => None,
         }
     }
 
@@ -18161,7 +18355,8 @@ impl Widget for ShellOverlayHost {
             }
             AccessibleOverlay::Overview
             | AccessibleOverlay::MemberSheet
-            | AccessibleOverlay::ShortcutHelp => false,
+            | AccessibleOverlay::ShortcutHelp
+            | AccessibleOverlay::DisplayLayouts => false,
         }
     }
 
@@ -18328,7 +18523,8 @@ impl ShellOverlayHost {
         let follow_in_flight = self.follow_transition.is_animating(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
-        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now);
+        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
+            || self.display_identify.needs_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -19142,6 +19338,8 @@ impl ShellOverlayHost {
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+        self.display_identify
+            .draw(scene, transform, text_renderer, theme, Instant::now());
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
@@ -20317,6 +20515,18 @@ impl ShellOverlayHost {
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
+                    if let Some(summary) = shortcut_action_summary(shortcuts)
+                        && pointer_y + 40.0 < body.y1
+                    {
+                        text_renderer.draw_text(
+                            scene,
+                            &summary,
+                            theme.tokens.typography.scale.xs,
+                            colors.text_primary,
+                            transform.pre_translate((body.x0, pointer_y + 32.0).into()),
+                            Some(f64_to_f32_lossy(body.width())),
+                        );
+                    }
                     if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
                         text_renderer.draw_text(
                             scene,
@@ -20583,6 +20793,18 @@ impl ShellOverlayHost {
                     ui::chrome::SelectionState::active(selected),
                 );
             }
+        }
+        if let (Some(rect), Some(secret)) = (layout.secret, self.portal_dialogs.secret_display()) {
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                &secret,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(true),
+            );
         }
         for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
             let accelerator = row.accelerator.as_deref().map_or_else(
@@ -22641,10 +22863,12 @@ impl ShellOverlayHost {
             return;
         }
 
-        let visible_rows = layout.visible_rows(history.len());
-        let _ = self.clamp_qs_notification_history_start(history.len());
+        let rows = self.qs_notification_rows();
+        let visible_rows = layout.visible_rows(rows.len());
+        let _ = self.clamp_qs_notification_history_start(rows.len());
         let start = self.qs_notification_history_start;
-        let shown = visible_rows.min(history.len().saturating_sub(start));
+        let shown = visible_rows.min(rows.len().saturating_sub(start));
+        let selected = self.qs_notification_selected_row(&rows, &history);
 
         chip(
             scene,
@@ -22654,10 +22878,10 @@ impl ShellOverlayHost {
             colors.text_dim,
         );
 
-        let position = if history.len() > visible_rows {
+        let position = if rows.len() > visible_rows {
             let first = start.saturating_add(1);
             let last = start.saturating_add(shown);
-            format!("Newest {first}\u{2013}{last} of {}", history.len())
+            format!("Newest {first}\u{2013}{last} of {}", rows.len())
         } else {
             format!(
                 "{} notification{}",
@@ -22675,14 +22899,58 @@ impl ShellOverlayHost {
         );
 
         let now = Instant::now();
-        for (index, notification) in history
-            .iter()
-            .rev()
-            .skip(start)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let row = layout.row(index);
+        for (offset, history_row) in rows.iter().enumerate().skip(start).take(visible_rows) {
+            let row = layout.row(offset.saturating_sub(start));
+            let row_selected = selected == Some(offset);
+            let (notification, grouped) = match history_row {
+                crate::shell::notification_history::HistoryRow::Group {
+                    label,
+                    count,
+                    expanded,
+                    newest,
+                    ..
+                } => {
+                    let Some(newest) = history.get(*newest) else {
+                        continue;
+                    };
+                    ui::surface::card(
+                        scene,
+                        transform,
+                        row,
+                        qs::control_radius(theme, row),
+                        qs::control_fill(theme, cursor.is_some_and(|p| row.contains(p))),
+                    );
+                    Self::draw_qs_notification_group_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &layout,
+                        row,
+                        (label, *count, *expanded, newest),
+                    );
+                    self.draw_qs_notification_row_controls(
+                        scene,
+                        transform,
+                        theme,
+                        notification_row_controls(&layout, row, false),
+                        self.qs_notification_row_control.filter(|_| row_selected),
+                    );
+                    if row_selected && self.qs_notification_row_control.is_none() {
+                        Self::draw_qs_notification_selection(scene, transform, theme, row);
+                    }
+                    continue;
+                }
+                crate::shell::notification_history::HistoryRow::Item { index, grouped } => {
+                    let Some(notification) = history.get(*index) else {
+                        continue;
+                    };
+                    (notification, *grouped)
+                }
+            };
+            let agent = self.qs_notification_agent(notification);
+            let controls = notification_row_controls(&layout, row, agent.is_some());
+            let text_right = controls.1.unwrap_or(controls.0).x0 - qs::RELATED_GAP;
             // A history row is a resting Control surface (HIG §9.5): the
             // lift floor with its derived edge, never a ramp-slot wash.
             ui::surface::card(
@@ -22690,7 +22958,7 @@ impl ShellOverlayHost {
                 transform,
                 row,
                 qs::control_radius(theme, row),
-                qs::control_fill(theme, false),
+                qs::control_fill(theme, cursor.is_some_and(|p| row.contains(p))),
             );
             // Keep severity scannable without taking another line in the
             // fixed-height responsive card. The accessibility description
@@ -22716,9 +22984,10 @@ impl ShellOverlayHost {
             let relative_time = notification_history_relative_time(notification, now);
             let (time_width, _) = text_renderer.measure(&relative_time, caption_size, None);
             // Source/time, title, body: three measured lines on the control
-            // padding, inset `s3` like every row glyph in the panel.
-            let x = row.x0 + qs::CONTROL_INSET;
-            let inner_w = row.width() - 2.0 * qs::CONTROL_INSET;
+            // padding, inset `s3` like every row glyph in the panel. A
+            // grouped notification sits one glyph in, under its header's
+            // label, so the fold reads as a hierarchy.
+            let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
             let source_y = row.y0 + qs::CONTROL_PAD;
             text_renderer.draw_text(
                 scene,
@@ -22727,7 +22996,7 @@ impl ShellOverlayHost {
                 colors.text_dim,
                 transform.pre_translate((x, source_y).into()),
                 Some(f64_to_f32_lossy(
-                    inner_w - f64::from(time_width) - qs::RELATED_GAP,
+                    row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
                 )),
             );
             text_renderer.draw_text(
@@ -22747,7 +23016,7 @@ impl ShellOverlayHost {
                 label_size,
                 colors.text_primary,
                 transform.pre_translate((x, title_y).into()),
-                Some(f64_to_f32_lossy(inner_w)),
+                Some(f64_to_f32_lossy(text_right - x)),
                 TextWeight::Semibold,
             );
             if notification.show_preview && !notification.body.is_empty() {
@@ -22757,8 +23026,18 @@ impl ShellOverlayHost {
                     caption_size,
                     colors.text_dim,
                     transform.pre_translate((x, title_y + layout.label_lh).into()),
-                    Some(f64_to_f32_lossy(inner_w)),
+                    Some(f64_to_f32_lossy(text_right - x)),
                 );
+            }
+            self.draw_qs_notification_row_controls(
+                scene,
+                transform,
+                theme,
+                controls,
+                self.qs_notification_row_control.filter(|_| row_selected),
+            );
+            if row_selected && self.qs_notification_row_control.is_none() {
+                Self::draw_qs_notification_selection(scene, transform, theme, row);
             }
         }
 
@@ -22808,13 +23087,13 @@ impl ShellOverlayHost {
                 ),
                 None,
             );
-        } else if history.len() > visible_rows {
+        } else if rows.len() > visible_rows {
             let newer = if start > 0 {
                 "\u{2191} Newer"
             } else {
                 "At newest"
             };
-            let older = if start.saturating_add(shown) < history.len() {
+            let older = if start.saturating_add(shown) < rows.len() {
                 "\u{2193} Older"
             } else {
                 "At oldest"
@@ -25998,11 +26277,7 @@ mod overview_transition_tests {
         }
         assert_eq!(STRIP_TRAILING_GUTTER_PX, WHEEL_TO_STRIP_GAP_PX);
         let mut h = host().with_sidebar(Box::new(Container::new()));
-        h.set_output_geometry(&[OutputGeometry {
-            x: 0.0,
-            width: 1600.0,
-            height: 900.0,
-        }]);
+        h.set_output_geometry(&[OutputGeometry::unscaled(0.0, 0.0, 1600.0, 900.0)]);
 
         let spans = h.strip_output_spans();
         assert_eq!(spans.len(), 1, "one output in, one span out");
@@ -27402,7 +27677,7 @@ mod palette_dispatch_tests {
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
             "Close tab:Alt+F4  /  Super+W",
-            "Change workspace:Super+Page Up / Down",
+            "Reopen closed tab:Super+Shift+T",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
@@ -27413,7 +27688,7 @@ mod palette_dispatch_tests {
             "Lock:Super+L",
             "Quick Settings:Super+Q",
             "Workspace wheel:Super+S",
-            "Wireless display:Super+P",
+            "Display layout:Super+P",
             "Capture screenshot:Super+Shift+S",
             "Picture in picture:Super+Shift+P",
             "Save recent replay:Super+Shift+R",
@@ -27478,7 +27753,7 @@ mod palette_dispatch_tests {
             "Screenshot",
             "Switch windows",
             "Close tab",
-            "Change workspace",
+            "Reopen closed tab",
         ] {
             assert!(rows.iter().any(|(label, _)| *label == essential));
         }
@@ -32213,7 +32488,7 @@ mod tests {
     }
 
     #[test]
-    fn super_p_opens_and_toggles_the_projection_sheet() {
+    fn super_p_opens_the_display_sheet_and_escape_closes_it() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(!h.chrome.borrow().overlays.projection);
@@ -32221,14 +32496,21 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
         assert!(
             h.chrome.borrow().overlays.projection,
-            "Win+P must open the OS-owned projection sheet"
+            "Win+P must open the OS-owned display sheet"
         );
 
         assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
         assert!(
-            !h.chrome.borrow().overlays.projection,
-            "the same familiar chord closes the sheet again"
+            h.chrome.borrow().overlays.projection,
+            "pressing Win+P again moves between layouts; it does not close the sheet"
         );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.chrome.borrow().overlays.projection);
     }
 
     #[test]
@@ -34497,7 +34779,7 @@ mod resync_strips_tests {
                             state.tree_mut().native_document_tabs.insert(
                                 tab,
                                 crate::shell::state::NativeDocumentReference {
-                                    provider_id: "dev.qos.notes".into(),
+                                    provider_id: "dev.tilo.notes".into(),
                                     path: "/untouched/original.txt".into(),
                                 },
                             );

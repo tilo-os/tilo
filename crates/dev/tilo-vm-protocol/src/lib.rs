@@ -16,6 +16,7 @@
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
 pub mod client;
+pub mod display;
 pub mod input;
 pub mod manifest;
 
@@ -25,11 +26,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
-pub use input::{Button, InputAction};
+pub use display::OutputSpec;
+pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -236,6 +238,11 @@ pub struct SlotCreate {
     pub kind: SlotKind,
     #[serde(default)]
     pub owner: Owner,
+    /// Headful only: one vkms connector per output, left to right, with
+    /// this mode and scale applied through the display settings. Empty
+    /// means one connector at the compositor's default mode and scale.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,6 +577,10 @@ pub enum Action {
     ReleaseSeat {
         seat: String,
     },
+    /// The outputs' modes and scales, confirmed through the display settings.
+    SetOutputs {
+        outputs: String,
+    },
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
@@ -670,6 +681,9 @@ pub struct SlotInfo {
     /// `systemctl is-active` of the session unit (`vm` reports `n/a`).
     pub session: String,
     pub seat: Option<String>,
+    /// The outputs the slot was created with (`--outputs`), left to right.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
     /// How the running session differs from a greetd session (capabilities,
     /// `SELinux` domain); `None` when it matches or is not running.
     #[serde(default)]
@@ -1013,6 +1027,25 @@ mod tests {
     }
 
     #[test]
+    fn slot_create_carries_outputs_as_spec_strings() {
+        let request = Request::SlotCreate(SlotCreate {
+            name: "a".into(),
+            kind: SlotKind::Headful,
+            owner: Owner::default(),
+            outputs: display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
+        });
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            value["params"]["outputs"],
+            serde_json::json!(["2560x1600@2", "1920x1080@1"])
+        );
+        assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
+        // A client that sends no outputs gets the single default connector.
+        let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
+        assert!(bare.outputs.is_empty());
+    }
+
+    #[test]
     fn method_names_match_serde_tags() {
         let requests: Vec<Request> = vec![
             Hello {
@@ -1093,7 +1126,7 @@ mod tests {
               "toolchain": "rustc 1.97.1 (abc 2026-08-01)",
               "target": "x86_64-unknown-linux-gnu",
               "cargo_lock_hash": "0123abcd",
-              "base_image": "code.podesta.ai/qos/tilo:main-1a2b3c4"
+              "base_image": "registry.tilo.so/tilo/tilo:main-1a2b3c4"
             }"#,
         )
         .unwrap();

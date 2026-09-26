@@ -15,14 +15,14 @@ pub(in crate::setup) const MAX_COLLISIONS: usize = 16;
 /// 2^32-1 transitions exceed the 16,384 intervals needed for a 1-TiB component,
 /// including three attempts. Arbitrarily repeated pauses eventually refuse.
 const MAX_GENERATION: u64 = u32::MAX as u64;
-const RECORD_LEN: usize = 8 + 1 + 32 + 32 + 32 + 42 + 8 * 4 + 32 + 32;
+const RECORD_LEN: usize = 8 + 1 + 32 + 32 + 32 + 43 + 8 * 4 + 32 + 32;
 
 pub(in crate::setup) fn validate_leaf(
     selected: &SelectedManifest,
     leaf: &str,
 ) -> Result<(), String> {
-    if leaf.len() != 42
-        || !leaf.starts_with(".qos-part-")
+    if leaf.len() != 43
+        || !leaf.starts_with(".tilo-part-")
         || !leaf.as_bytes()[10..]
             .iter()
             .copied()
@@ -228,7 +228,7 @@ impl Record {
 
     fn encode(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(300);
-        b.extend_from_slice(b"QOSCP001");
+        b.extend_from_slice(b"TILOCP01");
         b.push(self.kind as u8);
         b.extend_from_slice(&self.binding);
         b.extend_from_slice(&self.ownership.parent);
@@ -246,7 +246,7 @@ impl Record {
         // Exact fixed layout rejects trailing, missing, unknown and noncanonical forms.
         if b.len() != RECORD_LEN
             || b.len() > MAX_RECORD
-            || &b[..8] != b"QOSCP001"
+            || &b[..8] != b"TILOCP01"
             || Sha256::digest(&b[..b.len() - 32])[..] != b[b.len() - 32..]
         {
             return Err("Invalid bounded checkpoint record".into());
@@ -266,7 +266,7 @@ impl Record {
         let binding = take(b, &mut offset);
         let parent = take(b, &mut offset);
         let file = take(b, &mut offset);
-        let leaf = String::from_utf8(take::<42>(b, &mut offset).to_vec())
+        let leaf = String::from_utf8(take::<43>(b, &mut offset).to_vec())
             .map_err(|_| "Invalid leaf encoding")?;
         let generation = u64::from_le_bytes(take(b, &mut offset));
         let epoch = u64::from_le_bytes(take(b, &mut offset));

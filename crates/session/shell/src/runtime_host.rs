@@ -1,4 +1,4 @@
-//! Compositor-free host of the same services used by the qOS desktop.
+//! Compositor-free host of the same services used by the Tilo desktop.
 //!
 //! This module contains lifecycle wiring only. Policy and RPC remain in the
 //! existing brokers. Keeping it in this library initially avoids copying the
@@ -24,7 +24,7 @@ pub mod mcp_process;
 mod unix;
 
 /// A single-user service session. Drop applications before dropping the session.
-/// Identity discovery uses the same environment as qOS; configure it before
+/// Identity discovery uses the same environment as Tilo; configure it before
 /// starting any threads when using an isolated profile.
 pub struct Session {
     pub broker: BrokerHandle,
@@ -137,7 +137,7 @@ impl Session {
     }
 
     /// Launch a trusted native app through the existing SDK descriptor contract.
-    /// This is a development host, not a replacement for qOS package sandboxing.
+    /// This is a development host, not a replacement for Tilo package sandboxing.
     /// # Errors
     /// Returns handshake, descriptor or process-spawn errors.
     pub fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
@@ -166,7 +166,7 @@ impl MediaHost {
     fn start(content: &Path, socket: &Path) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
-            .thread_name("qos-media")
+            .thread_name("tilo-media")
             .enable_all()
             .build()?;
         let store = std::sync::Arc::new(

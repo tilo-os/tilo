@@ -580,6 +580,8 @@ pub struct ConnectorSnapshot {
     pub enabled: bool,
     /// Physical panel size in millimetres, when the connector reports one. `None` for virtual connectors, which report 0×0.
     pub physical_mm: Option<(u32, u32)>,
+    /// What the sink's EDID says it is; `None` when it exposes none.
+    pub monitor: Option<settings_store::hardware::MonitorIdentity>,
 }
 
 /// A connector before the whole-seat topology resolves its persisted key.
@@ -624,13 +626,20 @@ pub(crate) fn resolve_connector_config_keys<'a>(
         .collect()
 }
 
+/// Whether a connector drives a panel built into the machine (a laptop or
+/// tablet screen) rather than a monitor plugged into a port.
+pub(crate) fn is_builtin_connector(connector_name: &str) -> bool {
+    let upper = connector_name.to_ascii_uppercase();
+    upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI")
+}
+
 fn connector_is_scanout_eligible(
     state: connector::State,
     interface: connector::Interface,
     has_usable_mode: bool,
 ) -> bool {
     // `Virtual` is a real scanout sink for virtual GPUs (including the
-    // Parallels display used by qOS). `Writeback` captures a CRTC rather than
+    // Parallels display used by Tilo). `Writeback` captures a CRTC rather than
     // displaying one, and `Unknown` supplies no typed evidence that it can be
     // used for scanout.
     state == connector::State::Connected && has_usable_mode && is_display_connector(interface)
@@ -763,6 +772,7 @@ impl CardHandle {
             let Some(mode) = mode else {
                 continue;
             };
+            let monitor = self.read_monitor_identity(&connector_name);
             out.push(ConnectorSnapshot {
                 connector_id: u32::from(ch),
                 handle: ch,
@@ -772,9 +782,31 @@ impl CardHandle {
                 connector_name,
                 enabled: true,
                 physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
+                monitor,
             });
         }
         out
+    }
+
+    /// The connector's EDID identity, read from its sysfs node. The kernel
+    /// refreshes that blob on every probe, so it describes the monitor on
+    /// the port now rather than the one first seen there.
+    fn read_monitor_identity(
+        &self,
+        connector_name: &str,
+    ) -> Option<settings_store::hardware::MonitorIdentity> {
+        let edid = std::fs::read(self.connector_sysfs(connector_name).join("edid")).ok()?;
+        crate::wayland::edid::parse_monitor_identity(&edid)
+    }
+
+    /// `/sys/class/drm/<cardN>-<connector>`.
+    pub fn connector_sysfs(&self, connector_name: &str) -> std::path::PathBuf {
+        let card_name = self
+            .card_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("card0");
+        Path::new("/sys/class/drm").join(format!("{card_name}-{connector_name}"))
     }
 
     /// Apply the key selected for the complete multi-card topology.  This
@@ -810,11 +842,6 @@ impl CardHandle {
     ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
         use settings_store::hardware::{DisplayOutputSnapshot, OutputDescriptor, OutputMode};
 
-        let card_name = self
-            .card_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("card0");
         let mut outputs = Vec::new();
         for snapshot in connectors {
             let connector = &snapshot.connector_name;
@@ -836,7 +863,7 @@ impl CardHandle {
                 height: u32::from(height),
                 refresh_mhz: mode_refresh_mhz(&snapshot.mode),
             };
-            let sysfs = Path::new("/sys/class/drm").join(format!("{card_name}-{connector}"));
+            let sysfs = self.connector_sysfs(connector);
             let sink_hdr = std::fs::read(sysfs.join("edid")).ok().is_some_and(|edid| {
                 crate::wayland::edid::parse_hdr_display_info(&edid)
                     .supported_transfers
@@ -849,9 +876,7 @@ impl CardHandle {
             let sink_vrr = std::fs::read_to_string(sysfs.join("vrr_capable"))
                 .ok()
                 .is_some_and(|value| value.trim() == "1");
-            let upper = connector.to_ascii_uppercase();
-            let builtin =
-                upper.starts_with("EDP") || upper.starts_with("LVDS") || upper.starts_with("DSI");
+            let builtin = is_builtin_connector(connector);
             outputs.push(DisplayOutputSnapshot {
                 descriptor: OutputDescriptor {
                     // The configuration key becomes card-qualified only for
@@ -866,6 +891,7 @@ impl CardHandle {
                     // Likewise it does not set the CRTC VRR_ENABLED property.
                     vrr: false,
                     color_profiles: profiles.keys().cloned().collect(),
+                    monitor: snapshot.monitor.clone(),
                 },
                 current_mode,
                 builtin,
@@ -921,6 +947,7 @@ impl CardHandle {
                 connector_name: snapshot.connector_name.clone(),
                 config_key: snapshot.config_key.clone(),
                 physical_mm: snapshot.physical_mm,
+                monitor: snapshot.monitor.clone(),
                 crtc,
                 scanout,
             }),
@@ -936,10 +963,18 @@ impl CardHandle {
 
     /// Bring up every connected connector (startup path); hotplug uses [`Self::bring_up`] per connector instead so already-live displays aren't re-modeset (a visible flash).
     pub fn bring_up_all(&self) -> Vec<ScanoutBuild> {
-        let config = settings_store::hardware::DisplayConfig::load_effective();
+        let connected = self.connected();
+        let set = settings_store::hardware::DisplaySet::of(connected.iter().map(|snapshot| {
+            settings_store::hardware::AttachedOutput {
+                connector: &snapshot.connector_name,
+                connector_label: &snapshot.connector_name,
+                monitor: snapshot.monitor.as_ref(),
+            }
+        }));
+        let config = settings_store::hardware::DisplayConfig::load_effective(&set);
         let mut used: Vec<crtc::Handle> = Vec::new();
         let mut builds = Vec::new();
-        for mut snapshot in self.connected() {
+        for mut snapshot in connected {
             let config_key = snapshot.connector_name.clone();
             Self::apply_output_config(&mut snapshot, config_key, &config);
             if !snapshot.enabled {
@@ -2321,6 +2356,8 @@ pub struct ScanoutBuild {
     pub config_key: String,
     /// Physical panel size in mm, when reported — the one input to scale derivation that resolution alone cannot supply (see [`super::scale`]).
     pub physical_mm: Option<(u32, u32)>,
+    /// EDID identity of the monitor on this connector, when it has one.
+    pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
     pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.
@@ -3038,6 +3075,7 @@ mod tests {
             }
             Err(error) => panic!("unexpected bridge error: {error:?}"),
         };
+        bridge.warm_renderer_for_test();
         let width = usize::try_from(WIDTH).expect("test width");
         let height = usize::try_from(HEIGHT).expect("test height");
         let pitch = width.checked_mul(4).expect("test pitch") + 16;

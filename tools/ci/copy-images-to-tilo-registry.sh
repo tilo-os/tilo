@@ -10,18 +10,16 @@
 #   OWNER_MOVES   required. Space-separated OLD:NEW owner pairs, e.g.
 #                 "<old-owner>:tilo public:tilo". Only these owners move;
 #                 several old owners may land in one new owner.
-#   SOURCE_REGISTRY   default code.podesta.ai
+#   SOURCE_REGISTRY   default code.tilo.so
 #   DEST_REGISTRY     default registry.tilo.so
 #   SOURCE_USERNAME/SOURCE_TOKEN
 #                 optional source credentials; otherwise the caller's
 #                 containers auth file is used.
-#   DEST_TOKEN    optional destination password (DEST_USERNAME, default
-#                 `oidc`). Without it, inside a Forgejo Actions job with
-#                 `enable-openid-connect: true`, a fresh ID token is fetched
-#                 for every push: registry.tilo.so accepts it as the password
-#                 of user `oidc` and grants push below tilo/ to allow-listed
-#                 source repositories. copy-images-to-tilo-registry.yml runs
-#                 this script that way.
+#   DEST_USERNAME/DEST_TOKEN
+#                 destination credentials, required to copy. In a workflow:
+#                 the actor and the job token (secrets.GITHUB_TOKEN), which
+#                 registry.tilo.so accepts for pushes below tilo/ from
+#                 allow-listed source repositories.
 #   ALL_TAGS=1    copy every tag of each referenced repository, not only the
 #                 tags and digests named in the tree. Includes cosign tags.
 #   RESIGN=1      after copying, cosign-sign each copied digest of a
@@ -31,19 +29,24 @@
 #                 as in the release workflow). Copied signatures still name
 #                 the old repository, which that policy refuses.
 #   SCAN_ROOT     default: this checkout.
+#   EXTRA_REFERENCES
+#                 optional. Space-separated $SOURCE_REGISTRY references to
+#                 copy as if this tree named them, for images that only
+#                 another repository pins (the CI runner label images are
+#                 pinned in the infra repository). The owner and
+#                 private-image rules below apply to them unchanged.
 #
 # Signature (.sig), attestation (.att) and SBOM (.sbom) tags that cosign keeps
 # next to a digest are copied with it, for an index and for each child.
 set -euo pipefail
 
-SOURCE_REGISTRY=${SOURCE_REGISTRY:-code.podesta.ai}
+SOURCE_REGISTRY=${SOURCE_REGISTRY:-code.tilo.so}
 DEST_REGISTRY=${DEST_REGISTRY:-registry.tilo.so}
 SCAN_ROOT=${SCAN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 APPLY=${APPLY:-0}
 ALL_TAGS=${ALL_TAGS:-0}
 RESIGN=${RESIGN:-0}
 : "${OWNER_MOVES:?set OWNER_MOVES to space-separated OLD:NEW owner pairs}"
-ID_TOKEN="$SCAN_ROOT/.forgejo/actions/tilo-registry-login/id-token.sh"
 
 die() { printf 'copy-images: %s\n' "$*" >&2; exit 1; }
 plan() { printf '%s\n' "$*"; }
@@ -59,8 +62,8 @@ done
 # A missing credential is the likelier operator mistake and needs no tools
 # to report, so name it first. Tools are checked in a dry run as well: a dry
 # run that passes proves the real run can start.
-if [[ $APPLY == 1 && -z ${DEST_TOKEN:-} && -z ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]]; then
-  die 'set DEST_TOKEN, or run inside a Forgejo Actions job with enable-openid-connect: true'
+if [[ $APPLY == 1 && ( -z ${DEST_TOKEN:-} || -z ${DEST_USERNAME:-} ) ]]; then
+  die 'set DEST_USERNAME and DEST_TOKEN (in a workflow: the actor and secrets.GITHUB_TOKEN)'
 fi
 required_tools=(skopeo jq)
 [[ $RESIGN != 1 ]] || required_tools+=(cosign)
@@ -72,20 +75,28 @@ name_re='[a-z0-9][a-z0-9._/-]*[a-z0-9]'
 tag_re='[A-Za-z0-9_]([A-Za-z0-9_.-]{0,126}[A-Za-z0-9_])?'
 digest_re='sha256:[0-9a-f]{64}'
 
+extra_re="^${SOURCE_REGISTRY//./\\.}/[a-z0-9][a-z0-9._-]*/${name_re}(:${tag_re})?(@${digest_re})?\$"
+for ref in ${EXTRA_REFERENCES:-}; do
+  [[ $ref =~ $extra_re ]] || die "EXTRA_REFERENCES entry is not a $SOURCE_REGISTRY image reference: $ref"
+done
+
 # Collect "<new-owner>/<name> <tag|-> <digest|->" for every reference to
 # either the old or the new location. Test fixtures and experiment records
 # name repositories that were never published, so they are not scanned.
 references() {
   local registry pattern
-  for registry in "$SOURCE_REGISTRY" "$DEST_REGISTRY"; do
-    # The trailing class drops references that continue into a shell or
-    # workflow expression ("tilo:main-${sha}"): only complete names are real.
-    pattern="${registry//./\\.}/[a-z0-9][a-z0-9._-]*/${name_re}(:${tag_re})?(@${digest_re})?([^A-Za-z0-9_.$\{/-]|\$)"
-    git -C "$SCAN_ROOT" grep -hoE "$pattern" -- . \
-        ':(exclude,glob)**/tests/**' ':(exclude,glob)**/test_*' ':(exclude,glob)**/*_test.*' \
-        ':(exclude,glob)**/*_tests.rs' ':(exclude,glob)**/tests.rs' \
-        ':(exclude,glob)experiments/**' ':(exclude)tools/ci/copy-images-to-tilo-registry.sh' || true
-  done | sed -E 's/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r ref; do
+  {
+    for registry in "$SOURCE_REGISTRY" "$DEST_REGISTRY"; do
+      # The trailing class drops references that continue into a shell or
+      # workflow expression ("tilo:main-${sha}"): only complete names are real.
+      pattern="${registry//./\\.}/[a-z0-9][a-z0-9._-]*/${name_re}(:${tag_re})?(@${digest_re})?([^A-Za-z0-9_.$\{/-]|\$)"
+      git -C "$SCAN_ROOT" grep -hoE "$pattern" -- . \
+          ':(exclude,glob)**/tests/**' ':(exclude,glob)**/test_*' ':(exclude,glob)**/*_test.*' \
+          ':(exclude,glob)**/*_tests.rs' ':(exclude,glob)**/tests.rs' \
+          ':(exclude,glob)experiments/**' ':(exclude)tools/ci/copy-images-to-tilo-registry.sh' || true
+    done
+    for ref in ${EXTRA_REFERENCES:-}; do printf '%s\n' "$ref"; done
+  } | sed -E 's/[^A-Za-z0-9_]$//' | sort -u | while IFS= read -r ref; do
     local rest=${ref#*/} owner name tag=- digest=- origin=-
     owner=${rest%%/*}
     rest=${rest#*/}
@@ -93,6 +104,10 @@ references() {
     if [[ $rest == *:* ]]; then tag=${rest##*:}; rest=${rest%:*}; fi
     name=$rest
     case $name in *.git) continue ;; esac
+    # Board images carry private firmware and stay on the forge's private
+    # registry. registry.tilo.so is anonymously readable: never copy them.
+    case $name in *lenovo*) continue ;; esac
+    [[ $name == tilo && $tag == lenovo-* ]] && continue
     if [[ $ref == "$SOURCE_REGISTRY"/* ]]; then
       [[ -n ${OWNER_NEW[$owner]:-} ]] || continue
       origin=$owner
@@ -157,7 +172,9 @@ if [[ $RESIGN == 1 ]]; then
   . "$SCAN_ROOT/os/dev/configure-cosign-kms.sh"
 fi
 
-work=$(mktemp -d "${XDG_RUNTIME_DIR:-$HOME/.cache}/copy-images.XXXXXX")
+scratch=${RUNNER_TEMP:-${XDG_RUNTIME_DIR:-$HOME/.cache}}
+mkdir -p "$scratch"
+work=$(mktemp -d "$scratch/copy-images.XXXXXX")
 trap 'rm -rf "$work" "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' EXIT
 src_creds=()
 if [[ -n ${SOURCE_TOKEN:-} ]]; then
@@ -170,12 +187,8 @@ fi
 export DOCKER_CONFIG="$work/docker"
 mkdir -p "$DOCKER_CONFIG"
 dest_login() {
-  if [[ -n ${DEST_TOKEN:-} ]]; then
-    printf '%s' "$DEST_TOKEN"
-  else
-    "$ID_TOKEN"
-  fi | skopeo login --authfile "$DOCKER_CONFIG/config.json" \
-         --username "${DEST_USERNAME:-oidc}" --password-stdin "$DEST_REGISTRY" >/dev/null
+  printf '%s' "$DEST_TOKEN" | skopeo login --authfile "$DOCKER_CONFIG/config.json" \
+    --username "$DEST_USERNAME" --password-stdin "$DEST_REGISTRY" >/dev/null
 }
 inspect_src() { skopeo inspect --raw "${src_creds[@]}" "docker://$1"; }
 inspect_dst() { skopeo inspect --raw "docker://$1"; }  # pulls are anonymous

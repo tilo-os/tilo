@@ -8,7 +8,7 @@
 #include <string_view>
 #include <utility>
 
-namespace qos {
+namespace tilo {
 inline bool ValidCredentialCounter(std::string_view value) {
   if(value.empty() || value.size()>16 || value.front()=='0')return false;
   uint64_t number=0;
@@ -18,7 +18,7 @@ inline bool ValidCredentialCounter(std::string_view value) {
 
 
 // Host-owned identity, never accepted from page JavaScript or Rust IPC.
-// origin must be canonicalized with qos::Origin from the committed CEF entry.
+// origin must be canonicalized with tilo::Origin from the committed CEF entry.
 struct CredentialIdentity {
   int browser_id = 0;
   std::string frame;
@@ -129,4 +129,4 @@ class CredentialDocument {
   std::optional<CredentialIdentity> current_;
   std::map<uint64_t, Pending> pending_;
 };
-}  // namespace qos
+}  // namespace tilo

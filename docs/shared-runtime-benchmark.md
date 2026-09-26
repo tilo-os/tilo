@@ -18,16 +18,16 @@ The runner retains `benchmark.json`, raw events, per-app frame JSONL and render
 logs under the printed evidence directory. It uses a disposable profile and
 removes private identity material after stopping the apps. Evidence includes
 the system, architecture, executable SHA-256 hashes, and debug-assertions flag.
-The shared `QOS_PROFILE_WINDOW_POSITION=x,y` hook places Photos at logical
+The shared `TILO_PROFILE_WINDOW_POSITION=x,y` hook places Photos at logical
 desktop position 20,60 and Word Processor at 840,60, each with the existing
-800×600 logical window size. `QOS_PROFILE_WINDOW_FRONT=1` asks the window manager
+800×600 logical window size. `TILO_PROFILE_WINDOW_FRONT=1` asks the window manager
 to keep benchmark windows above unrelated desktop apps for the duration of the
 run; ordinary app launches retain normal window ordering. Keep both windows visible on a sufficiently large
 desktop. Window managers may ignore placement (notably Wayland); missing
 render samples fail the run rather than silently benchmarking an occluded app.
 
-Benchmark mode also enables `QOS_PROFILE_RESOURCES=1`. The shared UI emits
-`qos-resource-stage` JSON rows for declaration generation, semantic construction,
+Benchmark mode also enables `TILO_PROFILE_RESOURCES=1`. The shared UI emits
+`tilo-resource-stage` JSON rows for declaration generation, semantic construction,
 surface validation, permission projection, bound-resource work, control refresh,
 and cache lookups. Reports group each stage by cache result, so cheap hits do
 not dilute miss costs. Generations identify resource/permission state, not frame

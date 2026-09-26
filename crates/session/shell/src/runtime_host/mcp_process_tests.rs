@@ -12,7 +12,7 @@ use std::{
 };
 
 fn isolated_root(test_name: &str) -> Option<PathBuf> {
-    if let Some(root) = std::env::var_os("QOS_MCP_PROCESS_TEST_ROOT") {
+    if let Some(root) = std::env::var_os("TILO_MCP_PROCESS_TEST_ROOT") {
         return Some(PathBuf::from(root));
     }
     let root = tempfile::tempdir().unwrap();
@@ -20,7 +20,7 @@ fn isolated_root(test_name: &str) -> Option<PathBuf> {
     let environment = root.path().join("environment");
     let status = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", test_name, "--nocapture"])
-        .env("QOS_MCP_PROCESS_TEST_ROOT", profile)
+        .env("TILO_MCP_PROCESS_TEST_ROOT", profile)
         .env("XDG_CONFIG_HOME", environment.join("config"))
         .env("XDG_DATA_HOME", environment.join("data"))
         .env("XDG_CACHE_HOME", environment.join("cache"))
@@ -151,12 +151,12 @@ fn manifest_validation_precedes_launch_and_accepts_duplicate_ids() {
     let duplicates = AppManifest {
         apps: vec![
             AppSpec {
-                id: "dev.qos.same".into(),
+                id: "dev.tilo.same".into(),
                 executable: executable.clone(),
                 args: vec![],
             },
             AppSpec {
-                id: "dev.qos.same".into(),
+                id: "dev.tilo.same".into(),
                 executable,
                 args: vec!["--help".into()],
             },
@@ -167,12 +167,12 @@ fn manifest_validation_precedes_launch_and_accepts_duplicate_ids() {
     let invalid = AppManifest {
         apps: vec![
             AppSpec {
-                id: "dev.qos.valid".into(),
+                id: "dev.tilo.valid".into(),
                 executable: std::env::current_exe().unwrap(),
                 args: vec![],
             },
             AppSpec {
-                id: "dev.qos.invalid".into(),
+                id: "dev.tilo.invalid".into(),
                 executable: PathBuf::from("relative"),
                 args: vec![],
             },
@@ -300,7 +300,7 @@ fn eof_reaps_owned_children_and_early_exit_interrupts_idle_input() {
     let pid_file = root.join("child.pid");
     let manifest = validate_manifest(AppManifest {
         apps: vec![AppSpec {
-            id: "dev.qos.synthetic".into(),
+            id: "dev.tilo.synthetic".into(),
             executable: PathBuf::from("/bin/sh"),
             args: vec![
                 "-c".into(),
@@ -330,7 +330,7 @@ fn eof_reaps_owned_children_and_early_exit_interrupts_idle_input() {
 
     let manifest = validate_manifest(AppManifest {
         apps: vec![AppSpec {
-            id: "dev.qos.failure".into(),
+            id: "dev.tilo.failure".into(),
             executable: PathBuf::from("/bin/sh"),
             args: vec!["-c".into(), "exit 17".into()],
         }],
@@ -358,7 +358,7 @@ fn output_failure_reaps_the_surviving_child_and_releases_the_profile() {
     let pid_file = root.join("surviving-child.pid");
     let manifest = validate_manifest(AppManifest {
         apps: vec![AppSpec {
-            id: "dev.qos.survivor".into(),
+            id: "dev.tilo.survivor".into(),
             executable: PathBuf::from("/bin/sh"),
             args: vec![
                 "-c".into(),
@@ -393,7 +393,7 @@ fn output_failure_reaps_the_surviving_child_and_releases_the_profile() {
 #[test]
 fn duplicate_app_ids_publish_as_distinct_normal_sdk_instances() {
     const TEST: &str = "runtime_host::mcp_process::tests::duplicate_app_ids_publish_as_distinct_normal_sdk_instances";
-    if std::env::var_os("QOS_MCP_PUBLICATION_HELPER").is_some() {
+    if std::env::var_os("TILO_MCP_PUBLICATION_HELPER").is_some() {
         let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
         loop {
@@ -412,11 +412,11 @@ fn duplicate_app_ids_publish_as_distinct_normal_sdk_instances() {
         let mut command = Command::new(&executable);
         command
             .args(["--exact", TEST, "--nocapture"])
-            .env("QOS_MCP_PUBLICATION_HELPER", "1")
+            .env("TILO_MCP_PUBLICATION_HELPER", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log));
-        children.push(session.launch("dev.qos.same", command).unwrap());
+        children.push(session.launch("dev.tilo.same", command).unwrap());
     }
     let deadline = Instant::now() + Duration::from_secs(10);
     let roots = loop {
@@ -437,6 +437,6 @@ fn duplicate_app_ids_publish_as_distinct_normal_sdk_instances() {
         let _ = child.wait();
     }
     assert_eq!(roots.len(), 2);
-    assert!(roots.iter().all(|root| root.app_id == "dev.qos.same"));
+    assert!(roots.iter().all(|root| root.app_id == "dev.tilo.same"));
     assert_ne!(roots[0].peer_id, roots[1].peer_id);
 }
