@@ -281,7 +281,13 @@ async fn bootstrap_authorized_collaborator(
 ) -> Hydrator {
     let document = tokio::time::timeout(
         Duration::from_secs(12),
-        fetch_remote_doc(endpoint, ticket.node.clone(), identity),
+        fetch_remote_doc(
+            endpoint,
+            ticket.node.clone(),
+            identity,
+            ticket.workspace_id(),
+            &None,
+        ),
     )
     .await
     .expect("authenticated collaborator bootstrap timed out")
@@ -329,7 +335,13 @@ async fn assert_revoked_collaborator_is_denied(
     assert!(
         tokio::time::timeout(
             Duration::from_secs(12),
-            fetch_remote_doc(endpoint, ticket.node.clone(), identity),
+            fetch_remote_doc(
+                endpoint,
+                ticket.node.clone(),
+                identity,
+                ticket.workspace_id(),
+                &None
+            ),
         )
         .await
         .expect("revoked collaborator namespace request timed out")
@@ -1586,9 +1598,15 @@ async fn structural_changes_propagate_both_ways() {
     let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
     let store_b = Arc::new(ContentStore::memory());
     let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-    let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-        .await
-        .unwrap();
+    let doc = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap();
     let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
     let ws_b = Workspace::join(
         ep_b.clone(),
@@ -1664,9 +1682,15 @@ async fn content_written_on_one_peer_hydrates_on_another() {
     let (ep_b, look_b, auth_b) = bind_certified_endpoint().await;
     let store_b = Arc::new(ContentStore::memory());
     let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-    let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-        .await
-        .unwrap();
+    let doc = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap();
     let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
     let _ws_b = Workspace::join(
         ep_b.clone(),
@@ -2207,9 +2231,15 @@ async fn certified_human_grant_bootstraps_from_an_owned_device() {
     .await
     .unwrap();
 
-    let document = fetch_remote_doc(&ep_b, ticket.node, &auth_b)
-        .await
-        .expect("a device certified by the granted human must bootstrap");
+    let document = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .expect("a device certified by the granted human must bootstrap");
     let joined = Namespace::from_bytes("joiner", &document).unwrap();
     assert!(joined.entry_at("human-shared").is_some());
     let connection = ep_b.connect(server.addr(), iroh_blobs::ALPN).await.unwrap();
@@ -2366,7 +2396,14 @@ async fn live_sync_rejects_a_revoked_certified_device_before_mode() {
     .await
     .unwrap();
 
-    let result = fetch_remote_doc(&ep_b, ticket.node, &auth_b).await;
+    let result = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await;
     assert!(
         result.is_err(),
         "revoked peer must receive no mode response"
@@ -2404,9 +2441,15 @@ async fn a_stranger_receives_no_namespace_document() {
     .await
     .unwrap();
 
-    let leaked = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-        .await
-        .unwrap_or_default();
+    let leaked = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap_or_default();
     assert!(
         leaked.is_empty(),
         "a peer with no grant must not be able to load the host's workspace document"
@@ -2433,9 +2476,15 @@ async fn a_subtree_reader_receives_no_monolithic_namespace_document() {
             .await
             .unwrap();
 
-    let leaked = fetch_remote_doc(&ep_b, ticket.node, &auth_b)
-        .await
-        .unwrap_or_default();
+    let leaked = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap_or_default();
     assert!(
         leaked.is_empty(),
         "a subtree reader must not receive a whole document naming private paths"
@@ -2463,9 +2512,15 @@ async fn a_read_only_peer_pulls_updates_but_cannot_author() {
     .await
     .unwrap();
 
-    let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-        .await
-        .unwrap();
+    let doc = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap();
     let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
     let store_b = Arc::new(ContentStore::memory());
     let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
@@ -2487,9 +2542,16 @@ async fn a_read_only_peer_pulls_updates_but_cannot_author() {
         .create_file(ROOT_INO, "readers-change", None, 0, 2)
         .unwrap();
     assert!(
-        sync_with_peer(&ep_b, ticket.node, &ns_b, &auth_b)
-            .await
-            .is_err(),
+        sync_with_peer(
+            &ep_b,
+            ticket.node.clone(),
+            &ns_b,
+            &auth_b,
+            ticket.workspace_id(),
+            &None
+        )
+        .await
+        .is_err(),
         "the host must close a read-only peer's bidirectional sync"
     );
     assert!(
@@ -2550,9 +2612,15 @@ async fn fresh_record_join_finishes_initial_projection_before_returning() {
     .await
     .unwrap();
 
-    let document = fetch_remote_doc(&client_ep, ticket.node.clone(), &client_identity)
-        .await
-        .unwrap();
+    let document = fetch_remote_doc(
+        &client_ep,
+        ticket.node.clone(),
+        &client_identity,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap();
     let client_services = record_services(client_temp.path());
     let client_repository = Arc::clone(&client_services.repository);
     let client_store = Arc::new(ContentStore::memory());
@@ -2966,9 +3034,15 @@ async fn root_writers_still_sync_bidirectionally() {
     .await
     .unwrap();
 
-    let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-        .await
-        .unwrap();
+    let doc = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap();
     let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
     let store_b = Arc::new(ContentStore::memory());
     let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
@@ -3086,9 +3160,15 @@ async fn an_entitled_peer_still_bootstraps_and_hydrates() {
     .await
     .unwrap();
 
-    let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-        .await
-        .expect("an entitled peer bootstraps the document");
+    let doc = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .expect("an entitled peer bootstraps the document");
     let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
     assert!(
         ns_b.lock().unwrap().entry_at("shared").is_some(),
@@ -3129,4 +3209,371 @@ async fn an_entitled_peer_still_bootstraps_and_hydrates() {
         .await
         .expect("an entitled peer hydrates content");
     assert_eq!(got.as_slice(), content, "and reads the host's real bytes");
+}
+
+// ---------------------------------------------------------------------------
+// Namespace payloads are bound to the requesting workspace.
+
+/// Another workspace's namespace: a real, valid tree, just not this one.
+fn other_workspace_namespace() -> Namespace {
+    let mut namespace = Namespace::new("other-workspace").unwrap();
+    namespace
+        .create_dir(ROOT_INO, "other-workspace-secret", 1)
+        .unwrap();
+    namespace
+}
+
+type RogueAnswer =
+    Arc<dyn Fn(&FsTransportIdentity, NamespaceRequestV1) -> NamespaceFrameV1 + Send + Sync>;
+
+/// A certified peer that answers every sync-ALPN request with whatever
+/// `answer` makes of it, whichever workspace the request names.
+#[derive(Clone)]
+struct RogueNamespaceServer {
+    endpoint: Endpoint,
+    identity: FsTransportIdentity,
+    answer: RogueAnswer,
+}
+
+impl std::fmt::Debug for RogueNamespaceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RogueNamespaceServer")
+    }
+}
+
+impl ProtocolHandler for RogueNamespaceServer {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        authenticate_connection(
+            &self.endpoint,
+            &connection,
+            &mut recv,
+            &mut send,
+            &self.identity,
+        )
+        .await
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let request = read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
+        let request: NamespaceRequestV1 = postcard::from_bytes(&request).unwrap();
+        if request.mode == NamespaceModeV1::Sync {
+            // The requester's first round.
+            let _ = read_namespace_frame(&mut recv).await;
+        }
+        write_namespace_frame(&mut send, &(self.answer)(&self.identity, request))
+            .await
+            .map_err(AcceptError::from_err)?;
+        let _ = send.finish();
+        connection.closed().await;
+        Ok(())
+    }
+}
+
+async fn rogue_namespace_server(answer: RogueAnswer) -> (Router, EndpointAddr, IdentityKey) {
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let person = identity.user_public_key();
+    let router = Router::builder(endpoint.clone())
+        .accept(
+            TILO_FS_SYNC_ALPN,
+            RogueNamespaceServer {
+                endpoint: endpoint.clone(),
+                identity,
+                answer,
+            },
+        )
+        .spawn();
+    (router, endpoint.addr(), person)
+}
+
+/// Serves `namespace`, correctly bound, as a document of `workspace`.
+fn serve_document_of(workspace: uuid::Uuid, namespace: Namespace) -> RogueAnswer {
+    let bytes = Mutex::new(namespace);
+    Arc::new(move |identity, _request| {
+        let tree = bytes.lock().unwrap().save();
+        NamespaceFrameV1::Payload(
+            identity
+                .bind_namespace(workspace, NamespacePayloadKind::Document, tree)
+                .unwrap(),
+        )
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_of_another_workspace_is_refused_although_validly_signed() {
+    let requested = uuid::Uuid::new_v4();
+    let other = uuid::Uuid::new_v4();
+    let (router, rogue, _) =
+        rogue_namespace_server(serve_document_of(other, other_workspace_namespace())).await;
+    let (ep, _lookup, identity) = bind_certified_endpoint().await;
+
+    let error = fetch_remote_doc(&ep, rogue, &identity, requested, &None)
+        .await
+        .expect_err("another workspace's tree must not be accepted");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains(&format!("belongs to workspace {other}"))
+            && text.contains(&requested.to_string()),
+        "{text}"
+    );
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_whose_bytes_are_not_the_signed_ones_is_refused() {
+    let workspace = uuid::Uuid::new_v4();
+    let (router, rogue, _) = rogue_namespace_server(Arc::new(move |identity, _| {
+        let mut signed = identity
+            .bind_namespace(
+                workspace,
+                NamespacePayloadKind::Document,
+                Namespace::new("honest").unwrap().save(),
+            )
+            .unwrap();
+        signed.bytes = other_workspace_namespace().save();
+        NamespaceFrameV1::Payload(signed)
+    }))
+    .await;
+    let (ep, _lookup, identity) = bind_certified_endpoint().await;
+
+    let error = fetch_remote_doc(&ep, rogue, &identity, workspace, &None)
+        .await
+        .expect_err("bytes other than the signed ones must not be accepted");
+    assert!(
+        format!("{error:#}").contains("do not match their signed digest"),
+        "{error:#}"
+    );
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_bound_by_another_device_than_the_peer_is_refused() {
+    let workspace = uuid::Uuid::new_v4();
+    let (router, rogue, _) = rogue_namespace_server(Arc::new(move |_, _| {
+        let elsewhere = ed25519_dalek::SigningKey::from_bytes(&[0x5a; 32]);
+        NamespaceFrameV1::Payload(
+            BoundNamespacePayloadV1::sign(
+                workspace,
+                NamespacePayloadKind::Document,
+                other_workspace_namespace().save(),
+                &elsewhere,
+            )
+            .unwrap(),
+        )
+    }))
+    .await;
+    let (ep, _lookup, identity) = bind_certified_endpoint().await;
+
+    let error = fetch_remote_doc(&ep, rogue, &identity, workspace, &None)
+        .await
+        .expect_err("a binding by another device must not be accepted");
+    assert!(
+        format!("{error:#}").contains("another device than the authenticated peer"),
+        "{error:#}"
+    );
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_signed_by_a_device_outside_the_policy_is_refused() {
+    let workspace = uuid::Uuid::new_v4();
+    let (router, rogue, rogue_person) =
+        rogue_namespace_server(serve_document_of(workspace, other_workspace_namespace())).await;
+    let (ep, _lookup, identity) = bind_certified_endpoint().await;
+    let someone_else = identity_of(iroh::SecretKey::generate().public());
+    let policy = Some(policy_granting(&[identity.user_public_key(), someone_else]));
+
+    let error = fetch_remote_doc(&ep, rogue.clone(), &identity, workspace, &policy)
+        .await
+        .expect_err("a device whose holder may not read the workspace serves no tree");
+    assert!(format!("{error:#}").contains("not authorised"), "{error:#}");
+
+    // The same bytes from a member are accepted: the refusal was the signer's.
+    let member = Some(policy_granting(&[rogue_person]));
+    fetch_remote_doc(&ep, rogue, &identity, workspace, &member)
+        .await
+        .unwrap();
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sync_message_of_another_workspace_is_refused_and_nothing_merges() {
+    let requested = uuid::Uuid::new_v4();
+    let other = uuid::Uuid::new_v4();
+    let (router, rogue, _) = rogue_namespace_server(Arc::new(move |identity, _| {
+        let message = other_workspace_namespace()
+            .sync_generate(&mut automerge::sync::State::new())
+            .unwrap();
+        NamespaceFrameV1::Payload(
+            identity
+                .bind_namespace(other, NamespacePayloadKind::SyncMessage, message)
+                .unwrap(),
+        )
+    }))
+    .await;
+    let (ep, _lookup, identity) = bind_certified_endpoint().await;
+    let namespace = Arc::new(Mutex::new(Namespace::new("requester").unwrap()));
+
+    let error = sync_with_peer(&ep, rogue, &namespace, &identity, requested, &None)
+        .await
+        .expect_err("another workspace's sync message must not be accepted");
+    assert!(
+        format!("{error:#}").contains(&format!("belongs to workspace {other}")),
+        "{error:#}"
+    );
+    assert!(
+        namespace
+            .lock()
+            .unwrap()
+            .entry_at("other-workspace-secret")
+            .is_none(),
+        "nothing of the other workspace merged"
+    );
+    router.shutdown().await.unwrap();
+}
+
+/// A device serving several workspaces answers only for the one it serves
+/// on this endpoint, and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_refuses_a_namespace_request_for_another_workspace() {
+    let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
+    let store_a = Arc::new(ContentStore::memory());
+    let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+    let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
+    ns_a.lock()
+        .unwrap()
+        .create_dir(ROOT_INO, "hosts-tree", 1)
+        .unwrap();
+    let (_ws_a, ticket) = Workspace::host(ep_a, look_a, store_a, hyd_a, ns_a, auth_a, None)
+        .await
+        .unwrap();
+    let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
+    let other = uuid::Uuid::new_v4();
+
+    let error = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b, other, &None)
+        .await
+        .expect_err("the host serves only its own workspace");
+    assert!(
+        format!("{error:#}").contains("does not serve the requested workspace"),
+        "{error:#}"
+    );
+    let namespace = Arc::new(Mutex::new(Namespace::new("B").unwrap()));
+    let error = sync_with_peer(
+        &ep_b,
+        ticket.node.clone(),
+        &namespace,
+        &auth_b,
+        other,
+        &None,
+    )
+    .await
+    .expect_err("the host syncs only its own workspace");
+    assert!(
+        format!("{error:#}").contains("does not serve the requested workspace"),
+        "{error:#}"
+    );
+    assert!(namespace.lock().unwrap().entry_at("hosts-tree").is_none());
+
+    // The right workspace is served.
+    let doc = fetch_remote_doc(
+        &ep_b,
+        ticket.node.clone(),
+        &auth_b,
+        ticket.workspace_id(),
+        &None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        Namespace::from_bytes("B", &doc)
+            .unwrap()
+            .entry_at("hosts-tree")
+            .is_some()
+    );
+}
+
+/// A read-only device's per-request pull, for a peer without the session
+/// protocol: once authenticated is not enough, the peer must be a member
+/// this device's policy lets read the whole workspace, and its document
+/// must be bound to this workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_pull_merges_only_a_members_document_of_this_workspace() {
+    let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
+    let host_person = auth_a.user_public_key();
+    let store_a = Arc::new(ContentStore::memory());
+    let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+    let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
+    ns_a.lock()
+        .unwrap()
+        .create_dir(ROOT_INO, "hosts-tree", 1)
+        .unwrap();
+    let (_ws_a, ticket) = Workspace::host(ep_a, look_a, store_a, hyd_a, ns_a.clone(), auth_a, None)
+        .await
+        .unwrap();
+    let workspace = ticket.workspace_id();
+    let (other_router, other_peer, other_person) = rogue_namespace_server(serve_document_of(
+        uuid::Uuid::new_v4(),
+        other_workspace_namespace(),
+    ))
+    .await;
+
+    let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
+    let hydrator = Hydrator::new(ep_b.clone(), Arc::new(ContentStore::memory()));
+    // The reader joined earlier; the host has changed its tree since.
+    let joined = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b, workspace, &None)
+        .await
+        .unwrap();
+    let namespace = Arc::new(Mutex::new(
+        Namespace::from_bytes("reader", &joined).unwrap(),
+    ));
+    ns_a.lock()
+        .unwrap()
+        .create_dir(ROOT_INO, "hosts-later", 2)
+        .unwrap();
+    let host_addr = ticket.node.clone();
+    let pass = |policy| {
+        let hydrator = &hydrator;
+        let namespace = &namespace;
+        let ep_b = &ep_b;
+        let auth_b = &auth_b;
+        let host_addr = &host_addr;
+        let other_peer = &other_peer;
+        async move {
+            let policy: PeerPolicy = Some(policy);
+            let pass = PeerPass {
+                endpoint: ep_b,
+                namespace,
+                hydrator,
+                sender: None,
+                identity: auth_b,
+                policy: &policy,
+                workspace_id: workspace,
+                records: None,
+                exchange_namespace: false,
+                read_only: true,
+                reconcile: crate::record_materializer::ReconcileScope::Everything,
+            };
+            (
+                pass.per_request(host_addr.clone()).await,
+                pass.per_request(other_peer.clone()).await,
+            )
+        }
+    };
+
+    // Both peers authenticate, neither is a member: nothing merges.
+    let (host_changed, other_changed) = pass(policy_granting(&[auth_b.user_public_key()])).await;
+    let has = |path: &str| namespace.lock().unwrap().entry_at(path).is_some();
+    assert!(!host_changed && !other_changed);
+    assert!(!has("hosts-later"));
+    assert!(!has("other-workspace-secret"));
+
+    // Both are members; only the document bound to this workspace merges.
+    let (host_changed, other_changed) = pass(policy_granting(&[
+        auth_b.user_public_key(),
+        host_person,
+        other_person,
+    ]))
+    .await;
+    assert!(host_changed && !other_changed);
+    assert!(has("hosts-later"));
+    assert!(!has("other-workspace-secret"));
+    other_router.shutdown().await.unwrap();
 }
