@@ -5071,7 +5071,7 @@ impl RoomActivityPane {
                         outcome.state,
                         StepState::Undone { .. } | StepState::KeptSome { .. }
                     ) {
-                        let _ = qdoc::history::commit_stamped(doc);
+                        let _ = tilo_resource::history::commit_stamped(doc);
                     }
                     outcome.state
                 })
@@ -6132,7 +6132,7 @@ impl RoomActivityPane {
                             return false;
                         }
                         ui::state::write_revert_patches(doc, &current, &target);
-                        qdoc::history::commit_stamped(doc).is_some()
+                        tilo_resource::history::commit_stamped(doc).is_some()
                     })
                     .unwrap_or(false)
             });
@@ -6225,7 +6225,7 @@ impl RoomActivityPane {
                                         return UndoApply::default();
                                     };
                                     let committed = outcome.wrote
-                                        && qdoc::history::commit_stamped(doc).is_some();
+                                        && tilo_resource::history::commit_stamped(doc).is_some();
                                     UndoApply {
                                         wrote: committed,
                                         partial: committed && !outcome.is_complete(),
@@ -8150,7 +8150,7 @@ mod tests {
                 }],
             )
             .expect("task receipt");
-            qdoc::history::commit_stamped_at(doc, 23);
+            tilo_resource::history::commit_stamped_at(doc, 23);
         });
         tree.desktop
             .room_records_held
@@ -8954,7 +8954,7 @@ mod tests {
             "Last week's window".to_string(),
             b"{}".to_vec(),
         ));
-        qdoc::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
+        tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
             .expect("the append left a transaction to stamp");
 
         tree.grant_in_workspace(
@@ -9023,7 +9023,7 @@ mod tests {
                 .unwrap();
             peer.put(&ws_entry, "name", "Bob's rename").unwrap();
         }
-        qdoc::history::commit_stamped(&mut peer).expect("the peer's edit commits");
+        tilo_resource::history::commit_stamped(&mut peer).expect("the peer's edit commits");
         let blobs: Vec<Vec<u8>> = peer
             .get_changes(&tree.doc.get_heads())
             .into_iter()
@@ -9295,13 +9295,13 @@ mod tests {
             "Plan".to_string(),
             b"{}".to_vec(),
         ));
-        qdoc::history::commit_stamped(&mut tree.doc);
+        tilo_resource::history::commit_stamped(&mut tree.doc);
         assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
             91_002,
             "Review".to_string(),
             b"{}".to_vec(),
         ));
-        qdoc::history::commit_stamped(&mut tree.doc);
+        tilo_resource::history::commit_stamped(&mut tree.doc);
         let mut pane = pane_over(&mut tree);
         assert!(pane.replay_frames.len() >= 2);
         let tab_counts: Vec<usize> = pane
@@ -9556,7 +9556,7 @@ mod tests {
         let mut peer = tree.doc.fork();
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
-        qdoc::history::commit_stamped(&mut peer);
+        tilo_resource::history::commit_stamped(&mut peer);
 
         pane.apply_name(
             &mut tree,
@@ -9601,7 +9601,7 @@ mod tests {
         let mut peer = tree.doc.fork();
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
-        qdoc::history::commit_stamped(&mut peer);
+        tilo_resource::history::commit_stamped(&mut peer);
         tree.doc.merge_incoming(&mut peer).expect("peers merge");
 
         pane.invalidate();

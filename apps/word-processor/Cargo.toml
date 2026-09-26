@@ -33,6 +33,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
+qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
