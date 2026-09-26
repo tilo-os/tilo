@@ -25,15 +25,24 @@
 //! assert_eq!(groups[0].results[0].title, "Alice Ng");
 //! ```
 
+mod body;
 mod provider;
+pub mod rank;
 mod registry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+mod tokenizer;
 
+pub use body::{BODY_CHUNK_SCALARS, BodyPiece, SearchBody, SearchBodySource};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
     DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog,
-    SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchResult,
-    SearchTextIndex, SearchTextPage, fuzzy_score, normalize_search_text,
+    SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchRecord,
+    SearchResult, SearchTextIndex, SearchTextPage, normalize_search_text,
+};
+pub use rank::{
+    FieldWeight, MatchTier, RankField, field_rank, fuzzy_score, relevance_fraction,
+    result_relevance,
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
+pub use tokenizer::{SearchTokenizer, UnicodeTokenizer, default_tokenizer, fold_search_text};

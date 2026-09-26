@@ -21,6 +21,7 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
+use ui::search::{FieldWeight, RankField};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
@@ -337,61 +338,31 @@ fn shadowed_by_a_tilo_package(
         .any(|pkg| pkg.package_id.eq_ignore_ascii_case(&app.desktop_id))
 }
 
-/// Same scale as the applications provider, one step lower at each rung so
-/// a confined Tilo app sorts first at an equal match. `Keywords=` and
-/// categories are matched too — how typing "browser" finds Firefox.
+/// Ranks lower than a Tilo app at an equal match, so a confined Tilo app
+/// sorts first.
+const HOST_APP_STEP: i32 = 5;
+
+/// The applications provider's ranking, one step lower so a confined Tilo
+/// app sorts first at an equal match. `Keywords=` and categories are matched
+/// too — how typing "browser" finds Firefox.
 fn match_score(needle: &str, name: &str, desktop_id: &str, app: &HostApp) -> Option<i32> {
-    if needle.is_empty() {
+    if needle.trim().is_empty() {
         return Some(0);
     }
-    if name.starts_with(needle) {
-        return Some(95);
-    }
-    // The full id, or its last segment — `org.gnome.TextEditor` named
-    // either way identifies exactly one application.
-    if desktop_id == needle || desktop_id.rsplit('.').next() == Some(needle) {
-        return Some(95);
-    }
-    if name.contains(needle) {
-        return Some(45);
-    }
-    if desktop_id.starts_with(needle) {
-        return Some(55);
-    }
-    if desktop_id.contains(needle) {
-        return Some(24);
-    }
-    if app
-        .keywords
-        .iter()
-        .any(|k| k.to_lowercase().contains(needle))
-    {
-        return Some(22);
-    }
-    if app
-        .categories
-        .iter()
-        .any(|c| c.to_lowercase().contains(needle))
-    {
-        return Some(19);
-    }
-    if fuzzy_subsequence(needle, name) {
-        return Some(9);
-    }
-    None
-}
-
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
+    let last_segment = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
+    let keywords = app.keywords.join(" ");
+    let categories = app.categories.join(" ");
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(name, FieldWeight::TITLE),
+            RankField::new(last_segment, FieldWeight::TITLE),
+            RankField::new(desktop_id, super::applications::PACKAGE_ID_WEIGHT),
+            RankField::new(&keywords, FieldWeight::METADATA),
+            RankField::new(&categories, FieldWeight::METADATA),
+        ],
+    )
+    .map(|rank| rank.saturating_sub(HOST_APP_STEP).max(1))
 }
 
 impl Default for HostApplicationsProvider {

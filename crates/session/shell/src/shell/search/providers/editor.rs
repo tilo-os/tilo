@@ -54,7 +54,7 @@ impl SearchProvider for EditorProvider {
     ) -> crate::shell::search::SearchProximity {
         super::text_app::proximity_of(chrome, result)
     }
-    /// A title prefix scores 110 - see [`super::text_app::match_score`].
+    /// An exact title scores the ranker maximum - see [`super::text_app::match_score`].
     fn max_score(&self) -> i32 {
         super::text_app::MAX_SCORE
     }
@@ -174,7 +174,11 @@ mod tests {
             1,
             "searching the editor's own document must find it; got {out:?}"
         );
-        assert_eq!(out[0].score, 40, "a body hit scores 40");
+        assert!(
+            out[0].score > 0 && out[0].score < 25,
+            "a body hit ranks far below a title hit, got {}",
+            out[0].score
+        );
         assert!(
             out[0]
                 .subtitle

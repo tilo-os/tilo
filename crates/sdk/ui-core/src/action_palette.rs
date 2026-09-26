@@ -38,7 +38,9 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::search::{SearchCursor, SearchGroup, SearchProvider, SearchResult, fuzzy_score};
+use crate::search::{
+    SearchCursor, SearchGroup, SearchProvider, SearchResult, fuzzy_score, result_relevance,
+};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
@@ -1717,20 +1719,19 @@ impl ActionPalette {
     }
 }
 
-/// Rank `rows` by fit against `query` and bucket by kind. Reuses the shared
-/// [`fuzzy_score`] primitive so a hit from one source is comparable to a hit
-/// from another. Caps each group so no single source floods the overlay.
+/// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
+/// [`result_relevance`] ranker so a hit from one source is comparable to a
+/// hit from another. Caps each group so no single source floods the overlay.
 fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
     /// A provider bias notch is worth this many query-match points.
     const BIAS_WEIGHT: i32 = 4;
     let key = |r: &SearchResult| -> i32 {
-        let bonus = fuzzy_score(query, &r.title)
-            .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
-            .unwrap_or(0);
-        r.score.saturating_mul(BIAS_WEIGHT).saturating_add(bonus)
+        r.score
+            .saturating_mul(BIAS_WEIGHT)
+            .saturating_add(result_relevance(query, r))
     };
     let mut ranked = rows;
-    ranked.sort_by_key(|b| std::cmp::Reverse(key(b)));
+    ranked.sort_by_cached_key(|b| std::cmp::Reverse(key(b)));
     let mut groups: Vec<SearchGroup> = Vec::new();
     for r in ranked {
         if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {

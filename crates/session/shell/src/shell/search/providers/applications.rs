@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
+use ui::search::{FieldWeight, RankField};
 
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
@@ -1101,16 +1102,19 @@ impl ApplicationsProvider {
     }
 }
 
-/// Case-insensitive, first matching band wins in the order written below:
-/// name prefix 100, id in full or last segment 100, name substring 50, id
-/// prefix 60, id substring 25, category substring 20, description 15,
-/// fuzzy subsequence on the name 10. Multi-word queries may span metadata
-/// fields, so `office spreadsheet` can find an app whose category and
-/// description carry one word each. Empty needle matches everything at 0, so an empty palette
-/// lists installed apps. Category ranks below the id because it's a bucket,
-/// not an identity. Package ids score by how completely they were named,
-/// not flat "contains" — `hex-editor` typed for `so.tilo.hex-editor` is the
-/// app's identity in full and must outrank an incidental substring.
+/// The package id in full names exactly one app, so an exact id is as
+/// strong as the name; a shared id prefix names a publisher and stays below
+/// an exact name.
+pub(crate) const PACKAGE_ID_WEIGHT: FieldWeight = FieldWeight::new(88);
+
+/// The shared ranker over an app's fields. The package id in full, or its
+/// last segment, identifies exactly one app and weighs as its name —
+/// `hex-editor` typed for `so.tilo.hex-editor` is the app's identity and must
+/// outrank an incidental substring. Category ranks below the id because it's
+/// a bucket, not an identity. Multi-word queries may span fields, so `office
+/// spreadsheet` can find an app whose category and description carry one
+/// word each. An empty needle matches everything at `0`, so an empty palette
+/// lists installed apps.
 pub(crate) fn match_score(
     needle: &str,
     name: &str,
@@ -1118,59 +1122,17 @@ pub(crate) fn match_score(
     category: Option<&str>,
     description: Option<&str>,
 ) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    if name.starts_with(needle) {
-        return Some(100);
-    }
-    // The id in full, or its last segment — both identify exactly one app.
-    if package_id == needle || package_id.rsplit('.').next() == Some(needle) {
-        return Some(100);
-    }
-    if name.contains(needle) {
-        return Some(50);
-    }
-    if package_id.starts_with(needle) {
-        return Some(60);
-    }
-    if package_id.contains(needle) {
-        return Some(25);
-    }
-    if category.is_some_and(|c| c.contains(needle)) {
-        return Some(20);
-    }
-    if description.is_some_and(|d| d.contains(needle)) {
-        return Some(15);
-    }
-    let terms: Vec<&str> = needle.split_whitespace().collect();
-    if terms.len() > 1
-        && terms.iter().all(|term| {
-            name.contains(term)
-                || package_id.contains(term)
-                || category.is_some_and(|value| value.contains(term))
-                || description.is_some_and(|value| value.contains(term))
-        })
-    {
-        return Some(15);
-    }
-    if fuzzy_subsequence(needle, name) {
-        return Some(10);
-    }
-    None
-}
-
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
+    let last_segment = package_id.rsplit('.').next().unwrap_or(package_id);
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(name, FieldWeight::TITLE),
+            RankField::new(last_segment, FieldWeight::TITLE),
+            RankField::new(package_id, PACKAGE_ID_WEIGHT),
+            RankField::new(category.unwrap_or_default(), FieldWeight::METADATA),
+            RankField::new(description.unwrap_or_default(), FieldWeight::BODY),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -1401,7 +1363,7 @@ mod tests {
         );
         assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
         assert_eq!(out[0].id, "so.tilo.sheets");
-        assert_eq!(out[0].score, 20, "category ranks below name and id matches");
+        assert_eq!(out[0].score, 34, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
             Some("Opens in rightmost space · Tilo · Office · so.tilo.sheets"),
@@ -1425,7 +1387,7 @@ mod tests {
         assert_eq!(out.len(), 2);
         let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
         assert_eq!(score("so.tilo.sysinfo"), 100, "prefix on the display name");
-        assert_eq!(score("so.tilo.monitor"), 20, "category-only match");
+        assert_eq!(score("so.tilo.monitor"), 34, "category-only match");
         assert!(score("so.tilo.sysinfo") > score("so.tilo.monitor"));
     }
 
@@ -1440,7 +1402,7 @@ mod tests {
         assert_eq!(out.len(), 1, "only the matching package: {out:?}");
         // A shared id *prefix* names a publisher, not an app, so it
         // stays below a name match.
-        assert_eq!(out[0].score, 60);
+        assert_eq!(out[0].score, 87);
         let by_name = p.results_for(
             "hello",
             vec![app("so.tilo.hello", "Hello")],
