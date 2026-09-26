@@ -79,6 +79,7 @@ members = [
     "apps/settings",
     "apps/sheets",
     "apps/slides",
+    "apps/shortcuts",
     "apps/snippets",
     "apps/store",
     "apps/terminal",
@@ -207,6 +208,7 @@ members = [
     "crates/system/content",
     "crates/system/durable-store",
     "crates/system/fs",
+    "crates/system/fs-content",
     "crates/system/fs-native",
     "crates/system/os-actions",
     "crates/system/power",
@@ -404,6 +406,11 @@ iroh-base = "1.0.3"
 # Disable unused RPC support and its platform certificate dependencies.
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
+# iroh-blobs' BAO tree and RPC layer, for the content store's file-backed
+# provider (versions follow iroh-blobs).
+bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
+irpc = { version = "0.17.0", default-features = false }
+ref-cast = "1.0.24"
 iroh-mdns-address-lookup = "0.5.0"
 # Content-defined chunking for the native data plane (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
@@ -541,6 +548,67 @@ opt-level = 3
 [profile.test.package.read-fonts]
 opt-level = 3
 [profile.test.package.swash]
+opt-level = 3
+
+# Same reason for the hot paths the tilo-ui tests profile as dominant in a debug
+# build: shader translation (naga) for every renderer, deflate and hashing for
+# large documents and PNG captures, font parsing and shaping, and QR encoding.
+# Dev and test stay identical so `cargo build` and `cargo test` share artifacts.
+[profile.dev.package.naga]
+opt-level = 3
+[profile.test.package.naga]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
+[profile.test.package.zlib-rs]
+opt-level = 3
+[profile.dev.package.harfrust]
+opt-level = 3
+[profile.test.package.harfrust]
+opt-level = 3
+[profile.dev.package.qrcode]
+opt-level = 3
+[profile.test.package.qrcode]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.test.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.test.package.fdeflate]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
+[profile.test.package.simd-adler32]
+opt-level = 3
+
+# Text shaping (cosmic-text, fontdb, slotmap and the unicode tables) dominates
+# large-document editor tests, and RSA key generation (crypto-bigint) dominates
+# the tilo-crypto tests, when built at opt-level 0.
+[profile.dev.package.cosmic-text]
+opt-level = 3
+[profile.test.package.cosmic-text]
+opt-level = 3
+[profile.dev.package.slotmap]
+opt-level = 3
+[profile.test.package.slotmap]
+opt-level = 3
+[profile.dev.package.unicode-bidi]
+opt-level = 3
+[profile.test.package.unicode-bidi]
+opt-level = 3
+[profile.dev.package.unicode-script]
+opt-level = 3
+[profile.test.package.unicode-script]
+opt-level = 3
+[profile.dev.package.unicode-linebreak]
+opt-level = 3
+[profile.test.package.unicode-linebreak]
+opt-level = 3
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+[profile.test.package.crypto-bigint]
 opt-level = 3
 
 [profile.release]

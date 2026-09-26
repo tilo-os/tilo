@@ -392,28 +392,31 @@ mod tests {
     }
 
     #[test]
-    fn modes_map_only_their_domain_entries() {
-        let mut palette = CommandPalette::new();
-        palette.set_entries(entries());
-        palette.open_commands();
-        assert_eq!(palette.active, vec![PaletteKind::Command(Command::NewFile)]);
-        palette.open_files();
-        assert_eq!(palette.active, vec![PaletteKind::File(42)]);
-    }
+    fn palette_modes_filter_entries_and_file_selection_emits_its_action() {
+        // Modes map only their domain entries.
+        {
+            let mut palette = CommandPalette::new();
+            palette.set_entries(entries());
+            palette.open_commands();
+            assert_eq!(palette.active, vec![PaletteKind::Command(Command::NewFile)]);
+            palette.open_files();
+            assert_eq!(palette.active, vec![PaletteKind::File(42)]);
+        }
 
-    #[test]
-    fn shared_selection_emits_the_file_resource_action() {
-        let mut palette = CommandPalette::new();
-        palette.set_entries(entries());
-        palette.open_files();
-        let mut state = automerge::AutoCommit::new();
-        palette
-            .shared
-            .activate_selected(&mut state, &automerge::ROOT);
-        let invocation = palette
-            .take_control_invocation()
-            .expect("native invocation");
-        assert_eq!(invocation.address.resource, "code_editor.file:42");
-        assert_eq!(invocation.address.action, "open");
+        // Shared selection emits the file resource action (fresh palette).
+        {
+            let mut palette = CommandPalette::new();
+            palette.set_entries(entries());
+            palette.open_files();
+            let mut state = automerge::AutoCommit::new();
+            palette
+                .shared
+                .activate_selected(&mut state, &automerge::ROOT);
+            let invocation = palette
+                .take_control_invocation()
+                .expect("native invocation");
+            assert_eq!(invocation.address.resource, "code_editor.file:42");
+            assert_eq!(invocation.address.action, "open");
+        }
     }
 }

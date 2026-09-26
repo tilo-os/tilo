@@ -1365,24 +1365,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mobile_ua_engages_only_below_the_breakpoint() {
-        assert!(wants_mobile(390), "phone width → mobile UA");
-        assert!(wants_mobile(MOBILE_BREAKPOINT_PX - 1));
-        assert!(
-            !wants_mobile(MOBILE_BREAKPOINT_PX),
-            "at the breakpoint → desktop"
-        );
-        assert!(!wants_mobile(1280), "desktop width → desktop UA");
-    }
-
-    #[test]
-    fn keysym_mapping_is_stable() {
-        assert_eq!(keysyms(&KeyInput::Character("a".into())), vec![0x61]);
-        assert_eq!(keysyms(&KeyInput::Character("é".into())), vec![0xE9]);
-        assert_eq!(
-            keysyms(&KeyInput::Character("€".into())),
-            vec![0x0100_0000 + 0x20AC]
-        );
-        assert_eq!(keysyms(&KeyInput::Named(NamedKey::Enter)), vec![0xff0d]);
+    fn wpe_input_mapping_is_stable_and_mobile_ua_engages_below_the_breakpoint() {
+        // phase: mobile_ua_engages_only_below_the_breakpoint
+        {
+            assert!(wants_mobile(390), "phone width → mobile UA");
+            assert!(wants_mobile(MOBILE_BREAKPOINT_PX - 1));
+            assert!(
+                !wants_mobile(MOBILE_BREAKPOINT_PX),
+                "at the breakpoint → desktop"
+            );
+            assert!(!wants_mobile(1280), "desktop width → desktop UA");
+        }
+        // phase: keysym_mapping_is_stable
+        {
+            assert_eq!(keysyms(&KeyInput::Character("a".into())), vec![0x61]);
+            assert_eq!(keysyms(&KeyInput::Character("é".into())), vec![0xE9]);
+            assert_eq!(
+                keysyms(&KeyInput::Character("€".into())),
+                vec![0x0100_0000 + 0x20AC]
+            );
+            assert_eq!(keysyms(&KeyInput::Named(NamedKey::Enter)), vec![0xff0d]);
+        }
     }
 }

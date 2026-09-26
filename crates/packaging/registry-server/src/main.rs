@@ -1506,291 +1506,303 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     #[test]
-    fn bounded_parallel_map_preserves_order_and_respects_the_bound() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let peak = Arc::new(AtomicUsize::new(0));
-        let parallelism = NonZeroUsize::new(DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM).unwrap();
-        let barrier = Arc::new(Barrier::new(parallelism.get()));
-        let inputs = (0..8).collect::<Vec<_>>();
-        let output = bounded_parallel_map(&inputs, parallelism, |value| -> Result<_, ()> {
-            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-            peak.fetch_max(current, Ordering::SeqCst);
-            barrier.wait();
-            active.fetch_sub(1, Ordering::SeqCst);
-            Ok(value * 2)
-        })
-        .unwrap();
-
-        assert_eq!(
-            output,
-            inputs.iter().map(|value| value * 2).collect::<Vec<_>>()
-        );
-        assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
-    }
-
-    #[test]
-    fn bounded_parallel_map_stops_before_the_next_batch_after_an_error() {
-        let calls = AtomicUsize::new(0);
-        let error = bounded_parallel_map(
-            &[0, 1, 2, 3, 4, 5],
-            NonZeroUsize::new(4).unwrap(),
-            |value| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                if *value == 1 {
-                    Err("rejected")
-                } else {
-                    Ok(*value)
-                }
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error, "rejected");
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-    }
-
-    #[test]
-    fn collected_artifacts_are_sorted_and_duplicate_bytes_are_safe() {
-        let storage_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(storage_dir.path()).unwrap();
-        let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
-        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-        let target = |architecture: &str| RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: architecture.into(),
-            isa: architecture.into(),
-            runtime: None,
-        };
-        let shared_bytes = b"same verified tapp".to_vec();
-        let digest = blake3::hash(&shared_bytes).to_hex().to_string();
-        let submissions = ["so.tilo.zeta", "so.tilo.alpha"]
-            .into_iter()
-            .map(|package_id| {
-                let mut entry = publisher_entry(&publisher);
-                entry.package_id = package_id.into();
-                sign_entry(&mut entry, &publisher);
-                registry_server::PendingSubmission {
-                    submission_id: package_id.into(),
-                    submitted_at_unix: 1,
-                    change: registry_types::sign_change_request(
-                        EntryAction::Add,
-                        entry,
-                        &publisher,
-                    ),
-                }
-            })
-            .collect::<Vec<_>>();
-        let persisted = Mutex::new(BTreeSet::new());
-        let staged = stage_collected_promotion(
-            &storage,
-            publisher_hex,
-            submissions,
-            NonZeroUsize::new(2).unwrap(),
-            |pending| {
-                persist_distinct_artifact(&storage, &persisted, &digest, &shared_bytes)?;
-                let architecture = if pending.submission_id.ends_with("alpha") {
-                    "aarch64"
-                } else {
-                    "x86_64"
-                };
-                Ok(vec![StagedArtifact {
-                    submission_id: pending.submission_id.clone(),
-                    version: "1.0.0".into(),
-                    target: Some(target(architecture)),
-                    blake3_hex: digest.clone(),
-                }])
-            },
-        )
-        .unwrap();
-
-        assert_eq!(
-            staged
-                .artifacts
-                .iter()
-                .map(|artifact| artifact.submission_id.as_str())
-                .collect::<Vec<_>>(),
-            ["so.tilo.alpha", "so.tilo.zeta"]
-        );
-        assert!(
-            staged
-                .artifacts
-                .iter()
-                .all(|artifact| artifact.blake3_hex == digest)
-        );
-        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
-    }
-
-    #[test]
-    fn failed_collection_leaves_written_bytes_but_no_publishable_manifest() {
-        let storage_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(storage_dir.path()).unwrap();
-        let publisher = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
-        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-        let submissions = ["so.tilo.alpha", "so.tilo.beta"]
-            .into_iter()
-            .map(|package_id| {
-                let mut entry = publisher_entry(&publisher);
-                entry.package_id = package_id.into();
-                sign_entry(&mut entry, &publisher);
-                registry_server::PendingSubmission {
-                    submission_id: package_id.into(),
-                    submitted_at_unix: 1,
-                    change: registry_types::sign_change_request(
-                        EntryAction::Add,
-                        entry,
-                        &publisher,
-                    ),
-                }
-            })
-            .collect::<Vec<_>>();
-        storage
-            .save_staged_promotion(&StagedPromotion {
-                publisher_pubkey_hex: publisher_hex.clone(),
-                collected_at_unix: 1,
-                submissions: Vec::new(),
-                artifacts: Vec::new(),
-            })
-            .unwrap();
-        let bytes = b"verified first artifact".to_vec();
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        let persisted = Mutex::new(BTreeSet::new());
-
-        let error = stage_collected_promotion(
-            &storage,
-            publisher_hex,
-            submissions,
-            NonZeroUsize::new(1).unwrap(),
-            |pending| {
-                if pending.submission_id.ends_with("beta") {
-                    anyhow::bail!("second fetch failed");
-                }
-                persist_distinct_artifact(&storage, &persisted, &digest, &bytes)?;
-                Ok(vec![StagedArtifact {
-                    submission_id: pending.submission_id.clone(),
-                    version: "1.0.0".into(),
-                    target: Some(pending.change.entry.versions[0].target.clone()),
-                    blake3_hex: digest.clone(),
-                }])
-            },
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("second fetch failed"));
-        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-
-        // A crash retry starts with a fresh in-memory digest set. Re-saving the
-        // same content-addressed bytes verifies and reuses the durable artifact.
-        persist_distinct_artifact(&storage, &Mutex::new(BTreeSet::new()), &digest, &bytes).unwrap();
-    }
-
-    #[test]
-    fn failed_collection_invalidates_an_older_staged_batch() {
-        let storage_dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(storage_dir.path()).unwrap();
-        let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
-        storage
-            .save_allowlist(&PublisherAllowlist {
-                publishers: vec![PublisherRow {
-                    pubkey_hex: publisher_hex.clone(),
-                    can_add_new: true,
-                    note: "first party".into(),
-                }],
-            })
-            .unwrap();
-        storage
-            .save_staged_promotion(&StagedPromotion {
-                publisher_pubkey_hex: publisher_hex.clone(),
-                collected_at_unix: 1,
-                submissions: Vec::new(),
-                artifacts: Vec::new(),
+    fn bounded_parallel_map_orders_bounds_and_stops_on_error() {
+        // phase: bounded_parallel_map_preserves_order_and_respects_the_bound
+        {
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let parallelism =
+                NonZeroUsize::new(DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM).unwrap();
+            let barrier = Arc::new(Barrier::new(parallelism.get()));
+            let inputs = (0..8).collect::<Vec<_>>();
+            let output = bounded_parallel_map(&inputs, parallelism, |value| -> Result<_, ()> {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(current, Ordering::SeqCst);
+                barrier.wait();
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(value * 2)
             })
             .unwrap();
 
-        let mut entry = publisher_entry(&publisher);
-        entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
-        sign_entry(&mut entry, &publisher);
-        storage
-            .save_pending(&registry_server::PendingSubmission {
-                submission_id: entry.package_id.clone(),
-                submitted_at_unix: 2,
-                change: registry_types::sign_change_request(EntryAction::Add, entry, &publisher),
-            })
-            .unwrap();
-
-        assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
-        assert!(storage.load_staged_promotion().unwrap().is_none());
-    }
-
-    #[test]
-    fn staged_artifacts_are_selected_by_version_and_target() {
-        let target = |architecture: &str, isa: &str| RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: architecture.into(),
-            isa: isa.into(),
-            runtime: None,
-        };
-        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let mut entry = publisher_entry(&key);
-        let mut arm = entry.versions[0].clone();
-        arm.target = target("aarch64", "aarch64-v8.2");
-        entry.versions.push(arm);
-        sign_entry(&mut entry, &key);
-        let pending = registry_server::PendingSubmission {
-            submission_id: entry.package_id.clone(),
-            submitted_at_unix: 1,
-            change: registry_types::sign_change_request(EntryAction::Add, entry, &key),
-        };
-        let artifacts = [
-            StagedArtifact {
-                submission_id: pending.submission_id.clone(),
-                version: "1.0.0".into(),
-                target: Some(target("x86_64", "x86_64-v3")),
-                blake3_hex: "aa".repeat(32),
-            },
-            StagedArtifact {
-                submission_id: pending.submission_id.clone(),
-                version: "1.0.0".into(),
-                target: Some(target("aarch64", "aarch64-v8.2")),
-                blake3_hex: "bb".repeat(32),
-            },
-        ];
-        for version in &pending.change.entry.versions {
-            let matches = artifacts
-                .iter()
-                .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
-                .count();
             assert_eq!(
-                matches, 1,
-                "{} must select exactly one staged artifact",
-                version.target.architecture
+                output,
+                inputs.iter().map(|value| value * 2).collect::<Vec<_>>()
             );
+            assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
         }
+        // phase: bounded_parallel_map_stops_before_the_next_batch_after_an_error
+        {
+            let calls = AtomicUsize::new(0);
+            let error = bounded_parallel_map(
+                &[0, 1, 2, 3, 4, 5],
+                NonZeroUsize::new(4).unwrap(),
+                |value| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if *value == 1 {
+                        Err("rejected")
+                    } else {
+                        Ok(*value)
+                    }
+                },
+            )
+            .unwrap_err();
 
-        let legacy = StagedArtifact {
-            submission_id: pending.submission_id.clone(),
-            version: "1.0.0".into(),
-            target: None,
-            blake3_hex: "cc".repeat(32),
-        };
-        assert!(
-            pending
-                .change
-                .entry
-                .versions
-                .iter()
-                .all(|version| !staged_artifact_matches(&legacy, &pending, version)),
-            "a target-less artifact must fail closed when a version is multi-architecture"
-        );
+            assert_eq!(error, "rejected");
+            assert_eq!(calls.load(Ordering::SeqCst), 4);
+        }
+    }
 
-        let mut single = pending;
-        single.change.entry.versions.truncate(1);
-        assert!(staged_artifact_matches(
-            &legacy,
-            &single,
-            &single.change.entry.versions[0]
-        ));
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn artifact_collection_stages_only_complete_sorted_batches() {
+        // phase: collected_artifacts_are_sorted_and_duplicate_bytes_are_safe
+        {
+            let storage_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(storage_dir.path()).unwrap();
+            let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+            let target = |architecture: &str| RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: architecture.into(),
+                isa: architecture.into(),
+                runtime: None,
+            };
+            let shared_bytes = b"same verified tapp".to_vec();
+            let digest = blake3::hash(&shared_bytes).to_hex().to_string();
+            let submissions = ["so.tilo.zeta", "so.tilo.alpha"]
+                .into_iter()
+                .map(|package_id| {
+                    let mut entry = publisher_entry(&publisher);
+                    entry.package_id = package_id.into();
+                    sign_entry(&mut entry, &publisher);
+                    registry_server::PendingSubmission {
+                        submission_id: package_id.into(),
+                        submitted_at_unix: 1,
+                        change: registry_types::sign_change_request(
+                            EntryAction::Add,
+                            entry,
+                            &publisher,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let persisted = Mutex::new(BTreeSet::new());
+            let staged = stage_collected_promotion(
+                &storage,
+                publisher_hex,
+                submissions,
+                NonZeroUsize::new(2).unwrap(),
+                |pending| {
+                    persist_distinct_artifact(&storage, &persisted, &digest, &shared_bytes)?;
+                    let architecture = if pending.submission_id.ends_with("alpha") {
+                        "aarch64"
+                    } else {
+                        "x86_64"
+                    };
+                    Ok(vec![StagedArtifact {
+                        submission_id: pending.submission_id.clone(),
+                        version: "1.0.0".into(),
+                        target: Some(target(architecture)),
+                        blake3_hex: digest.clone(),
+                    }])
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                staged
+                    .artifacts
+                    .iter()
+                    .map(|artifact| artifact.submission_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["so.tilo.alpha", "so.tilo.zeta"]
+            );
+            assert!(
+                staged
+                    .artifacts
+                    .iter()
+                    .all(|artifact| artifact.blake3_hex == digest)
+            );
+            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
+        }
+        // phase: failed_collection_leaves_written_bytes_but_no_publishable_manifest
+        {
+            let storage_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(storage_dir.path()).unwrap();
+            let publisher = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+            let submissions = ["so.tilo.alpha", "so.tilo.beta"]
+                .into_iter()
+                .map(|package_id| {
+                    let mut entry = publisher_entry(&publisher);
+                    entry.package_id = package_id.into();
+                    sign_entry(&mut entry, &publisher);
+                    registry_server::PendingSubmission {
+                        submission_id: package_id.into(),
+                        submitted_at_unix: 1,
+                        change: registry_types::sign_change_request(
+                            EntryAction::Add,
+                            entry,
+                            &publisher,
+                        ),
+                    }
+                })
+                .collect::<Vec<_>>();
+            storage
+                .save_staged_promotion(&StagedPromotion {
+                    publisher_pubkey_hex: publisher_hex.clone(),
+                    collected_at_unix: 1,
+                    submissions: Vec::new(),
+                    artifacts: Vec::new(),
+                })
+                .unwrap();
+            let bytes = b"verified first artifact".to_vec();
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            let persisted = Mutex::new(BTreeSet::new());
+
+            let error = stage_collected_promotion(
+                &storage,
+                publisher_hex,
+                submissions,
+                NonZeroUsize::new(1).unwrap(),
+                |pending| {
+                    if pending.submission_id.ends_with("beta") {
+                        anyhow::bail!("second fetch failed");
+                    }
+                    persist_distinct_artifact(&storage, &persisted, &digest, &bytes)?;
+                    Ok(vec![StagedArtifact {
+                        submission_id: pending.submission_id.clone(),
+                        version: "1.0.0".into(),
+                        target: Some(pending.change.entry.versions[0].target.clone()),
+                        blake3_hex: digest.clone(),
+                    }])
+                },
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("second fetch failed"));
+            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
+            assert!(storage.load_staged_promotion().unwrap().is_none());
+
+            // A crash retry starts with a fresh in-memory digest set. Re-saving the
+            // same content-addressed bytes verifies and reuses the durable artifact.
+            persist_distinct_artifact(&storage, &Mutex::new(BTreeSet::new()), &digest, &bytes)
+                .unwrap();
+        }
+        // phase: failed_collection_invalidates_an_older_staged_batch
+        {
+            let storage_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(storage_dir.path()).unwrap();
+            let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+            storage
+                .save_allowlist(&PublisherAllowlist {
+                    publishers: vec![PublisherRow {
+                        pubkey_hex: publisher_hex.clone(),
+                        can_add_new: true,
+                        note: "first party".into(),
+                    }],
+                })
+                .unwrap();
+            storage
+                .save_staged_promotion(&StagedPromotion {
+                    publisher_pubkey_hex: publisher_hex.clone(),
+                    collected_at_unix: 1,
+                    submissions: Vec::new(),
+                    artifacts: Vec::new(),
+                })
+                .unwrap();
+
+            let mut entry = publisher_entry(&publisher);
+            entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
+            sign_entry(&mut entry, &publisher);
+            storage
+                .save_pending(&registry_server::PendingSubmission {
+                    submission_id: entry.package_id.clone(),
+                    submitted_at_unix: 2,
+                    change: registry_types::sign_change_request(
+                        EntryAction::Add,
+                        entry,
+                        &publisher,
+                    ),
+                })
+                .unwrap();
+
+            assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
+            assert!(storage.load_staged_promotion().unwrap().is_none());
+        }
+        // phase: staged_artifacts_are_selected_by_version_and_target
+        {
+            let target = |architecture: &str, isa: &str| RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: architecture.into(),
+                isa: isa.into(),
+                runtime: None,
+            };
+            let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let mut entry = publisher_entry(&key);
+            let mut arm = entry.versions[0].clone();
+            arm.target = target("aarch64", "aarch64-v8.2");
+            entry.versions.push(arm);
+            sign_entry(&mut entry, &key);
+            let pending = registry_server::PendingSubmission {
+                submission_id: entry.package_id.clone(),
+                submitted_at_unix: 1,
+                change: registry_types::sign_change_request(EntryAction::Add, entry, &key),
+            };
+            let artifacts = [
+                StagedArtifact {
+                    submission_id: pending.submission_id.clone(),
+                    version: "1.0.0".into(),
+                    target: Some(target("x86_64", "x86_64-v3")),
+                    blake3_hex: "aa".repeat(32),
+                },
+                StagedArtifact {
+                    submission_id: pending.submission_id.clone(),
+                    version: "1.0.0".into(),
+                    target: Some(target("aarch64", "aarch64-v8.2")),
+                    blake3_hex: "bb".repeat(32),
+                },
+            ];
+            for version in &pending.change.entry.versions {
+                let matches = artifacts
+                    .iter()
+                    .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
+                    .count();
+                assert_eq!(
+                    matches, 1,
+                    "{} must select exactly one staged artifact",
+                    version.target.architecture
+                );
+            }
+
+            let legacy = StagedArtifact {
+                submission_id: pending.submission_id.clone(),
+                version: "1.0.0".into(),
+                target: None,
+                blake3_hex: "cc".repeat(32),
+            };
+            assert!(
+                pending
+                    .change
+                    .entry
+                    .versions
+                    .iter()
+                    .all(|version| !staged_artifact_matches(&legacy, &pending, version)),
+                "a target-less artifact must fail closed when a version is multi-architecture"
+            );
+
+            let mut single = pending;
+            single.change.entry.versions.truncate(1);
+            assert!(staged_artifact_matches(
+                &legacy,
+                &single,
+                &single.change.entry.versions[0]
+            ));
+        }
     }
 
     fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {

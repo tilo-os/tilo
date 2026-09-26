@@ -66,65 +66,70 @@ pub(crate) fn coalesce_regions(mut regions: Vec<Region>) -> Vec<Region> {
 mod tests {
     use super::{Region, coalesce_regions};
     #[test]
-    fn overlaps_merge_without_extra_raster_work() {
-        let result = coalesce_regions(vec![
-            Region {
-                x: 10,
-                y: 76,
-                width: 100,
-                height: 40,
-            },
-            Region {
-                x: 10,
-                y: 96,
-                width: 100,
-                height: 40,
-            },
-        ]);
-        assert_eq!(
-            result,
-            vec![Region {
-                x: 10,
-                y: 76,
-                width: 100,
-                height: 60
-            }]
-        );
-    }
-    #[test]
-    fn near_but_gapped_regions_do_not_expand_work() {
-        let result = coalesce_regions(vec![
-            Region {
-                x: 0,
-                y: 0,
-                width: 10,
-                height: 10,
-            },
-            Region {
-                x: 12,
-                y: 0,
-                width: 10,
-                height: 10,
-            },
-        ]);
-        assert_eq!(result.len(), 2);
-    }
-    #[test]
-    fn far_regions_stay_separate() {
-        let result = coalesce_regions(vec![
-            Region {
-                x: 0,
-                y: 0,
-                width: 20,
-                height: 20,
-            },
-            Region {
-                x: 3_800,
-                y: 2_000,
-                width: 20,
-                height: 20,
-            },
-        ]);
-        assert_eq!(result.len(), 2);
+    fn damage_regions_merge_only_when_that_saves_raster_work() {
+        // Case `overlaps_merge_without_extra_raster_work`.
+        {
+            let result = coalesce_regions(vec![
+                Region {
+                    x: 10,
+                    y: 76,
+                    width: 100,
+                    height: 40,
+                },
+                Region {
+                    x: 10,
+                    y: 96,
+                    width: 100,
+                    height: 40,
+                },
+            ]);
+            assert_eq!(
+                result,
+                vec![Region {
+                    x: 10,
+                    y: 76,
+                    width: 100,
+                    height: 60
+                }]
+            );
+        }
+
+        // Case `near_but_gapped_regions_do_not_expand_work`.
+        {
+            let result = coalesce_regions(vec![
+                Region {
+                    x: 0,
+                    y: 0,
+                    width: 10,
+                    height: 10,
+                },
+                Region {
+                    x: 12,
+                    y: 0,
+                    width: 10,
+                    height: 10,
+                },
+            ]);
+            assert_eq!(result.len(), 2);
+        }
+
+        // Case `far_regions_stay_separate`.
+        {
+            let result = coalesce_regions(vec![
+                Region {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 20,
+                },
+                Region {
+                    x: 3_800,
+                    y: 2_000,
+                    width: 20,
+                    height: 20,
+                },
+            ]);
+            assert_eq!(result.len(), 2);
+        }
     }
 }

@@ -235,120 +235,123 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_maps_ro_to_read_only_access() {
-        let plan = access_plan(&[PathBuf::from("/usr")], &[], FS_ABI);
-        assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].access, AccessFs::from_read(FS_ABI));
-        assert!(!plan[0].access.contains(AccessFs::WriteFile));
+    fn landlock_plans_map_ro_and_rw_rules_in_order_without_widening() {
+        // Phase `plan_maps_ro_to_read_only_access`.
+        {
+            let plan = access_plan(&[PathBuf::from("/usr")], &[], FS_ABI);
+            assert_eq!(plan.len(), 1);
+            assert_eq!(plan[0].access, AccessFs::from_read(FS_ABI));
+            assert!(!plan[0].access.contains(AccessFs::WriteFile));
+        }
+        // Phase `plan_maps_rw_to_full_access_superset`.
+        {
+            let plan = access_plan(&[PathBuf::from("/a")], &[PathBuf::from("/b")], FS_ABI);
+            let ro = plan.iter().find(|r| r.path == *"/a").unwrap().access;
+            let rw = plan.iter().find(|r| r.path == *"/b").unwrap().access;
+            assert!(rw.contains(ro), "rw is superset of ro");
+            assert_eq!(rw, AccessFs::from_all(FS_ABI));
+            assert!(rw.contains(AccessFs::MakeReg));
+        }
+        // Phase `plan_preserves_order_ro_then_rw`.
+        {
+            let plan = access_plan(
+                &[PathBuf::from("/a"), PathBuf::from("/b")],
+                &[PathBuf::from("/c")],
+                FS_ABI,
+            );
+            let paths: Vec<_> = plan.iter().map(|r| r.path.clone()).collect();
+            assert_eq!(
+                paths,
+                vec![
+                    PathBuf::from("/a"),
+                    PathBuf::from("/b"),
+                    PathBuf::from("/c")
+                ]
+            );
+        }
+        // Phase `a_newer_abi_never_widens_an_application_plan`.
+        {
+            let newer = access_plan(&[], &[PathBuf::from("/a")], ABI::V6);
+            assert_eq!(newer[0].access, AccessFs::from_all(FS_ABI));
+        }
     }
 
     #[test]
-    fn plan_maps_rw_to_full_access_superset() {
-        let plan = access_plan(&[PathBuf::from("/a")], &[PathBuf::from("/b")], FS_ABI);
-        let ro = plan.iter().find(|r| r.path == *"/a").unwrap().access;
-        let rw = plan.iter().find(|r| r.path == *"/b").unwrap().access;
-        assert!(rw.contains(ro), "rw is superset of ro");
-        assert_eq!(rw, AccessFs::from_all(FS_ABI));
-        assert!(rw.contains(AccessFs::MakeReg));
+    fn landlock_rules_request_exactly_their_rights_and_the_ruleset_is_pinned() {
+        // Phase `concrete_file_rules_never_request_directory_rights`.
+        {
+            let temp = tempfile::NamedTempFile::new().expect("temp file");
+            let fd = PathFd::new(temp.path()).expect("open temp file");
+            let access = access_for_fd(&fd, AccessFs::from_all(FS_ABI)).expect("fstat");
+            assert!(!access.contains(AccessFs::ReadDir));
+            assert!(!access.contains(AccessFs::MakeDir));
+            assert!(access.contains(AccessFs::ReadFile));
+            assert!(access.contains(AccessFs::IoctlDev));
+        }
+        // Phase `directory_rules_keep_every_requested_right`.
+        {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let fd = PathFd::new(dir.path()).expect("open temp dir");
+            let access = access_for_fd(&fd, AccessFs::from_all(FS_ABI)).expect("fstat");
+            assert_eq!(access, AccessFs::from_all(FS_ABI));
+        }
+        // Phase `the_application_ruleset_is_pinned`.
+        // Bits (landlock ABI order): Execute 1, WriteFile 2, ReadFile 4,
+        // ReadDir 8, RemoveDir 16, RemoveFile 32, MakeChar 64, MakeDir 128,
+        // MakeReg 256, MakeSock 512, MakeFifo 1024, MakeBlock 2048,
+        // MakeSym 4096, Refer 8192, Truncate 16384, IoctlDev 32768;
+        // BindTcp 1, ConnectTcp 2.
+        {
+            let rules = vec![FsRule {
+                path: PathBuf::from("/usr"),
+                access: AccessFs::from_read(FS_ABI),
+            }];
+
+            let offline = RulesetSpec::application(rules.clone(), NetRestriction::Unrestricted);
+            assert_eq!(offline.compat, CompatLevel::HardRequirement);
+            assert_eq!(offline.handled_fs.bits(), 0xffff);
+            assert!(offline.handled_net.is_empty());
+            assert!(offline.connect_ports.is_empty());
+            assert_eq!(offline.rules, rules);
+            assert!(offline.trim_file_rights);
+
+            let denied = RulesetSpec::application(rules.clone(), NetRestriction::DenyAll);
+            assert_eq!(denied.handled_net.bits(), 0b11);
+            assert!(denied.connect_ports.is_empty());
+
+            let gated = RulesetSpec::application(rules, NetRestriction::ConnectOnly(4711));
+            assert_eq!(gated.handled_net.bits(), 0b11);
+            assert_eq!(gated.connect_ports, vec![4711]);
+        }
     }
 
     #[test]
-    fn plan_preserves_order_ro_then_rw() {
-        let plan = access_plan(
-            &[PathBuf::from("/a"), PathBuf::from("/b")],
-            &[PathBuf::from("/c")],
-            FS_ABI,
-        );
-        let paths: Vec<_> = plan.iter().map(|r| r.path.clone()).collect();
-        assert_eq!(
-            paths,
-            vec![
-                PathBuf::from("/a"),
-                PathBuf::from("/b"),
-                PathBuf::from("/c")
-            ]
-        );
-    }
-
-    #[test]
-    fn a_newer_abi_never_widens_an_application_plan() {
-        let newer = access_plan(&[], &[PathBuf::from("/a")], ABI::V6);
-        assert_eq!(newer[0].access, AccessFs::from_all(FS_ABI));
-    }
-
-    #[test]
-    fn concrete_file_rules_never_request_directory_rights() {
-        let temp = tempfile::NamedTempFile::new().expect("temp file");
-        let fd = PathFd::new(temp.path()).expect("open temp file");
-        let access = access_for_fd(&fd, AccessFs::from_all(FS_ABI)).expect("fstat");
-        assert!(!access.contains(AccessFs::ReadDir));
-        assert!(!access.contains(AccessFs::MakeDir));
-        assert!(access.contains(AccessFs::ReadFile));
-        assert!(access.contains(AccessFs::IoctlDev));
-    }
-
-    #[test]
-    fn directory_rules_keep_every_requested_right() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let fd = PathFd::new(dir.path()).expect("open temp dir");
-        let access = access_for_fd(&fd, AccessFs::from_all(FS_ABI)).expect("fstat");
-        assert_eq!(access, AccessFs::from_all(FS_ABI));
-    }
-
-    // Bits (landlock ABI order): Execute 1, WriteFile 2, ReadFile 4,
-    // ReadDir 8, RemoveDir 16, RemoveFile 32, MakeChar 64, MakeDir 128,
-    // MakeReg 256, MakeSock 512, MakeFifo 1024, MakeBlock 2048,
-    // MakeSym 4096, Refer 8192, Truncate 16384, IoctlDev 32768;
-    // BindTcp 1, ConnectTcp 2.
-    #[test]
-    fn the_application_ruleset_is_pinned() {
-        let rules = vec![FsRule {
-            path: PathBuf::from("/usr"),
-            access: AccessFs::from_read(FS_ABI),
-        }];
-
-        let offline = RulesetSpec::application(rules.clone(), NetRestriction::Unrestricted);
-        assert_eq!(offline.compat, CompatLevel::HardRequirement);
-        assert_eq!(offline.handled_fs.bits(), 0xffff);
-        assert!(offline.handled_net.is_empty());
-        assert!(offline.connect_ports.is_empty());
-        assert_eq!(offline.rules, rules);
-        assert!(offline.trim_file_rights);
-
-        let denied = RulesetSpec::application(rules.clone(), NetRestriction::DenyAll);
-        assert_eq!(denied.handled_net.bits(), 0b11);
-        assert!(denied.connect_ports.is_empty());
-
-        let gated = RulesetSpec::application(rules, NetRestriction::ConnectOnly(4711));
-        assert_eq!(gated.handled_net.bits(), 0b11);
-        assert_eq!(gated.connect_ports, vec![4711]);
-    }
-
-    #[test]
-    fn outcome_mapping_covers_all_ruleset_statuses() {
-        assert_eq!(
-            outcome_from_status(&RulesetStatus::FullyEnforced),
-            LandlockOutcome::FullyEnforced
-        );
-        assert_eq!(
-            outcome_from_status(&RulesetStatus::PartiallyEnforced),
-            LandlockOutcome::PartiallyEnforced
-        );
-        assert_eq!(
-            outcome_from_status(&RulesetStatus::NotEnforced),
-            LandlockOutcome::NotEnforced
-        );
-    }
-
-    #[test]
-    fn outcomes_short_of_full_enforcement_say_so() {
-        assert!(LandlockOutcome::NotEnforced.describe().contains("NOT"));
-        assert!(LandlockOutcome::Errored.describe().contains("failed"));
-        assert!(
-            LandlockOutcome::PartiallyEnforced
-                .describe()
-                .contains("partially")
-        );
+    fn landlock_outcomes_cover_every_status_and_report_partial_enforcement() {
+        // Phase `outcome_mapping_covers_all_ruleset_statuses`.
+        {
+            assert_eq!(
+                outcome_from_status(&RulesetStatus::FullyEnforced),
+                LandlockOutcome::FullyEnforced
+            );
+            assert_eq!(
+                outcome_from_status(&RulesetStatus::PartiallyEnforced),
+                LandlockOutcome::PartiallyEnforced
+            );
+            assert_eq!(
+                outcome_from_status(&RulesetStatus::NotEnforced),
+                LandlockOutcome::NotEnforced
+            );
+        }
+        // Phase `outcomes_short_of_full_enforcement_say_so`.
+        {
+            assert!(LandlockOutcome::NotEnforced.describe().contains("NOT"));
+            assert!(LandlockOutcome::Errored.describe().contains("failed"));
+            assert!(
+                LandlockOutcome::PartiallyEnforced
+                    .describe()
+                    .contains("partially")
+            );
+        }
     }
 
     /// Live-kernel enforcement: a forked child installs an application

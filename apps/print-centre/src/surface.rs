@@ -3521,363 +3521,416 @@ mod tests {
     }
 
     #[test]
-    fn scenarios_build() {
-        for s in [
-            DemoScenario::Dashboard,
-            DemoScenario::Active,
-            DemoScenario::Attention,
-            DemoScenario::Empty,
-            DemoScenario::PrintSetup,
-            DemoScenario::ScanSetup,
-            DemoScenario::ScanResult,
-            DemoScenario::History,
-            DemoScenario::Diagnostics,
-            DemoScenario::ServiceError,
-        ] {
-            assert_eq!(PrintCentre::demo(s).name(), "PrintCentre");
-        }
-    }
-
-    #[test]
-    fn resource_surface_exposes_real_navigation_and_device_operations() {
-        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
-        centre.snapshot = Some(demo_snapshot());
-        let doc = AutoCommit::new();
-        let resources = centre.resources(&doc);
-        let root = resources.first().expect("Print Centre root resource");
-        let action_ids = root
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect::<Vec<_>>();
-        for expected in [
-            "refresh",
-            "open-queue",
-            "open-history",
-            "run-diagnostics",
-            "find-printers",
-            "print-document",
-            "scan-document",
-        ] {
-            assert!(action_ids.contains(&expected), "missing {expected} action");
-        }
-        assert!(
-            root.children
-                .iter()
-                .any(|resource| resource.kind == "print-centre.printer"),
-            "configured queues are first-class resources"
-        );
-        assert!(
-            root.children
-                .iter()
-                .any(|resource| resource.kind == "print-centre.job"),
-            "recent documents are first-class resources"
-        );
-        assert!(
-            root.children
-                .iter()
-                .any(|resource| resource.kind == "print-centre.scanner"),
-            "available scanners are first-class resources"
-        );
-
-        let payload = serde_json::to_vec("queue").expect("operation payload");
-        assert!(
-            centre
-                .invoke_resource_operation(
-                    OperationKind::View,
-                    PRINT_CENTRE_OPERATION,
-                    &payload,
-                    &doc,
-                    &ROOT,
-                )
-                .expect("queue view operation")
-        );
-    }
-
-    #[test]
-    fn backend_failures_remain_distinct_from_legitimate_empty_results() {
-        let unavailable = Snapshot {
-            queues: Err("cups socket closed".into()),
-            jobs: Err("jobs timed out".into()),
-            scanners: Err("scanner service missing".into()),
-        };
-        assert_eq!(
-            failed_areas(&unavailable, true, true, true),
-            vec!["printers", "documents", "scanners"]
-        );
-
-        let empty = Snapshot {
-            queues: Ok(Vec::new()),
-            jobs: Ok(Vec::new()),
-            scanners: Ok(Vec::new()),
-        };
-        assert!(failed_areas(&empty, true, true, true).is_empty());
-        let (tx, _rx) = mpsc::channel();
-        assert!(unavailable_card(&failed_areas(&unavailable, true, true, true), &tx).is_some());
-        assert!(unavailable_card(&failed_areas(&empty, true, true, true), &tx).is_none());
-    }
-
-    #[test]
-    fn scan_review_actions_wrap_inside_phone_viewports() {
-        fn inspect(widget: &ui::headless::InspectionNode, width: f64, buttons: &mut usize) {
-            let [x, y, w, h] = widget.rect;
-            let rect = Rect::new(x, y, x + w, y + h);
-            if widget.widget == "Button" && rect.area() > 0.0 {
-                *buttons += 1;
-                assert!(rect.width() >= 44.0, "button is too narrow: {rect:?}");
-                assert!(rect.height() >= 44.0, "button is too short: {rect:?}");
-                assert!(rect.x0 >= -0.5, "button escaped left edge: {rect:?}");
-                assert!(
-                    rect.x1 <= width + 0.5,
-                    "button escaped {width}px phone viewport: {rect:?}"
-                );
-            }
-            for child in &widget.children {
-                inspect(child, width, buttons);
+    fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
+        eprintln!("phase scenarios_build");
+        {
+            for s in [
+                DemoScenario::Dashboard,
+                DemoScenario::Active,
+                DemoScenario::Attention,
+                DemoScenario::Empty,
+                DemoScenario::PrintSetup,
+                DemoScenario::ScanSetup,
+                DemoScenario::ScanResult,
+                DemoScenario::History,
+                DemoScenario::Diagnostics,
+                DemoScenario::ServiceError,
+            ] {
+                assert_eq!(PrintCentre::demo(s).name(), "PrintCentre");
             }
         }
 
-        for width in [360_u32, 390] {
-            let centre = ui::headless::Driver::new(
-                ui::State::new(),
-                Box::new(PrintCentre::demo(DemoScenario::ScanResult)),
-                (width, 760),
+        eprintln!("phase resource_surface_exposes_real_navigation_and_device_operations");
+        {
+            let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+            centre.snapshot = Some(demo_snapshot());
+            let doc = AutoCommit::new();
+            let resources = centre.resources(&doc);
+            let root = resources.first().expect("Print Centre root resource");
+            let action_ids = root
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>();
+            for expected in [
+                "refresh",
+                "open-queue",
+                "open-history",
+                "run-diagnostics",
+                "find-printers",
+                "print-document",
+                "scan-document",
+            ] {
+                assert!(action_ids.contains(&expected), "missing {expected} action");
+            }
+            assert!(
+                root.children
+                    .iter()
+                    .any(|resource| resource.kind == "print-centre.printer"),
+                "configured queues are first-class resources"
             );
-            let mut buttons = 0;
-            inspect(&centre.inspection().root, f64::from(width), &mut buttons);
-            assert!(buttons >= 8, "expected the complete scan-review action set");
-        }
-    }
-
-    #[test]
-    fn print_setup_footer_stays_visible_and_touch_sized_on_phones() {
-        fn collect_buttons(widget: &ui::headless::InspectionNode, buttons: &mut Vec<Rect>) {
-            let [x, y, w, h] = widget.rect;
-            let rect = Rect::new(x, y, x + w, y + h);
-            if widget.widget == "Button" && rect.area() > 0.0 {
-                buttons.push(rect);
-            }
-            for child in &widget.children {
-                collect_buttons(child, buttons);
-            }
-        }
-
-        for width in [360_u32, 520] {
-            let height = 820_u32;
-            let centre = ui::headless::Driver::new(
-                ui::State::new(),
-                Box::new(PrintCentre::demo(DemoScenario::PrintSetup)),
-                (width, height),
+            assert!(
+                root.children
+                    .iter()
+                    .any(|resource| resource.kind == "print-centre.job"),
+                "recent documents are first-class resources"
             );
-            let snapshot = centre.inspection();
+            assert!(
+                root.children
+                    .iter()
+                    .any(|resource| resource.kind == "print-centre.scanner"),
+                "available scanners are first-class resources"
+            );
 
-            let mut buttons = Vec::new();
-            collect_buttons(&snapshot.root, &mut buttons);
-            buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
-            let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
+            let payload = serde_json::to_vec("queue").expect("operation payload");
+            assert!(
+                centre
+                    .invoke_resource_operation(
+                        OperationKind::View,
+                        PRINT_CENTRE_OPERATION,
+                        &payload,
+                        &doc,
+                        &ROOT,
+                    )
+                    .expect("queue view operation")
+            );
+        }
+
+        eprintln!("phase backend_failures_remain_distinct_from_legitimate_empty_results");
+        {
+            let unavailable = Snapshot {
+                queues: Err("cups socket closed".into()),
+                jobs: Err("jobs timed out".into()),
+                scanners: Err("scanner service missing".into()),
+            };
             assert_eq!(
-                footer_buttons.len(),
-                2,
-                "Cancel and Print must stay visible; buttons were {buttons:?}"
+                failed_areas(&unavailable, true, true, true),
+                vec!["printers", "documents", "scanners"]
             );
-            let root_bottom = snapshot.root.rect[1] + snapshot.root.rect[3];
-            for rect in footer_buttons {
-                assert!(
-                    rect.width() >= 44.0,
-                    "footer button is too narrow: {rect:?}"
-                );
-                assert!(
-                    rect.height() >= 44.0,
-                    "footer button is too short: {rect:?}"
-                );
-                assert!(
-                    rect.x0 >= 0.0 && rect.x1 <= f64::from(width),
-                    "button escaped viewport: {rect:?}"
-                );
-                assert!(
-                    rect.y1 <= root_bottom,
-                    "button fell below compact layout: {rect:?}"
-                );
-            }
+
+            let empty = Snapshot {
+                queues: Ok(Vec::new()),
+                jobs: Ok(Vec::new()),
+                scanners: Ok(Vec::new()),
+            };
+            assert!(failed_areas(&empty, true, true, true).is_empty());
+            let (tx, _rx) = mpsc::channel();
+            assert!(unavailable_card(&failed_areas(&unavailable, true, true, true), &tx).is_some());
+            assert!(unavailable_card(&failed_areas(&empty, true, true, true), &tx).is_none());
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn dashboard_cards_and_actions_stay_measured_at_large_text_scales() {
-        fn rect_for(widget: &ui::headless::InspectionNode, id: &str) -> Option<Rect> {
-            if widget.test_id.as_deref() == Some(id) {
-                let [x, y, width, height] = widget.rect;
-                return Some(Rect::new(x, y, x + width, y + height));
-            }
-            widget.children.iter().find_map(|child| rect_for(child, id))
-        }
-
-        fn collect_cards(widget: &ui::headless::InspectionNode, cards: &mut Vec<Rect>) {
-            let [x, y, width, height] = widget.rect;
-            if widget.widget == "DashboardCard" && width > 0.0 && height > 0.0 {
-                cards.push(Rect::new(x, y, x + width, y + height));
-            }
-            for child in &widget.children {
-                collect_cards(child, cards);
-            }
-        }
-
-        let ids = [
-            "print-centre.add",
-            "print-centre.print",
-            "print-centre.queue",
-            "print-centre.job.cancel",
-            "print-centre.refresh",
-            "print-centre.device.open.Studio_printer",
-            "print-centre.scan.open",
-            "print-centre.history.open",
-            "print-centre.diagnostics.open",
-        ];
-        for text_scale in [1.0, 2.0] {
-            let centre = ui::headless::Driver::new_with_theme(
-                ui::State::new(),
-                Box::new(PrintCentre::demo(DemoScenario::Active)),
-                (1440, 900),
-                Theme::dark().with_text_scale(text_scale),
-            );
-            let snapshot = centre.inspection();
-            let root = &snapshot.root;
-            let controls = ids.map(|id| {
-                let rect = rect_for(root, id).unwrap_or_else(|| panic!("missing {id}"));
-                assert!(
-                    rect.x0 >= -0.5 && rect.x1 <= 1440.5,
-                    "{id} escaped the viewport at {text_scale}x text: {rect:?}"
-                );
-                assert!(
-                    rect.width() >= 44.0 && rect.height() >= 44.0,
-                    "{id} lost its touch target at {text_scale}x text: {rect:?}"
-                );
-                rect
-            });
-            assert!(
-                controls[1].y1 <= 900.5,
-                "the primary Print action must remain in the captured viewport: {:?}",
-                controls[1]
-            );
-
-            for (index, pair) in controls[3..].windows(2).enumerate() {
-                let (before, after) = (pair[0], pair[1]);
-                assert!(
-                    before.y1 + 16.0 <= after.y0,
-                    "{} and {} overlap at {text_scale}x text: {before:?} {after:?}",
-                    ids[index + 3],
-                    ids[index + 4],
-                );
-            }
-
-            let mut cards = Vec::new();
-            collect_cards(root, &mut cards);
-            assert!(
-                cards.len() >= 5,
-                "expected active, printer, scan, and utility cards"
-            );
-            for (index, card) in cards.iter().enumerate() {
-                assert!(
-                    card.x0 >= -0.5 && card.x1 <= 1440.5,
-                    "card {index} escaped the viewport at {text_scale}x text: {card:?}"
-                );
-                for other in cards.iter().skip(index + 1) {
-                    let overlaps = card.x0 < other.x1
-                        && other.x0 < card.x1
-                        && card.y0 < other.y1
-                        && other.y0 < card.y1;
+    fn phone_and_large_text_layouts_keep_actions_visible_and_measured() {
+        eprintln!("phase scan_review_actions_wrap_inside_phone_viewports");
+        {
+            fn inspect(widget: &ui::headless::InspectionNode, width: f64, buttons: &mut usize) {
+                let [x, y, w, h] = widget.rect;
+                let rect = Rect::new(x, y, x + w, y + h);
+                if widget.widget == "Button" && rect.area() > 0.0 {
+                    *buttons += 1;
+                    assert!(rect.width() >= 44.0, "button is too narrow: {rect:?}");
+                    assert!(rect.height() >= 44.0, "button is too short: {rect:?}");
+                    assert!(rect.x0 >= -0.5, "button escaped left edge: {rect:?}");
                     assert!(
-                        !overlaps,
-                        "measured dashboard cards overlap at {text_scale}x text: {card:?} {other:?}"
+                        rect.x1 <= width + 0.5,
+                        "button escaped {width}px phone viewport: {rect:?}"
                     );
+                }
+                for child in &widget.children {
+                    inspect(child, width, buttons);
+                }
+            }
+
+            for width in [360_u32, 390] {
+                let centre = ui::headless::Driver::new(
+                    ui::State::new(),
+                    Box::new(PrintCentre::demo(DemoScenario::ScanResult)),
+                    (width, 760),
+                );
+                let mut buttons = 0;
+                inspect(&centre.inspection().root, f64::from(width), &mut buttons);
+                assert!(buttons >= 8, "expected the complete scan-review action set");
+            }
+        }
+
+        eprintln!("phase print_setup_footer_stays_visible_and_touch_sized_on_phones");
+        {
+            fn collect_buttons(widget: &ui::headless::InspectionNode, buttons: &mut Vec<Rect>) {
+                let [x, y, w, h] = widget.rect;
+                let rect = Rect::new(x, y, x + w, y + h);
+                if widget.widget == "Button" && rect.area() > 0.0 {
+                    buttons.push(rect);
+                }
+                for child in &widget.children {
+                    collect_buttons(child, buttons);
+                }
+            }
+
+            for width in [360_u32, 520] {
+                let height = 820_u32;
+                let centre = ui::headless::Driver::new(
+                    ui::State::new(),
+                    Box::new(PrintCentre::demo(DemoScenario::PrintSetup)),
+                    (width, height),
+                );
+                let snapshot = centre.inspection();
+
+                let mut buttons = Vec::new();
+                collect_buttons(&snapshot.root, &mut buttons);
+                buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
+                let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
+                assert_eq!(
+                    footer_buttons.len(),
+                    2,
+                    "Cancel and Print must stay visible; buttons were {buttons:?}"
+                );
+                let root_bottom = snapshot.root.rect[1] + snapshot.root.rect[3];
+                for rect in footer_buttons {
+                    assert!(
+                        rect.width() >= 44.0,
+                        "footer button is too narrow: {rect:?}"
+                    );
+                    assert!(
+                        rect.height() >= 44.0,
+                        "footer button is too short: {rect:?}"
+                    );
+                    assert!(
+                        rect.x0 >= 0.0 && rect.x1 <= f64::from(width),
+                        "button escaped viewport: {rect:?}"
+                    );
+                    assert!(
+                        rect.y1 <= root_bottom,
+                        "button fell below compact layout: {rect:?}"
+                    );
+                }
+            }
+        }
+
+        eprintln!("phase dashboard_cards_and_actions_stay_measured_at_large_text_scales");
+        {
+            fn rect_for(widget: &ui::headless::InspectionNode, id: &str) -> Option<Rect> {
+                if widget.test_id.as_deref() == Some(id) {
+                    let [x, y, width, height] = widget.rect;
+                    return Some(Rect::new(x, y, x + width, y + height));
+                }
+                widget.children.iter().find_map(|child| rect_for(child, id))
+            }
+
+            fn collect_cards(widget: &ui::headless::InspectionNode, cards: &mut Vec<Rect>) {
+                let [x, y, width, height] = widget.rect;
+                if widget.widget == "DashboardCard" && width > 0.0 && height > 0.0 {
+                    cards.push(Rect::new(x, y, x + width, y + height));
+                }
+                for child in &widget.children {
+                    collect_cards(child, cards);
+                }
+            }
+
+            let ids = [
+                "print-centre.add",
+                "print-centre.print",
+                "print-centre.queue",
+                "print-centre.job.cancel",
+                "print-centre.refresh",
+                "print-centre.device.open.Studio_printer",
+                "print-centre.scan.open",
+                "print-centre.history.open",
+                "print-centre.diagnostics.open",
+            ];
+            for text_scale in [1.0, 2.0] {
+                let centre = ui::headless::Driver::new_with_theme(
+                    ui::State::new(),
+                    Box::new(PrintCentre::demo(DemoScenario::Active)),
+                    (1440, 900),
+                    Theme::dark().with_text_scale(text_scale),
+                );
+                let snapshot = centre.inspection();
+                let root = &snapshot.root;
+                let controls = ids.map(|id| {
+                    let rect = rect_for(root, id).unwrap_or_else(|| panic!("missing {id}"));
+                    assert!(
+                        rect.x0 >= -0.5 && rect.x1 <= 1440.5,
+                        "{id} escaped the viewport at {text_scale}x text: {rect:?}"
+                    );
+                    assert!(
+                        rect.width() >= 44.0 && rect.height() >= 44.0,
+                        "{id} lost its touch target at {text_scale}x text: {rect:?}"
+                    );
+                    rect
+                });
+                assert!(
+                    controls[1].y1 <= 900.5,
+                    "the primary Print action must remain in the captured viewport: {:?}",
+                    controls[1]
+                );
+
+                for (index, pair) in controls[3..].windows(2).enumerate() {
+                    let (before, after) = (pair[0], pair[1]);
+                    assert!(
+                        before.y1 + 16.0 <= after.y0,
+                        "{} and {} overlap at {text_scale}x text: {before:?} {after:?}",
+                        ids[index + 3],
+                        ids[index + 4],
+                    );
+                }
+
+                let mut cards = Vec::new();
+                collect_cards(root, &mut cards);
+                assert!(
+                    cards.len() >= 5,
+                    "expected active, printer, scan, and utility cards"
+                );
+                for (index, card) in cards.iter().enumerate() {
+                    assert!(
+                        card.x0 >= -0.5 && card.x1 <= 1440.5,
+                        "card {index} escaped the viewport at {text_scale}x text: {card:?}"
+                    );
+                    for other in cards.iter().skip(index + 1) {
+                        let overlaps = card.x0 < other.x1
+                            && other.x0 < card.x1
+                            && card.y0 < other.y1
+                            && other.y0 < card.y1;
+                        assert!(
+                            !overlaps,
+                            "measured dashboard cards overlap at {text_scale}x text: {card:?} {other:?}"
+                        );
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn backend_states_are_translated_to_people_facing_copy() {
-        use os_actions::printing::QueueState;
-        assert_eq!(
-            friendly_queue_state(&queue(QueueState::Ready, true)),
-            "Ready"
-        );
-        assert_eq!(
-            friendly_queue_state(&queue(QueueState::Ready, false)),
-            "Not accepting new documents"
-        );
-        assert_eq!(
-            friendly_queue_state(&queue(QueueState::Offline, true)),
-            "Cannot reach this printer"
-        );
+    fn backend_telemetry_is_humanized_and_never_invented() {
+        eprintln!("phase backend_states_are_translated_to_people_facing_copy");
+        {
+            use os_actions::printing::QueueState;
+            assert_eq!(
+                friendly_queue_state(&queue(QueueState::Ready, true)),
+                "Ready"
+            );
+            assert_eq!(
+                friendly_queue_state(&queue(QueueState::Ready, false)),
+                "Not accepting new documents"
+            );
+            assert_eq!(
+                friendly_queue_state(&queue(QueueState::Offline, true)),
+                "Cannot reach this printer"
+            );
+        }
+
+        eprintln!("phase supply_gauge_uses_the_lowest_known_cartridge");
+        {
+            let mut printer = queue(os_actions::printing::QueueState::Ready, true);
+            printer.telemetry.supplies = Some(vec![
+                os_actions::printing::PrinterSupply {
+                    name: "Black".into(),
+                    color: None,
+                    level_percent: Some(82),
+                },
+                os_actions::printing::PrinterSupply {
+                    name: "Cyan".into(),
+                    color: None,
+                    level_percent: Some(14),
+                },
+            ]);
+            let (fraction, percent) = supply_level(&printer).unwrap();
+            assert!((fraction - 0.14).abs() < f32::EPSILON);
+            assert_eq!(percent, 14);
+        }
+
+        eprintln!("phase missing_supply_telemetry_is_not_invented");
+        {
+            let printer = queue(os_actions::printing::QueueState::Ready, true);
+            assert_eq!(supply_level(&printer), None);
+        }
+
+        eprintln!("phase backend_identifiers_are_humanized_before_display");
+        {
+            assert_eq!(display_name("Studio_printer"), "Studio printer");
+            assert_eq!(display_name("office--laser_2"), "office laser 2");
+            assert_eq!(display_name("  Nearby_Printer  "), "Nearby Printer");
+        }
+
+        eprintln!("phase device_reasons_are_translated_without_leaking_backend_jargon");
+        {
+            assert_eq!(
+                friendly_reason("media-empty-warning"),
+                "Add paper to continue."
+            );
+            assert_eq!(
+                friendly_reason("marker-supply-low-warning"),
+                "A supply is running low; printing can usually continue for now."
+            );
+            assert_eq!(
+                friendly_reason("vendor-specific-0x92"),
+                "The printer reported a condition that may need attention."
+            );
+        }
     }
 
     #[test]
-    fn supply_gauge_uses_the_lowest_known_cartridge() {
-        let mut printer = queue(os_actions::printing::QueueState::Ready, true);
-        printer.telemetry.supplies = Some(vec![
-            os_actions::printing::PrinterSupply {
-                name: "Black".into(),
-                color: None,
-                level_percent: Some(82),
-            },
-            os_actions::printing::PrinterSupply {
-                name: "Cyan".into(),
-                color: None,
-                level_percent: Some(14),
-            },
-        ]);
-        let (fraction, percent) = supply_level(&printer).unwrap();
-        assert!((fraction - 0.14).abs() < f32::EPSILON);
-        assert_eq!(percent, 14);
-    }
-
-    #[test]
-    fn missing_supply_telemetry_is_not_invented() {
-        let printer = queue(os_actions::printing::QueueState::Ready, true);
-        assert_eq!(supply_level(&printer), None);
-    }
-
-    #[test]
-    fn backend_identifiers_are_humanized_before_display() {
-        assert_eq!(display_name("Studio_printer"), "Studio printer");
-        assert_eq!(display_name("office--laser_2"), "office laser 2");
-        assert_eq!(display_name("  Nearby_Printer  "), "Nearby Printer");
-    }
-
-    #[test]
-    fn device_reasons_are_translated_without_leaking_backend_jargon() {
-        assert_eq!(
-            friendly_reason("media-empty-warning"),
-            "Add paper to continue."
-        );
-        assert_eq!(
-            friendly_reason("marker-supply-low-warning"),
-            "A supply is running low; printing can usually continue for now."
-        );
-        assert_eq!(
-            friendly_reason("vendor-specific-0x92"),
-            "The printer reported a condition that may need attention."
-        );
-    }
-
-    #[test]
-    fn scan_result_fixture_is_opaque_and_visually_structured() {
-        let pixels = demo_scanned_page_pixels(320, 440);
-        assert_eq!(pixels.len(), 320 * 440 * 4);
-        assert!(
-            pixels
+    fn scan_output_is_opaque_byte_exact_private_and_previewable() {
+        eprintln!("phase scan_result_fixture_is_opaque_and_visually_structured");
+        {
+            let pixels = demo_scanned_page_pixels(320, 440);
+            assert_eq!(pixels.len(), 320 * 440 * 4);
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .all(|pixel| pixel.last() == Some(&255))
+            );
+            let distinct = pixels
                 .chunks_exact(4)
-                .all(|pixel| pixel.last() == Some(&255))
-        );
-        let distinct = pixels
-            .chunks_exact(4)
-            .map(<[u8]>::to_vec)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert!(
-            distinct.len() >= 4,
-            "fixture must expose blank-preview regressions"
-        );
+                .map(<[u8]>::to_vec)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(
+                distinct.len() >= 4,
+                "fixture must expose blank-preview regressions"
+            );
+        }
+
+        eprintln!("phase scanned_pages_are_saved_byte_exactly_with_private_permissions");
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("receipt.png");
+            let bytes = b"deterministic scanned page bytes";
+            save_scanned_page(&path, bytes).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600);
+            }
+        }
+
+        eprintln!("phase selected_image_produces_real_bounded_preview_pixels");
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("boarding-pass.png");
+            let mut source =
+                image::RgbaImage::from_pixel(1_200, 600, image::Rgba([245, 245, 240, 255]));
+            for y in 80..180 {
+                for x in 120..1_080 {
+                    source.put_pixel(x, y, image::Rgba([24, 92, 170, 255]));
+                }
+            }
+            source.save(&path).unwrap();
+
+            let preview = load_print_preview(&path).expect("a selected PNG has a real preview");
+            assert!(preview.is_valid());
+            assert_eq!(preview.max_edge(), 720);
+            assert!(
+                preview
+                    .rgba
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[..3] == [24, 92, 170]),
+                "preview pixels come from the selected document"
+            );
+        }
     }
 
     fn scanned_page(width: u32) -> ScannedPage {
@@ -3898,121 +3951,84 @@ mod tests {
     }
 
     #[test]
-    fn multipage_scan_session_preserves_reorders_navigates_and_deletes_pages() {
-        let mut centre = PrintCentre::demo(DemoScenario::ScanSetup);
-        centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(10))));
-        centre.handle_command(UiCommand::ScanAnother);
-        assert_eq!(
-            centre.scan_pages.len(),
-            1,
-            "scan another preserves page one"
-        );
-        centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(20))));
-        assert_eq!(centre.scan_selected, 1);
-
-        centre.handle_command(UiCommand::MoveScanPageEarlier);
-        assert_eq!(centre.scan_selected, 0);
-        assert_eq!(centre.scan_pages[0].width, 20);
-        centre.handle_command(UiCommand::NextScanPage);
-        assert_eq!(centre.scan_result.as_ref().map(|page| page.width), Some(10));
-
-        centre.handle_command(UiCommand::DeleteScanPage);
-        assert_eq!(centre.scan_pages.len(), 1);
-        assert_eq!(centre.scan_selected, 0);
-        assert_eq!(centre.scan_result.as_ref().map(|page| page.width), Some(20));
-    }
-
-    #[test]
-    fn rotation_updates_saved_pixels_and_invalidates_stale_ocr() {
-        let mut page = scanned_page(3);
-        page.recognized_text = Some("stale orientation".into());
-        page.rotate_clockwise().unwrap();
-        assert_eq!((page.width, page.height), (1, 3));
-        assert!(!page.png.is_empty());
-        let decoded = image::load_from_memory(&page.png).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (1, 3));
-        assert!(page.recognized_text.is_none());
-        assert!(page.ocr_needs_refresh);
-    }
-
-    #[test]
-    fn crop_updates_preview_and_export_bytes_and_invalidates_ocr() {
-        let mut page = ScannedPage {
-            png: Arc::from(Vec::<u8>::new()),
-            rgba: Arc::from(vec![255; 8 * 6 * 4]),
-            width: 8,
-            height: 6,
-            recognized_text: Some("stale text".into()),
-            ocr_note: "Recognized 2 words.".into(),
-            ocr_language: "English".into(),
-            ocr_needs_refresh: false,
-            ocr_in_progress: false,
-        };
-        page.crop_to(CropSelection {
-            left: 0.25,
-            top: 0.0,
-            right: 0.75,
-            bottom: 0.5,
-        })
-        .unwrap();
-        assert_eq!((page.width, page.height), (4, 3));
-        assert_eq!(page.rgba.len(), 4 * 3 * 4);
-        assert!(image::load_from_memory(&page.png).is_ok());
-        assert!(page.recognized_text.is_none());
-        assert!(page.ocr_needs_refresh);
-    }
-
-    #[test]
-    fn whole_document_export_keeps_page_order_and_ocr_layer() {
-        let mut first = scanned_page(3);
-        first.recognized_text = Some("FIRST PAGE".into());
-        let mut second = scanned_page(5);
-        second.recognized_text = Some("SECOND PAGE".into());
-        let bytes = scanned_document_pdf(&[first, second]);
-        let pdf = String::from_utf8_lossy(&bytes);
-        assert!(pdf.starts_with("%PDF-1.7"));
-        assert!(pdf.contains("/Count 2"));
-        assert!(pdf.find("FIRST PAGE") < pdf.find("SECOND PAGE"));
-        assert!(pdf.contains("3 Tr"));
-    }
-
-    #[test]
-    fn scanned_pages_are_saved_byte_exactly_with_private_permissions() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("receipt.png");
-        let bytes = b"deterministic scanned page bytes";
-        save_scanned_page(&path, bytes).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        #[cfg(unix)]
+    fn scan_page_edits_invalidate_ocr_and_export_in_order() {
+        eprintln!("phase multipage_scan_session_preserves_reorders_navigates_and_deletes_pages");
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
-    }
+            let mut centre = PrintCentre::demo(DemoScenario::ScanSetup);
+            centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(10))));
+            centre.handle_command(UiCommand::ScanAnother);
+            assert_eq!(
+                centre.scan_pages.len(),
+                1,
+                "scan another preserves page one"
+            );
+            centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(20))));
+            assert_eq!(centre.scan_selected, 1);
 
-    #[test]
-    fn selected_image_produces_real_bounded_preview_pixels() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("boarding-pass.png");
-        let mut source =
-            image::RgbaImage::from_pixel(1_200, 600, image::Rgba([245, 245, 240, 255]));
-        for y in 80..180 {
-            for x in 120..1_080 {
-                source.put_pixel(x, y, image::Rgba([24, 92, 170, 255]));
-            }
-        }
-        source.save(&path).unwrap();
+            centre.handle_command(UiCommand::MoveScanPageEarlier);
+            assert_eq!(centre.scan_selected, 0);
+            assert_eq!(centre.scan_pages[0].width, 20);
+            centre.handle_command(UiCommand::NextScanPage);
+            assert_eq!(centre.scan_result.as_ref().map(|page| page.width), Some(10));
 
-        let preview = load_print_preview(&path).expect("a selected PNG has a real preview");
-        assert!(preview.is_valid());
-        assert_eq!(preview.max_edge(), 720);
-        assert!(
-            preview
-                .rgba
-                .chunks_exact(4)
-                .any(|pixel| pixel[..3] == [24, 92, 170]),
-            "preview pixels come from the selected document"
-        );
+            centre.handle_command(UiCommand::DeleteScanPage);
+            assert_eq!(centre.scan_pages.len(), 1);
+            assert_eq!(centre.scan_selected, 0);
+            assert_eq!(centre.scan_result.as_ref().map(|page| page.width), Some(20));
+        }
+
+        eprintln!("phase rotation_updates_saved_pixels_and_invalidates_stale_ocr");
+        {
+            let mut page = scanned_page(3);
+            page.recognized_text = Some("stale orientation".into());
+            page.rotate_clockwise().unwrap();
+            assert_eq!((page.width, page.height), (1, 3));
+            assert!(!page.png.is_empty());
+            let decoded = image::load_from_memory(&page.png).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (1, 3));
+            assert!(page.recognized_text.is_none());
+            assert!(page.ocr_needs_refresh);
+        }
+
+        eprintln!("phase crop_updates_preview_and_export_bytes_and_invalidates_ocr");
+        {
+            let mut page = ScannedPage {
+                png: Arc::from(Vec::<u8>::new()),
+                rgba: Arc::from(vec![255; 8 * 6 * 4]),
+                width: 8,
+                height: 6,
+                recognized_text: Some("stale text".into()),
+                ocr_note: "Recognized 2 words.".into(),
+                ocr_language: "English".into(),
+                ocr_needs_refresh: false,
+                ocr_in_progress: false,
+            };
+            page.crop_to(CropSelection {
+                left: 0.25,
+                top: 0.0,
+                right: 0.75,
+                bottom: 0.5,
+            })
+            .unwrap();
+            assert_eq!((page.width, page.height), (4, 3));
+            assert_eq!(page.rgba.len(), 4 * 3 * 4);
+            assert!(image::load_from_memory(&page.png).is_ok());
+            assert!(page.recognized_text.is_none());
+            assert!(page.ocr_needs_refresh);
+        }
+
+        eprintln!("phase whole_document_export_keeps_page_order_and_ocr_layer");
+        {
+            let mut first = scanned_page(3);
+            first.recognized_text = Some("FIRST PAGE".into());
+            let mut second = scanned_page(5);
+            second.recognized_text = Some("SECOND PAGE".into());
+            let bytes = scanned_document_pdf(&[first, second]);
+            let pdf = String::from_utf8_lossy(&bytes);
+            assert!(pdf.starts_with("%PDF-1.7"));
+            assert!(pdf.contains("/Count 2"));
+            assert!(pdf.find("FIRST PAGE") < pdf.find("SECOND PAGE"));
+            assert!(pdf.contains("3 Tr"));
+        }
     }
 }

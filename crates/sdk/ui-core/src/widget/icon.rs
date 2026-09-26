@@ -189,45 +189,49 @@ mod tests {
         scene
     }
 
-    /// A laid-out icon widget must emit at least one stroke into the scene.
     #[test]
-    fn icon_widget_paints_glyph() {
-        let mut w = IconWidget::new(Icon::Home, 24.0);
-        let scene = paint(&mut w);
-        let color_tags = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(color_tags >= 1, "icon widget must paint its glyph");
-    }
+    fn icon_widget_paints_resolved_glyph_or_nothing() {
+        /// A laid-out icon widget must emit at least one stroke into the scene.
+        fn icon_widget_paints_glyph() {
+            let mut w = IconWidget::new(Icon::Home, 24.0);
+            let scene = paint(&mut w);
+            let color_tags = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(color_tags >= 1, "icon widget must paint its glyph");
+        }
 
-    /// A zero-size rect is a no-op (no panic, no draw).
-    #[test]
-    fn icon_widget_zero_rect_is_noop() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        let mut w = IconWidget::new(Icon::Home, 24.0);
-        // rect stays ZERO
-        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let tags = scene.encoding().draw_tags.len();
-        assert_eq!(tags, 0, "no draw work for a zero-size icon");
-    }
+        /// A zero-size rect is a no-op (no panic, no draw).
+        fn icon_widget_zero_rect_is_noop() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            let mut w = IconWidget::new(Icon::Home, 24.0);
+            // rect stays ZERO
+            w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let tags = scene.encoding().draw_tags.len();
+            assert_eq!(tags, 0, "no draw work for a zero-size icon");
+        }
 
-    /// The colour builders pick the documented theme slots.
-    #[test]
-    fn icon_widget_color_resolution() {
-        let theme = Theme::dark();
-        let primary = IconWidget::new(Icon::Star, 16.0);
-        assert_eq!(primary.resolve_color(&theme), theme.text_primary);
+        /// The colour builders pick the documented theme slots.
+        fn icon_widget_color_resolution() {
+            let theme = Theme::dark();
+            let primary = IconWidget::new(Icon::Star, 16.0);
+            assert_eq!(primary.resolve_color(&theme), theme.text_primary);
 
-        let dim = IconWidget::new(Icon::Star, 16.0).dim();
-        assert_eq!(dim.resolve_color(&theme), theme.text_dim);
+            let dim = IconWidget::new(Icon::Star, 16.0).dim();
+            assert_eq!(dim.resolve_color(&theme), theme.text_dim);
 
-        let fixed = IconWidget::new(Icon::Star, 16.0).with_color(Color::from_rgb8(1, 2, 3));
-        assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+            let fixed = IconWidget::new(Icon::Star, 16.0).with_color(Color::from_rgb8(1, 2, 3));
+            assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
+        }
+
+        icon_widget_paints_glyph();
+        icon_widget_zero_rect_is_noop();
+        icon_widget_color_resolution();
     }
 }

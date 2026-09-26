@@ -156,49 +156,50 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     #[test]
-    fn vault_round_trips_through_crdt() {
-        let mut doc = AutoCommit::new();
-        let vault = sample_vault();
-        VpnDoc::write_vault(&mut doc, &vault);
-        let back = VpnDoc::read_vault(&doc);
-        assert_eq!(back.connections.len(), vault.connections.len());
-        assert_eq!(back.selected, None, "window selection is not synchronized");
-        let home = back.connections.iter().find(|c| c.name == "Home").unwrap();
-        assert_eq!(home.status, ConnStatus::Disconnected);
-        assert_eq!(home.kind, ConnKind::WireGuard);
-    }
+    fn vault_document_round_trips_merges_and_excludes_live_state() {
+        // Case `vault_round_trips_through_crdt`.
+        {
+            let mut doc = AutoCommit::new();
+            let vault = sample_vault();
+            VpnDoc::write_vault(&mut doc, &vault);
+            let back = VpnDoc::read_vault(&doc);
+            assert_eq!(back.connections.len(), vault.connections.len());
+            assert_eq!(back.selected, None, "window selection is not synchronized");
+            let home = back.connections.iter().find(|c| c.name == "Home").unwrap();
+            assert_eq!(home.status, ConnStatus::Disconnected);
+            assert_eq!(home.kind, ConnKind::WireGuard);
+        }
+        // Case `machine_live_state_is_not_persisted`.
+        {
+            let mut doc = AutoCommit::new();
+            let vault = sample_vault();
+            VpnDoc::write_vault(&mut doc, &vault);
+            let back = VpnDoc::read_vault(&doc);
+            assert!(back.connections.iter().all(|connection| {
+                connection.status == ConnStatus::Disconnected
+                    && connection.last_handshake_secs.is_none()
+            }));
+        }
+        // Case `empty_detection_and_two_doc_merge`.
+        {
+            let mut a = AutoCommit::new();
+            assert!(VpnDoc::is_empty(&a));
+            VpnDoc::write_vault(&mut a, &sample_vault());
+            assert!(!VpnDoc::is_empty(&a));
 
-    #[test]
-    fn machine_live_state_is_not_persisted() {
-        let mut doc = AutoCommit::new();
-        let vault = sample_vault();
-        VpnDoc::write_vault(&mut doc, &vault);
-        let back = VpnDoc::read_vault(&doc);
-        assert!(back.connections.iter().all(|connection| {
-            connection.status == ConnStatus::Disconnected
-                && connection.last_handshake_secs.is_none()
-        }));
-    }
-
-    #[test]
-    fn empty_detection_and_two_doc_merge() {
-        let mut a = AutoCommit::new();
-        assert!(VpnDoc::is_empty(&a));
-        VpnDoc::write_vault(&mut a, &sample_vault());
-        assert!(!VpnDoc::is_empty(&a));
-
-        // Peer B joins from A's state, adds one, A pulls it back.
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let extra = Connection::new("Travel", ConnKind::WireGuard);
-        VpnDoc::write_connection(&mut b, &extra);
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge_incoming(&mut b_loaded).unwrap();
-        let names: Vec<String> = VpnDoc::read_vault(&a)
-            .connections
-            .into_iter()
-            .map(|c| c.name)
-            .collect();
-        assert!(names.contains(&"Travel".to_string()));
-        assert!(names.contains(&"Home".to_string()));
+            // Peer B joins from A's state, adds one, A pulls it back.
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let extra = Connection::new("Travel", ConnKind::WireGuard);
+            VpnDoc::write_connection(&mut b, &extra);
+            let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b_loaded).unwrap();
+            let names: Vec<String> = VpnDoc::read_vault(&a)
+                .connections
+                .into_iter()
+                .map(|c| c.name)
+                .collect();
+            assert!(names.contains(&"Travel".to_string()));
+            assert!(names.contains(&"Home".to_string()));
+        }
     }
 }

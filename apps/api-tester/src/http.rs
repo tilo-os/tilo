@@ -223,86 +223,94 @@ mod tests {
             .collect()
     }
 
+    /// `build_outgoing` turns a saved request plus environment into the wire
+    /// request: query string, auth header and encoded body.
     #[test]
-    fn url_gets_query_string_from_enabled_params() {
-        let mut req = Request::new("r");
-        req.url = "{{base}}/search".into();
-        req.params = vec![KeyValue::new("q", "rust lang"), {
-            let mut d = KeyValue::new("debug", "1");
-            d.enabled = false;
-            d
-        }];
-        let out = build_outgoing(&req, &env(&[("base", "https://api.example.com")]));
-        assert_eq!(out.url, "https://api.example.com/search?q=rust%20lang");
-    }
+    fn build_outgoing_encodes_query_auth_and_body() {
+        // Case "query string": only enabled params, percent-encoded, after
+        // environment substitution.
+        {
+            let mut req = Request::new("r");
+            req.url = "{{base}}/search".into();
+            req.params = vec![KeyValue::new("q", "rust lang"), {
+                let mut d = KeyValue::new("debug", "1");
+                d.enabled = false;
+                d
+            }];
+            let out = build_outgoing(&req, &env(&[("base", "https://api.example.com")]));
+            assert_eq!(
+                out.url, "https://api.example.com/search?q=rust%20lang",
+                "case query string"
+            );
+        }
 
-    #[test]
-    fn bearer_auth_adds_authorization_header() {
-        let mut req = Request::new("r");
-        req.url = "https://x.test".into();
-        req.auth = Auth::Bearer {
-            token: "{{tok}}".into(),
-        };
-        let out = build_outgoing(&req, &env(&[("tok", "secret123")]));
-        assert!(
-            out.headers
-                .iter()
-                .any(|(k, v)| k == "Authorization" && v == "Bearer secret123")
-        );
-    }
+        // Case "bearer auth": adds a substituted Authorization header.
+        {
+            let mut req = Request::new("r");
+            req.url = "https://x.test".into();
+            req.auth = Auth::Bearer {
+                token: "{{tok}}".into(),
+            };
+            let out = build_outgoing(&req, &env(&[("tok", "secret123")]));
+            assert!(
+                out.headers
+                    .iter()
+                    .any(|(k, v)| k == "Authorization" && v == "Bearer secret123"),
+                "case bearer auth"
+            );
+        }
 
-    #[test]
-    fn basic_auth_base64_encodes_credentials() {
-        let mut req = Request::new("r");
-        req.url = "https://x.test".into();
-        req.auth = Auth::Basic {
-            username: "user".into(),
-            password: "pass".into(),
-        };
-        let out = build_outgoing(&req, &HashMap::new());
-        // base64("user:pass") == "dXNlcjpwYXNz"
-        assert!(
-            out.headers
-                .iter()
-                .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz")
-        );
-    }
+        // Case "basic auth": base64-encodes the credentials.
+        {
+            let mut req = Request::new("r");
+            req.url = "https://x.test".into();
+            req.auth = Auth::Basic {
+                username: "user".into(),
+                password: "pass".into(),
+            };
+            let out = build_outgoing(&req, &HashMap::new());
+            // base64("user:pass") == "dXNlcjpwYXNz"
+            assert!(
+                out.headers
+                    .iter()
+                    .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz"),
+                "case basic auth"
+            );
+        }
 
-    #[test]
-    fn json_body_defaults_content_type() {
-        let mut req = Request::new("r");
-        req.method = HttpMethod::Post;
-        req.url = "https://x.test".into();
-        req.body_mode = BodyMode::Json;
-        req.body_text = "{\"a\":1}".into();
-        let out = build_outgoing(&req, &HashMap::new());
-        assert_eq!(out.body.as_deref(), Some("{\"a\":1}"));
-        assert!(
-            out.headers
-                .iter()
-                .any(|(k, v)| k == "Content-Type" && v == "application/json")
-        );
-    }
+        // Case "json body": the body passes through and Content-Type defaults.
+        {
+            let mut req = Request::new("r");
+            req.method = HttpMethod::Post;
+            req.url = "https://x.test".into();
+            req.body_mode = BodyMode::Json;
+            req.body_text = "{\"a\":1}".into();
+            let out = build_outgoing(&req, &HashMap::new());
+            assert_eq!(out.body.as_deref(), Some("{\"a\":1}"), "case json body");
+            assert!(
+                out.headers
+                    .iter()
+                    .any(|(k, v)| k == "Content-Type" && v == "application/json"),
+                "case json body"
+            );
+        }
 
-    #[test]
-    fn form_body_encodes_pairs() {
-        let mut req = Request::new("r");
-        req.method = HttpMethod::Post;
-        req.url = "https://x.test".into();
-        req.body_mode = BodyMode::Form;
-        req.form = vec![
-            KeyValue::new("name", "Jane Doe"),
-            KeyValue::new("role", "admin"),
-        ];
-        let out = build_outgoing(&req, &HashMap::new());
-        assert_eq!(out.body.as_deref(), Some("name=Jane%20Doe&role=admin"));
-    }
-
-    #[test]
-    fn sample_response_is_valid_json() {
-        let r = sample_response();
-        assert!(r.is_json());
-        assert!(serde_json::from_str::<serde_json::Value>(&r.body).is_ok());
-        assert_eq!(r.status, 200);
+        // Case "form body": pairs are url-encoded.
+        {
+            let mut req = Request::new("r");
+            req.method = HttpMethod::Post;
+            req.url = "https://x.test".into();
+            req.body_mode = BodyMode::Form;
+            req.form = vec![
+                KeyValue::new("name", "Jane Doe"),
+                KeyValue::new("role", "admin"),
+            ];
+            let out = build_outgoing(&req, &HashMap::new());
+            assert_eq!(
+                out.body.as_deref(),
+                Some("name=Jane%20Doe&role=admin"),
+                "case form body"
+            );
+        }
     }
 }

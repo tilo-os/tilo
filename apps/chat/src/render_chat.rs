@@ -4352,82 +4352,82 @@ mod tests {
         assert!((actual - expected).abs() < f64::EPSILON);
     }
 
-    /// Defect regression: the attachment chip must never leak the internal
-    /// mount path. The demo's shared note lives at
-    /// `/var/workspace/notes/moq-over-iroh.md` (see `doc.rs`), but its chip
-    /// meta must show only the file type + size — no path, no "shared via".
     #[test]
-    fn file_chip_meta_never_leaks_a_path() {
-        let meta = file_chip_meta("moq-over-iroh.md", 18_944);
-        assert!(
-            !meta.contains('/'),
-            "chip meta leaked a path separator: {meta:?}"
-        );
-        assert!(
-            !meta.contains("/var"),
-            "chip meta leaked the mount path: {meta:?}"
-        );
-        assert!(
-            !meta.to_lowercase().contains("workspace"),
-            "chip meta leaked the workspace label: {meta:?}"
-        );
-        assert!(
-            !meta.to_lowercase().contains("shared via"),
-            "chip meta still carries stale 'shared via' copy: {meta:?}"
-        );
-        // It still tells the user the real, useful facts: type + size.
-        assert_eq!(
-            meta, "MD · 18.5 KiB",
-            "chip meta should be type + size only"
-        );
-    }
+    fn attachment_chips_show_type_and_size_and_cards_reserve_their_geometry() {
+        // Phase: file_chip_meta_never_leaks_a_path.
+        // Defect regression: the attachment chip must never leak the internal
+        // mount path. The demo's shared note lives at
+        // `/var/workspace/notes/moq-over-iroh.md` (see `doc.rs`), but its chip
+        // meta must show only the file type + size — no path, no "shared via".
+        {
+            let meta = file_chip_meta("moq-over-iroh.md", 18_944);
+            assert!(
+                !meta.contains('/'),
+                "chip meta leaked a path separator: {meta:?}"
+            );
+            assert!(
+                !meta.contains("/var"),
+                "chip meta leaked the mount path: {meta:?}"
+            );
+            assert!(
+                !meta.to_lowercase().contains("workspace"),
+                "chip meta leaked the workspace label: {meta:?}"
+            );
+            assert!(
+                !meta.to_lowercase().contains("shared via"),
+                "chip meta still carries stale 'shared via' copy: {meta:?}"
+            );
+            // It still tells the user the real, useful facts: type + size.
+            assert_eq!(
+                meta, "MD · 18.5 KiB",
+                "chip meta should be type + size only"
+            );
+        }
+        // Phase: file_chip_meta_without_extension_is_just_the_size.
+        {
+            let meta = file_chip_meta("Makefile", 512);
+            assert_eq!(meta, "512 B");
+            assert!(!meta.contains('/'));
+        }
+        // Phase: attachment_size_uses_canonical_binary_units.
+        {
+            assert_eq!(file_chip_meta("archive.zip", 1536), "ZIP · 1.5 KiB");
+        }
+        // Phase: attachment_geometry_reserves_card_metadata_and_following_gap.
+        {
+            let file = Attachment::File {
+                name: "notes.md".into(),
+                blob: "sha256:file".into(),
+                size: 512,
+            };
+            let image = Attachment::Image {
+                name: "wide.png".into(),
+                blob: "sha256:image".into(),
+                w: 800,
+                h: 400,
+            };
+            let unknown_video = Attachment::Video {
+                name: "clip.mp4".into(),
+                blob: "sha256:video".into(),
+                w: 0,
+                h: 0,
+                size: 1024,
+            };
 
-    #[test]
-    fn file_chip_meta_without_extension_is_just_the_size() {
-        let meta = file_chip_meta("Makefile", 512);
-        assert_eq!(meta, "512 B");
-        assert!(!meta.contains('/'));
-    }
+            let (file_w, file_h) = attachment_card_size(&file, 420.0, 1.0);
+            close(file_w, 360.0);
+            close(file_h, 58.0);
+            close(attachment_flow_height(&file, 420.0, 1.0), 70.0);
 
-    #[test]
-    fn attachment_size_uses_canonical_binary_units() {
-        assert_eq!(file_chip_meta("archive.zip", 1536), "ZIP · 1.5 KiB");
-    }
+            let (image_w, image_h) = attachment_card_size(&image, 300.0, 1.0);
+            close(image_w, 300.0);
+            close(image_h, 150.0);
+            close(attachment_flow_height(&image, 300.0, 1.0), 174.0);
 
-    #[test]
-    fn attachment_geometry_reserves_card_metadata_and_following_gap() {
-        let file = Attachment::File {
-            name: "notes.md".into(),
-            blob: "sha256:file".into(),
-            size: 512,
-        };
-        let image = Attachment::Image {
-            name: "wide.png".into(),
-            blob: "sha256:image".into(),
-            w: 800,
-            h: 400,
-        };
-        let unknown_video = Attachment::Video {
-            name: "clip.mp4".into(),
-            blob: "sha256:video".into(),
-            w: 0,
-            h: 0,
-            size: 1024,
-        };
-
-        let (file_w, file_h) = attachment_card_size(&file, 420.0, 1.0);
-        close(file_w, 360.0);
-        close(file_h, 58.0);
-        close(attachment_flow_height(&file, 420.0, 1.0), 70.0);
-
-        let (image_w, image_h) = attachment_card_size(&image, 300.0, 1.0);
-        close(image_w, 300.0);
-        close(image_h, 150.0);
-        close(attachment_flow_height(&image, 300.0, 1.0), 174.0);
-
-        let (video_w, video_h) = attachment_card_size(&unknown_video, 320.0, 1.0);
-        close(video_w, 320.0);
-        close(video_h, 180.0);
-        close(attachment_flow_height(&unknown_video, 320.0, 1.0), 204.0);
+            let (video_w, video_h) = attachment_card_size(&unknown_video, 320.0, 1.0);
+            close(video_w, 320.0);
+            close(video_h, 180.0);
+            close(attachment_flow_height(&unknown_video, 320.0, 1.0), 204.0);
+        }
     }
 }

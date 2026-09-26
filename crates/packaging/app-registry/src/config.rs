@@ -284,95 +284,95 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trust_roundtrip() {
-        let k = RegistryTrust::Key([3u8; 32]);
-        assert_eq!(RegistryTrust::parse(&k.to_wire()).unwrap(), k);
-        assert_eq!(
-            RegistryTrust::parse("unsigned").unwrap(),
-            RegistryTrust::Unsigned
-        );
-        assert!(RegistryTrust::parse("nonsense").is_err());
-    }
+    fn registry_sources_round_trip_merge_workspace_overrides_and_default_to_central() {
+        // Phase `trust_roundtrip`.
+        {
+            let k = RegistryTrust::Key([3u8; 32]);
+            assert_eq!(RegistryTrust::parse(&k.to_wire()).unwrap(), k);
+            assert_eq!(
+                RegistryTrust::parse("unsigned").unwrap(),
+                RegistryTrust::Unsigned
+            );
+            assert!(RegistryTrust::parse("nonsense").is_err());
+        }
+        // Phase `toml_roundtrip`.
+        {
+            let cfg = RegistriesConfig::from_registries(vec![
+                RegistryRef {
+                    name: "central".into(),
+                    base_url: "https://apps.tilo.so".into(),
+                    trust: RegistryTrust::Key([9u8; 32]),
+                    priority: 0,
+                },
+                RegistryRef {
+                    name: "team".into(),
+                    base_url: "file:///srv/reg".into(),
+                    trust: RegistryTrust::Unsigned,
+                    priority: 10,
+                },
+            ]);
+            let text = cfg.to_toml().unwrap();
+            let file: RegistryFile = toml::from_str(&text).unwrap();
+            let back: Vec<RegistryRef> = file
+                .registries
+                .into_iter()
+                .map(RegistryRow::into_ref)
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(back, cfg.registries);
+        }
+        // Phase `workspace_overrides_global_by_name_and_sorts_first`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let global = dir.path().join("global.toml");
+            std::fs::write(
+                &global,
+                r#"
+    [[registry]]
+    name = "central"
+    base-url = "https://apps.tilo.so"
+    trust = "ed25519:0303030303030303030303030303030303030303030303030303030303030303"
+    priority = 0
+    "#,
+            )
+            .unwrap();
 
-    #[test]
-    fn toml_roundtrip() {
-        let cfg = RegistriesConfig::from_registries(vec![
-            RegistryRef {
-                name: "central".into(),
-                base_url: "https://apps.tilo.so".into(),
-                trust: RegistryTrust::Key([9u8; 32]),
-                priority: 0,
-            },
-            RegistryRef {
-                name: "team".into(),
-                base_url: "file:///srv/reg".into(),
-                trust: RegistryTrust::Unsigned,
-                priority: 10,
-            },
-        ]);
-        let text = cfg.to_toml().unwrap();
-        let file: RegistryFile = toml::from_str(&text).unwrap();
-        let back: Vec<RegistryRef> = file
-            .registries
-            .into_iter()
-            .map(RegistryRow::into_ref)
-            .map(Result::unwrap)
-            .collect();
-        assert_eq!(back, cfg.registries);
-    }
+            let ws_root = dir.path().join("ws");
+            std::fs::create_dir_all(ws_root.join(".tilo")).unwrap();
+            std::fs::write(
+                workspace_path(&ws_root),
+                r#"
+    [[registry]]
+    name = "central"
+    base-url = "file:///ws/central"
+    trust = "unsigned"
+    priority = 0
 
-    #[test]
-    fn workspace_overrides_global_by_name_and_sorts_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global.toml");
-        std::fs::write(
-            &global,
-            r#"
-[[registry]]
-name = "central"
-base-url = "https://apps.tilo.so"
-trust = "ed25519:0303030303030303030303030303030303030303030303030303030303030303"
-priority = 0
-"#,
-        )
-        .unwrap();
+    [[registry]]
+    name = "team"
+    base-url = "file:///ws/team"
+    trust = "unsigned"
+    priority = 5
+    "#,
+            )
+            .unwrap();
 
-        let ws_root = dir.path().join("ws");
-        std::fs::create_dir_all(ws_root.join(".tilo")).unwrap();
-        std::fs::write(
-            workspace_path(&ws_root),
-            r#"
-[[registry]]
-name = "central"
-base-url = "file:///ws/central"
-trust = "unsigned"
-priority = 0
-
-[[registry]]
-name = "team"
-base-url = "file:///ws/team"
-trust = "unsigned"
-priority = 5
-"#,
-        )
-        .unwrap();
-
-        let cfg = RegistriesConfig::load_from(Some(&global), Some(&ws_root)).unwrap();
-        // The workspace "central" (file://) must have replaced the global central by name.
-        let central = cfg.registries.iter().find(|r| r.name == "central").unwrap();
-        assert_eq!(central.base_url, "file:///ws/central");
-        // priority 0 comes before priority 5.
-        assert_eq!(cfg.registries.first().unwrap().name, "central");
-        assert_eq!(cfg.registries.len(), 2);
-    }
-
-    #[test]
-    fn missing_files_yield_default_central() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg =
-            RegistriesConfig::load_from(Some(&dir.path().join("nope.toml")), Some(dir.path()))
-                .unwrap();
-        assert_eq!(cfg.registries.len(), 1);
-        assert_eq!(cfg.registries[0].name, "central");
+            let cfg = RegistriesConfig::load_from(Some(&global), Some(&ws_root)).unwrap();
+            // The workspace "central" (file://) must have replaced the global central by name.
+            let central = cfg.registries.iter().find(|r| r.name == "central").unwrap();
+            assert_eq!(central.base_url, "file:///ws/central");
+            // priority 0 comes before priority 5.
+            assert_eq!(cfg.registries.first().unwrap().name, "central");
+            assert_eq!(cfg.registries.len(), 2);
+        }
+        // Phase `missing_files_yield_default_central`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg =
+                RegistriesConfig::load_from(Some(&dir.path().join("nope.toml")), Some(dir.path()))
+                    .unwrap();
+            assert_eq!(cfg.registries.len(), 1);
+            assert_eq!(cfg.registries[0].name, "central");
+        }
     }
 }

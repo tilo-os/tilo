@@ -162,48 +162,60 @@ mod tests {
     use std::io::{Read, Write};
 
     #[test]
-    fn atomic_replacement_stays_private_and_leaves_no_temporary_files() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("key.bin");
-        write_atomic(&path, b"old secret").unwrap();
-        write_atomic(&path, b"new secret").unwrap();
-        let mut bytes = Vec::new();
-        read(&path).unwrap().read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"new secret");
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn private_files_round_trip_and_creation_never_overwrites() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("identity");
-        directory(&root).unwrap();
-        let path = root.join("secret");
-        let mut file = create_new(&path).unwrap();
-        file.write_all(b"private identity").unwrap();
-        file.sync_all().unwrap();
-        drop(file);
-        sync_directory(&root).unwrap();
-        assert_eq!(
-            create_new(&path).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        let mut bytes = Vec::new();
-        read(&path).unwrap().read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"private identity");
-        rewrite(&path).unwrap().write_all(b"new").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"new");
-    }
-
-    #[test]
-    fn directories_and_files_cannot_substitute_for_one_another() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("identity");
-        directory(&root).unwrap();
-        assert!(read(&root).is_err());
-        let file = root.join("file");
-        create_new(&file).unwrap();
-        assert!(directory(&file).is_err());
+    fn private_files_are_created_and_replaced_atomically_without_substitution() {
+        // Phase `atomic_replacement_stays_private_and_leaves_no_temporary_files`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("key.bin");
+            write_atomic(&path, b"old secret").unwrap();
+            write_atomic(&path, b"new secret").unwrap();
+            let mut bytes = Vec::new();
+            read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"new secret");
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+        // Phase `private_files_round_trip_and_creation_never_overwrites`.
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("identity");
+            directory(&root).unwrap();
+            let path = root.join("secret");
+            let mut file = create_new(&path).unwrap();
+            file.write_all(b"private identity").unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            sync_directory(&root).unwrap();
+            assert_eq!(
+                create_new(&path).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            let mut bytes = Vec::new();
+            read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"private identity");
+            rewrite(&path).unwrap().write_all(b"new").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        }
+        // Phase `directories_and_files_cannot_substitute_for_one_another`.
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("identity");
+            directory(&root).unwrap();
+            assert!(read(&root).is_err());
+            let file = root.join("file");
+            create_new(&file).unwrap();
+            assert!(directory(&file).is_err());
+        }
+        // Phase `atomic_creation_never_replaces_an_existing_file`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("broker-identity");
+            assert!(create_atomic(&path, b"first").unwrap());
+            assert!(!create_atomic(&path, b"second").unwrap());
+            let mut bytes = Vec::new();
+            read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"first");
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        }
     }
 
     #[cfg(windows)]
@@ -281,17 +293,5 @@ mod tests {
         assert!(rewrite(&path).is_err());
         assert!(write_atomic(&path, b"replacement").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
-    }
-
-    #[test]
-    fn atomic_creation_never_replaces_an_existing_file() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("broker-identity");
-        assert!(create_atomic(&path, b"first").unwrap());
-        assert!(!create_atomic(&path, b"second").unwrap());
-        let mut bytes = Vec::new();
-        read(&path).unwrap().read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, b"first");
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
     }
 }

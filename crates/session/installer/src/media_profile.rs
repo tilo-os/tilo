@@ -275,106 +275,107 @@ mod tests {
     }
 
     #[test]
-    fn accepts_the_imager_contract_and_rejects_destructive_fields() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), serde_json::to_vec(&good()).unwrap()).unwrap();
-        let profile = load_from(file.path()).unwrap().unwrap();
-        assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
-        assert!(profile.repairs.is_empty());
+    fn media_profile_accepts_the_contract_and_repairs_only_bad_values() {
+        // Phase `accepts_the_imager_contract_and_rejects_destructive_fields`.
+        {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), serde_json::to_vec(&good()).unwrap()).unwrap();
+            let profile = load_from(file.path()).unwrap().unwrap();
+            assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
+            assert!(profile.repairs.is_empty());
 
-        let mut bad = good();
-        bad["target"] = serde_json::json!("/dev/sda");
-        std::fs::write(file.path(), serde_json::to_vec(&bad).unwrap()).unwrap();
-        assert!(load_from(file.path()).is_err());
-    }
-
-    #[test]
-    fn retains_each_sound_field_while_requesting_one_repair() {
-        let zones = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(zones.path().join("Europe")).unwrap();
-        std::fs::write(zones.path().join("Europe/Berlin"), b"zone").unwrap();
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let cases = [
-            (
-                "hostname",
-                MediaProfileField::Hostname,
-                serde_json::json!("bad host"),
-            ),
-            (
-                "username",
-                MediaProfileField::Username,
-                serde_json::json!("root"),
-            ),
-            (
-                "full_name",
-                MediaProfileField::FullName,
-                serde_json::json!("Bad:Name"),
-            ),
-            (
-                "locale",
-                MediaProfileField::Locale,
-                // Syntactically plausible is not enough: the installed image
-                // must actually carry the selected locale data.
-                serde_json::json!("zz_ZZ.UTF-8"),
-            ),
-            (
-                "keyboard",
-                MediaProfileField::Keyboard,
-                serde_json::json!("not-a-layout"),
-            ),
-            (
-                "timezone",
-                MediaProfileField::Timezone,
-                serde_json::json!("Europe/Missing"),
-            ),
-            (
-                "filesystem",
-                MediaProfileField::Filesystem,
-                serde_json::json!("zfs"),
-            ),
-        ];
-        for (field, expected, value) in cases {
-            let mut candidate = good();
-            candidate[field] = value;
-            std::fs::write(file.path(), serde_json::to_vec(&candidate).unwrap()).unwrap();
-            let profile = load_from_with_zoneinfo(file.path(), zones.path())
-                .unwrap()
-                .unwrap();
-            assert_eq!(profile.repairs, vec![expected], "wrong repair for {field}");
-            assert_eq!(
-                profile.username.as_deref(),
-                (field != "username").then_some("ada")
-            );
-            assert_eq!(
-                profile.hostname.as_deref(),
-                (field != "hostname").then_some("studio")
-            );
+            let mut bad = good();
+            bad["target"] = serde_json::json!("/dev/sda");
+            std::fs::write(file.path(), serde_json::to_vec(&bad).unwrap()).unwrap();
+            assert!(load_from(file.path()).is_err());
         }
-    }
+        // Phase `retains_each_sound_field_while_requesting_one_repair`.
+        {
+            let zones = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(zones.path().join("Europe")).unwrap();
+            std::fs::write(zones.path().join("Europe/Berlin"), b"zone").unwrap();
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let cases = [
+                (
+                    "hostname",
+                    MediaProfileField::Hostname,
+                    serde_json::json!("bad host"),
+                ),
+                (
+                    "username",
+                    MediaProfileField::Username,
+                    serde_json::json!("root"),
+                ),
+                (
+                    "full_name",
+                    MediaProfileField::FullName,
+                    serde_json::json!("Bad:Name"),
+                ),
+                (
+                    "locale",
+                    MediaProfileField::Locale,
+                    // Syntactically plausible is not enough: the installed image
+                    // must actually carry the selected locale data.
+                    serde_json::json!("zz_ZZ.UTF-8"),
+                ),
+                (
+                    "keyboard",
+                    MediaProfileField::Keyboard,
+                    serde_json::json!("not-a-layout"),
+                ),
+                (
+                    "timezone",
+                    MediaProfileField::Timezone,
+                    serde_json::json!("Europe/Missing"),
+                ),
+                (
+                    "filesystem",
+                    MediaProfileField::Filesystem,
+                    serde_json::json!("zfs"),
+                ),
+            ];
+            for (field, expected, value) in cases {
+                let mut candidate = good();
+                candidate[field] = value;
+                std::fs::write(file.path(), serde_json::to_vec(&candidate).unwrap()).unwrap();
+                let profile = load_from_with_zoneinfo(file.path(), zones.path())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(profile.repairs, vec![expected], "wrong repair for {field}");
+                assert_eq!(
+                    profile.username.as_deref(),
+                    (field != "username").then_some("ada")
+                );
+                assert_eq!(
+                    profile.hostname.as_deref(),
+                    (field != "hostname").then_some("studio")
+                );
+            }
+        }
+        // Phase `missing_values_are_repairs_but_schema_and_shape_still_fail_closed`.
+        {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let mut missing = good();
+            missing.as_object_mut().unwrap().remove("hostname");
+            std::fs::write(file.path(), serde_json::to_vec(&missing).unwrap()).unwrap();
+            let profile = load_from(file.path()).unwrap().unwrap();
+            assert!(profile.hostname.is_none());
+            assert!(profile.repairs.contains(&MediaProfileField::Hostname));
 
-    #[test]
-    fn missing_values_are_repairs_but_schema_and_shape_still_fail_closed() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let mut missing = good();
-        missing.as_object_mut().unwrap().remove("hostname");
-        std::fs::write(file.path(), serde_json::to_vec(&missing).unwrap()).unwrap();
-        let profile = load_from(file.path()).unwrap().unwrap();
-        assert!(profile.hostname.is_none());
-        assert!(profile.repairs.contains(&MediaProfileField::Hostname));
+            let mut optional_name = good();
+            optional_name.as_object_mut().unwrap().remove("full_name");
+            std::fs::write(file.path(), serde_json::to_vec(&optional_name).unwrap()).unwrap();
+            let profile = load_from(file.path()).unwrap().unwrap();
+            assert_eq!(profile.full_name.as_deref(), Some(""));
+            assert!(profile.repairs.is_empty());
 
-        let mut optional_name = good();
-        optional_name.as_object_mut().unwrap().remove("full_name");
-        std::fs::write(file.path(), serde_json::to_vec(&optional_name).unwrap()).unwrap();
-        let profile = load_from(file.path()).unwrap().unwrap();
-        assert_eq!(profile.full_name.as_deref(), Some(""));
-        assert!(profile.repairs.is_empty());
+            let mut schema = good();
+            schema["schema"] = serde_json::json!(2);
+            std::fs::write(file.path(), serde_json::to_vec(&schema).unwrap()).unwrap();
+            assert!(load_from(file.path()).is_err());
 
-        let mut schema = good();
-        schema["schema"] = serde_json::json!(2);
-        std::fs::write(file.path(), serde_json::to_vec(&schema).unwrap()).unwrap();
-        assert!(load_from(file.path()).is_err());
-
-        std::fs::write(file.path(), b"not json").unwrap();
-        assert!(load_from(file.path()).is_err());
+            std::fs::write(file.path(), b"not json").unwrap();
+            assert!(load_from(file.path()).is_err());
+        }
     }
 }

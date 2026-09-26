@@ -116,50 +116,66 @@ mod tests {
     }
 
     #[test]
-    fn inside_viewport_yields_no_mist() {
+    fn an_offscreen_peer_mists_the_edge_it_overflows_most() {
         assert!(edge_mist_for(vp(), Point::new(50.0, 50.0)).is_none());
         // On the border still counts as inside (no overflow).
         assert!(edge_mist_for(vp(), Point::new(0.0, 0.0)).is_none());
         assert!(edge_mist_for(vp(), Point::new(100.0, 100.0)).is_none());
-    }
 
-    #[test]
-    fn peer_to_the_right_gets_a_right_band() {
-        let m = edge_mist_for(vp(), Point::new(180.0, 50.0)).expect("off-right");
-        assert_eq!(m.edge, MistEdge::Right);
-        assert!((m.along - 0.5).abs() < 1e-9, "mid-height projects to 0.5");
-        assert!((m.distance - 80.0).abs() < 1e-9);
-    }
+        // (case, peer, edge, along, distance when asserted)
+        let cases = [
+            // Mid-height projects to 0.5.
+            (
+                "off-right",
+                Point::new(180.0, 50.0),
+                MistEdge::Right,
+                0.5,
+                Some(80.0),
+            ),
+            (
+                "off-left",
+                Point::new(-40.0, 25.0),
+                MistEdge::Left,
+                0.25,
+                Some(40.0),
+            ),
+            (
+                "off-top",
+                Point::new(75.0, -60.0),
+                MistEdge::Top,
+                0.75,
+                None,
+            ),
+            (
+                "off-bottom",
+                Point::new(10.0, 250.0),
+                MistEdge::Bottom,
+                0.10,
+                None,
+            ),
+        ];
+        for (case, peer, edge, along, distance) in cases {
+            let m = edge_mist_for(vp(), peer).expect(case);
+            assert_eq!(m.edge, edge, "case {case}");
+            assert!(
+                (m.along - along).abs() < 1e-9,
+                "case {case}: along {}",
+                m.along
+            );
+            if let Some(distance) = distance {
+                assert!(
+                    (m.distance - distance).abs() < 1e-9,
+                    "case {case}: distance {}",
+                    m.distance
+                );
+            }
+        }
 
-    #[test]
-    fn peer_to_the_left_gets_a_left_band() {
-        let m = edge_mist_for(vp(), Point::new(-40.0, 25.0)).expect("off-left");
-        assert_eq!(m.edge, MistEdge::Left);
-        assert!((m.along - 0.25).abs() < 1e-9);
-        assert!((m.distance - 40.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn peer_above_gets_a_top_band() {
-        let m = edge_mist_for(vp(), Point::new(75.0, -60.0)).expect("off-top");
-        assert_eq!(m.edge, MistEdge::Top);
-        assert!((m.along - 0.75).abs() < 1e-9);
-    }
-
-    #[test]
-    fn peer_below_gets_a_bottom_band() {
-        let m = edge_mist_for(vp(), Point::new(10.0, 250.0)).expect("off-bottom");
-        assert_eq!(m.edge, MistEdge::Bottom);
-        assert!((m.along - 0.10).abs() < 1e-9);
-    }
-
-    #[test]
-    fn dominant_axis_wins_at_a_corner() {
-        // Far to the right, only a little above the top: horizontal
-        // overflow (200) dominates vertical (10), so it reads as Right.
+        // The dominant axis wins at a corner. Far to the right, only a little
+        // above the top: horizontal overflow (200) dominates vertical (10), so
+        // it reads as Right.
         let m = edge_mist_for(vp(), Point::new(300.0, -10.0)).expect("corner");
         assert_eq!(m.edge, MistEdge::Right);
-
         // Flip it: far above, only a little to the right → Top.
         let m2 = edge_mist_for(vp(), Point::new(110.0, -300.0)).expect("corner2");
         assert_eq!(m2.edge, MistEdge::Top);

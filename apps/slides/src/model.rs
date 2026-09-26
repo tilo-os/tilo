@@ -947,37 +947,49 @@ fn seed_slide_closing() -> Slide {
 mod tests {
     use super::*;
 
+    /// Seed deck, z increments, kind/align round-trips and palette role fallback.
     #[test]
-    fn seed_deck_has_designed_slides() {
-        let d = seed_deck();
-        assert_eq!(d.slides.len(), 5);
-        // Every slide has at least one element.
-        for s in &d.slides {
-            assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
+    fn deck_model_seeds_orders_and_round_trips_kinds() {
+        // Case `seed_deck_has_designed_slides`.
+        {
+            let d = seed_deck();
+            assert_eq!(d.slides.len(), 5);
+            // Every slide has at least one element.
+            for s in &d.slides {
+                assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
+            }
         }
-    }
 
-    #[test]
-    fn add_element_increments_z() {
-        let mut s = Slide::new(Layout::Blank);
-        let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
-        let b = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
-        assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
-    }
-
-    #[test]
-    fn kind_and_align_round_trip() {
-        for k in [
-            ElementKind::Text,
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
-        ] {
-            assert_eq!(ElementKind::from_str(k.as_str()), k);
+        // Case `add_element_increments_z`.
+        {
+            let mut s = Slide::new(Layout::Blank);
+            let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
+            let b = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
+            assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
         }
-        for a in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
-            assert_eq!(TextAlign::from_str(a.as_str()), a);
+
+        // Case `kind_and_align_round_trip`.
+        {
+            for k in [
+                ElementKind::Text,
+                ElementKind::Rect,
+                ElementKind::Ellipse,
+                ElementKind::Line,
+                ElementKind::Image,
+            ] {
+                assert_eq!(ElementKind::from_str(k.as_str()), k);
+            }
+            for a in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+                assert_eq!(TextAlign::from_str(a.as_str()), a);
+            }
+        }
+
+        // Case `palette_resolves_none_role`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let p = Palette::resolve(PaletteKind::Indigo, &theme);
+            assert!(p.resolve_role("none").is_none());
+            assert!(p.resolve_role("accent").is_some());
         }
     }
 
@@ -1057,13 +1069,5 @@ mod tests {
         let surface = palette.on(Background::Surface);
         assert_eq!(surface.text, palette.text);
         assert_eq!(surface.text_dim, palette.text_dim);
-    }
-
-    #[test]
-    fn palette_resolves_none_role() {
-        let theme = ui::theme::Theme::dark();
-        let p = Palette::resolve(PaletteKind::Indigo, &theme);
-        assert!(p.resolve_role("none").is_none());
-        assert!(p.resolve_role("accent").is_some());
     }
 }

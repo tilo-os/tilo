@@ -20,6 +20,18 @@ authorize = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(authorize)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class SigningSpoolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -126,213 +138,216 @@ class SigningSpoolTests(unittest.TestCase):
             reservation, self.work / 'out', self.home / 'signer', request['request_id'],
             request['operation'], request['input_sha256'], verification_sha256)
 
-    def test_real_rsa_remote_adapter_roundtrip_and_replay_rejection(self):
-        data = b'x' * 40
-        source = self.work / 'policy-message'
-        source.write_bytes(data)
-        destination = self.work / 'out' / 'signature'
-        errors = []
-        def remote():
-            try:
-                spool.remote_sign(self.config, 'sign-sha256-rsa-pkcs1', source, destination)
-            except Exception as error:
-                errors.append(error)
-        thread = threading.Thread(target=remote)
-        thread.start()
-        deadline = time.monotonic() + 2
-        requests = []
-        while not requests and time.monotonic() < deadline:
-            requests = list((self.work / 'spool').glob('*/request.json'))
-            time.sleep(0.01)
-        self.assertEqual(len(requests), 1)
-        policy = self.policy(data)
-        receipt = self.service(requests[0].parent, policy)
-        thread.join(timeout=5)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(errors, [])
-        self.assertFalse(receipt['private_keys_transferred'])
-        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
-                          str(self.home / 'pcr.pub'), str(source), str(destination)])
-        with self.assertRaises(FileExistsError):
-            self.service(requests[0].parent, policy)
-        with self.assertRaisesRegex(ValueError, 'already consumed'):
-            self.service(self.request(data, '2' * 32), policy)
+    def test_remote_adapter_and_response_verification(self):
+        with self.subTest(phase="real_rsa_remote_adapter_roundtrip_and_replay_rejection"):
+            data = b'x' * 40
+            source = self.work / 'policy-message'
+            source.write_bytes(data)
+            destination = self.work / 'out' / 'signature'
+            errors = []
+            def remote():
+                try:
+                    spool.remote_sign(self.config, 'sign-sha256-rsa-pkcs1', source, destination)
+                except Exception as error:
+                    errors.append(error)
+            thread = threading.Thread(target=remote)
+            thread.start()
+            deadline = time.monotonic() + 2
+            requests = []
+            while not requests and time.monotonic() < deadline:
+                requests = list((self.work / 'spool').glob('*/request.json'))
+                time.sleep(0.01)
+            self.assertEqual(len(requests), 1)
+            policy = self.policy(data)
+            receipt = self.service(requests[0].parent, policy)
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertFalse(receipt['private_keys_transferred'])
+            spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                              str(self.home / 'pcr.pub'), str(source), str(destination)])
+            with self.assertRaises(FileExistsError):
+                self.service(requests[0].parent, policy)
+            with self.assertRaisesRegex(ValueError, 'already consumed'):
+                self.service(self.request(data, '2' * 32), policy)
+        restart_fixture(self)
+        with self.subTest(phase="actual_efi_response_verified_with_fixture_certificate"):
+            data = synthetic_uki('aarch64')
+            request = self.request(data, operation='sign-efi')
+            self.service(request, self.policy(data, 'uki', 'sign-efi'))
+            spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi',
+                              str(self.home / 'efi-signing.crt'), str(request / 'output')])
+        restart_fixture(self)
+        with self.subTest(phase="cross_request_response_rejected_without_output"):
+            source = self.work / 'message'
+            source.write_bytes(b'x' * 40)
+            destination = self.work / 'out' / 'signature'
+            errors = []
+            def remote():
+                try:
+                    spool.remote_sign(self.config, 'sign-sha256-rsa-pkcs1', source, destination)
+                except Exception as error:
+                    errors.append(error)
+            thread = threading.Thread(target=remote)
+            thread.start()
+            deadline = time.monotonic() + 2
+            requests = []
+            while not requests and time.monotonic() < deadline:
+                requests = list((self.work / 'spool').glob('*/request.json'))
+                time.sleep(0.01)
+            self.assertEqual(len(requests), 1)
+            directory = requests[0].parent
+            metadata = json.loads(requests[0].read_text())
+            response = {k: metadata[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
+            response.update(request_id='0' * 32, output_sha256='0' * 64, output_bytes=256)
+            spool.publish(directory / 'response.json', spool.canonical(response))
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], ValueError)
+            self.assertFalse(destination.exists())
+        restart_fixture(self)
+        with self.subTest(phase="authorization_checks_exact_hash_architecture_and_seal"):
+            source = self.work / 'target.efi'
+            data = synthetic_uki('aarch64')
+            source.write_bytes(data)
+            kwargs = dict(identifier='test-uki', purpose='uki', source=source, expected_sha256=spool.digest(data),
+                          architecture='aarch64', prepared_input=self.work / 'out' / 'prepared', generation=7, composefs_digest='a' * 128)
+            row = authorize.authorize(**kwargs)
+            self.assertEqual(row['input_sha256'], spool.digest(data))
+            for changes in ({'expected_sha256': '0' * 64}, {'architecture': 'x86_64'}, {'composefs_digest': 'b' * 128}):
+                with self.assertRaises(ValueError):
+                    authorize.authorize(**(kwargs | changes))
 
-    def test_actual_efi_response_verified_with_fixture_certificate(self):
-        data = synthetic_uki('aarch64')
-        request = self.request(data, operation='sign-efi')
-        self.service(request, self.policy(data, 'uki', 'sign-efi'))
-        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi',
-                          str(self.home / 'efi-signing.crt'), str(request / 'output')])
-
-    def test_interrupted_reservation_recovery_signs_verifies_and_publishes_once(self):
-        reservation, request, verification_sha256 = self.interrupted_reservation()
-        receipt = self.recover(reservation, request, verification_sha256)
-        self.assertTrue(receipt['recovered'])
-        self.assertEqual(spool.document(reservation / 'complete.json'),
-                         spool.document(self.work / 'out' / 'response.json'))
-        self.assertEqual((reservation / 'output').read_bytes(), (self.work / 'out' / 'output').read_bytes())
-        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
-                          str(self.home / 'pcr.pub'), str(reservation / 'input'),
-                          str(self.work / 'out' / 'output')])
-        with self.assertRaisesRegex(ValueError, 'exact incomplete'):
-            self.recover(reservation, request, verification_sha256)
-
-    def test_recovery_rejects_completed_nonzero_and_mismatched_reservations_before_signing(self):
-        cases = ('complete', 'nonzero', 'request-id', 'input-hash', 'verification-hash')
-        for index, case in enumerate(cases):
-            with self.subTest(case=case):
-                nonce = format(index + 4, 'x') * 32
-                reservation, request, verification_sha256 = self.interrupted_reservation(
-                    nonce=nonce, identifier='recovery-' + case)
-                if case == 'complete':
-                    (reservation / 'complete.json').write_bytes(b'{}')
-                elif case == 'nonzero':
-                    (reservation / 'output').write_bytes(b'ambiguous')
-                elif case == 'request-id':
-                    request = request | {'request_id': 'f' * 32}
-                elif case == 'input-hash':
-                    request = request | {'input_sha256': 'f' * 64}
-                else:
-                    verification_sha256 = 'f' * 64
-                with patch.object(spool.signer, 'run') as run, self.assertRaises((OSError, ValueError)):
-                    self.recover(reservation, request, verification_sha256)
-                run.assert_not_called()
-
-    def test_recovery_commits_retry_marker_before_signer_and_never_retries_it(self):
-        reservation, request, verification_sha256 = self.interrupted_reservation()
-        with patch.object(spool.signer, 'run', side_effect=ValueError('simulated interruption')) as run:
-            with self.assertRaisesRegex(ValueError, 'simulated interruption'):
+    def test_reservation_recovery(self):
+        with self.subTest(phase="interrupted_reservation_recovery_signs_verifies_and_publishes_once"):
+            reservation, request, verification_sha256 = self.interrupted_reservation()
+            receipt = self.recover(reservation, request, verification_sha256)
+            self.assertTrue(receipt['recovered'])
+            self.assertEqual(spool.document(reservation / 'complete.json'),
+                             spool.document(self.work / 'out' / 'response.json'))
+            self.assertEqual((reservation / 'output').read_bytes(), (self.work / 'out' / 'output').read_bytes())
+            spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                              str(self.home / 'pcr.pub'), str(reservation / 'input'),
+                              str(self.work / 'out' / 'output')])
+            with self.assertRaisesRegex(ValueError, 'exact incomplete'):
                 self.recover(reservation, request, verification_sha256)
-        self.assertEqual(run.call_count, 1)
-        self.assertEqual(spool.document(reservation / 'recovery.json')['request_id'], request['request_id'])
-        with patch.object(spool.signer, 'run') as second_run, self.assertRaisesRegex(ValueError, 'exact incomplete'):
-            self.recover(reservation, request, verification_sha256)
-        second_run.assert_not_called()
+        restart_fixture(self)
+        with self.subTest(phase="recovery_rejects_completed_nonzero_and_mismatched_reservations_before_signing"):
+            cases = ('complete', 'nonzero', 'request-id', 'input-hash', 'verification-hash')
+            for index, case in enumerate(cases):
+                with self.subTest(case=case):
+                    nonce = format(index + 4, 'x') * 32
+                    reservation, request, verification_sha256 = self.interrupted_reservation(
+                        nonce=nonce, identifier='recovery-' + case)
+                    if case == 'complete':
+                        (reservation / 'complete.json').write_bytes(b'{}')
+                    elif case == 'nonzero':
+                        (reservation / 'output').write_bytes(b'ambiguous')
+                    elif case == 'request-id':
+                        request = request | {'request_id': 'f' * 32}
+                    elif case == 'input-hash':
+                        request = request | {'input_sha256': 'f' * 64}
+                    else:
+                        verification_sha256 = 'f' * 64
+                    with patch.object(spool.signer, 'run') as run, self.assertRaises((OSError, ValueError)):
+                        self.recover(reservation, request, verification_sha256)
+                    run.assert_not_called()
+        restart_fixture(self)
+        with self.subTest(phase="recovery_commits_retry_marker_before_signer_and_never_retries_it"):
+            reservation, request, verification_sha256 = self.interrupted_reservation()
+            with patch.object(spool.signer, 'run', side_effect=ValueError('simulated interruption')) as run:
+                with self.assertRaisesRegex(ValueError, 'simulated interruption'):
+                    self.recover(reservation, request, verification_sha256)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(spool.document(reservation / 'recovery.json')['request_id'], request['request_id'])
+            with patch.object(spool.signer, 'run') as second_run, self.assertRaisesRegex(ValueError, 'exact incomplete'):
+                self.recover(reservation, request, verification_sha256)
+            second_run.assert_not_called()
+        restart_fixture(self)
+        with self.subTest(phase="reservation_is_fsynced_before_private_key_use"):
+            data = b'x' * 40
+            request = self.request(data)
+            policy = self.policy(data)
+            synced = []
+            original_sync = spool.sync_directory
+            original_run = spool.signer.run
+            def sync(directory):
+                synced.append(Path(directory))
+                original_sync(directory)
+            def run(arguments, **kwargs):
+                if arguments[0] == str(self.home / 'signer'):
+                    used = self.work / 'state' / spool.context(self.context)
+                    self.assertIn(self.work / 'state', synced)
+                    self.assertIn(used, synced)
+                    self.assertIn(used / 'authorization-fixture-operation', synced)
+                return original_run(arguments, **kwargs)
+            with patch.object(spool, 'sync_directory', side_effect=sync), patch.object(spool.signer, 'run', side_effect=run):
+                self.service(request, policy)
 
-    def test_mismatched_input_and_context_never_reserve_authorization(self):
-        data = b'x' * 40
-        policy = self.policy(data)
-        request = self.request(data)
-        (request / 'input').write_bytes(b'y' * 40)
-        with self.assertRaisesRegex(ValueError, 'changed'):
-            self.service(request, policy)
-        (request / 'input').write_bytes(data)
-        metadata = json.loads((request / 'request.json').read_text())
-        metadata['context_sha256'] = '0' * 64
-        (request / 'request.json').write_bytes(spool.canonical(metadata))
-        with self.assertRaisesRegex(ValueError, 'another signing context'):
-            self.service(request, policy)
-        self.assertEqual(list((self.work / 'state').iterdir()), [])
-
-    def test_unapproved_bytes_symlink_and_size_fail_closed(self):
-        data = b'x' * 40
-        policy = self.policy(data)
-        request = self.request(b'y' * 40)
-        with self.assertRaisesRegex(ValueError, 'not explicitly authorized'):
-            self.service(request, policy)
-        (request / 'input').unlink()
-        (request / 'input').symlink_to(self.home / 'pcr-signing.key')
-        with self.assertRaises(OSError):
-            self.service(request, policy)
-        metadata = json.loads((request / 'request.json').read_text())
-        metadata['input_bytes'] = spool.MAX_INPUT + 1
-        (request / 'request.json').write_bytes(spool.canonical(metadata))
-        with self.assertRaisesRegex(ValueError, 'invalid signing request'):
-            self.service(request, policy)
-
-    def test_publication_is_single_link_before_directory_sync_and_never_overwrites(self):
-        path = self.work / 'out' / 'request.json'
-        original_sync = spool.sync_directory
-        observed = []
-        def observe(directory):
-            if path.exists():
-                observed.append((path.stat().st_nlink, spool.document(path)))
-            original_sync(directory)
-        with patch.object(spool, 'sync_directory', side_effect=observe):
-            spool.publish(path, b'{"schema":1}')
-        self.assertEqual(observed, [(1, {'schema': 1})])
-        with self.assertRaises(OSError):
-            spool.publish(path, b'{"schema":2}')
-        self.assertEqual(spool.document(path), {'schema': 1})
-
-    def test_reservation_is_fsynced_before_private_key_use(self):
-        data = b'x' * 40
-        request = self.request(data)
-        policy = self.policy(data)
-        synced = []
-        original_sync = spool.sync_directory
-        original_run = spool.signer.run
-        def sync(directory):
-            synced.append(Path(directory))
-            original_sync(directory)
-        def run(arguments, **kwargs):
-            if arguments[0] == str(self.home / 'signer'):
-                used = self.work / 'state' / spool.context(self.context)
-                self.assertIn(self.work / 'state', synced)
-                self.assertIn(used, synced)
-                self.assertIn(used / 'authorization-fixture-operation', synced)
-            return original_run(arguments, **kwargs)
-        with patch.object(spool, 'sync_directory', side_effect=sync), patch.object(spool.signer, 'run', side_effect=run):
-            self.service(request, policy)
-
-    def test_readonly_signer_home_real_private_mount_namespace(self):
-        source = self.work / 'message'
-        source.write_bytes(b'x' * 40)
-        output = self.work / 'out' / 'readonly-signature'
-        script = """import subprocess,sys
+    def test_input_and_publication_safety(self):
+        with self.subTest(phase="mismatched_input_and_context_never_reserve_authorization"):
+            data = b'x' * 40
+            policy = self.policy(data)
+            request = self.request(data)
+            (request / 'input').write_bytes(b'y' * 40)
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                self.service(request, policy)
+            (request / 'input').write_bytes(data)
+            metadata = json.loads((request / 'request.json').read_text())
+            metadata['context_sha256'] = '0' * 64
+            (request / 'request.json').write_bytes(spool.canonical(metadata))
+            with self.assertRaisesRegex(ValueError, 'another signing context'):
+                self.service(request, policy)
+            self.assertEqual(list((self.work / 'state').iterdir()), [])
+        restart_fixture(self)
+        with self.subTest(phase="unapproved_bytes_symlink_and_size_fail_closed"):
+            data = b'x' * 40
+            policy = self.policy(data)
+            request = self.request(b'y' * 40)
+            with self.assertRaisesRegex(ValueError, 'not explicitly authorized'):
+                self.service(request, policy)
+            (request / 'input').unlink()
+            (request / 'input').symlink_to(self.home / 'pcr-signing.key')
+            with self.assertRaises(OSError):
+                self.service(request, policy)
+            metadata = json.loads((request / 'request.json').read_text())
+            metadata['input_bytes'] = spool.MAX_INPUT + 1
+            (request / 'request.json').write_bytes(spool.canonical(metadata))
+            with self.assertRaisesRegex(ValueError, 'invalid signing request'):
+                self.service(request, policy)
+        restart_fixture(self)
+        with self.subTest(phase="publication_is_single_link_before_directory_sync_and_never_overwrites"):
+            path = self.work / 'out' / 'request.json'
+            original_sync = spool.sync_directory
+            observed = []
+            def observe(directory):
+                if path.exists():
+                    observed.append((path.stat().st_nlink, spool.document(path)))
+                original_sync(directory)
+            with patch.object(spool, 'sync_directory', side_effect=observe):
+                spool.publish(path, b'{"schema":1}')
+            self.assertEqual(observed, [(1, {'schema': 1})])
+            with self.assertRaises(OSError):
+                spool.publish(path, b'{"schema":2}')
+            self.assertEqual(spool.document(path), {'schema': 1})
+        restart_fixture(self)
+        with self.subTest(phase="readonly_signer_home_real_private_mount_namespace"):
+            source = self.work / 'message'
+            source.write_bytes(b'x' * 40)
+            output = self.work / 'out' / 'readonly-signature'
+            script = """import subprocess,sys
 home,source,destination=sys.argv[1:]
 subprocess.run(['mount','--bind',home,home],check=True)
 subprocess.run(['mount','-o','remount,bind,ro',home],check=True)
 subprocess.run([home+'/signer','sign-sha256-rsa-pkcs1',source,destination],check=True)
 """
-        result = subprocess.run(['/usr/bin/unshare', '--mount', '--propagation', 'private',
-                                 '/usr/bin/python3', '-c', script, str(self.home), str(source), str(output)],
-                                capture_output=True, timeout=30)
-        self.assertEqual(result.returncode, 0, 'fixture signer failed with actual read-only home')
-        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
-                          str(self.home / 'pcr.pub'), str(source), str(output)])
-
-    def test_cross_request_response_rejected_without_output(self):
-        source = self.work / 'message'
-        source.write_bytes(b'x' * 40)
-        destination = self.work / 'out' / 'signature'
-        errors = []
-        def remote():
-            try:
-                spool.remote_sign(self.config, 'sign-sha256-rsa-pkcs1', source, destination)
-            except Exception as error:
-                errors.append(error)
-        thread = threading.Thread(target=remote)
-        thread.start()
-        deadline = time.monotonic() + 2
-        requests = []
-        while not requests and time.monotonic() < deadline:
-            requests = list((self.work / 'spool').glob('*/request.json'))
-            time.sleep(0.01)
-        self.assertEqual(len(requests), 1)
-        directory = requests[0].parent
-        metadata = json.loads(requests[0].read_text())
-        response = {k: metadata[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
-        response.update(request_id='0' * 32, output_sha256='0' * 64, output_bytes=256)
-        spool.publish(directory / 'response.json', spool.canonical(response))
-        thread.join(timeout=5)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(len(errors), 1)
-        self.assertIsInstance(errors[0], ValueError)
-        self.assertFalse(destination.exists())
-
-    def test_authorization_checks_exact_hash_architecture_and_seal(self):
-        source = self.work / 'target.efi'
-        data = synthetic_uki('aarch64')
-        source.write_bytes(data)
-        kwargs = dict(identifier='test-uki', purpose='uki', source=source, expected_sha256=spool.digest(data),
-                      architecture='aarch64', prepared_input=self.work / 'out' / 'prepared', generation=7, composefs_digest='a' * 128)
-        row = authorize.authorize(**kwargs)
-        self.assertEqual(row['input_sha256'], spool.digest(data))
-        for changes in ({'expected_sha256': '0' * 64}, {'architecture': 'x86_64'}, {'composefs_digest': 'b' * 128}):
-            with self.assertRaises(ValueError):
-                authorize.authorize(**(kwargs | changes))
+            result = subprocess.run(['/usr/bin/unshare', '--mount', '--propagation', 'private',
+                                     '/usr/bin/python3', '-c', script, str(self.home), str(source), str(output)],
+                                    capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, 'fixture signer failed with actual read-only home')
+            spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                              str(self.home / 'pcr.pub'), str(source), str(output)])
 
 if __name__ == '__main__':
     unittest.main()

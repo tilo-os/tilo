@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
-mod typed_peer;
+use crate::typed_peer;
 use typed_peer::TypedPeer;
 
 fn hello(handle: &str) -> CollabRequest {

@@ -46,11 +46,15 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 pub mod continuity;
+pub mod day_schedule;
 pub mod display_identify;
 pub mod display_mode;
+pub mod display_tools;
 pub mod hardware;
+pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
+pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 
@@ -251,226 +255,229 @@ mod tests {
     // Path resolution: the divergence this crate ends
 
     #[test]
-    fn an_absolute_xdg_config_home_wins() {
-        let dir = tmpdir();
-        assert_eq!(
-            config_root_from(Some(dir.as_os_str()), Some("/home/ada".as_ref())),
-            Some(dir.join("tilo"))
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_relative_xdg_config_home_is_ignored_not_joined() {
-        // The live bug: hand-rolled resolvers joined a relative value verbatim, so `settings.json`
-        // moved with the working directory while `dirs::config_dir()` readers stayed on
-        // `$HOME/.config` — one file, two locations, silently.
-        let root = config_root_from(Some("relative/config".as_ref()), Some("/home/ada".as_ref()))
-            .expect("falls back to $HOME/.config");
-        assert!(
-            root.is_absolute(),
-            "a settings path must never be relative: {root:?}"
-        );
-        assert_eq!(root, Path::new("/home/ada/.config/tilo"));
-    }
-
-    #[test]
-    fn an_empty_xdg_config_home_is_ignored() {
-        assert_eq!(
-            config_root_from(Some("".as_ref()), Some("/home/ada".as_ref())),
-            Some(PathBuf::from("/home/ada/.config/tilo"))
-        );
-        assert_eq!(
-            config_root_from(None, None),
-            None,
-            "no usable variable and no home names no config root"
-        );
-    }
-
-    #[test]
-    fn the_configured_root_applies_the_same_rules_to_the_process_environment() {
-        let home = xdg_paths::home();
-        assert_eq!(
-            config_root(),
-            config_root_from(
-                std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-                home.as_deref().map(Path::as_os_str),
-            )
-        );
+    fn config_root_resolution_accepts_only_absolute_xdg_paths() {
+        // Phase `an_absolute_xdg_config_home_wins`.
+        {
+            let dir = tmpdir();
+            assert_eq!(
+                config_root_from(Some(dir.as_os_str()), Some("/home/ada".as_ref())),
+                Some(dir.join("tilo"))
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `a_relative_xdg_config_home_is_ignored_not_joined`.
+        {
+            // The live bug: hand-rolled resolvers joined a relative value verbatim, so `settings.json`
+            // moved with the working directory while `dirs::config_dir()` readers stayed on
+            // `$HOME/.config` — one file, two locations, silently.
+            let root =
+                config_root_from(Some("relative/config".as_ref()), Some("/home/ada".as_ref()))
+                    .expect("falls back to $HOME/.config");
+            assert!(
+                root.is_absolute(),
+                "a settings path must never be relative: {root:?}"
+            );
+            assert_eq!(root, Path::new("/home/ada/.config/tilo"));
+        }
+        // Phase `an_empty_xdg_config_home_is_ignored`.
+        {
+            assert_eq!(
+                config_root_from(Some("".as_ref()), Some("/home/ada".as_ref())),
+                Some(PathBuf::from("/home/ada/.config/tilo"))
+            );
+            assert_eq!(
+                config_root_from(None, None),
+                None,
+                "no usable variable and no home names no config root"
+            );
+        }
+        // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
+        {
+            let home = xdg_paths::home();
+            assert_eq!(
+                config_root(),
+                config_root_from(
+                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+                    home.as_deref().map(Path::as_os_str),
+                )
+            );
+        }
     }
 
     // Forgiving reads
 
     #[test]
-    fn broken_documents_read_as_no_settings() {
-        for text in ["", "not json {", "[1,2,3]", "null", "\"a string\""] {
-            assert!(parse(text).is_empty(), "{text:?} must read as no settings");
-            assert!(section(text, "display").is_empty());
+    fn reads_forgive_broken_missing_and_mistyped_documents() {
+        // Phase `broken_documents_read_as_no_settings`.
+        {
+            for text in ["", "not json {", "[1,2,3]", "null", "\"a string\""] {
+                assert!(parse(text).is_empty(), "{text:?} must read as no settings");
+                assert!(section(text, "display").is_empty());
+            }
         }
-    }
+        // Phase `a_missing_file_reads_as_no_settings`.
+        {
+            let dir = tmpdir();
+            assert!(load_at(&dir.join("absent.json")).is_empty());
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `a_section_of_the_wrong_type_reads_as_absent`.
+        {
+            let text = r#"{"display": 3, "region": ["x"], "power": {"idle": 5}}"#;
+            assert!(
+                section(text, "display").is_empty(),
+                "a number is not a section"
+            );
+            assert!(
+                section(text, "region").is_empty(),
+                "an array is not a section"
+            );
+            assert_eq!(section(text, "power").get("idle"), Some(&json!(5)));
+        }
+        // Phase `typed_readers_clamp_and_fall_back`.
+        {
+            let doc = parse(r#"{"display":{"scale":1.5,"mode":"dark","hidpi":true,"bad":"x"}}"#);
+            assert_eq!(f64_in(&doc, "display", "scale", 0.5..=3.0, 1.0), 1.5);
+            // Out of range → the default, never the stored value.
+            assert_eq!(f64_in(&doc, "display", "scale", 0.5..=1.2, 1.0), 1.0);
+            // Wrong type and absent both → the default.
+            assert_eq!(f64_in(&doc, "display", "bad", 0.0..=9.0, 7.0), 7.0);
+            assert_eq!(f64_in(&doc, "display", "nope", 0.0..=9.0, 7.0), 7.0);
+            assert_eq!(f64_in(&doc, "absent", "scale", 0.0..=9.0, 7.0), 7.0);
 
-    #[test]
-    fn a_missing_file_reads_as_no_settings() {
-        let dir = tmpdir();
-        assert!(load_at(&dir.join("absent.json")).is_empty());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_section_of_the_wrong_type_reads_as_absent() {
-        let text = r#"{"display": 3, "region": ["x"], "power": {"idle": 5}}"#;
-        assert!(
-            section(text, "display").is_empty(),
-            "a number is not a section"
-        );
-        assert!(
-            section(text, "region").is_empty(),
-            "an array is not a section"
-        );
-        assert_eq!(section(text, "power").get("idle"), Some(&json!(5)));
-    }
-
-    #[test]
-    fn typed_readers_clamp_and_fall_back() {
-        let doc = parse(r#"{"display":{"scale":1.5,"mode":"dark","hidpi":true,"bad":"x"}}"#);
-        assert_eq!(f64_in(&doc, "display", "scale", 0.5..=3.0, 1.0), 1.5);
-        // Out of range → the default, never the stored value.
-        assert_eq!(f64_in(&doc, "display", "scale", 0.5..=1.2, 1.0), 1.0);
-        // Wrong type and absent both → the default.
-        assert_eq!(f64_in(&doc, "display", "bad", 0.0..=9.0, 7.0), 7.0);
-        assert_eq!(f64_in(&doc, "display", "nope", 0.0..=9.0, 7.0), 7.0);
-        assert_eq!(f64_in(&doc, "absent", "scale", 0.0..=9.0, 7.0), 7.0);
-
-        assert_eq!(str_at(&doc, "display", "mode"), Some("dark"));
-        assert_eq!(
-            str_at(&doc, "display", "scale"),
-            None,
-            "a number is not a string"
-        );
-        assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
-        assert_eq!(bool_at(&doc, "display", "mode"), None);
+            assert_eq!(str_at(&doc, "display", "mode"), Some("dark"));
+            assert_eq!(
+                str_at(&doc, "display", "scale"),
+                None,
+                "a number is not a string"
+            );
+            assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
+            assert_eq!(bool_at(&doc, "display", "mode"), None);
+        }
     }
 
     // Non-destructive writes
 
     #[test]
-    fn writing_one_section_preserves_every_other() {
-        // The reason writes merge: the panes are separate binaries, and one that serialised its
-        // own view would drop the sections it predates.
-        let dir = tmpdir();
-        let path = dir.join("settings.json");
-        std::fs::write(
-            &path,
-            r#"{"version":1,"display":{"scale":1.5},"region":{"units":"imperial"}}"#,
-        )
-        .unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn section_writes_merge_preserve_and_repair_atomically() {
+        // Phase `writing_one_section_preserves_every_other`.
+        {
+            // The reason writes merge: the panes are separate binaries, and one that serialised its
+            // own view would drop the sections it predates.
+            let dir = tmpdir();
+            let path = dir.join("settings.json");
+            std::fs::write(
+                &path,
+                r#"{"version":1,"display":{"scale":1.5},"region":{"units":"imperial"}}"#,
+            )
+            .unwrap();
 
-        let mut vals = Map::new();
-        vals.insert("idle_suspend".into(), json!(600));
-        update_section_at(&path, "power", vals).unwrap();
+            let mut vals = Map::new();
+            vals.insert("idle_suspend".into(), json!(600));
+            update_section_at(&path, "power", vals).unwrap();
 
-        let doc = load_at(&path);
-        assert_eq!(doc.get("version"), Some(&json!(1)), "unknown keys survive");
-        assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.5);
-        assert_eq!(str_at(&doc, "region", "units"), Some("imperial"));
-        assert_eq!(
-            doc.get("power").unwrap().get("idle_suspend"),
-            Some(&json!(600))
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
+            let doc = load_at(&path);
+            assert_eq!(doc.get("version"), Some(&json!(1)), "unknown keys survive");
+            assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.5);
+            assert_eq!(str_at(&doc, "region", "units"), Some("imperial"));
+            assert_eq!(
+                doc.get("power").unwrap().get("idle_suspend"),
+                Some(&json!(600))
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `writing_a_section_merges_into_it_rather_than_replacing_it`.
+        {
+            let dir = tmpdir();
+            let path = dir.join("settings.json");
+            std::fs::write(&path, r#"{"region":{"units":"metric","first_day":"mon"}}"#).unwrap();
 
-    #[test]
-    fn writing_a_section_merges_into_it_rather_than_replacing_it() {
-        let dir = tmpdir();
-        let path = dir.join("settings.json");
-        std::fs::write(&path, r#"{"region":{"units":"metric","first_day":"mon"}}"#).unwrap();
+            let mut vals = Map::new();
+            vals.insert("units".into(), json!("imperial"));
+            update_section_at(&path, "region", vals).unwrap();
 
-        let mut vals = Map::new();
-        vals.insert("units".into(), json!("imperial"));
-        update_section_at(&path, "region", vals).unwrap();
+            let doc = load_at(&path);
+            assert_eq!(
+                str_at(&doc, "region", "units"),
+                Some("imperial"),
+                "the write lands"
+            );
+            assert_eq!(
+                str_at(&doc, "region", "first_day"),
+                Some("mon"),
+                "a key the writer did not mention must survive"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `writing_creates_the_directory_and_the_file`.
+        {
+            let dir = tmpdir();
+            let path = dir.join("nested").join("deeper").join("settings.json");
+            let mut vals = Map::new();
+            vals.insert("scale".into(), json!(2.0));
+            update_section_at(&path, "display", vals).unwrap();
+            assert_eq!(
+                f64_in(&load_at(&path), "display", "scale", 0.0..=9.0, 0.0),
+                2.0
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `writing_over_a_corrupt_file_does_not_propagate_the_corruption`.
+        {
+            let dir = tmpdir();
+            let path = dir.join("settings.json");
+            std::fs::write(&path, "{ truncated").unwrap();
 
-        let doc = load_at(&path);
-        assert_eq!(
-            str_at(&doc, "region", "units"),
-            Some("imperial"),
-            "the write lands"
-        );
-        assert_eq!(
-            str_at(&doc, "region", "first_day"),
-            Some("mon"),
-            "a key the writer did not mention must survive"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
+            let mut vals = Map::new();
+            vals.insert("scale".into(), json!(1.25));
+            update_section_at(&path, "display", vals).unwrap();
 
-    #[test]
-    fn writing_creates_the_directory_and_the_file() {
-        let dir = tmpdir();
-        let path = dir.join("nested").join("deeper").join("settings.json");
-        let mut vals = Map::new();
-        vals.insert("scale".into(), json!(2.0));
-        update_section_at(&path, "display", vals).unwrap();
-        assert_eq!(
-            f64_in(&load_at(&path), "display", "scale", 0.0..=9.0, 0.0),
-            2.0
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
+            let doc = load_at(&path);
+            assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.25);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `a_section_stored_as_the_wrong_type_is_replaced_on_write`.
+        {
+            let dir = tmpdir();
+            let path = dir.join("settings.json");
+            std::fs::write(&path, r#"{"display": "not an object", "keep": 1}"#).unwrap();
 
-    #[test]
-    fn writing_over_a_corrupt_file_does_not_propagate_the_corruption() {
-        let dir = tmpdir();
-        let path = dir.join("settings.json");
-        std::fs::write(&path, "{ truncated").unwrap();
+            let mut vals = Map::new();
+            vals.insert("scale".into(), json!(1.0));
+            update_section_at(&path, "display", vals).unwrap();
 
-        let mut vals = Map::new();
-        vals.insert("scale".into(), json!(1.25));
-        update_section_at(&path, "display", vals).unwrap();
-
-        let doc = load_at(&path);
-        assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.25);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_section_stored_as_the_wrong_type_is_replaced_on_write() {
-        let dir = tmpdir();
-        let path = dir.join("settings.json");
-        std::fs::write(&path, r#"{"display": "not an object", "keep": 1}"#).unwrap();
-
-        let mut vals = Map::new();
-        vals.insert("scale".into(), json!(1.0));
-        update_section_at(&path, "display", vals).unwrap();
-
-        let doc = load_at(&path);
-        assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.0);
-        assert_eq!(
-            doc.get("keep"),
-            Some(&json!(1)),
-            "other sections still survive"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn no_temp_file_is_left_behind() {
-        let dir = tmpdir();
-        let path = dir.join("settings.json");
-        let mut vals = Map::new();
-        vals.insert("scale".into(), json!(1.0));
-        update_section_at(&path, "display", vals).unwrap();
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(std::result::Result::ok)
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| {
-                Path::new(n)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
-            })
-            .collect();
-        assert!(leftovers.is_empty(), "atomic write left {leftovers:?}");
-        std::fs::remove_dir_all(&dir).ok();
+            let doc = load_at(&path);
+            assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.0);
+            assert_eq!(
+                doc.get("keep"),
+                Some(&json!(1)),
+                "other sections still survive"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Phase `no_temp_file_is_left_behind`.
+        {
+            let dir = tmpdir();
+            let path = dir.join("settings.json");
+            let mut vals = Map::new();
+            vals.insert("scale".into(), json!(1.0));
+            update_section_at(&path, "display", vals).unwrap();
+            let leftovers: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| {
+                    Path::new(n)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+                })
+                .collect();
+            assert!(leftovers.is_empty(), "atomic write left {leftovers:?}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 }

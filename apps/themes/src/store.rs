@@ -170,96 +170,101 @@ mod tests {
     use super::*;
     use crate::model::{presets, seed_custom};
 
+    /// The appearance store: merge preserving foreign keys, document and file round-trips, and garbage input.
     #[test]
-    fn merge_writes_appearance_and_preserves_foreign_keys() {
-        let existing = r#"{"version":1,"locale":{"currency":"EUR"},"audio":{"event_sounds":true},"appearance":{"high_contrast":true,"text_scale":1.25}}"#;
-        let spec = seed_custom();
-        let out = to_json_merged(&spec, existing);
-        // Our section landed with the id + a nested full theme.
-        assert_eq!(active_id(&out).as_deref(), Some("sunset"));
-        assert!(
-            out.contains("\"appearance\""),
-            "appearance section present: {out}"
-        );
-        // Foreign sections survive untouched.
-        assert!(
-            out.contains("\"currency\": \"EUR\""),
-            "locale survived: {out}"
-        );
-        assert!(
-            out.contains("\"event_sounds\": true"),
-            "audio survived: {out}"
-        );
-        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(root["appearance"]["high_contrast"], true);
-        assert_eq!(root["appearance"]["text_scale"], 1.25);
-        assert_eq!(root["appearance"]["theme"], "custom:sunset");
-        let runtime = ui::Theme::from_settings_json(&out).expect("runtime consumes custom theme");
-        assert_eq!(runtime.name, spec.name);
-        assert_eq!(runtime.accent_primary, spec.to_theme().accent_primary);
-        assert_eq!(runtime.tokens.radii.md, spec.radius_px());
-    }
-
-    #[test]
-    fn active_spec_round_trips_through_the_document() {
-        let spec = presets()[3].clone(); // Dracula
-        let out = to_json_merged(&spec, "");
-        let back = active_spec(&out).expect("appearance.theme parses back into a spec");
-        assert_eq!(
-            back, spec,
-            "the exact ThemeSpec is recoverable from the store"
-        );
-        assert_eq!(active_id(&out).as_deref(), Some(spec.id.as_str()));
-    }
-
-    #[test]
-    fn empty_or_garbage_document_has_no_active_theme() {
-        assert_eq!(active_id(""), None);
-        assert_eq!(active_id("not json {"), None);
-        assert_eq!(active_spec("").map(|s| s.id), None);
-    }
-
-    #[test]
-    fn merge_overwrites_only_its_own_section_on_reapply() {
-        // Applying a second theme replaces only Studio's artifact (no stale
-        // editor keys leak through) while Settings-owned fields survive.
-        let first = to_json_merged(&presets()[0].clone(), "");
-        let second = to_json_merged(&presets()[4].clone(), &first);
-        assert_eq!(
-            active_id(&second).as_deref(),
-            Some(presets()[4].id.as_str())
-        );
-        let back = active_spec(&second).unwrap();
-        assert_eq!(back, presets()[4].clone());
-    }
-
-    #[test]
-    fn round_trips_through_a_real_file() {
-        // Exercise the actual disk write/read (not just the in-memory merge)
-        // against an explicit temp file — no process-global env mutation, so
-        // it is safe under the default parallel test runner.
-        let path = std::env::temp_dir()
-            .join(format!("tilo-themes-store-{}", std::process::id()))
-            .join("settings.json");
-        let _ = std::fs::remove_file(&path);
-        // A pre-existing foreign section must survive the write.
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p).unwrap();
+    fn active_theme_store_round_trips_and_merges_its_own_section() {
+        // Case `merge_writes_appearance_and_preserves_foreign_keys`.
+        {
+            let existing = r#"{"version":1,"locale":{"currency":"EUR"},"audio":{"event_sounds":true},"appearance":{"high_contrast":true,"text_scale":1.25}}"#;
+            let spec = seed_custom();
+            let out = to_json_merged(&spec, existing);
+            // Our section landed with the id + a nested full theme.
+            assert_eq!(active_id(&out).as_deref(), Some("sunset"));
+            assert!(
+                out.contains("\"appearance\""),
+                "appearance section present: {out}"
+            );
+            // Foreign sections survive untouched.
+            assert!(
+                out.contains("\"currency\": \"EUR\""),
+                "locale survived: {out}"
+            );
+            assert!(
+                out.contains("\"event_sounds\": true"),
+                "audio survived: {out}"
+            );
+            let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(root["appearance"]["high_contrast"], true);
+            assert_eq!(root["appearance"]["text_scale"], 1.25);
+            assert_eq!(root["appearance"]["theme"], "custom:sunset");
+            let runtime =
+                ui::Theme::from_settings_json(&out).expect("runtime consumes custom theme");
+            assert_eq!(runtime.name, spec.name);
+            assert_eq!(runtime.accent_primary, spec.to_theme().accent_primary);
+            assert_eq!(runtime.tokens.radii.md, spec.radius_px());
         }
-        std::fs::write(&path, r#"{"version":1,"locale":{"currency":"GBP"}}"#).unwrap();
-        let spec = seed_custom();
-        save_to(&path, &spec).expect("save_to writes the settings file");
-        assert_eq!(load_active_id_from(&path).as_deref(), Some("sunset"));
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            active_spec(&text),
-            Some(spec),
-            "the exact theme reads back off disk"
-        );
-        assert!(
-            text.contains("GBP"),
-            "foreign locale section survived the write"
-        );
-        let _ = std::fs::remove_file(&path);
+
+        // Case `active_spec_round_trips_through_the_document`.
+        {
+            let spec = presets()[3].clone(); // Dracula
+            let out = to_json_merged(&spec, "");
+            let back = active_spec(&out).expect("appearance.theme parses back into a spec");
+            assert_eq!(
+                back, spec,
+                "the exact ThemeSpec is recoverable from the store"
+            );
+            assert_eq!(active_id(&out).as_deref(), Some(spec.id.as_str()));
+        }
+
+        // Case `empty_or_garbage_document_has_no_active_theme`.
+        {
+            assert_eq!(active_id(""), None);
+            assert_eq!(active_id("not json {"), None);
+            assert_eq!(active_spec("").map(|s| s.id), None);
+        }
+
+        // Case `merge_overwrites_only_its_own_section_on_reapply`.
+        {
+            // Applying a second theme replaces only Studio's artifact (no stale
+            // editor keys leak through) while Settings-owned fields survive.
+            let first = to_json_merged(&presets()[0].clone(), "");
+            let second = to_json_merged(&presets()[4].clone(), &first);
+            assert_eq!(
+                active_id(&second).as_deref(),
+                Some(presets()[4].id.as_str())
+            );
+            let back = active_spec(&second).unwrap();
+            assert_eq!(back, presets()[4].clone());
+        }
+
+        // Case `round_trips_through_a_real_file`.
+        {
+            // Exercise the actual disk write/read (not just the in-memory merge)
+            // against an explicit temp file — no process-global env mutation, so
+            // it is safe under the default parallel test runner.
+            let path = std::env::temp_dir()
+                .join(format!("tilo-themes-store-{}", std::process::id()))
+                .join("settings.json");
+            let _ = std::fs::remove_file(&path);
+            // A pre-existing foreign section must survive the write.
+            if let Some(p) = path.parent() {
+                std::fs::create_dir_all(p).unwrap();
+            }
+            std::fs::write(&path, r#"{"version":1,"locale":{"currency":"GBP"}}"#).unwrap();
+            let spec = seed_custom();
+            save_to(&path, &spec).expect("save_to writes the settings file");
+            assert_eq!(load_active_id_from(&path).as_deref(), Some("sunset"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                active_spec(&text),
+                Some(spec),
+                "the exact theme reads back off disk"
+            );
+            assert!(
+                text.contains("GBP"),
+                "foreign locale section survived the write"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }

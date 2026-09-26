@@ -414,27 +414,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unused_undo_status_is_not_evaluated() {
-        use crate::widget::Widget;
-        let mut spacer = crate::widget::Spacer::new();
-        spacer.set_undo_status(&mut || panic!("default widget must not request a summary"));
-    }
+    fn undo_access_publishes_status_and_refuses_unavailable_verbs_once() {
+        // Case `unused_undo_status_is_not_evaluated`.
+        {
+            use crate::widget::Widget;
+            let mut spacer = crate::widget::Spacer::new();
+            spacer.set_undo_status(&mut || panic!("default widget must not request a summary"));
+        }
 
-    #[test]
-    fn undo_button_requests_and_publishes_status() {
-        use crate::widget::Widget;
-        let mut button = crate::widget::UndoButton::undo();
-        let mut calls = 0;
-        button.set_undo_status(&mut || {
-            calls += 1;
-            status(true, false)
-        });
-        assert_eq!(calls, 1);
-        assert!(button.is_enabled());
-        assert_eq!(
-            button.accessibility().unwrap().description.as_deref(),
-            Some("Undo: +5 -0 chars")
-        );
+        // Case `undo_button_requests_and_publishes_status`.
+        {
+            use crate::widget::Widget;
+            let mut button = crate::widget::UndoButton::undo();
+            let mut calls = 0;
+            button.set_undo_status(&mut || {
+                calls += 1;
+                status(true, false)
+            });
+            assert_eq!(calls, 1);
+            assert!(button.is_enabled());
+            assert_eq!(
+                button.accessibility().unwrap().description.as_deref(),
+                Some("Undo: +5 -0 chars")
+            );
+        }
+
+        // Case `a_request_for_an_unavailable_verb_is_refused_and_enqueues_nothing`.
+        {
+            let mut access = UndoAccess::new();
+            // Nothing published yet: an empty history.
+            assert!(!access.request(UndoRequest::Undo), "empty history refuses");
+            assert_eq!(
+                access.take_request(),
+                None,
+                "a refused request must not reach the host"
+            );
+
+            access.publish(&status(true, false));
+            assert!(access.request(UndoRequest::Undo));
+            assert_eq!(access.take_request(), Some(UndoRequest::Undo));
+            // Redo is still unavailable even though undo is.
+            assert!(!access.request(UndoRequest::Redo));
+            assert_eq!(access.take_request(), None);
+        }
+
+        // Case `taking_a_request_clears_it_so_one_activation_is_one_undo`.
+        {
+            let mut access = UndoAccess::new();
+            access.publish(&status(true, true));
+            access.request(UndoRequest::Undo);
+            assert_eq!(access.take_request(), Some(UndoRequest::Undo));
+            assert_eq!(
+                access.take_request(),
+                None,
+                "a drained request must not fire twice"
+            );
+        }
     }
 
     fn status(can_undo: bool, can_redo: bool) -> UndoStatus {
@@ -447,73 +482,44 @@ mod tests {
     }
 
     #[test]
-    fn a_request_for_an_unavailable_verb_is_refused_and_enqueues_nothing() {
-        let mut access = UndoAccess::new();
-        // Nothing published yet: an empty history.
-        assert!(!access.request(UndoRequest::Undo), "empty history refuses");
-        assert_eq!(
-            access.take_request(),
-            None,
-            "a refused request must not reach the host"
-        );
+    fn undo_shortcuts_and_descriptions_never_promise_a_missing_action() {
+        // Case `the_shortcut_table_is_the_one_binding_both_hosts_read`.
+        {
+            assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
+            assert_eq!(shortcut("Z", true, false), Some(UndoRequest::Undo));
+            // Shift is read from the modifiers, not from the character's case:
+            // a shifted "z" reaches winit as either spelling.
+            assert_eq!(shortcut("z", true, true), Some(UndoRequest::Redo));
+            assert_eq!(shortcut("Z", true, true), Some(UndoRequest::Redo));
+            assert_eq!(shortcut("y", true, false), Some(UndoRequest::Redo));
+            // Without Ctrl these are ordinary characters and must reach the widget.
+            assert_eq!(shortcut("z", false, false), None);
+            assert_eq!(shortcut("Z", false, true), None);
+            assert_eq!(shortcut("k", true, false), None);
+        }
 
-        access.publish(&status(true, false));
-        assert!(access.request(UndoRequest::Undo));
-        assert_eq!(access.take_request(), Some(UndoRequest::Undo));
-        // Redo is still unavailable even though undo is.
-        assert!(!access.request(UndoRequest::Redo));
-        assert_eq!(access.take_request(), None);
-    }
+        // Case `description_never_promises_an_action_that_is_not_there`.
+        {
+            let empty = UndoStatus::empty();
+            assert_eq!(empty.description(UndoRequest::Undo), "Nothing to undo");
+            assert_eq!(empty.description(UndoRequest::Redo), "Nothing to redo");
 
-    #[test]
-    fn taking_a_request_clears_it_so_one_activation_is_one_undo() {
-        let mut access = UndoAccess::new();
-        access.publish(&status(true, true));
-        access.request(UndoRequest::Undo);
-        assert_eq!(access.take_request(), Some(UndoRequest::Undo));
-        assert_eq!(
-            access.take_request(),
-            None,
-            "a drained request must not fire twice"
-        );
-    }
+            let live = status(true, true);
+            assert_eq!(live.description(UndoRequest::Undo), "Undo: +5 -0 chars");
+            assert_eq!(live.description(UndoRequest::Redo), "Redo: +2 -0 chars");
+        }
 
-    #[test]
-    fn the_shortcut_table_is_the_one_binding_both_hosts_read() {
-        assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
-        assert_eq!(shortcut("Z", true, false), Some(UndoRequest::Undo));
-        // Shift is read from the modifiers, not from the character's case:
-        // a shifted "z" reaches winit as either spelling.
-        assert_eq!(shortcut("z", true, true), Some(UndoRequest::Redo));
-        assert_eq!(shortcut("Z", true, true), Some(UndoRequest::Redo));
-        assert_eq!(shortcut("y", true, false), Some(UndoRequest::Redo));
-        // Without Ctrl these are ordinary characters and must reach the widget.
-        assert_eq!(shortcut("z", false, false), None);
-        assert_eq!(shortcut("Z", false, true), None);
-        assert_eq!(shortcut("k", true, false), None);
-    }
-
-    #[test]
-    fn description_never_promises_an_action_that_is_not_there() {
-        let empty = UndoStatus::empty();
-        assert_eq!(empty.description(UndoRequest::Undo), "Nothing to undo");
-        assert_eq!(empty.description(UndoRequest::Redo), "Nothing to redo");
-
-        let live = status(true, true);
-        assert_eq!(live.description(UndoRequest::Undo), "Undo: +5 -0 chars");
-        assert_eq!(live.description(UndoRequest::Redo), "Redo: +2 -0 chars");
-    }
-
-    /// A change the producer could not describe must not be read out as if it
-    /// were a summary — the control falls back to the bare verb.
-    #[test]
-    fn an_indescribable_change_falls_back_to_the_bare_verb() {
-        let s = UndoStatus {
-            can_undo: true,
-            undo_summary: Some(crate::history_source::NO_VISIBLE_CHANGE.to_string()),
-            ..Default::default()
-        };
-        assert_eq!(s.description(UndoRequest::Undo), "Undo");
+        // Case `an_indescribable_change_falls_back_to_the_bare_verb`:
+        // A change the producer could not describe must not be read out as if it
+        // were a summary — the control falls back to the bare verb.
+        {
+            let s = UndoStatus {
+                can_undo: true,
+                undo_summary: Some(crate::history_source::NO_VISIBLE_CHANGE.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(s.description(UndoRequest::Undo), "Undo");
+        }
     }
 }
 

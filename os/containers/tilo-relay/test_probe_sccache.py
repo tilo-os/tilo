@@ -83,29 +83,23 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("remote compiler cache probe: PASS", result.stdout)
         self.assertEqual(commands[-1], "--stop-server")
 
-    def test_local_cache_is_rejected_and_server_is_stopped(self):
-        result, commands, _ = self.run_probe("local")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("did not use the bound remote S3 cache", result.stderr)
-        self.assertEqual(commands[-1], "--stop-server")
-
-    def test_remote_io_error_is_rejected_and_server_is_stopped(self):
-        result, commands, _ = self.run_probe("io")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("authentication or I/O error", result.stderr)
-        self.assertEqual(commands[-1], "--stop-server")
-
-    def test_client_failure_still_stops_server(self):
-        result, commands, _ = self.run_probe("auth")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(commands[-1], "--stop-server")
-
-    def test_client_timeout_is_bounded_and_stops_server(self):
-        result, commands, elapsed = self.run_probe("timeout", "0.05")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertLess(elapsed, 2)
-        self.assertEqual(commands[-1], "--stop-server")
-
+    def test_failed_or_untrusted_probes_are_rejected_and_stop_server(self):
+        for mode, timeout, stderr in (
+            ("local", "1", "did not use the bound remote S3 cache"),
+            ("io", "1", "authentication or I/O error"),
+            # A failing client still stops the server.
+            ("auth", "1", None),
+            # A hung client is bounded by the probe timeout.
+            ("timeout", "0.05", None),
+        ):
+            with self.subTest(mode=mode):
+                result, commands, elapsed = self.run_probe(mode, timeout)
+                self.assertNotEqual(result.returncode, 0)
+                if stderr is not None:
+                    self.assertIn(stderr, result.stderr)
+                if mode == "timeout":
+                    self.assertLess(elapsed, 2)
+                self.assertEqual(commands[-1], "--stop-server")
 
 if __name__ == "__main__":
     unittest.main()

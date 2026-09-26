@@ -17,10 +17,8 @@ SPEC.loader.exec_module(checker)
 class CryptoDependencyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-
-    def tearDown(self) -> None:
-        self.temp.cleanup()
 
     def write(self, relative: str, contents: str) -> None:
         path = self.root / relative
@@ -40,51 +38,58 @@ class CryptoDependencyTests(unittest.TestCase):
             f'[package]\nname = "{name}"\nversion = "0.1.0"\n\n{body}\n',
         )
 
-    def test_seal_crate_may_use_primitives(self) -> None:
-        self.workspace(["crates/system/tilo-seal"])
-        self.crate(
-            "crates/system/tilo-seal",
-            "tilo-seal",
-            '[dependencies]\nchacha20poly1305 = "0.11"\nhpke-rs = "0.7"\nargon2 = "0.6"\n',
-        )
-        self.assertEqual(checker.violations(self.root), [])
-
-    def test_direct_dependency_is_rejected(self) -> None:
-        self.workspace(["apps/vault"])
-        self.crate("apps/vault", "vault", '[dependencies]\nx25519-dalek = "3"\n')
-        errors = checker.violations(self.root)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("x25519-dalek", errors[0])
-
-    def test_workspace_inheritance_and_dev_and_target_tables_are_checked(self) -> None:
-        self.workspace(
-            ["apps/vault"],
-            'chacha20poly1305 = "0.11"\ncipher = { version = "0.6", package = "argon2" }\n',
-        )
-        self.crate(
-            "apps/vault",
-            "vault",
-            "[dev-dependencies]\nchacha20poly1305.workspace = true\n\n"
-            "[target.'cfg(unix)'.dependencies]\ncipher = { workspace = true }\n",
-        )
-        errors = checker.violations(self.root)
-        self.assertEqual(len(errors), 2, errors)
-        self.assertTrue(any("argon2" in error for error in errors))
-        self.assertTrue(any("dev-dependencies" in error for error in errors))
-
-    def test_rename_does_not_hide_a_primitive(self) -> None:
-        self.workspace(["apps/vault"])
-        self.crate(
-            "apps/vault",
-            "vault",
-            '[dependencies]\ninnocent = { version = "2", package = "x25519-dalek" }\n',
-        )
-        self.assertEqual(len(checker.violations(self.root)), 1)
-
-    def test_protocol_libraries_are_not_primitives(self) -> None:
-        self.workspace(["apps/tube"])
-        self.crate("apps/tube", "tube", '[dependencies]\nsnow = "0.9"\nopenmls = "0.9"\n')
-        self.assertEqual(checker.violations(self.root), [])
+    def test_crypto_primitives_are_confined_to_the_seal_crate_in_every_manifest_form(self) -> None:
+        with self.subTest(phase='seal crate may use primitives'):
+            self.doCleanups()
+            self.setUp()
+            self.workspace(["crates/system/tilo-seal"])
+            self.crate(
+                "crates/system/tilo-seal",
+                "tilo-seal",
+                '[dependencies]\nchacha20poly1305 = "0.11"\nhpke-rs = "0.7"\nargon2 = "0.6"\n',
+            )
+            self.assertEqual(checker.violations(self.root), [])
+        with self.subTest(phase='direct dependency is rejected'):
+            self.doCleanups()
+            self.setUp()
+            self.workspace(["apps/vault"])
+            self.crate("apps/vault", "vault", '[dependencies]\nx25519-dalek = "3"\n')
+            errors = checker.violations(self.root)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("x25519-dalek", errors[0])
+        with self.subTest(phase='workspace inheritance and dev and target tables are checked'):
+            self.doCleanups()
+            self.setUp()
+            self.workspace(
+                ["apps/vault"],
+                'chacha20poly1305 = "0.11"\ncipher = { version = "0.6", package = "argon2" }\n',
+            )
+            self.crate(
+                "apps/vault",
+                "vault",
+                "[dev-dependencies]\nchacha20poly1305.workspace = true\n\n"
+                "[target.'cfg(unix)'.dependencies]\ncipher = { workspace = true }\n",
+            )
+            errors = checker.violations(self.root)
+            self.assertEqual(len(errors), 2, errors)
+            self.assertTrue(any("argon2" in error for error in errors))
+            self.assertTrue(any("dev-dependencies" in error for error in errors))
+        with self.subTest(phase='rename does not hide a primitive'):
+            self.doCleanups()
+            self.setUp()
+            self.workspace(["apps/vault"])
+            self.crate(
+                "apps/vault",
+                "vault",
+                '[dependencies]\ninnocent = { version = "2", package = "x25519-dalek" }\n',
+            )
+            self.assertEqual(len(checker.violations(self.root)), 1)
+        with self.subTest(phase='protocol libraries are not primitives'):
+            self.doCleanups()
+            self.setUp()
+            self.workspace(["apps/tube"])
+            self.crate("apps/tube", "tube", '[dependencies]\nsnow = "0.9"\nopenmls = "0.9"\n')
+            self.assertEqual(checker.violations(self.root), [])
 
 
 if __name__ == "__main__":

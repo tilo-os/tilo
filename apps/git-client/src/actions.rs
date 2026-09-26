@@ -796,8 +796,17 @@ mod tests {
         }
     }
 
-    /// Each preference action writes its absolute value into `root["settings"]`.
+    /// Preference actions: each writes its absolute value into `root["settings"]`, a
+    /// malformed diff layout normalises, and palette toggles target the opposite of
+    /// the live value. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn preference_actions_write_normalised_values_that_track_live_state() {
+        preference_actions_write_the_settings();
+        malformed_diff_layout_normalises_instead_of_wedging();
+        palette_actions_target_the_opposite_of_current_state();
+    }
+
+    /// Each preference action writes its absolute value into `root["settings"]`.
     fn preference_actions_write_the_settings() {
         let mut doc = seeded();
         assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
@@ -817,7 +826,6 @@ mod tests {
 
     /// A malformed diff-layout payload normalises to the canonical form rather
     /// than erroring, so an out-of-range replay lands on a valid setting.
-    #[test]
     fn malformed_diff_layout_normalises_instead_of_wedging() {
         let mut doc = seeded();
         dispatch(
@@ -833,10 +841,19 @@ mod tests {
         );
     }
 
+    /// The repository resource tree: Ctrl+K publishes repo, preference and view
+    /// actions in order; git objects carry confirmation contracts; contextual
+    /// resources are bounded while omitted items still resolve. Each phase is a former test with its own fresh fixture.
+    #[test]
+    fn repository_resource_tree_exports_bounded_git_objects_and_contracts() {
+        ctrl_k_publishes_the_repo_and_preference_actions();
+        repository_resources_cover_git_objects_and_confirmation_contracts();
+        contextual_resources_are_bounded_but_omitted_items_resolve();
+    }
+
     /// Ctrl+K on an open repository publishes the repo resource exporting the
     /// preference, view and repository actions in order. Drives the real
     /// resource builder.
-    #[test]
     fn ctrl_k_publishes_the_repo_and_preference_actions() {
         let doc = seeded();
         let resources = provide_resources(&repo_model(), &doc);
@@ -868,7 +885,6 @@ mod tests {
 
     /// The palette's exported actions track the live document: with a non-default
     /// state seeded, each toggle targets the opposite of the current value.
-    #[test]
     fn palette_actions_target_the_opposite_of_current_state() {
         let mut doc = AutoCommit::new();
         let s = Settings {
@@ -926,7 +942,6 @@ mod tests {
         ],
     }
 
-    #[test]
     fn repository_resources_cover_git_objects_and_confirmation_contracts() {
         let (model, _) = crate::sample::model();
         let doc = seeded();
@@ -968,7 +983,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn contextual_resources_are_bounded_but_omitted_items_resolve() {
         let (mut model, _) = crate::sample::model();
         let template = model.commits[0].clone();

@@ -442,165 +442,175 @@ mod tests {
     }
 
     #[test]
-    fn row_click_dispatches_and_updates_the_matching_profile() {
-        let mut pane = QuickSettingsVpnPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut profiles = vec![profile(false)];
-        let actions = RecordingActions::default();
-        pane.list.layout(panel, profiles.len());
-        let outcome =
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut profiles, &actions);
-        assert_eq!(outcome, VpnPaneOutcome::Reconcile);
-        assert!(profiles[0].active);
-        assert_eq!(actions.calls.borrow().as_slice(), [("Work".into(), true)]);
+    fn vpn_rows_dispatch_only_real_profile_actions_and_truthful_state() {
+        // Phase `row_click_dispatches_and_updates_the_matching_profile`.
+        {
+            let mut pane = QuickSettingsVpnPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut profiles = vec![profile(false)];
+            let actions = RecordingActions::default();
+            pane.list.layout(panel, profiles.len());
+            let outcome =
+                pane.handle_click(pane.list.rows()[0].center(), panel, &mut profiles, &actions);
+            assert_eq!(outcome, VpnPaneOutcome::Reconcile);
+            assert!(profiles[0].active);
+            assert_eq!(actions.calls.borrow().as_slice(), [("Work".into(), true)]);
+        }
+
+        // Phase `back_and_empty_space_do_not_dispatch_hardware_actions`.
+        {
+            let mut pane = QuickSettingsVpnPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut profiles = vec![profile(true)];
+            let actions = RecordingActions::default();
+            pane.list.layout(panel, profiles.len());
+            assert_eq!(
+                pane.handle_click(pane.list.back_center(), panel, &mut profiles, &actions),
+                VpnPaneOutcome::DrillIn(DrillInOutcome::Back)
+            );
+            assert_eq!(
+                pane.handle_click(panel.center(), panel, &mut profiles, &actions),
+                VpnPaneOutcome::DrillIn(DrillInOutcome::None)
+            );
+            assert!(actions.calls.borrow().is_empty());
+            assert!(profiles[0].active);
+        }
+
+        // Phase `failed_action_does_not_publish_a_false_connected_state`.
+        {
+            let mut pane = QuickSettingsVpnPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut profiles = vec![profile(false)];
+            let actions = RecordingActions {
+                reject: true,
+                ..Default::default()
+            };
+            pane.list.layout(panel, profiles.len());
+
+            assert_eq!(
+                pane.handle_click(pane.list.rows()[0].center(), panel, &mut profiles, &actions),
+                VpnPaneOutcome::ActionFailed {
+                    profile: "Work".into(),
+                    error: "VPN transition rejected".into(),
+                }
+            );
+            assert!(!profiles[0].active);
+            assert_eq!(actions.calls.borrow().as_slice(), [("Work".into(), true)]);
+        }
     }
 
     #[test]
-    fn back_and_empty_space_do_not_dispatch_hardware_actions() {
-        let mut pane = QuickSettingsVpnPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut profiles = vec![profile(true)];
-        let actions = RecordingActions::default();
-        pane.list.layout(panel, profiles.len());
-        assert_eq!(
-            pane.handle_click(pane.list.back_center(), panel, &mut profiles, &actions),
-            VpnPaneOutcome::DrillIn(DrillInOutcome::Back)
-        );
-        assert_eq!(
-            pane.handle_click(panel.center(), panel, &mut profiles, &actions),
-            VpnPaneOutcome::DrillIn(DrillInOutcome::None)
-        );
-        assert!(actions.calls.borrow().is_empty());
-        assert!(profiles[0].active);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn vpn_keyboard_and_semantics_follow_the_visible_profiles() {
+        // Phase `keyboard_wraps_to_a_profile_and_uses_the_same_action_path`.
+        {
+            let mut pane = QuickSettingsVpnPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let mut profiles = vec![profile(false)];
+            let actions = RecordingActions::default();
 
-    #[test]
-    fn failed_action_does_not_publish_a_false_connected_state() {
-        let mut pane = QuickSettingsVpnPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut profiles = vec![profile(false)];
-        let actions = RecordingActions {
-            reject: true,
-            ..Default::default()
-        };
-        pane.list.layout(panel, profiles.len());
+            assert_eq!(
+                pane.handle_key(
+                    &Key::Named(NamedKey::Tab),
+                    true,
+                    panel,
+                    &mut profiles,
+                    &actions,
+                ),
+                Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
+            );
+            assert_eq!(
+                pane.handle_key(
+                    &Key::Named(NamedKey::Enter),
+                    false,
+                    panel,
+                    &mut profiles,
+                    &actions,
+                ),
+                Some(VpnPaneOutcome::Reconcile)
+            );
+            assert!(profiles[0].active);
 
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut profiles, &actions),
-            VpnPaneOutcome::ActionFailed {
-                profile: "Work".into(),
-                error: "VPN transition rejected".into(),
-            }
-        );
-        assert!(!profiles[0].active);
-        assert_eq!(actions.calls.borrow().as_slice(), [("Work".into(), true)]);
-    }
+            pane.reset_focus();
+            let _ = pane.handle_key(
+                &Key::Named(NamedKey::ArrowDown),
+                false,
+                panel,
+                &mut profiles,
+                &actions,
+            );
+            assert_eq!(
+                pane.handle_key(
+                    &Key::Named(NamedKey::Space),
+                    false,
+                    panel,
+                    &mut profiles,
+                    &actions,
+                ),
+                Some(VpnPaneOutcome::DrillIn(DrillInOutcome::Back))
+            );
+        }
 
-    #[test]
-    fn keyboard_wraps_to_a_profile_and_uses_the_same_action_path() {
-        let mut pane = QuickSettingsVpnPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut profiles = vec![profile(false)];
-        let actions = RecordingActions::default();
+        // Phase `semantics_match_back_then_profiles`.
+        {
+            let pane = QuickSettingsVpnPane::default();
+            let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+            let profiles = vec![profile(true)];
+            let names = pane
+                .semantic_rects(panel, &profiles)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                ["quick_settings_vpn_back", "quick_settings_vpn_profile[0]"]
+            );
+            let snapshot = pane.accessibility_snapshot(&profiles);
+            assert_eq!(snapshot.name.as_deref(), Some("VPN"));
+            assert_eq!(snapshot.children.len(), names.len());
+            assert_eq!(snapshot.children[1].name.as_deref(), Some("Work"));
+            assert_eq!(
+                snapshot.children[1].description.as_deref(),
+                Some("VPN connected")
+            );
+        }
 
-        assert_eq!(
-            pane.handle_key(
+        // Phase `compact_keyboard_focus_scrolls_the_last_profile_into_view`.
+        {
+            let mut pane = QuickSettingsVpnPane::default();
+            let panel = Rect::new(600.0, 40.0, 948.0, 240.0);
+            let mut profiles = (0..8)
+                .map(|index| os_actions::VpnConnectionInfo {
+                    name: format!("Profile {index}"),
+                    uuid: format!("profile-{index}"),
+                    active: false,
+                    kind: "wireguard".into(),
+                })
+                .collect::<Vec<_>>();
+            let actions = RecordingActions::default();
+
+            let _ = pane.handle_key(
                 &Key::Named(NamedKey::Tab),
                 true,
                 panel,
                 &mut profiles,
                 &actions,
-            ),
-            Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
-        );
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Enter),
-                false,
-                panel,
-                &mut profiles,
-                &actions,
-            ),
-            Some(VpnPaneOutcome::Reconcile)
-        );
-        assert!(profiles[0].active);
-
-        pane.reset_focus();
-        let _ = pane.handle_key(
-            &Key::Named(NamedKey::ArrowDown),
-            false,
-            panel,
-            &mut profiles,
-            &actions,
-        );
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Space),
-                false,
-                panel,
-                &mut profiles,
-                &actions,
-            ),
-            Some(VpnPaneOutcome::DrillIn(DrillInOutcome::Back))
-        );
-    }
-
-    #[test]
-    fn semantics_match_back_then_profiles() {
-        let pane = QuickSettingsVpnPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let profiles = vec![profile(true)];
-        let names = pane
-            .semantic_rects(panel, &profiles)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            ["quick_settings_vpn_back", "quick_settings_vpn_profile[0]"]
-        );
-        let snapshot = pane.accessibility_snapshot(&profiles);
-        assert_eq!(snapshot.name.as_deref(), Some("VPN"));
-        assert_eq!(snapshot.children.len(), names.len());
-        assert_eq!(snapshot.children[1].name.as_deref(), Some("Work"));
-        assert_eq!(
-            snapshot.children[1].description.as_deref(),
-            Some("VPN connected")
-        );
-    }
-
-    #[test]
-    fn compact_keyboard_focus_scrolls_the_last_profile_into_view() {
-        let mut pane = QuickSettingsVpnPane::default();
-        let panel = Rect::new(600.0, 40.0, 948.0, 240.0);
-        let mut profiles = (0..8)
-            .map(|index| os_actions::VpnConnectionInfo {
-                name: format!("Profile {index}"),
-                uuid: format!("profile-{index}"),
-                active: false,
-                kind: "wireguard".into(),
-            })
-            .collect::<Vec<_>>();
-        let actions = RecordingActions::default();
-
-        let _ = pane.handle_key(
-            &Key::Named(NamedKey::Tab),
-            true,
-            panel,
-            &mut profiles,
-            &actions,
-        );
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(QuickSettingsVpnPane::PROFILE_FOCUS_START + 7)
-        );
-        assert_eq!(pane.list.visible_indices(), 6..8);
-        let names = pane
-            .semantic_rects(panel, &profiles)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"quick_settings_vpn_profile[7]".to_string()));
-        assert!(!names.contains(&"quick_settings_vpn_profile[0]".to_string()));
+            );
+            assert_eq!(
+                pane.keyboard_focus,
+                Some(QuickSettingsVpnPane::PROFILE_FOCUS_START + 7)
+            );
+            assert_eq!(pane.list.visible_indices(), 6..8);
+            let names = pane
+                .semantic_rects(panel, &profiles)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert!(names.contains(&"quick_settings_vpn_profile[7]".to_string()));
+            assert!(!names.contains(&"quick_settings_vpn_profile[0]".to_string()));
+        }
     }
 }

@@ -13,6 +13,18 @@ offline = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(offline)
 
 
+def restart_fixture(test):
+    """Give the next subTest phase of a merged test the fresh fixture it had
+    as its own test: tear down, run cleanups, reset instance state, set up."""
+    test.tearDown()
+    test.doCleanups()
+    fresh = type(test)(test._testMethodName).__dict__
+    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
+    test.__dict__.clear()
+    test.__dict__.update(fresh, **keep)
+    test.setUp()
+
+
 class OfflineTargetTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -50,71 +62,73 @@ class OfflineTargetTest(unittest.TestCase):
             "update_origin": "code.tilo.so/tilo/tilo:lenovo-83ed-" + "a" * 40,
         }))
 
-    def test_valid_target_and_copy(self):
-        self.assertEqual(offline.verify(self.root)["target_ref"], self.ref)
-        destination = Path(self.temp.name) / "staged"
-        offline.install(self.root, destination)
-        self.assertEqual(offline.verify(destination)["target_ref"], self.ref)
+    def test_accepts_valid_targets(self):
+        with self.subTest(phase="valid_target_and_copy"):
+            self.assertEqual(offline.verify(self.root)["target_ref"], self.ref)
+            destination = Path(self.temp.name) / "staged"
+            offline.install(self.root, destination)
+            self.assertEqual(offline.verify(destination)["target_ref"], self.ref)
+        restart_fixture(self)
+        with self.subTest(phase="generic_signed_child_transport"):
+            metadata_path = self.root / "target.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["hardware_profile"] = "generic"
+            metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+            metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen7"
+            metadata_path.write_text(json.dumps(metadata))
+            self.assertEqual(offline.verify(self.root)["hardware_profile"], "generic")
 
-    def test_generic_signed_child_transport(self):
-        metadata_path = self.root / "target.json"
-        metadata = json.loads(metadata_path.read_text())
-        metadata["hardware_profile"] = "generic"
-        metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
-        metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen7"
-        metadata_path.write_text(json.dumps(metadata))
-        self.assertEqual(offline.verify(self.root)["hardware_profile"], "generic")
-
-    def test_board_target_is_never_the_public_repository(self):
-        # A board image carries private firmware and stays on the forge.
-        metadata_path = self.root / "target.json"
-        metadata = json.loads(metadata_path.read_text())
-        metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
-        metadata_path.write_text(json.dumps(metadata))
-        with self.assertRaises(ValueError):
-            offline.verify(self.root)
-
-    def test_tampered_blob_rejected(self):
-        (self.blobs / self.layer["digest"].removeprefix("sha256:")).write_bytes(b"tampered-os-payload")
-        with self.assertRaisesRegex(ValueError, "blob"):
-            offline.verify(self.root)
-
-    def test_missing_image_kind_rejected(self):
-        index_path = self.root / "oci/index.json"
-        index = json.loads(index_path.read_text())
-        index["manifests"][0].pop("annotations")
-        index_path.write_text(json.dumps(index))
-        with self.assertRaisesRegex(ValueError, "pinned target"):
-            offline.verify(self.root)
-
-    def test_extra_transport_file_rejected(self):
-        (self.root / "not-reviewed").write_text("x")
-        with self.assertRaisesRegex(ValueError, "unexpected"):
-            offline.verify(self.root)
-
-    def test_wrong_platform_config_rejected(self):
-        layout = self.root / "oci"
-        index = json.loads((layout / "index.json").read_text())
-        target = index["manifests"][0]
-        manifest_path = self.blobs / target["digest"].removeprefix("sha256:")
-        manifest = json.loads(manifest_path.read_text())
-        config = b'{"architecture":"amd64","os":"linux"}'
-        config_digest = hashlib.sha256(config).hexdigest()
-        (self.blobs / config_digest).write_bytes(config)
-        manifest["config"] = {"digest": "sha256:" + config_digest, "size": len(config)}
-        rewritten = json.dumps(manifest, separators=(",", ":")).encode()
-        rewritten_digest = hashlib.sha256(rewritten).hexdigest()
-        (self.blobs / rewritten_digest).write_bytes(rewritten)
-        manifest_path.unlink()
-        target.update(digest="sha256:" + rewritten_digest, size=len(rewritten))
-        (layout / "index.json").write_text(json.dumps(index))
-        metadata_path = self.root / "target.json"
-        metadata = json.loads(metadata_path.read_text())
-        metadata["target_digest"] = target["digest"]
-        metadata["target_ref"] = "code.tilo.so/tilo/tilo@" + target["digest"]
-        metadata_path.write_text(json.dumps(metadata))
-        with self.assertRaisesRegex(ValueError, "Linux ARM64"):
-            offline.verify(self.root)
+    def test_rejects_tampered_or_incomplete_targets(self):
+        with self.subTest(phase="board_target_is_never_the_public_repository"):
+            # A board image carries private firmware and stays on the forge.
+            metadata_path = self.root / "target.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaises(ValueError):
+                offline.verify(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="tampered_blob_rejected"):
+            (self.blobs / self.layer["digest"].removeprefix("sha256:")).write_bytes(b"tampered-os-payload")
+            with self.assertRaisesRegex(ValueError, "blob"):
+                offline.verify(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="missing_image_kind_rejected"):
+            index_path = self.root / "oci/index.json"
+            index = json.loads(index_path.read_text())
+            index["manifests"][0].pop("annotations")
+            index_path.write_text(json.dumps(index))
+            with self.assertRaisesRegex(ValueError, "pinned target"):
+                offline.verify(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="extra_transport_file_rejected"):
+            (self.root / "not-reviewed").write_text("x")
+            with self.assertRaisesRegex(ValueError, "unexpected"):
+                offline.verify(self.root)
+        restart_fixture(self)
+        with self.subTest(phase="wrong_platform_config_rejected"):
+            layout = self.root / "oci"
+            index = json.loads((layout / "index.json").read_text())
+            target = index["manifests"][0]
+            manifest_path = self.blobs / target["digest"].removeprefix("sha256:")
+            manifest = json.loads(manifest_path.read_text())
+            config = b'{"architecture":"amd64","os":"linux"}'
+            config_digest = hashlib.sha256(config).hexdigest()
+            (self.blobs / config_digest).write_bytes(config)
+            manifest["config"] = {"digest": "sha256:" + config_digest, "size": len(config)}
+            rewritten = json.dumps(manifest, separators=(",", ":")).encode()
+            rewritten_digest = hashlib.sha256(rewritten).hexdigest()
+            (self.blobs / rewritten_digest).write_bytes(rewritten)
+            manifest_path.unlink()
+            target.update(digest="sha256:" + rewritten_digest, size=len(rewritten))
+            (layout / "index.json").write_text(json.dumps(index))
+            metadata_path = self.root / "target.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["target_digest"] = target["digest"]
+            metadata["target_ref"] = "code.tilo.so/tilo/tilo@" + target["digest"]
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "Linux ARM64"):
+                offline.verify(self.root)
 
 
 if __name__ == "__main__":

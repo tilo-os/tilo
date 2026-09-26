@@ -294,71 +294,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_unproject_roundtrip() {
-        let c = LatLon::new(48.1371, 11.5754);
-        let proj = Projection::new(c, 14.0, Point::new(640.0, 400.0));
-        let back = proj.unproject(proj.project(c));
-        assert!((back.lat - c.lat).abs() < 1e-9);
-        assert!((back.lon - c.lon).abs() < 1e-9);
-        // Centre projects to the viewport centre.
-        let p = proj.project(c);
-        assert!((p.x - 640.0).abs() < 1e-6 && (p.y - 400.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn haversine_known_distance() {
-        // ~111 km between one degree of latitude.
-        let d = haversine_m(LatLon::new(0.0, 0.0), LatLon::new(1.0, 0.0));
-        assert!((d - 111_195.0).abs() < 500.0, "got {d}");
-    }
-
-    #[test]
-    fn fmt_helpers() {
-        assert_eq!(fmt_distance(120.0), "120 m");
-        assert_eq!(fmt_distance(1500.0), "1.5 km");
-        assert_eq!(fmt_duration(90.0), "2 min");
-        assert_eq!(fmt_duration(3720.0), "1 h 2 min");
-    }
-
-    /// Dense collinear shape points along a straight road collapse to the two
-    /// endpoints, and the endpoints are always preserved.
-    #[test]
-    fn simplify_drops_collinear_shape_points() {
-        // 100 points evenly along a straight east–west line.
-        let pts: Vec<LatLon> = (0..100)
-            .map(|i| LatLon::new(48.0, 11.0 + f64::from(i) * 0.001))
-            .collect();
-        let out = simplify_polyline(&pts, 3.0);
-        assert_eq!(out.len(), 2, "a straight run reduces to its endpoints");
-        assert_eq!(out[0], pts[0], "start preserved");
-        assert_eq!(out[1], pts[99], "end preserved");
-    }
-
-    /// A real corner (deviation well above tolerance) is kept, and no retained
-    /// vertex deviates from the simplified line by more than the tolerance.
-    #[test]
-    fn simplify_preserves_corners_within_tolerance() {
-        // An L-shape: east then north, with jitter points along each leg.
-        let mut pts = Vec::new();
-        for i in 0..20 {
-            pts.push(LatLon::new(48.0, 11.0 + f64::from(i) * 0.001));
+    fn projection_distance_and_formatting() {
+        // Phase `project_unproject_roundtrip`.
+        {
+            let c = LatLon::new(48.1371, 11.5754);
+            let proj = Projection::new(c, 14.0, Point::new(640.0, 400.0));
+            let back = proj.unproject(proj.project(c));
+            assert!((back.lat - c.lat).abs() < 1e-9);
+            assert!((back.lon - c.lon).abs() < 1e-9);
+            // Centre projects to the viewport centre.
+            let p = proj.project(c);
+            assert!((p.x - 640.0).abs() < 1e-6 && (p.y - 400.0).abs() < 1e-6);
         }
-        for i in 1..20 {
-            pts.push(LatLon::new(48.0 + f64::from(i) * 0.001, 11.019));
+
+        // Phase `haversine_known_distance`.
+        {
+            // ~111 km between one degree of latitude.
+            let d = haversine_m(LatLon::new(0.0, 0.0), LatLon::new(1.0, 0.0));
+            assert!((d - 111_195.0).abs() < 500.0, "got {d}");
         }
-        let out = simplify_polyline(&pts, 3.0);
-        assert!(
-            out.len() >= 3,
-            "the corner vertex is retained, got {}",
-            out.len()
-        );
-        assert!(out.len() < pts.len(), "collinear jitter still dropped");
-        assert_eq!(out.first(), pts.first());
-        assert_eq!(out.last(), pts.last());
-        // Every original point lies within tolerance of the simplified polyline.
-        for p in &pts {
-            let d = min_dist_to_polyline(*p, &out);
-            assert!(d <= 3.5, "deviation {d:.2} m exceeds tolerance");
+
+        // Phase `fmt_helpers`.
+        {
+            assert_eq!(fmt_distance(120.0), "120 m");
+            assert_eq!(fmt_distance(1500.0), "1.5 km");
+            assert_eq!(fmt_duration(90.0), "2 min");
+            assert_eq!(fmt_duration(3720.0), "1 h 2 min");
+        }
+    }
+
+    #[test]
+    fn simplify_drops_collinear_points_keeps_corners_and_handles_edges() {
+        // Phase `simplify_drops_collinear_shape_points`.
+        // Dense collinear shape points along a straight road collapse to the two
+        // endpoints, and the endpoints are always preserved.
+        {
+            // 100 points evenly along a straight east–west line.
+            let pts: Vec<LatLon> = (0..100)
+                .map(|i| LatLon::new(48.0, 11.0 + f64::from(i) * 0.001))
+                .collect();
+            let out = simplify_polyline(&pts, 3.0);
+            assert_eq!(out.len(), 2, "a straight run reduces to its endpoints");
+            assert_eq!(out[0], pts[0], "start preserved");
+            assert_eq!(out[1], pts[99], "end preserved");
+        }
+
+        // Phase `simplify_preserves_corners_within_tolerance`.
+        // A real corner (deviation well above tolerance) is kept, and no retained
+        // vertex deviates from the simplified line by more than the tolerance.
+        {
+            // An L-shape: east then north, with jitter points along each leg.
+            let mut pts = Vec::new();
+            for i in 0..20 {
+                pts.push(LatLon::new(48.0, 11.0 + f64::from(i) * 0.001));
+            }
+            for i in 1..20 {
+                pts.push(LatLon::new(48.0 + f64::from(i) * 0.001, 11.019));
+            }
+            let out = simplify_polyline(&pts, 3.0);
+            assert!(
+                out.len() >= 3,
+                "the corner vertex is retained, got {}",
+                out.len()
+            );
+            assert!(out.len() < pts.len(), "collinear jitter still dropped");
+            assert_eq!(out.first(), pts.first());
+            assert_eq!(out.last(), pts.last());
+            // Every original point lies within tolerance of the simplified polyline.
+            for p in &pts {
+                let d = min_dist_to_polyline(*p, &out);
+                assert!(d <= 3.5, "deviation {d:.2} m exceeds tolerance");
+            }
+        }
+
+        // Phase `simplify_handles_short_and_zero_tolerance`.
+        // Degenerate inputs pass through unchanged.
+        {
+            let two = vec![LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)];
+            assert_eq!(
+                simplify_polyline(&two, 3.0),
+                two,
+                "two points are already minimal"
+            );
+            let many: Vec<LatLon> = (0..10).map(|i| LatLon::new(f64::from(i), 0.0)).collect();
+            assert_eq!(
+                simplify_polyline(&many, 0.0),
+                many,
+                "zero tolerance keeps everything"
+            );
         }
     }
 
@@ -370,22 +393,5 @@ mod tests {
         line.windows(2)
             .map(|w| super::perp_dist2(pp, xy(w[0]), xy(w[1])).sqrt())
             .fold(f64::MAX, f64::min)
-    }
-
-    /// Degenerate inputs pass through unchanged.
-    #[test]
-    fn simplify_handles_short_and_zero_tolerance() {
-        let two = vec![LatLon::new(0.0, 0.0), LatLon::new(1.0, 1.0)];
-        assert_eq!(
-            simplify_polyline(&two, 3.0),
-            two,
-            "two points are already minimal"
-        );
-        let many: Vec<LatLon> = (0..10).map(|i| LatLon::new(f64::from(i), 0.0)).collect();
-        assert_eq!(
-            simplify_polyline(&many, 0.0),
-            many,
-            "zero tolerance keeps everything"
-        );
     }
 }

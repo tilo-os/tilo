@@ -8,9 +8,13 @@ cargo run -p tilo-app-cli --bin tilo-app -- new reading-list --dev
 ```
 
 Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
-opens it, and watches both app code and the local toolkit. A successful edit
-replaces the running process; a failed build leaves the last good app open and
-waits for the next save. Press Ctrl-C to stop.
+opens it, and watches both app code and the local toolkit. A successful Rust or
+asset edit replaces the running process. Before the old process exits it writes
+the open document, route, and caret, and the new process restores them. Another
+save while that compile is still running cancels it and builds the newest
+source. Edits to a graph screen's `ui/*.json` still update that screen in place.
+A failed build leaves the last good app open and waits for the next save. Press
+Ctrl-C to stop.
 
 The same stages remain available separately for automation and focused work:
 
@@ -1530,6 +1534,53 @@ mistaking a model refresh for user intent. Use `with_on_change_path` or
 `bind_text` instead when the value itself belongs in durable shared state;
 those paths preserve Automerge authorship, collaboration, persistence, and
 undo behavior.
+
+### Using other apps' actions
+
+An app that builds on what other apps publish — a shortcut editor, a
+launcher — reaches the same door the palette and agents use with
+`ui::RemoteActions`. The broker decides every request for the **app**, under
+its own identity, never under the ambient authority of the person using it:
+
+- the app always reaches what it owns: its own surface, and actions the
+  session publishes under its package id;
+- reading the catalogue (`catalogue`) needs the manifest to declare it;
+- invoking another app's action (`invoke`) needs the manifest to declare it
+  **and** the workspace to grant it to the app, like any collaborator grant.
+  Without a grant, the person who is using the app is asked on a sheet only
+  the compositor draws: "<App> wants to use <Other app>: <action>", with the
+  action's risk and whether it still confirms each use. They answer *Allow
+  once*, *Allow for this session*, *Always allow in this workspace* or
+  *Deny*; the invocation waits for the answer. An allowing answer is recorded
+  as an ordinary capability (the app as subject, `Scope::Action`, a matching
+  expiry) granted by that person, and appears in the workspace's history.
+  Nobody is asked when nobody can answer — the screen is locked, the
+  connection belongs to someone else, or they cannot administer the
+  workspace — and an action that governs the workspace is never offered:
+  such a request is refused.
+
+People review and revoke these grants in the workspace's Settings, under
+Permissions › App actions. Agents and scripts use the workspace's
+`app-action.grant` and `app-action.revoke` actions, which need the same
+authority and confirmation as any other permission change.
+
+```toml
+[actions]
+query = true    # read the catalogue of actions the person is offered
+invoke = false  # invoke other apps' actions as this app
+```
+
+```rust
+let remote = ui::RemoteActions::current();
+let page = remote.catalogue(CatalogueQuery::default()); // LocalState<CatalogueCall>
+let run = remote.invoke(row.target().unwrap(), InvokeArgument::None, None);
+```
+
+Answers arrive as `LocalState`s, so a bound view updates and an idle window
+wakes. The root that owns the client returns it from
+`Widget::collaborative_mut` (a `Decorator` can), which is how its requests
+reach the connection. Tests stand in for the session with
+`RemoteActions::enter(host, caller)` and an in-process `ActionHost`.
 
 ### Localization
 

@@ -582,115 +582,180 @@ mod tests {
         (app, doc)
     }
 
-    /// Ctrl+K on the firewall yields the tree: the configuration (start/stop +
-    /// panic), a `firewall.zone` child per zone exporting make-active/set-policy/
-    /// add-rule, and a `firewall.rule` child per rule exporting toggle/edit/
-    /// delete. Drives the real resource hook.
+    /// The palette publishes the firewall tree (or only recovery when unavailable), ignores out-of-range targets and creates rules through the add-allow action.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn ctrl_k_publishes_the_firewall_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one configuration root");
-        let cfg = &resources[0];
-        assert_eq!(cfg.kind, "firewall.config");
-        let cfg_actions: Vec<&str> = cfg.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(cfg_actions.contains(&"toggle-enabled"), "{cfg_actions:?}");
-        assert!(cfg_actions.contains(&"toggle-panic"), "{cfg_actions:?}");
-        let enabled = cfg
-            .actions
-            .iter()
-            .find(|action| action.id == "toggle-enabled")
-            .expect("start/stop operation");
-        assert_eq!(enabled.kind, OperationKind::Effect);
-        assert_eq!(enabled.contract.permission, PermissionRequirement::Admin);
-        assert_eq!(enabled.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(enabled.contract.discovery, DiscoveryScope::Launchable);
-        assert_eq!(cfg.children.len(), 9, "all nine stock zones are published");
-
-        // The public zone carries rules in the sample; find it and check both
-        // the zone-level and rule-level action sets.
-        let public = cfg
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "firewall.zone:public")
-            .expect("a public zone resource");
-        assert_eq!(public.kind, "firewall.zone");
-        let z_actions: Vec<&str> = public.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(z_actions.contains(&"set-policy"), "{z_actions:?}");
-        assert!(z_actions.contains(&"add-allow"), "{z_actions:?}");
-        assert!(z_actions.contains(&"service-ssh"), "{z_actions:?}");
-        assert!(
-            public
+    fn firewall_action_surface_publishes_and_dispatches() {
+        // --- phase: ctrl_k_publishes_the_firewall_tree ---
+        // Ctrl+K on the firewall yields the tree: the configuration (start/stop +
+        // panic), a `firewall.zone` child per zone exporting make-active/set-policy/
+        // add-rule, and a `firewall.rule` child per rule exporting toggle/edit/
+        // delete. Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one configuration root");
+            let cfg = &resources[0];
+            assert_eq!(cfg.kind, "firewall.config");
+            let cfg_actions: Vec<&str> = cfg.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(cfg_actions.contains(&"toggle-enabled"), "{cfg_actions:?}");
+            assert!(cfg_actions.contains(&"toggle-panic"), "{cfg_actions:?}");
+            let enabled = cfg
                 .actions
                 .iter()
-                .find(|action| action.id == "set-policy")
-                .is_some_and(|action| !action.params().is_empty())
-        );
-        // public is the active zone in the sample, so make-active is suppressed.
-        assert!(
-            !z_actions.contains(&"set-default"),
-            "active zone omits make-active"
-        );
-        assert!(!public.children.is_empty(), "public has rules");
+                .find(|action| action.id == "toggle-enabled")
+                .expect("start/stop operation");
+            assert_eq!(enabled.kind, OperationKind::Effect);
+            assert_eq!(enabled.contract.permission, PermissionRequirement::Admin);
+            assert_eq!(enabled.contract.confirmation, ConfirmationPolicy::Confirm);
+            assert_eq!(enabled.contract.discovery, DiscoveryScope::Launchable);
+            assert_eq!(cfg.children.len(), 9, "all nine stock zones are published");
 
-        let rule = &public.children[0];
-        assert_eq!(rule.kind, "firewall.rule");
-        let r_actions: Vec<&str> = rule.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(r_actions.contains(&"toggle"), "{r_actions:?}");
-        assert!(r_actions.contains(&"edit"), "{r_actions:?}");
-        assert!(r_actions.contains(&"delete"), "{r_actions:?}");
-        assert_eq!(
-            rule.actions
+            // The public zone carries rules in the sample; find it and check both
+            // the zone-level and rule-level action sets.
+            let public = cfg
+                .children
                 .iter()
-                .find(|action| action.id == "delete")
-                .expect("delete action")
-                .contract
-                .risk,
-            RiskLevel::Destructive
-        );
-        // First rule can't move up; it can move down.
-        assert!(!r_actions.contains(&"move-up"), "{r_actions:?}");
-        assert!(r_actions.contains(&"move-down"), "{r_actions:?}");
+                .find(|r| r.id.as_str() == "firewall.zone:public")
+                .expect("a public zone resource");
+            assert_eq!(public.kind, "firewall.zone");
+            let z_actions: Vec<&str> = public.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(z_actions.contains(&"set-policy"), "{z_actions:?}");
+            assert!(z_actions.contains(&"add-allow"), "{z_actions:?}");
+            assert!(z_actions.contains(&"service-ssh"), "{z_actions:?}");
+            assert!(
+                public
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "set-policy")
+                    .is_some_and(|action| !action.params().is_empty())
+            );
+            // public is the active zone in the sample, so make-active is suppressed.
+            assert!(
+                !z_actions.contains(&"set-default"),
+                "active zone omits make-active"
+            );
+            assert!(!public.children.is_empty(), "public has rules");
 
-        let ssh = public
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "firewall.service:public:ssh")
-            .expect("a service resource with a stable address");
-        assert_eq!(ssh.kind, "firewall.service");
-        assert!(ssh.actions.iter().any(|action| action.id == "set-enabled"));
+            let rule = &public.children[0];
+            assert_eq!(rule.kind, "firewall.rule");
+            let r_actions: Vec<&str> = rule.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(r_actions.contains(&"toggle"), "{r_actions:?}");
+            assert!(r_actions.contains(&"edit"), "{r_actions:?}");
+            assert!(r_actions.contains(&"delete"), "{r_actions:?}");
+            assert_eq!(
+                rule.actions
+                    .iter()
+                    .find(|action| action.id == "delete")
+                    .expect("delete action")
+                    .contract
+                    .risk,
+                RiskLevel::Destructive
+            );
+            // First rule can't move up; it can move down.
+            assert!(!r_actions.contains(&"move-up"), "{r_actions:?}");
+            assert!(r_actions.contains(&"move-down"), "{r_actions:?}");
 
-        // A non-active zone offers make-active.
-        let home = cfg
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "firewall.zone:home")
-            .expect("a home zone resource");
-        let home_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(home_actions.contains(&"set-default"), "{home_actions:?}");
+            let ssh = public
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "firewall.service:public:ssh")
+                .expect("a service resource with a stable address");
+            assert_eq!(ssh.kind, "firewall.service");
+            assert!(ssh.actions.iter().any(|action| action.id == "set-enabled"));
 
-        // The flattened tree exports every action, including the deeper rule
-        // operations that sort after the zones.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"Delete rule"), "{flat:?}");
-        assert!(flat.contains(&"Make active zone"), "{flat:?}");
-        assert!(flat.contains(&"Set default policy"), "{flat:?}");
-    }
+            // A non-active zone offers make-active.
+            let home = cfg
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == "firewall.zone:home")
+                .expect("a home zone resource");
+            let home_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(home_actions.contains(&"set-default"), "{home_actions:?}");
 
-    /// The unavailable firewall publishes only its read-only recovery action;
-    /// it never exposes rule mutations against an unknown host state.
-    #[test]
-    fn unavailable_firewall_publishes_only_recovery() {
-        let app = FirewallApp::new(); // no firewalld on the test host → unavailable
-        let doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].kind, "firewall.recovery");
-        assert_eq!(resources[0].actions.len(), 1);
-        assert_eq!(resources[0].actions[0].id, "retry");
+            // The flattened tree exports every action, including the deeper rule
+            // operations that sort after the zones.
+            let flat: Vec<&str> = tilo_actions::flatten(&resources)
+                .iter()
+                .map(|f| f.action.label.as_str())
+                .collect();
+            assert!(flat.contains(&"Delete rule"), "{flat:?}");
+            assert!(flat.contains(&"Make active zone"), "{flat:?}");
+            assert!(flat.contains(&"Set default policy"), "{flat:?}");
+        }
+
+        // --- phase: unavailable_firewall_publishes_only_recovery ---
+        // The unavailable firewall publishes only its read-only recovery action;
+        // it never exposes rule mutations against an unknown host state.
+        {
+            let app = FirewallApp::new(); // no firewalld on the test host → unavailable
+            let doc = AutoCommit::new();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].kind, "firewall.recovery");
+            assert_eq!(resources[0].actions.len(), 1);
+            assert_eq!(resources[0].actions[0].id, "retry");
+        }
+
+        // --- phase: out_of_range_action_is_a_no_op ---
+        // A malformed / out-of-range payload is a no-op, not an error: deleting a
+        // rule id that isn't there leaves the document (its heads) untouched.
+        {
+            let (_app, mut doc) = seeded();
+            let zone = FirewallDoc::load(&doc).unwrap().default_zone;
+            let before = doc.get_heads();
+            let action = delete_rule_action(zone, RuleId::from_u128(0xDEAD_BEEF));
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                before,
+                "a delete of an absent rule changed nothing"
+            );
+        }
+
+        // --- phase: add_allow_action_creates_a_rule ---
+        // Dispatching the zone-level "Add allow rule" prompted action creates a
+        // rule in the document with the committed port.
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let public = resources[0]
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == "firewall.zone:public")
+                .unwrap();
+            let spec = public.actions.iter().find(|a| a.id == "add-allow").unwrap();
+            let before = FirewallDoc::load(&doc)
+                .unwrap()
+                .zone(ZoneKind::Public)
+                .unwrap()
+                .rules
+                .len();
+
+            let encoded = prompted_encode(spec, "8443");
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let after = FirewallDoc::load(&doc).unwrap();
+            let rules = &after.zone(ZoneKind::Public).unwrap().rules;
+            assert_eq!(rules.len(), before + 1, "the action added a rule");
+            assert!(
+                rules.iter().any(|r| r.matcher
+                    == Matcher::Port {
+                        port: "8443".into(),
+                        proto: Proto::Tcp
+                    }
+                    && r.action == Action::Allow),
+                "the created rule carries the committed port"
+            );
+        }
     }
 
     /// The configuration a peer holding `doc` publishes: the provider reads
@@ -761,62 +826,5 @@ mod tests {
                 encode(&edit_rule_action(ZoneKind::Public, edited))
             }),
         ],
-    }
-
-    /// A malformed / out-of-range payload is a no-op, not an error: deleting a
-    /// rule id that isn't there leaves the document (its heads) untouched.
-    #[test]
-    fn out_of_range_action_is_a_no_op() {
-        let (_app, mut doc) = seeded();
-        let zone = FirewallDoc::load(&doc).unwrap().default_zone;
-        let before = doc.get_heads();
-        let action = delete_rule_action(zone, RuleId::from_u128(0xDEAD_BEEF));
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            before,
-            "a delete of an absent rule changed nothing"
-        );
-    }
-
-    /// Dispatching the zone-level "Add allow rule" prompted action creates a
-    /// rule in the document with the committed port.
-    #[test]
-    fn add_allow_action_creates_a_rule() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let public = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "firewall.zone:public")
-            .unwrap();
-        let spec = public.actions.iter().find(|a| a.id == "add-allow").unwrap();
-        let before = FirewallDoc::load(&doc)
-            .unwrap()
-            .zone(ZoneKind::Public)
-            .unwrap()
-            .rules
-            .len();
-
-        let encoded = prompted_encode(spec, "8443");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let after = FirewallDoc::load(&doc).unwrap();
-        let rules = &after.zone(ZoneKind::Public).unwrap().rules;
-        assert_eq!(rules.len(), before + 1, "the action added a rule");
-        assert!(
-            rules.iter().any(|r| r.matcher
-                == Matcher::Port {
-                    port: "8443".into(),
-                    proto: Proto::Tcp
-                }
-                && r.action == Action::Allow),
-            "the created rule carries the committed port"
-        );
     }
 }
