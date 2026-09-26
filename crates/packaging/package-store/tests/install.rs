@@ -59,6 +59,10 @@ impl BlobFetcher for CountingFetcher<'_> {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn installs_materialise_the_tree_and_share_unchanged_blobs() {
     // phase: an_install_materialises_exactly_the_package_tree
     {
