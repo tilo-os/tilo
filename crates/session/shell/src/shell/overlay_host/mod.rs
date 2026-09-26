@@ -4094,6 +4094,16 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Audio devices that arrived or left since the last call.
+    pub fn drain_audio_device_sounds(
+        &self,
+    ) -> Vec<settings_store::system_sounds::SystemSoundEvent> {
+        self.session_audio_policy
+            .as_ref()
+            .map(crate::shell::session_audio_policy::SessionAudioPolicyOwner::drain_device_sounds)
+            .unwrap_or_default()
+    }
+
     /// The QS action dispatcher, for callers that actuate hardware
     /// outside the popover — the media keys, which drive the same
     /// volume and brightness the sliders do and must go through the same

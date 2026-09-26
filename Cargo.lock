@@ -7950,6 +7950,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-automerge",
  "tilo-test-env",
  "tracing",

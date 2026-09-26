@@ -664,7 +664,7 @@ pub struct ChromeState {
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
     notification_badges: BTreeMap<String, u32>,
-    notification_sound: Option<media::notification_sound::NotificationSoundPlayer>,
+    system_sounds: Option<crate::shell::system_sounds::SystemSounds>,
     priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     notification_policy: settings_store::notification_policy::NotificationPolicy,
     notification_policy_checked: Option<std::time::Instant>,
@@ -841,7 +841,7 @@ impl ChromeState {
             notification_history_store: None,
             notification_history_dirty: false,
             notification_badges: BTreeMap::new(),
-            notification_sound: None,
+            system_sounds: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
             notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
             notification_policy_checked: None,
@@ -1963,6 +1963,7 @@ impl ChromeState {
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> u64 {
+        let _ = self.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Error);
         self.push_notification_full(
             Notification::new(title, body)
                 .with_severity(NotificationSeverity::Error)
@@ -2493,11 +2494,31 @@ impl ChromeState {
 
     pub fn set_notification_runtime(
         &mut self,
-        sound: media::notification_sound::NotificationSoundPlayer,
+        sounds: crate::shell::system_sounds::SystemSounds,
         priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     ) {
-        self.notification_sound = Some(sound);
+        self.system_sounds = Some(sounds);
         self.priority_contacts = priority_contacts;
+    }
+
+    /// Play a system event sound, subject to the person's "System sounds"
+    /// choices, Do Not Disturb, focus time and presenting. A session without
+    /// a sound runtime (tests, renders) stays silent.
+    pub fn play_system_sound(
+        &self,
+        event: settings_store::system_sounds::SystemSoundEvent,
+    ) -> bool {
+        self.play_system_sound_allowed(event, true)
+    }
+
+    fn play_system_sound_allowed(
+        &self,
+        event: settings_store::system_sounds::SystemSoundEvent,
+        delivery_allows: bool,
+    ) -> bool {
+        self.system_sounds.as_ref().is_some_and(|sounds| {
+            sounds.play(event, self.notifications_auto_quiet(), delivery_allows)
+        })
     }
 
     /// Keep notification unit tests independent of the developer account's
@@ -2579,6 +2600,7 @@ impl ChromeState {
             let sharing = bridge.take_sharing(dbus_id);
             let urgency = inc.urgency;
             let badge_count = inc.badge_count;
+            let sound = inc.sound;
             let verified_priority_contact = verified_app_id.is_some()
                 && inc
                     .contact_endpoint
@@ -2631,11 +2653,15 @@ impl ChromeState {
                     self.notification_badges.insert(app_id, count.min(9_999));
                 }
             }
-            if effective.sounds && !self.notifications_auto_quiet() {
-                let _ = self
-                    .notification_sound
-                    .as_ref()
-                    .map(media::notification_sound::NotificationSoundPlayer::play);
+            if let Some(event) = sound {
+                use settings_store::system_sounds::SystemSoundEvent;
+                // Notifications and messages carry the notification policy's
+                // per-app verdict; other events follow System sounds alone.
+                let allows = !matches!(
+                    event,
+                    SystemSoundEvent::Notification | SystemSoundEvent::Message
+                ) || effective.sounds;
+                let _ = self.play_system_sound_allowed(event, allows);
             }
             if effective.banners {
                 self.push_notification_full(notification);
