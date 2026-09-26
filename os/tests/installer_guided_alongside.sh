@@ -37,6 +37,13 @@ printf 'label: gpt\nstart=2048, size=8192, type=0fc63daf-8483-4772-8e79-3d69d847
 run_root blockdev --rereadpt "$loop"
 run_root partx -u "$loop"
 for _ in {1..50}; do [ -b "${loop}p1" ] && break; sleep 0.1; done
+# The helper waits for the kernel's partition nodes, as udev provides them on a
+# real system. A container /dev that is a static snapshot never shows them.
+if [ ! -b "${loop}p1" ] && [ -e "/sys/class/block/${loop##*/}p1" ]; then
+  printf 'SKIP  guided alongside loopback test needs a /dev that shows new partition nodes (%s is %s)\n' \
+    /dev "$(findmnt -no FSTYPE /dev 2>/dev/null || echo unknown)"
+  exit 0
+fi
 existing="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$existing_uuid")"
 [ -b "$existing" ]
 printf 'existing-operating-system-data\n' | run_root dd of="$existing" bs=1 seek=4096 conv=notrunc status=none
