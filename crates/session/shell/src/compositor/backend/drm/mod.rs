@@ -1764,6 +1764,7 @@ mod tests {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
             },
         ];
         let (mut paused, mut blanked) = (false, false);
