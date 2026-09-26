@@ -23,6 +23,7 @@ notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 atomic-file = { path = "../../system/atomic-file" }
+# serde comes in through serde_json. A direct dependency is unused and fails machete.
 serde_json.workspace = true
 syn = { version = "2.0", features = ["full"] }
 tempfile.workspace = true
