@@ -4164,6 +4164,12 @@ fn install_device_fabric_bridge(
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
                     crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
                 }
+                DeviceFabricUiAction::SelectLocalInput { node_id } => {
+                    crate::shell::device_fabric_runtime::select_local_input(node_id)?;
+                }
+                DeviceFabricUiAction::StepInputLevel { node_id, raise } => {
+                    crate::shell::device_fabric_runtime::step_input_level(node_id, raise)?;
+                }
                 DeviceFabricUiAction::HandoffBluetooth {
                     address,
                     name,
