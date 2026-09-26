@@ -8,6 +8,7 @@ clang
 clang-devel
 cmake
 expat-devel
+flite
 fontconfig-devel
 freetype-devel
 gcc
@@ -20,10 +21,12 @@ gstreamer1-plugins-base
 gstreamer1-plugins-base-devel
 harfbuzz-devel
 hyphen
+lcms2
 libavif
 libdrm-devel
 libepoxy
 libinput-devel
+libjxl
 libmanette
 libseat-devel
 libsoup3-devel
