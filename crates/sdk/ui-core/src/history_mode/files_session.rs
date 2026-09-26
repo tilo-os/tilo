@@ -44,6 +44,22 @@ enum Reply {
 }
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+#[derive(PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a snapshot of the controller's independent presentation flags"
+)]
+struct Presented {
+    versions: Vec<FileVersionV1>,
+    scope: Option<Scope>,
+    current_revision: Option<collab_types::ContentRevisionV1>,
+    message: String,
+    live_updates: bool,
+    preview_changed: bool,
+    presentation_invalidated: bool,
+    review_changed: bool,
+}
+
 struct Completion {
     key: Key,
     reply: Reply,
@@ -77,6 +93,9 @@ pub(super) struct FileController {
     pub live_updates: bool,
     active: bool,
     refreshing: bool,
+    /// `message` reports a restore outcome. The activity summary must not
+    /// replace it until the user acts or the presentation is reactivated.
+    reporting: bool,
     next_poll: crate::time::Instant,
 }
 impl FileController {
@@ -114,6 +133,7 @@ impl FileController {
             live_updates: false,
             active: true,
             refreshing: false,
+            reporting: false,
             next_poll: now,
         }
     }
@@ -157,6 +177,7 @@ impl FileController {
         self.confirmation = uuid::Uuid::new_v4();
         self.review_changed = true;
         self.refreshing = false;
+        self.reporting = false;
     }
     pub fn suspend(&mut self) {
         self.active = false;
@@ -181,6 +202,7 @@ impl FileController {
         self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
+        self.message = "Loading file history".into();
         self.next_poll = self.background.now();
         self.load();
     }
@@ -230,6 +252,7 @@ impl FileController {
         };
         self.confirmation = uuid::Uuid::new_v4();
         self.review_changed = true;
+        self.reporting = false;
         let Ok(request) = self.restore.prepare(review, operation) else {
             self.message = "An earlier restore is still pending; check its exact result".into();
             return;
@@ -306,7 +329,7 @@ impl FileController {
                 self.scope = Some(scope);
                 self.versions = versions;
                 self.current_revision = current_revision;
-                if self.after.is_none() {
+                if self.after.is_none() && !self.reporting {
                     self.message = format!("{} immutable versions", self.versions.len());
                 }
             }
@@ -326,7 +349,10 @@ impl FileController {
     pub fn drain(&mut self) -> bool {
         self.has_results();
         let values = self.inbox.get_mut().drain(..).collect::<Vec<_>>();
-        let changed = !values.is_empty();
+        // Only what the presentation shows counts as a change: an idle poll
+        // that finds the same activity must not rebuild the chrome under a
+        // pointer that is mid-click.
+        let mut changed = false;
         for completion in values {
             // Exact admitted outcomes survive a closed presentation generation,
             // but can only settle this controller's original request and target.
@@ -336,8 +362,16 @@ impl FileController {
                 {
                     continue;
                 }
+                if self.restore.has_settled(&request) {
+                    // The submit and a result lookup for one exact intent run
+                    // concurrently; whichever settled it first already
+                    // reported. The slower one must not replace that report.
+                    continue;
+                }
+                changed = true;
                 if self.restore.receive(request, outcome.clone()) {
                     self.message = outcome_message(&outcome);
+                    self.reporting = true;
                     if matches!(outcome, Outcome::NotVisible) {
                         self.hide();
                     }
@@ -353,6 +387,12 @@ impl FileController {
             if completion.key != self.key {
                 continue;
             }
+            let before = if matches!(completion.reply, Reply::Activity(_)) {
+                Some(self.presented())
+            } else {
+                changed = true;
+                None
+            };
             match completion.reply {
                 Reply::Unavailable => {
                     self.refreshing = false;
@@ -420,11 +460,27 @@ impl FileController {
                 }
                 Reply::Outcome(..) => {}
             }
+            if let Some(before) = before {
+                changed |= before != self.presented();
+            }
         }
         if self.active && !self.refreshing && self.background.now() >= self.next_poll {
             self.load();
         }
         changed
+    }
+    /// Everything an activity reply can change that the host presents.
+    fn presented(&self) -> Presented {
+        Presented {
+            versions: self.versions.clone(),
+            scope: self.scope,
+            current_revision: self.current_revision,
+            message: self.message.clone(),
+            live_updates: self.live_updates,
+            preview_changed: self.preview_changed,
+            presentation_invalidated: self.presentation_invalidated,
+            review_changed: self.review_changed,
+        }
     }
     /// Refresh the activity list again after the poll interval.
     fn schedule_poll(&mut self) {
