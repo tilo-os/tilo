@@ -138,6 +138,23 @@ impl Output {
         layout::logical_extent(self.physical_size(), f64::from(self.scale), self.transform)
     }
 
+    /// Where the output sits in the logical desktop — the space the shell
+    /// lays out in, clients are configured in and the pointer moves in.
+    pub fn logical_rect(&self) -> vello::kurbo::Rect {
+        let (w, h) = self.logical_size();
+        let (x, y) = (
+            f64::from(self.logical_position.0),
+            f64::from(self.logical_position.1),
+        );
+        vello::kurbo::Rect::new(x, y, x + f64::from(w), y + f64::from(h))
+    }
+
+    /// Where the output's pixels sit in the painted scene.
+    pub fn scene_rect(&self) -> vello::kurbo::Rect {
+        let (x, y) = (f64::from(self.position.0), f64::from(self.position.1));
+        vello::kurbo::Rect::new(x, y, x + f64::from(self.size.0), y + f64::from(self.size.1))
+    }
+
     pub fn physical_size(&self) -> (u32, u32) {
         use settings_store::hardware::OutputTransform::{Rotate90, Rotate270};
         if matches!(self.transform, Rotate90 | Rotate270) {
@@ -172,19 +189,45 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
     (w, h)
 }
 
-/// Translate the backend's output list into the geometry the shell's
-/// strips resolve window widths against.
+/// Bounding box (width, height) of every output's logical rectangle: the
+/// size of the desktop the shell lays out. Equal to [`combined_geometry`]
+/// when every scale is 1.
+pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
+    let mut w: i64 = 0;
+    let mut h: i64 = 0;
+    for o in outputs {
+        let (lw, lh) = o.logical_size();
+        w = w.max(i64::from(o.logical_position.0).saturating_add(i64::from(lw)));
+        h = h.max(i64::from(o.logical_position.1).saturating_add(i64::from(lh)));
+    }
+    let w = u32::try_from(w.max(0)).unwrap_or(u32::MAX);
+    let h = u32::try_from(h.max(0)).unwrap_or(u32::MAX);
+    (w, h)
+}
+
+/// Translate the backend's output list into the geometry the shell lays out
+/// and paints across: each display's logical rectangle, its scale, and
+/// where its pixels go in the scene.
 ///
 /// Outputs with a zero dimension are dropped: a connector mid-modeset
 /// reports 0×0, which would hand a strip a display it can't place a window on.
 pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::OutputGeometry> {
     outputs
         .iter()
-        .filter(|o| o.size.0 > 0 && o.size.1 > 0)
-        .map(|o| crate::shell::overlay_host::OutputGeometry {
-            x: f64::from(o.position.0),
-            width: f64::from(o.size.0),
-            height: f64::from(o.size.1),
+        .filter(|o| {
+            let (lw, lh) = o.logical_size();
+            o.size.0 > 0 && o.size.1 > 0 && lw > 0 && lh > 0
+        })
+        .map(|o| {
+            let logical = o.logical_rect();
+            crate::shell::overlay_host::OutputGeometry {
+                x: logical.x0,
+                y: logical.y0,
+                width: logical.width(),
+                height: logical.height(),
+                scale: f64::from(o.scale),
+                scene: o.scene_rect(),
+            }
         })
         .collect()
 }
@@ -226,7 +269,9 @@ pub enum GestureEvent {
     },
 }
 
-/// One touch point's movement, in combined-output coordinates.
+/// One touch point's movement. A backend reports it in scene pixels; the
+/// compositor carries it into the logical desktop with
+/// [`layout::event_to_logical`] before anything hit-tests it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TouchEvent {
     Down { slot: u32, x: f64, y: f64 },
