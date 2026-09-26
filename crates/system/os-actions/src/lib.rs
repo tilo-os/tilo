@@ -86,7 +86,7 @@ pub use firmware::{
 };
 pub use linux_physical_gamepad::{
     LinuxPhysicalGamepadCatalog, LinuxPhysicalGamepadSource, PhysicalGamepadDrain,
-    PhysicalGamepadId, PhysicalGamepadInfo,
+    PhysicalGamepadHotplug, PhysicalGamepadId, PhysicalGamepadInfo,
 };
 pub use linux_virtual_gamepad::{
     LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,

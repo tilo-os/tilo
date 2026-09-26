@@ -8,11 +8,12 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _};
 use std::mem::size_of;
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::slice;
 
+use crate::linux_virtual_gamepad::{FORWARDED_GAMEPAD_PRODUCT, FORWARDED_GAMEPAD_VENDOR};
 use crate::{ForwardedGamepadEvent, GamepadAxis, GamepadButton};
 
 const EV_SYN: u16 = 0x00;
@@ -59,6 +60,9 @@ pub struct PhysicalGamepadId(PathBuf);
 pub struct PhysicalGamepadInfo {
     pub id: PhysicalGamepadId,
     pub name: String,
+    /// USB/Bluetooth vendor id, when the kernel reports one. It names the
+    /// printed button legends more reliably than the product string.
+    pub vendor_id: Option<u16>,
 }
 
 /// Production discovery roots. Custom roots exist only to make classification
@@ -109,14 +113,22 @@ impl LinuxPhysicalGamepadCatalog {
             if !metadata.file_type().is_char_device() || !self.is_controller_rdev(metadata.rdev()) {
                 continue;
             }
-            let name_path = self.sys_class_input.join(file_name).join("device/name");
-            let name = fs::read_to_string(name_path)
+            let device = self.sys_class_input.join(file_name).join("device");
+            let vendor_id = read_hex_id(&device.join("id/vendor"));
+            let product_id = read_hex_id(&device.join("id/product"));
+            // A granted lease re-creates a remote controller here for one
+            // app. It is that app's input, never a controller in this room.
+            if is_forwarded_gamepad(vendor_id, product_id) {
+                continue;
+            }
+            let name = fs::read_to_string(device.join("name"))
                 .ok()
                 .and_then(|name| sanitize_local_name(&name))
                 .unwrap_or_else(|| "Game controller".into());
             controllers.push(PhysicalGamepadInfo {
                 id: PhysicalGamepadId(path),
                 name,
+                vendor_id,
             });
         }
         controllers.sort_by(|left, right| left.id.cmp(&right.id));
@@ -153,6 +165,27 @@ impl LinuxPhysicalGamepadCatalog {
         LinuxPhysicalGamepadSource::open(&id.0)
     }
 
+    /// Watch udev's device database, which is written once a newly attached
+    /// input device has been classified, so callers rescan on hotplug
+    /// instead of polling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when inotify is unavailable or the udev database
+    /// directory cannot be watched.
+    pub fn hotplug_watch(&self) -> io::Result<PhysicalGamepadHotplug> {
+        use rustix::fs::inotify;
+        let fd = inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
+        inotify::add_watch(
+            &fd,
+            &self.udev_data,
+            inotify::WatchFlags::CLOSE_WRITE
+                | inotify::WatchFlags::MOVED_TO
+                | inotify::WatchFlags::DELETE,
+        )?;
+        Ok(PhysicalGamepadHotplug { fd })
+    }
+
     fn is_controller_rdev(&self, rdev: u64) -> bool {
         let major = libc::major(rdev as libc::dev_t);
         let minor = libc::minor(rdev as libc::dev_t);
@@ -160,6 +193,42 @@ impl LinuxPhysicalGamepadCatalog {
         fs::read_to_string(path)
             .ok()
             .is_some_and(|properties| is_exclusive_controller(&properties))
+    }
+}
+
+/// Nonblocking readiness source for input-device hotplug.
+pub struct PhysicalGamepadHotplug {
+    fd: OwnedFd,
+}
+
+impl PhysicalGamepadHotplug {
+    /// A duplicate of the watch descriptor for an event loop to poll.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor cannot be duplicated.
+    pub fn wake_fd(&self) -> io::Result<OwnedFd> {
+        self.fd.try_clone()
+    }
+
+    /// Consume every queued notification. Returns whether any of them
+    /// concerned an input device (udev records `c13:<minor>` for evdev).
+    pub fn take_changes(&mut self) -> bool {
+        use rustix::fs::inotify;
+        let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
+        let mut reader = inotify::Reader::new(&self.fd, &mut buffer);
+        let mut changed = false;
+        loop {
+            match reader.next() {
+                Ok(event) => {
+                    changed |= event
+                        .file_name()
+                        .is_some_and(|name| name.to_bytes().starts_with(b"c13:"));
+                }
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return changed,
+            }
+        }
     }
 }
 
@@ -202,6 +271,16 @@ impl LinuxPhysicalGamepadSource {
             hat_x: 0,
             hat_y: 0,
         })
+    }
+
+    /// A duplicate of the evdev descriptor for an event loop to poll. Reads
+    /// still go through [`Self::drain`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor cannot be duplicated.
+    pub fn wake_fd(&self) -> io::Result<OwnedFd> {
+        self.file.as_fd().try_clone_to_owned()
     }
 
     /// Consume at most `limit` raw kernel events. Unknown event types and
@@ -369,6 +448,15 @@ fn is_exclusive_controller(properties: &str) -> bool {
     joystick && !forbidden
 }
 
+fn is_forwarded_gamepad(vendor: Option<u16>, product: Option<u16>) -> bool {
+    vendor == Some(FORWARDED_GAMEPAD_VENDOR) && product == Some(FORWARDED_GAMEPAD_PRODUCT)
+}
+
+fn read_hex_id(path: &Path) -> Option<u16> {
+    let text = fs::read_to_string(path).ok()?;
+    u16::from_str_radix(text.trim(), 16).ok()
+}
+
 fn sanitize_local_name(name: &str) -> Option<String> {
     let name: String = name
         .trim()
@@ -495,6 +583,28 @@ mod tests {
                 .is_valid()
             );
         }
+    }
+
+    #[test]
+    fn forwarded_virtual_gamepads_are_not_room_hardware() {
+        assert!(is_forwarded_gamepad(
+            Some(FORWARDED_GAMEPAD_VENDOR),
+            Some(FORWARDED_GAMEPAD_PRODUCT)
+        ));
+        assert!(!is_forwarded_gamepad(Some(0x045e), Some(0x028e)));
+        assert!(!is_forwarded_gamepad(Some(FORWARDED_GAMEPAD_VENDOR), None));
+        assert!(!is_forwarded_gamepad(None, None));
+    }
+
+    #[test]
+    fn sysfs_ids_parse_as_hex() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vendor");
+        fs::write(&path, "057e\n").expect("write vendor");
+        assert_eq!(read_hex_id(&path), Some(0x057e));
+        fs::write(&path, "garbage").expect("write vendor");
+        assert_eq!(read_hex_id(&path), None);
+        assert_eq!(read_hex_id(&dir.path().join("missing")), None);
     }
 
     #[test]
