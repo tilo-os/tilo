@@ -10,8 +10,11 @@ toolchain, and it is unsealed. Two ways that could leak into production:
      its base and never build a UKI of its own;
    * its RPM snapshot default must be the production one (os/rpms-snapshot.env),
      and its toolchain list (os/scripts/builder-packages.txt) must be exactly
-     what os/Containerfile's builder stage installs, so it compiles with what
-     the production builder of the same commit compiles with;
+     what os/Containerfile's builder stage installs but for Fedora's Rust
+     compiler, so it links against what the production builder of the same
+     commit links against;
+   * its Rust compiler must be the release rust-toolchain.toml pins, taken from
+     a digest-pinned tilo-builder image, never a floating tag;
    * every script or workflow that builds os/Containerfile.dev may tag and push
      it only under a `tilo-vm` name, never code.sandbox.example/qos/tilo or
      localhost/tilo;
@@ -53,6 +56,8 @@ WHY_LEAK = ("production images are built from os/Containerfile* and must never c
 # Dev-image sources that only os/Containerfile.dev may use.
 DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-vmd/data", "os/scripts/unseal-rootfs.py",
                "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev")
+WHY_TOOLCHAIN = ("the dev image and in-VM builds must compile with the compiler CI checks the workspace with; "
+                 "Fedora's rust package, or a floating image tag, changes version whenever it is refreshed")
 PRODUCTION_NAME = re.compile(r"(?:code\.podesta\.ai/qos/tilo|localhost/tilo)(?=[:@\s\"']|$)")
 
 
@@ -149,6 +154,20 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
         findings.append(Finding(shown, "declares no `ARG RPMS_REF`",
                                 "the toolchain must come from the frozen snapshot the production builder used",
                                 "add a bare `ARG RPMS_REF` before the first FROM."))
+    toolchain = next(((n, m.group(1)) for n, t in lines
+                      if (m := re.fullmatch(r"ARG RUST_TOOLCHAIN_IMAGE=(\S+)", t))), None)
+    if toolchain is None:
+        findings.append(Finding(shown, "declares no `ARG RUST_TOOLCHAIN_IMAGE=<pinned tilo-builder>`",
+                                WHY_TOOLCHAIN, "add `ARG RUST_TOOLCHAIN_IMAGE=code.sandbox.example/qos/tilo-builder@sha256:<digest>` "
+                                "before the first FROM and install the toolchain from its `rust-toolchain` stage."))
+    elif not re.fullmatch(r"code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}", toolchain[1]):
+        findings.append(Finding(f"{shown}:{toolchain[0]}", f"RUST_TOOLCHAIN_IMAGE is not a digest-pinned "
+                                f"tilo-builder image ({toolchain[1]})", WHY_TOOLCHAIN,
+                                "pin code.sandbox.example/qos/tilo-builder@sha256:<digest> of an index built from this "
+                                "rust-toolchain.toml."))
+    if not any("rust-toolchain.toml" in t and "/tilo/" in t for _, t in lines if t.startswith("COPY ")):
+        findings.append(Finding(shown, "does not stage rust-toolchain.toml for the dev-toolchain stage", WHY_TOOLCHAIN,
+                                "copy it into the dev-inputs stage; the toolchain stage selects its channel from it."))
     builder = "os/dev/build-dev-image.sh"
     path = repo / builder
     if path.is_file():
@@ -197,7 +216,7 @@ def check_builder_packages(repo: Path) -> list[Finding]:
                 rel(repo, listing), f"differs from the packages os/Containerfile's builder stage installs "
                 f"on {arch} (missing: {', '.join(added) or '-'}; extra: {', '.join(removed) or '-'})",
                 "the dev image compiles its binaries and in-VM builds with this list, so it must be "
-                "exactly the production builder's toolchain",
+                "exactly the production builder's toolchain (but for the pinned Rust compiler)",
                 "run `python3 os/scripts/builder-packages.py --write` and commit the result."))
             break
     return findings
