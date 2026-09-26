@@ -14276,6 +14276,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-automation"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tilo-actions",
+ "uuid",
+]
+
+[[package]]
 name = "tilo-automerge"
 version = "0.1.0"
 dependencies = [
