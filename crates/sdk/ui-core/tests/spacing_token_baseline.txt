@@ -97,6 +97,7 @@ apps/music/src/app/render.rs pixel_const 13
 apps/notes/src/app.rs pixel_const 4
 apps/notes/src/main_panel.rs pixel_const 7
 apps/notes/src/shortcuts_overlay.rs pixel_const 5
+apps/osk/src/autocorrect.rs pixel_const 3
 apps/osk/src/widget.rs pixel_const 3
 apps/passwords/src/showcase.rs pixel_const 1
 apps/pdf-viewer/src/app.rs pixel_const 16
