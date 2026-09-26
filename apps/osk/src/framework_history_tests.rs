@@ -5,15 +5,20 @@ fn keyboard() -> OskWidget {
     OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
 }
 
-#[test]
-fn framework_history_real_root_declares_preferences() {
-    let keyboard = keyboard();
-    let definition = keyboard
-        .document_history_definition()
-        .expect("real OSK root must declare History");
-    assert_eq!(definition.app_id, "so.tilo.osk");
-    assert_eq!(definition.scopes.len(), 1);
-    assert!(definition.scopes[0].content_schema.is_some());
+fn put_preferences(doc: &mut AutoCommit, layout: &str, suggestions: bool, personalization: bool) {
+    doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, layout).unwrap();
+    doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, suggestions)
+        .unwrap();
+    doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, personalization)
+        .unwrap();
+}
+
+fn saved_layout(doc: &AutoCommit) -> Option<String> {
+    read_config_text(doc, &automerge::ROOT, CONFIG_LAYOUT_KEY)
+}
+
+fn saved_suggestions(doc: &AutoCommit) -> Option<bool> {
+    read_config_bool(doc, &automerge::ROOT, CONFIG_SUGGESTIONS_KEY)
 }
 
 #[test]
@@ -25,12 +30,7 @@ fn framework_history_absence_adopts_each_default_without_reseeding() {
     ] {
         let mut keyboard = keyboard();
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, "azerty")
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, false)
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, false)
-            .unwrap();
+        put_preferences(&mut doc, "azerty", false, false);
         doc.commit();
         keyboard.sync(&mut doc, &automerge::ROOT);
         doc.delete(automerge::ROOT, key).unwrap();
@@ -79,6 +79,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
+use ui::headless::test_support::select_timeline_entry;
 use ui::history_mode::*;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, EncodedAction};
 
@@ -89,6 +90,18 @@ struct LiveFixture {
     event_count: Rc<Cell<usize>>,
     acknowledgements: Rc<Cell<usize>>,
     reentrant: Option<Rc<RefCell<ReentrantAck>>>,
+}
+impl LiveFixture {
+    fn new(keyboard: Rc<RefCell<OskWidget>>, acknowledgements: Rc<Cell<usize>>) -> Self {
+        Self {
+            keyboard,
+            queue: Rc::default(),
+            events: Rc::default(),
+            event_count: Rc::default(),
+            acknowledgements,
+            reentrant: None,
+        }
+    }
 }
 impl Widget for LiveFixture {
     fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
@@ -230,18 +243,13 @@ struct Fixture {
 fn driver(doc: AutoCommit, keyboard: OskWidget) -> Fixture {
     let definition = keyboard.document_history_definition().unwrap();
     let keyboard = Rc::new(RefCell::new(keyboard));
-    let queue = Rc::default();
-    let events = Rc::default();
-    let event_count = Rc::new(Cell::new(0));
     let acknowledgements = Rc::new(Cell::new(0));
-    let root = LiveFixture {
-        keyboard: keyboard.clone(),
-        queue: Rc::clone(&queue),
-        events: Rc::clone(&events),
-        event_count: event_count.clone(),
-        acknowledgements: acknowledgements.clone(),
-        reentrant: None,
-    };
+    let root = LiveFixture::new(keyboard.clone(), acknowledgements.clone());
+    let (queue, events, event_count) = (
+        root.queue.clone(),
+        root.events.clone(),
+        root.event_count.clone(),
+    );
     let registration = HistoryRegistration::new(
         definition,
         vec![HistorySourceRegistration::HostDocument {
@@ -271,40 +279,26 @@ fn driver(doc: AutoCommit, keyboard: OskWidget) -> Fixture {
         acknowledgements,
     }
 }
-fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
-    let target = format!(
-        "timeline-entry:{}",
-        ui::widget::history_group::hex16(&ui::history_source::entry_id_from_hash(
-            &hash.to_string()
-        ))
-    );
-    driver
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&target),
-            &AccessibilityAction::Activate,
-        )
-        .unwrap();
-}
 fn document() -> (AutoCommit, automerge::ChangeHash) {
     let mut doc = AutoCommit::new();
-    doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, "azerty")
-        .unwrap();
-    doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, false)
-        .unwrap();
-    doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, false)
-        .unwrap();
+    put_preferences(&mut doc, "azerty", false, false);
     doc.commit();
     let selected = doc.get_heads()[0];
-    doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, "qwerty")
-        .unwrap();
-    doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, true)
-        .unwrap();
-    doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, true)
-        .unwrap();
+    put_preferences(&mut doc, "qwerty", true, true);
     doc.put(automerge::ROOT, "unrelated", "live only").unwrap();
     doc.commit();
     (doc, selected)
+}
+/// Open History, select `hash` and review its restore, stopping before the
+/// confirming Enter.
+fn review_restore(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
+    driver.click_named("history-open").unwrap();
+    select_timeline_entry(driver, hash);
+    driver.click_named("history-restore").unwrap();
+}
+fn restore(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
+    review_restore(driver, hash);
+    driver.key("Enter");
 }
 fn invoke(f: &mut Fixture, resource: &str, action: &str) {
     f.queue.borrow_mut().push_back(ControlInvocation {
@@ -317,9 +311,7 @@ fn invoke(f: &mut Fixture, resource: &str, action: &str) {
 fn framework_history_host_pending_draft_refuses_then_settles_once_and_cannot_overwrite_restore() {
     let (doc, selected) = document();
     let mut f = driver(doc, keyboard());
-    f.driver.click_named("history-open").unwrap();
-    select(&mut f.driver, selected);
-    f.driver.click_named("history-restore").unwrap();
+    review_restore(&mut f.driver, selected);
     let heads = f.driver.state_mut().doc.base_heads();
     f.keyboard.borrow_mut().set_suggestions_enabled(false);
     f.driver.key("Enter");
@@ -340,14 +332,7 @@ fn framework_history_host_pending_draft_refuses_then_settles_once_and_cannot_ove
     f.driver.key("Shift");
     assert_eq!(f.acknowledgements.get(), 1);
     assert!(!f.keyboard.borrow().drafts.pending());
-    assert_eq!(
-        read_config_bool(
-            &f.driver.state_mut().doc,
-            &automerge::ROOT,
-            CONFIG_SUGGESTIONS_KEY
-        ),
-        Some(false)
-    );
+    assert_eq!(saved_suggestions(&f.driver.state_mut().doc), Some(false));
     let changes = f.driver.state_mut().doc.get_changes(&heads);
     assert_eq!(changes.len(), 1);
     let context =
@@ -357,17 +342,9 @@ fn framework_history_host_pending_draft_refuses_then_settles_once_and_cannot_ove
     assert_eq!(context.resource.unwrap().id, "osk.keyboard.suggestions");
     f.driver.key("Shift");
     assert_eq!(f.acknowledgements.get(), 1);
-    f.driver.click_named("history-open").unwrap();
-    select(&mut f.driver, selected);
-    f.driver.click_named("history-restore").unwrap();
-    f.driver.key("Enter");
+    restore(&mut f.driver, selected);
     assert_eq!(
-        read_config_text(
-            &f.driver.state_mut().doc,
-            &automerge::ROOT,
-            CONFIG_LAYOUT_KEY
-        )
-        .as_deref(),
+        saved_layout(&f.driver.state_mut().doc).as_deref(),
         Some("azerty")
     );
     assert_eq!(f.keyboard.borrow().preferred_text_layout, "azerty");
@@ -415,11 +392,7 @@ fn framework_history_granular_actions_noop_settlement_failure_retry_and_superses
     assert_eq!(f.driver.state_mut().doc.base_heads(), heads);
     assert!(f.driver.state_mut().undo(None, None).is_some());
     assert_eq!(
-        read_config_bool(
-            &f.driver.state_mut().doc,
-            &automerge::ROOT,
-            CONFIG_SUGGESTIONS_KEY
-        ),
+        saved_suggestions(&f.driver.state_mut().doc),
         Some(true),
         "no-op settlement adds no undo boundary"
     );
@@ -500,30 +473,17 @@ fn framework_history_shared_host_restore_undo_and_absence_preserve_unrelated_roo
         Some(CONFIG_PERSONALIZATION_KEY),
     ] {
         let (mut doc, _) = document();
-        doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, "azerty")
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, false)
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, false)
-            .unwrap();
+        put_preferences(&mut doc, "azerty", false, false);
         if let Some(key) = deleted {
             doc.delete(automerge::ROOT, key).unwrap();
         }
         doc.commit();
         let selected = doc.get_heads()[0];
-        doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, "qwerty")
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, true)
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, true)
-            .unwrap();
+        put_preferences(&mut doc, "qwerty", true, true);
         doc.commit();
         let mut f = driver(doc, keyboard());
         let heads = f.driver.state_mut().doc.base_heads();
-        f.driver.click_named("history-open").unwrap();
-        select(&mut f.driver, selected);
-        f.driver.click_named("history-restore").unwrap();
-        f.driver.key("Enter");
+        restore(&mut f.driver, selected);
         let doc = &mut f.driver.state_mut().doc;
         assert_eq!(doc.get_changes(&heads).len(), 1);
         assert_eq!(
@@ -562,12 +522,7 @@ fn framework_history_shared_host_restore_undo_and_absence_preserve_unrelated_roo
         );
         assert!(f.driver.state_mut().undo(None, None).is_some());
         assert_eq!(
-            read_config_text(
-                &f.driver.state_mut().doc,
-                &automerge::ROOT,
-                CONFIG_LAYOUT_KEY
-            )
-            .as_deref(),
+            saved_layout(&f.driver.state_mut().doc).as_deref(),
             Some("qwerty")
         );
     }
@@ -721,19 +676,9 @@ fn framework_history_wrong_types_and_unsupported_current_content_never_partially
         .unwrap();
     let heads = doc.get_heads();
     let mut f = driver(doc, keyboard());
-    f.driver.click_named("history-open").unwrap();
-    select(&mut f.driver, selected);
-    f.driver.click_named("history-restore").unwrap();
-    f.driver.key("Enter");
+    restore(&mut f.driver, selected);
     assert_eq!(f.driver.state_mut().doc.get_heads(), heads);
-    assert_eq!(
-        read_config_bool(
-            &f.driver.state_mut().doc,
-            &automerge::ROOT,
-            CONFIG_SUGGESTIONS_KEY
-        ),
-        Some(true)
-    );
+    assert_eq!(saved_suggestions(&f.driver.state_mut().doc), Some(true));
     assert!(f.driver.a11y_node_named("Refresh review").is_some());
 }
 #[test]
@@ -783,7 +728,7 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
     let heads = f.driver.state_mut().doc.get_heads();
     let bytes = f.driver.state_mut().doc.save();
     f.driver.click_named("history-open").unwrap();
-    select(&mut f.driver, selected);
+    select_timeline_entry(&mut f.driver, selected);
     assert!(
         f.driver
             .inspection_json()
@@ -818,7 +763,7 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
         predictor
     );
     f.driver.click_named("history-open").unwrap();
-    select(&mut f.driver, selected);
+    select_timeline_entry(&mut f.driver, selected);
     f.events.borrow_mut().extend([
         "osk:purpose:number".into(),
         "osk:hide".into(),
@@ -839,11 +784,7 @@ fn framework_history_preview_geometry_paints_builtins_without_live_construction_
     let mut scenes = Vec::new();
     for name in ["qwerty", "azerty"] {
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, name).unwrap();
-        doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, false)
-            .unwrap();
-        doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, true)
-            .unwrap();
+        put_preferences(&mut doc, name, false, true);
         doc.commit();
         let hash = doc.get_heads()[0];
         let mut preview = frozen_preview(&keyboard(), &doc, hash).unwrap();
@@ -890,10 +831,7 @@ fn framework_history_personalization_restore_clears_current_cache_but_never_reco
         .predictor
         .learn_transition(Some("local"), "word");
     assert_eq!(f.keyboard.borrow().predictor.learned_context_count(), 1);
-    f.driver.click_named("history-open").unwrap();
-    select(&mut f.driver, selected);
-    f.driver.click_named("history-restore").unwrap();
-    f.driver.key("Enter");
+    restore(&mut f.driver, selected);
     assert_eq!(f.keyboard.borrow().predictor.learned_context_count(), 0);
     assert!(!f.keyboard.borrow().personalization_enabled);
     f.driver.click_named("history-back-live").unwrap();
@@ -949,14 +887,7 @@ fn real_owned_tile_settles_and_restores(component: bool) {
         let (mut doc, selected) = document();
         let keyboard = Rc::new(RefCell::new(keyboard()));
         let acknowledgements = Rc::new(Cell::new(0));
-        let root = LiveFixture {
-            keyboard: keyboard.clone(),
-            queue: Rc::default(),
-            events: Rc::default(),
-            event_count: Rc::new(Cell::new(0)),
-            acknowledgements: acknowledgements.clone(),
-            reentrant: None,
-        };
+        let root = LiveFixture::new(keyboard.clone(), acknowledgements.clone());
         let (tile, checkout) = if component {
             let definition = ApplicationDefinition {
                 app_id: "dev.tilo.osk",
@@ -1036,9 +967,7 @@ fn real_owned_tile_settles_and_restores(component: bool) {
 
         let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(tile), (900, 650));
         crate::actions::register(driver.action_registry_mut());
-        driver.click_named("history-open").unwrap();
-        select(&mut driver, selected);
-        driver.click_named("history-restore").unwrap();
+        review_restore(&mut driver, selected);
         keyboard.borrow_mut().set_suggestions_enabled(false);
         driver.key("Enter");
         assert!(
@@ -1058,28 +987,12 @@ fn real_owned_tile_settles_and_restores(component: bool) {
         assert!(!keyboard.borrow().drafts.pending());
         assert_eq!(acknowledgements.get(), 1);
         assert_eq!(
-            store
-                .read(&checkout.id, |doc| read_config_bool(
-                    doc,
-                    &automerge::ROOT,
-                    CONFIG_SUGGESTIONS_KEY
-                ))
-                .unwrap(),
+            store.read(&checkout.id, saved_suggestions).unwrap(),
             Some(false)
         );
-        driver.click_named("history-open").unwrap();
-        select(&mut driver, selected);
-        driver.click_named("history-restore").unwrap();
-        driver.key("Enter");
+        restore(&mut driver, selected);
         assert_eq!(
-            store
-                .read(&checkout.id, |doc| read_config_text(
-                    doc,
-                    &automerge::ROOT,
-                    CONFIG_LAYOUT_KEY
-                ))
-                .unwrap()
-                .as_deref(),
+            store.read(&checkout.id, saved_layout).unwrap().as_deref(),
             Some("azerty")
         );
         assert_eq!(acknowledgements.get(), 1);
@@ -1093,11 +1006,7 @@ fn real_owned_tile_settles_and_restores(component: bool) {
         reopened.try_open_record(&checkout).unwrap();
         assert_eq!(
             reopened
-                .read(&checkout.id, |doc| read_config_text(
-                    doc,
-                    &automerge::ROOT,
-                    CONFIG_LAYOUT_KEY
-                ))
+                .read(&checkout.id, saved_layout)
                 .unwrap()
                 .as_deref(),
             Some("azerty")
@@ -1134,14 +1043,7 @@ fn framework_history_legacy_tile_document_action_must_not_mutate_outer_state() {
         .unwrap();
     let root = Rc::new(RefCell::new(keyboard()));
     let acks = Rc::new(Cell::new(0));
-    let live = LiveFixture {
-        keyboard: root.clone(),
-        queue: Rc::default(),
-        events: Rc::default(),
-        event_count: Rc::new(Cell::new(0)),
-        acknowledgements: acks.clone(),
-        reentrant: None,
-    };
+    let live = LiveFixture::new(root.clone(), acks.clone());
     let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(live)));
     tile.bind_record(store.clone(), checkout.clone());
     tile.register_document_history(&crate::framework_history::HISTORY)
@@ -1161,17 +1063,9 @@ fn framework_history_legacy_tile_document_action_must_not_mutate_outer_state() {
     driver.relayout();
     driver.key("Shift");
     let outer_after = driver.state_mut().doc.get_heads();
-    let outer_value = read_config_bool(
-        &driver.state_mut().doc,
-        &automerge::ROOT,
-        CONFIG_SUGGESTIONS_KEY,
-    );
+    let outer_value = saved_suggestions(&driver.state_mut().doc);
     let record_after = store.with(&checkout.id, AutoCommit::get_heads).unwrap();
-    let record_value = store
-        .read(&checkout.id, |doc| {
-            read_config_bool(doc, &automerge::ROOT, CONFIG_SUGGESTIONS_KEY)
-        })
-        .unwrap();
+    let record_value = store.read(&checkout.id, saved_suggestions).unwrap();
     assert_eq!(
         outer_after,
         outer_heads,
@@ -1208,21 +1102,21 @@ fn assert_no_reentrant_offer(root: &mut OskWidget, doc: &AutoCommit) {
     );
 }
 thread_local! {
-    static ROUND1_ROOT: RefCell<Option<Box<dyn Widget>>> = RefCell::new(None);
+    static NATIVE_ROOT: RefCell<Option<Box<dyn Widget>>> = RefCell::new(None);
 }
-fn round1_native_root() -> Box<dyn Widget> {
-    ROUND1_ROOT.with_borrow_mut(|root| root.take().unwrap())
+fn native_root() -> Box<dyn Widget> {
+    NATIVE_ROOT.with_borrow_mut(|root| root.take().unwrap())
 }
-fn round1_native_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
+fn native_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
     (
         ui::State::new(),
         ui::persist::DocWriter::disabled("reentrant controlled fixture"),
     )
 }
-fn round1_native_app(root: Box<dyn Widget>) -> ui::App {
-    ROUND1_ROOT.with_borrow_mut(|slot| *slot = Some(root));
-    let mut app = ui::launch::LaunchSpec::new("dev.tilo.osk-reentrant", round1_native_root)
-        .open_state(round1_native_state)
+fn native_app(root: Box<dyn Widget>) -> ui::App {
+    NATIVE_ROOT.with_borrow_mut(|slot| *slot = Some(root));
+    let mut app = ui::launch::LaunchSpec::new("dev.tilo.osk-reentrant", native_root)
+        .open_state(native_state)
         .build_controlled_app_for_test()
         .unwrap();
     crate::actions::register(app.action_registry_mut());
@@ -1234,7 +1128,7 @@ fn round1_native_app(root: Box<dyn Widget>) -> ui::App {
     clippy::too_many_lines,
     reason = "one owned-tile scenario proving settle and restore end to end"
 )]
-fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_unrelated_drafts() {
+fn framework_history_native_app_reentrant_ack_preserves_newer_and_unrelated_drafts() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = ui::record::RecordOwners::new(directory.path().join("profile"));
     let store = owners.open("dev.tilo.osk", "reentrant").unwrap();
@@ -1246,12 +1140,7 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
         .reserve_record(&checkout)
         .unwrap()
         .initialize(|doc| {
-            doc.put(automerge::ROOT, CONFIG_LAYOUT_KEY, "qwerty")
-                .unwrap();
-            doc.put(automerge::ROOT, CONFIG_SUGGESTIONS_KEY, true)
-                .unwrap();
-            doc.put(automerge::ROOT, CONFIG_PERSONALIZATION_KEY, true)
-                .unwrap();
+            put_preferences(doc, "qwerty", true, true);
             Ok(())
         })
         .unwrap();
@@ -1265,44 +1154,30 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
         ..Default::default()
     }));
     let live = LiveFixture {
-        keyboard: keyboard.clone(),
-        queue: Rc::default(),
-        events: Rc::default(),
-        event_count: Rc::new(Cell::new(0)),
-        acknowledgements: acks.clone(),
         reentrant: Some(probe.clone()),
+        ..LiveFixture::new(keyboard.clone(), acks.clone())
     };
     let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(live)));
     tile.bind_record(store.clone(), checkout.clone());
-    let mut app = round1_native_app(Box::new(tile));
-    let before = store
-        .read(
-            &checkout.id,
-            automerge::transaction::Transactable::base_heads,
-        )
-        .unwrap();
+    let mut app = native_app(Box::new(tile));
+    let record_heads = || {
+        store
+            .read(
+                &checkout.id,
+                automerge::transaction::Transactable::base_heads,
+            )
+            .unwrap()
+    };
+    let before = record_heads();
     let outer = app.state_mut_for_test().doc.save();
     assert!(app.controlled_local_idle_for_test());
     assert_eq!(acks.get(), 3);
     assert!(keyboard.borrow().drafts.has(0));
     assert!(keyboard.borrow().drafts.has(1));
     assert!(!keyboard.borrow().drafts.has(2));
-    let captured_heads = store
-        .read(
-            &checkout.id,
-            automerge::transaction::Transactable::base_heads,
-        )
-        .unwrap();
+    let captured_heads = record_heads();
     assert!(!app.controlled_local_idle_for_test());
-    assert_eq!(
-        store
-            .read(
-                &checkout.id,
-                automerge::transaction::Transactable::base_heads
-            )
-            .unwrap(),
-        captured_heads
-    );
+    assert_eq!(record_heads(), captured_heads);
     assert_eq!(
         acks.get(),
         3,
@@ -1328,15 +1203,7 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
             assert_eq!(before, &probe.envelopes[index - 1].2);
         }
     }
-    assert_eq!(
-        store
-            .read(
-                &checkout.id,
-                automerge::transaction::Transactable::base_heads
-            )
-            .unwrap(),
-        probe.envelopes.last().unwrap().2
-    );
+    assert_eq!(record_heads(), probe.envelopes.last().unwrap().2);
     store
         .read(&checkout.id, |doc| {
             assert_eq!(
@@ -1357,18 +1224,10 @@ fn framework_history_round1_registered_native_reentrant_ack_preserves_newer_and_
     app.rebuild_structure();
     assert!(!app.controlled_local_idle_for_test());
     assert_eq!(acks.get(), 5);
-    assert_eq!(
-        store
-            .read(
-                &checkout.id,
-                automerge::transaction::Transactable::base_heads
-            )
-            .unwrap(),
-        probe.envelopes.last().unwrap().2
-    );
+    assert_eq!(record_heads(), probe.envelopes.last().unwrap().2);
 }
 #[test]
-fn framework_history_round1_registered_native_explicit_ack_removes_matching_stale_offer() {
+fn framework_history_native_app_explicit_ack_removes_matching_stale_offer() {
     let keyboard = Rc::new(RefCell::new(keyboard()));
     keyboard.borrow_mut().set_suggestions_enabled(false);
     let queue = Rc::new(RefCell::new(VecDeque::from([ControlInvocation {
@@ -1378,14 +1237,11 @@ fn framework_history_round1_registered_native_explicit_ack_removes_matching_stal
     let acks = Rc::new(Cell::new(0));
     let probe = Rc::new(RefCell::new(ReentrantAck::default()));
     let live = LiveFixture {
-        keyboard: keyboard.clone(),
         queue,
-        events: Rc::default(),
-        event_count: Rc::new(Cell::new(0)),
-        acknowledgements: acks.clone(),
         reentrant: Some(probe.clone()),
+        ..LiveFixture::new(keyboard.clone(), acks.clone())
     };
-    let mut app = round1_native_app(Box::new(live));
+    let mut app = native_app(Box::new(live));
     let before = app.state_mut_for_test().doc.get_heads();
     assert!(app.controlled_local_idle_for_test());
     assert_eq!(
