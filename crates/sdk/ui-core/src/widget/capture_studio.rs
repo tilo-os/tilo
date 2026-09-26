@@ -147,6 +147,10 @@ pub enum CaptureDestination {
     File,
     Clipboard,
     FloatingWindow,
+    /// Save to the screenshots folder *and* put the pixels on the
+    /// clipboard: the instant Shift/Alt+Print captures, which have no
+    /// chooser in which to pick one.
+    FileAndClipboard,
 }
 
 /// How far beyond the pixels currently visible on the physical display the
