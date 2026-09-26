@@ -1854,6 +1854,8 @@ pub struct CapnpBrokerState {
     /// Applications with a grant question on screen, by room: one at a
     /// time each, so an app cannot bury the person in sheets.
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
+    /// Steps of interactive shortcut runs waiting for their person.
+    step_prompts: crate::shell::automation_host::StepPrompts,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
@@ -2824,6 +2826,7 @@ impl CapnpBrokerState {
                 ),
                 app_action_consent: std::sync::RwLock::new(None),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
+                step_prompts: crate::shell::automation_host::StepPrompts::default(),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
