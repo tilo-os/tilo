@@ -4453,7 +4453,7 @@ impl CapnpBrokerState {
     }
 
     /// Drive an event onto the subscribed queues `route` addresses,
-    /// skipping `except`. Called from [`FanoutState::fanout_to_route`]
+    /// skipping `except`. Called from `FanoutState::fanout_to_route`
     /// Delegates to
     /// [`CrdtRoute::delivers_to`] rather than reimplementing the filter,
     /// so RPC and in-process delivery cannot drift.

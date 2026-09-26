@@ -2008,7 +2008,7 @@ impl ShellDriver {
 
     /// Two runs named, one by the peer under its own actor, so the band
     /// reads "named by" someone other than the viewer. Both go in through
-    /// the pane's own write path (the [Name] chip's call).
+    /// the pane's own write path (the `[Name]` chip's call).
     fn scene_room_activity_named(&mut self) {
         self.scene_room_activity();
         let handle = self.chrome_handle();

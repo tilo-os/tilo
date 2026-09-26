@@ -2,7 +2,7 @@
 //!
 //! [`Hub`] is a synchronous fan-out used by tests and the hosted
 //! single-process collaboration mode; real cross-host delivery happens
-//! via [`crate::network::p2p`], and both transports share the
+//! via `crate::network::p2p`, and both transports share the
 //! [`NeighbourMsg`] envelope so subscriber implementations stay transport-agnostic.
 
 use crate::network::protocol::NeighbourMsg;

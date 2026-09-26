@@ -13,7 +13,7 @@
 //! 3. `Start` — commit; returns the `devices` bitmask the user allowed.
 //! 4. `Notify*` — per-event injection, gated on the session being started
 //!    **and** holding the relevant device grant. Accepted events decode
-//!    into a [`RemoteAction`](crate::network::streaming::RemoteAction)
+//!    into a [`RemoteAction`]
 //!    and go to the [`RemoteInputInjector`]; the compositor drains that
 //!    into [`State::apply_remote_desktop_action`], driving the
 //!    smithay `Seat` at whatever surface holds focus.

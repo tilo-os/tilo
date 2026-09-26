@@ -1926,7 +1926,7 @@ pub enum PeerSyncAction {
     /// collaborators panel's Invite button emits.
     PromptInvite,
     /// User invoked `/connect`. Opens the token-input prompt
-    /// ([`ShellOverlayHost::draw_peer_sync`]); submitting it sends a
+    /// (`ShellOverlayHost::draw_peer_sync`); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
 }
@@ -4514,7 +4514,7 @@ impl ShellOverlayHost {
     ///
     /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
     /// the content subtree this host wraps. The caller (currently
-    /// [`build_tilo_overlay_host_with_chrome`]) is responsible for
+    /// [`build_tilo_overlay_host_with_chrome`](crate::shell::build_tilo_overlay_host_with_chrome)) is responsible for
     /// upholding that invariant by capturing the pointer immediately after
     /// `Box::new(strip_row)` and passing the same `Box` into the content
     /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
@@ -4535,7 +4535,7 @@ impl ShellOverlayHost {
     }
 
     /// Record which workspace the injected content was built for, so
-    /// [`Self::resync_workspace_content`] can detect the first switch away.
+    /// `Self::resync_workspace_content` can detect the first switch away.
     #[must_use]
     pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
         self.content_built_for_ws = Some(ws_raw);
@@ -7370,7 +7370,7 @@ impl ShellOverlayHost {
         self.collaborators_overlay.activity_rect()
     }
 
-    /// Revoke-button rects painted by [`Self::draw_ws_settings`] while
+    /// Revoke-button rects painted by `Self::draw_ws_settings` while
     /// the Permissions tab is active, each keyed by the capability id it
     /// revokes. Empty whenever the modal is closed or another tab is
     /// active.
@@ -9863,7 +9863,7 @@ impl ShellOverlayHost {
         self.ws_settings_invite_rect()
     }
 
-    /// Public alias for [`Self::quick_settings_rect`] so integration
+    /// Public alias for `Self::quick_settings_rect` so integration
     /// tests can compute drill-in row coordinates without duplicating
     /// the popover-rect math.
     pub fn quick_settings_rect_for_tests(&self) -> Rect {

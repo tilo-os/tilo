@@ -4,8 +4,8 @@
 //! scoring over file bodies. A background walker rebuilds only what
 //! changed since the last commit, using each doc's stored `mtime`. A small
 //! LRU query cache absorbs repeated keystrokes; the writer commits every
-//! [`COMMIT_BATCH`] docs or [`COMMIT_INTERVAL_SECS`] seconds, whichever is
-//! first. Files over [`MAX_FILE_BYTES`] are indexed by header only.
+//! `COMMIT_BATCH` docs or `COMMIT_INTERVAL_SECS` seconds, whichever is
+//! first. Files over `MAX_FILE_BYTES` are indexed by header only.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;

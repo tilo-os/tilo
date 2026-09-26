@@ -34,7 +34,7 @@ const SLOW_FRAME_LIFECYCLE: Duration = Duration::from_millis(100);
 
 /// The half of a backend that turns a finished scene into photons.
 ///
-/// Split off a [`super::backend::Backend`] by [`super::backend::Backend::take_presenter`] and
+/// Split off a `super::backend::Backend` by `super::backend::Backend::take_presenter` and
 /// moved onto the render thread, so `Send` is the whole point of the trait — everything not `Send` (a winit `EventLoop`, a `GlesRenderer`, the libinput context) stays on the backend.
 pub trait Presenter: Send {
     /// Render and present one frame.

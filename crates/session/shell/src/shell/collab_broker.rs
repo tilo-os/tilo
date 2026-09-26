@@ -264,7 +264,7 @@ impl CrdtRoute {
 
 /// Callback an in-process fanout subscriber registers to receive
 /// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
-/// recurs across [`RoomSubscription`], [`FanoutState::subscribe_rooms`]
+/// recurs across [`RoomSubscription`], `FanoutState::subscribe_rooms`
 /// and [`BrokerHandle::subscribe_rooms`], and the last of those is public
 /// API other modules call.
 pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
@@ -631,7 +631,7 @@ impl BrokerHandle {
 
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
     /// skips one peer id, for the Iroh bridge. No "reach everyone"
-    /// form exists — see [`FanoutState::fanout_to_route`].
+    /// form exists — see `FanoutState::fanout_to_route`.
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
         self.fanout
             .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
