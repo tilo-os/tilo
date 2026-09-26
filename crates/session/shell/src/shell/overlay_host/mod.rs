@@ -23823,7 +23823,6 @@ mod empty_workspace_tests;
     clippy::float_cmp,
     reason = "exact overview layout geometry is the behavior under test"
 )]
-#[cfg(test)]
 #[path = "overview_panel_tests.rs"]
 mod overview_panel_tests;
 
@@ -23832,7 +23831,6 @@ mod overview_panel_tests;
     clippy::float_cmp,
     reason = "exact transition endpoints are the behavior under test"
 )]
-#[cfg(test)]
 #[path = "overview_transition_tests.rs"]
 mod overview_transition_tests;
 
@@ -23853,7 +23851,6 @@ mod two_workspace_host_tests;
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"
 )]
-#[cfg(test)]
 #[path = "modal_curve_tests.rs"]
 mod modal_curve_tests;
 
@@ -23862,7 +23859,6 @@ mod modal_curve_tests;
     clippy::float_cmp,
     reason = "exact overlay hit-test geometry is the behavior under test"
 )]
-#[cfg(test)]
 #[path = "overlay_event_absorb_tests.rs"]
 mod overlay_event_absorb_tests;
 
@@ -23871,7 +23867,6 @@ mod overlay_event_absorb_tests;
     clippy::float_cmp,
     reason = "deterministic host geometry fixtures use exactly representable values"
 )]
-#[cfg(test)]
 #[path = "overlay_host_tests.rs"]
 mod tests;
 
