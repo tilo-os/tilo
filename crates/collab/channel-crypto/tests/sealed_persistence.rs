@@ -1,7 +1,16 @@
 use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
 use collab_types::ChannelId;
 
+/// Sealed groups survive restart with ratchet state, reject a wrong key, tampering and
+/// truncation, and fixtures from an earlier build still open.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn sealed_group_state_survives_restarts_and_refuses_tampering() {
+    sealed_groups_survive_restart_and_keep_ratchet_state();
+    sealed_state_rejects_wrong_key_tampering_and_truncation();
+    sealed_state_fixtures_from_an_earlier_build_still_open();
+}
+
 fn sealed_groups_survive_restart_and_keep_ratchet_state() {
     let dir = tempfile::tempdir().unwrap();
     let alice_path = dir.path().join("alice.mls");
@@ -29,7 +38,6 @@ fn sealed_groups_survive_restart_and_keep_ratchet_state() {
     assert_eq!(alice.decrypt(&after_restart).unwrap(), b"ratchet continues");
 }
 
-#[test]
 fn sealed_state_rejects_wrong_key_tampering_and_truncation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("group.mls");
@@ -50,7 +58,6 @@ fn sealed_state_rejects_wrong_key_tampering_and_truncation() {
 /// Sealed states written before a crypto-stack upgrade must still open:
 /// the file is XChaCha20-Poly1305 under the vault key, so this pins the
 /// on-disk format, not just a round trip through the current build.
-#[test]
 fn sealed_state_fixtures_from_an_earlier_build_still_open() {
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let mut alice = ChannelGroup::load_sealed(

@@ -862,7 +862,18 @@ mod tests {
     use super::*;
     use crate::diff::parse_unified;
 
+    /// Diff view: paired rows align change blocks, content height scales with lines,
+    /// metrics follow the text scale, the gutter sizes from the widest column tail,
+    /// and a hunk header elides before its unstage button. Each phase is a former test with its own fresh fixture.
     #[test]
+    fn diff_view_rows_and_metrics_follow_content_and_text_scale() {
+        pair_rows_aligns_change_blocks();
+        content_height_scales_with_lines();
+        metrics_match_the_constants_at_1x_and_follow_the_text_scale();
+        gutter_digits_come_from_the_widest_column_tail();
+        hunk_header_elides_before_the_unstage_button();
+    }
+
     fn pair_rows_aligns_change_blocks() {
         let d = parse_unified(
             "x.rs",
@@ -882,7 +893,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn content_height_scales_with_lines() {
         let d = parse_unified("x.rs", "rust", "@@ -1,1 +1,1 @@\n+a\n+b\n");
         assert!(DiffView::content_height_with_metrics(&d, &Metrics::default()) > ROW_H * 2.0);
@@ -891,7 +901,6 @@ mod tests {
     /// The measured metrics reproduce the historical constants at 1× — the
     /// scaled path changes nothing for a user who has not enlarged text — and
     /// grow the pitch and gutter with the glyphs at 2×.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
@@ -928,7 +937,6 @@ mod tests {
     /// The gutter takes its digit count from the last numbered line of each
     /// column, so a deletion tail with a larger old number than the final
     /// addition's new number is not missed.
-    #[test]
     fn gutter_digits_come_from_the_widest_column_tail() {
         let d = parse_unified("x.rs", "rust", "@@ -998,3 +1,2 @@\n a\n-b\n-c\n+d\n");
         let theme = Theme::dark();
@@ -948,7 +956,6 @@ mod tests {
 
     /// A long `@@ … @@` header must end before the hunk's first action button
     /// in a phone-width pane instead of running under it.
-    #[test]
     fn hunk_header_elides_before_the_unstage_button() {
         let d = parse_unified(
             "x.rs",

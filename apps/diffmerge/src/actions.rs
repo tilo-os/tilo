@@ -691,7 +691,16 @@ mod tests {
         r
     }
 
+    /// Operations outside the merge tree: open-files binds both paths as a
+    /// cancellable job, diff blocks publish bounded view actions, and a block's
+    /// fingerprint changes with its rows. Fresh model per phase.
     #[test]
+    fn workspace_and_diff_block_operations_are_bound_and_content_addressed() {
+        open_files_strictly_binds_both_direct_paths_as_a_job();
+        local_diff_blocks_publish_bounded_canonical_view_actions();
+        diff_block_fingerprint_changes_when_the_addressed_rows_change();
+    }
+
     fn open_files_strictly_binds_both_direct_paths_as_a_job() {
         let root = workspace_operations();
         let spec = root.actions.iter().find(|a| a.id == "open-files").unwrap();
@@ -720,7 +729,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn local_diff_blocks_publish_bounded_canonical_view_actions() {
         let model = DiffModel::compute("a\nb\nc\n", "a\nB\nc\nnew\n");
         let resources = provide_diff_resources(&DiffResourceCtx {
@@ -760,7 +768,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn diff_block_fingerprint_changes_when_the_addressed_rows_change() {
         let first = DiffModel::compute("unchanged\nold\n", "unchanged\nnew\n");
         let second = DiffModel::compute("unchanged\nold\n", "unchanged\nnewer\n");
@@ -832,9 +839,20 @@ mod tests {
         ],
     }
 
+    /// The merge resource tree (Ctrl+K) and its conflict actions: the tree shape,
+    /// content-based conflict identity, take-theirs dispatch, an out-of-range
+    /// hunk, and the real sample triple. Every phase builds its own model/doc.
+    #[test]
+    fn merge_tree_publishes_content_addressed_conflicts_whose_actions_resolve() {
+        ctrl_k_publishes_the_merge_tree();
+        conflict_identity_depends_on_content_not_hunk_position();
+        take_theirs_action_mutates_merged_and_records_choice();
+        out_of_range_hunk_is_harmless();
+        sample_triple_exposes_a_conflict_resource();
+    }
+
     /// Ctrl+K on a merge yields the tree: the merge root (with a merged-output
     /// edit) → one conflict resource exporting take-ours/theirs/both + resolve.
-    #[test]
     fn ctrl_k_publishes_the_merge_tree() {
         let (ctx, _hunk) = conflict_ctx();
         let resources = provide_resources(&ctx, &AutoCommit::new());
@@ -856,7 +874,6 @@ mod tests {
         assert!(ids.contains(&"resolve"), "{ids:?}");
     }
 
-    #[test]
     fn conflict_identity_depends_on_content_not_hunk_position() {
         let (ctx, hunk) = conflict_ctx();
         let conflict = &ctx.model.hunks[hunk];
@@ -876,7 +893,6 @@ mod tests {
     /// Taking theirs through the action mutates the merged buffer (the conflict
     /// output flips from the provisional "ours" to "theirs") and records the
     /// choice in the resolutions map.
-    #[test]
     fn take_theirs_action_mutates_merged_and_records_choice() {
         let (ctx, hunk) = conflict_ctx();
         let mut doc = AutoCommit::new();
@@ -908,7 +924,6 @@ mod tests {
     /// A malformed / out-of-range hunk index doesn't wedge: the resolution is
     /// still recorded under that key and the carried merged text is written,
     /// with no panic (the app never authors an out-of-range index).
-    #[test]
     fn out_of_range_hunk_is_harmless() {
         let mut doc = AutoCommit::new();
         MergeDoc::set_merged(&mut doc, "a\nb\n");
@@ -922,7 +937,6 @@ mod tests {
 
     /// Sanity: on the real sample triple the resource tree exposes a conflict
     /// hunk, so `--shots`/demo has something to resolve through Ctrl+K.
-    #[test]
     fn sample_triple_exposes_a_conflict_resource() {
         let (base, ours, theirs) = samples::merge_triple();
         let model = MergeModel::compute(&base.text, &ours.text, &theirs.text);

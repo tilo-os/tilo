@@ -115,11 +115,14 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 }
 
 #[test]
-fn tooltip_renders_over_icon_button_dark() {
-    render_case(&Theme::dark(), Color::from_rgb8(0x0f, 0x17, 0x2a), "dark");
-}
+fn tooltip_renders_over_icon_button_in_both_themes() {
+    // Case `tooltip_renders_over_icon_button_dark`.
+    {
+        render_case(&Theme::dark(), Color::from_rgb8(0x0f, 0x17, 0x2a), "dark");
+    }
 
-#[test]
-fn tooltip_renders_over_icon_button_light() {
-    render_case(&Theme::light(), Color::from_rgb8(0xf5, 0xf6, 0xf8), "light");
+    // Case `tooltip_renders_over_icon_button_light`.
+    {
+        render_case(&Theme::light(), Color::from_rgb8(0xf5, 0xf6, 0xf8), "light");
+    }
 }

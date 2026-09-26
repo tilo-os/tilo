@@ -488,33 +488,30 @@ mod tests {
     }
 
     #[test]
-    fn block_semantics_normalize_aliases_levels_and_unknown_kinds() {
+    fn block_plans_normalize_kinds_tables_images_and_walk_order() {
+        // Aliases, clamped heading levels and unknown kinds.
         let mut heading = block("heading", "title");
         heading.attrs.insert("level".into(), AttrVal::Int(99));
         assert_eq!(ExportBlock::new(&heading).kind(), BlockKind::Heading);
         assert_eq!(ExportBlock::new(&heading).heading_level(), 6);
-        assert_eq!(
-            ExportBlock::new(&block("blockquote", "q")).kind(),
-            BlockKind::Quote
-        );
-        assert_eq!(
-            ExportBlock::new(&block("code_block", "c")).kind(),
-            BlockKind::Code
-        );
-        assert_eq!(
-            ExportBlock::new(&block("future-kind", "p")).kind(),
-            BlockKind::Paragraph
-        );
-    }
+        for (kind, want) in [
+            ("blockquote", BlockKind::Quote),
+            ("code_block", BlockKind::Code),
+            ("future-kind", BlockKind::Paragraph),
+        ] {
+            assert_eq!(
+                ExportBlock::new(&block(kind, "x")).kind(),
+                want,
+                "case {kind}"
+            );
+        }
 
-    #[test]
-    fn table_plan_accepts_nested_and_flat_shapes_without_huge_allocations() {
+        // Tables: nested and flat shapes, without huge allocations.
         let mut nested = block("table", "nested");
         let mut row = block("table_row", "row");
         row.children = vec![block("cell", "a"), block("cell", "b")];
         nested.children.push(row);
         assert_eq!(TablePlan::new(&nested).rows()[0].len(), 2);
-
         let mut flat = block("table", "flat");
         flat.children = vec![block("cell", "a"), block("cell", "b"), block("cell", "c")];
         flat.attrs.insert("cols".into(), AttrVal::Int(2));
@@ -528,16 +525,13 @@ mod tests {
         );
         flat.attrs.insert("cols".into(), AttrVal::Int(i64::MAX));
         assert_eq!(TablePlan::new(&flat).rows().len(), 1);
-    }
 
-    #[test]
-    fn image_detection_and_depth_first_walk_are_canonical() {
+        // Image detection and the canonical depth-first walk.
         assert_eq!(
             detect_image_media(b"RIFFxxxxWEBP").map(|m| m.mime),
             Some("image/webp")
         );
         assert_eq!(detect_image_media(b"not an image"), None);
-
         let mut root = block("paragraph", "root");
         let mut child = block("paragraph", "child");
         child.children.push(block("paragraph", "grandchild"));
@@ -560,58 +554,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn plans_unicode_by_character_and_borrows_utf8_runs() {
-        let marks = vec![mark(1, 3, "strong", MarkValue::Bool(true))];
-        let plan = InlinePlan::new("aé🦀z", &marks);
-        let runs: Vec<_> = plan
-            .points()
+    fn str_mark(start: usize, end: usize, name: &str, value: &str) -> MarkSpan {
+        mark(start, end, name, MarkValue::Str(value.into()))
+    }
+
+    fn runs<'p, 'a>(plan: &'p InlinePlan<'a>) -> Vec<&'p InlineRun<'a>> {
+        plan.points()
             .iter()
             .filter_map(|point| point.run.as_ref())
-            .collect();
-        assert_eq!(runs.len(), 3);
-        assert_eq!((runs[0].char_range.clone(), runs[0].text), (0..1, "a"));
-        assert_eq!((runs[1].char_range.clone(), runs[1].text), (1..3, "é🦀"));
-        assert_eq!((runs[2].char_range.clone(), runs[2].text), (3..4, "z"));
-        assert!(std::ptr::eq(
-            runs[1].marks[0],
-            std::ptr::from_ref(&marks[0])
-        ));
+            .collect()
     }
 
     #[test]
-    fn orders_adjacent_and_overlapping_semantic_boundaries_deterministically() {
+    fn inline_plans_split_maximal_runs_and_order_boundaries() {
+        use crate::schema::{
+            MARK_BOOKMARK, MARK_COMMENT, MARK_DEL, MARK_INS, MARK_LINK, MARK_NOTE_REF,
+        };
+
+        // Unicode is planned by character and runs borrow the UTF-8 text.
+        let marks = vec![mark(1, 3, "strong", MarkValue::Bool(true))];
+        let plan = InlinePlan::new("aé🦀z", &marks);
+        let r = runs(&plan);
+        assert_eq!(r.len(), 3);
+        assert_eq!((r[0].char_range.clone(), r[0].text), (0..1, "a"));
+        assert_eq!((r[1].char_range.clone(), r[1].text), (1..3, "é🦀"));
+        assert_eq!((r[2].char_range.clone(), r[2].text), (3..4, "z"));
+        assert!(std::ptr::eq(r[1].marks[0], std::ptr::from_ref(&marks[0])));
+
+        // Adjacent and overlapping semantic boundaries order deterministically.
         let marks = vec![
-            mark(
-                0,
-                2,
-                crate::schema::MARK_COMMENT,
-                MarkValue::Str("z".into()),
-            ),
-            mark(
-                0,
-                2,
-                crate::schema::MARK_COMMENT,
-                MarkValue::Str("a".into()),
-            ),
-            mark(
-                2,
-                4,
-                crate::schema::MARK_COMMENT,
-                MarkValue::Str("next".into()),
-            ),
-            mark(
-                1,
-                2,
-                crate::schema::MARK_BOOKMARK,
-                MarkValue::Str("bm".into()),
-            ),
-            mark(
-                2,
-                3,
-                crate::schema::MARK_INS,
-                MarkValue::Str("change".into()),
-            ),
+            str_mark(0, 2, MARK_COMMENT, "z"),
+            str_mark(0, 2, MARK_COMMENT, "a"),
+            str_mark(2, 4, MARK_COMMENT, "next"),
+            str_mark(1, 2, MARK_BOOKMARK, "bm"),
+            str_mark(2, 3, MARK_INS, "change"),
         ];
         let plan = InlinePlan::new("test", &marks);
         let at_two = plan
@@ -623,105 +599,55 @@ mod tests {
         assert_eq!(at_two.boundary.comments.starts, ["next"]);
         assert_eq!(at_two.boundary.bookmarks.ends, ["bm"]);
         assert_eq!(at_two.boundary.changes.starts, ["change"]);
-    }
 
-    #[test]
-    fn exposes_links_changes_marks_and_internal_targets_per_maximal_run() {
+        // Links, changes, marks and internal targets per maximal run.
         let marks = vec![
-            mark(
-                0,
-                4,
-                crate::schema::MARK_LINK,
-                MarkValue::Str("#target".into()),
-            ),
-            mark(
-                1,
-                3,
-                crate::schema::MARK_DEL,
-                MarkValue::Str("deleted".into()),
-            ),
+            str_mark(0, 4, MARK_LINK, "#target"),
+            str_mark(1, 3, MARK_DEL, "deleted"),
             mark(1, 3, "em", MarkValue::Bool(true)),
-            mark(
-                1,
-                3,
-                crate::schema::MARK_INS,
-                MarkValue::Str("inserted".into()),
-            ),
+            str_mark(1, 3, MARK_INS, "inserted"),
         ];
         let plan = InlinePlan::new("abcd", &marks);
-        let runs: Vec<_> = plan
-            .points()
-            .iter()
-            .filter_map(|p| p.run.as_ref())
-            .collect();
+        let r = runs(&plan);
         assert_eq!(
-            runs.iter().map(|r| r.text).collect::<Vec<_>>(),
+            r.iter().map(|r| r.text).collect::<Vec<_>>(),
             ["a", "bc", "d"]
         );
-        assert_eq!(runs[1].cross_reference(), Some("target"));
+        assert_eq!(r[1].cross_reference(), Some("target"));
         assert_eq!(
-            runs[1].change,
+            r[1].change,
             Some(ActiveChange {
                 kind: ChangeKind::Ins,
                 id: "inserted"
             })
         );
         assert_eq!(
-            runs[1]
-                .marks
+            r[1].marks
                 .iter()
                 .map(|m| m.name.as_str())
                 .collect::<Vec<_>>(),
             ["del", "em", "ins", "link"]
         );
-    }
 
-    #[test]
-    fn recognizes_only_exact_note_placeholders_and_keeps_terminal_boundaries() {
+        // Only exact note placeholders are note references, and the terminal
+        // boundary is kept.
         let p = crate::schema::FIELD_PLACEHOLDER;
         let text = format!("x{p}y{p}");
         let marks = vec![
-            mark(
-                1,
-                2,
-                crate::schema::MARK_NOTE_REF,
-                MarkValue::Str("note".into()),
-            ),
-            mark(
-                3,
-                5,
-                crate::schema::MARK_NOTE_REF,
-                MarkValue::Str("missing-shape".into()),
-            ),
-            mark(
-                0,
-                4,
-                crate::schema::MARK_BOOKMARK,
-                MarkValue::Str("all".into()),
-            ),
+            str_mark(1, 2, MARK_NOTE_REF, "note"),
+            str_mark(3, 5, MARK_NOTE_REF, "missing-shape"),
+            str_mark(0, 4, MARK_BOOKMARK, "all"),
         ];
         let plan = InlinePlan::new(&text, &marks);
-        let notes: Vec<_> = plan
-            .points()
-            .iter()
-            .filter_map(|p| p.run.as_ref())
-            .map(|r| r.note_reference)
-            .collect();
+        let notes: Vec<_> = runs(&plan).iter().map(|r| r.note_reference).collect();
         assert_eq!(notes, [None, Some("note"), None, None]);
         let terminal = plan.points().last().unwrap();
         assert_eq!(terminal.offset, 4);
         assert!(terminal.run.is_none());
         assert_eq!(terminal.boundary.bookmarks.ends, ["all"]);
-    }
 
-    #[test]
-    fn ignores_out_of_range_boundaries_without_clamping_them_into_output() {
-        let marks = vec![mark(
-            8,
-            9,
-            crate::schema::MARK_COMMENT,
-            MarkValue::Str("bad".into()),
-        )];
+        // Out-of-range boundaries are ignored, not clamped into the output.
+        let marks = vec![str_mark(8, 9, MARK_COMMENT, "bad")];
         let plan = InlinePlan::new("hi", &marks);
         assert_eq!(plan.points().len(), 2);
         assert!(plan.points().iter().all(|p| p.boundary.is_empty()));

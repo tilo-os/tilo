@@ -431,460 +431,479 @@ mod tests {
     }
 
     #[test]
-    fn a_large_corpus_is_capped_on_the_first_page_without_a_title_rebuild() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        for number in 0..128 {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn record_pages_seek_without_duplicates_and_stale_on_mutation() {
+        // Phase `a_large_corpus_is_capped_on_the_first_page_without_a_title_rebuild`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            for number in 0..128 {
+                index.borrow_mut().reference(
+                    rooms[0],
+                    &RecordId::for_file(format!("/work/entry-{number:03}.note")),
+                    &RecordKind::new("note"),
+                );
+            }
+            let provider = RecordsProvider::with_index(index);
+            let first = page(
+                &provider,
+                "entry",
+                &chrome,
+                None,
+                SearchBudget {
+                    max_results: 16,
+                    max_bytes: usize::MAX,
+                    max_work: 3,
+                },
+            );
+            assert_eq!(first.results.len(), 3, "work is a hard source cap");
+            assert!(first.budget_exhausted);
+            assert!(!first.exhausted);
+            assert!(first.next_cursor.is_some());
+        }
+
+        // Phase `record_pages_seek_from_the_last_key_without_duplicates`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            for number in 0..5 {
+                index.borrow_mut().reference(
+                    rooms[0],
+                    &RecordId::for_file(format!("/work/page-{number}.note")),
+                    &RecordKind::new("note"),
+                );
+            }
+            let provider = RecordsProvider::with_index(index);
+            let budget = SearchBudget {
+                max_results: 2,
+                max_bytes: usize::MAX,
+                max_work: 2,
+            };
+            let first = page(&provider, "page", &chrome, None, budget);
+            let cursor = first.next_cursor.clone().expect("more source rows");
+            let second = page(&provider, "page", &chrome, Some(&cursor), budget);
+            let cursor = second.next_cursor.clone().expect("one final source row");
+            let third = page(&provider, "page", &chrome, Some(&cursor), budget);
+            let ids: Vec<_> = first
+                .results
+                .iter()
+                .chain(&second.results)
+                .chain(&third.results)
+                .map(|row| row.id.clone())
+                .collect();
+            assert_eq!(ids.len(), 5);
+            let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+            assert_eq!(unique.len(), ids.len(), "a key cursor must not replay rows");
+            assert!(third.exhausted);
+        }
+
+        // Phase `resource_limits_do_not_consume_an_unemitted_record`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
             index.borrow_mut().reference(
                 rooms[0],
-                &RecordId::for_file(format!("/work/entry-{number:03}.note")),
+                &RecordId::for_file("/work/too-large-to-fit.note"),
                 &RecordKind::new("note"),
             );
-        }
-        let provider = RecordsProvider::with_index(index);
-        let first = page(
-            &provider,
-            "entry",
-            &chrome,
-            None,
-            SearchBudget {
-                max_results: 16,
-                max_bytes: usize::MAX,
-                max_work: 3,
-            },
-        );
-        assert_eq!(first.results.len(), 3, "work is a hard source cap");
-        assert!(first.budget_exhausted);
-        assert!(!first.exhausted);
-        assert!(first.next_cursor.is_some());
-    }
-
-    #[test]
-    fn record_pages_seek_from_the_last_key_without_duplicates() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        for number in 0..5 {
-            index.borrow_mut().reference(
-                rooms[0],
-                &RecordId::for_file(format!("/work/page-{number}.note")),
-                &RecordKind::new("note"),
+            let provider = RecordsProvider::with_index(index);
+            let limited = page(
+                &provider,
+                "large",
+                &chrome,
+                None,
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: 1,
+                    max_work: 1,
+                },
             );
-        }
-        let provider = RecordsProvider::with_index(index);
-        let budget = SearchBudget {
-            max_results: 2,
-            max_bytes: usize::MAX,
-            max_work: 2,
-        };
-        let first = page(&provider, "page", &chrome, None, budget);
-        let cursor = first.next_cursor.clone().expect("more source rows");
-        let second = page(&provider, "page", &chrome, Some(&cursor), budget);
-        let cursor = second.next_cursor.clone().expect("one final source row");
-        let third = page(&provider, "page", &chrome, Some(&cursor), budget);
-        let ids: Vec<_> = first
-            .results
-            .iter()
-            .chain(&second.results)
-            .chain(&third.results)
-            .map(|row| row.id.clone())
-            .collect();
-        assert_eq!(ids.len(), 5);
-        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
-        assert_eq!(unique.len(), ids.len(), "a key cursor must not replay rows");
-        assert!(third.exhausted);
-    }
-
-    #[test]
-    fn resource_limits_do_not_consume_an_unemitted_record() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        index.borrow_mut().reference(
-            rooms[0],
-            &RecordId::for_file("/work/too-large-to-fit.note"),
-            &RecordKind::new("note"),
-        );
-        let provider = RecordsProvider::with_index(index);
-        let limited = page(
-            &provider,
-            "large",
-            &chrome,
-            None,
-            SearchBudget {
-                max_results: 1,
-                max_bytes: 1,
-                max_work: 1,
-            },
-        );
-        assert!(limited.results.is_empty());
-        assert!(limited.budget_exhausted);
-        let cursor = limited.next_cursor.expect("the unreturned row is retained");
-        let retried = page(
-            &provider,
-            "large",
-            &chrome,
-            Some(&cursor),
-            SearchBudget {
-                max_results: 1,
-                max_bytes: usize::MAX,
-                max_work: 1,
-            },
-        );
-        assert_eq!(retried.results.len(), 1, "retry resumes at the row");
-    }
-
-    #[test]
-    fn a_room_reference_mutation_stales_a_retained_cursor() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        for name in ["first", "second"] {
-            index.borrow_mut().reference(
-                rooms[0],
-                &RecordId::for_file(format!("/work/{name}.note")),
-                &RecordKind::new("note"),
+            assert!(limited.results.is_empty());
+            assert!(limited.budget_exhausted);
+            let cursor = limited.next_cursor.expect("the unreturned row is retained");
+            let retried = page(
+                &provider,
+                "large",
+                &chrome,
+                Some(&cursor),
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: usize::MAX,
+                    max_work: 1,
+                },
             );
+            assert_eq!(retried.results.len(), 1, "retry resumes at the row");
         }
-        let provider = RecordsProvider::with_index(Rc::clone(&index));
-        let first = page(
-            &provider,
-            "note",
-            &chrome,
-            None,
-            SearchBudget {
-                max_results: 1,
-                max_bytes: usize::MAX,
-                max_work: 1,
-            },
-        );
-        let cursor = first.next_cursor.expect("one source row remains");
-        index.borrow_mut().reference(
-            rooms[0],
-            &RecordId::for_file("/work/third.note"),
-            &RecordKind::new("note"),
-        );
-        assert!(
-            page(
+
+        // Phase `a_room_reference_mutation_stales_a_retained_cursor`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            for name in ["first", "second"] {
+                index.borrow_mut().reference(
+                    rooms[0],
+                    &RecordId::for_file(format!("/work/{name}.note")),
+                    &RecordKind::new("note"),
+                );
+            }
+            let provider = RecordsProvider::with_index(Rc::clone(&index));
+            let first = page(
                 &provider,
                 "note",
                 &chrome,
-                Some(&cursor),
-                SearchBudget::PALETTE,
-            )
-            .stale_cursor,
-            "local mutations must never advance an old continuation"
-        );
-    }
-
-    #[test]
-    fn same_count_scan_replacement_stales_a_record_cursor() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        let observed = |name: &str| ObservedRecord {
-            id: RecordId::for_file(format!("/scan/{name}.note")),
-            kind: RecordKind::new("note"),
-            home: Some(rooms[0]),
-            package_id: "so.tilo.notes".into(),
-        };
-        index
-            .borrow_mut()
-            .replace_scanned_records_for_test(vec![observed("a"), observed("b")]);
-        let provider = RecordsProvider::with_index(Rc::clone(&index));
-        let chrome_state = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let context = || SearchContext {
-            needle: "note",
-            wanted: &[ResourceKind::Record],
-            chrome: &chrome_state,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        };
-        let first = provider.query_page(
-            context(),
-            None,
-            SearchBudget {
-                max_results: 1,
-                max_bytes: usize::MAX,
-                max_work: 16,
-            },
-        );
-        let cursor = first
-            .next_cursor
-            .expect("a bounded first page has a cursor");
-
-        index
-            .borrow_mut()
-            .replace_scanned_records_for_test(vec![observed("c"), observed("d")]);
-        let replacement_page = provider.query_page(context(), Some(&cursor), SearchBudget::PALETTE);
-        assert!(
-            replacement_page.stale_cursor,
-            "same-count replacement must invalidate the cursor"
-        );
-    }
-
-    #[test]
-    fn a_record_from_another_room_is_findable_and_says_where_it_lives() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        let book = RecordId::minted();
-        index
-            .borrow_mut()
-            .reference(rooms[1], &book, &RecordKind::new("book"));
-        index.borrow_mut().seed_observed([ObservedRecord {
-            id: book,
-            kind: RecordKind::new("book"),
-            home: Some(rooms[1]),
-            package_id: "so.tilo.ebook".into(),
-        }]);
-        let provider = RecordsProvider::with_index(index);
-
-        let out = query(&provider, "book", &chrome);
-        assert_eq!(
-            out.len(),
-            1,
-            "the record in the other room must be findable: {out:?}"
-        );
-        assert_eq!(out[0].kind, ResourceKind::Record);
-        assert_eq!(
-            out[0].subtitle.as_deref(),
-            Some("In Reading · book"),
-            "the row must say which room the record lives in"
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::similar_names,
-        reason = "here/there are the domain vocabulary for the two rooms under test, not a naming accident"
-    )]
-    fn activating_a_row_references_the_same_record_into_this_room() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
-        let (here, there) = (rooms[0], rooms[1]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        let book = RecordId::minted();
-        let kind = RecordKind::new("book");
-        index.borrow_mut().reference(there, &book, &kind);
-        let provider = RecordsProvider::with_index(Rc::clone(&index));
-
-        assert!(
-            !index.borrow().holds(here, &book),
-            "the active room starts without it — a room starts empty"
-        );
-
-        let out = query(&provider, "book", &chrome);
-        let row = out.first().expect("the record is findable");
-        let mut doc = automerge::AutoCommit::new();
-        (row.on_open)(
-            &mut doc,
-            &automerge::ROOT,
-            &chrome,
-            &crate::shell::search::action_api::ActionArgs::none(),
-        )
-        .expect("bringing a record here takes no arguments");
-
-        let index = index.borrow();
-        assert!(index.holds(here, &book), "activating brings it here");
-        assert!(
-            index.holds(there, &book),
-            "and leaves it in the room it came from — this is a reference, \
-             not a move"
-        );
-        let ids_here: Vec<RecordId> = index.records_in(here).into_iter().map(|c| c.id).collect();
-        let ids_there: Vec<RecordId> = index.records_in(there).into_iter().map(|c| c.id).collect();
-        assert_eq!(
-            ids_here, ids_there,
-            "both rooms name the same record id — a copy would have minted \
-             a new one"
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::similar_names,
-        reason = "here/there are the domain vocabulary for the two rooms under test, not a naming accident"
-    )]
-    fn an_edit_through_one_rooms_reference_does_not_leak_through_the_other() {
-        use automerge::{ROOT, ReadDoc, transaction::Transactable};
-
-        let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
-        let (here, there) = (rooms[0], rooms[1]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        let book = RecordId::minted();
-        let kind = RecordKind::new("book");
-        index.borrow_mut().reference(there, &book, &kind);
-        let provider = RecordsProvider::with_index(Rc::clone(&index));
-
-        let out = query(&provider, "book", &chrome);
-        let mut doc = automerge::AutoCommit::new();
-        (out[0].on_open)(
-            &mut doc,
-            &ROOT,
-            &chrome,
-            &crate::shell::search::action_api::ActionArgs::none(),
-        )
-        .expect("bringing a record here takes no arguments");
-
-        let mut there_set = RecordSet::in_memory().with_home(there.to_string());
-        let mut there_state = ui::State::new();
-        let from_there: RecordCheckout = index
-            .borrow()
-            .records_in(there)
-            .into_iter()
-            .find(|c| c.id == book)
-            .expect("the room it came from still holds it");
-        there_set.checkout(&mut there_state, None, &from_there);
-        let _ = there_state.doc.put(&ROOT, "title", "Chapter 3");
-
-        let from_here: RecordCheckout = index
-            .borrow()
-            .records_in(here)
-            .into_iter()
-            .find(|c| c.id == book)
-            .expect("this room holds it now");
-        let mut here_set = RecordSet::in_memory().with_home(here.to_string());
-        let mut here_state = ui::State::new();
-        here_set.checkout(&mut here_state, None, &from_here);
-        assert!(
-            matches!(here_state.doc.get(&ROOT, "title"), Ok(None)),
-            "the same id in another room must hydrate a separate document"
-        );
-    }
-
-    #[test]
-    fn a_record_in_this_room_is_labelled_as_being_here() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        let id = RecordId::for_file("/work/report.odt");
-        index
-            .borrow_mut()
-            .reference(rooms[0], &id, &RecordKind::new("document"));
-        let provider = RecordsProvider::with_index(index);
-
-        let out = query(&provider, "report", &chrome);
-        assert_eq!(out.len(), 1);
-        assert!(
-            out[0]
-                .subtitle
-                .as_deref()
-                .unwrap_or_default()
-                .starts_with("In this workspace"),
-            "got {:?}",
-            out[0].subtitle
-        );
-    }
-
-    #[test]
-    fn a_record_from_an_unknown_room_says_so() {
-        let (chrome, _rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        index.borrow_mut().seed_observed([ObservedRecord {
-            id: RecordId::for_file("/shared/minutes.odt"),
-            kind: RecordKind::new("document"),
-            home: Some(RoomId::new()),
-            package_id: "so.tilo.word-processor".into(),
-        }]);
-        let provider = RecordsProvider::with_index(index);
-
-        let out = query(&provider, "minutes", &chrome);
-        assert_eq!(out.len(), 1);
-        assert_eq!(
-            out[0].subtitle.as_deref(),
-            Some("In another workspace · /shared/minutes.odt")
-        );
-    }
-
-    #[test]
-    fn provenance_follows_the_active_room() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
-        let reading_ws = chrome.borrow().tree().desktop.workspaces[1].id;
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        let id = RecordId::minted();
-        index
-            .borrow_mut()
-            .reference(rooms[1], &id, &RecordKind::new("book"));
-        let provider = RecordsProvider::with_index(index);
-
-        assert_eq!(
-            query(&provider, "book", &chrome)[0].subtitle.as_deref(),
-            Some("In Reading · book")
-        );
-        activate(&chrome, reading_ws);
-        assert_eq!(
-            query(&provider, "book", &chrome)[0].subtitle.as_deref(),
-            Some("In this workspace · book")
-        );
-    }
-
-    #[test]
-    fn scores_stay_inside_the_declared_ceiling() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        for path in [
-            "/work/dune.epub",
-            "/work/notes-on-dune.md",
-            "/work/redundant.txt",
-            "/dune/other.txt",
-        ] {
+                None,
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: usize::MAX,
+                    max_work: 1,
+                },
+            );
+            let cursor = first.next_cursor.expect("one source row remains");
             index.borrow_mut().reference(
                 rooms[0],
-                &RecordId::for_file(path),
+                &RecordId::for_file("/work/third.note"),
+                &RecordKind::new("note"),
+            );
+            assert!(
+                page(
+                    &provider,
+                    "note",
+                    &chrome,
+                    Some(&cursor),
+                    SearchBudget::PALETTE,
+                )
+                .stale_cursor,
+                "local mutations must never advance an old continuation"
+            );
+        }
+
+        // Phase `same_count_scan_replacement_stales_a_record_cursor`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            let observed = |name: &str| ObservedRecord {
+                id: RecordId::for_file(format!("/scan/{name}.note")),
+                kind: RecordKind::new("note"),
+                home: Some(rooms[0]),
+                package_id: "so.tilo.notes".into(),
+            };
+            index
+                .borrow_mut()
+                .replace_scanned_records_for_test(vec![observed("a"), observed("b")]);
+            let provider = RecordsProvider::with_index(Rc::clone(&index));
+            let chrome_state = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let context = || SearchContext {
+                needle: "note",
+                wanted: &[ResourceKind::Record],
+                chrome: &chrome_state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            let first = provider.query_page(
+                context(),
+                None,
+                SearchBudget {
+                    max_results: 1,
+                    max_bytes: usize::MAX,
+                    max_work: 16,
+                },
+            );
+            let cursor = first
+                .next_cursor
+                .expect("a bounded first page has a cursor");
+
+            index
+                .borrow_mut()
+                .replace_scanned_records_for_test(vec![observed("c"), observed("d")]);
+            let replacement_page =
+                provider.query_page(context(), Some(&cursor), SearchBudget::PALETTE);
+            assert!(
+                replacement_page.stale_cursor,
+                "same-count replacement must invalidate the cursor"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "here/there are the domain vocabulary for the two rooms under test, not a naming accident"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn records_from_other_rooms_are_findable_referenced_and_isolated() {
+        // Phase `a_record_from_another_room_is_findable_and_says_where_it_lives`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            let book = RecordId::minted();
+            index
+                .borrow_mut()
+                .reference(rooms[1], &book, &RecordKind::new("book"));
+            index.borrow_mut().seed_observed([ObservedRecord {
+                id: book,
+                kind: RecordKind::new("book"),
+                home: Some(rooms[1]),
+                package_id: "so.tilo.ebook".into(),
+            }]);
+            let provider = RecordsProvider::with_index(index);
+
+            let out = query(&provider, "book", &chrome);
+            assert_eq!(
+                out.len(),
+                1,
+                "the record in the other room must be findable: {out:?}"
+            );
+            assert_eq!(out[0].kind, ResourceKind::Record);
+            assert_eq!(
+                out[0].subtitle.as_deref(),
+                Some("In Reading · book"),
+                "the row must say which room the record lives in"
+            );
+        }
+
+        // Phase `activating_a_row_references_the_same_record_into_this_room`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
+            let (here, there) = (rooms[0], rooms[1]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            let book = RecordId::minted();
+            let kind = RecordKind::new("book");
+            index.borrow_mut().reference(there, &book, &kind);
+            let provider = RecordsProvider::with_index(Rc::clone(&index));
+
+            assert!(
+                !index.borrow().holds(here, &book),
+                "the active room starts without it — a room starts empty"
+            );
+
+            let out = query(&provider, "book", &chrome);
+            let row = out.first().expect("the record is findable");
+            let mut doc = automerge::AutoCommit::new();
+            (row.on_open)(
+                &mut doc,
+                &automerge::ROOT,
+                &chrome,
+                &crate::shell::search::action_api::ActionArgs::none(),
+            )
+            .expect("bringing a record here takes no arguments");
+
+            let index = index.borrow();
+            assert!(index.holds(here, &book), "activating brings it here");
+            assert!(
+                index.holds(there, &book),
+                "and leaves it in the room it came from — this is a reference, \
+                 not a move"
+            );
+            let ids_here: Vec<RecordId> =
+                index.records_in(here).into_iter().map(|c| c.id).collect();
+            let ids_there: Vec<RecordId> =
+                index.records_in(there).into_iter().map(|c| c.id).collect();
+            assert_eq!(
+                ids_here, ids_there,
+                "both rooms name the same record id — a copy would have minted \
+                 a new one"
+            );
+        }
+
+        // Phase `an_edit_through_one_rooms_reference_does_not_leak_through_the_other`.
+        {
+            use automerge::{ROOT, ReadDoc, transaction::Transactable};
+
+            let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
+            let (here, there) = (rooms[0], rooms[1]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            let book = RecordId::minted();
+            let kind = RecordKind::new("book");
+            index.borrow_mut().reference(there, &book, &kind);
+            let provider = RecordsProvider::with_index(Rc::clone(&index));
+
+            let out = query(&provider, "book", &chrome);
+            let mut doc = automerge::AutoCommit::new();
+            (out[0].on_open)(
+                &mut doc,
+                &ROOT,
+                &chrome,
+                &crate::shell::search::action_api::ActionArgs::none(),
+            )
+            .expect("bringing a record here takes no arguments");
+
+            let mut there_set = RecordSet::in_memory().with_home(there.to_string());
+            let mut there_state = ui::State::new();
+            let from_there: RecordCheckout = index
+                .borrow()
+                .records_in(there)
+                .into_iter()
+                .find(|c| c.id == book)
+                .expect("the room it came from still holds it");
+            there_set.checkout(&mut there_state, None, &from_there);
+            let _ = there_state.doc.put(&ROOT, "title", "Chapter 3");
+
+            let from_here: RecordCheckout = index
+                .borrow()
+                .records_in(here)
+                .into_iter()
+                .find(|c| c.id == book)
+                .expect("this room holds it now");
+            let mut here_set = RecordSet::in_memory().with_home(here.to_string());
+            let mut here_state = ui::State::new();
+            here_set.checkout(&mut here_state, None, &from_here);
+            assert!(
+                matches!(here_state.doc.get(&ROOT, "title"), Ok(None)),
+                "the same id in another room must hydrate a separate document"
+            );
+        }
+    }
+
+    #[test]
+    fn record_provenance_labels_follow_the_active_room() {
+        // Phase `a_record_in_this_room_is_labelled_as_being_here`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            let id = RecordId::for_file("/work/report.odt");
+            index
+                .borrow_mut()
+                .reference(rooms[0], &id, &RecordKind::new("document"));
+            let provider = RecordsProvider::with_index(index);
+
+            let out = query(&provider, "report", &chrome);
+            assert_eq!(out.len(), 1);
+            assert!(
+                out[0]
+                    .subtitle
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("In this workspace"),
+                "got {:?}",
+                out[0].subtitle
+            );
+        }
+
+        // Phase `a_record_from_an_unknown_room_says_so`.
+        {
+            let (chrome, _rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            index.borrow_mut().seed_observed([ObservedRecord {
+                id: RecordId::for_file("/shared/minutes.odt"),
+                kind: RecordKind::new("document"),
+                home: Some(RoomId::new()),
+                package_id: "so.tilo.word-processor".into(),
+            }]);
+            let provider = RecordsProvider::with_index(index);
+
+            let out = query(&provider, "minutes", &chrome);
+            assert_eq!(out.len(), 1);
+            assert_eq!(
+                out[0].subtitle.as_deref(),
+                Some("In another workspace · /shared/minutes.odt")
+            );
+        }
+
+        // Phase `provenance_follows_the_active_room`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
+            let reading_ws = chrome.borrow().tree().desktop.workspaces[1].id;
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            let id = RecordId::minted();
+            index
+                .borrow_mut()
+                .reference(rooms[1], &id, &RecordKind::new("book"));
+            let provider = RecordsProvider::with_index(index);
+
+            assert_eq!(
+                query(&provider, "book", &chrome)[0].subtitle.as_deref(),
+                Some("In Reading · book")
+            );
+            activate(&chrome, reading_ws);
+            assert_eq!(
+                query(&provider, "book", &chrome)[0].subtitle.as_deref(),
+                Some("In this workspace · book")
+            );
+        }
+    }
+
+    #[test]
+    fn record_queries_stay_in_their_ceiling_and_answer_only_when_wanted() {
+        // Phase `scores_stay_inside_the_declared_ceiling`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            for path in [
+                "/work/dune.epub",
+                "/work/notes-on-dune.md",
+                "/work/redundant.txt",
+                "/dune/other.txt",
+            ] {
+                index.borrow_mut().reference(
+                    rooms[0],
+                    &RecordId::for_file(path),
+                    &RecordKind::new("document"),
+                );
+            }
+            let provider = RecordsProvider::with_index(index);
+            let out = query(&provider, "dune", &chrome);
+            assert!(!out.is_empty());
+            for r in &out {
+                assert!(
+                    r.score <= provider.max_score(),
+                    "{} scored {} over the declared ceiling {}",
+                    r.title,
+                    r.score,
+                    provider.max_score()
+                );
+            }
+            // Ranked, not merely returned: the exact name leads, and a
+            // directory-only hit is last.
+            assert_eq!(out[0].title, "dune.epub");
+            assert_eq!(out.last().unwrap().title, "other.txt");
+            assert!(
+                !out.iter().any(|r| r.title == "redundant.txt"),
+                "`dune` must not match inside another word: {out:?}"
+            );
+        }
+
+        // Phase `an_empty_query_returns_nothing`.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            index.borrow_mut().reference(
+                rooms[0],
+                &RecordId::for_file("/work/a.odt"),
                 &RecordKind::new("document"),
             );
+            let provider = RecordsProvider::with_index(index);
+            assert!(query(&provider, "   ", &chrome).is_empty());
         }
-        let provider = RecordsProvider::with_index(index);
-        let out = query(&provider, "dune", &chrome);
-        assert!(!out.is_empty());
-        for r in &out {
-            assert!(
-                r.score <= provider.max_score(),
-                "{} scored {} over the declared ceiling {}",
-                r.title,
-                r.score,
-                provider.max_score()
+
+        // Phase `a_query_that_does_not_want_records_gets_none`.
+        // The kind filter is honoured: with Records unticked the provider
+        // contributes nothing, rather than the registry filtering afterwards.
+        {
+            let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+            let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+            index.borrow_mut().reference(
+                rooms[0],
+                &RecordId::for_file("/work/a.odt"),
+                &RecordKind::new("document"),
             );
+            let provider = RecordsProvider::with_index(index);
+            let state = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let out = provider.query(SearchContext {
+                needle: "a.odt",
+                wanted: &[ResourceKind::File],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            });
+            assert!(out.is_empty());
         }
-        // Ranked, not merely returned: the exact name leads, and a
-        // directory-only hit is last.
-        assert_eq!(out[0].title, "dune.epub");
-        assert_eq!(out.last().unwrap().title, "other.txt");
-        assert!(
-            !out.iter().any(|r| r.title == "redundant.txt"),
-            "`dune` must not match inside another word: {out:?}"
-        );
-    }
-
-    #[test]
-    fn an_empty_query_returns_nothing() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        index.borrow_mut().reference(
-            rooms[0],
-            &RecordId::for_file("/work/a.odt"),
-            &RecordKind::new("document"),
-        );
-        let provider = RecordsProvider::with_index(index);
-        assert!(query(&provider, "   ", &chrome).is_empty());
-    }
-
-    /// The kind filter is honoured: with Records unticked the provider
-    /// contributes nothing, rather than the registry filtering afterwards.
-    #[test]
-    fn a_query_that_does_not_want_records_gets_none() {
-        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
-        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
-        index.borrow_mut().reference(
-            rooms[0],
-            &RecordId::for_file("/work/a.odt"),
-            &RecordKind::new("document"),
-        );
-        let provider = RecordsProvider::with_index(index);
-        let state = chrome.borrow();
-        let doc = automerge::AutoCommit::new();
-        let out = provider.query(SearchContext {
-            needle: "a.odt",
-            wanted: &[ResourceKind::File],
-            chrome: &state,
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        assert!(out.is_empty());
     }
 }

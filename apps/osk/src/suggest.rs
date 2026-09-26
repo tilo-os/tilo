@@ -3,7 +3,8 @@
 //! After a swipe it shows the ranked decode candidates; after a word commits
 //! it shows next-word predictions. The top chip is the "auto" pick (the one
 //! already inserted, after a swipe); tapping any chip replaces the current
-//! word with it.
+//! word with it. A word that names an emoji ("pizza") also gets emoji chips,
+//! which insert the emoji after the word.
 //!
 //! This module holds the **pure geometry** + the data model, mirroring
 //! [`crate::toolbar`]: [`suggestion_rects`] splits a row into evenly-spaced
@@ -19,6 +20,8 @@ pub struct Suggestion {
     pub word: String,
     /// Decode/prediction score in `0.0..=1.0` (for ordering / future styling).
     pub score: f32,
+    /// The chip inserts an emoji the word stands for rather than a word.
+    pub emoji: bool,
 }
 
 impl Suggestion {
@@ -26,6 +29,16 @@ impl Suggestion {
         Self {
             word: word.into(),
             score,
+            emoji: false,
+        }
+    }
+
+    /// A chip inserting `emoji` for the word being typed.
+    pub fn emoji(emoji: impl Into<String>) -> Self {
+        Self {
+            word: emoji.into(),
+            score: 0.0,
+            emoji: true,
         }
     }
 }
@@ -63,29 +76,32 @@ mod tests {
     }
 
     #[test]
-    fn rects_split_evenly_and_fill_width() {
-        let s = sugg(&["quick", "quack", "quiche"]);
-        let rects = suggestion_rects(&s, Rect::new(0.0, 0.0, 600.0, 40.0));
-        assert_eq!(rects.len(), 3);
-        for (_, r) in &rects {
-            assert!((r.width() - 200.0).abs() < 1.0);
+    fn suggestion_chip_rects_split_evenly_and_fill_width() {
+        eprintln!("phase rects_split_evenly_and_fill_width");
+        {
+            let s = sugg(&["quick", "quack", "quiche"]);
+            let rects = suggestion_rects(&s, Rect::new(0.0, 0.0, 600.0, 40.0));
+            assert_eq!(rects.len(), 3);
+            for (_, r) in &rects {
+                assert!((r.width() - 200.0).abs() < 1.0);
+            }
+            assert!((rects.last().unwrap().1.x1 - 600.0).abs() < 1e-6);
+            assert!((rects.first().unwrap().1.x0 - 0.0).abs() < 1e-6);
         }
-        assert!((rects.last().unwrap().1.x1 - 600.0).abs() < 1e-6);
-        assert!((rects.first().unwrap().1.x0 - 0.0).abs() < 1e-6);
-    }
 
-    #[test]
-    fn no_suggestions_yields_no_rects() {
-        assert!(suggestion_rects(&[], Rect::new(0.0, 0.0, 600.0, 40.0)).is_empty());
-        let s = sugg(&["x"]);
-        assert!(suggestion_rects(&s, Rect::new(0.0, 0.0, 0.0, 40.0)).is_empty());
-    }
+        eprintln!("phase no_suggestions_yields_no_rects");
+        {
+            assert!(suggestion_rects(&[], Rect::new(0.0, 0.0, 600.0, 40.0)).is_empty());
+            let s = sugg(&["x"]);
+            assert!(suggestion_rects(&s, Rect::new(0.0, 0.0, 0.0, 40.0)).is_empty());
+        }
 
-    #[test]
-    fn single_chip_fills_the_row() {
-        let s = sugg(&["hello"]);
-        let rects = suggestion_rects(&s, Rect::new(10.0, 0.0, 610.0, 40.0));
-        assert_eq!(rects.len(), 1);
-        assert_eq!(rects[0].1, Rect::new(10.0, 0.0, 610.0, 40.0));
+        eprintln!("phase single_chip_fills_the_row");
+        {
+            let s = sugg(&["hello"]);
+            let rects = suggestion_rects(&s, Rect::new(10.0, 0.0, 610.0, 40.0));
+            assert_eq!(rects.len(), 1);
+            assert_eq!(rects[0].1, Rect::new(10.0, 0.0, 610.0, 40.0));
+        }
     }
 }

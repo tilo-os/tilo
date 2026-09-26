@@ -512,70 +512,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combos_map_to_evdev_codes() {
-        assert_eq!(combo_codes("ctrl+alt+t").unwrap(), [29, 56, 20]);
-        assert_eq!(combo_codes("Return").unwrap(), [28]);
-        assert_eq!(combo_codes("super").unwrap(), [125]);
-        assert_eq!(combo_codes("ctrl+T").unwrap(), [29, 20]);
-        assert_eq!(combo_codes("shift+/").unwrap(), [42, 53]);
-        assert_eq!(combo_codes("?").unwrap(), [42, 53]);
-        assert_eq!(combo_codes("ctrl++").unwrap(), [29, 42, 13]);
-        assert_eq!(combo_codes("F12").unwrap(), [88]);
-        assert_eq!(combo_codes("ctrl+nokey"), Err("nokey".into()));
-        assert!(combo_codes("").is_err());
-    }
-
-    #[test]
-    fn text_types_on_a_us_layout() {
-        let strokes = text_strokes("Hi!\n").unwrap();
-        assert_eq!(
-            strokes,
-            [
-                Stroke {
-                    code: 35,
-                    shift: true
-                },
-                Stroke {
-                    code: 23,
-                    shift: false
-                },
-                Stroke {
-                    code: 2,
-                    shift: true
-                },
-                Stroke {
-                    code: 28,
-                    shift: false
-                },
-            ]
-        );
-        assert_eq!(text_strokes("zé"), Err('é'));
-        for c in ('a'..='z')
-            .chain('A'..='Z')
-            .chain("0123456789 -=[];'`\\,./!@#$%^&*()_+{}:\"~|<>?".chars())
-        {
-            let stroke = char_stroke(c).unwrap();
-            assert!(stroke.code > 0 && stroke.code <= KEY_MAX_USED, "{c}");
-        }
-    }
-
-    #[test]
-    fn validation_names_the_problem() {
-        assert!(
-            validate(&[InputAction::Key {
-                combos: vec!["ctrl+c".into()]
-            }])
-            .is_ok()
-        );
-        let error = validate(&[InputAction::Type {
-            text: "naïve".into(),
-        }])
-        .unwrap_err();
-        assert!(error.contains('ï'), "{error}");
-        assert!(validate(&[InputAction::Key { combos: vec![] }]).is_err());
-    }
-
-    #[test]
     fn gamepad_combos_use_printed_legends() {
         assert_eq!(gamepad_combo("a").unwrap(), [GamepadInput::Button(0x130)]);
         assert_eq!(
@@ -675,14 +611,83 @@ mod tests {
         );
     }
 
+    /// Combos map to evdev codes, text types on a US layout, validation names the problem, and actions
+    /// round-trip as tagged JSON.
     #[test]
-    fn actions_round_trip_as_tagged_json() {
-        let action = InputAction::Click {
-            button: Button::Right,
-            at: Some((10, 20)),
-        };
-        let text = serde_json::to_string(&action).unwrap();
-        assert_eq!(text, r#"{"kind":"click","button":"right","at":[10,20]}"#);
-        assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), action);
+    fn input_actions_map_validate_and_round_trip() {
+        // Phase: combos_map_to_evdev_codes.
+        {
+            assert_eq!(combo_codes("ctrl+alt+t").unwrap(), [29, 56, 20]);
+            assert_eq!(combo_codes("Return").unwrap(), [28]);
+            assert_eq!(combo_codes("super").unwrap(), [125]);
+            assert_eq!(combo_codes("ctrl+T").unwrap(), [29, 20]);
+            assert_eq!(combo_codes("shift+/").unwrap(), [42, 53]);
+            assert_eq!(combo_codes("?").unwrap(), [42, 53]);
+            assert_eq!(combo_codes("ctrl++").unwrap(), [29, 42, 13]);
+            assert_eq!(combo_codes("F12").unwrap(), [88]);
+            assert_eq!(combo_codes("ctrl+nokey"), Err("nokey".into()));
+            assert!(combo_codes("").is_err());
+        }
+
+        // Phase: text_types_on_a_us_layout.
+        {
+            let strokes = text_strokes("Hi!\n").unwrap();
+            assert_eq!(
+                strokes,
+                [
+                    Stroke {
+                        code: 35,
+                        shift: true
+                    },
+                    Stroke {
+                        code: 23,
+                        shift: false
+                    },
+                    Stroke {
+                        code: 2,
+                        shift: true
+                    },
+                    Stroke {
+                        code: 28,
+                        shift: false
+                    },
+                ]
+            );
+            assert_eq!(text_strokes("zé"), Err('é'));
+            for c in ('a'..='z')
+                .chain('A'..='Z')
+                .chain("0123456789 -=[];'`\\,./!@#$%^&*()_+{}:\"~|<>?".chars())
+            {
+                let stroke = char_stroke(c).unwrap();
+                assert!(stroke.code > 0 && stroke.code <= KEY_MAX_USED, "{c}");
+            }
+        }
+
+        // Phase: validation_names_the_problem.
+        {
+            assert!(
+                validate(&[InputAction::Key {
+                    combos: vec!["ctrl+c".into()]
+                }])
+                .is_ok()
+            );
+            let error = validate(&[InputAction::Type {
+                text: "naïve".into(),
+            }])
+            .unwrap_err();
+            assert!(error.contains('ï'), "{error}");
+            assert!(validate(&[InputAction::Key { combos: vec![] }]).is_err());
+        }
+
+        // Phase: actions_round_trip_as_tagged_json.
+        {
+            let action = InputAction::Click {
+                button: Button::Right,
+                at: Some((10, 20)),
+            };
+            let text = serde_json::to_string(&action).unwrap();
+            assert_eq!(text, r#"{"kind":"click","button":"right","at":[10,20]}"#);
+            assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), action);
+        }
     }
 }

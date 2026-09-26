@@ -122,40 +122,45 @@ impl TemplatePicker {
 mod tests {
     use super::*;
 
+    /// Rows follow the canonical template order, a click returns a typed template and closes, a scaled
+    /// picker keeps rows mapped, and an outside click dismisses without a selection.
     #[test]
-    fn rows_follow_the_canonical_template_order() {
-        let picker = TemplatePicker::default();
-        assert_eq!(picker.templates, Template::all());
-        assert_eq!(picker.labels().len(), picker.templates.len());
-        assert!(picker.labels().iter().all(|label| !label.is_empty()));
-    }
+    fn the_template_picker_maps_rows_to_templates_at_every_scale() {
+        // Phase: rows_follow_the_canonical_template_order.
+        {
+            let picker = TemplatePicker::default();
+            assert_eq!(picker.templates, Template::all());
+            assert_eq!(picker.labels().len(), picker.templates.len());
+            assert!(picker.labels().iter().all(|label| !label.is_empty()));
+        }
 
-    #[test]
-    fn click_returns_a_typed_template_and_closes() {
-        let mut picker = TemplatePicker::default();
-        picker.open_at(Point::new(10.0, 20.0));
-        let report_row = picker.item_center(Template::Report).unwrap();
-        assert_eq!(picker.click(report_row), Some(Template::Report));
-        assert!(!picker.is_open());
-    }
+        // Phase: click_returns_a_typed_template_and_closes.
+        {
+            let mut picker = TemplatePicker::default();
+            picker.open_at(Point::new(10.0, 20.0));
+            let report_row = picker.item_center(Template::Report).unwrap();
+            assert_eq!(picker.click(report_row), Some(Template::Report));
+            assert!(!picker.is_open());
+        }
 
-    #[test]
-    fn scaled_picker_keeps_rows_mapped_to_their_templates() {
-        let mut picker = TemplatePicker::default();
-        picker.set_text_scale(2.0);
-        picker.open_at(Point::new(10.0, 20.0));
+        // Phase: scaled_picker_keeps_rows_mapped_to_their_templates.
+        {
+            let mut picker = TemplatePicker::default();
+            picker.set_text_scale(2.0);
+            picker.open_at(Point::new(10.0, 20.0));
 
-        let report = picker
-            .item_center(Template::Report)
-            .expect("report stays an actionable template row at large text");
-        assert_eq!(picker.click(report), Some(Template::Report));
-    }
+            let report = picker
+                .item_center(Template::Report)
+                .expect("report stays an actionable template row at large text");
+            assert_eq!(picker.click(report), Some(Template::Report));
+        }
 
-    #[test]
-    fn outside_click_dismisses_without_a_selection() {
-        let mut picker = TemplatePicker::default();
-        picker.open_at(Point::new(10.0, 20.0));
-        assert_eq!(picker.click(Point::new(0.0, 0.0)), None);
-        assert!(!picker.is_open());
+        // Phase: outside_click_dismisses_without_a_selection.
+        {
+            let mut picker = TemplatePicker::default();
+            picker.open_at(Point::new(10.0, 20.0));
+            assert_eq!(picker.click(Point::new(0.0, 0.0)), None);
+            assert!(!picker.is_open());
+        }
     }
 }

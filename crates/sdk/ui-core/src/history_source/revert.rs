@@ -561,71 +561,73 @@ mod replay_regressions {
     }
 
     #[test]
-    fn filtered_removal_keeps_middle_peer_child_and_targets_later_original_element() {
-        let mut doc = AutoCommit::new().with_actor(ActorId::from(b"alice".as_slice()));
-        let list = doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
-        insert(&mut doc, &list, 0, "keep-tail");
-        doc.commit();
-        insert(&mut doc, &list, 0, "remove-a");
-        let protected = insert(&mut doc, &list, 1, "protect-b");
-        insert(&mut doc, &list, 2, "remove-c");
-        insert(&mut doc, &list, 4, "remove-e");
-        let change = doc.commit().unwrap();
-        doc.set_actor(ActorId::from(b"bob".as_slice()));
-        doc.put(&protected, "label", "peer edited b").unwrap();
-        doc.commit();
-        let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
-        let result = revert_run(&mut doc, &run, None, &AuthorDirectory::default()).unwrap();
-        assert!(result.wrote);
-        assert_eq!(result.kept.len(), 1);
-        let labels = (0..doc.length(&list))
-            .map(|index| {
-                let block = doc.get(&list, index).unwrap().unwrap().1;
-                doc.get(block, "label")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str()
-                    .unwrap()
-                    .to_string()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(labels, ["peer edited b", "keep-tail"]);
-    }
-
-    #[test]
-    fn filtered_mark_revert_preserves_later_peer_formatting() {
-        use automerge::marks::{ExpandMark, Mark};
-        let mut doc = AutoCommit::new().with_actor(ActorId::from(b"alice".as_slice()));
-        let text = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, "hello").unwrap();
-        doc.commit();
-        doc.mark(
-            &text,
-            Mark::new("bold".into(), true, 0, 5),
-            ExpandMark::After,
-        )
-        .unwrap();
-        let change = doc.commit().unwrap();
-        doc.set_actor(ActorId::from(b"bob".as_slice()));
-        doc.mark(
-            &text,
-            Mark::new("italic".into(), true, 0, 5),
-            ExpandMark::After,
-        )
-        .unwrap();
-        doc.commit();
-        let before = doc.marks(&text).unwrap();
-        let result = revert_run(
-            &mut doc,
-            &ChangeRun::single(entry_id_from_hash(&change.to_string())),
-            None,
-            &AuthorDirectory::default(),
-        )
-        .unwrap();
-        assert!(!result.wrote);
-        assert_eq!(result.kept.len(), 1);
-        assert_eq!(doc.marks(&text).unwrap(), before);
-        assert_eq!(doc.text(&text).unwrap(), "hello");
+    fn filtered_reverts_preserve_later_peer_content_and_formatting() {
+        // phase: filtered_removal_keeps_middle_peer_child_and_targets_later_original_element
+        {
+            let mut doc = AutoCommit::new().with_actor(ActorId::from(b"alice".as_slice()));
+            let list = doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
+            insert(&mut doc, &list, 0, "keep-tail");
+            doc.commit();
+            insert(&mut doc, &list, 0, "remove-a");
+            let protected = insert(&mut doc, &list, 1, "protect-b");
+            insert(&mut doc, &list, 2, "remove-c");
+            insert(&mut doc, &list, 4, "remove-e");
+            let change = doc.commit().unwrap();
+            doc.set_actor(ActorId::from(b"bob".as_slice()));
+            doc.put(&protected, "label", "peer edited b").unwrap();
+            doc.commit();
+            let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
+            let result = revert_run(&mut doc, &run, None, &AuthorDirectory::default()).unwrap();
+            assert!(result.wrote);
+            assert_eq!(result.kept.len(), 1);
+            let labels = (0..doc.length(&list))
+                .map(|index| {
+                    let block = doc.get(&list, index).unwrap().unwrap().1;
+                    doc.get(block, "label")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(labels, ["peer edited b", "keep-tail"]);
+        }
+        // phase: filtered_mark_revert_preserves_later_peer_formatting
+        {
+            use automerge::marks::{ExpandMark, Mark};
+            let mut doc = AutoCommit::new().with_actor(ActorId::from(b"alice".as_slice()));
+            let text = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "hello").unwrap();
+            doc.commit();
+            doc.mark(
+                &text,
+                Mark::new("bold".into(), true, 0, 5),
+                ExpandMark::After,
+            )
+            .unwrap();
+            let change = doc.commit().unwrap();
+            doc.set_actor(ActorId::from(b"bob".as_slice()));
+            doc.mark(
+                &text,
+                Mark::new("italic".into(), true, 0, 5),
+                ExpandMark::After,
+            )
+            .unwrap();
+            doc.commit();
+            let before = doc.marks(&text).unwrap();
+            let result = revert_run(
+                &mut doc,
+                &ChangeRun::single(entry_id_from_hash(&change.to_string())),
+                None,
+                &AuthorDirectory::default(),
+            )
+            .unwrap();
+            assert!(!result.wrote);
+            assert_eq!(result.kept.len(), 1);
+            assert_eq!(doc.marks(&text).unwrap(), before);
+            assert_eq!(doc.text(&text).unwrap(), "hello");
+        }
     }
 }

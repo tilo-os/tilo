@@ -80,6 +80,12 @@ mod tests {
                 String::from_utf8_lossy(&result.stdout),
                 String::from_utf8_lossy(&result.stderr),
             );
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                String::from_utf8_lossy(&result.stdout).contains("test result: ok. 1 passed"),
+                "the child ran no test: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
             return;
         }
         let fixture = tempfile::tempdir().unwrap();

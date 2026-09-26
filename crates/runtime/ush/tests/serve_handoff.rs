@@ -55,33 +55,78 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     seen
 }
 
-/// A `dsh` session is authority without a boundary. An app that was handed the
-/// service socket at launch must not be able to ask for one, and this is the
-/// function that decides it.
 #[test]
-fn the_service_refuses_a_developer_session_to_a_caller() {
-    let err = decide_serve(&ServeRequest::OpenSession {
-        profile: "dsh".into(),
-        cols: 80,
-        rows: 24,
-        term: None,
-        command: Vec::new(),
-    })
-    .expect_err("dsh was granted over the service socket");
-    assert!(err.contains("not a sandbox"), "{err}");
+fn the_service_protocol_refuses_dsh_answers_garbage_and_never_hangs() {
+    // phase: the_service_refuses_a_developer_session_to_a_caller
+    // A `dsh` session is authority without a boundary. An app that was handed the
+    // service socket at launch must not be able to ask for one, and this is the
+    // function that decides it.
+    {
+        let err = decide_serve(&ServeRequest::OpenSession {
+            profile: "dsh".into(),
+            cols: 80,
+            rows: 24,
+            term: None,
+            command: Vec::new(),
+        })
+        .expect_err("dsh was granted over the service socket");
+        assert!(err.contains("not a sandbox"), "{err}");
 
-    for name in ["ush", "", "something-else"] {
+        for name in ["ush", "", "something-else"] {
+            assert!(
+                decide_serve(&ServeRequest::OpenSession {
+                    profile: name.into(),
+                    cols: 80,
+                    rows: 24,
+                    term: None,
+                    command: Vec::new(),
+                })
+                .is_ok(),
+                "{name:?} should resolve to the sandboxed profile and be allowed"
+            );
+        }
+    }
+    // phase: a_malformed_request_is_answered
+    // A malformed request must be refused with a reply, not by dropping the
+    // connection — a caller that gets silence cannot tell "refused" from "the
+    // supervisor is not running".
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("ush.sock");
+        let store = Store::at(dir.path().join("store"));
+        store.ensure().expect("store");
+
+        let serve_socket = socket.clone();
+        std::thread::spawn(move || {
+            let _ = ush::supervisor::serve(&serve_socket, &store, &PathBuf::from("/"));
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !socket.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let stream = UnixStream::connect(&socket).expect("connect");
+        (&stream).write_all(b"{ not json }\n").expect("write");
+        (&stream).flush().expect("flush");
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read reply");
         assert!(
-            decide_serve(&ServeRequest::OpenSession {
-                profile: name.into(),
-                cols: 80,
-                rows: 24,
-                term: None,
-                command: Vec::new(),
-            })
-            .is_ok(),
-            "{name:?} should resolve to the sandboxed profile and be allowed"
+            line.contains("denied"),
+            "a malformed request must be refused in words: {line:?}"
         );
+    }
+    // phase: read_until_gives_up_rather_than_hanging
+    // Kept so the unused-import warning cannot hide a reader that never reads.
+    {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let started = Instant::now();
+        let seen = read_until(a.as_raw_fd(), "never", Duration::from_millis(200));
+        assert!(seen.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let mut sink = Vec::new();
+        let _ = (&a).read_to_end(&mut sink);
     }
 }
 
@@ -270,48 +315,4 @@ fn run_handoff() {
         "the test left its store behind at {}",
         path.display()
     );
-}
-
-/// A malformed request must be refused with a reply, not by dropping the
-/// connection — a caller that gets silence cannot tell "refused" from "the
-/// supervisor is not running".
-#[test]
-fn a_malformed_request_is_answered() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("ush.sock");
-    let store = Store::at(dir.path().join("store"));
-    store.ensure().expect("store");
-
-    let serve_socket = socket.clone();
-    std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, &store, &PathBuf::from("/"));
-    });
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    let stream = UnixStream::connect(&socket).expect("connect");
-    (&stream).write_all(b"{ not json }\n").expect("write");
-    (&stream).flush().expect("flush");
-
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("read reply");
-    assert!(
-        line.contains("denied"),
-        "a malformed request must be refused in words: {line:?}"
-    );
-}
-
-/// Kept so the unused-import warning cannot hide a reader that never reads.
-#[test]
-fn read_until_gives_up_rather_than_hanging() {
-    let (a, _b) = UnixStream::pair().unwrap();
-    let started = Instant::now();
-    let seen = read_until(a.as_raw_fd(), "never", Duration::from_millis(200));
-    assert!(seen.is_empty());
-    assert!(started.elapsed() < Duration::from_secs(5));
-    let mut sink = Vec::new();
-    let _ = (&a).read_to_end(&mut sink);
 }

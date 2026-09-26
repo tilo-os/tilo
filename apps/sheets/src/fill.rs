@@ -534,173 +534,181 @@ mod tests {
         out.iter().map(|o| o.raw.clone()).collect()
     }
 
+    /// Formula reference shifting and linear/constant numeric series.
     #[test]
-    fn formula_fill_shifts_relative_refs_per_step() {
-        // A single `=A1` filled down three cells → =A2, =A3, =A4.
-        let pat = [FillCell::new(
-            "=A1",
-            CellValue::Number(0.0),
-            CellFormat::General,
-        )];
-        assert_eq!(
-            raws(&extend_series(&pat, 3, 0, 1)),
-            vec!["=A2", "=A3", "=A4"]
-        );
-        // Filled right instead → =B1, =C1, =D1.
-        assert_eq!(
-            raws(&extend_series(&pat, 3, 1, 0)),
-            vec!["=B1", "=C1", "=D1"]
-        );
-        // An absolute reference stays put on the copy.
-        let anch = [FillCell::new(
-            "=$A$1+B1",
-            CellValue::Number(0.0),
-            CellFormat::General,
-        )];
-        assert_eq!(
-            raws(&extend_series(&anch, 2, 0, 1)),
-            vec!["=$A$1+B2", "=$A$1+B3"]
-        );
-    }
-
-    #[test]
-    fn two_numbers_extrapolate_a_linear_series() {
-        // 1, 2 → 3, 4, 5.
-        let pat = [num(1.0), num(2.0)];
-        assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["3", "4", "5"]);
-        // 2, 4 → 6, 8 (step 2).
-        let pat = [num(2.0), num(4.0)];
-        assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["6", "8"]);
-        // 10, 7 → 4, 1, -2 (negative step).
-        let pat = [num(10.0), num(7.0)];
-        assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["4", "1", "-2"]);
-    }
-
-    #[test]
-    fn three_numbers_fit_a_straight_line() {
-        // A perfect line 2, 4, 6 → 8, 10.
-        let pat = [num(2.0), num(4.0), num(6.0)];
-        assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["8", "10"]);
-    }
-
-    #[test]
-    fn single_number_fills_constant() {
-        let pat = [num(7.0)];
-        assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["7", "7", "7"]);
-    }
-
-    #[test]
-    fn date_daily_series_continues_by_a_day() {
-        // A lone date advances one day at a time.
-        let pat = [date(2024, 1, 1)];
-        let out = extend_series(&pat, 2, 0, 1);
-        assert_eq!(out.len(), 2);
-        for o in &out {
-            assert!(matches!(o.fmt, CellFormat::Date(_)));
+    fn numeric_and_formula_fills_extrapolate() {
+        // Case `formula_fill_shifts_relative_refs_per_step`.
+        {
+            // A single `=A1` filled down three cells → =A2, =A3, =A4.
+            let pat = [FillCell::new(
+                "=A1",
+                CellValue::Number(0.0),
+                CellFormat::General,
+            )];
+            assert_eq!(
+                raws(&extend_series(&pat, 3, 0, 1)),
+                vec!["=A2", "=A3", "=A4"]
+            );
+            // Filled right instead → =B1, =C1, =D1.
+            assert_eq!(
+                raws(&extend_series(&pat, 3, 1, 0)),
+                vec!["=B1", "=C1", "=D1"]
+            );
+            // An absolute reference stays put on the copy.
+            let anch = [FillCell::new(
+                "=$A$1+B1",
+                CellValue::Number(0.0),
+                CellFormat::General,
+            )];
+            assert_eq!(
+                raws(&extend_series(&anch, 2, 0, 1)),
+                vec!["=$A$1+B2", "=$A$1+B3"]
+            );
         }
-        let s0: f64 = out[0].raw.parse().unwrap();
-        let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(s0, DateStyle::Iso),
-            "2024-01-02"
-        );
-        assert_eq!(
-            crate::model::serial_to_date(s1, DateStyle::Iso),
-            "2024-01-03"
-        );
-        // Two dates a week apart continue weekly.
-        let pat = [date(2024, 1, 1), date(2024, 1, 8)];
-        let out = extend_series(&pat, 1, 0, 1);
-        let s: f64 = out[0].raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(s, DateStyle::Iso),
-            "2024-01-15"
-        );
+
+        // Case `two_numbers_extrapolate_a_linear_series`.
+        {
+            // 1, 2 → 3, 4, 5.
+            let pat = [num(1.0), num(2.0)];
+            assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["3", "4", "5"]);
+            // 2, 4 → 6, 8 (step 2).
+            let pat = [num(2.0), num(4.0)];
+            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["6", "8"]);
+            // 10, 7 → 4, 1, -2 (negative step).
+            let pat = [num(10.0), num(7.0)];
+            assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["4", "1", "-2"]);
+        }
+
+        // Case `three_numbers_fit_a_straight_line`.
+        {
+            // A perfect line 2, 4, 6 → 8, 10.
+            let pat = [num(2.0), num(4.0), num(6.0)];
+            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["8", "10"]);
+        }
+
+        // Case `single_number_fills_constant`.
+        {
+            let pat = [num(7.0)];
+            assert_eq!(raws(&extend_series(&pat, 3, 0, 1)), vec!["7", "7", "7"]);
+        }
     }
 
+    /// Daily/monthly dates, month/weekday names, numbered text, pure text and mixed blocks.
     #[test]
-    fn date_monthly_series_holds_the_day_of_month() {
-        // 15 Jan, 15 Feb → 15 Mar, 15 Apr (monthly cadence).
-        let pat = [date(2024, 1, 15), date(2024, 2, 15)];
-        let out = extend_series(&pat, 2, 0, 1);
-        let s0: f64 = out[0].raw.parse().unwrap();
-        let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(s0, DateStyle::Iso),
-            "2024-03-15"
-        );
-        assert_eq!(
-            crate::model::serial_to_date(s1, DateStyle::Iso),
-            "2024-04-15"
-        );
-        // Month-end clamps: a day-31 monthly cadence (Oct 31, Dec 31 — step of
-        // two months) continues to Feb 29 (leap) and Apr 30, each clamped into
-        // its shorter month.
-        let pat = [date(2023, 10, 31), date(2023, 12, 31)];
-        let out = extend_series(&pat, 2, 0, 1);
-        let s0: f64 = out[0].raw.parse().unwrap();
-        let s1: f64 = out[1].raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(s0, DateStyle::Iso),
-            "2024-02-29"
-        );
-        assert_eq!(
-            crate::model::serial_to_date(s1, DateStyle::Iso),
-            "2024-04-30"
-        );
-    }
+    fn date_name_and_text_fills_continue_their_pattern() {
+        // Case `date_daily_series_continues_by_a_day`.
+        {
+            // A lone date advances one day at a time.
+            let pat = [date(2024, 1, 1)];
+            let out = extend_series(&pat, 2, 0, 1);
+            assert_eq!(out.len(), 2);
+            for o in &out {
+                assert!(matches!(o.fmt, CellFormat::Date(_)));
+            }
+            let s0: f64 = out[0].raw.parse().unwrap();
+            let s1: f64 = out[1].raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(s0, DateStyle::Iso),
+                "2024-01-02"
+            );
+            assert_eq!(
+                crate::model::serial_to_date(s1, DateStyle::Iso),
+                "2024-01-03"
+            );
+            // Two dates a week apart continue weekly.
+            let pat = [date(2024, 1, 1), date(2024, 1, 8)];
+            let out = extend_series(&pat, 1, 0, 1);
+            let s: f64 = out[0].raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(s, DateStyle::Iso),
+                "2024-01-15"
+            );
+        }
 
-    #[test]
-    fn month_and_weekday_names_cycle() {
-        // A single month name extends onward.
-        let pat = [text("Jan")];
-        assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Feb", "Mar"]);
-        // Long month names, wrapping past December.
-        let pat = [text("November"), text("December")];
-        assert_eq!(
-            raws(&extend_series(&pat, 2, 0, 1)),
-            vec!["January", "February"]
-        );
-        // Weekday names with a step of 2.
-        let pat = [text("Mon"), text("Wed")];
-        assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Fri", "Sun"]);
-    }
+        // Case `date_monthly_series_holds_the_day_of_month`.
+        {
+            // 15 Jan, 15 Feb → 15 Mar, 15 Apr (monthly cadence).
+            let pat = [date(2024, 1, 15), date(2024, 2, 15)];
+            let out = extend_series(&pat, 2, 0, 1);
+            let s0: f64 = out[0].raw.parse().unwrap();
+            let s1: f64 = out[1].raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(s0, DateStyle::Iso),
+                "2024-03-15"
+            );
+            assert_eq!(
+                crate::model::serial_to_date(s1, DateStyle::Iso),
+                "2024-04-15"
+            );
+            // Month-end clamps: a day-31 monthly cadence (Oct 31, Dec 31 — step of
+            // two months) continues to Feb 29 (leap) and Apr 30, each clamped into
+            // its shorter month.
+            let pat = [date(2023, 10, 31), date(2023, 12, 31)];
+            let out = extend_series(&pat, 2, 0, 1);
+            let s0: f64 = out[0].raw.parse().unwrap();
+            let s1: f64 = out[1].raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(s0, DateStyle::Iso),
+                "2024-02-29"
+            );
+            assert_eq!(
+                crate::model::serial_to_date(s1, DateStyle::Iso),
+                "2024-04-30"
+            );
+        }
 
-    #[test]
-    fn text_with_trailing_number_increments() {
-        // Single "Item 1" increments by one.
-        let pat = [text("Item 1")];
-        assert_eq!(
-            raws(&extend_series(&pat, 2, 0, 1)),
-            vec!["Item 2", "Item 3"]
-        );
-        // Two samples set the step.
-        let pat = [text("Q1"), text("Q3")];
-        assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Q5", "Q7"]);
-        // Zero-padding is preserved.
-        let pat = [text("Row-01")];
-        assert_eq!(
-            raws(&extend_series(&pat, 2, 0, 1)),
-            vec!["Row-02", "Row-03"]
-        );
-    }
+        // Case `month_and_weekday_names_cycle`.
+        {
+            // A single month name extends onward.
+            let pat = [text("Jan")];
+            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Feb", "Mar"]);
+            // Long month names, wrapping past December.
+            let pat = [text("November"), text("December")];
+            assert_eq!(
+                raws(&extend_series(&pat, 2, 0, 1)),
+                vec!["January", "February"]
+            );
+            // Weekday names with a step of 2.
+            let pat = [text("Mon"), text("Wed")];
+            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Fri", "Sun"]);
+        }
 
-    #[test]
-    fn pure_text_fills_constant() {
-        let pat = [text("Hello")];
-        assert_eq!(
-            raws(&extend_series(&pat, 3, 0, 1)),
-            vec!["Hello", "Hello", "Hello"]
-        );
-    }
+        // Case `text_with_trailing_number_increments`.
+        {
+            // Single "Item 1" increments by one.
+            let pat = [text("Item 1")];
+            assert_eq!(
+                raws(&extend_series(&pat, 2, 0, 1)),
+                vec!["Item 2", "Item 3"]
+            );
+            // Two samples set the step.
+            let pat = [text("Q1"), text("Q3")];
+            assert_eq!(raws(&extend_series(&pat, 2, 0, 1)), vec!["Q5", "Q7"]);
+            // Zero-padding is preserved.
+            let pat = [text("Row-01")];
+            assert_eq!(
+                raws(&extend_series(&pat, 2, 0, 1)),
+                vec!["Row-02", "Row-03"]
+            );
+        }
 
-    #[test]
-    fn mixed_block_repeats_verbatim() {
-        // A number and a label alternate → the block repeats.
-        let pat = [num(5.0), text("x")];
-        assert_eq!(
-            raws(&extend_series(&pat, 4, 0, 1)),
-            vec!["5", "x", "5", "x"]
-        );
+        // Case `pure_text_fills_constant`.
+        {
+            let pat = [text("Hello")];
+            assert_eq!(
+                raws(&extend_series(&pat, 3, 0, 1)),
+                vec!["Hello", "Hello", "Hello"]
+            );
+        }
+
+        // Case `mixed_block_repeats_verbatim`.
+        {
+            // A number and a label alternate → the block repeats.
+            let pat = [num(5.0), text("x")];
+            assert_eq!(
+                raws(&extend_series(&pat, 4, 0, 1)),
+                vec!["5", "x", "5", "x"]
+            );
+        }
     }
 }

@@ -1,0 +1,221 @@
+//! Sample content for screenshots only (`--shots`). A person's window starts
+//! empty: nothing here runs on the live path.
+
+use serde_json::{Value, json};
+use tilo_automation::{
+    AGENT_APP_ID, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, ActionCatalog, SHORTCUTS_APP_ID,
+    Shortcut,
+};
+use ui::LocalState;
+use ui::prelude::*;
+use ui::tilo_actions::remote::{CatalogueResource, CatalogueRow};
+use ui::tilo_actions::{
+    ActionAddress, ActionContract, ActionDescriptor, ActionParam, ExecutionLocus, InputSpec,
+    OperationKind, ParamType, PermissionRequirement, ResultSpec,
+};
+
+use crate::door::{DoorState, Loaded, RunRecord, RunStatus};
+use crate::model::Workbench;
+
+/// The `--shots` scenarios.
+pub const SCENARIOS: &[&str] = &["library", "editor", "review"];
+
+const NOTES: &str = "so.tilo.notes";
+const MAIL: &str = "so.tilo.mail";
+
+#[expect(clippy::too_many_arguments, reason = "one catalogue row, spelled out")]
+fn row(
+    app: &str,
+    resource: &str,
+    kind: &str,
+    label: &str,
+    action: &str,
+    action_label: &str,
+    params: Vec<ActionParam>,
+    permission: PermissionRequirement,
+    result: ResultSpec,
+) -> CatalogueRow {
+    CatalogueRow {
+        provider: format!("sample:{app}"),
+        app_id: app.into(),
+        parent_resource: String::new(),
+        resource: CatalogueResource {
+            id: resource.into(),
+            kind: kind.into(),
+            label: label.into(),
+            presentation: None,
+        },
+        action: Some(ActionDescriptor {
+            address: ActionAddress::new(resource, action),
+            resource_kind: kind.into(),
+            resource_label: label.into(),
+            action_label: action_label.into(),
+            description: None,
+            locus: ExecutionLocus::default(),
+            kind: OperationKind::Document,
+            contract: ActionContract {
+                permission,
+                result,
+                ..ActionContract::default()
+            },
+            input: InputSpec::None,
+            params,
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+    }
+}
+
+/// A catalogue like the one a workspace with notes and mail offers.
+#[must_use]
+pub fn catalog() -> ActionCatalog {
+    let titles = ResultSpec::Json {
+        schema: json!({
+            "type": "object",
+            "properties": {"titles": {"type": "array", "items": {"type": "string"}}},
+            "additionalProperties": false
+        }),
+    };
+    ActionCatalog::new(vec![
+        row(
+            NOTES,
+            "notes.folder:inbox",
+            "notes.folder",
+            "Inbox",
+            "list",
+            "List notes",
+            Vec::new(),
+            PermissionRequirement::Read,
+            titles,
+        ),
+        row(
+            NOTES,
+            "notes.folder:inbox",
+            "notes.folder",
+            "Inbox",
+            "create",
+            "New note",
+            vec![
+                ActionParam::required("title", ParamType::Text, "Title"),
+                ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
+            ],
+            PermissionRequirement::Write,
+            ResultSpec::None,
+        ),
+        row(
+            MAIL,
+            "mail.outbox",
+            "mail.outbox",
+            "Outbox",
+            "send",
+            "Send message",
+            vec![
+                ActionParam::required("to", ParamType::Text, "Recipient"),
+                ActionParam::required("body", ParamType::Text, "Message"),
+            ],
+            PermissionRequirement::Write,
+            ResultSpec::None,
+        ),
+        row(
+            AGENT_APP_ID,
+            "agent.transform:text",
+            AGENT_TRANSFORM_KIND,
+            "Text",
+            AGENT_SUMMARISE_ACTION,
+            "Summarise",
+            vec![ActionParam::required("input", ParamType::Text, "Text")],
+            PermissionRequirement::Read,
+            ResultSpec::Json {
+                schema: json!({"type": "string"}),
+            },
+        ),
+        row(
+            SHORTCUTS_APP_ID,
+            "shortcuts",
+            "shortcuts.library",
+            "Shortcuts",
+            "list",
+            "List shortcuts",
+            Vec::new(),
+            PermissionRequirement::Read,
+            ResultSpec::None,
+        ),
+    ])
+}
+
+fn morning_digest() -> Value {
+    json!({
+        "id": "morning-digest",
+        "name": "Morning digest",
+        "steps": [
+            {"id": "list", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "ai", "step": "ai", "transform": "summarise",
+             "input": {"template": "{{step.list/titles}}"}},
+            {"id": "send", "step": "invoke", "app_id": MAIL,
+             "resource": {"fixed": "mail.outbox"}, "action": "send",
+             "args": {"to": {"literal": "me@example.org"}, "body": {"step_output": {"step": "ai"}}}}
+        ]
+    })
+}
+
+/// The drafts a scenario starts with.
+#[must_use]
+pub fn drafts(name: Option<&str>) -> Vec<Invoke<Workbench>> {
+    match name {
+        Some("editor" | "review") => vec![Workbench::OPEN_SHORTCUT.with(morning_digest())],
+        _ => Vec::new(),
+    }
+}
+
+/// Stage a scenario's view: a library, a catalogue and recent runs as a
+/// workspace would have them, and the first draft open.
+pub fn stage(
+    cx: &ViewCx<Workbench>,
+    door: &LocalState<DoorState>,
+    selected: &LocalState<Option<String>>,
+    narrow: &LocalState<NarrowScreen>,
+    sheet: &LocalState<bool>,
+) {
+    let door = door.clone();
+    let selected = selected.clone();
+    let narrow = narrow.clone();
+    let sheet = sheet.clone();
+    let live = cx.live().clone();
+    cx.on_stage(move |scenario| {
+        let saved: Vec<Shortcut> = [
+            morning_digest(),
+            json!({
+                "id": "tidy-inbox", "name": "Tidy the inbox", "steps": []
+            }),
+        ]
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect();
+        door.set(DoorState {
+            catalogue: Loaded::Ready(catalog()),
+            library: Loaded::Ready(saved),
+            runs: vec![RunRecord {
+                serial: 1,
+                shortcut_id: "morning-digest".into(),
+                name: "Morning digest".into(),
+                status: RunStatus::Completed(None),
+            }],
+            notice: None,
+            drafted: None,
+        });
+        if matches!(scenario, Some("editor" | "review")) {
+            let first = live.with(|workbench| {
+                workbench
+                    .drafts
+                    .ids()
+                    .next()
+                    .map(|id| id.as_str().to_owned())
+            });
+            selected.set(first);
+            narrow.set(NarrowScreen::Content);
+            sheet.set(scenario == Some("review"));
+        }
+    });
+}

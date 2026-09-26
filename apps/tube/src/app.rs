@@ -3143,677 +3143,839 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "grayjay-sync")]
     #[test]
-    fn visible_pair_control_queues_the_published_privileged_effect() {
-        let (mut app, doc) = fresh();
-        app.device_sync = crate::sync::DeviceSync::with_test_view(crate::sync::SyncView {
-            status: crate::sync::SyncStatus::Ready,
-            summary: "ready".into(),
-            device_public_key: Some("public".into()),
-            peers: Vec::new(),
-        });
-        *app.device_sync
-            .pairing_input
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = "grayjay://secret-invite".into();
-        assert!(app.apply(Action::PairDevice, &doc, &automerge::ROOT));
-        let invocation = app
-            .take_control_invocation()
-            .expect("visible Pair queues a host-routable invocation");
-        assert_eq!(invocation.address.resource, "tube.device-sync");
-        assert_eq!(invocation.address.action, "pair");
-        assert_eq!(
-            invocation.arguments.get("invite"),
-            Some(&serde_json::Value::String("grayjay://secret-invite".into()))
-        );
-        assert!(
-            app.device_sync
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn visible_controls_route_through_published_actions() {
+        // Case `visible_pair_control_queues_the_published_privileged_effect`.
+        #[cfg(feature = "grayjay-sync")]
+        {
+            let (mut app, doc) = fresh();
+            app.device_sync = crate::sync::DeviceSync::with_test_view(crate::sync::SyncView {
+                status: crate::sync::SyncStatus::Ready,
+                summary: "ready".into(),
+                device_public_key: Some("public".into()),
+                peers: Vec::new(),
+            });
+            *app.device_sync
                 .pairing_input
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty(),
-            "the local field is wiped once its Secret argument is queued"
-        );
-        let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
-        let spec = tilo_actions::door::resolve(&resources, &invocation.address)
-            .expect("fresh resource tree resolves Pair");
-        assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
-        assert!(!matches!(
-            spec.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ));
-    }
-
-    #[test]
-    fn resolution_player_setting_round_trips_into_the_model() {
-        // The resolution selector now lives ON the player; a `Chose` event it
-        // emits (drained in `sync`) must round-trip into the model's preferred
-        // quality via the production `apply_player_setting_event` path.
-        let (mut app, _) = fresh();
-        assert_eq!(app.model.settings.preferred_quality, "1080p");
-        app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
-            id: "resolution".into(),
-            index: 1,
-        });
-        assert_eq!(
-            app.model.settings.preferred_quality, "720p",
-            "picking index 1 selects 720p"
-        );
-        assert!(
-            app.structure_dirty,
-            "a resolution change rebuilds the watch tree"
-        );
-        // A different setting id is ignored (no accidental clobber).
-        app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
-            id: "unrelated".into(),
-            index: 3,
-        });
-        assert_eq!(app.model.settings.preferred_quality, "720p");
-    }
-
-    #[test]
-    fn player_fullscreen_toggle_reaches_the_root_via_the_shared_mechanism() {
-        // `TubeApp` must forward the player's fullscreen intent up to the root,
-        // since `ui::App` only polls the root widget.
-        let (mut app, _) = fresh_synth();
-        assert_eq!(
-            FullscreenProvider::fullscreen_intent(&app),
-            None,
-            "no opinion until the user acts"
-        );
-        app.player.borrow_mut().toggle_fullscreen();
-        assert_eq!(
-            FullscreenProvider::fullscreen_intent(&app),
-            Some(true),
-            "toggle reaches the root"
-        );
-        assert_eq!(
-            FullscreenProvider::fullscreen_params(&app).target,
-            ui::fullscreen::FullscreenTarget::Largest,
-            "immersive video targets the big screen"
-        );
-        // A compositor-driven exit flows back to the player through the root.
-        FullscreenProvider::on_fullscreen_changed(&mut app, false);
-        assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
-    }
-
-    #[test]
-    fn open_video_navigates_and_records_history() {
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
-        assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
-        assert_eq!(
-            app.model.history.first().map(std::string::String::as_str),
-            Some("vid_donut")
-        );
-        assert_eq!(app.model.playhead, 0.0);
-    }
-
-    #[test]
-    fn subscribe_toggles_via_action() {
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        assert!(!app.model.is_subscribed("ch_synth"));
-        app.apply(Action::ToggleSubscribe("ch_synth".into()), &doc, &r);
-        assert!(app.model.is_subscribed("ch_synth"));
-    }
-
-    #[test]
-    fn externally_applied_absolute_subscription_action_updates_visible_model() {
-        let (mut app, mut doc) = fresh();
-        tilo_actions::Action::apply(
-            &crate::actions::TubeAction::SetSubscription {
-                channel_id: "ch_synth".into(),
-                subscribed: true,
-            },
-            &mut doc,
-        )
-        .expect("action applies");
-        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-        assert!(
-            app.model.is_subscribed("ch_synth"),
-            "agent/replay actions must update the rendered subscription state"
-        );
-    }
-
-    #[cfg(feature = "grayjay-sync")]
-    #[test]
-    fn pulled_device_state_is_imported_through_canonical_actions() {
-        let (mut app, mut doc) = fresh();
-        app.model.subscriptions.clear();
-        app.model.history.clear();
-        let settings = app.model.settings.clone();
-        let expected_autoplay = !settings.autoplay;
-        let remote = crate::sync::SyncState {
-            // This creator is intentionally not in the local catalogue: the
-            // durable URL must still make the return trip to a freshly paired
-            // desktop instead of being discarded as an unknown row.
-            subscriptions: vec!["https://youtube.com/@new-to-this-device".into()],
-            watch_history: vec!["video-not-fetched-yet".into()],
-            settings: Some(crate::model::Settings {
-                autoplay: expected_autoplay,
-                ..settings
-            }),
-        };
-
-        assert!(app.import_device_sync_state(remote, &mut doc));
-        assert!(
-            app.reconcile_collaborative_actions(&doc),
-            "the action document—not a transient model write—projects the import"
-        );
-        assert!(app.reconcile_owner_history());
-        assert!(
-            app.model
-                .subscriptions
-                .contains(&"https://youtube.com/@new-to-this-device".to_string())
-        );
-        assert!(
-            app.model
-                .history
-                .contains(&"video-not-fetched-yet".to_string())
-        );
-        assert_eq!(app.model.settings.autoplay, expected_autoplay);
-
-        let exported = crate::sync::lifecycle_state(&app.model);
-        assert!(
-            exported
-                .subscriptions
-                .contains(&"https://youtube.com/@new-to-this-device".to_string())
-        );
-        assert!(app.actions.last_dispatched().is_some());
-    }
-
-    #[test]
-    fn owner_history_never_enters_a_collaborator_document() {
-        let (mut app, mut shared) = fresh();
-        app.history_store = OwnerHistoryStore::memory();
-        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
-            video_id: "vid_donut".into(),
-            watched_at_ms: 1,
-            present: true,
-            mutation_id: "owner:watch:1".into(),
-        }));
-        let exported = shared.save();
-        let collaborator = AutoCommit::load(&exported).expect("shared replica reloads");
-        assert!(
-            !exported
-                .windows(b"vid_donut".len())
-                .any(|window| window == b"vid_donut"),
-            "shared Automerge bytes must not contain an owner video id"
-        );
-        assert!(
-            collaborator
-                .get(&automerge::ROOT, "owner_history")
-                .unwrap()
-                .is_none(),
-            "a collaborator replica cannot receive an owner history root"
-        );
-        assert!(shared.get(&automerge::ROOT, "tube").unwrap().is_none());
-        assert!(
-            app.history_store
-                .document()
-                .get(&automerge::ROOT, "owner_history")
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn history_store_recovery_is_visible_without_exposing_a_path() {
-        let (mut app, doc) = fresh();
-        app.history_store = OwnerHistoryStore::recovery_disabled_for_test();
-        app.model.history.clear();
-        app.apply(
-            Action::OpenVideo("vid_donut".into()),
-            &doc,
-            &automerge::ROOT,
-        );
-        let notice = app
-            .model
-            .history_recovery_notice
-            .as_deref()
-            .expect("history recovery banner");
-        assert!(notice.contains("existing local file was preserved"));
-        assert!(!notice.contains('/'));
-        assert!(
-            app.model.history.is_empty(),
-            "failed local writes do not claim history changed"
-        );
-    }
-
-    #[test]
-    fn legacy_shared_history_is_migrated_once_without_new_shared_writes() {
-        use automerge::{ScalarValue, transaction::Transactable};
-
-        let (mut app, mut shared) = fresh();
-        app.history_store = OwnerHistoryStore::memory();
-        let tube = shared
-            .put_object(&automerge::ROOT, "tube", ObjType::Map)
-            .expect("tube map");
-        let private = shared
-            .put_object(&tube, "private_history", ObjType::Map)
-            .expect("legacy map");
-        let owner = shared
-            .put_object(&private, app.model.history_owner.as_str(), ObjType::Map)
-            .expect("owner map");
-        let entries = shared
-            .put_object(&owner, "entries", ObjType::Map)
-            .expect("entries map");
-        let legacy_id = "legacy-history-video";
-        let record = HistoryEntryRecord {
-            present: true,
-            watched_at_ms: 7,
-            mutation_id: "old-device:7".into(),
-        };
-        shared
-            .put(
-                &entries,
-                legacy_id,
-                ScalarValue::Str(serde_json::to_string(&record).expect("serializable").into()),
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                "grayjay://secret-invite".into();
+            assert!(app.apply(Action::PairDevice, &doc, &automerge::ROOT));
+            let invocation = app
+                .take_control_invocation()
+                .expect("visible Pair queues a host-routable invocation");
+            assert_eq!(invocation.address.resource, "tube.device-sync");
+            assert_eq!(invocation.address.action, "pair");
+            assert_eq!(
+                invocation.arguments.get("invite"),
+                Some(&serde_json::Value::String("grayjay://secret-invite".into()))
+            );
+            assert!(
+                app.device_sync
+                    .pairing_input
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
+                "the local field is wiped once its Secret argument is queued"
+            );
+            let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+            let spec = tilo_actions::door::resolve(&resources, &invocation.address)
+                .expect("fresh resource tree resolves Pair");
+            assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
+            assert!(!matches!(
+                spec.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            ));
+        }
+        // Case `resolution_player_setting_round_trips_into_the_model`.
+        {
+            // The resolution selector now lives ON the player; a `Chose` event it
+            // emits (drained in `sync`) must round-trip into the model's preferred
+            // quality via the production `apply_player_setting_event` path.
+            let (mut app, _) = fresh();
+            assert_eq!(app.model.settings.preferred_quality, "1080p");
+            app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
+                id: "resolution".into(),
+                index: 1,
+            });
+            assert_eq!(
+                app.model.settings.preferred_quality, "720p",
+                "picking index 1 selects 720p"
+            );
+            assert!(
+                app.structure_dirty,
+                "a resolution change rebuilds the watch tree"
+            );
+            // A different setting id is ignored (no accidental clobber).
+            app.apply_player_setting_event(ui::widget::video_player::PlayerSettingEvent::Chose {
+                id: "unrelated".into(),
+                index: 3,
+            });
+            assert_eq!(app.model.settings.preferred_quality, "720p");
+        }
+        // Case `player_fullscreen_toggle_reaches_the_root_via_the_shared_mechanism`.
+        {
+            // `TubeApp` must forward the player's fullscreen intent up to the root,
+            // since `ui::App` only polls the root widget.
+            let (mut app, _) = fresh_synth();
+            assert_eq!(
+                FullscreenProvider::fullscreen_intent(&app),
+                None,
+                "no opinion until the user acts"
+            );
+            app.player.borrow_mut().toggle_fullscreen();
+            assert_eq!(
+                FullscreenProvider::fullscreen_intent(&app),
+                Some(true),
+                "toggle reaches the root"
+            );
+            assert_eq!(
+                FullscreenProvider::fullscreen_params(&app).target,
+                ui::fullscreen::FullscreenTarget::Largest,
+                "immersive video targets the big screen"
+            );
+            // A compositor-driven exit flows back to the player through the root.
+            FullscreenProvider::on_fullscreen_changed(&mut app, false);
+            assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
+        }
+        // Case `subscribe_toggles_via_action`.
+        {
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            assert!(!app.model.is_subscribed("ch_synth"));
+            app.apply(Action::ToggleSubscribe("ch_synth".into()), &doc, &r);
+            assert!(app.model.is_subscribed("ch_synth"));
+        }
+        // Case `externally_applied_absolute_subscription_action_updates_visible_model`.
+        {
+            let (mut app, mut doc) = fresh();
+            tilo_actions::Action::apply(
+                &crate::actions::TubeAction::SetSubscription {
+                    channel_id: "ch_synth".into(),
+                    subscribed: true,
+                },
+                &mut doc,
             )
-            .expect("legacy entry");
-        let before = shared.save();
-        assert!(
-            before
-                .windows(legacy_id.len())
-                .any(|window| window == legacy_id.as_bytes())
-        );
-        assert!(app.migrate_legacy_shared_history_once(&shared));
-        assert!(app.reconcile_owner_history());
-        assert_eq!(app.model.history, vec![legacy_id]);
-        assert!(app.history_store.has_legacy_migration_marker());
-        assert!(!app.migrate_legacy_shared_history_once(&shared));
-        assert_eq!(
-            shared.save(),
-            before,
-            "migration never mutates shared history"
-        );
+            .expect("action applies");
+            Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+            assert!(
+                app.model.is_subscribed("ch_synth"),
+                "agent/replay actions must update the rendered subscription state"
+            );
+        }
+        // Case `like_toggles_and_share_copies_a_link`.
+        {
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            assert!(!app.model.is_liked("vid_donut"));
+            app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
+            assert!(
+                app.model.is_liked("vid_donut"),
+                "ToggleLike likes the video"
+            );
+            app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
+            assert!(
+                !app.model.is_liked("vid_donut"),
+                "ToggleLike again unlikes it"
+            );
+
+            app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
+            app.apply(Action::Share("vid_donut".into()), &doc, &r);
+            dispatch_control(&mut app, &doc);
+            assert!(
+                !app.model.is_liked("vid_donut"),
+                "Share must not like the video"
+            );
+            assert!(
+                app.model.notices.iter().any(|n| n.contains("vid_donut")),
+                "Share records the copied link as a notice"
+            );
+        }
+        // Case `quality_cycles`.
+        {
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            let q0 = app.model.settings.preferred_quality.clone();
+            app.apply(Action::SetQuality("720p".into()), &doc, &r);
+            assert_ne!(q0, app.model.settings.preferred_quality);
+            assert_eq!(app.model.settings.preferred_quality, "720p");
+        }
     }
 
     #[test]
-    fn subscription_and_queue_entities_survive_without_cached_metadata() {
-        let (mut app, mut doc) = fresh();
-        let unknown_channel = "channel-not-in-catalogue";
-        let unknown_video = "video-not-in-catalogue";
-        tilo_actions::Action::apply(
-            &crate::actions::TubeAction::SetSubscription {
-                channel_id: unknown_channel.into(),
-                subscribed: true,
-            },
-            &mut doc,
-        )
-        .expect("subscription applies");
-        tilo_actions::Action::apply(
-            &crate::actions::TubeAction::SetQueueMembership {
-                video_id: unknown_video.into(),
-                queued: true,
-            },
-            &mut doc,
-        )
-        .expect("queue membership applies");
-        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-        assert!(app.model.is_subscribed(unknown_channel));
-        assert!(app.model.is_queued(unknown_video));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn owner_history_stays_local_and_migrates_canonically() {
+        // Case `open_video_navigates_and_records_history`.
+        {
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
+            assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
+            assert_eq!(
+                app.model.history.first().map(std::string::String::as_str),
+                Some("vid_donut")
+            );
+            assert_eq!(app.model.playhead, 0.0);
+        }
+        // Case `pulled_device_state_is_imported_through_canonical_actions`.
+        #[cfg(feature = "grayjay-sync")]
+        {
+            let (mut app, mut doc) = fresh();
+            app.model.subscriptions.clear();
+            app.model.history.clear();
+            let settings = app.model.settings.clone();
+            let expected_autoplay = !settings.autoplay;
+            let remote = crate::sync::SyncState {
+                // This creator is intentionally not in the local catalogue: the
+                // durable URL must still make the return trip to a freshly paired
+                // desktop instead of being discarded as an unknown row.
+                subscriptions: vec!["https://youtube.com/@new-to-this-device".into()],
+                watch_history: vec!["video-not-fetched-yet".into()],
+                settings: Some(crate::model::Settings {
+                    autoplay: expected_autoplay,
+                    ..settings
+                }),
+            };
 
-        let resources = Widget::resources(&app, &doc);
-        let library = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.library")
-            .expect("library resource");
-        let subscriptions = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.subscriptions")
-            .expect("subscriptions resource");
-        assert!(
+            assert!(app.import_device_sync_state(remote, &mut doc));
+            assert!(
+                app.reconcile_collaborative_actions(&doc),
+                "the action document—not a transient model write—projects the import"
+            );
+            assert!(app.reconcile_owner_history());
+            assert!(
+                app.model
+                    .subscriptions
+                    .contains(&"https://youtube.com/@new-to-this-device".to_string())
+            );
+            assert!(
+                app.model
+                    .history
+                    .contains(&"video-not-fetched-yet".to_string())
+            );
+            assert_eq!(app.model.settings.autoplay, expected_autoplay);
+
+            let exported = crate::sync::lifecycle_state(&app.model);
+            assert!(
+                exported
+                    .subscriptions
+                    .contains(&"https://youtube.com/@new-to-this-device".to_string())
+            );
+            assert!(app.actions.last_dispatched().is_some());
+        }
+        // Case `owner_history_never_enters_a_collaborator_document`.
+        {
+            let (mut app, mut shared) = fresh();
+            app.history_store = OwnerHistoryStore::memory();
+            assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                video_id: "vid_donut".into(),
+                watched_at_ms: 1,
+                present: true,
+                mutation_id: "owner:watch:1".into(),
+            }));
+            let exported = shared.save();
+            let collaborator = AutoCommit::load(&exported).expect("shared replica reloads");
+            assert!(
+                !exported
+                    .windows(b"vid_donut".len())
+                    .any(|window| window == b"vid_donut"),
+                "shared Automerge bytes must not contain an owner video id"
+            );
+            assert!(
+                collaborator
+                    .get(&automerge::ROOT, "owner_history")
+                    .unwrap()
+                    .is_none(),
+                "a collaborator replica cannot receive an owner history root"
+            );
+            assert!(shared.get(&automerge::ROOT, "tube").unwrap().is_none());
+            assert!(
+                app.history_store
+                    .document()
+                    .get(&automerge::ROOT, "owner_history")
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        // Case `history_store_recovery_is_visible_without_exposing_a_path`.
+        {
+            let (mut app, doc) = fresh();
+            app.history_store = OwnerHistoryStore::recovery_disabled_for_test();
+            app.model.history.clear();
+            app.apply(
+                Action::OpenVideo("vid_donut".into()),
+                &doc,
+                &automerge::ROOT,
+            );
+            let notice = app
+                .model
+                .history_recovery_notice
+                .as_deref()
+                .expect("history recovery banner");
+            assert!(notice.contains("existing local file was preserved"));
+            assert!(!notice.contains('/'));
+            assert!(
+                app.model.history.is_empty(),
+                "failed local writes do not claim history changed"
+            );
+        }
+        // Case `legacy_shared_history_is_migrated_once_without_new_shared_writes`.
+        {
+            use automerge::{ScalarValue, transaction::Transactable};
+
+            let (mut app, mut shared) = fresh();
+            app.history_store = OwnerHistoryStore::memory();
+            let tube = shared
+                .put_object(&automerge::ROOT, "tube", ObjType::Map)
+                .expect("tube map");
+            let private = shared
+                .put_object(&tube, "private_history", ObjType::Map)
+                .expect("legacy map");
+            let owner = shared
+                .put_object(&private, app.model.history_owner.as_str(), ObjType::Map)
+                .expect("owner map");
+            let entries = shared
+                .put_object(&owner, "entries", ObjType::Map)
+                .expect("entries map");
+            let legacy_id = "legacy-history-video";
+            let record = HistoryEntryRecord {
+                present: true,
+                watched_at_ms: 7,
+                mutation_id: "old-device:7".into(),
+            };
+            shared
+                .put(
+                    &entries,
+                    legacy_id,
+                    ScalarValue::Str(serde_json::to_string(&record).expect("serializable").into()),
+                )
+                .expect("legacy entry");
+            let before = shared.save();
+            assert!(
+                before
+                    .windows(legacy_id.len())
+                    .any(|window| window == legacy_id.as_bytes())
+            );
+            assert!(app.migrate_legacy_shared_history_once(&shared));
+            assert!(app.reconcile_owner_history());
+            assert_eq!(app.model.history, vec![legacy_id]);
+            assert!(app.history_store.has_legacy_migration_marker());
+            assert!(!app.migrate_legacy_shared_history_once(&shared));
+            assert_eq!(
+                shared.save(),
+                before,
+                "migration never mutates shared history"
+            );
+        }
+        // Case `subscription_and_queue_entities_survive_without_cached_metadata`.
+        {
+            let (mut app, mut doc) = fresh();
+            let unknown_channel = "channel-not-in-catalogue";
+            let unknown_video = "video-not-in-catalogue";
+            tilo_actions::Action::apply(
+                &crate::actions::TubeAction::SetSubscription {
+                    channel_id: unknown_channel.into(),
+                    subscribed: true,
+                },
+                &mut doc,
+            )
+            .expect("subscription applies");
+            tilo_actions::Action::apply(
+                &crate::actions::TubeAction::SetQueueMembership {
+                    video_id: unknown_video.into(),
+                    queued: true,
+                },
+                &mut doc,
+            )
+            .expect("queue membership applies");
+            Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+            assert!(app.model.is_subscribed(unknown_channel));
+            assert!(app.model.is_queued(unknown_video));
+
+            let resources = Widget::resources(&app, &doc);
+            let library = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.library")
+                .expect("library resource");
+            let subscriptions = library
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "tube.subscriptions")
+                .expect("subscriptions resource");
+            assert!(
             subscriptions
                 .children
                 .iter()
                 .any(|resource| resource.id.0 == format!("tube.subscription:{unknown_channel}"))
         );
-        let queue = library
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "tube.queue")
-            .expect("queue resource");
-        assert!(
-            queue
+            let queue = library
                 .children
                 .iter()
-                .any(|resource| resource.id.0 == format!("tube.queue:{unknown_video}"))
-        );
+                .find(|resource| resource.id.0 == "tube.queue")
+                .expect("queue resource");
+            assert!(
+                queue
+                    .children
+                    .iter()
+                    .any(|resource| resource.id.0 == format!("tube.queue:{unknown_video}"))
+            );
+        }
+        // Case `owner_history_projects_local_actions_by_authored_order`.
+        {
+            let mut model = crate::sample::model();
+            model.history.clear();
+            let mut app = TubeApp::new().with_model_for_test(model);
+            assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                video_id: "vid_donut".into(),
+                watched_at_ms: 10,
+                present: true,
+                mutation_id: "watch:10".into(),
+            }));
+            assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                video_id: "vid_donut".into(),
+                watched_at_ms: 20,
+                present: false,
+                mutation_id: "remove:20".into(),
+            }));
+            let winner = newest_history_record(
+                [
+                    HistoryEntryRecord {
+                        present: true,
+                        watched_at_ms: 10,
+                        mutation_id: "watch:10".into(),
+                    },
+                    HistoryEntryRecord {
+                        present: false,
+                        watched_at_ms: 20,
+                        mutation_id: "remove:20".into(),
+                    },
+                ]
+                .into_iter(),
+            )
+            .expect("records have a deterministic winner");
+            assert!(!winner.present);
+            assert!(!app.reconcile_owner_history());
+            assert!(app.model.history.is_empty());
+            assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
+                video_id: "vid_donut".into(),
+                watched_at_ms: 30,
+                present: true,
+                mutation_id: "watch:30".into(),
+            }));
+            assert!(app.dispatch_history_action(OwnerHistoryAction::Clear {
+                cleared_at_ms: 25,
+                clear_id: "clear:25".into(),
+            }));
+            assert!(app.reconcile_owner_history());
+            assert_eq!(app.model.history, vec!["vid_donut"]);
+        }
     }
 
     // --- media-engine transport wiring (the real playback path) ---
 
     #[test]
-    fn resolved_stream_opens_and_plays_the_engine() {
-        // The worker's `StreamResolved` path (factored into `load_resolved_stream`)
-        // must open the rangeable URL into the shared player's media engine and
-        // start it — the exact code path the live app runs.
-        let (mut app, _doc) = fresh_synth();
-        app.model.route = Route::Watch("vid_donut".into());
-        let ok = app.load_resolved_stream(
-            "vid_donut".into(),
-            "https://inv.example/latest_version?id=vid_donut&itag=18&local=true".into(),
-            true,
-            "360p",
-        );
-        assert!(ok, "the resolved stream loaded for the open watch video");
-        assert!(
-            app.player.borrow().is_playing(),
-            "the engine is playing the stream"
-        );
-        let src = app
-            .player
-            .borrow()
-            .engine()
-            .and_then(|e| e.source().cloned());
-        match src {
-            Some(media::Source::Remote { url }) => {
-                assert!(
-                    url.contains("local=true"),
-                    "opened the rangeable proxy URL: {url}"
-                );
-            }
-            other => panic!("expected a remote source on the engine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolved_stream_for_a_different_video_is_dropped() {
-        // A late resolution for a since-closed video must not hijack the engine.
-        let (mut app, _doc) = fresh_synth();
-        app.model.route = Route::Watch("vid_donut".into());
-        let ok = app.load_resolved_stream(
-            "some_other_id".into(),
-            "https://inv.example/x?local=true".into(),
-            true,
-            "360p",
-        );
-        assert!(!ok, "a stream for a non-open video is dropped");
-        assert!(
-            app.player
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn resolved_streams_drive_the_playback_engine() {
+        // Case `resolved_stream_opens_and_plays_the_engine`.
+        {
+            // The worker's `StreamResolved` path (factored into `load_resolved_stream`)
+            // must open the rangeable URL into the shared player's media engine and
+            // start it — the exact code path the live app runs.
+            let (mut app, _doc) = fresh_synth();
+            app.model.route = Route::Watch("vid_donut".into());
+            let ok = app.load_resolved_stream(
+                "vid_donut".into(),
+                "https://inv.example/latest_version?id=vid_donut&itag=18&local=true".into(),
+                true,
+                "360p",
+            );
+            assert!(ok, "the resolved stream loaded for the open watch video");
+            assert!(
+                app.player.borrow().is_playing(),
+                "the engine is playing the stream"
+            );
+            let src = app
+                .player
                 .borrow()
                 .engine()
-                .and_then(|e| e.source())
-                .is_none()
-        );
-    }
+                .and_then(|e| e.source().cloned());
+            match src {
+                Some(media::Source::Remote { url }) => {
+                    assert!(
+                        url.contains("local=true"),
+                        "opened the rangeable proxy URL: {url}"
+                    );
+                }
+                other => panic!("expected a remote source on the engine, got {other:?}"),
+            }
+        }
+        // Case `resolved_stream_for_a_different_video_is_dropped`.
+        {
+            // A late resolution for a since-closed video must not hijack the engine.
+            let (mut app, _doc) = fresh_synth();
+            app.model.route = Route::Watch("vid_donut".into());
+            let ok = app.load_resolved_stream(
+                "some_other_id".into(),
+                "https://inv.example/x?local=true".into(),
+                true,
+                "360p",
+            );
+            assert!(!ok, "a stream for a non-open video is dropped");
+            assert!(
+                app.player
+                    .borrow()
+                    .engine()
+                    .and_then(|e| e.source())
+                    .is_none()
+            );
+        }
+        // Case `toggle_play_drives_the_engine`.
+        {
+            let (mut app, doc) = fresh_synth();
+            let r = automerge::ROOT;
+            app.model.route = Route::Watch("vid_donut".into());
+            app.load_resolved_stream(
+                "vid_donut".into(),
+                "https://inv.example/x?local=true".into(),
+                true,
+                "360p",
+            );
+            assert!(app.player.borrow().is_playing());
+            app.apply(Action::TogglePlay, &doc, &r);
+            dispatch_control(&mut app, &doc);
+            assert!(
+                !app.player.borrow().is_playing(),
+                "TogglePlay paused the engine"
+            );
+            assert!(!app.model.playing, "the model mirrors the paused engine");
+            app.apply(Action::TogglePlay, &doc, &r);
+            dispatch_control(&mut app, &doc);
+            assert!(
+                app.player.borrow().is_playing(),
+                "TogglePlay resumed the engine"
+            );
+            assert!(app.model.playing, "the model mirrors the playing engine");
+        }
+        // Case `opening_a_watch_page_arms_stream_resolution_on_open`.
+        {
+            // The resolve/buffer must start when the watch page OPENS — not on a
+            // later Play click. `ensure_playback` (run right after the open action
+            // drains, and on the boot-into-watch sync) arms it; `playing_id`
+            // latching to the opened video proves the `PlayVideo` resolve request
+            // went out, so playback is loading before any Play is pressed.
+            let (mut app, doc) = fresh_synth();
+            app.online = true; // online so `ensure_playback` actually resolves
+            let r = automerge::ROOT;
+            assert!(app.playing_id.is_none(), "nothing armed before opening");
+            app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
+            app.ensure_playback();
+            assert_eq!(
+                app.playing_id.as_deref(),
+                Some("vid_donut"),
+                "opening a watch page arms stream resolution (no Play click needed)"
+            );
+        }
+        // Case `watch_animates_while_resolving_then_idles_once_paused_and_loaded`.
+        {
+            // While the stream is still resolving (armed but no source loaded) the
+            // loop must keep pumping so `StreamResolved` folds in. Once a source is
+            // loaded and the video is PAUSED, the app must let the event loop idle
+            // rather than spin at 60fps forever — the needless busy-loop that made
+            // scrolling on a paused-but-loaded watch page feel heavy.
+            let (mut app, _doc) = fresh_synth();
+            app.online = true;
+            app.model.route = Route::Watch("vid_donut".into());
+            app.playing_id = Some("vid_donut".into());
 
-    #[test]
-    fn toggle_play_drives_the_engine() {
-        let (mut app, doc) = fresh_synth();
-        let r = automerge::ROOT;
-        app.model.route = Route::Watch("vid_donut".into());
-        app.load_resolved_stream(
-            "vid_donut".into(),
-            "https://inv.example/x?local=true".into(),
-            true,
-            "360p",
-        );
-        assert!(app.player.borrow().is_playing());
-        app.apply(Action::TogglePlay, &doc, &r);
-        dispatch_control(&mut app, &doc);
-        assert!(
-            !app.player.borrow().is_playing(),
-            "TogglePlay paused the engine"
-        );
-        assert!(!app.model.playing, "the model mirrors the paused engine");
-        app.apply(Action::TogglePlay, &doc, &r);
-        dispatch_control(&mut app, &doc);
-        assert!(
-            app.player.borrow().is_playing(),
-            "TogglePlay resumed the engine"
-        );
-        assert!(app.model.playing, "the model mirrors the playing engine");
-    }
+            // Resolving: no source loaded yet → keep pumping.
+            app.player_video = None;
+            assert!(
+                app.needs_animation_frame(),
+                "while the stream is resolving the loop keeps pumping so it folds in"
+            );
 
-    #[test]
-    fn auto_skip_seeks_the_engine_past_a_sponsor_segment() {
-        // Auto-skip runs against the real playhead and must seek the engine (not
-        // just the model). vid_rust_async has a Sponsor segment 1440..1570.
-        let (mut app, _doc) = fresh_synth();
-        app.model.route = Route::Watch("vid_rust_async".into());
-        app.load_resolved_stream(
-            "vid_rust_async".into(),
-            "https://inv.example/x?local=true".into(),
-            true,
-            "360p",
-        );
-        // Playhead inside the sponsor band.
-        app.model.playhead = 1500.0;
-        let skipped = app.apply_auto_skip();
-        assert!(skipped, "a skip happened");
-        assert!(
-            app.model.playhead >= 1570.0,
-            "model playhead jumped past the segment"
-        );
-        // The seek reached the engine (its position advanced off the start). The
-        // synthesized test engine caps its duration, so the exact target clamps —
-        // proving it moved is the honest real-path assertion.
-        let engine_pos = app
-            .player
-            .borrow()
-            .engine()
-            .map_or(0, media::MediaEngine::position_ms);
-        assert!(
-            engine_pos > 0,
-            "the auto-skip seeked the engine (pos={engine_pos})"
-        );
-        assert!(app.model.notices.iter().any(|n| n.contains("Sponsor")));
-    }
-
-    #[test]
-    fn seek_into_sponsor_auto_skips_to_segment_end() {
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        // vid_rust_async has a Sponsor segment 1440..1570.
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
-        let dur = f64::from(app.model.video("vid_rust_async").unwrap().duration);
-        // Seek to ~1500s (inside the sponsor segment).
-        app.apply(Action::Seek(1500.0 / dur), &doc, &r);
-        // Auto-skip should jump the playhead to the segment end (1570).
-        assert!(
-            app.model.playhead >= 1570.0,
-            "playhead was {}",
-            app.model.playhead
-        );
-        assert!(app.model.notices.iter().any(|l| l.contains("Sponsor")));
-    }
-
-    #[test]
-    fn autoplay_advances_to_next_when_the_video_ends() {
-        // Autoplay is on by default; seeking to the very end must advance to
-        // the first "up next" recommendation — the real code path that
-        // consumes the autoplay flag.
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        assert!(app.model.settings.autoplay, "autoplay defaults on");
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
-        app.apply(Action::Seek(1.0), &doc, &r);
-        match app.route_for_test() {
-            Route::Watch(id) => assert_ne!(
-                id, "vid_rust_async",
-                "autoplay advanced to a different video"
-            ),
-            other => panic!("expected a watch route, got {other:?}"),
+            // Loaded + paused → the loop may idle (the paused player asks for none).
+            let ok = app.load_resolved_stream(
+                "vid_donut".into(),
+                "https://inv.example/x?local=true".into(),
+                true,
+                "360p",
+            );
+            assert!(
+                ok && app.player_video.as_deref() == Some("vid_donut"),
+                "source loaded"
+            );
+            app.player.borrow_mut().pause();
+            app.model.playing = false;
+            assert!(!app.player.borrow().is_playing(), "precondition: paused");
+            assert!(
+                !app.needs_animation_frame(),
+                "a paused, loaded watch page lets the event loop idle"
+            );
         }
     }
 
     #[test]
-    fn autoplay_off_parks_at_the_end_without_advancing() {
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &doc, &r);
-        assert!(!app.model.settings.autoplay);
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
-        app.apply(Action::Seek(1.0), &doc, &r);
-        assert_eq!(
-            app.route_for_test(),
-            &Route::Watch("vid_rust_async".into()),
-            "with autoplay off, reaching the end stays on the same video"
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn sponsor_segments_and_autoplay_steer_the_engine() {
+        // Case `auto_skip_seeks_the_engine_past_a_sponsor_segment`.
+        {
+            // Auto-skip runs against the real playhead and must seek the engine (not
+            // just the model). vid_rust_async has a Sponsor segment 1440..1570.
+            let (mut app, _doc) = fresh_synth();
+            app.model.route = Route::Watch("vid_rust_async".into());
+            app.load_resolved_stream(
+                "vid_rust_async".into(),
+                "https://inv.example/x?local=true".into(),
+                true,
+                "360p",
+            );
+            // Playhead inside the sponsor band.
+            app.model.playhead = 1500.0;
+            let skipped = app.apply_auto_skip();
+            assert!(skipped, "a skip happened");
+            assert!(
+                app.model.playhead >= 1570.0,
+                "model playhead jumped past the segment"
+            );
+            // The seek reached the engine (its position advanced off the start). The
+            // synthesized test engine caps its duration, so the exact target clamps —
+            // proving it moved is the honest real-path assertion.
+            let engine_pos = app
+                .player
+                .borrow()
+                .engine()
+                .map_or(0, media::MediaEngine::position_ms);
+            assert!(
+                engine_pos > 0,
+                "the auto-skip seeked the engine (pos={engine_pos})"
+            );
+            assert!(app.model.notices.iter().any(|n| n.contains("Sponsor")));
+        }
+        // Case `seek_into_sponsor_auto_skips_to_segment_end`.
+        {
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            // vid_rust_async has a Sponsor segment 1440..1570.
+            app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+            let dur = f64::from(app.model.video("vid_rust_async").unwrap().duration);
+            // Seek to ~1500s (inside the sponsor segment).
+            app.apply(Action::Seek(1500.0 / dur), &doc, &r);
+            // Auto-skip should jump the playhead to the segment end (1570).
+            assert!(
+                app.model.playhead >= 1570.0,
+                "playhead was {}",
+                app.model.playhead
+            );
+            assert!(app.model.notices.iter().any(|l| l.contains("Sponsor")));
+        }
+        // Case `autoplay_advances_to_next_when_the_video_ends`.
+        {
+            // Autoplay is on by default; seeking to the very end must advance to
+            // the first "up next" recommendation — the real code path that
+            // consumes the autoplay flag.
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            assert!(app.model.settings.autoplay, "autoplay defaults on");
+            app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+            app.apply(Action::Seek(1.0), &doc, &r);
+            match app.route_for_test() {
+                Route::Watch(id) => assert_ne!(
+                    id, "vid_rust_async",
+                    "autoplay advanced to a different video"
+                ),
+                other => panic!("expected a watch route, got {other:?}"),
+            }
+        }
+        // Case `autoplay_off_parks_at_the_end_without_advancing`.
+        {
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &doc, &r);
+            assert!(!app.model.settings.autoplay);
+            app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+            app.apply(Action::Seek(1.0), &doc, &r);
+            assert_eq!(
+                app.route_for_test(),
+                &Route::Watch("vid_rust_async".into()),
+                "with autoplay off, reaching the end stays on the same video"
+            );
+        }
+        // Case `cycling_category_walks_the_three_modes`.
+        {
+            use crate::model::SkipMode;
+            let (mut app, doc) = fresh();
+            let r = automerge::ROOT;
+            assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
+            app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
+            assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
+            app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
+            assert_eq!(
+                app.model.settings.mode_of(Category::Intro),
+                SkipMode::Disabled
+            );
+            app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
+            assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
+        }
+        // Case `show_mode_segment_does_not_auto_skip_but_manual_skip_seeks`.
+        {
+            use crate::model::SkipMode;
+            let (mut app, _doc) = fresh_synth();
+            app.model.route = Route::Watch("vid_rust_async".into());
+            app.load_resolved_stream(
+                "vid_rust_async".into(),
+                "https://inv.example/x?local=true".into(),
+                true,
+                "360p",
+            );
+            // Put the Sponsor category into Show mode, then park inside its segment.
+            app.model
+                .settings
+                .categories
+                .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
+            app.model.playhead = 1500.0;
+            assert!(!app.apply_auto_skip(), "Show mode must NOT auto-skip");
+            assert_eq!(
+                app.model.playhead, 1500.0,
+                "playhead untouched by auto-skip"
+            );
+            // The manual skip button jumps to the segment end.
+            let doc = AutoCommit::new();
+            let r = automerge::ROOT;
+            app.apply(Action::SkipSegment(1570.0), &doc, &r);
+            assert!(
+                app.model.playhead >= 1570.0,
+                "manual skip advanced the playhead"
+            );
+        }
+        // Case `show_mode_segment_drives_the_in_video_skip_overlay`.
+        {
+            use crate::model::{Category, SkipMode};
+            // The on-video "Skip" overlay is settings-driven: it appears only for a
+            // Show-mode segment the playhead is inside, never for Auto-skip (which
+            // jumps on its own) or Off, and never when SponsorBlock is disabled.
+            let (mut app, _doc) = fresh();
+            app.model.route = Route::Watch("vid_rust_async".into()); // Sponsor 1440..1570
+            let key = Category::Sponsor.api_key().to_string();
+
+            app.model
+                .settings
+                .categories
+                .insert(key.clone(), SkipMode::Skip);
+            app.model.playhead = 1500.0;
+            assert_eq!(
+                app.current_show_skip_end(),
+                None,
+                "auto-skip shows no manual overlay"
+            );
+
+            app.model.settings.categories.insert(key, SkipMode::Show);
+            assert_eq!(
+                app.current_show_skip_end(),
+                Some(1570.0),
+                "show-mode offers a Skip to the end"
+            );
+
+            app.model.playhead = 100.0;
+            assert_eq!(
+                app.current_show_skip_end(),
+                None,
+                "no overlay outside the segment"
+            );
+
+            app.model.playhead = 1500.0;
+            app.model.settings.sponsorblock_enabled = false;
+            assert_eq!(
+                app.current_show_skip_end(),
+                None,
+                "master off suppresses the overlay"
+            );
+        }
     }
 
     #[test]
-    fn like_toggles_and_share_copies_a_link() {
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        assert!(!app.model.is_liked("vid_donut"));
-        app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
-        assert!(
-            app.model.is_liked("vid_donut"),
-            "ToggleLike likes the video"
-        );
-        app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
-        assert!(
-            !app.model.is_liked("vid_donut"),
-            "ToggleLike again unlikes it"
-        );
+    fn settings_and_queries_keep_shared_and_local_state_apart() {
+        // Case `collaborative_settings_reconcile_without_serializing_device_ui_state`.
+        {
+            let (mut app, mut doc) = fresh();
+            app.model.route = Route::Watch("vid_donut".into());
+            app.model.playhead = 42.0;
+            tilo_actions::Action::apply(
+                &crate::actions::TubeAction::SetSetting {
+                    setting: SettingFlag::DeArrow,
+                    enabled: false,
+                },
+                &mut doc,
+            )
+            .expect("structured setting action applies");
+            Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+            assert!(!app.model.settings.dearrow_enabled);
+            assert!(
+                doc.get(&automerge::ROOT, "tube_state")
+                    .expect("document read")
+                    .is_none(),
+                "route, playback and fetched catalogue are never mirrored into collaboration"
+            );
+        }
+        // Case `search_and_palette_queries_stay_local_to_each_tube_instance`.
+        {
+            use automerge::transaction::Transactable;
 
-        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
-        app.apply(Action::Share("vid_donut".into()), &doc, &r);
-        dispatch_control(&mut app, &doc);
-        assert!(
-            !app.model.is_liked("vid_donut"),
-            "Share must not like the video"
-        );
-        assert!(
-            app.model.notices.iter().any(|n| n.contains("vid_donut")),
-            "Share records the copied link as a notice"
-        );
-    }
+            let (mut first, mut doc) = fresh();
+            first.search_query.set("rust async".into());
+            first.palette_query.set("compositor".into());
+            first.model.palette_open = true;
+            Widget::sync(&mut first, &mut doc, &automerge::ROOT);
 
-    #[test]
-    fn cycling_category_walks_the_three_modes() {
-        use crate::model::SkipMode;
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
-        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
-        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
-        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
-        assert_eq!(
-            app.model.settings.mode_of(Category::Intro),
-            SkipMode::Disabled
-        );
-        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
-        assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
-    }
+            assert_eq!(first.model.palette_query, "compositor");
+            assert!(
+                doc.get(&automerge::ROOT, "search_query")
+                    .expect("document read")
+                    .is_none()
+            );
+            assert!(
+                doc.get(&automerge::ROOT, "palette_query")
+                    .expect("document read")
+                    .is_none()
+            );
 
-    #[test]
-    fn show_mode_segment_does_not_auto_skip_but_manual_skip_seeks() {
-        use crate::model::SkipMode;
-        let (mut app, _doc) = fresh_synth();
-        app.model.route = Route::Watch("vid_rust_async".into());
-        app.load_resolved_stream(
-            "vid_rust_async".into(),
-            "https://inv.example/x?local=true".into(),
-            true,
-            "360p",
-        );
-        // Put the Sponsor category into Show mode, then park inside its segment.
-        app.model
-            .settings
-            .categories
-            .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
-        app.model.playhead = 1500.0;
-        assert!(!app.apply_auto_skip(), "Show mode must NOT auto-skip");
-        assert_eq!(
-            app.model.playhead, 1500.0,
-            "playhead untouched by auto-skip"
-        );
-        // The manual skip button jumps to the segment end.
-        let doc = AutoCommit::new();
-        let r = automerge::ROOT;
-        app.apply(Action::SkipSegment(1570.0), &doc, &r);
-        assert!(
-            app.model.playhead >= 1570.0,
-            "manual skip advanced the playhead"
-        );
-    }
+            let mut second = TubeApp::new();
+            Widget::sync(&mut second, &mut doc, &automerge::ROOT);
+            assert!(second.search_query.get().is_empty());
+            assert!(second.palette_query.get().is_empty());
+            assert!(second.model.palette_query.is_empty());
+            assert_eq!(first.search_query.get(), "rust async");
+            assert_eq!(first.palette_query.get(), "compositor");
 
-    #[test]
-    fn collaborative_settings_reconcile_without_serializing_device_ui_state() {
-        let (mut app, mut doc) = fresh();
-        app.model.route = Route::Watch("vid_donut".into());
-        app.model.playhead = 42.0;
-        tilo_actions::Action::apply(
-            &crate::actions::TubeAction::SetSetting {
-                setting: SettingFlag::DeArrow,
-                enabled: false,
-            },
-            &mut doc,
-        )
-        .expect("structured setting action applies");
-        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-        assert!(!app.model.settings.dearrow_enabled);
-        assert!(
-            doc.get(&automerge::ROOT, "tube_state")
-                .expect("document read")
-                .is_none(),
-            "route, playback and fetched catalogue are never mirrored into collaboration"
-        );
-    }
-
-    #[test]
-    fn search_and_palette_queries_stay_local_to_each_tube_instance() {
-        use automerge::transaction::Transactable;
-
-        let (mut first, mut doc) = fresh();
-        first.search_query.set("rust async".into());
-        first.palette_query.set("compositor".into());
-        first.model.palette_open = true;
-        Widget::sync(&mut first, &mut doc, &automerge::ROOT);
-
-        assert_eq!(first.model.palette_query, "compositor");
-        assert!(
-            doc.get(&automerge::ROOT, "search_query")
-                .expect("document read")
-                .is_none()
-        );
-        assert!(
-            doc.get(&automerge::ROOT, "palette_query")
-                .expect("document read")
-                .is_none()
-        );
-
-        let mut second = TubeApp::new();
-        Widget::sync(&mut second, &mut doc, &automerge::ROOT);
-        assert!(second.search_query.get().is_empty());
-        assert!(second.palette_query.get().is_empty());
-        assert!(second.model.palette_query.is_empty());
-        assert_eq!(first.search_query.get(), "rust async");
-        assert_eq!(first.palette_query.get(), "compositor");
-
-        // Legacy documents may still contain the old keys. A new app must not
-        // adopt either value merely because a collaborator's older client
-        // emitted it.
-        let mut legacy_doc = AutoCommit::new();
-        legacy_doc
-            .put(&automerge::ROOT, "search_query", "remote query")
-            .expect("legacy search seed");
-        legacy_doc
-            .put(&automerge::ROOT, "palette_query", "remote palette")
-            .expect("legacy palette seed");
-        let mut third = TubeApp::new();
-        Widget::sync(&mut third, &mut legacy_doc, &automerge::ROOT);
-        assert!(third.search_query.get().is_empty());
-        assert!(third.palette_query.get().is_empty());
-    }
-
-    #[test]
-    fn quality_cycles() {
-        let (mut app, doc) = fresh();
-        let r = automerge::ROOT;
-        let q0 = app.model.settings.preferred_quality.clone();
-        app.apply(Action::SetQuality("720p".into()), &doc, &r);
-        assert_ne!(q0, app.model.settings.preferred_quality);
-        assert_eq!(app.model.settings.preferred_quality, "720p");
+            // Legacy documents may still contain the old keys. A new app must not
+            // adopt either value merely because a collaborator's older client
+            // emitted it.
+            let mut legacy_doc = AutoCommit::new();
+            legacy_doc
+                .put(&automerge::ROOT, "search_query", "remote query")
+                .expect("legacy search seed");
+            legacy_doc
+                .put(&automerge::ROOT, "palette_query", "remote palette")
+                .expect("legacy palette seed");
+            let mut third = TubeApp::new();
+            Widget::sync(&mut third, &mut legacy_doc, &automerge::ROOT);
+            assert!(third.search_query.get().is_empty());
+            assert!(third.palette_query.get().is_empty());
+        }
     }
 
     // --- responsive navigation rail ---
@@ -3827,390 +3989,232 @@ mod tests {
     }
 
     #[test]
-    fn rail_is_docked_wide_and_overlay_narrow() {
-        assert!(
-            !at_width(1280.0).nav_is_overlay(),
-            "wide window docks the rail"
-        );
-        assert!(
-            !at_width(NAV_BREAKPOINT).nav_is_overlay(),
-            "breakpoint is inclusive → docked"
-        );
-        assert!(
-            at_width(NAV_BREAKPOINT - 1.0).nav_is_overlay(),
-            "below breakpoint overlays the rail"
-        );
-    }
-
-    #[test]
-    fn fresh_unknown_width_defaults_closed() {
-        // Before the first laid-out frame the width is unknown (rect ZERO).
-        // The rail must NOT assume the wide/docked layout and flash open over
-        // the content — it defaults to the overlay resolution (closed).
-        let app = TubeApp::new();
-        assert_eq!(
-            app.rect.width(),
-            0.0,
-            "a fresh app has no measured width yet"
-        );
-        assert!(
-            app.nav_is_overlay(),
-            "unknown width resolves to overlay, not docked"
-        );
-        assert!(
-            !app.sidebar_currently_open(),
-            "with the width unknown the rail defaults closed (never assume wide)"
-        );
-    }
-
-    #[test]
-    fn shot_viewport_seeds_layout_before_first_frame() {
-        // The `--shots` viewport hint lets the single offscreen frame resolve
-        // the layout from the true width up front: wide docks + opens, narrow
-        // overlays + closes.
-        assert!(
-            TubeApp::new()
-                .with_viewport(1280.0, 720.0)
-                .sidebar_currently_open(),
-            "a wide shot viewport docks and opens the rail"
-        );
-        assert!(
-            !TubeApp::new()
-                .with_viewport(560.0, 720.0)
-                .sidebar_currently_open(),
-            "a narrow shot viewport overlays and closes the rail"
-        );
-    }
-
-    #[test]
-    fn route_shot_seeds_the_navigation_authority_with_the_visible_route() {
-        let app = TubeApp::new().with_route_shot(Route::Search("rust".into()));
-        assert!(matches!(&app.model.route, Route::Search(query) if query == "rust"));
-        assert!(matches!(app.nav.current(), Route::Search(query) if query == "rust"));
-        assert!(
-            !app.can_go_back_for_test(),
-            "a direct screenshot route has no fabricated prior destination"
-        );
-    }
-
-    #[test]
-    fn rail_default_open_when_docked_closed_when_overlay() {
-        assert!(
-            at_width(1280.0).sidebar_currently_open(),
-            "docked rail shows by default"
-        );
-        assert!(
-            !at_width(560.0).sidebar_currently_open(),
-            "overlay rail hides by default"
-        );
-    }
-
-    #[test]
-    fn toggle_summons_overlay_rail() {
-        let (mut app, doc) = (at_width(560.0), AutoCommit::new());
-        let r = automerge::ROOT;
-        assert!(!app.sidebar_currently_open(), "narrow rail starts closed");
-        app.apply(Action::ToggleSidebar, &doc, &r);
-        assert!(
-            app.sidebar_currently_open(),
-            "hamburger summons the overlay rail"
-        );
-        app.apply(Action::ToggleSidebar, &doc, &r);
-        assert!(
-            !app.sidebar_currently_open(),
-            "a second toggle dismisses it"
-        );
-    }
-
-    #[test]
-    fn selecting_a_destination_dismisses_overlay_rail() {
-        let (mut app, doc) = (at_width(560.0), AutoCommit::new());
-        let r = automerge::ROOT;
-        app.apply(Action::ToggleSidebar, &doc, &r); // open it
-        assert!(app.sidebar_currently_open());
-        app.apply(Action::Navigate(Route::Trending), &doc, &r);
-        assert!(
-            !app.sidebar_currently_open(),
-            "navigating closes the overlay flap"
-        );
-    }
-
-    #[test]
-    fn docked_rail_is_not_dismissed_on_navigation() {
-        let (mut app, doc) = (at_width(1280.0), AutoCommit::new());
-        let r = automerge::ROOT;
-        app.apply(Action::Navigate(Route::History), &doc, &r);
-        assert!(
-            app.sidebar_currently_open(),
-            "the docked rail stays put when navigating"
-        );
+    fn navigation_rail_docks_wide_and_overlays_narrow() {
+        // Case `rail_is_docked_wide_and_overlay_narrow`.
+        {
+            assert!(
+                !at_width(1280.0).nav_is_overlay(),
+                "wide window docks the rail"
+            );
+            assert!(
+                !at_width(NAV_BREAKPOINT).nav_is_overlay(),
+                "breakpoint is inclusive → docked"
+            );
+            assert!(
+                at_width(NAV_BREAKPOINT - 1.0).nav_is_overlay(),
+                "below breakpoint overlays the rail"
+            );
+        }
+        // Case `fresh_unknown_width_defaults_closed`.
+        {
+            // Before the first laid-out frame the width is unknown (rect ZERO).
+            // The rail must NOT assume the wide/docked layout and flash open over
+            // the content — it defaults to the overlay resolution (closed).
+            let app = TubeApp::new();
+            assert_eq!(
+                app.rect.width(),
+                0.0,
+                "a fresh app has no measured width yet"
+            );
+            assert!(
+                app.nav_is_overlay(),
+                "unknown width resolves to overlay, not docked"
+            );
+            assert!(
+                !app.sidebar_currently_open(),
+                "with the width unknown the rail defaults closed (never assume wide)"
+            );
+        }
+        // Case `shot_viewport_seeds_layout_before_first_frame`.
+        {
+            // The `--shots` viewport hint lets the single offscreen frame resolve
+            // the layout from the true width up front: wide docks + opens, narrow
+            // overlays + closes.
+            assert!(
+                TubeApp::new()
+                    .with_viewport(1280.0, 720.0)
+                    .sidebar_currently_open(),
+                "a wide shot viewport docks and opens the rail"
+            );
+            assert!(
+                !TubeApp::new()
+                    .with_viewport(560.0, 720.0)
+                    .sidebar_currently_open(),
+                "a narrow shot viewport overlays and closes the rail"
+            );
+        }
+        // Case `route_shot_seeds_the_navigation_authority_with_the_visible_route`.
+        {
+            let app = TubeApp::new().with_route_shot(Route::Search("rust".into()));
+            assert!(matches!(&app.model.route, Route::Search(query) if query == "rust"));
+            assert!(matches!(app.nav.current(), Route::Search(query) if query == "rust"));
+            assert!(
+                !app.can_go_back_for_test(),
+                "a direct screenshot route has no fabricated prior destination"
+            );
+        }
+        // Case `rail_default_open_when_docked_closed_when_overlay`.
+        {
+            assert!(
+                at_width(1280.0).sidebar_currently_open(),
+                "docked rail shows by default"
+            );
+            assert!(
+                !at_width(560.0).sidebar_currently_open(),
+                "overlay rail hides by default"
+            );
+        }
+        // Case `toggle_summons_overlay_rail`.
+        {
+            let (mut app, doc) = (at_width(560.0), AutoCommit::new());
+            let r = automerge::ROOT;
+            assert!(!app.sidebar_currently_open(), "narrow rail starts closed");
+            app.apply(Action::ToggleSidebar, &doc, &r);
+            assert!(
+                app.sidebar_currently_open(),
+                "hamburger summons the overlay rail"
+            );
+            app.apply(Action::ToggleSidebar, &doc, &r);
+            assert!(
+                !app.sidebar_currently_open(),
+                "a second toggle dismisses it"
+            );
+        }
+        // Case `selecting_a_destination_dismisses_overlay_rail`.
+        {
+            let (mut app, doc) = (at_width(560.0), AutoCommit::new());
+            let r = automerge::ROOT;
+            app.apply(Action::ToggleSidebar, &doc, &r); // open it
+            assert!(app.sidebar_currently_open());
+            app.apply(Action::Navigate(Route::Trending), &doc, &r);
+            assert!(
+                !app.sidebar_currently_open(),
+                "navigating closes the overlay flap"
+            );
+        }
+        // Case `docked_rail_is_not_dismissed_on_navigation`.
+        {
+            let (mut app, doc) = (at_width(1280.0), AutoCommit::new());
+            let r = automerge::ROOT;
+            app.apply(Action::Navigate(Route::History), &doc, &r);
+            assert!(
+                app.sidebar_currently_open(),
+                "the docked rail stays put when navigating"
+            );
+        }
     }
 
     // --- no fabricated content + loading states ---
 
     #[test]
-    fn online_starts_empty_with_no_fabricated_sample() {
-        // The real (online) app must NOT present the bundled sample catalogue as
-        // if it were real data — it starts empty and shows a loading skeleton.
-        let app = TubeApp::new().online();
-        assert!(
-            app.model.videos.is_empty(),
-            "online start must seed no sample videos"
-        );
-        assert!(
-            app.model.channels.is_empty(),
-            "online start must seed no sample channels"
-        );
-        assert!(app.model.subscriptions.is_empty());
-        assert!(
-            app.model.feed_loading,
-            "cold Home shows a loading skeleton, not a blank page"
-        );
-    }
+    fn online_catalogue_starts_empty_and_tracks_requests() {
+        // Case `online_starts_empty_with_no_fabricated_sample`.
+        {
+            // The real (online) app must NOT present the bundled sample catalogue as
+            // if it were real data — it starts empty and shows a loading skeleton.
+            let app = TubeApp::new().online();
+            assert!(
+                app.model.videos.is_empty(),
+                "online start must seed no sample videos"
+            );
+            assert!(
+                app.model.channels.is_empty(),
+                "online start must seed no sample channels"
+            );
+            assert!(app.model.subscriptions.is_empty());
+            assert!(
+                app.model.feed_loading,
+                "cold Home shows a loading skeleton, not a blank page"
+            );
+        }
+        // Case `rejected_newest_request_clears_loading_and_explains_retry`.
+        {
+            let mut app = TubeApp::empty();
+            app.model.search_query = "rust".into();
+            app.model.search_loading = true;
+            app.request_rejected(&Request::Search {
+                query: "rust".into(),
+            });
+            assert!(!app.model.search_loading, "do not leave a stuck skeleton");
+            assert!(
+                app.model
+                    .search_error
+                    .as_deref()
+                    .is_some_and(|message| message.contains("try again"))
+            );
 
-    #[test]
-    fn rejected_newest_request_clears_loading_and_explains_retry() {
-        let mut app = TubeApp::empty();
-        app.model.search_query = "rust".into();
-        app.model.search_loading = true;
-        app.request_rejected(&Request::Search {
-            query: "rust".into(),
-        });
-        assert!(!app.model.search_loading, "do not leave a stuck skeleton");
-        assert!(
-            app.model
-                .search_error
-                .as_deref()
-                .is_some_and(|message| message.contains("try again"))
-        );
+            app.model.feed_loading = true;
+            app.request_rejected(&Request::Feed);
+            assert!(!app.model.feed_loading, "do not leave Home loading forever");
+            assert!(
+                app.model
+                    .feed_error
+                    .as_deref()
+                    .is_some_and(|message| message.contains("try again"))
+            );
+        }
+        // Case `submitting_a_search_enters_the_loading_state`.
+        {
+            // A live search in flight shows a skeleton (search_loading) rather than a
+            // premature "No results".
+            let mut app = TubeApp::new();
+            app.online = true; // online without spawning the image store's threads
+            let doc = AutoCommit::new();
+            let r = automerge::ROOT;
+            app.search_query.set("rust".into());
+            assert!(!app.model.search_loading);
+            app.apply(Action::SubmitSearch, &doc, &r);
+            assert!(
+                app.model.search_loading,
+                "an in-flight search must show the skeleton"
+            );
+            assert!(matches!(&app.model.route, Route::Search(q) if q == "rust"));
+        }
+        // Case `channel_stub_qualifies_for_an_uploader_fetch`.
+        {
+            // The watch page's creator avatar + subscriber count come from a channel
+            // fetch kicked off when we only hold a name stub. Prove the gate: a bare
+            // `ensure_channel_stub` record has no avatar and 0 subscribers (so it
+            // qualifies), while a fetched channel would not.
+            let mut m = crate::model::TubeModel::default();
+            m.ensure_channel_stub("c1", "Chan");
+            let stub = m.channel("c1").expect("stub inserted");
+            assert!(
+                stub.avatar_url.is_empty() && stub.subscribers == 0,
+                "a name stub must be recognised as needing an avatar/subs fetch",
+            );
+        }
+        // Case `image_loads_do_not_force_a_structural_rebuild`.
+        {
+            // Thumbnails / avatars / banners resolve their decoded image LAZILY in
+            // their own `sync` and repaint via `needs_redraw` when it lands, so an
+            // in-flight image load must NOT make the app report a structural
+            // rebuild (a whole-tree rebuild + layout re-solve on every one of
+            // ~160 image completions would make the grids churn).
+            use std::sync::Arc;
+            use std::time::Duration;
+            // A fetcher that blocks briefly so a load is deterministically in
+            // flight (pending ≥ 1) when we poll.
+            let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
+                std::thread::sleep(Duration::from_millis(200));
+                None
+            });
+            let store = ui::ImageStore::new(&fetcher);
+            let _ = store.get("http://x/a.png");
+            assert!(store.pending() >= 1, "a load is in flight");
 
-        app.model.feed_loading = true;
-        app.request_rejected(&Request::Feed);
-        assert!(!app.model.feed_loading, "do not leave Home loading forever");
-        assert!(
-            app.model
-                .feed_error
-                .as_deref()
-                .is_some_and(|message| message.contains("try again"))
-        );
-    }
-
-    #[test]
-    fn submitting_a_search_enters_the_loading_state() {
-        // A live search in flight shows a skeleton (search_loading) rather than a
-        // premature "No results".
-        let mut app = TubeApp::new();
-        app.online = true; // online without spawning the image store's threads
-        let doc = AutoCommit::new();
-        let r = automerge::ROOT;
-        app.search_query.set("rust".into());
-        assert!(!app.model.search_loading);
-        app.apply(Action::SubmitSearch, &doc, &r);
-        assert!(
-            app.model.search_loading,
-            "an in-flight search must show the skeleton"
-        );
-        assert!(matches!(&app.model.route, Route::Search(q) if q == "rust"));
-    }
-
-    #[test]
-    fn show_mode_segment_drives_the_in_video_skip_overlay() {
-        use crate::model::{Category, SkipMode};
-        // The on-video "Skip" overlay is settings-driven: it appears only for a
-        // Show-mode segment the playhead is inside, never for Auto-skip (which
-        // jumps on its own) or Off, and never when SponsorBlock is disabled.
-        let (mut app, _doc) = fresh();
-        app.model.route = Route::Watch("vid_rust_async".into()); // Sponsor 1440..1570
-        let key = Category::Sponsor.api_key().to_string();
-
-        app.model
-            .settings
-            .categories
-            .insert(key.clone(), SkipMode::Skip);
-        app.model.playhead = 1500.0;
-        assert_eq!(
-            app.current_show_skip_end(),
-            None,
-            "auto-skip shows no manual overlay"
-        );
-
-        app.model.settings.categories.insert(key, SkipMode::Show);
-        assert_eq!(
-            app.current_show_skip_end(),
-            Some(1570.0),
-            "show-mode offers a Skip to the end"
-        );
-
-        app.model.playhead = 100.0;
-        assert_eq!(
-            app.current_show_skip_end(),
-            None,
-            "no overlay outside the segment"
-        );
-
-        app.model.playhead = 1500.0;
-        app.model.settings.sponsorblock_enabled = false;
-        assert_eq!(
-            app.current_show_skip_end(),
-            None,
-            "master off suppresses the overlay"
-        );
-    }
-
-    #[test]
-    fn channel_stub_qualifies_for_an_uploader_fetch() {
-        // The watch page's creator avatar + subscriber count come from a channel
-        // fetch kicked off when we only hold a name stub. Prove the gate: a bare
-        // `ensure_channel_stub` record has no avatar and 0 subscribers (so it
-        // qualifies), while a fetched channel would not.
-        let mut m = crate::model::TubeModel::default();
-        m.ensure_channel_stub("c1", "Chan");
-        let stub = m.channel("c1").expect("stub inserted");
-        assert!(
-            stub.avatar_url.is_empty() && stub.subscribers == 0,
-            "a name stub must be recognised as needing an avatar/subs fetch",
-        );
-    }
-
-    #[test]
-    fn image_loads_do_not_force_a_structural_rebuild() {
-        // Thumbnails / avatars / banners resolve their decoded image LAZILY in
-        // their own `sync` and repaint via `needs_redraw` when it lands, so an
-        // in-flight image load must NOT make the app report a structural
-        // rebuild (a whole-tree rebuild + layout re-solve on every one of
-        // ~160 image completions would make the grids churn).
-        use std::sync::Arc;
-        use std::time::Duration;
-        // A fetcher that blocks briefly so a load is deterministically in
-        // flight (pending ≥ 1) when we poll.
-        let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
-            std::thread::sleep(Duration::from_millis(200));
-            None
-        });
-        let store = ui::ImageStore::new(&fetcher);
-        let _ = store.get("http://x/a.png");
-        assert!(store.pending() >= 1, "a load is in flight");
-
-        let mut app = TubeApp::new().with_image_store(store);
-        // This test isolates image completion from an actual user's durable
-        // owner history, which is legitimately projected during first sync.
-        app.history_store = OwnerHistoryStore::memory();
-        let mut doc = AutoCommit::new();
-        let r = automerge::ROOT;
-        app.sync(&mut doc, &r);
-        assert!(
-            !Widget::take_structure_dirty(&mut app),
-            "an in-flight image load must NOT queue a whole-tree rebuild — images \
+            let mut app = TubeApp::new().with_image_store(store);
+            // This test isolates image completion from an actual user's durable
+            // owner history, which is legitimately projected during first sync.
+            app.history_store = OwnerHistoryStore::memory();
+            let mut doc = AutoCommit::new();
+            let r = automerge::ROOT;
+            app.sync(&mut doc, &r);
+            assert!(
+                !Widget::take_structure_dirty(&mut app),
+                "an in-flight image load must NOT queue a whole-tree rebuild — images \
              fold in lazily via sync + redraw, not via a structural rebuild",
-        );
-    }
-
-    #[test]
-    fn opening_a_watch_page_arms_stream_resolution_on_open() {
-        // The resolve/buffer must start when the watch page OPENS — not on a
-        // later Play click. `ensure_playback` (run right after the open action
-        // drains, and on the boot-into-watch sync) arms it; `playing_id`
-        // latching to the opened video proves the `PlayVideo` resolve request
-        // went out, so playback is loading before any Play is pressed.
-        let (mut app, doc) = fresh_synth();
-        app.online = true; // online so `ensure_playback` actually resolves
-        let r = automerge::ROOT;
-        assert!(app.playing_id.is_none(), "nothing armed before opening");
-        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
-        app.ensure_playback();
-        assert_eq!(
-            app.playing_id.as_deref(),
-            Some("vid_donut"),
-            "opening a watch page arms stream resolution (no Play click needed)"
-        );
-    }
-
-    #[test]
-    fn owner_history_projects_local_actions_by_authored_order() {
-        let mut model = crate::sample::model();
-        model.history.clear();
-        let mut app = TubeApp::new().with_model_for_test(model);
-        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
-            video_id: "vid_donut".into(),
-            watched_at_ms: 10,
-            present: true,
-            mutation_id: "watch:10".into(),
-        }));
-        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
-            video_id: "vid_donut".into(),
-            watched_at_ms: 20,
-            present: false,
-            mutation_id: "remove:20".into(),
-        }));
-        let winner = newest_history_record(
-            [
-                HistoryEntryRecord {
-                    present: true,
-                    watched_at_ms: 10,
-                    mutation_id: "watch:10".into(),
-                },
-                HistoryEntryRecord {
-                    present: false,
-                    watched_at_ms: 20,
-                    mutation_id: "remove:20".into(),
-                },
-            ]
-            .into_iter(),
-        )
-        .expect("records have a deterministic winner");
-        assert!(!winner.present);
-        assert!(!app.reconcile_owner_history());
-        assert!(app.model.history.is_empty());
-        assert!(app.dispatch_history_action(OwnerHistoryAction::SetEntry {
-            video_id: "vid_donut".into(),
-            watched_at_ms: 30,
-            present: true,
-            mutation_id: "watch:30".into(),
-        }));
-        assert!(app.dispatch_history_action(OwnerHistoryAction::Clear {
-            cleared_at_ms: 25,
-            clear_id: "clear:25".into(),
-        }));
-        assert!(app.reconcile_owner_history());
-        assert_eq!(app.model.history, vec!["vid_donut"]);
-    }
-
-    #[test]
-    fn watch_animates_while_resolving_then_idles_once_paused_and_loaded() {
-        // While the stream is still resolving (armed but no source loaded) the
-        // loop must keep pumping so `StreamResolved` folds in. Once a source is
-        // loaded and the video is PAUSED, the app must let the event loop idle
-        // rather than spin at 60fps forever — the needless busy-loop that made
-        // scrolling on a paused-but-loaded watch page feel heavy.
-        let (mut app, _doc) = fresh_synth();
-        app.online = true;
-        app.model.route = Route::Watch("vid_donut".into());
-        app.playing_id = Some("vid_donut".into());
-
-        // Resolving: no source loaded yet → keep pumping.
-        app.player_video = None;
-        assert!(
-            app.needs_animation_frame(),
-            "while the stream is resolving the loop keeps pumping so it folds in"
-        );
-
-        // Loaded + paused → the loop may idle (the paused player asks for none).
-        let ok = app.load_resolved_stream(
-            "vid_donut".into(),
-            "https://inv.example/x?local=true".into(),
-            true,
-            "360p",
-        );
-        assert!(
-            ok && app.player_video.as_deref() == Some("vid_donut"),
-            "source loaded"
-        );
-        app.player.borrow_mut().pause();
-        app.model.playing = false;
-        assert!(!app.player.borrow().is_playing(), "precondition: paused");
-        assert!(
-            !app.needs_animation_frame(),
-            "a paused, loaded watch page lets the event loop idle"
-        );
+            );
+        }
     }
 }

@@ -210,43 +210,46 @@ mod tests {
     }
 
     #[test]
-    fn host_paths_publish_unchanged() {
-        let store = DocumentStoreHandle::host_paths();
-        let out = store.publish(
-            &caller(),
-            &[PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")],
-            FsMode::Read,
-        );
-        assert_eq!(
-            out,
-            vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]
-        );
-    }
-
-    #[test]
-    fn host_paths_does_not_claim_to_serve_confined_callers() {
+    fn host_path_doc_store_publishes_inputs_unchanged_in_order() {
+        // Phase `host_paths_publish_unchanged`.
+        {
+            let store = DocumentStoreHandle::host_paths();
+            let out = store.publish(
+                &caller(),
+                &[PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")],
+                FsMode::Read,
+            );
+            assert_eq!(
+                out,
+                vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]
+            );
+        }
+        // Phase `host_paths_does_not_claim_to_serve_confined_callers`.
         // The whole point of the flag: a passthrough store is honest that a
         // bwrap'd app can't reach what it returns; reporting true here would make the compositor's startup log lie about sandboxed file-open.
         assert!(!DocumentStoreHandle::host_paths().reaches_confined_apps());
-    }
-
-    #[test]
-    fn publish_returns_one_entry_per_input_in_order() {
-        let store = DocumentStoreHandle::host_paths();
-        let inputs = [
-            PathBuf::from("/tmp/1"),
-            PathBuf::from("/tmp/2"),
-            PathBuf::from("/tmp/3"),
-        ];
-        let out = store.publish_detailed(&caller(), &inputs, FsMode::ReadWrite);
-        assert_eq!(out.len(), inputs.len());
-        for (got, want) in out.iter().zip(inputs.iter()) {
-            assert_eq!(&got.host_path, want);
+        // Phase `publish_returns_one_entry_per_input_in_order`.
+        {
+            let store = DocumentStoreHandle::host_paths();
+            let inputs = [
+                PathBuf::from("/tmp/1"),
+                PathBuf::from("/tmp/2"),
+                PathBuf::from("/tmp/3"),
+            ];
+            let out = store.publish_detailed(&caller(), &inputs, FsMode::ReadWrite);
+            assert_eq!(out.len(), inputs.len());
+            for (got, want) in out.iter().zip(inputs.iter()) {
+                assert_eq!(&got.host_path, want);
+            }
         }
+        // Phase `a_published_document_keeps_the_name_the_user_picked`.
+        assert_eq!(doc_file_name(Path::new("/home/q/Report.odt")), "Report.odt");
+        assert_eq!(doc_file_name(Path::new("/")), "document");
     }
 
     #[test]
-    fn a_caller_slug_is_two_components_and_cannot_escape() {
+    fn caller_slug_is_a_confined_two_component_path() {
+        // Phase `a_caller_slug_is_two_components_and_cannot_escape`.
         for hostile in [
             "../../etc/passwd",
             "..",
@@ -277,18 +280,11 @@ mod tests {
                 "{hostile:?} escaped the store root: {slug}"
             );
         }
-    }
-
-    #[test]
-    fn an_empty_app_id_still_yields_a_usable_component() {
-        let c = PortalCaller::new(WorkspaceId(1), "");
-        let slug = caller_slug(&c);
-        assert!(slug.ends_with("/unknown"), "{slug}");
-    }
-
-    #[test]
-    fn a_published_document_keeps_the_name_the_user_picked() {
-        assert_eq!(doc_file_name(Path::new("/home/q/Report.odt")), "Report.odt");
-        assert_eq!(doc_file_name(Path::new("/")), "document");
+        // Phase `an_empty_app_id_still_yields_a_usable_component`.
+        {
+            let c = PortalCaller::new(WorkspaceId(1), "");
+            let slug = caller_slug(&c);
+            assert!(slug.ends_with("/unknown"), "{slug}");
+        }
     }
 }

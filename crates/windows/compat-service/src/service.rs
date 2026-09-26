@@ -1782,130 +1782,133 @@ mod tests {
     }
 
     #[test]
-    fn matching_vm_recipe_does_not_auto_route_without_explicit_action() {
-        let directory = TempDir::new().unwrap();
-        let service = service(&directory);
-        let query = ApplicationQuery::executable("special.exe");
-        let status = service
-            .explain(&query, VmFallback::Disabled, "app", &[], Some(1))
-            .unwrap();
-        assert_eq!(status.route, RouteKind::Wine);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn vm_routing_is_explicit_visible_and_publication_bound() {
+        // Phase `matching_vm_recipe_does_not_auto_route_without_explicit_action`.
+        {
+            let directory = TempDir::new().unwrap();
+            let service = service(&directory);
+            let query = ApplicationQuery::executable("special.exe");
+            let status = service
+                .explain(&query, VmFallback::Disabled, "app", &[], Some(1))
+                .unwrap();
+            assert_eq!(status.route, RouteKind::Wine);
 
-        let result = service.launch(&LaunchInput {
-            app_id: "app".to_string(),
-            workspace_id: "workspace".to_string(),
-            program_id: "special".to_string(),
-            query,
-            vm_fallback: VmFallback::Disabled,
-            capabilities: Vec::new(),
-            now_unix: Some(1),
-        });
-        assert!(matches!(result, Err(ServiceError::ProgramNotRegistered(_))));
-        assert_eq!(service.vm.calls.load(Ordering::SeqCst), 0);
-    }
+            let result = service.launch(&LaunchInput {
+                app_id: "app".to_string(),
+                workspace_id: "workspace".to_string(),
+                program_id: "special".to_string(),
+                query,
+                vm_fallback: VmFallback::Disabled,
+                capabilities: Vec::new(),
+                now_unix: Some(1),
+            });
+            assert!(matches!(result, Err(ServiceError::ProgramNotRegistered(_))));
+            assert_eq!(service.vm.calls.load(Ordering::SeqCst), 0);
+        }
+        // Phase `explicit_vm_escalation_reuses_the_digest_pinned_capsule_installer`.
+        {
+            let directory = TempDir::new().unwrap();
+            let service = service(&directory);
+            let installer = pe_installer();
+            let outcome = service
+                .install(
+                    &mut installer.reopen().unwrap(),
+                    "Favorite_App.exe",
+                    "workspace",
+                    &[],
+                    Some(1),
+                )
+                .unwrap();
+            let InstallOutcome::Confirmation { input, .. } = outcome;
+            let receipt = service
+                .install_in_capsule(
+                    installer.reopen().unwrap(),
+                    "Favorite_App.exe",
+                    "workspace",
+                    &[],
+                    Some(1),
+                    &input,
+                )
+                .unwrap();
 
-    #[test]
-    fn explicit_vm_escalation_reuses_the_digest_pinned_capsule_installer() {
-        let directory = TempDir::new().unwrap();
-        let service = service(&directory);
-        let installer = pe_installer();
-        let outcome = service
-            .install(
-                &mut installer.reopen().unwrap(),
-                "Favorite_App.exe",
-                "workspace",
-                &[],
-                Some(1),
+            let status = service
+                .escalate_install_to_vm(&receipt.capsule_id, "workspace")
+                .unwrap();
+
+            assert_eq!(status.phase, VmInstallationPhase::Starting);
+            assert_eq!(service.vm.install_calls.load(Ordering::SeqCst), 1);
+        }
+        // Phase `explicit_vm_action_is_visible_before_delegate_is_called`.
+        {
+            let directory = TempDir::new().unwrap();
+            let service = service(&directory);
+            let status = service
+                .explain(
+                    &ApplicationQuery::executable("special.exe"),
+                    VmFallback::Explicit,
+                    "app",
+                    &[],
+                    Some(1),
+                )
+                .unwrap();
+            assert_eq!(status.route, RouteKind::Vm);
+            assert!(status.vm_fallback_was_explicit);
+        }
+        // Phase `protocol_launch_has_no_client_supplied_capability_field`.
+        {
+            let request = serde_json::json!({
+                "method": "launch",
+                "version": 1,
+                "app_id": "app",
+                "workspace_id": "workspace",
+                "program_id": "special",
+                "query": {"executable": "special.exe"},
+                "explicit_vm_fallback": false,
+                "capabilities": [{"effect": "grant"}]
+            });
+            assert!(serde_json::from_value::<crate::ProtocolRequest>(request).is_err());
+        }
+        // Phase `published_vm_launch_uses_only_the_authenticated_publication_id`.
+        {
+            let directory = TempDir::new().unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let service = CompatibilityService::new(
+                catalogue(),
+                CapsuleStore::new(directory.path()).unwrap(),
+                SystemRuntimeRegistry::assuming_provider(),
+                Resources,
+                Executor,
+                Vm {
+                    calls: Arc::clone(&calls),
+                    install_calls: Arc::new(AtomicUsize::new(0)),
+                },
+                HostSession {
+                    uid: 1000,
+                    wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+                    render_node: PathBuf::from("/dev/dri/renderD128"),
+                },
             )
             .unwrap();
-        let InstallOutcome::Confirmation { input, .. } = outcome;
-        let receipt = service
-            .install_in_capsule(
-                installer.reopen().unwrap(),
-                "Favorite_App.exe",
-                "workspace",
-                &[],
-                Some(1),
-                &input,
-            )
-            .unwrap();
+            let application = VmPublishedApplication {
+                entry_id: "windows-vm-opaque".to_string(),
+                app_id: "so.tilo.windows.vm.opaque".to_string(),
+                published_application_id: "published-word".to_string(),
+                display_name: "Word".to_string(),
+                presentation: VmPresentation::NativeRail,
+                uninstall_available: false,
+            };
 
-        let status = service
-            .escalate_install_to_vm(&receipt.capsule_id, "workspace")
-            .unwrap();
-
-        assert_eq!(status.phase, VmInstallationPhase::Starting);
-        assert_eq!(service.vm.install_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn explicit_vm_action_is_visible_before_delegate_is_called() {
-        let directory = TempDir::new().unwrap();
-        let service = service(&directory);
-        let status = service
-            .explain(
-                &ApplicationQuery::executable("special.exe"),
-                VmFallback::Explicit,
-                "app",
-                &[],
-                Some(1),
-            )
-            .unwrap();
-        assert_eq!(status.route, RouteKind::Vm);
-        assert!(status.vm_fallback_was_explicit);
-    }
-
-    #[test]
-    fn protocol_launch_has_no_client_supplied_capability_field() {
-        let request = serde_json::json!({
-            "method": "launch",
-            "version": 1,
-            "app_id": "app",
-            "workspace_id": "workspace",
-            "program_id": "special",
-            "query": {"executable": "special.exe"},
-            "explicit_vm_fallback": false,
-            "capabilities": [{"effect": "grant"}]
-        });
-        assert!(serde_json::from_value::<crate::ProtocolRequest>(request).is_err());
-    }
-
-    #[test]
-    fn published_vm_launch_uses_only_the_authenticated_publication_id() {
-        let directory = TempDir::new().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let service = CompatibilityService::new(
-            catalogue(),
-            CapsuleStore::new(directory.path()).unwrap(),
-            SystemRuntimeRegistry::assuming_provider(),
-            Resources,
-            Executor,
-            Vm {
-                calls: Arc::clone(&calls),
-                install_calls: Arc::new(AtomicUsize::new(0)),
-            },
-            HostSession {
-                uid: 1000,
-                wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
-                render_node: PathBuf::from("/dev/dri/renderD128"),
-            },
-        )
-        .unwrap();
-        let application = VmPublishedApplication {
-            entry_id: "windows-vm-opaque".to_string(),
-            app_id: "so.tilo.windows.vm.opaque".to_string(),
-            published_application_id: "published-word".to_string(),
-            display_name: "Word".to_string(),
-            presentation: VmPresentation::NativeRail,
-            uninstall_available: false,
-        };
-
-        assert!(matches!(
-            service.launch_published_vm(&application, "workspace", &[], Some(1)),
-            Err(ServiceError::Vm(windows_vm::LaunchError::Agent(
-                windows_vm::AgentError::Unavailable
-            )))
-        ));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(matches!(
+                service.launch_published_vm(&application, "workspace", &[], Some(1)),
+                Err(ServiceError::Vm(windows_vm::LaunchError::Agent(
+                    windows_vm::AgentError::Unavailable
+                )))
+            ));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
     }
 }

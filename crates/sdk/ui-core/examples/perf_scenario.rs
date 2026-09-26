@@ -201,27 +201,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_scroll_workload_is_rejected() {
-        assert!(verified_list_scroll(0).is_err());
-    }
-
-    #[test]
-    fn outside_pointer_scroll_cannot_return_a_successful_measurement() {
-        tilo_ui::i18n::I18nManager::init("en-US");
-        let offset = Rc::new(Cell::new((0.0, 256.0)));
-        let (state, root) = list_app(200, Rc::clone(&offset));
-        let mut driver = Driver::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
-        driver.send(&WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(-100.0, -100.0),
-        });
-        assert!(verified_scroll_step(&mut driver, &offset, -3.0, 0).is_err());
-    }
-
-    #[test]
-    fn repeated_direction_reversals_produce_one_moving_frame_per_step() {
-        tilo_ui::i18n::I18nManager::init("en-US");
-        let report = verified_list_scroll(40).expect("verified scrolling");
-        assert_eq!(report.frames, 40);
+    fn scroll_workloads_must_move_and_measure_each_step() {
+        // phase: empty_scroll_workload_is_rejected
+        {
+            assert!(verified_list_scroll(0).is_err());
+        }
+        // phase: outside_pointer_scroll_cannot_return_a_successful_measurement
+        {
+            tilo_ui::i18n::I18nManager::init("en-US");
+            let offset = Rc::new(Cell::new((0.0, 256.0)));
+            let (state, root) = list_app(200, Rc::clone(&offset));
+            let mut driver = Driver::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
+            driver.send(&WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(-100.0, -100.0),
+            });
+            assert!(verified_scroll_step(&mut driver, &offset, -3.0, 0).is_err());
+        }
+        // phase: repeated_direction_reversals_produce_one_moving_frame_per_step
+        {
+            tilo_ui::i18n::I18nManager::init("en-US");
+            let report = verified_list_scroll(40).expect("verified scrolling");
+            assert_eq!(report.frames, 40);
+        }
     }
 }

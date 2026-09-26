@@ -650,29 +650,48 @@ mod tests {
     }
 
     #[test]
-    fn full_workspace_uses_collaboration_and_blob_substrates() {
-        let resources = ReplicationIntent::FullWorkspace.resources();
-        assert!(resources.contains(&ReplicationResource::Workspace));
-        assert!(resources.contains(&ReplicationResource::FileTree));
-        assert!(resources.contains(&ReplicationResource::FileThumbnails));
-        assert!(resources.contains(&ReplicationResource::FileBlobs));
-        assert!(resources.contains(&ReplicationResource::EbookLibrary));
-        assert!(resources.contains(&ReplicationResource::MediaLibrary));
-    }
+    fn replication_intents_and_service_profiles_select_their_substrates() {
+        use ReplicationResource::{
+            EbookLibrary, FileBlobs, FileThumbnails, FileTree, MediaLibrary, Workspace,
+        };
+        let cases = [
+            (
+                "full workspace uses collaboration and blob substrates",
+                ReplicationIntent::FullWorkspace,
+                vec![
+                    Workspace,
+                    FileTree,
+                    FileThumbnails,
+                    FileBlobs,
+                    EbookLibrary,
+                    MediaLibrary,
+                ],
+                vec![],
+            ),
+            (
+                "on demand syncs previews without file bytes",
+                ReplicationIntent::OnDemand,
+                vec![Workspace, FileTree, FileThumbnails],
+                vec![FileBlobs, EbookLibrary, MediaLibrary],
+            ),
+            (
+                "selecting media also hydrates its file bytes",
+                ReplicationIntent::Resources(BTreeSet::from([MediaLibrary])),
+                vec![Workspace, FileTree, FileThumbnails, FileBlobs],
+                vec![],
+            ),
+        ];
+        for (name, intent, present, absent) in cases {
+            let resources = intent.resources();
+            for r in present {
+                assert!(resources.contains(&r), "case {name}: {r:?} missing");
+            }
+            for r in absent {
+                assert!(!resources.contains(&r), "case {name}: {r:?} present");
+            }
+        }
 
-    #[test]
-    fn on_demand_syncs_previews_without_file_bytes() {
-        let resources = ReplicationIntent::OnDemand.resources();
-        assert!(resources.contains(&ReplicationResource::Workspace));
-        assert!(resources.contains(&ReplicationResource::FileTree));
-        assert!(resources.contains(&ReplicationResource::FileThumbnails));
-        assert!(!resources.contains(&ReplicationResource::FileBlobs));
-        assert!(!resources.contains(&ReplicationResource::EbookLibrary));
-        assert!(!resources.contains(&ReplicationResource::MediaLibrary));
-    }
-
-    #[test]
-    fn relay_only_claims_only_its_running_workspace_planes() {
+        // A relay-only device claims only its running workspace planes.
         let services = ServiceCapabilities::relay_only();
         assert!(services.workspace_replication);
         assert!(services.inbound_relay);
@@ -680,126 +699,114 @@ mod tests {
         assert!(services.remote_control_relay);
         assert!(!services.app_serving);
         assert!(!services.compute);
-
         assert_eq!(
             ServiceCapabilities::personal_server().limited_to(&services),
             services
         );
+
+        // Discovery claims are intersected with signed device authority.
+        let advertised = ServiceCapabilities::personal_server();
+        assert_eq!(
+            advertised.authorized_by(&tilo_user_identity::DeviceCapabilities::member()),
+            ServiceCapabilities::default()
+        );
+        let mut host_without_global_read = tilo_user_identity::DeviceCapabilities::host();
+        host_without_global_read.can_read_all_workspaces = false;
+        let authorized = advertised.authorized_by(&host_without_global_read);
+        assert!(authorized.workspace_replication);
+        assert!(!authorized.full_content_replication);
     }
 
     #[test]
-    fn selecting_media_also_hydrates_its_file_bytes() {
-        let intent =
-            ReplicationIntent::Resources(BTreeSet::from([ReplicationResource::MediaLibrary]));
-        let resources = intent.resources();
-        assert!(resources.contains(&ReplicationResource::Workspace));
-        assert!(resources.contains(&ReplicationResource::FileTree));
-        assert!(resources.contains(&ReplicationResource::FileThumbnails));
-        assert!(resources.contains(&ReplicationResource::FileBlobs));
-    }
-
-    #[test]
-    fn placement_is_stable_and_returns_distinct_replicas() {
-        let request = PlacementRequest {
-            client: [99; 32],
+    fn placement_picks_only_eligible_capable_and_power_appropriate_servers() {
+        type Case = (
+            &'static str,
+            PlacementRequest,
+            Vec<ServerAdvertisement>,
+            Vec<[u8; 32]>,
+        );
+        let request = |client: [u8; 32], workload: Workload, replicas| PlacementRequest {
+            client,
             workspace_id: 7,
-            workload: Workload::WorkspaceReplication,
-            replicas: 2,
+            workload,
+            replicas,
         };
+        let with = |id: u8, edit: &dyn Fn(&mut ServerAdvertisement)| {
+            let mut s = server(id);
+            edit(&mut s);
+            s
+        };
+
+        // Placement is stable and returns distinct replicas.
+        let replicate = request([99; 32], Workload::WorkspaceReplication, 2);
         let candidates = vec![server(1), server(2), server(3)];
-        let first = place(&request, &candidates);
-        let second = place(&request, &candidates);
-        assert_eq!(first, second);
+        let first = place(&replicate, &candidates);
+        assert_eq!(first, place(&replicate, &candidates));
         assert_eq!(first.servers.len(), 2);
         assert_ne!(first.servers[0], first.servers[1]);
-    }
 
-    #[test]
-    fn ineligible_servers_never_receive_work() {
-        let request = PlacementRequest {
-            client: [99; 32],
-            workspace_id: 7,
-            workload: Workload::ContentReplication,
-            replicas: 4,
-        };
-        let mut offline = server(1);
-        offline.online = false;
-        let mut interactive = server(2);
-        interactive.role = DeviceRole::Interactive;
-        let mut no_content = server(3);
-        no_content.services.full_content_replication = false;
-        let eligible = server(4);
-        assert_eq!(
-            place(&request, &[offline, interactive, no_content, eligible]).servers,
-            vec![[4; 32]]
-        );
-    }
+        let word = || "so.tilo.word".to_string();
+        let remote = Workload::RemoteControl { target: [2; 32] };
+        let cases: Vec<Case> = vec![
+            (
+                "ineligible servers never receive work",
+                request([99; 32], Workload::ContentReplication, 4),
+                vec![
+                    with(1, &|s| s.online = false),
+                    with(2, &|s| s.role = DeviceRole::Interactive),
+                    with(3, &|s| s.services.full_content_replication = false),
+                    server(4),
+                ],
+                vec![[4; 32]],
+            ),
+            (
+                "app placement is app scoped",
+                request([99; 32], Workload::App { app_id: word() }, 1),
+                vec![
+                    with(1, &|s| {
+                        s.apps = BTreeSet::from(["so.tilo.sheet".to_string()]);
+                    }),
+                    server(2),
+                ],
+                vec![[2; 32]],
+            ),
+            (
+                "discretionary work avoids low power and energy saver devices",
+                request([99; 32], Workload::Compute { app_id: word() }, 3),
+                vec![
+                    with(1, &|s| s.power = PowerAvailability::Battery(9)),
+                    with(2, &|s| s.energy_saver = true),
+                    server(3),
+                ],
+                vec![[3; 32]],
+            ),
+            (
+                "essential relay work can still use a battery peer",
+                request([99; 32], Workload::InboundRelay, 1),
+                vec![with(4, &|s| {
+                    s.power = PowerAvailability::Battery(10);
+                    s.energy_saver = true;
+                })],
+                vec![[4; 32]],
+            ),
+            (
+                "remote control relay cannot be client or target",
+                request([1; 32], remote.clone(), 1),
+                vec![server(1), server(2)],
+                vec![],
+            ),
+            (
+                "remote control relay uses a third server",
+                request([1; 32], remote, 1),
+                vec![server(3)],
+                vec![[3; 32]],
+            ),
+        ];
+        for (name, req, candidates, want) in cases {
+            assert_eq!(place(&req, &candidates).servers, want, "case {name}");
+        }
 
-    #[test]
-    fn app_and_compute_placement_are_capability_and_app_scoped() {
-        let mut wrong_app = server(1);
-        wrong_app.apps = BTreeSet::from(["so.tilo.sheet".to_string()]);
-        let right = server(2);
-        let request = PlacementRequest {
-            client: [99; 32],
-            workspace_id: 7,
-            workload: Workload::App {
-                app_id: "so.tilo.word".to_string(),
-            },
-            replicas: 1,
-        };
-        assert_eq!(place(&request, &[wrong_app, right]).servers, vec![[2; 32]]);
-    }
-
-    #[test]
-    fn discretionary_work_avoids_low_power_and_energy_saver_devices() {
-        let mut low_battery = server(1);
-        low_battery.power = PowerAvailability::Battery(9);
-        let mut saver = server(2);
-        saver.energy_saver = true;
-        let available = server(3);
-        let request = PlacementRequest {
-            client: [99; 32],
-            workspace_id: 7,
-            workload: Workload::Compute {
-                app_id: "so.tilo.word".to_string(),
-            },
-            replicas: 3,
-        };
-        assert_eq!(
-            place(&request, &[low_battery, saver, available]).servers,
-            vec![[3; 32]]
-        );
-    }
-
-    #[test]
-    fn essential_relay_work_can_still_use_a_battery_peer() {
-        let mut battery = server(4);
-        battery.power = PowerAvailability::Battery(10);
-        battery.energy_saver = true;
-        let request = PlacementRequest {
-            client: [99; 32],
-            workspace_id: 7,
-            workload: Workload::InboundRelay,
-            replicas: 1,
-        };
-        assert_eq!(place(&request, &[battery]).servers, vec![[4; 32]]);
-    }
-
-    #[test]
-    fn remote_control_relay_cannot_be_client_or_target() {
-        let request = PlacementRequest {
-            client: [1; 32],
-            workspace_id: 7,
-            workload: Workload::RemoteControl { target: [2; 32] },
-            replicas: 1,
-        };
-        assert!(place(&request, &[server(1), server(2)]).servers.is_empty());
-        assert_eq!(place(&request, &[server(3)]).servers, vec![[3; 32]]);
-    }
-
-    #[test]
-    fn remote_control_prefers_direct_then_falls_back_to_mesh() {
+        // Remote control prefers a direct route, then falls back to the mesh.
         assert_eq!(
             route_remote_control([1; 32], [2; 32], 7, true, &[server(3)]),
             RemoteControlRoute::Direct { target: [2; 32] }
@@ -811,19 +818,5 @@ mod tests {
                 via: [3; 32]
             }
         );
-    }
-
-    #[test]
-    fn discovery_claims_are_intersected_with_signed_device_authority() {
-        let advertised = ServiceCapabilities::personal_server();
-        assert_eq!(
-            advertised.authorized_by(&tilo_user_identity::DeviceCapabilities::member()),
-            ServiceCapabilities::default()
-        );
-        let mut host_without_global_read = tilo_user_identity::DeviceCapabilities::host();
-        host_without_global_read.can_read_all_workspaces = false;
-        let authorized = advertised.authorized_by(&host_without_global_read);
-        assert!(authorized.workspace_replication);
-        assert!(!authorized.full_content_replication);
     }
 }
