@@ -446,210 +446,218 @@ mod tests {
     }
 
     #[test]
-    fn filter_matches_empty_means_all() {
-        // The contract the chrome relies on when it constructs
-        // `HistoryFilter::default()` and only fills in a single field.
-        let f = HistoryFilter::default();
-        assert!(f.matches(&entry(OpClass::Splice, "Alice", 0)));
-        assert!(f.matches(&entry(OpClass::Comment, "Bob", 999)));
-        assert!(f.matches(&entry(OpClass::Govern, "Carol", 12345)));
-    }
+    fn history_filter_matches_author_ops_time_and_facets() {
+        fn filter_matches_empty_means_all() {
+            // The contract the chrome relies on when it constructs
+            // `HistoryFilter::default()` and only fills in a single field.
+            let f = HistoryFilter::default();
+            assert!(f.matches(&entry(OpClass::Splice, "Alice", 0)));
+            assert!(f.matches(&entry(OpClass::Comment, "Bob", 999)));
+            assert!(f.matches(&entry(OpClass::Govern, "Carol", 12345)));
+        }
 
-    #[test]
-    fn filter_matches_author_case_insensitive() {
-        // Typeahead "author:alice" must hit a row authored by "Alice".
-        let f = HistoryFilter::default().with_author("alice");
-        assert!(f.matches(&entry(OpClass::Splice, "Alice", 0)));
-        assert!(f.matches(&entry(OpClass::Splice, "ALICE", 0)));
-        assert!(!f.matches(&entry(OpClass::Splice, "Bob", 0)));
-    }
+        fn filter_matches_author_case_insensitive() {
+            // Typeahead "author:alice" must hit a row authored by "Alice".
+            let f = HistoryFilter::default().with_author("alice");
+            assert!(f.matches(&entry(OpClass::Splice, "Alice", 0)));
+            assert!(f.matches(&entry(OpClass::Splice, "ALICE", 0)));
+            assert!(!f.matches(&entry(OpClass::Splice, "Bob", 0)));
+        }
 
-    #[test]
-    fn filter_matches_op_class_subset() {
-        // Stays inclusive within the subset — no implicit "Comments
-        // must also be from Alice" cross-product.
-        let f = HistoryFilter::default().with_op_class(OpClass::Comment);
-        assert!(!f.matches(&entry(OpClass::Splice, "Alice", 0)));
-        assert!(f.matches(&entry(OpClass::Comment, "Alice", 0)));
-        assert!(f.matches(&entry(OpClass::Comment, "Bob", 0)));
-    }
+        fn filter_matches_op_class_subset() {
+            // Stays inclusive within the subset — no implicit "Comments
+            // must also be from Alice" cross-product.
+            let f = HistoryFilter::default().with_op_class(OpClass::Comment);
+            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 0)));
+            assert!(f.matches(&entry(OpClass::Comment, "Alice", 0)));
+            assert!(f.matches(&entry(OpClass::Comment, "Bob", 0)));
+        }
 
-    #[test]
-    fn filter_matches_time_range() {
-        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-        let end = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
-        let f = HistoryFilter {
-            time_range: Some((start, end)),
-            ..Default::default()
-        };
-        assert!(!f.matches(&entry(OpClass::Splice, "Alice", 99)));
-        assert!(f.matches(&entry(OpClass::Splice, "Alice", 100)));
-        assert!(f.matches(&entry(OpClass::Splice, "Alice", 150)));
-        assert!(!f.matches(&entry(OpClass::Splice, "Alice", 200)));
-        assert!(!f.matches(&entry(OpClass::Splice, "Alice", 300)));
-    }
+        fn filter_matches_time_range() {
+            let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+            let end = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+            let f = HistoryFilter {
+                time_range: Some((start, end)),
+                ..Default::default()
+            };
+            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 99)));
+            assert!(f.matches(&entry(OpClass::Splice, "Alice", 100)));
+            assert!(f.matches(&entry(OpClass::Splice, "Alice", 150)));
+            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 200)));
+            assert!(!f.matches(&entry(OpClass::Splice, "Alice", 300)));
+        }
 
-    #[test]
-    fn semantic_facets_filter_context_without_guessing_legacy_entries() {
-        let mut contextual = entry(OpClass::EditMeta, "Ada", 100);
-        contextual.context = Some(
-            ActionContext::for_resource(
-                "Rename",
-                "files.entry:brief.md",
-                "files.entry",
-                "brief.md",
-            )
-            .with_app("org.tilo.Files", "Files")
-            .with_group("issue:42", "Launch brief", "issue")
-            .with_facet(ActionFacet::new("file-type", "Markdown"))
-            .with_facet(ActionFacet::new("path", "/work/brief.md")),
-        );
-        let legacy = entry(OpClass::EditMeta, "Ada", 100);
+        fn semantic_facets_filter_context_without_guessing_legacy_entries() {
+            let mut contextual = entry(OpClass::EditMeta, "Ada", 100);
+            contextual.context = Some(
+                ActionContext::for_resource(
+                    "Rename",
+                    "files.entry:brief.md",
+                    "files.entry",
+                    "brief.md",
+                )
+                .with_app("org.tilo.Files", "Files")
+                .with_group("issue:42", "Launch brief", "issue")
+                .with_facet(ActionFacet::new("file-type", "Markdown"))
+                .with_facet(ActionFacet::new("path", "/work/brief.md")),
+            );
+            let legacy = entry(OpClass::EditMeta, "Ada", 100);
 
-        let by_app = HistoryFilter::default().with_app("files");
-        assert!(by_app.matches(&contextual));
-        assert!(!by_app.matches(&legacy));
+            let by_app = HistoryFilter::default().with_app("files");
+            assert!(by_app.matches(&contextual));
+            assert!(!by_app.matches(&legacy));
 
-        let by_kind = HistoryFilter::default().with_resource_kind("files.entry");
-        assert!(by_kind.matches(&contextual));
-        assert!(
-            HistoryFilter::default()
-                .with_resource("brief.md")
-                .matches(&contextual)
-        );
-        assert!(
-            HistoryFilter::default()
-                .with_work_group("issue:42")
-                .matches(&contextual)
-        );
-        let by_type =
-            HistoryFilter::default().with_facet(ActionFacet::new("file-type", "Markdown"));
-        assert!(by_type.matches(&contextual));
-        assert!(
-            !HistoryFilter::default()
+            let by_kind = HistoryFilter::default().with_resource_kind("files.entry");
+            assert!(by_kind.matches(&contextual));
+            assert!(
+                HistoryFilter::default()
+                    .with_resource("brief.md")
+                    .matches(&contextual)
+            );
+            assert!(
+                HistoryFilter::default()
+                    .with_work_group("issue:42")
+                    .matches(&contextual)
+            );
+            let by_type =
+                HistoryFilter::default().with_facet(ActionFacet::new("file-type", "Markdown"));
+            assert!(by_type.matches(&contextual));
+            assert!(
+                !HistoryFilter::default()
+                    .with_facet(ActionFacet::new("file-type", "PDF"))
+                    .matches(&contextual)
+            );
+            let within_lens_is_or = HistoryFilter::default()
                 .with_facet(ActionFacet::new("file-type", "PDF"))
-                .matches(&contextual)
-        );
-        let within_lens_is_or = HistoryFilter::default()
-            .with_facet(ActionFacet::new("file-type", "PDF"))
-            .with_facet(ActionFacet::new("file-type", "Markdown"));
-        assert!(within_lens_is_or.matches(&contextual));
-        let across_lenses_is_and =
-            within_lens_is_or.with_facet(ActionFacet::new("path", "/somewhere/else"));
-        assert!(!across_lenses_is_and.matches(&contextual));
-        assert!(
-            HistoryFilter::default()
-                .with_classification(HistoryClassification::Classified)
-                .matches(&contextual)
-        );
-        assert!(
-            HistoryFilter::default()
-                .with_classification(HistoryClassification::Unclassified)
-                .matches(&legacy)
-        );
+                .with_facet(ActionFacet::new("file-type", "Markdown"));
+            assert!(within_lens_is_or.matches(&contextual));
+            let across_lenses_is_and =
+                within_lens_is_or.with_facet(ActionFacet::new("path", "/somewhere/else"));
+            assert!(!across_lenses_is_and.matches(&contextual));
+            assert!(
+                HistoryFilter::default()
+                    .with_classification(HistoryClassification::Classified)
+                    .matches(&contextual)
+            );
+            assert!(
+                HistoryFilter::default()
+                    .with_classification(HistoryClassification::Unclassified)
+                    .matches(&legacy)
+            );
+        }
+
+        filter_matches_empty_means_all();
+        filter_matches_author_case_insensitive();
+        filter_matches_op_class_subset();
+        filter_matches_time_range();
+        semantic_facets_filter_context_without_guessing_legacy_entries();
     }
 
     #[test]
-    fn op_class_revertibility_matches_spec_table() {
-        // Pin the table — a regression that makes Comment revertible
-        // would silently paint a confusing chip on every comment row.
-        assert!(op_class_is_revertible(OpClass::Splice));
-        assert!(op_class_is_revertible(OpClass::Move));
-        assert!(op_class_is_revertible(OpClass::EditMeta));
-        assert!(op_class_is_revertible(OpClass::Tombstone));
-        assert!(op_class_is_revertible(OpClass::Restore));
-        assert!(!op_class_is_revertible(OpClass::Comment));
-        assert!(!op_class_is_revertible(OpClass::Govern));
-        assert!(!op_class_is_revertible(OpClass::Compaction));
-        assert!(!op_class_is_revertible(OpClass::Redact));
-    }
+    fn op_class_revertibility_glyphs_and_formatting_helpers() {
+        fn op_class_revertibility_matches_spec_table() {
+            // Pin the table — a regression that makes Comment revertible
+            // would silently paint a confusing chip on every comment row.
+            assert!(op_class_is_revertible(OpClass::Splice));
+            assert!(op_class_is_revertible(OpClass::Move));
+            assert!(op_class_is_revertible(OpClass::EditMeta));
+            assert!(op_class_is_revertible(OpClass::Tombstone));
+            assert!(op_class_is_revertible(OpClass::Restore));
+            assert!(!op_class_is_revertible(OpClass::Comment));
+            assert!(!op_class_is_revertible(OpClass::Govern));
+            assert!(!op_class_is_revertible(OpClass::Compaction));
+            assert!(!op_class_is_revertible(OpClass::Redact));
+        }
 
-    #[test]
-    fn redacted_entry_is_non_revertible_regardless_of_op_class() {
-        // The widget gates the [Revert] chip on `op_class_is_revertible`
-        // AND `entry.redaction.is_none()`; a Splice that has since been
-        // redacted MUST NOT show the chip.
-        let mut e = entry(OpClass::Splice, "Alice", 0);
-        e.redaction = Some(RedactionDisplay {
-            redactor_label: "owner@example".into(),
-            reason: "GDPR".into(),
-            redacted_at: SystemTime::UNIX_EPOCH,
-        });
-        assert!(op_class_is_revertible(e.op_class));
-        assert!(
-            e.redaction.is_some(),
-            "the chrome reads `entry.redaction.is_some()` as the veto",
-        );
-    }
+        fn redacted_entry_is_non_revertible_regardless_of_op_class() {
+            // The widget gates the [Revert] chip on `op_class_is_revertible`
+            // AND `entry.redaction.is_none()`; a Splice that has since been
+            // redacted MUST NOT show the chip.
+            let mut e = entry(OpClass::Splice, "Alice", 0);
+            e.redaction = Some(RedactionDisplay {
+                redactor_label: "owner@example".into(),
+                reason: "GDPR".into(),
+                redacted_at: SystemTime::UNIX_EPOCH,
+            });
+            assert!(op_class_is_revertible(e.op_class));
+            assert!(
+                e.redaction.is_some(),
+                "the chrome reads `entry.redaction.is_some()` as the veto",
+            );
+        }
 
-    #[test]
-    fn op_class_glyph_is_ascii_or_symbol_not_emoji() {
-        for op in [
-            OpClass::Splice,
-            OpClass::Move,
-            OpClass::EditMeta,
-            OpClass::Comment,
-            OpClass::Tombstone,
-            OpClass::Restore,
-            OpClass::Govern,
-            OpClass::Compaction,
-            OpClass::Redact,
-        ] {
-            let g = op_class_glyph(op);
-            assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
-            for ch in g.chars() {
-                let cp = ch as u32;
-                assert!(
-                    cp < 0x1f300,
-                    "glyph for {op:?} ({g:?} U+{cp:04X}) must not be a pictographic emoji",
-                );
+        fn op_class_glyph_is_ascii_or_symbol_not_emoji() {
+            for op in [
+                OpClass::Splice,
+                OpClass::Move,
+                OpClass::EditMeta,
+                OpClass::Comment,
+                OpClass::Tombstone,
+                OpClass::Restore,
+                OpClass::Govern,
+                OpClass::Compaction,
+                OpClass::Redact,
+            ] {
+                let g = op_class_glyph(op);
+                assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
+                for ch in g.chars() {
+                    let cp = ch as u32;
+                    assert!(
+                        cp < 0x1f300,
+                        "glyph for {op:?} ({g:?} U+{cp:04X}) must not be a pictographic emoji",
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn format_relative_time_thresholds() {
-        // Pin the wording so a regression can't silently swap to
-        // "1 minute ago" / "1 hour ago".
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(10)),
-            "just now"
-        );
-        assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(120)),
-            "2 min ago"
-        );
-        assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
-            "2 h ago"
-        );
-        assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(259_200)),
-            "3 d ago"
-        );
-    }
-
-    #[test]
-    fn hue_to_rgb_covers_every_sextant() {
-        // Walk every 60-degree boundary so a future regression that
-        // collapses one sextant (e.g. "5" branch falling through to
-        // black) flips the test immediately.
-        let hues = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 359.9];
-        let mut seen: Vec<(u8, u8, u8)> = Vec::new();
-        for h in hues {
-            let rgb = hue_to_rgb(h);
-            assert_ne!(rgb, (0, 0, 0), "hue {h} produced black");
-            seen.push(rgb);
+        fn format_relative_time_thresholds() {
+            // Pin the wording so a regression can't silently swap to
+            // "1 minute ago" / "1 hour ago".
+            let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+            assert_eq!(
+                format_relative_time(base, base + Duration::from_secs(10)),
+                "just now"
+            );
+            assert_eq!(
+                format_relative_time(base, base + Duration::from_secs(120)),
+                "2 min ago"
+            );
+            assert_eq!(
+                format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
+                "2 h ago"
+            );
+            assert_eq!(
+                format_relative_time(base, base + Duration::from_secs(259_200)),
+                "3 d ago"
+            );
         }
-        // Allow a couple of near-duplicates at the wrap-around, but
-        // require at least 5 unique values out of 7 samples.
-        seen.sort_unstable();
-        seen.dedup();
-        assert!(
-            seen.len() >= 5,
-            "hues collapsed to {} unique colours",
-            seen.len()
-        );
+
+        fn hue_to_rgb_covers_every_sextant() {
+            // Walk every 60-degree boundary so a future regression that
+            // collapses one sextant (e.g. "5" branch falling through to
+            // black) flips the test immediately.
+            let hues = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 359.9];
+            let mut seen: Vec<(u8, u8, u8)> = Vec::new();
+            for h in hues {
+                let rgb = hue_to_rgb(h);
+                assert_ne!(rgb, (0, 0, 0), "hue {h} produced black");
+                seen.push(rgb);
+            }
+            // Allow a couple of near-duplicates at the wrap-around, but
+            // require at least 5 unique values out of 7 samples.
+            seen.sort_unstable();
+            seen.dedup();
+            assert!(
+                seen.len() >= 5,
+                "hues collapsed to {} unique colours",
+                seen.len()
+            );
+        }
+
+        op_class_revertibility_matches_spec_table();
+        redacted_entry_is_non_revertible_regardless_of_op_class();
+        op_class_glyph_is_ascii_or_symbol_not_emoji();
+        format_relative_time_thresholds();
+        hue_to_rgb_covers_every_sextant();
     }
 }

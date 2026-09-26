@@ -111,7 +111,10 @@ impl LogindManager {
     /// # Errors
     ///
     /// Returns an error if the `ListInhibitors` call fails.
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "the tuple is logind's ListInhibitors D-Bus signature"
+    )]
     pub async fn list_inhibitors(
         &self,
     ) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>> {
@@ -181,67 +184,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn can_suspend_returns_a_known_verdict() {
-        let Some(m) = manager_or_skip("can_suspend").await else {
-            return;
-        };
-        let verdict = m.can_suspend().await.expect("CanSuspend call");
-        assert!(
-            matches!(verdict.as_str(), "yes" | "no" | "na" | "challenge"),
-            "unexpected CanSuspend verdict: {verdict:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn inhibitor_lands_in_the_list_then_releases() {
-        let Some(m) = manager_or_skip("inhibit").await else {
-            return;
-        };
-        let why = format!("tilo-power test {}", std::process::id());
-        let holder = m
-            .inhibit("idle:sleep", "Tilo power test", &why, "block")
-            .await
-            .expect("Inhibit call");
-        assert_eq!(holder.what(), "idle:sleep");
-
-        // The lock is now visible to logind's own bookkeeping.
-        let listed = m.list_inhibitors().await.expect("ListInhibitors");
-        assert!(
-            listed
-                .iter()
-                .any(|(_what, _who, w, _mode, _uid, _pid)| w == &why),
-            "our inhibitor should be listed while held"
-        );
-
-        // Releasing the fd removes it.
-        drop(holder);
-        // logind updates asynchronously; retry briefly.
-        let mut gone = false;
-        for _ in 0..20 {
-            let listed = m.list_inhibitors().await.expect("ListInhibitors");
-            if !listed.iter().any(|(_w, _who, w, _m, _u, _p)| w == &why) {
-                gone = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    async fn logind_answers_suspend_inhibit_and_key_delegation() {
+        // Phase `can_suspend_returns_a_known_verdict`.
+        async fn can_suspend_returns_a_known_verdict() {
+            let Some(m) = manager_or_skip("can_suspend").await else {
+                return;
+            };
+            let verdict = m.can_suspend().await.expect("CanSuspend call");
+            assert!(
+                matches!(verdict.as_str(), "yes" | "no" | "na" | "challenge"),
+                "unexpected CanSuspend verdict: {verdict:?}"
+            );
         }
-        assert!(gone, "inhibitor should disappear after the fd is dropped");
-    }
+        // Phase `inhibitor_lands_in_the_list_then_releases`.
+        async fn inhibitor_lands_in_the_list_then_releases() {
+            let Some(m) = manager_or_skip("inhibit").await else {
+                return;
+            };
+            let why = format!("tilo-power test {}", std::process::id());
+            let holder = m
+                .inhibit("idle:sleep", "Tilo power test", &why, "block")
+                .await
+                .expect("Inhibit call");
+            assert_eq!(holder.what(), "idle:sleep");
 
-    #[tokio::test]
-    async fn delegate_handled_keys_takes_a_block_lock() {
-        let Some(m) = manager_or_skip("delegate").await else {
-            return;
-        };
-        let holder = m.delegate_handled_keys().await.expect("delegate inhibit");
-        let listed = m.list_inhibitors().await.expect("ListInhibitors");
-        // A block lock on the handled keys, owned by us, must be present.
-        assert!(
-            listed.iter().any(|(what, _who, _why, mode, _uid, _pid)| {
-                what.contains("handle-lid-switch") && mode == "block"
-            }),
-            "the delegate lock should be a block inhibitor on the lid switch"
-        );
-        drop(holder);
+            // The lock is now visible to logind's own bookkeeping.
+            let listed = m.list_inhibitors().await.expect("ListInhibitors");
+            assert!(
+                listed
+                    .iter()
+                    .any(|(_what, _who, w, _mode, _uid, _pid)| w == &why),
+                "our inhibitor should be listed while held"
+            );
+
+            // Releasing the fd removes it.
+            drop(holder);
+            // logind updates asynchronously; retry briefly.
+            let mut gone = false;
+            for _ in 0..20 {
+                let listed = m.list_inhibitors().await.expect("ListInhibitors");
+                if !listed.iter().any(|(_w, _who, w, _m, _u, _p)| w == &why) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(gone, "inhibitor should disappear after the fd is dropped");
+        }
+        // Phase `delegate_handled_keys_takes_a_block_lock`.
+        async fn delegate_handled_keys_takes_a_block_lock() {
+            let Some(m) = manager_or_skip("delegate").await else {
+                return;
+            };
+            let holder = m.delegate_handled_keys().await.expect("delegate inhibit");
+            let listed = m.list_inhibitors().await.expect("ListInhibitors");
+            // A block lock on the handled keys, owned by us, must be present.
+            assert!(
+                listed.iter().any(|(what, _who, _why, mode, _uid, _pid)| {
+                    what.contains("handle-lid-switch") && mode == "block"
+                }),
+                "the delegate lock should be a block inhibitor on the lid switch"
+            );
+            drop(holder);
+        }
+        // Phase `can_suspend_returns_a_known_verdict` (defined above).
+        can_suspend_returns_a_known_verdict().await;
+        // Phase `inhibitor_lands_in_the_list_then_releases` (defined above).
+        inhibitor_lands_in_the_list_then_releases().await;
+        // Phase `delegate_handled_keys_takes_a_block_lock` (defined above).
+        delegate_handled_keys_takes_a_block_lock().await;
     }
 }

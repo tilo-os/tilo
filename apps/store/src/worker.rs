@@ -832,79 +832,83 @@ mod tests {
         }
     }
 
+    /// LRU eviction, non-blocking requests and the authoritative action directory.
     #[test]
-    fn lru_revisit_is_retained_and_oldest_is_evicted() {
-        let mut cache = LruMap::new(2);
-        cache.insert("a", 1);
-        cache.insert("b", 2);
-        assert_eq!(cache.get(&"a"), Some(&1));
-        cache.insert("c", 3);
-        assert!(cache.get(&"a").is_some());
-        assert!(cache.get(&"b").is_none());
-    }
+    fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
+        // Case `lru_revisit_is_retained_and_oldest_is_evicted`.
+        {
+            let mut cache = LruMap::new(2);
+            cache.insert("a", 1);
+            cache.insert("b", 2);
+            assert_eq!(cache.get(&"a"), Some(&1));
+            cache.insert("c", 3);
+            assert!(cache.get(&"a").is_some());
+            assert!(cache.get(&"b").is_none());
+        }
 
-    #[test]
-    fn request_and_drain_are_non_blocking() {
-        let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
-        let started = std::time::Instant::now();
-        assert!(worker.request(Request::Search("editor".into())));
-        assert!(started.elapsed() < Duration::from_millis(50));
-        let started = std::time::Instant::now();
-        let _ = worker.try_snapshot();
-        assert!(started.elapsed() < Duration::from_millis(20));
-    }
+        // Case `request_and_drain_are_non_blocking`.
+        {
+            let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
+            let started = std::time::Instant::now();
+            assert!(worker.request(Request::Search("editor".into())));
+            assert!(started.elapsed() < Duration::from_millis(50));
+            let started = std::time::Instant::now();
+            let _ = worker.try_snapshot();
+            assert!(started.elapsed() < Duration::from_millis(20));
+        }
 
-    #[test]
-    fn filtered_snapshot_never_truncates_authoritative_action_directory() {
-        let search_index = StoreSearchIndex::default();
-        let state = state_with_items(
-            vec![
-                item("dev.example.alpha", "Alpha"),
-                item("dev.example.beta", "Beta"),
-            ],
-            search_index.clone(),
-        );
-        sync_authoritative_catalogue(&state);
-        let (snapshots, received) = mpsc::channel();
+        // Case `filtered_snapshot_never_truncates_authoritative_action_directory`.
+        {
+            let search_index = StoreSearchIndex::default();
+            let state = state_with_items(
+                vec![
+                    item("dev.example.alpha", "Alpha"),
+                    item("dev.example.beta", "Beta"),
+                ],
+                search_index.clone(),
+            );
+            sync_authoritative_catalogue(&state);
+            let (snapshots, received) = mpsc::channel();
 
-        assert!(send_tracked(
-            &snapshots,
-            &state,
-            vec![item("dev.example.alpha", "Alpha")],
-            "1 result for Alpha.",
-            Some("Alpha".into()),
-            None,
-            None,
-            None,
-        ));
-        assert_eq!(received.recv().expect("filtered snapshot").items.len(), 1);
+            assert!(send_tracked(
+                &snapshots,
+                &state,
+                vec![item("dev.example.alpha", "Alpha")],
+                "1 result for Alpha.",
+                Some("Alpha".into()),
+                None,
+                None,
+                None,
+            ));
+            assert_eq!(received.recv().expect("filtered snapshot").items.len(), 1);
 
-        let provider = search_index.provider();
-        assert_eq!(provider.search_limited("Beta", 10).len(), 1);
-    }
+            let provider = search_index.provider();
+            assert_eq!(provider.search_limited("Beta", 10).len(), 1);
+        }
 
-    #[test]
-    fn authoritative_catalogue_replacement_updates_and_removes_directory_rows() {
-        let search_index = StoreSearchIndex::default();
-        let mut state = state_with_items(
-            vec![
-                item("dev.example.alpha", "Alpha"),
-                item("dev.example.beta", "Beta"),
-            ],
-            search_index.clone(),
-        );
-        sync_authoritative_catalogue(&state);
-        let provider = search_index.provider();
-        let cursor = provider
-            .search_page("", None, 1, 1)
-            .next
-            .expect("two directory rows produce a continuation");
+        // Case `authoritative_catalogue_replacement_updates_and_removes_directory_rows`.
+        {
+            let search_index = StoreSearchIndex::default();
+            let mut state = state_with_items(
+                vec![
+                    item("dev.example.alpha", "Alpha"),
+                    item("dev.example.beta", "Beta"),
+                ],
+                search_index.clone(),
+            );
+            sync_authoritative_catalogue(&state);
+            let provider = search_index.provider();
+            let cursor = provider
+                .search_page("", None, 1, 1)
+                .next
+                .expect("two directory rows produce a continuation");
 
-        state.base_items = vec![item("dev.example.gamma", "Gamma")];
-        sync_authoritative_catalogue(&state);
+            state.base_items = vec![item("dev.example.gamma", "Gamma")];
+            sync_authoritative_catalogue(&state);
 
-        assert!(provider.search_limited("Beta", 10).is_empty());
-        assert_eq!(provider.search_limited("Gamma", 10).len(), 1);
-        assert!(!provider.action_directory_cursor_is_current(&cursor));
+            assert!(provider.search_limited("Beta", 10).is_empty());
+            assert_eq!(provider.search_limited("Gamma", 10).len(), 1);
+            assert!(!provider.action_directory_cursor_is_current(&cursor));
+        }
     }
 }

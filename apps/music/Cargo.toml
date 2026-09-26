@@ -19,8 +19,9 @@ thin = ["dep:runtime-dylib"]
 # The bundled sample library and runtime offline switch keep shots and tests
 # hermetic. Live builds also support network lyrics.
 default = ["audio", "live"]
-# Desktop audio output/control and the host file chooser for playlist covers.
-audio = ["dep:gstreamer", "dep:tokio", "ui/portal", "ui/mpris"]
+# Desktop audio output. Media controls and the host file chooser for playlist
+# covers come with `ui`.
+audio = ["dep:gstreamer", "dep:tokio"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.

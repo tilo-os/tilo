@@ -405,26 +405,28 @@ mod tests {
             .count()
     }
 
-    /// A thumbnail with a real decoded image paints an IMAGE draw command —
-    /// proof the fetched thumbnail actually reaches the scene (not the gradient).
     #[test]
-    fn thumbnail_with_image_emits_an_image_draw() {
-        let mut t = Thumbnail::new("seed", 120).image(Some(tiny_image()));
-        assert!(
-            paint_count_images(&mut t) >= 1,
-            "expected an IMAGE draw for a real thumbnail"
-        );
-    }
-
-    /// Without an image the thumbnail paints the gradient poster (no IMAGE draw),
-    /// so the hermetic `--shots` path is unchanged.
-    #[test]
-    fn thumbnail_without_image_paints_gradient_not_image() {
-        let mut t = Thumbnail::new("seed", 120);
-        assert_eq!(
-            paint_count_images(&mut t),
-            0,
-            "no image → gradient poster, no IMAGE draw"
-        );
+    fn thumbnail_paints_image_or_gradient_fallback() {
+        // Case `thumbnail_with_image_emits_an_image_draw`:
+        // A thumbnail with a real decoded image paints an IMAGE draw command —
+        // proof the fetched thumbnail actually reaches the scene (not the gradient).
+        {
+            let mut t = Thumbnail::new("seed", 120).image(Some(tiny_image()));
+            assert!(
+                paint_count_images(&mut t) >= 1,
+                "expected an IMAGE draw for a real thumbnail"
+            );
+        }
+        // Case `thumbnail_without_image_paints_gradient_not_image`:
+        // Without an image the thumbnail paints the gradient poster (no IMAGE draw),
+        // so the hermetic `--shots` path is unchanged.
+        {
+            let mut t = Thumbnail::new("seed", 120);
+            assert_eq!(
+                paint_count_images(&mut t),
+                0,
+                "no image → gradient poster, no IMAGE draw"
+            );
+        }
     }
 }

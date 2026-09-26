@@ -2780,10 +2780,19 @@ mod tests {
         (ev, doc)
     }
 
+    #[test]
+    fn pointer_hit_testing_follows_the_line_pitch_and_selects_words_lines_and_ranges() {
+        // Each phase builds a fresh bound editor so click counts and selections cannot leak.
+        line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale();
+        double_click_selects_word();
+        triple_click_selects_line();
+        drag_selects_char_range();
+        drag_across_lines_selects_multiline();
+    }
+
     /// The row pitch is the historical 20 px at 1× and grows with the glyphs
     /// at 2×; pointer hit-testing maps a click on the third row back to line
     /// 2 at both scales, so paint and hits share one pitch.
-    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
@@ -2823,6 +2832,15 @@ mod tests {
     }
 
     #[test]
+    fn typing_requests_action_owned_edits_and_keeps_the_caret_in_chars() {
+        // Each phase builds a fresh bound editor.
+        insert_text_requests_an_action_owned_edit();
+        newline_preserves_leading_indent();
+        backspace_at_line_start_joins_previous_line();
+        backspace_removes_char_before_caret();
+        multi_char_unicode_inserts_keep_caret_in_chars();
+    }
+
     fn insert_text_requests_an_action_owned_edit() {
         let (mut ev, mut doc) = bound_editor("ab");
         ev.set_caret_for_test(0, 1);
@@ -2831,7 +2849,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 2));
     }
 
-    #[test]
     fn newline_preserves_leading_indent() {
         let (mut ev, mut doc) = bound_editor("    foo");
         ev.set_caret_for_test(0, 7); // end of "    foo"
@@ -2841,7 +2858,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (1, 4));
     }
 
-    #[test]
     fn backspace_at_line_start_joins_previous_line() {
         let (mut ev, mut doc) = bound_editor("ab\ncd");
         ev.set_caret_for_test(1, 0); // start of "cd"
@@ -2850,7 +2866,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 2));
     }
 
-    #[test]
     fn backspace_removes_char_before_caret() {
         let (mut ev, mut doc) = bound_editor("abc");
         ev.set_caret_for_test(0, 2);
@@ -2859,7 +2874,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 1));
     }
 
-    #[test]
     fn multi_char_unicode_inserts_keep_caret_in_chars() {
         let (mut ev, mut doc) = bound_editor("");
         ev.set_caret_for_test(0, 0);
@@ -2984,7 +2998,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn double_click_selects_word() {
         let (mut ev, mut doc) = geom_editor("hello world");
         // Two presses at the same point within the multi-click window → word.
@@ -2996,7 +3009,6 @@ mod tests {
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("world"));
     }
 
-    #[test]
     fn triple_click_selects_line() {
         let (mut ev, mut doc) = geom_editor("hello world\nsecond line");
         let p = ev.pixel_for_test(0, 3);
@@ -3008,7 +3020,6 @@ mod tests {
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello world"));
     }
 
-    #[test]
     fn drag_selects_char_range() {
         let (mut ev, mut doc) = geom_editor("hello world");
         let (p0, p5) = (ev.pixel_for_test(0, 0), ev.pixel_for_test(0, 5));
@@ -3022,7 +3033,6 @@ mod tests {
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 5))));
     }
 
-    #[test]
     fn drag_across_lines_selects_multiline() {
         let (mut ev, mut doc) = geom_editor("abc\ndef");
         let (p01, p12) = (ev.pixel_for_test(0, 1), ev.pixel_for_test(1, 2));
@@ -3034,6 +3044,15 @@ mod tests {
     }
 
     #[test]
+    fn arrow_keys_move_and_extend_by_char_and_word() {
+        // Each phase builds a fresh bound editor.
+        shift_arrow_extends_by_char();
+        ctrl_arrow_moves_by_word();
+        ctrl_shift_arrow_extends_by_word();
+        word_move_uses_shared_boundaries_across_lines();
+        plain_arrow_collapses_selection_to_edge();
+    }
+
     fn shift_arrow_extends_by_char() {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 0);
@@ -3055,7 +3074,6 @@ mod tests {
         assert_eq!(ev.selection_for_test(), Some(((0, 0), (0, 2))));
     }
 
-    #[test]
     fn ctrl_arrow_moves_by_word() {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
@@ -3091,7 +3109,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 4));
     }
 
-    #[test]
     fn ctrl_shift_arrow_extends_by_word() {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
@@ -3106,7 +3123,6 @@ mod tests {
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("foo "));
     }
 
-    #[test]
     fn word_move_uses_shared_boundaries_across_lines() {
         // Word-forward at end of a line steps onto the next line's first word —
         // proving the flat-index conversion round-trips through the shared
@@ -3117,7 +3133,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (1, 0));
     }
 
-    #[test]
     fn plain_arrow_collapses_selection_to_edge() {
         let (mut ev, mut doc) = geom_editor("hello");
         ev.set_caret_for_test(0, 1);
@@ -3157,6 +3172,13 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_shortcuts_cut_copy_and_paste_the_selection() {
+        // Each phase builds a fresh bound editor. The copy/paste phase keeps its
+        // original no-backend early return, which only ends that phase.
+        ctrl_x_cuts_selection_through_crdt();
+        clipboard_copy_paste_round_trips_when_available();
+    }
+
     fn ctrl_x_cuts_selection_through_crdt() {
         // Cut requests deletion of the selected range (clipboard write is a
         // silent no-op in the headless test env, so we assert on the buffer).
@@ -3178,7 +3200,6 @@ mod tests {
         assert_eq!(ev.selection_for_test(), None);
     }
 
-    #[test]
     fn clipboard_copy_paste_round_trips_when_available() {
         // Only meaningful where arboard has a backend (a Wayland/X11 session).
         // Probe with a sentinel; if it doesn't round-trip, skip cleanly — the

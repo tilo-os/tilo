@@ -65,23 +65,27 @@ fn windows_catalog_architecture(native_machine: u16) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    /// Host architecture detection and mapping.
     #[test]
-    fn windows_native_machine_selects_the_matching_catalog_architecture() {
-        assert_eq!(windows_catalog_architecture(0xaa64), Some("aarch64"));
-        assert_eq!(windows_catalog_architecture(0x8664), Some("x86_64"));
-    }
-
-    #[test]
-    fn unsupported_windows_machines_never_fall_back_to_x86_64() {
-        // Unknown, 32-bit x86, 32-bit ARM, and ARM64EC are not native targets
-        // in the release catalog. Do not guess which disk image can boot them.
-        for native_machine in [0, 0x014c, 0x01c4, 0xa641, 0xffff] {
-            assert_eq!(windows_catalog_architecture(native_machine), None);
+    fn host_architecture_selects_only_matching_catalog_entries() {
+        // Phase `windows_native_machine_selects_the_matching_catalog_architecture`.
+        {
+            assert_eq!(windows_catalog_architecture(0xaa64), Some("aarch64"));
+            assert_eq!(windows_catalog_architecture(0x8664), Some("x86_64"));
         }
-    }
 
-    #[test]
-    fn live_host_architecture_is_detectable() {
-        assert!(architecture().is_ok());
+        // Phase `unsupported_windows_machines_never_fall_back_to_x86_64`.
+        {
+            // Unknown, 32-bit x86, 32-bit ARM, and ARM64EC are not native targets
+            // in the release catalog. Do not guess which disk image can boot them.
+            for native_machine in [0, 0x014c, 0x01c4, 0xa641, 0xffff] {
+                assert_eq!(windows_catalog_architecture(native_machine), None);
+            }
+        }
+
+        // Phase `live_host_architecture_is_detectable`.
+        {
+            assert!(architecture().is_ok());
+        }
     }
 }

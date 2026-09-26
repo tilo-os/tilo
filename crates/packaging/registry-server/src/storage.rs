@@ -1261,26 +1261,91 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_layout() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Storage::open(dir.path()).unwrap();
-        assert!(s.root.join("entries").is_dir());
-        assert!(s.root.join("pending").is_dir());
-        assert!(s.root.join("deferred-pending").is_dir());
-        assert!(s.root.join("reviews").is_dir());
-        assert!(s.root.join("quarantined").is_dir());
-        assert!(s.root.join("snapshots").is_dir());
+    fn entries_and_identity_round_trip_through_the_storage_layout() {
+        // phase: open_creates_layout
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let s = Storage::open(dir.path()).unwrap();
+            assert!(s.root.join("entries").is_dir());
+            assert!(s.root.join("pending").is_dir());
+            assert!(s.root.join("deferred-pending").is_dir());
+            assert!(s.root.join("reviews").is_dir());
+            assert!(s.root.join("quarantined").is_dir());
+            assert!(s.root.join("snapshots").is_dir());
+        }
+        // phase: save_and_load_entry_roundtrip
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let s = Storage::open(dir.path()).unwrap();
+            let e = sample_entry("so.tilo.editor");
+            s.save_entry(&e).unwrap();
+            let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
+            assert_eq!(back, e);
+        }
+        // phase: load_entry_missing_returns_none
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let s = Storage::open(dir.path()).unwrap();
+            assert!(s.load_entry("nope").unwrap().is_none());
+        }
+        // phase: load_entries_lists_all
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let s = Storage::open(dir.path()).unwrap();
+            s.save_entry(&sample_entry("so.tilo.a")).unwrap();
+            s.save_entry(&sample_entry("so.tilo.b")).unwrap();
+            let mut ids: Vec<String> = s
+                .load_entries()
+                .unwrap()
+                .into_iter()
+                .map(|e| e.package_id)
+                .collect();
+            ids.sort();
+            assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
+        }
+        // phase: delete_entry_removes_file
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let s = Storage::open(dir.path()).unwrap();
+            s.save_entry(&sample_entry("so.tilo.a")).unwrap();
+            assert!(s.delete_entry("so.tilo.a").unwrap());
+            assert!(!s.delete_entry("so.tilo.a").unwrap());
+            assert!(s.load_entry("so.tilo.a").unwrap().is_none());
+        }
+        // phase: filename_encode_escapes_unsafe_chars
+        {
+            assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
+            // A slash gets escaped so it can't escape the entries/
+            // directory.
+            assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
+        }
+        // phase: identity_roundtrip
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let s = Storage::open(dir.path()).unwrap();
+            let ident = ServerIdentity {
+                owner_pubkey_hex: "cc".repeat(32),
+                name: "Tilo Official".into(),
+                description: "The default registry".into(),
+                base_url: "https://apps.tilo.so".into(),
+            };
+            s.save_identity(&ident).unwrap();
+            let back = s.load_identity().unwrap();
+            assert_eq!(back, ident);
+        }
     }
 
     #[test]
-    fn staging_a_package_keeps_its_payload_blobs_for_thin_installs() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(dir.path()).unwrap();
-        let identity = tilo_app_package::SigningIdentity::generate();
-        let payload = dir.path().join("payload");
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
-        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+    fn staged_packages_stay_readable_for_thin_installs() {
+        // phase: staging_a_package_keeps_its_payload_blobs_for_thin_installs
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let identity = tilo_app_package::SigningIdentity::generate();
+            let payload = dir.path().join("payload");
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
+            let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
             "[package]\nid = \"so.tilo.editor\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
              [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
              [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
@@ -1289,199 +1354,133 @@ mod tests {
             hex::encode(identity.public_key_bytes())
         ))
         .unwrap();
-        let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
-        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        storage.save_staged_artifact(&digest, &bytes).unwrap();
+            let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+            let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let digest = blake3::hash(&bytes).to_hex().to_string();
+            storage.save_staged_artifact(&digest, &bytes).unwrap();
 
-        let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
-        assert_eq!(
-            storage.load_payload_blob(&blob).unwrap().as_deref(),
-            Some(&b"#!/bin/true\n"[..])
-        );
-        assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
-        assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
+            let blob = tilo_app_package::BlobHash::of(b"#!/bin/true\n").to_hex();
+            assert_eq!(
+                storage.load_payload_blob(&blob).unwrap().as_deref(),
+                Some(&b"#!/bin/true\n"[..])
+            );
+            assert_eq!(storage.load_payload_blob(&"0".repeat(64)).unwrap(), None);
+            assert_eq!(storage.load_payload_blob("../../etc/passwd").unwrap(), None);
+        }
+        // phase: targetless_single_architecture_staging_remains_readable
+        {
+            let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
+                "submission_id": "so.tilo.editor",
+                "version": "1.0.0",
+                "blake3_hex": "ab".repeat(32),
+            }))
+            .unwrap();
+            assert_eq!(artifact.target, None);
+        }
     }
 
     #[test]
-    fn snapshot_transaction_recovers_each_crash_boundary() {
-        for crash_point in ["intent", "archive", "pointer"] {
+    fn snapshot_chain_transactions_are_crash_safe_and_monotonic() {
+        // phase: snapshot_transaction_recovers_each_crash_boundary
+        {
+            for crash_point in ["intent", "archive", "pointer"] {
+                let dir = tempfile::tempdir().unwrap();
+                let storage = Storage::open(dir.path()).unwrap();
+                let candidate = snapshot(1, String::new(), crash_point);
+                let body = serde_json::to_vec_pretty(&candidate).unwrap();
+                atomic_write(&storage.snapshot_transaction_path(), &body).unwrap();
+                if matches!(crash_point, "archive" | "pointer") {
+                    storage.archive_snapshot(&candidate).unwrap();
+                }
+                if crash_point == "pointer" {
+                    atomic_write(&storage.snapshot_path(), &body).unwrap();
+                }
+
+                let writer = storage.lock_snapshot().unwrap();
+                assert_eq!(writer.recover().unwrap(), Some(candidate.clone()));
+                assert_eq!(writer.current().unwrap(), Some(candidate.clone()));
+                assert_eq!(writer.sequence(1).unwrap(), Some(candidate));
+                drop(writer);
+                assert!(!storage.snapshot_transaction_path().exists());
+            }
+        }
+        // phase: concurrent_snapshot_writers_form_one_chain_without_sequence_forks
+        {
             let dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(dir.path()).unwrap();
-            let candidate = snapshot(1, String::new(), crash_point);
-            let body = serde_json::to_vec_pretty(&candidate).unwrap();
-            atomic_write(&storage.snapshot_transaction_path(), &body).unwrap();
-            if matches!(crash_point, "archive" | "pointer") {
-                storage.archive_snapshot(&candidate).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let mut threads = Vec::new();
+            for marker in ["so.tilo.a", "so.tilo.b"] {
+                let storage = storage.clone();
+                let barrier = barrier.clone();
+                threads.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    let writer = storage.lock_snapshot().unwrap();
+                    let current = writer.current().unwrap();
+                    let (sequence, previous) =
+                        current.as_ref().map_or((1, String::new()), |head| {
+                            (
+                                head.sequence.checked_add(1).unwrap(),
+                                registry_types::snapshot_hash(head).unwrap(),
+                            )
+                        });
+                    writer
+                        .publish(&snapshot(sequence, previous, marker))
+                        .unwrap();
+                }));
             }
-            if crash_point == "pointer" {
-                atomic_write(&storage.snapshot_path(), &body).unwrap();
+            barrier.wait();
+            for thread in threads {
+                thread.join().unwrap();
             }
-
+            let first = storage.load_snapshot_sequence(1).unwrap().unwrap();
+            let second = storage.load_snapshot_sequence(2).unwrap().unwrap();
+            assert_eq!(
+                second.previous_snapshot_hash_hex,
+                registry_types::snapshot_hash(&first).unwrap()
+            );
+            assert_eq!(storage.load_snapshot().unwrap(), Some(second));
+        }
+        // phase: history_filename_sequence_must_match_signed_body_sequence
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let wrong = snapshot(2, String::new(), "wrong");
+            let hash = registry_types::snapshot_hash(&wrong).unwrap();
+            let path = storage.snapshot_history_path(1, &hash).unwrap();
+            atomic_write(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
+            assert!(matches!(
+                storage.load_snapshot_sequence(1),
+                Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
+            ));
+        }
+        // phase: stale_candidate_is_rejected_without_leaving_a_transaction
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
             let writer = storage.lock_snapshot().unwrap();
-            assert_eq!(writer.recover().unwrap(), Some(candidate.clone()));
-            assert_eq!(writer.current().unwrap(), Some(candidate.clone()));
-            assert_eq!(writer.sequence(1).unwrap(), Some(candidate));
-            drop(writer);
+            let first = snapshot(1, String::new(), "first");
+            writer.publish(&first).unwrap();
+            let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
+            writer.publish(&second).unwrap();
+            let stale = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "stale");
+            assert!(writer.publish(&stale).is_err());
             assert!(!storage.snapshot_transaction_path().exists());
+            assert_eq!(writer.current().unwrap(), Some(second));
+            drop(writer);
         }
-    }
-
-    #[test]
-    fn concurrent_snapshot_writers_form_one_chain_without_sequence_forks() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(dir.path()).unwrap();
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-        let mut threads = Vec::new();
-        for marker in ["so.tilo.a", "so.tilo.b"] {
-            let storage = storage.clone();
-            let barrier = barrier.clone();
-            threads.push(std::thread::spawn(move || {
-                barrier.wait();
-                let writer = storage.lock_snapshot().unwrap();
-                let current = writer.current().unwrap();
-                let (sequence, previous) = current.as_ref().map_or((1, String::new()), |head| {
-                    (
-                        head.sequence.checked_add(1).unwrap(),
-                        registry_types::snapshot_hash(head).unwrap(),
-                    )
-                });
-                writer
-                    .publish(&snapshot(sequence, previous, marker))
-                    .unwrap();
-            }));
+        // phase: archiving_a_stale_pointer_never_rewinds_the_live_pointer
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let writer = storage.lock_snapshot().unwrap();
+            let first = snapshot(1, String::new(), "first");
+            writer.publish(&first).unwrap();
+            let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
+            writer.publish(&second).unwrap();
+            writer.archive_current(&first).unwrap();
+            assert_eq!(writer.current().unwrap(), Some(second));
+            drop(writer);
         }
-        barrier.wait();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        let first = storage.load_snapshot_sequence(1).unwrap().unwrap();
-        let second = storage.load_snapshot_sequence(2).unwrap().unwrap();
-        assert_eq!(
-            second.previous_snapshot_hash_hex,
-            registry_types::snapshot_hash(&first).unwrap()
-        );
-        assert_eq!(storage.load_snapshot().unwrap(), Some(second));
-    }
-
-    #[test]
-    fn history_filename_sequence_must_match_signed_body_sequence() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(dir.path()).unwrap();
-        let wrong = snapshot(2, String::new(), "wrong");
-        let hash = registry_types::snapshot_hash(&wrong).unwrap();
-        let path = storage.snapshot_history_path(1, &hash).unwrap();
-        atomic_write(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
-        assert!(matches!(
-            storage.load_snapshot_sequence(1),
-            Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
-        ));
-    }
-
-    #[test]
-    fn stale_candidate_is_rejected_without_leaving_a_transaction() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(dir.path()).unwrap();
-        let writer = storage.lock_snapshot().unwrap();
-        let first = snapshot(1, String::new(), "first");
-        writer.publish(&first).unwrap();
-        let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
-        writer.publish(&second).unwrap();
-        let stale = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "stale");
-        assert!(writer.publish(&stale).is_err());
-        assert!(!storage.snapshot_transaction_path().exists());
-        assert_eq!(writer.current().unwrap(), Some(second));
-        drop(writer);
-    }
-
-    #[test]
-    fn archiving_a_stale_pointer_never_rewinds_the_live_pointer() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::open(dir.path()).unwrap();
-        let writer = storage.lock_snapshot().unwrap();
-        let first = snapshot(1, String::new(), "first");
-        writer.publish(&first).unwrap();
-        let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
-        writer.publish(&second).unwrap();
-        writer.archive_current(&first).unwrap();
-        assert_eq!(writer.current().unwrap(), Some(second));
-        drop(writer);
-    }
-
-    #[test]
-    fn save_and_load_entry_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Storage::open(dir.path()).unwrap();
-        let e = sample_entry("so.tilo.editor");
-        s.save_entry(&e).unwrap();
-        let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
-        assert_eq!(back, e);
-    }
-
-    #[test]
-    fn load_entry_missing_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Storage::open(dir.path()).unwrap();
-        assert!(s.load_entry("nope").unwrap().is_none());
-    }
-
-    #[test]
-    fn load_entries_lists_all() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Storage::open(dir.path()).unwrap();
-        s.save_entry(&sample_entry("so.tilo.a")).unwrap();
-        s.save_entry(&sample_entry("so.tilo.b")).unwrap();
-        let mut ids: Vec<String> = s
-            .load_entries()
-            .unwrap()
-            .into_iter()
-            .map(|e| e.package_id)
-            .collect();
-        ids.sort();
-        assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
-    }
-
-    #[test]
-    fn delete_entry_removes_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Storage::open(dir.path()).unwrap();
-        s.save_entry(&sample_entry("so.tilo.a")).unwrap();
-        assert!(s.delete_entry("so.tilo.a").unwrap());
-        assert!(!s.delete_entry("so.tilo.a").unwrap());
-        assert!(s.load_entry("so.tilo.a").unwrap().is_none());
-    }
-
-    #[test]
-    fn filename_encode_escapes_unsafe_chars() {
-        assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
-        // A slash gets escaped so it can't escape the entries/
-        // directory.
-        assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
-    }
-
-    #[test]
-    fn identity_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = Storage::open(dir.path()).unwrap();
-        let ident = ServerIdentity {
-            owner_pubkey_hex: "cc".repeat(32),
-            name: "Tilo Official".into(),
-            description: "The default registry".into(),
-            base_url: "https://apps.tilo.so".into(),
-        };
-        s.save_identity(&ident).unwrap();
-        let back = s.load_identity().unwrap();
-        assert_eq!(back, ident);
-    }
-
-    #[test]
-    fn targetless_single_architecture_staging_remains_readable() {
-        let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
-            "submission_id": "so.tilo.editor",
-            "version": "1.0.0",
-            "blake3_hex": "ab".repeat(32),
-        }))
-        .unwrap();
-        assert_eq!(artifact.target, None);
     }
 }

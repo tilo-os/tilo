@@ -49,3 +49,17 @@ greeter-welcome-back = Willkommen zurück bei Tilo
 greeter-sign-in = Zum Fortfahren anmelden
 greeter-passcode-intro = Gib deinen Code ein, um deinen Desktop zu öffnen.
 lock-welcome-back = Willkommen zurück
+
+# Now playing: Quick Settings and the lock screen.
+now-playing-title = Wird abgespielt
+now-playing-play = Abspielen
+now-playing-pause = Pausieren
+now-playing-previous = Vorheriger Titel
+now-playing-next = Nächster Titel
+now-playing-seek = Wiedergabeposition
+now-playing-seek-help = Mit Pfeil links und rechts um fünf Sekunden springen
+now-playing-choose-player = Player wählen
+now-playing-choose-output = Wiedergabeort wählen
+now-playing-output-local = Auf diesem Computer
+now-playing-output-device = Eines deiner Geräte
+now-playing-route-gone = Dieser Wiedergabeort ist nicht mehr verfügbar

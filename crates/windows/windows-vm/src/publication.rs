@@ -178,33 +178,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_executable_paths_as_aliases() {
-        let mut application = app("example");
-        application.remote_app_alias = "C:\\Windows\\notepad.exe".to_string();
-        assert_eq!(
-            application.validate(),
-            Err(CatalogError::InvalidIdentifier("RemoteApp alias"))
-        );
-    }
-
-    #[test]
-    fn older_catalogues_default_to_no_safe_uninstaller() {
-        let application: PublishedApplication = serde_json::from_str(
-            r#"{"id":"example","displayName":"Example","remoteAppAlias":"tilo-example","iconSha256":null,"associations":[]}"#,
-        )
-        .unwrap();
-        assert!(!application.uninstall_available);
-    }
-
-    #[test]
-    fn duplicate_ids_are_rejected() {
-        let catalog = Catalog {
-            generation: 1,
-            applications: vec![app("same"), app("same")],
-        };
-        assert!(matches!(
-            catalog.validate(),
-            Err(CatalogError::DuplicateId(_))
-        ));
+    fn publication_catalogues_reject_paths_duplicates_and_unsafe_uninstallers() {
+        // Phase `rejects_executable_paths_as_aliases`.
+        {
+            let mut application = app("example");
+            application.remote_app_alias = "C:\\Windows\\notepad.exe".to_string();
+            assert_eq!(
+                application.validate(),
+                Err(CatalogError::InvalidIdentifier("RemoteApp alias"))
+            );
+        }
+        // Phase `older_catalogues_default_to_no_safe_uninstaller`.
+        {
+            let application: PublishedApplication = serde_json::from_str(
+                r#"{"id":"example","displayName":"Example","remoteAppAlias":"tilo-example","iconSha256":null,"associations":[]}"#,
+            )
+            .unwrap();
+            assert!(!application.uninstall_available);
+        }
+        // Phase `duplicate_ids_are_rejected`.
+        {
+            let catalog = Catalog {
+                generation: 1,
+                applications: vec![app("same"), app("same")],
+            };
+            assert!(matches!(
+                catalog.validate(),
+                Err(CatalogError::DuplicateId(_))
+            ));
+        }
     }
 }

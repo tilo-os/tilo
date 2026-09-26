@@ -12,6 +12,12 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       ca-certificates curl libgcc libstdc++ zlib-ng-compat \
       gnupg2 diffutils which \
     && dnf clean all
+# Native fixture tools for check.yml's security-boundary invariants (EFI, RPM
+# signing, kernel modules, rendered fonts). Baked in so that job neither waits
+# on nor depends on a Fedora mirror; a separate layer keeps the base cached.
+RUN dnf install -y --setopt=install_weak_deps=False \
+      gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts \
+    && dnf clean all
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \

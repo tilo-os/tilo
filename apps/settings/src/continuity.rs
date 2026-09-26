@@ -199,17 +199,36 @@ pub(crate) fn settings_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Privacy facets are opt-in behind a master switch, and audit entries hold only time, capability and state.
     #[test]
-    fn privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins() {
-        let mut policy = ContinuityPrivacy::default();
-        for capability in Capability::ALL {
-            assert!(!policy.allowed(capability));
-            assert!(!policy.effective(capability));
+    fn continuity_privacy_is_opt_in_and_its_audit_is_payload_free() {
+        // Case `privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins`.
+        {
+            let mut policy = ContinuityPrivacy::default();
+            for capability in Capability::ALL {
+                assert!(!policy.allowed(capability));
+                assert!(!policy.effective(capability));
+            }
+            policy.set_allowed(Capability::Clipboard, true);
+            assert!(!policy.effective(Capability::Clipboard));
+            policy.enabled = true;
+            assert!(policy.effective(Capability::Clipboard));
         }
-        policy.set_allowed(Capability::Clipboard, true);
-        assert!(!policy.effective(Capability::Clipboard));
-        policy.enabled = true;
-        assert!(policy.effective(Capability::Clipboard));
+
+        // Case `audit_schema_cannot_hold_payloads_tokens_or_device_addresses`.
+        {
+            let entry = AuditEntry {
+                recorded_at_secs: 42,
+                capability: Some(Capability::Clipboard),
+                enabled: true,
+            };
+            let encoded = serde_json::to_value(entry).unwrap();
+            let object = encoded.as_object().unwrap();
+            assert_eq!(object.len(), 3);
+            assert!(object.contains_key("recorded_at_secs"));
+            assert!(object.contains_key("capability"));
+            assert!(object.contains_key("enabled"));
+        }
     }
 
     #[test]
@@ -232,20 +251,5 @@ mod tests {
         assert_eq!(loaded.audit.len(), AUDIT_LIMIT);
         assert_eq!(loaded.audit[0].recorded_at_secs, 5);
         assert_eq!(settings_store::load_at(&path)["locale"]["currency"], "EUR");
-    }
-
-    #[test]
-    fn audit_schema_cannot_hold_payloads_tokens_or_device_addresses() {
-        let entry = AuditEntry {
-            recorded_at_secs: 42,
-            capability: Some(Capability::Clipboard),
-            enabled: true,
-        };
-        let encoded = serde_json::to_value(entry).unwrap();
-        let object = encoded.as_object().unwrap();
-        assert_eq!(object.len(), 3);
-        assert!(object.contains_key("recorded_at_secs"));
-        assert!(object.contains_key("capability"));
-        assert!(object.contains_key("enabled"));
     }
 }

@@ -167,89 +167,93 @@ mod tests {
         ]
     }
 
+    /// Canonical hits, browsing, incremental refresh and paged budgets.
     #[test]
-    fn sheet_and_cell_hits_use_canonical_addresses() {
-        let provider = SheetSearchProvider::new(&sheets());
-        let sheet = provider.search("sales").pop().expect("sheet hit");
-        assert_eq!(
-            sheet.action_address(),
-            Some(crate::actions::open_sheet_address("sales-id"))
-        );
-        let cell = provider.search("4,200").pop().expect("computed result hit");
-        assert_eq!(cell.title, "Budget!A1");
-        assert_eq!(
-            cell.action_address(),
-            Some(crate::actions::open_cell_address("budget-id", 0, 0))
-        );
-    }
-
-    #[test]
-    fn empty_query_browses_sheets_and_populated_cells() {
-        let mut registry = SearchRegistry::new();
-        registry.register(Box::new(SheetSearchProvider::new(&sheets())));
-        let hits = registry.query("");
-        assert_eq!(hits.len(), 3);
-        assert!(hits.iter().all(|hit| hit.action_address().is_some()));
-    }
-
-    #[test]
-    fn refresh_is_incremental_and_removes_stale_cells() {
-        let provider = SheetSearchProvider::new(&sheets());
-        let before = provider.stats();
-        provider.refresh(&sheets());
-        assert_eq!(
-            provider.stats(),
-            before,
-            "identical revisions do not reindex"
-        );
-        let mut revised = sheets();
-        revised[0].cells.clear();
-        provider.refresh(&revised);
-        assert!(provider.search("4,200").is_empty());
-        assert!(
-            provider
-                .resolve_action_resource(&crate::actions::open_cell_address("budget-id", 0, 0))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn late_cells_are_reachable_in_a_large_catalog_with_paged_work_budgets() {
-        let (provider, hit) = assert_late_hit_reachable(
-            |corpus| {
-                let large = vec![SearchableSheet {
-                    id: "large-id".into(),
-                    name: "Large workbook".into(),
-                    cells: corpus
-                        .map(|row| SearchableCell {
-                            col: 0,
-                            row: u32::try_from(row.index).expect("corpus fits a sheet"),
-                            raw: row.text,
-                            display: String::new(),
-                        })
-                        .collect(),
-                }];
-                SheetSearchProvider::new(&large)
-            },
-            3_000,
-        );
-        assert_eq!(hit.title, "Large workbook!A3000");
-        let needle = provider.search_page(LATE_HIT_NEEDLE, None, 1, 1);
-        assert_eq!(needle.results, vec![hit]);
-        assert!(needle.inspected <= 1);
-
-        let mut cursor = None;
-        let mut total = 0;
-        loop {
-            let page = provider.search_page("ordinary", cursor.as_ref(), 17, 5);
-            assert!(page.inspected <= 17);
-            assert!(page.results.len() <= 5);
-            total += page.results.len();
-            cursor = page.next;
-            if cursor.is_none() || total > 20 {
-                break;
-            }
+    fn sheet_search_addresses_browses_refreshes_and_pages() {
+        // Case `sheet_and_cell_hits_use_canonical_addresses`.
+        {
+            let provider = SheetSearchProvider::new(&sheets());
+            let sheet = provider.search("sales").pop().expect("sheet hit");
+            assert_eq!(
+                sheet.action_address(),
+                Some(crate::actions::open_sheet_address("sales-id"))
+            );
+            let cell = provider.search("4,200").pop().expect("computed result hit");
+            assert_eq!(cell.title, "Budget!A1");
+            assert_eq!(
+                cell.action_address(),
+                Some(crate::actions::open_cell_address("budget-id", 0, 0))
+            );
         }
-        assert!(total >= 20, "continuation makes broad matches reachable");
+
+        // Case `empty_query_browses_sheets_and_populated_cells`.
+        {
+            let mut registry = SearchRegistry::new();
+            registry.register(Box::new(SheetSearchProvider::new(&sheets())));
+            let hits = registry.query("");
+            assert_eq!(hits.len(), 3);
+            assert!(hits.iter().all(|hit| hit.action_address().is_some()));
+        }
+
+        // Case `refresh_is_incremental_and_removes_stale_cells`.
+        {
+            let provider = SheetSearchProvider::new(&sheets());
+            let before = provider.stats();
+            provider.refresh(&sheets());
+            assert_eq!(
+                provider.stats(),
+                before,
+                "identical revisions do not reindex"
+            );
+            let mut revised = sheets();
+            revised[0].cells.clear();
+            provider.refresh(&revised);
+            assert!(provider.search("4,200").is_empty());
+            assert!(
+                provider
+                    .resolve_action_resource(&crate::actions::open_cell_address("budget-id", 0, 0))
+                    .is_none()
+            );
+        }
+
+        // Case `late_cells_are_reachable_in_a_large_catalog_with_paged_work_budgets`.
+        {
+            let (provider, hit) = assert_late_hit_reachable(
+                |corpus| {
+                    let large = vec![SearchableSheet {
+                        id: "large-id".into(),
+                        name: "Large workbook".into(),
+                        cells: corpus
+                            .map(|row| SearchableCell {
+                                col: 0,
+                                row: u32::try_from(row.index).expect("corpus fits a sheet"),
+                                raw: row.text,
+                                display: String::new(),
+                            })
+                            .collect(),
+                    }];
+                    SheetSearchProvider::new(&large)
+                },
+                3_000,
+            );
+            assert_eq!(hit.title, "Large workbook!A3000");
+            let needle = provider.search_page(LATE_HIT_NEEDLE, None, 1, 1);
+            assert_eq!(needle.results, vec![hit]);
+            assert!(needle.inspected <= 1);
+
+            let mut cursor = None;
+            let mut total = 0;
+            loop {
+                let page = provider.search_page("ordinary", cursor.as_ref(), 17, 5);
+                assert!(page.inspected <= 17);
+                assert!(page.results.len() <= 5);
+                total += page.results.len();
+                cursor = page.next;
+                if cursor.is_none() || total > 20 {
+                    break;
+                }
+            }
+            assert!(total >= 20, "continuation makes broad matches reachable");
+        }
     }
 }

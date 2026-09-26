@@ -564,232 +564,244 @@ mod tests {
     }
 
     #[test]
-    fn get_returns_none_then_ready_after_async_decode() {
-        let bytes = png_bytes(12, 8, [10, 200, 30]);
-        // Asserting `!is_idle()` right after the miss is a race: the worker
-        // may finish this tiny decode first. Counting fetches makes the
-        // real claim regardless of who wins that race.
-        let fetches = Arc::new(AtomicUsize::new(0));
-        let seen = Arc::clone(&fetches);
-        let fetch: Fetcher = Arc::new(move |_url: &str| {
-            seen.fetch_add(1, Ordering::SeqCst);
-            Some(bytes.clone())
-        });
-        let store = ImageStore::new(&fetch);
+    fn store_schedules_one_load_per_url_and_settles_ready_or_failed() {
+        // Case `get_returns_none_then_ready_after_async_decode`.
+        {
+            let bytes = png_bytes(12, 8, [10, 200, 30]);
+            // Asserting `!is_idle()` right after the miss is a race: the worker
+            // may finish this tiny decode first. Counting fetches makes the
+            // real claim regardless of who wins that race.
+            let fetches = Arc::new(AtomicUsize::new(0));
+            let seen = Arc::clone(&fetches);
+            let fetch: Fetcher = Arc::new(move |_url: &str| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Some(bytes.clone())
+            });
+            let store = ImageStore::new(&fetch);
 
-        // First look: not cached → placeholder (None) + a load is scheduled.
-        assert!(store.get("http://example.test/cover.png").is_none());
+            // First look: not cached → placeholder (None) + a load is scheduled.
+            assert!(store.get("http://example.test/cover.png").is_none());
 
-        store.block_until_idle(DECODE_HANG_GUARD);
-        assert!(store.is_idle(), "load settled");
-        assert_eq!(
-            fetches.load(Ordering::SeqCst),
-            1,
-            "the cache miss scheduled exactly one load"
-        );
+            store.block_until_idle(DECODE_HANG_GUARD);
+            assert!(store.is_idle(), "load settled");
+            assert_eq!(
+                fetches.load(Ordering::SeqCst),
+                1,
+                "the cache miss scheduled exactly one load"
+            );
 
-        let img = store
-            .get("http://example.test/cover.png")
-            .expect("decoded image is cached after the async load");
-        assert_eq!((img.width, img.height), (12, 8));
+            let img = store
+                .get("http://example.test/cover.png")
+                .expect("decoded image is cached after the async load");
+            assert_eq!((img.width, img.height), (12, 8));
 
-        // Painting the cached image must not panic.
-        let mut scene = Scene::new();
-        paint_image_cover(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 40.0, 40.0),
-            &img,
-            8.0,
-        );
-    }
-
-    #[test]
-    fn host_driven_store_loads_only_what_the_host_completes() {
-        let (store, mut loader) = ImageStore::host_driven();
-        assert!(store.get("a.png").is_none());
-        assert!(store.get("b.png").is_none());
-        assert_eq!(store.pending(), 2);
-        assert_eq!(loader.take_requests(), ["a.png", "b.png"]);
-        assert!(loader.take_requests().is_empty());
-        assert!(loader.complete("a.png", Some(&png_bytes(3, 2, [1, 2, 3]))));
-        assert!(!loader.complete("a.png", None), "a request settles once");
-        assert!(!loader.complete("never-requested.png", None));
-        let image = store.get("a.png").expect("completed image is cached");
-        assert_eq!((image.width, image.height), (3, 2));
-        assert_eq!(store.pending(), 1);
-        drop(loader);
-        assert!(store.is_idle(), "dropping the loader settles what it left");
-        assert!(store.get("b.png").is_none());
-        assert!(store.is_known("b.png"));
-        assert!(store.get("c.png").is_none());
-        assert!(
-            store.is_idle(),
-            "a store without a loader fails new requests"
-        );
-    }
-
-    #[test]
-    fn pumped_background_runs_native_loads_one_job_per_image() {
-        let pumped = crate::background::Pumped::new();
-        let bytes = png_bytes(4, 4, [9, 9, 9]);
-        let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
-        let store = {
-            let _background = pumped.background().enter();
-            ImageStore::with_workers(&fetch, 1)
-        };
-        let urls = ["one.png", "two.png", "three.png"];
-        for url in urls {
-            assert!(store.get(url).is_none());
-        }
-        assert_eq!(store.pending(), 3);
-        assert_eq!(pumped.run_pending(), 3);
-        assert!(store.is_idle());
-        for url in urls {
-            assert!(store.get(url).is_some(), "{url} decoded");
-        }
-        assert!(store.get("four.png").is_none());
-        store.block_until_idle(Duration::from_secs(5));
-        assert!(store.get("four.png").is_some(), "parking pumps the queue");
-    }
-
-    #[test]
-    fn a_host_without_background_work_settles_loads_as_failed() {
-        let fetch: Fetcher = Arc::new(|_| Some(png_bytes(2, 2, [0, 0, 0])));
-        let store = {
-            let _background = Background::new(crate::background::NoBackground).enter();
-            ImageStore::new(&fetch)
-        };
-        assert!(store.get("x.png").is_none());
-        assert!(store.is_idle());
-        assert!(store.is_known("x.png"));
-    }
-
-    #[test]
-    fn failed_fetch_settles_as_failed_not_pending() {
-        let fetch: Fetcher = Arc::new(|_url: &str| None);
-        let store = ImageStore::new(&fetch);
-        assert!(store.get("http://example.test/missing.jpg").is_none());
-        store.block_until_idle(DECODE_HANG_GUARD);
-        assert!(store.is_idle(), "a failed fetch still settles");
-        // Still None, and no repeated scheduling (already known/Failed).
-        assert!(store.get("http://example.test/missing.jpg").is_none());
-        assert!(store.is_known("http://example.test/missing.jpg"));
-    }
-
-    #[test]
-    fn empty_url_is_ignored() {
-        let fetch: Fetcher = Arc::new(|_url: &str| Some(png_bytes(2, 2, [0, 0, 0])));
-        let store = ImageStore::new(&fetch);
-        assert!(store.get("").is_none());
-        assert!(store.is_idle(), "empty url schedules nothing");
-    }
-
-    #[test]
-    fn decoded_cache_has_strict_entry_and_byte_limits() {
-        let mut slots = CacheState::default();
-        for index in 0..IMAGE_CACHE_ENTRY_LIMIT.saturating_add(5) {
-            insert_settled(
-                &mut slots,
-                format!("small-{index}"),
-                Slot::Ready(logical_image(1, 1)),
+            // Painting the cached image must not panic.
+            let mut scene = Scene::new();
+            paint_image_cover(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 40.0, 40.0),
+                &img,
+                8.0,
             );
         }
-        assert_eq!(slots.slots.len(), IMAGE_CACHE_ENTRY_LIMIT);
 
-        let mut large_slots = CacheState::default();
-        for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
-            insert_settled(
-                &mut large_slots,
-                format!("large-{index}"),
-                Slot::Ready(logical_image(600, 600)),
-            );
-            assert!(cache_bytes(&large_slots) <= IMAGE_CACHE_BYTE_LIMIT);
+        // Case `failed_fetch_settles_as_failed_not_pending`.
+        {
+            let fetch: Fetcher = Arc::new(|_url: &str| None);
+            let store = ImageStore::new(&fetch);
+            assert!(store.get("http://example.test/missing.jpg").is_none());
+            store.block_until_idle(DECODE_HANG_GUARD);
+            assert!(store.is_idle(), "a failed fetch still settles");
+            // Still None, and no repeated scheduling (already known/Failed).
+            assert!(store.get("http://example.test/missing.jpg").is_none());
+            assert!(store.is_known("http://example.test/missing.jpg"));
         }
-        assert!(large_slots.slots.len() < IMAGE_CACHE_ENTRY_LIMIT);
+
+        // Case `empty_url_is_ignored`.
+        {
+            let fetch: Fetcher = Arc::new(|_url: &str| Some(png_bytes(2, 2, [0, 0, 0])));
+            let store = ImageStore::new(&fetch);
+            assert!(store.get("").is_none());
+            assert!(store.is_idle(), "empty url schedules nothing");
+        }
     }
 
     #[test]
-    fn decoded_cache_evicts_the_least_recently_used_settled_entry() {
-        let mut cache = CacheState::default();
-        for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
+    fn host_and_background_loaders_settle_only_what_they_run() {
+        // Case `host_driven_store_loads_only_what_the_host_completes`.
+        {
+            let (store, mut loader) = ImageStore::host_driven();
+            assert!(store.get("a.png").is_none());
+            assert!(store.get("b.png").is_none());
+            assert_eq!(store.pending(), 2);
+            assert_eq!(loader.take_requests(), ["a.png", "b.png"]);
+            assert!(loader.take_requests().is_empty());
+            assert!(loader.complete("a.png", Some(&png_bytes(3, 2, [1, 2, 3]))));
+            assert!(!loader.complete("a.png", None), "a request settles once");
+            assert!(!loader.complete("never-requested.png", None));
+            let image = store.get("a.png").expect("completed image is cached");
+            assert_eq!((image.width, image.height), (3, 2));
+            assert_eq!(store.pending(), 1);
+            drop(loader);
+            assert!(store.is_idle(), "dropping the loader settles what it left");
+            assert!(store.get("b.png").is_none());
+            assert!(store.is_known("b.png"));
+            assert!(store.get("c.png").is_none());
+            assert!(
+                store.is_idle(),
+                "a store without a loader fails new requests"
+            );
+        }
+
+        // Case `pumped_background_runs_native_loads_one_job_per_image`.
+        {
+            let pumped = crate::background::Pumped::new();
+            let bytes = png_bytes(4, 4, [9, 9, 9]);
+            let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+            let store = {
+                let _background = pumped.background().enter();
+                ImageStore::with_workers(&fetch, 1)
+            };
+            let urls = ["one.png", "two.png", "three.png"];
+            for url in urls {
+                assert!(store.get(url).is_none());
+            }
+            assert_eq!(store.pending(), 3);
+            assert_eq!(pumped.run_pending(), 3);
+            assert!(store.is_idle());
+            for url in urls {
+                assert!(store.get(url).is_some(), "{url} decoded");
+            }
+            assert!(store.get("four.png").is_none());
+            store.block_until_idle(Duration::from_secs(5));
+            assert!(store.get("four.png").is_some(), "parking pumps the queue");
+        }
+
+        // Case `a_host_without_background_work_settles_loads_as_failed`.
+        {
+            let fetch: Fetcher = Arc::new(|_| Some(png_bytes(2, 2, [0, 0, 0])));
+            let store = {
+                let _background = Background::new(crate::background::NoBackground).enter();
+                ImageStore::new(&fetch)
+            };
+            assert!(store.get("x.png").is_none());
+            assert!(store.is_idle());
+            assert!(store.is_known("x.png"));
+        }
+    }
+
+    #[test]
+    fn decoded_cache_enforces_entry_byte_and_lru_limits() {
+        // Case `decoded_cache_has_strict_entry_and_byte_limits`.
+        {
+            let mut slots = CacheState::default();
+            for index in 0..IMAGE_CACHE_ENTRY_LIMIT.saturating_add(5) {
+                insert_settled(
+                    &mut slots,
+                    format!("small-{index}"),
+                    Slot::Ready(logical_image(1, 1)),
+                );
+            }
+            assert_eq!(slots.slots.len(), IMAGE_CACHE_ENTRY_LIMIT);
+
+            let mut large_slots = CacheState::default();
+            for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
+                insert_settled(
+                    &mut large_slots,
+                    format!("large-{index}"),
+                    Slot::Ready(logical_image(600, 600)),
+                );
+                assert!(cache_bytes(&large_slots) <= IMAGE_CACHE_BYTE_LIMIT);
+            }
+            assert!(large_slots.slots.len() < IMAGE_CACHE_ENTRY_LIMIT);
+        }
+
+        // Case `decoded_cache_evicts_the_least_recently_used_settled_entry`.
+        {
+            let mut cache = CacheState::default();
+            for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
+                insert_settled(
+                    &mut cache,
+                    format!("image-{index}"),
+                    Slot::Ready(logical_image(1, 1)),
+                );
+            }
+            let hot_tick = cache.next_tick();
+            cache
+                .slots
+                .get_mut("image-0")
+                .expect("seeded entry")
+                .last_used = hot_tick;
             insert_settled(
                 &mut cache,
-                format!("image-{index}"),
+                "new-image".into(),
                 Slot::Ready(logical_image(1, 1)),
             );
+            assert!(cache.slots.contains_key("image-0"));
+            assert!(!cache.slots.contains_key("image-1"));
+            assert!(cache.slots.contains_key("new-image"));
         }
-        let hot_tick = cache.next_tick();
-        cache
-            .slots
-            .get_mut("image-0")
-            .expect("seeded entry")
-            .last_used = hot_tick;
-        insert_settled(
-            &mut cache,
-            "new-image".into(),
-            Slot::Ready(logical_image(1, 1)),
-        );
-        assert!(cache.slots.contains_key("image-0"));
-        assert!(!cache.slots.contains_key("image-1"));
-        assert!(cache.slots.contains_key("new-image"));
-    }
 
-    #[test]
-    fn lru_clock_rebases_before_exhaustion_without_aliasing_live_entries() {
-        let mut cache = CacheState::default();
-        cache.slots.insert(
-            "old".into(),
-            SlotEntry {
-                slot: Slot::Failed,
-                last_used: 7,
-            },
-        );
-        cache.slots.insert(
-            "new".into(),
-            SlotEntry {
-                slot: Slot::Failed,
-                last_used: u64::MAX,
-            },
-        );
-        cache.clock = u64::MAX;
-        let tick = cache.next_tick();
-        let old = cache.slots["old"].last_used;
-        let new = cache.slots["new"].last_used;
-        assert!(old < new && new < tick);
-        assert_ne!(tick, 0);
-    }
-
-    #[test]
-    fn decode_downscales_oversized_sources_before_caching() {
-        let bytes = png_bytes(700, 2, [20, 40, 60]);
-        let (_, width, height) =
-            decode_rgba(&bytes, THUMBNAIL_MAX_DIMENSION).expect("valid PNG decodes");
-        assert!(width <= 600 && height <= 600);
-    }
-
-    #[test]
-    fn document_store_preserves_scan_resolution_without_changing_thumbnail_defaults() {
-        let bytes = png_bytes(1200, 760, [20, 40, 60]);
-        let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
-        for (store, expected) in [
-            (ImageStore::new(&fetch), (600, 380)),
-            (ImageStore::with_max_dimension(&fetch, 4096), (1200, 760)),
-        ] {
-            assert!(store.get("scan.png").is_none());
-            store.block_until_idle(DECODE_HANG_GUARD);
-            let image = store.get("scan.png").expect("scan must finish decoding");
-            assert_eq!((image.width, image.height), expected);
-            assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
+        // Case `lru_clock_rebases_before_exhaustion_without_aliasing_live_entries`.
+        {
+            let mut cache = CacheState::default();
+            cache.slots.insert(
+                "old".into(),
+                SlotEntry {
+                    slot: Slot::Failed,
+                    last_used: 7,
+                },
+            );
+            cache.slots.insert(
+                "new".into(),
+                SlotEntry {
+                    slot: Slot::Failed,
+                    last_used: u64::MAX,
+                },
+            );
+            cache.clock = u64::MAX;
+            let tick = cache.next_tick();
+            let old = cache.slots["old"].last_used;
+            let new = cache.slots["new"].last_used;
+            assert!(old < new && new < tick);
+            assert_ne!(tick, 0);
         }
     }
 
     #[test]
-    fn document_decode_limit_cannot_exceed_the_cache_budget() {
-        let bytes = png_bytes(5000, 2, [20, 40, 60]);
-        let (_, width, height) = decode_rgba(&bytes, u32::MAX).unwrap();
-        assert_eq!(width, IMAGE_MAX_DIMENSION);
-        assert!(u64::from(width) * u64::from(height) * 4 <= IMAGE_CACHE_BYTE_LIMIT);
+    fn decode_dimension_limits_fit_thumbnails_documents_and_the_cache_budget() {
+        // Case `decode_downscales_oversized_sources_before_caching`.
+        {
+            let bytes = png_bytes(700, 2, [20, 40, 60]);
+            let (_, width, height) =
+                decode_rgba(&bytes, THUMBNAIL_MAX_DIMENSION).expect("valid PNG decodes");
+            assert!(width <= 600 && height <= 600);
+        }
+
+        // Case `document_decode_limit_cannot_exceed_the_cache_budget`.
+        {
+            let bytes = png_bytes(5000, 2, [20, 40, 60]);
+            let (_, width, height) = decode_rgba(&bytes, u32::MAX).unwrap();
+            assert_eq!(width, IMAGE_MAX_DIMENSION);
+            assert!(u64::from(width) * u64::from(height) * 4 <= IMAGE_CACHE_BYTE_LIMIT);
+        }
+
+        // Case `document_store_preserves_scan_resolution_without_changing_thumbnail_defaults`.
+        {
+            let bytes = png_bytes(1200, 760, [20, 40, 60]);
+            let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+            for (store, expected) in [
+                (ImageStore::new(&fetch), (600, 380)),
+                (ImageStore::with_max_dimension(&fetch, 4096), (1200, 760)),
+            ] {
+                assert!(store.get("scan.png").is_none());
+                store.block_until_idle(DECODE_HANG_GUARD);
+                let image = store.get("scan.png").expect("scan must finish decoding");
+                assert_eq!((image.width, image.height), expected);
+                assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
+            }
+        }
     }
 
     #[test]
