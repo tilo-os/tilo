@@ -44,6 +44,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
                 is_default: false,
                 bluetooth_codec: Some("AAC".into()),
             }],
+            local_inputs: Vec::new(),
             transfers: Vec::new(),
             remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
             speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView::default(),
@@ -463,6 +464,75 @@ fn device_pane_requires_an_explicit_gamepad_consent_choice() {
                 forwarding_id: [7; 16],
                 approved: false,
             })
+    );
+}
+
+#[test]
+fn device_pane_lists_microphones_and_switches_and_levels_them() {
+    let (mut view, _) = fixture();
+    view.local_media.clear();
+    view.local_outputs.clear();
+    view.devices.clear();
+    view.local_inputs = vec![
+        LocalMediaInputView {
+            node_id: 70,
+            label: "Built-in microphone".into(),
+            is_default: true,
+            level_percent: Some(62),
+            muted: false,
+        },
+        LocalMediaInputView {
+            node_id: 71,
+            label: "USB headset".into(),
+            is_default: false,
+            level_percent: Some(40),
+            muted: false,
+        },
+    ];
+    let rows = device_fabric_pane_rows(
+        &view,
+        &crate::shell::collab_broker_capnp::RealtimeContinuityUiView::default(),
+    );
+    assert_eq!(
+        rows.iter()
+            .filter_map(|row| match row {
+                DeviceFabricPaneRow::LocalInput(input) => Some(input.label.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["Built-in microphone", "USB headset"],
+        "the picker lists every source, current first"
+    );
+    assert_eq!(
+        ShellOverlayHost::local_input_detail(&view.local_inputs[0]),
+        "Current microphone · input level 62%"
+    );
+
+    let actions = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&actions);
+    let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+    host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    host.set_device_fabric_bridge(Rc::new(move |action| {
+        recorded.borrow_mut().push(action);
+        Ok(view.clone())
+    }));
+    let (lower, raise) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+    host.handle_qs_device_fabric_click(raise.center());
+    host.handle_qs_device_fabric_click(lower.center());
+    host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+    let actions = actions.borrow();
+    assert!(actions.contains(&DeviceFabricUiAction::StepInputLevel {
+        node_id: 70,
+        raise: true
+    }));
+    assert!(actions.contains(&DeviceFabricUiAction::StepInputLevel {
+        node_id: 70,
+        raise: false
+    }));
+    assert!(actions.contains(&DeviceFabricUiAction::SelectLocalInput { node_id: 71 }));
+    assert!(
+        !actions.contains(&DeviceFabricUiAction::SelectLocalInput { node_id: 70 }),
+        "the current microphone is not re-selected"
     );
 }
 

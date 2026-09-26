@@ -40,6 +40,17 @@ pub struct LocalMediaOutputView {
     pub bluetooth_codec: Option<String>,
 }
 
+/// One microphone or other capture device on this machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalMediaInputView {
+    pub node_id: u32,
+    pub label: String,
+    pub is_default: bool,
+    /// The input level (the source's volume) in percent, when known.
+    pub level_percent: Option<u8>,
+    pub muted: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FabricTransferStatus {
     Sending,
@@ -80,6 +91,7 @@ pub struct DeviceFabricView {
     pub local_media: Vec<FabricMediaView>,
     pub media_handoffs: Vec<crate::shell::device_fabric_runtime::MediaHandoffStatusView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
+    pub local_inputs: Vec<LocalMediaInputView>,
     pub transfers: Vec<FabricTransferView>,
     pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
     pub speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView,
@@ -110,6 +122,15 @@ pub enum DeviceFabricUiAction {
     },
     RouteLocalAudio {
         node_id: u32,
+    },
+    /// Record from this local input from now on.
+    SelectLocalInput {
+        node_id: u32,
+    },
+    /// Raise or lower this local input's level by one step.
+    StepInputLevel {
+        node_id: u32,
+        raise: bool,
     },
     HandoffBluetooth {
         address: String,
@@ -274,6 +295,7 @@ pub(super) enum DeviceFabricPaneRow {
     MediaHandoff(crate::shell::device_fabric_runtime::MediaHandoffStatusView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
+    LocalInput(LocalMediaInputView),
     Tethering(crate::shell::personal_tethering_runtime::TetheringStatusView),
     Device(FabricDeviceView),
 }
@@ -442,6 +464,12 @@ pub(super) fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::LocalOutput),
+        )
+        .chain(
+            view.local_inputs
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::LocalInput),
         )
         .chain(
             view.tethering
