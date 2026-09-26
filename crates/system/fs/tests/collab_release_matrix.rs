@@ -675,10 +675,15 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     let host_identity = temp.path().join("host-identity");
     let peer_identity = temp.path().join("peer-identity");
     let reader_identity = temp.path().join("reader-identity");
-    let (person, _host_device) = install_identity(&host_identity, [0x51; 32], [0x52; 32], true);
-    let (_, _peer_device) = install_identity(&peer_identity, [0x51; 32], [0x53; 32], false);
+    // The daemons dial each other by endpoint id through the public relay.
+    // Fixed keys would let a concurrent run of this scenario answer as one of
+    // these peers; fresh keys keep every run's peers its own.
+    let person_seed = rand::random();
+    let (person, _host_device) =
+        install_identity(&host_identity, person_seed, rand::random(), true);
+    let (_, _peer_device) = install_identity(&peer_identity, person_seed, rand::random(), false);
     let (reader, _reader_device) =
-        install_identity(&reader_identity, [0x61; 32], [0x62; 32], false);
+        install_identity(&reader_identity, rand::random(), rand::random(), false);
     let acl = temp.path().join("acl.json");
     let caps = vec![
         collab_types::CapOverride::new(
@@ -948,11 +953,20 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let nas_identity = temp.path().join("nas");
         let reader_identity = temp.path().join("reader");
         let offline_reader_identity = temp.path().join("offline-reader");
-        let (owner, _) = install_identity(&owner_identity, [0xa1; 32], [0xa2; 32], true);
-        let (_, _) = install_identity(&nas_identity, [0xa1; 32], [0xa3; 32], false);
-        let (reader, _) = install_identity(&reader_identity, [0xa4; 32], [0xa5; 32], false);
-        let (offline_reader, _) =
-            install_identity(&offline_reader_identity, [0xa6; 32], [0xa7; 32], false);
+        // Every peer is reachable by endpoint id through the public relay, so
+        // fixed keys would let a concurrent run's owner answer the restarted
+        // NAS's bootstrap dial and hand it that run's namespace. Fresh keys
+        // keep the owner provably offline once it is stopped.
+        let owner_person_seed = rand::random();
+        let (owner, _) = install_identity(&owner_identity, owner_person_seed, rand::random(), true);
+        let (_, _) = install_identity(&nas_identity, owner_person_seed, rand::random(), false);
+        let (reader, _) = install_identity(&reader_identity, rand::random(), rand::random(), false);
+        let (offline_reader, _) = install_identity(
+            &offline_reader_identity,
+            rand::random(),
+            rand::random(),
+            false,
+        );
         let acl = temp.path().join("acl.json");
         let caps = vec![
             collab_types::CapOverride::new(
