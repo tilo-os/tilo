@@ -40,6 +40,11 @@ pub struct HostApp {
     /// Every string this app's window might announce itself as. See
     /// [`DesktopEntry::window_identities`].
     pub window_identities: Vec<String>,
+    /// `MimeType=`: what the entry says it opens, including
+    /// `x-scheme-handler/*` for URI schemes.
+    pub mime_types: Vec<String>,
+    /// `Terminal=true`: a console program, run inside the Tilo terminal.
+    pub terminal: bool,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -118,7 +123,7 @@ fn x11_session_for(workspace: Option<&str>) -> Option<X11Session> {
 }
 
 impl HostApp {
-    fn from_entry(entry: &DesktopEntry) -> Self {
+    pub(crate) fn from_entry(entry: &DesktopEntry) -> Self {
         Self {
             desktop_id: entry.id.clone(),
             name: entry.name.clone(),
@@ -126,6 +131,8 @@ impl HostApp {
             categories: entry.categories.clone(),
             keywords: entry.keywords.clone(),
             window_identities: entry.window_identities(),
+            mime_types: entry.mime_types.clone(),
+            terminal: entry.terminal,
         }
     }
 
@@ -330,6 +337,88 @@ pub(crate) fn launch_resolved_with_activation(
     portal_workspace_id: Option<String>,
     activation_token: Option<&str>,
 ) -> Result<HostApp, LaunchError> {
+    launch_resolved(
+        app,
+        document.map(HostOpen::Document),
+        portal_workspace_id,
+        activation_token,
+    )
+}
+
+/// What a host launch hands the application, if anything.
+#[derive(Debug, Clone, Copy)]
+pub enum HostOpen<'a> {
+    Document(&'a Path),
+    Url(&'a str),
+}
+
+/// Open `url` in a host application, the way a host `x-scheme-handler` is used.
+///
+/// # Errors
+///
+/// Returns the same launch-resolution errors as [`launch_with_document`].
+pub fn launch_with_url(
+    desktop_id: &str,
+    url: &str,
+    portal_workspace_id: Option<String>,
+) -> Result<HostApp, LaunchError> {
+    require_host_execution()?;
+    let app = find(desktop_id).ok_or_else(|| LaunchError::HostAppNotFound {
+        desktop_id: desktop_id.to_string(),
+    })?;
+    launch_resolved(app, Some(HostOpen::Url(url)), portal_workspace_id, None)
+}
+
+/// The argv a `Terminal=true` entry runs, with `%f`/`%u` expanded exactly as
+/// an unconfined launch would.
+fn terminal_argv(app: &HostApp, open: Option<HostOpen<'_>>) -> Result<Vec<String>, LaunchError> {
+    let entry = desktop_entry::cache::cached_scan()
+        .find(&app.desktop_id)
+        .cloned()
+        .ok_or_else(|| LaunchError::HostAppNotFound {
+            desktop_id: app.desktop_id.clone(),
+        })?;
+    let env = desktop_entry::launch::LaunchEnv {
+        files: match open {
+            Some(HostOpen::Document(path)) => vec![path.display().to_string()],
+            _ => Vec::new(),
+        },
+        urls: match open {
+            Some(HostOpen::Url(url)) => vec![url.to_string()],
+            _ => Vec::new(),
+        },
+        ..desktop_entry::launch::LaunchEnv::default()
+    };
+    desktop_entry::launch::terminal_argv(&entry, &env).map_err(|error| {
+        LaunchError::HostAppRefused {
+            desktop_id: app.desktop_id.clone(),
+            detail: error.to_string(),
+        }
+    })
+}
+
+fn launch_resolved(
+    app: HostApp,
+    open: Option<HostOpen<'_>>,
+    portal_workspace_id: Option<String>,
+    activation_token: Option<&str>,
+) -> Result<HostApp, LaunchError> {
+    if app.terminal {
+        // The window that appears is the Terminal's, not one announcing this
+        // entry's identities, so a placement noted for them would go stale.
+        launcher::clear_pending_placement(&app.desktop_id);
+        let argv = terminal_argv(&app, open)?;
+        let room = portal_workspace_id
+            .as_deref()
+            .and_then(crate::shell::state::RoomId::parse)
+            .ok_or(LaunchError::NoWorkspace)?;
+        launcher::launch_terminal_command(&argv, room)?;
+        return Ok(app);
+    }
+    let document = match open {
+        Some(HostOpen::Document(path)) => Some(path),
+        _ => None,
+    };
     let Some(socket) = launcher::wayland_socket() else {
         launcher::clear_pending_placement(&app.desktop_id);
         return Err(LaunchError::NoDisplay);
@@ -342,7 +431,7 @@ pub(crate) fn launch_resolved_with_activation(
         }
     };
     let x11 = x11_session_for(portal_workspace_id.as_deref());
-    let command = build_launch_command(
+    let mut command = build_launch_command(
         &app,
         &launcher_bin,
         &socket,
@@ -351,6 +440,10 @@ pub(crate) fn launch_resolved_with_activation(
         portal_workspace_id,
         activation_token,
     );
+    if let Some(HostOpen::Url(url)) = open {
+        command.args.push("--open-url".to_string());
+        command.args.push(url.to_string());
+    }
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
@@ -401,6 +494,8 @@ mod tests {
             source_label: "Flatpak",
             categories: Vec::new(),
             keywords: Vec::new(),
+            mime_types: Vec::new(),
+            terminal: false,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -586,5 +681,110 @@ mod unavailable_provider_tests {
             launch("fixture.desktop", None),
             Err(LaunchError::ProviderUnavailable { .. })
         ));
+    }
+
+    fn fixture_hosts(dir: &Path) -> Vec<HostApp> {
+        let write = |name: &str, body: &str| std::fs::write(dir.join(name), body).unwrap();
+        write(
+            "org.gnome.Evince.desktop",
+            "[Desktop Entry]\nType=Application\nName=Document Viewer\nExec=evince %U\n\
+             MimeType=application/pdf;image/tiff;\n",
+        );
+        write(
+            "okular.desktop",
+            "[Desktop Entry]\nType=Application\nName=Okular\nExec=okular %U\n\
+             MimeType=application/pdf;\n",
+        );
+        write(
+            "mutt.desktop",
+            "[Desktop Entry]\nType=Application\nName=Mutt\nExec=mutt %u\nTerminal=true\n\
+             MimeType=x-scheme-handler/mailto;\n",
+        );
+        desktop_entry::scan_dirs(&[dir.to_path_buf()], &["tilo".to_string()])
+            .entries
+            .iter()
+            .map(HostApp::from_entry)
+            .collect()
+    }
+
+    #[test]
+    fn host_mime_claims_and_mimeapps_defaults_feed_the_resolver() {
+        use desktop_policy::{MimeAppsChain, MimeAppsList, PersonalDefaults, ResourceKind};
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = fixture_hosts(dir.path());
+        let mutt = hosts.iter().find(|host| host.desktop_id == "mutt").unwrap();
+        assert!(mutt.terminal, "Terminal=true is carried to the launch path");
+
+        let chain = MimeAppsChain::new(vec![MimeAppsList::parse(
+            "[Default Applications]\napplication/pdf=okular.desktop;\n\
+             [Removed Associations]\nimage/tiff=org.gnome.Evince.desktop;\n\
+             [Added Associations]\ntext/plain=okular.desktop;\n",
+        )]);
+        let candidates = crate::shell::launcher::host_app_candidates(&hosts, &chain);
+        let evince = candidates
+            .iter()
+            .find(|c| c.package_id == "org.gnome.Evince.desktop")
+            .unwrap();
+        assert!(evince.handles(&ResourceKind::mime("application/pdf").unwrap()));
+        assert!(
+            !evince.handles(&ResourceKind::mime("image/tiff").unwrap()),
+            "a removed association no longer counts"
+        );
+        let okular = candidates
+            .iter()
+            .find(|c| c.package_id == "okular.desktop")
+            .unwrap();
+        assert!(
+            okular.handles(&ResourceKind::mime("text/plain").unwrap()),
+            "an added association counts"
+        );
+        let mutt = candidates
+            .iter()
+            .find(|c| c.package_id == "mutt.desktop")
+            .unwrap();
+        assert!(mutt.handles(&ResourceKind::scheme("mailto").unwrap()));
+
+        let pdf = ResourceKind::mime("application/pdf").unwrap();
+        let selected = desktop_policy::DefaultAppResolver::new(&candidates)
+            .with_system_defaults(&chain)
+            .resolve(&pdf, "", &PersonalDefaults::default(), None)
+            .unwrap();
+        assert_eq!(selected.package_id, "okular.desktop");
+
+        let personal = PersonalDefaults {
+            handlers: [(pdf, "org.gnome.Evince.desktop".to_string())].into(),
+        };
+        let published =
+            crate::shell::launcher::resolved_host_defaults(&candidates, &chain, &personal);
+        assert_eq!(
+            published.defaults.get("application/pdf"),
+            Some(&vec!["org.gnome.Evince.desktop".to_string()]),
+            "the published list carries the person's choice for host tools"
+        );
+        assert_eq!(
+            published.defaults.get("x-scheme-handler/mailto"),
+            Some(&vec!["mutt.desktop".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_package_claim_is_not_published_to_host_tools() {
+        use desktop_policy::{AppCandidate, MimeAppsChain, PersonalDefaults, ResourceKind};
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = fixture_hosts(dir.path());
+        let chain = MimeAppsChain::default();
+        let mut candidates = crate::shell::launcher::host_app_candidates(&hosts, &chain);
+        candidates.push(AppCandidate {
+            package_id: "so.tilo.pdf-viewer".into(),
+            display_name: "PDF Viewer".into(),
+            resources: [ResourceKind::mime("application/pdf").unwrap()].into(),
+        });
+        let published = crate::shell::launcher::resolved_host_defaults(
+            &candidates,
+            &chain,
+            &PersonalDefaults::default(),
+        );
+        assert!(!published.defaults.contains_key("application/pdf"));
+        assert!(published.defaults.contains_key("image/tiff"));
     }
 }
