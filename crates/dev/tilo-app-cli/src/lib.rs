@@ -2416,16 +2416,28 @@ fn component_registry_source(names: &[String], graph_names: &BTreeSet<String>) -
         let _ = writeln!(source, "pub mod {module_name};");
     }
     source.push_str(
-        "\nuse ui::UiBuildContext;\n\n/// Build the app-owned component factory registry for serialized screens.\n#[must_use]\npub fn ui_graph_context() -> UiBuildContext {\n    let context = UiBuildContext::default();\n",
+        "\nuse ui::UiBuildContext;\n\n/// Build the app-owned component factory registry for serialized screens.\n#[must_use]\npub fn ui_graph_context() -> UiBuildContext {\n",
     );
-    for name in graph_names {
-        let (module_name, _) = component_rust_names(name)?;
-        let _ = writeln!(
-            source,
-            "    let context = {module_name}::register_ui_graph(context);"
-        );
+    // The last registration is the tail expression: binding it and returning
+    // the binding is what `clippy::let_and_return` rejects.
+    let mut modules = graph_names
+        .iter()
+        .map(|name| component_rust_names(name).map(|(module_name, _)| module_name))
+        .collect::<Result<Vec<_>>>()?;
+    match modules.pop() {
+        None => source.push_str("    UiBuildContext::default()\n"),
+        Some(last) => {
+            source.push_str("    let context = UiBuildContext::default();\n");
+            for module_name in modules {
+                let _ = writeln!(
+                    source,
+                    "    let context = {module_name}::register_ui_graph(context);"
+                );
+            }
+            let _ = writeln!(source, "    {last}::register_ui_graph(context)");
+        }
     }
-    source.push_str("    context\n}\n");
+    source.push_str("}\n");
     syn::parse_file(&source).context("validating generated component registry")?;
     Ok(source)
 }
@@ -3435,6 +3447,33 @@ pub fn render_component_source(name: &str, template: ComponentTemplate) -> Resul
     let (source, _) = component_source(name, &module_name, &type_name, template);
     syn::parse_file(&source).with_context(|| format!("validating generated component {name:?}"))?;
     Ok(source)
+}
+
+/// Render the `src/components/mod.rs` registry `tilo-app add component`
+/// maintains for `components`, registering the graph-compatible ones with
+/// serialized screens as `--mount` does.
+///
+/// # Errors
+///
+/// Returns an error when a component name is not a usable Rust module or type
+/// name, or appears more than once.
+pub fn render_component_registry_source(
+    components: &[(&str, ComponentTemplate)],
+) -> Result<String> {
+    let mut names = Vec::with_capacity(components.len());
+    let mut graph_names = BTreeSet::new();
+    for &(name, template) in components {
+        validate_component_name(name)?;
+        if names.iter().any(|existing| existing == name) {
+            bail!("component {name:?} is listed more than once");
+        }
+        names.push(name.to_owned());
+        if graph_compatible_component_template(template) {
+            graph_names.insert(name.to_owned());
+        }
+    }
+    names.sort();
+    component_registry_source(&names, &graph_names)
 }
 
 fn parse_screen_registry(source: &str) -> Result<Vec<String>> {

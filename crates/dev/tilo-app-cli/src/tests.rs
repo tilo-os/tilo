@@ -870,6 +870,64 @@ fn generated_graph_apps_auto_register_compatible_components() {
     syn::parse_file(&library).expect("migrated generated root is valid Rust");
 }
 
+/// The body of the registry's `ui_graph_context`, one trimmed line per
+/// statement.
+fn ui_graph_context_body(registry: &str) -> Vec<&str> {
+    let (_, body) = registry
+        .split_once("pub fn ui_graph_context() -> UiBuildContext {\n")
+        .expect("registry defines ui_graph_context");
+    let (body, _) = body.split_once("\n}").expect("ui_graph_context closes");
+    body.lines().map(str::trim).collect()
+}
+
+#[test]
+fn component_registry_returns_the_last_registration_directly() {
+    // Binding the final context and returning the binding fails
+    // `clippy::let_and_return` in every app that compiles the registry; the
+    // smoke crate lints the two-component form, these pin the others.
+    let empty = render_component_registry_source(&[]).unwrap();
+    assert_eq!(ui_graph_context_body(&empty), ["UiBuildContext::default()"]);
+
+    let unmounted =
+        render_component_registry_source(&[("project-tree", ComponentTemplate::Tree)]).unwrap();
+    assert!(unmounted.contains("pub mod project_tree;"));
+    assert_eq!(
+        ui_graph_context_body(&unmounted),
+        ["UiBuildContext::default()"]
+    );
+
+    let one = render_component_registry_source(&[
+        ("project-tree", ComponentTemplate::Tree),
+        ("profile-card", ComponentTemplate::Display),
+    ])
+    .unwrap();
+    assert_eq!(
+        ui_graph_context_body(&one),
+        [
+            "let context = UiBuildContext::default();",
+            "profile_card::register_ui_graph(context)",
+        ]
+    );
+
+    let two = render_component_registry_source(&[
+        ("profile-form", ComponentTemplate::Form),
+        ("profile-card", ComponentTemplate::Display),
+    ])
+    .unwrap();
+    assert_eq!(
+        ui_graph_context_body(&two),
+        [
+            "let context = UiBuildContext::default();",
+            "let context = profile_card::register_ui_graph(context);",
+            "profile_form::register_ui_graph(context)",
+        ]
+    );
+    assert_eq!(
+        parse_component_registry(&two).unwrap(),
+        ["profile-card", "profile-form"]
+    );
+}
+
 #[test]
 fn component_template_replacement_requires_compatible_graph_props() {
     let temp = tempfile::tempdir().unwrap();
