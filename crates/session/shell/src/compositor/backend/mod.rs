@@ -350,6 +350,9 @@ pub enum BackendEvent {
         dy_unaccel: f64,
         time_usec: u64,
     },
+    /// A pen, eraser or other tablet tool, already mapped to global
+    /// coordinates on the output the pen is tied to.
+    Tablet(TabletInput),
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.
@@ -381,6 +384,99 @@ pub enum BackendEvent {
     VisualAlert,
     Redraw,
     Focus(bool),
+}
+
+/// The physical tablet a tool is used on.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TabletDevice {
+    pub name: String,
+    pub usb_id: Option<(u32, u32)>,
+    pub syspath: Option<std::path::PathBuf>,
+}
+
+/// What kind of tool touches the tablet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TabletToolKind {
+    Pen,
+    Eraser,
+    Brush,
+    Pencil,
+    Airbrush,
+    Mouse,
+    Lens,
+    Totem,
+    Unknown,
+}
+
+/// One physical tool, identified by its serial so a second pen is a second
+/// tool, and the axes it reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent hardware capability flags, as the tablet protocol lists them"
+)]
+pub struct TabletTool {
+    pub kind: TabletToolKind,
+    pub serial: u64,
+    pub wacom_id: u64,
+    pub pressure: bool,
+    pub distance: bool,
+    pub tilt: bool,
+    pub rotation: bool,
+    pub slider: bool,
+    pub wheel: bool,
+}
+
+/// What happened to the tool.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TabletPhase {
+    /// The tool came into range.
+    ProximityIn,
+    /// The tool left range.
+    ProximityOut,
+    /// Position or axes changed.
+    Motion,
+    /// The tip touched the surface.
+    TipDown,
+    /// The tip lifted.
+    TipUp,
+    /// A tool button (evdev code) changed.
+    Button { button: u32, pressed: bool },
+}
+
+/// One tablet tool event with every axis the tool reports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabletInput {
+    pub device: TabletDevice,
+    pub tool: TabletTool,
+    pub phase: TabletPhase,
+    /// Global compositor coordinates.
+    pub position: (f64, f64),
+    /// `0.0..=1.0`.
+    pub pressure: f64,
+    /// `0.0..=1.0`.
+    pub distance: f64,
+    /// Degrees from vertical along each axis.
+    pub tilt: (f64, f64),
+    /// Degrees.
+    pub rotation: f64,
+    /// `-1.0..=1.0`.
+    pub slider: f64,
+    /// Degrees and discrete clicks.
+    pub wheel: (f64, i32),
+    /// Milliseconds, the input device's clock.
+    pub time_msec: u32,
+}
+
+/// Map a tool's position, normalised to `0.0..=1.0` across the tablet, onto
+/// `target` (`x, y, width, height`, global): the output the pen is tied to,
+/// or the whole desktop when it is tied to none.
+pub fn map_tablet_position(normalised: (f64, f64), target: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (x, y, width, height) = target;
+    (
+        x + normalised.0.clamp(0.0, 1.0) * width,
+        y + normalised.1.clamp(0.0, 1.0) * height,
+    )
 }
 
 /// Where local pointer motion may take the pointer, in global coordinates.
@@ -623,6 +719,17 @@ mod tests {
         );
 
         assert_eq!(combined_geometry(&[]), (0, 0), "empty");
+    }
+
+    #[test]
+    fn tablet_positions_follow_the_tied_output() {
+        // Tied to a 1920x1080 output right of a 2560-wide one.
+        let output = (2560.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(map_tablet_position((0.0, 0.0), output), (2560.0, 0.0));
+        assert_eq!(map_tablet_position((0.5, 0.5), output), (3520.0, 540.0));
+        assert_eq!(map_tablet_position((1.0, 1.0), output), (4480.0, 1080.0));
+        // Out-of-range samples from the tablet edge stay on that output.
+        assert_eq!(map_tablet_position((1.2, -0.1), output), (4480.0, 0.0));
     }
 
     #[test]

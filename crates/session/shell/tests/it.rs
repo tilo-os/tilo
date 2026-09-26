@@ -129,6 +129,8 @@ mod output_management_protocol;
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "pen_and_key_capture.rs"]
+mod pen_and_key_capture;
 #[path = "per_output_groups.rs"]
 mod per_output_groups;
 #[path = "per_output_scale.rs"]
