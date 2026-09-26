@@ -27,6 +27,23 @@ jobs:
           uname -m
           cat /etc/os-release | head -2
 
+  # The warm canary reserve prefetched this builder from Oregon ECR into the
+  # containerd store before taking the job; the job container starts from it.
+  prefetched-builder:
+    runs-on: runner-engine-canary
+    timeout-minutes: 30
+    container:
+      image: code.sandbox.example/qos/tilo-builder@sha256:baa0a7a30c9dd6e02443fd0a32d7b22a5022eff50fcd300ea3b8ace9b8c240c2
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: The builder job container started
+        run: |
+          set -eu
+          command -v cargo
+          uname -m
+
   engine:
     runs-on: runner-engine-canary
     timeout-minutes: 45
