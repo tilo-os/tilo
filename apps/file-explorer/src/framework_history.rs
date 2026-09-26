@@ -7,7 +7,7 @@ use collab_types::files::{
     FileHistoryReadValueV1, FileRestoreReviewV1, MAX_CHECKED_HISTORY_REQUEST_BYTES,
     MAX_HISTORY_READ_BYTES,
 };
-#[cfg(unix)]
+use host_fs::attributes::{self, ErrorCode};
 use std::fs::File;
 use std::{path::Path, sync::Arc};
 use ui::history_mode::{
@@ -16,8 +16,6 @@ use ui::history_mode::{
         FileHistoricalContent, FileHistoryTarget, FileHistoryTransport, FilePreviewInput,
     },
 };
-#[cfg(unix)]
-use xattr::FileExt;
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.file-explorer",
@@ -32,7 +30,6 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
 /// A descriptor pins the kernel object. A later path replacement cannot retarget
 /// a queued review, immutable read, restore, or exact intent lookup.
 pub struct MountedFileHistory {
-    #[cfg(unix)]
     file: File,
 }
 impl MountedFileHistory {
@@ -40,33 +37,23 @@ impl MountedFileHistory {
     ///
     /// # Errors
     ///
-    /// Returns the I/O error from opening `path`.
-    #[cfg(unix)]
+    /// Returns the I/O error from opening `path`, or `Unsupported` on a host
+    /// without extended attributes, which cannot carry the projection.
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        if !attributes::SUPPORTED {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Tilo filesystem projection is unavailable on this host",
+            ));
+        }
         Ok(Self {
             file: File::open(path)?,
         })
     }
-    /// Opens a descriptor on the mounted file at `path`.
-    ///
-    /// # Errors
-    ///
-    /// Always returns `Unsupported`: the filesystem projection needs a Unix host.
-    #[cfg(not(unix))]
-    pub fn open(_path: &Path) -> std::io::Result<Self> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Tilo filesystem projection is unavailable on this host",
-        ))
-    }
-    #[cfg(unix)]
     fn get(&self, name: &str) -> Result<Vec<u8>, std::io::Error> {
-        self.file
-            .get_xattr(name)?
-            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENODATA))
+        attributes::get_open(&self.file, name)?.ok_or_else(|| ErrorCode::NoData.into_io_error())
     }
 }
-#[cfg(unix)]
 impl FileHistoryTransport for MountedFileHistory {
     fn read(
         &self,
@@ -132,9 +119,9 @@ impl FileHistoryTransport for MountedFileHistory {
         if bytes.len() > MAX_CHECKED_HISTORY_REQUEST_BYTES {
             return CheckedHistoryOutcomeV1::InvalidRequest;
         }
-        match self.file.set_xattr(CHECKED_HISTORY_RESTORE_XATTR, &bytes) {
+        match attributes::set_open(&self.file, CHECKED_HISTORY_RESTORE_XATTR, &bytes) {
             Ok(()) => self.result(request.intent_id),
-            Err(error) if error.raw_os_error() == Some(libc::EALREADY) => {
+            Err(error) if ErrorCode::of(&error) == Some(ErrorCode::Already) => {
                 CheckedHistoryOutcomeV1::Unchanged {
                     intent_id: request.intent_id,
                     review: request.review,
@@ -161,68 +148,30 @@ impl FileHistoryTransport for MountedFileHistory {
         response.outcome
     }
 }
-#[cfg(not(unix))]
-impl FileHistoryTransport for MountedFileHistory {
-    fn read(
-        &self,
-        _query: FileHistoryReadQueryV1,
-    ) -> Result<FileHistoryReadValueV1, FileHistoryReadErrorV1> {
-        Err(FileHistoryReadErrorV1::Unavailable)
-    }
-    fn preview(
-        &self,
-        _scope: FileHistoryReadScopeV1,
-        _version: collab_types::FileVersionId,
-    ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
-        Err(FileHistoryReadErrorV1::Unavailable)
-    }
-    fn review(&self) -> Result<FileRestoreReviewV1, CheckedHistoryOutcomeV1> {
-        Err(unavailable_projection())
-    }
-    fn submit(&self, request: CheckedHistoryRequestV1) -> CheckedHistoryOutcomeV1 {
-        if request.validate().is_err() {
-            return CheckedHistoryOutcomeV1::InvalidRequest;
-        }
-        let Ok(bytes) = serde_json::to_vec(&request) else {
-            return CheckedHistoryOutcomeV1::InvalidRequest;
-        };
-        if bytes.len() > MAX_CHECKED_HISTORY_REQUEST_BYTES {
-            return CheckedHistoryOutcomeV1::InvalidRequest;
-        }
-        unavailable_projection()
-    }
-    fn result(&self, _intent: uuid::Uuid) -> CheckedHistoryOutcomeV1 {
-        unavailable_projection()
-    }
-}
-#[cfg(not(unix))]
-fn unavailable_projection() -> CheckedHistoryOutcomeV1 {
-    CheckedHistoryOutcomeV1::UnsupportedOwner {
-        mapping: "Tilo filesystem projection is unavailable on this host".into(),
-    }
-}
-#[cfg(unix)]
 fn outcome_error(error: &std::io::Error) -> CheckedHistoryOutcomeV1 {
-    match error.raw_os_error() {
-        Some(libc::EBUSY) => CheckedHistoryOutcomeV1::ReviewRequired,
-        Some(libc::EAGAIN) => CheckedHistoryOutcomeV1::PendingWrites,
-        Some(libc::ENOENT) => CheckedHistoryOutcomeV1::NotVisible,
-        Some(libc::EROFS | libc::EACCES | libc::EPERM) => CheckedHistoryOutcomeV1::ReadOnly,
-        Some(libc::ENOTSUP) => CheckedHistoryOutcomeV1::UnsupportedOwner {
+    match ErrorCode::of(error) {
+        Some(ErrorCode::Busy) => CheckedHistoryOutcomeV1::ReviewRequired,
+        Some(ErrorCode::Again) => CheckedHistoryOutcomeV1::PendingWrites,
+        Some(ErrorCode::NotFound) => CheckedHistoryOutcomeV1::NotVisible,
+        Some(ErrorCode::ReadOnlyFilesystem | ErrorCode::AccessDenied | ErrorCode::NotPermitted) => {
+            CheckedHistoryOutcomeV1::ReadOnly
+        }
+        Some(ErrorCode::NotSupported) => CheckedHistoryOutcomeV1::UnsupportedOwner {
             mapping: "The filesystem has no checked restore mapping for this content owner".into(),
         },
-        Some(libc::EINVAL) => CheckedHistoryOutcomeV1::InvalidRequest,
+        Some(ErrorCode::InvalidArgument) => CheckedHistoryOutcomeV1::InvalidRequest,
         _ => CheckedHistoryOutcomeV1::Unavailable,
     }
 }
-#[cfg(unix)]
 fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
-    match error.raw_os_error() {
-        Some(libc::ENOENT | libc::EACCES | libc::EPERM) => FileHistoryReadErrorV1::NotVisible,
-        Some(libc::EBUSY) => FileHistoryReadErrorV1::Stale,
-        Some(libc::ENODATA) => FileHistoryReadErrorV1::MissingVersion,
-        Some(libc::E2BIG) => FileHistoryReadErrorV1::TooLarge,
-        Some(libc::EINVAL) => FileHistoryReadErrorV1::InvalidRequest,
+    match ErrorCode::of(error) {
+        Some(ErrorCode::NotFound | ErrorCode::AccessDenied | ErrorCode::NotPermitted) => {
+            FileHistoryReadErrorV1::NotVisible
+        }
+        Some(ErrorCode::Busy) => FileHistoryReadErrorV1::Stale,
+        Some(ErrorCode::NoData) => FileHistoryReadErrorV1::MissingVersion,
+        Some(ErrorCode::TooBig) => FileHistoryReadErrorV1::TooLarge,
+        Some(ErrorCode::InvalidArgument) => FileHistoryReadErrorV1::InvalidRequest,
         _ => FileHistoryReadErrorV1::Unavailable,
     }
 }
@@ -344,6 +293,7 @@ impl ui::history_mode::HistoryPreview for FilePreview {
 mod tests {
     use super::*;
     use collab_types::files::CheckedHistoryOperationV1;
+    use host_fs::attributes as xattr;
     fn scope() -> FileHistoryReadScopeV1 {
         FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),

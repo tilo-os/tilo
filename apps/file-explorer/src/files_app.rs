@@ -9,7 +9,6 @@
 //! frame. See [`crate::command`].
 
 use crate::command::{CommandSink, FileCommand, new_sink};
-use crate::filesystem_metadata as xattr;
 use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
@@ -17,6 +16,7 @@ use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sy
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::views::file_view::ThumbCtx;
 use crate::{config, favorites, fileops, templates};
+use host_fs::attributes as xattr;
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -2039,7 +2039,7 @@ impl FileExplorerWidget {
                     if let Err(error) =
                         xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"evict")
                     {
-                        if error.raw_os_error() == Some(libc::EBUSY) {
+                        if xattr::ErrorCode::of(&error) == Some(xattr::ErrorCode::Busy) {
                             safety_refusals.push(path.clone());
                         } else {
                             failures.push(format!("{}: {error}", path.display()));

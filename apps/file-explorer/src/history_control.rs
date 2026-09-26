@@ -1,4 +1,4 @@
-use crate::filesystem_metadata as xattr;
+use host_fs::attributes as xattr;
 use std::path::Path;
 
 use crate::i18n::{arg, t, t_args};

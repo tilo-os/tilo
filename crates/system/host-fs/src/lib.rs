@@ -1,9 +1,11 @@
 //! Portable access to file metadata that only some platforms have:
-//! permission bits and symbolic links.
+//! permission bits, symbolic links and extended attributes.
 //!
 //! Apps that preserve or present such metadata (a backup engine, a file
 //! manager) call these functions; each one says what it does where the
 //! platform has no equivalent, so no app needs its own target checks.
+
+pub mod attributes;
 
 use std::fs::Metadata;
 use std::io;

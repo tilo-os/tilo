@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Portable filesystem operations that only some hosts provide: permission bits, symbolic links"
+description = "Portable filesystem operations that only some hosts provide: permission bits, symbolic links, extended attributes"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+xattr = "1.6.1"
 
 [lints]
 workspace = true

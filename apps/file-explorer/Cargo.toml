@@ -57,6 +57,7 @@ icu_decimal = "2.3.0"
 icu_locale = "2.3.0"
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state.
+host-fs = { path = "../../crates/system/host-fs" }
 libc.workspace = true
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
@@ -85,9 +86,6 @@ tempfile.workspace = true
 # The catalog tests parse each bundled locale exactly as Fluent will.
 fluent.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
-
-[target.'cfg(unix)'.dependencies]
-xattr = "1.6.1"
 
 [target.'cfg(unix)'.dev-dependencies]
 fs = { path = "../../crates/system/fs" }
