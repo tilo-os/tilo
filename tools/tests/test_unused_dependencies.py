@@ -34,6 +34,77 @@ class UnusedDependencyTests(unittest.TestCase):
             self.assertEqual(args[:2], ["machete", "--with-metadata"])
             self.assertCountEqual(args[2:], ["Cargo.toml", "apps", "tools", "crates"])
 
+    def test_changed_scope_scans_only_crates_that_own_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            identity = {"GIT_AUTHOR_NAME": "CI", "GIT_AUTHOR_EMAIL": "ci@example.invalid",
+                        "GIT_COMMITTER_NAME": "CI", "GIT_COMMITTER_EMAIL": "ci@example.invalid"}
+            git_env = dict(os.environ, **identity)
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, env=git_env, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            def write(name, text="fixture\n"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+
+            git("init", "-q")
+            manifest = "[package]\nname = 'fixture'\nversion = '0.1.0'\n"
+            for name in ("Cargo.toml", "apps/a/Cargo.toml", "crates/b/Cargo.toml",
+                         "crates/b/fuzz/Cargo.toml", "vendor/codec/Cargo.toml"):
+                write(name, manifest)
+            for name in ("apps/a/src/lib.rs", "crates/b/src/gone.rs", "crates/b/src/moved.rs",
+                         "crates/b/fuzz/src/main.rs", "vendor/codec/src/lib.rs", "docs/a.md"):
+                write(name)
+            git("add", "-A")
+            git("commit", "-qm", "base")
+
+            binary = root.parent / (root.name + "-bin")
+            binary.mkdir()
+            cargo = binary / "cargo"
+            cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGUMENTS"\n')
+            cargo.chmod(0o755)
+            output = root.parent / (root.name + "-arguments")
+            env = dict(os.environ, TILO_REPO_ROOT=str(root), ARGUMENTS=str(output),
+                       PATH=str(binary) + os.pathsep + os.environ["PATH"])
+
+            def scanned(*paths):
+                base = git("rev-parse", "HEAD")
+                for name in paths:
+                    write(name, "changed\n")
+                git("add", "-A")
+                git("commit", "-qm", "change", "--allow-empty")
+                output.unlink(missing_ok=True)
+                result = subprocess.run(["bash", str(SCRIPT), "--changed", "", base], env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if not output.exists():
+                    return None
+                args = output.read_text().splitlines()
+                self.assertEqual(args[:2], ["machete", "--with-metadata"])
+                return args[2:]
+
+            # Prose, vendored code and files outside every crate scan nothing.
+            self.assertIsNone(scanned("docs/a.md", "vendor/codec/src/lib.rs", "README.md"))
+            # The nearest owning crate is scanned, nested crates on their own.
+            self.assertEqual(scanned("apps/a/src/lib.rs", "crates/b/fuzz/src/main.rs"),
+                             ["apps/a", "crates/b/fuzz"])
+            # A deletion, or a rename away, can remove a dependency's last use.
+            (root / "crates/b/src/gone.rs").unlink()
+            self.assertEqual(scanned(), ["crates/b"])
+            base = git("rev-parse", "HEAD")
+            (root / "crates/b/src/moved.rs").rename(root / "apps/a/src/moved.rs")
+            git("add", "-A")
+            git("commit", "-qm", "move")
+            result = subprocess.run(["bash", str(SCRIPT), "--changed", "", base], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text().splitlines()[2:], ["apps/a", "crates/b"])
+            # Crates inherit from the workspace manifest: every crate is scanned.
+            self.assertCountEqual(scanned("Cargo.toml"), ["Cargo.toml", "apps", "crates"])
+
 
 if __name__ == "__main__":
     unittest.main()
