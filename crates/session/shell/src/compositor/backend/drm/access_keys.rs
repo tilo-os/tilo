@@ -124,13 +124,13 @@ pub struct ButtonEdge {
 
 /// How far one tap of a direction key moves the pointer, in logical pixels:
 /// small enough to land on a one-pixel target.
-pub const NUDGE_PX: f64 = 1.0;
+pub const NUDGE_PX: f64 = 1.0; // pointer travel on the desktop, not themed UI spacing
 /// How long a direction key must be held before the pointer glides.
 pub const GLIDE_DELAY: Duration = Duration::from_millis(150);
 /// Glide speed as it starts, in logical pixels per second.
-pub const START_SPEED: f64 = 60.0;
+pub const START_SPEED: f64 = 60.0; // pointer travel on the desktop, not themed UI spacing
 /// Glide speed once fully accelerated, in logical pixels per second.
-pub const MAX_SPEED: f64 = 900.0;
+pub const MAX_SPEED: f64 = 900.0; // pointer travel on the desktop, not themed UI spacing
 /// How long the glide takes to reach [`MAX_SPEED`].
 pub const ACCEL_TIME: Duration = Duration::from_millis(1_200);
 /// Motion cadence while gliding.

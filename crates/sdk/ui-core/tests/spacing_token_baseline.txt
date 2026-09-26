@@ -260,6 +260,7 @@ crates/sdk/ui-core/src/widget/webview.rs pixel_const 1
 crates/sdk/ui-core/src/widget/window_group.rs pixel_const 8
 crates/session/shell/src/bin/shots/scenario.rs pixel_const 1
 crates/session/shell/src/bluetooth_prompt.rs pixel_const 1
+crates/session/shell/src/compositor/backend/drm/access_keys.rs pixel_const 3
 crates/session/shell/src/compositor/backend/drm/gestures.rs pixel_const 1
 crates/session/shell/src/compositor/backend/drm/runtime.rs pixel_const 1
 crates/session/shell/src/compositor/backend/drm/scale.rs pixel_const 4
