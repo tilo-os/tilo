@@ -585,7 +585,9 @@ impl PortalDialogQueue {
                 Some("Hold Ctrl, Alt, Shift, or Super, then press a key.".into());
             return true;
         };
-        if crate::portal::global_shortcuts::is_reserved_accelerator(&accelerator) {
+        if crate::portal::global_shortcuts::ShellGlobalShortcutsService::global()
+            .is_reserved(&accelerator)
+        {
             request.rows[selected].status =
                 Some("Reserved by Tilo. Choose another shortcut.".into());
             return true;

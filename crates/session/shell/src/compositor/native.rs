@@ -6577,6 +6577,11 @@ pub fn run() {
             {
                 tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
             }
+            // A GlobalShortcuts grant may not take a chord the user has just
+            // assigned to a desktop action.
+            state
+                .global_shortcuts
+                .set_shortcut_config(frame_builder.host().shortcut_config().clone());
             frame_builder.host_mut().set_desktop_controls_config(
                 settings_store::hardware::DesktopControlsConfig::load(),
             );

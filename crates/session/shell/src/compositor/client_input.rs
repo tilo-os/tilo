@@ -1300,8 +1300,10 @@ fn route_keyboard_input(
             .host()
             .configured_shortcut_action(&key.logical_key, modifiers)
             .is_some();
-        let shell_owns =
-            captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+        let shell_owns = captured
+            || configured_shortcut
+            || is_shell_chord(event, &modifiers, overlay_open)
+            || state.global_shortcuts.claims(&key.physical_key, modifiers);
         return if shell_owns {
             false
         } else {
@@ -1322,8 +1324,17 @@ fn route_keyboard_input(
             .host()
             .configured_shortcut_action(&key.logical_key, modifiers)
             .is_some();
-    let shell_owns =
-        captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+    let shell_chord = configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+    // An approved GlobalShortcuts grant fires over whatever app holds
+    // focus: shell chords win, then the grant, then the client. Its release
+    // is withheld too (the press never reached the client) and sends
+    // `Deactivated`, which push-to-talk style clients wait for.
+    let granted = if pressed {
+        !shell_chord && state.global_shortcuts.press(&key.physical_key, modifiers)
+    } else {
+        state.global_shortcuts.release(&key.physical_key)
+    };
+    let shell_owns = captured || shell_chord || granted;
     let forward = track_forwarded_key(
         &mut state.client_input.forwarded_keys,
         code,

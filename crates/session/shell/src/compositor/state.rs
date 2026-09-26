@@ -475,6 +475,9 @@ pub struct State {
     /// The share registry decides *whether* a peer may drive a surface;
     /// this decides what, where and how fast. Fed a view of the screen once per tick — until then it refuses everything.
     pub remote_input_firewall: RemoteInputFirewall,
+    /// Approved `GlobalShortcuts` grants. Client routing asks it before a
+    /// focused client sees a key, so a granted chord fires over any app.
+    pub global_shortcuts: crate::portal::global_shortcuts::ShellGlobalShortcutsService,
     /// Last `RemoteInput` event that survived the share-registry gate; read by tests to assert injection without a real `Seat<State>` (v2 replaces this).
     pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
     /// Last `RemoteInput` event the firewall refused, and the rule that refused it — otherwise indistinguishable from a broken filter.
@@ -930,6 +933,8 @@ impl State {
             workspace_tree,
             share_registry: ShareRegistry::new(),
             remote_input_firewall: RemoteInputFirewall::new(),
+            global_shortcuts: crate::portal::global_shortcuts::ShellGlobalShortcutsService::global(
+            ),
             last_remote_input: None,
             last_remote_input_denial: None,
             surface_tracker: SurfaceTracker::new(),
