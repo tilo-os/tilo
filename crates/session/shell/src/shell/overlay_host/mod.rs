@@ -4570,11 +4570,12 @@ impl ShellOverlayHost {
     /// calls this at its settings reload point.
     pub fn poll_display_identify(&mut self) -> bool {
         let outputs = if self.outputs.is_empty() {
-            vec![OutputGeometry {
-                x: 0.0,
-                width: self.rect.width(),
-                height: self.rect.height(),
-            }]
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.rect.width(),
+                self.rect.height(),
+            )]
         } else {
             self.outputs.clone()
         };

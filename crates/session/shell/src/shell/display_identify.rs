@@ -218,16 +218,8 @@ mod tests {
     #[test]
     fn every_output_gets_a_card_even_without_a_snapshot() {
         let outputs = [
-            OutputGeometry {
-                x: 0.0,
-                width: 1920.0,
-                height: 1080.0,
-            },
-            OutputGeometry {
-                x: 1920.0,
-                width: 2560.0,
-                height: 1440.0,
-            },
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+            OutputGeometry::unscaled(1920.0, 0.0, 2560.0, 1440.0),
         ];
         let mut identify = DisplayIdentify::default();
         let now = Instant::now();

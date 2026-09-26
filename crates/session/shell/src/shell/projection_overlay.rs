@@ -160,7 +160,8 @@ impl DisplayLayouts {
         self.outputs = DisplayHardwareSnapshot::load()
             .map(|snapshot| snapshot.outputs)
             .unwrap_or_default();
-        self.committed = DisplayConfig::load();
+        self.committed =
+            DisplayConfig::load_for(&settings_store::display_mode::attached_set(&self.outputs));
         self.transaction = DisplayTransaction::load();
         self.polled_at = Some(now);
     }
@@ -1920,6 +1921,7 @@ mod tests {
                     hdr: false,
                     vrr: false,
                     color_profiles: Vec::new(),
+                    monitor: None,
                 },
                 current_mode: mode,
                 builtin: connector == "eDP-1",
