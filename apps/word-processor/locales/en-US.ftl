@@ -203,6 +203,7 @@ toast-style-duplicated = Style duplicated
 toast-saved = Document saved
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
+toast-view-only = This document is open to view only.
 unsaved-title = Save changes?
 unsaved-body = Save this document before replacing it.
 unsaved-save = Save

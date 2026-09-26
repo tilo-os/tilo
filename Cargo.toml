@@ -140,6 +140,7 @@ members = [
     "crates/doc/pdf",
     "crates/doc/qdoc",
     "crates/doc/qdoc-codecs",
+    "crates/doc/qdoc-rich-text",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
 

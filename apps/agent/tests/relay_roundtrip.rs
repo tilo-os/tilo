@@ -361,9 +361,9 @@ fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str
     // seed's own commit — both pre-date anything the agent did.
     let genesis = qdoc::model::schema_genesis_actor_hex();
     let seed = hex::encode("ada");
-    let actors: std::collections::HashSet<String> = qdoc::history::versions(replica)
+    let actors: std::collections::HashSet<String> = tilo_resource::history::versions(replica)
         .into_iter()
-        .map(|v| v.actor_hex)
+        .map(|v| v.actor)
         .filter(|a| *a != genesis && *a != seed)
         .collect();
     assert_eq!(

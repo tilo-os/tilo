@@ -38,6 +38,7 @@
 pub mod actions;
 mod compact_swatch_palette;
 mod find_bar;
+pub mod framework;
 pub mod history_panel;
 pub mod i18n;
 mod outline_pane;
@@ -228,7 +229,7 @@ impl WpFormat {
 /// boundary here the first edit's entry would span the whole import.
 fn start_history_here(state: &mut ui::State) {
     let mut doc = std::mem::take(&mut state.doc);
-    let _ = qdoc::history::commit_stamped(&mut doc);
+    let _ = ui::tilo_resource::history::commit_stamped(&mut doc);
     state.history_mut().rebase(&mut doc);
     state.doc = doc;
 }
@@ -1052,18 +1053,15 @@ mod tests {
         }
         s.doc.commit();
 
-        let vers = qdoc::history::versions(&mut s.doc);
+        let vers = ui::tilo_resource::history::versions(&mut s.doc);
         assert!(vers.len() >= 2, "multiple authored changes");
         let last = vers.len() - 1;
         assert_eq!(
-            qdoc::history::materialize_at(&mut s.doc, last)
-                .unwrap()
-                .blocks[0]
-                .text,
+            qdoc::snapshot::at(&mut s.doc, last).unwrap().blocks[0].text,
             "hello world"
         );
         let saw_hello = (0..vers.len()).any(|i| {
-            qdoc::history::materialize_at(&mut s.doc, i)
+            qdoc::snapshot::at(&mut s.doc, i)
                 .ok()
                 .and_then(|sn| sn.blocks.first().map(|b| b.text == "hello"))
                 .unwrap_or(false)
