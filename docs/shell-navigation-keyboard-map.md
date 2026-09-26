@@ -58,6 +58,7 @@ Super+Left/Right clamps because it describes a spatial direction.
 | Open app as adjacent window | Super+N | Global search/open |
 | Open recovery terminal | Super+Enter | Global search/open Terminal |
 | Close focused tab | Super+W | Tab close |
+| Reopen last closed tab (this workspace) | Super+Shift+T | Close toast's Undo |
 | Duplicate focused tab | Super+D | Tab action |
 | Maximize/restore focused window group | Super+Up | Frame maximize/restore |
 | Move active tab into a new group | Super+Shift+Enter | Drag tab into a gap |
