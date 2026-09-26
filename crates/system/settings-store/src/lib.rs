@@ -49,6 +49,7 @@ pub mod continuity;
 pub mod day_schedule;
 pub mod display_identify;
 pub mod display_mode;
+pub mod display_tools;
 pub mod hardware;
 pub mod magnifier;
 pub mod notification_policy;

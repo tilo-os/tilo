@@ -265,6 +265,9 @@ impl OutputGlobals {
                         Some(out.logical_position.into()),
                     );
                     handle.set_preferred(mode);
+                    handle
+                        .user_data()
+                        .insert_if_missing_threadsafe(|| BackendOutput(id));
                     let global = handle.create_global::<D>(dh);
                     tracing::info!(
                         output = id.0,
@@ -319,6 +322,23 @@ impl OutputGlobals {
     }
 }
 
+/// The backend output a `wl_output` global stands for, stored on its
+/// Smithay handle when the global is created.
+#[derive(Clone, Copy, Debug)]
+struct BackendOutput(OutputId);
+
+/// The backend output a client's `wl_output` resource names, for protocols
+/// that take a `wl_output` argument (fullscreen, output power). `None` for
+/// an output that is not one of the compositor's advertised globals.
+pub fn output_id_of(
+    resource: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+) -> Option<OutputId> {
+    WlOutputHandle::from_resource(resource)?
+        .user_data()
+        .get::<BackendOutput>()
+        .map(|output| output.0)
+}
+
 /// The rate an output's `wl_output` mode advertises, in millihertz: its own
 /// mode's, else the compositor-wide fallback, else 60 Hz.
 fn advertised_refresh(out: &Output, fallback_refresh_mhz: Option<u32>) -> i32 {
@@ -345,17 +365,19 @@ fn mode_for(out: &Output, fallback_refresh_mhz: Option<u32>) -> OutputMode {
     }
 }
 
-/// The `wl_output` name: the connector (`DP-2`), as other compositors
+/// The `wl_output` name: the connector key (`DP-2`), as other compositors
 /// advertise it, so clients and users can refer to a monitor by port. It
-/// must be unique, so a connector label repeated across GPUs, or an output
-/// without one, gets its id appended.
+/// is the same name the output-management head for this output carries,
+/// so a tool can match a `wl_output` to its head. An output without a
+/// connector gets the virtual head name its head is advertised under. It
+/// must be unique, so a repeated connector gets its id appended.
 fn advertised_name(out: &Output, desired: &[Output]) -> String {
     let connector = &out.identity.connector;
     let repeated = desired
         .iter()
         .any(|other| other.id != out.id && other.identity.connector == *connector);
     if connector.is_empty() {
-        format!("Tilo-{}", out.id.0)
+        super::output_heads::virtual_head_name(out.id)
     } else if repeated {
         format!("{connector}-{}", out.id.0)
     } else {
@@ -579,7 +601,7 @@ mod tests {
         assert_eq!(advertised_name(&laptop, &all), "eDP-1");
         assert_eq!(advertised_name(&left, &all), "HDMI-A-1-1");
         assert_eq!(advertised_name(&right, &all), "HDMI-A-1-2");
-        assert_eq!(advertised_name(&unnamed, &all), "Tilo-3");
+        assert_eq!(advertised_name(&unnamed, &all), "VIRTUAL-4");
     }
 
     #[test]

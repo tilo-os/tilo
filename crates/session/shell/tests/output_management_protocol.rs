@@ -7,6 +7,9 @@
 //! `DisplayTransaction` the Settings display pane writes — never a direct
 //! modeset — with `succeeded` arriving only once the backend has applied
 //! the plan.
+//!
+//! The applied change then waits for the person: the shell's Keep/Revert
+//! prompt appears on every display, unless the tool is one they trusted.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,14 +24,21 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState, OutputTransform};
 use shell::compositor::backend::headless::output_fixture;
 use shell::compositor::backend::{Output, OutputId};
 use shell::compositor::output_globals::OutputGlobals;
 use shell::compositor::output_heads::heads_from_outputs;
+use shell::compositor::output_management::DisplayConfirmation;
 use shell::compositor::state::{ClientState, State};
+use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::overlay_host::{OutputGeometry, ShellOverlayHost};
+use shell::shell::state::WorkspaceTree;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
+use taffy::{NodeId, TaffyTree};
+use ui::a11y::{AccessNode, Role};
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{wl_output, wl_registry};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
@@ -43,6 +53,7 @@ use wayland_protocols_wlr::output_power_management::v1::client::{
     zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
     zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 #[derive(Clone, Debug, Default)]
 struct SeenHead {
@@ -62,6 +73,7 @@ struct Tool {
     manager: Option<ZwlrOutputManagerV1>,
     power_manager: Option<ZwlrOutputPowerManagerV1>,
     outputs: Vec<wl_output::WlOutput>,
+    output_names: HashMap<ObjectId, String>,
     heads: Vec<(ZwlrOutputHeadV1, SeenHead)>,
     mode_sizes: HashMap<ObjectId, (i32, i32)>,
     serial: Option<u32>,
@@ -233,7 +245,21 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Tool {
     }
 }
 
-wayland_client::delegate_noop!(Tool: ignore wl_output::WlOutput);
+impl Dispatch<wl_output::WlOutput, ()> for Tool {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            state.output_names.insert(output.id(), name);
+        }
+    }
+}
+
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputPowerManagerV1);
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputConfigurationHeadV1);
 
@@ -285,7 +311,15 @@ impl Harness {
 
     /// A privileged tool that has read every head.
     fn privileged(fixture: &str) -> Self {
-        let mut harness = Self::new(fixture, ClientState::privileged_arc());
+        Self::privileged_tool(fixture, None)
+    }
+
+    /// A privileged tool whose connection revealed `executable`.
+    fn privileged_tool(fixture: &str, executable: Option<&str>) -> Self {
+        let mut harness = Self::new(
+            fixture,
+            ClientState::privileged_tool_arc(executable.map(str::to_owned)),
+        );
         let expected = harness.outputs.len();
         harness.pump("heads", |tool| {
             tool.serial.is_some()
@@ -379,7 +413,7 @@ fn a_sandboxed_client_sees_neither_display_configuration_global() {
 #[test]
 fn apply_stages_the_settings_transaction_and_succeeds_once_the_backend_applied_it() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
-    let mut harness = Harness::privileged("docked-laptop");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
     let configuration = harness.configuration();
     let _panel = harness.enable(&configuration, "VIRTUAL-1");
     let monitor = harness.enable(&configuration, "VIRTUAL-2");
@@ -408,7 +442,11 @@ fn apply_stages_the_settings_transaction_and_succeeds_once_the_backend_applied_i
     assert!(panel.enabled);
     assert!((panel.scale - 2.0).abs() < 1e-3);
     assert_eq!(harness.tool.outcome, None, "nothing is applied yet");
-    assert!(harness.state.output_management.take_staged_by_tool());
+    assert_eq!(
+        harness.state.output_management.take_confirmation(),
+        None,
+        "nothing to keep before the backend applied it"
+    );
 
     // The DRM backend validates and applies the plan, awaiting the user's
     // confirmation — the moment the tool learns it worked.
@@ -419,6 +457,14 @@ fn apply_stages_the_settings_transaction_and_succeeds_once_the_backend_applied_i
         .output_management
         .resolve_transactions(DisplayTransaction::load().as_ref());
     assert_eq!(harness.outcome("apply outcome"), "succeeded");
+    assert_eq!(
+        harness.state.output_management.take_confirmation(),
+        Some(DisplayConfirmation {
+            transaction: transaction.id,
+            tool: Some(DisplayTool::new(KANSHI)),
+        }),
+        "the person is asked to keep it, naming the tool"
+    );
 }
 
 #[test]
@@ -532,4 +578,312 @@ fn output_power_switches_one_output_and_reports_it() {
         .set_output_heads(heads_from_outputs(&remaining));
     harness.pump("power object failed", |tool| tool.power.len() == 3);
     assert_eq!(harness.tool.power[2], Err(()));
+}
+
+const KANSHI: &str = "/usr/bin/kanshi";
+
+fn unix_now_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_millis(),
+    )
+    .expect("milliseconds fit u64")
+}
+
+/// The tool moves the monitor above the panel; the backend applies the plan
+/// and starts the restore countdown, ending at `deadline_unix_ms`.
+fn apply_and_await(harness: &mut Harness, deadline_unix_ms: u64) -> DisplayTransaction {
+    let configuration = harness.configuration();
+    let _panel = harness.enable(&configuration, "VIRTUAL-1");
+    let monitor = harness.enable(&configuration, "VIRTUAL-2");
+    monitor.set_position(0, -1440);
+    configuration.apply();
+    harness.pump("apply reaches the compositor", |_| {
+        DisplayTransaction::load()
+            .is_some_and(|transaction| transaction.state == DisplayTransactionState::Requested)
+    });
+    await_confirmation(harness, deadline_unix_ms, |_| {})
+}
+
+/// Play the backend for the staged transaction: `edit` what it applied,
+/// then wait for the person until `deadline_unix_ms`.
+fn await_confirmation(
+    harness: &mut Harness,
+    deadline_unix_ms: u64,
+    edit: impl FnOnce(&mut DisplayTransaction),
+) -> DisplayTransaction {
+    let mut transaction = DisplayTransaction::load().expect("a staged transaction");
+    edit(&mut transaction);
+    transaction.state = DisplayTransactionState::AwaitingConfirmation;
+    transaction.deadline_unix_ms = Some(deadline_unix_ms);
+    transaction.save().expect("save");
+    harness
+        .state
+        .output_management
+        .resolve_transactions(DisplayTransaction::load().as_ref());
+    assert_eq!(harness.outcome("apply outcome"), "succeeded");
+    transaction
+}
+
+fn in_fifteen_seconds() -> u64 {
+    unix_now_ms().saturating_add(15_000)
+}
+
+/// The shell, laid out over the fixture's displays, showing the prompt the
+/// compositor handed it.
+fn prompt_host(
+    harness: &Harness,
+    confirmation: DisplayConfirmation,
+) -> (ShellOverlayHost, (TaffyTree<()>, NodeId)) {
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let geometry: Vec<OutputGeometry> = harness
+        .outputs
+        .iter()
+        .map(|output| {
+            OutputGeometry::unscaled(
+                f64::from(output.logical_position.0),
+                f64::from(output.logical_position.1),
+                f64::from(output.size.0),
+                f64::from(output.size.1),
+            )
+        })
+        .collect();
+    host.set_output_geometry(&geometry);
+    let layout = crate::display_layout_switcher::layout_host(&mut host);
+    host.show_display_confirmation(confirmation.transaction, confirmation.tool);
+    (host, layout)
+}
+
+fn key(host: &mut ShellOverlayHost, layout: &(TaffyTree<()>, NodeId), key: NamedKey) {
+    crate::display_layout_switcher::press(host, layout, Key::Named(key), ModifiersState::empty());
+}
+
+fn prompt_dialog(host: &ShellOverlayHost) -> AccessNode {
+    use ui::widget::Widget;
+    host.accessibility()
+        .expect("the host publishes a semantic tree")
+        .children
+        .into_iter()
+        .find(|node| {
+            node.role == Role::Dialog
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("Keep the display settings"))
+        })
+        .expect("the prompt is in the semantic tree")
+}
+
+fn state_now() -> DisplayTransactionState {
+    DisplayTransaction::load().expect("transaction").state
+}
+
+#[test]
+fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    let confirmation = harness
+        .state
+        .output_management
+        .take_confirmation()
+        .expect("the person is asked");
+    let (mut host, layout) = prompt_host(&harness, confirmation);
+
+    assert!(host.display_confirmation_visible());
+    let cards = host.display_confirmation_cards();
+    assert_eq!(cards.len(), harness.outputs.len(), "one card per display");
+    for (card, output) in cards.iter().zip(&harness.outputs) {
+        let (x, y) = output.logical_position;
+        let centre = card.card.center();
+        assert!(
+            centre.x >= f64::from(x)
+                && centre.x <= f64::from(x) + f64::from(output.size.0)
+                && centre.y >= f64::from(y)
+                && centre.y <= f64::from(y) + f64::from(output.size.1),
+            "each card sits on its own display"
+        );
+    }
+    let dialog = prompt_dialog(&host);
+    assert_eq!(
+        dialog.name.as_deref(),
+        Some("Keep the display settings kanshi applied?")
+    );
+    assert!(dialog.state.modal);
+    let buttons: Vec<&str> = dialog
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .collect();
+    assert_eq!(
+        buttons,
+        ["Keep", "Revert", "Always keep changes from kanshi"]
+    );
+
+    key(&mut host, &layout, NamedKey::Enter);
+    assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
+    assert!(!host.display_confirmation_visible());
+    assert!(
+        !TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)),
+        "Keep answers for this change only"
+    );
+}
+
+#[test]
+fn escape_restores_the_previous_layout() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    let confirmation = harness.state.output_management.take_confirmation();
+    let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
+    key(&mut host, &layout, NamedKey::Escape);
+    assert_eq!(state_now(), DisplayTransactionState::RevertRequested);
+    assert!(!host.display_confirmation_visible());
+}
+
+#[test]
+fn running_out_of_time_restores_the_previous_layout() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    let confirmation = harness.state.output_management.take_confirmation();
+    let (mut host, _layout) = prompt_host(&harness, confirmation.expect("asked"));
+    assert!(!host.poll_display_confirmation(), "time is left");
+
+    let mut transaction = DisplayTransaction::load().expect("transaction");
+    transaction.deadline_unix_ms = Some(unix_now_ms().saturating_sub(1));
+    transaction.save().expect("save");
+    assert!(host.poll_display_confirmation(), "the countdown ended");
+    assert_eq!(state_now(), DisplayTransactionState::RevertRequested);
+    assert!(!host.display_confirmation_visible());
+}
+
+#[test]
+fn an_answer_given_elsewhere_closes_the_prompt() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    let confirmation = harness.state.output_management.take_confirmation();
+    let (mut host, _layout) = prompt_host(&harness, confirmation.expect("asked"));
+
+    // Settings › Displays kept it first.
+    let mut transaction = DisplayTransaction::load().expect("transaction");
+    transaction.request_confirmation().expect("keep");
+    assert!(host.poll_display_confirmation());
+    assert!(!host.display_confirmation_visible());
+    assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
+}
+
+#[test]
+fn always_keep_trusts_the_tool_and_its_next_change_is_kept_without_asking() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    let confirmation = harness.state.output_management.take_confirmation();
+    let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
+    key(&mut host, &layout, NamedKey::Tab);
+    key(&mut host, &layout, NamedKey::Tab);
+    assert!(
+        prompt_dialog(&host)
+            .children
+            .iter()
+            .any(|node| node.state.focused
+                && node.name.as_deref() == Some("Always keep changes from kanshi")),
+        "Tab walks Keep, Revert, Always keep"
+    );
+    key(&mut host, &layout, NamedKey::Enter);
+    assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
+    assert!(TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)));
+
+    let second = apply_and_await(&mut harness, in_fifteen_seconds());
+    assert_eq!(
+        harness.state.output_management.take_confirmation(),
+        None,
+        "a trusted tool is not asked about"
+    );
+    let kept = DisplayTransaction::load().expect("transaction");
+    assert_eq!(kept.id, second.id);
+    assert_eq!(kept.state, DisplayTransactionState::ConfirmRequested);
+}
+
+#[test]
+fn another_tool_is_still_asked_about() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    TrustedDisplayTools::trust(DisplayTool::new(KANSHI)).expect("trust");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some("/usr/bin/wlr-randr"));
+    apply_and_await(&mut harness, in_fifteen_seconds());
+    assert_eq!(
+        harness
+            .state
+            .output_management
+            .take_confirmation()
+            .and_then(|confirmation| confirmation.tool),
+        Some(DisplayTool::new("/usr/bin/wlr-randr"))
+    );
+    assert_eq!(state_now(), DisplayTransactionState::AwaitingConfirmation);
+}
+
+#[test]
+fn a_change_that_leaves_no_display_on_is_never_kept_on_trust() {
+    let _home = tilo_test_env::TestHome::new().expect("test home");
+    TrustedDisplayTools::trust(DisplayTool::new(KANSHI)).expect("trust");
+    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
+
+    // Asking for every screen off is refused outright.
+    let configuration = harness.configuration();
+    for name in ["VIRTUAL-1", "VIRTUAL-2"] {
+        configuration.disable_head(&harness.tool.head(name).0);
+    }
+    configuration.apply();
+    assert_eq!(harness.outcome("all-off apply"), "failed");
+    assert!(DisplayTransaction::load().is_none());
+
+    // And an applied plan that ends with every head off still waits for
+    // the person, however trusted the tool.
+    let configuration = harness.configuration();
+    let _panel = harness.enable(&configuration, "VIRTUAL-1");
+    let _monitor = harness.enable(&configuration, "VIRTUAL-2");
+    configuration.apply();
+    harness.pump("apply reaches the compositor", |_| {
+        DisplayTransaction::load().is_some()
+    });
+    await_confirmation(&mut harness, in_fifteen_seconds(), |transaction| {
+        for output in transaction.candidate.outputs.values_mut() {
+            output.enabled = false;
+        }
+    });
+    assert!(
+        harness
+            .state
+            .output_management
+            .take_confirmation()
+            .is_some(),
+        "the person is asked"
+    );
+    assert_eq!(state_now(), DisplayTransactionState::AwaitingConfirmation);
+}
+
+#[test]
+fn wl_output_names_are_the_head_names() {
+    let mut harness = Harness::privileged("docked-laptop");
+    let expected = harness.outputs.len();
+    harness.pump("output names", |tool| tool.output_names.len() == expected);
+    let mut outputs: Vec<&str> = harness
+        .tool
+        .outputs
+        .iter()
+        .map(|output| harness.tool.output_names[&output.id()].as_str())
+        .collect();
+    let mut heads: Vec<&str> = harness
+        .tool
+        .live_heads()
+        .iter()
+        .filter_map(|head| head.name.as_deref())
+        .collect();
+    outputs.sort_unstable();
+    heads.sort_unstable();
+    assert_eq!(outputs, heads);
+    assert_eq!(outputs, ["VIRTUAL-1", "VIRTUAL-2"]);
 }

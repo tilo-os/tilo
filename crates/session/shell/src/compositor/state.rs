@@ -50,7 +50,6 @@ use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::output::Output as SmithayOutput;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
@@ -2893,6 +2892,10 @@ pub struct ClientState {
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
+    /// The program behind a privileged connection, read from its peer
+    /// credentials when it connected. Display changes it makes are kept
+    /// without asking once the person trusts this executable.
+    pub executable: Option<String>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -2908,6 +2911,7 @@ impl Default for ClientState {
             package_id: None,
             workspace_id: None,
             enforce_package_id: false,
+            executable: None,
         }
     }
 }
@@ -2938,8 +2942,14 @@ impl ClientState {
 
     /// Per-client data for a connection accepted on the privileged socket.
     pub fn privileged_arc() -> Arc<Self> {
+        Self::privileged_tool_arc(None)
+    }
+
+    /// Per-client data for a privileged connection whose program is known.
+    pub fn privileged_tool_arc(executable: Option<String>) -> Arc<Self> {
         Arc::new(Self {
             privileged: true,
+            executable,
             ..Self::default()
         })
     }
@@ -3291,17 +3301,10 @@ fn floating_capability_token(app_id: &str) -> Option<&str> {
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
 }
 
-/// Map the client-bound `wl_output` object back to the stable backend id.
-/// `OutputGlobals` names its Smithay outputs `Tilo-<OutputId>`; parsing only
-/// that compositor-owned prefix rejects arbitrary/foreign output objects.
+/// Map the client-bound `wl_output` object back to the stable backend id;
+/// an output that is not one of the compositor's globals maps to nothing.
 fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::backend::OutputId> {
-    let output = SmithayOutput::from_resource(output?)?;
-    output
-        .name()
-        .strip_prefix("Tilo-")?
-        .parse::<u32>()
-        .ok()
-        .map(crate::compositor::backend::OutputId)
+    crate::compositor::output_globals::output_id_of(output?)
 }
 
 /// Calculate a popup's protocol geometry against the visible part of its
