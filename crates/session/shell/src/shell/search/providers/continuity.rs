@@ -1132,6 +1132,134 @@ impl SearchProvider for CallContinuityActionsProvider {
     }
 }
 
+pub const CONTINUE_PROVIDER_ID: &str = "continuity.continue";
+const CONTINUE_ID: &str = "continuity.continue";
+const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
+
+/// The palette's door to the top bar's "Continue <app> from <device>"
+/// offer: accept it (focus that tab here) or dismiss it.
+pub struct ContinueFromDeviceProvider;
+
+impl ContinueFromDeviceProvider {
+    fn row(
+        id: &'static str,
+        title: String,
+        subtitle: String,
+        score: i32,
+        expected: &crate::shell::continuity_suggestion::ContinuitySuggestion,
+    ) -> SearchResult {
+        let expected = expected.clone();
+        SearchResult {
+            kind: ResourceKind::Action,
+            operation_kind: tilo_actions::OperationKind::View,
+            provider_id: CONTINUE_PROVIDER_ID.into(),
+            id: id.into(),
+            title,
+            subtitle: Some(subtitle),
+            badge: Some(expected.device_label.clone()),
+            score,
+            params: Vec::new(),
+            contract: Some(tilo_actions::ActionContract::view()),
+            on_open: Rc::new(
+                move |_doc,
+                      _root,
+                      chrome: &crate::shell::chrome_state::Chrome,
+                      _args: &ActionArgs| {
+                    let mut state = chrome.borrow_mut();
+                    let now = std::time::Instant::now();
+                    // Re-read at dispatch: a stale row must not focus a tab
+                    // the person has since moved away from elsewhere.
+                    if state.continuity_suggestion(now).as_ref() != Some(&expected) {
+                        return Err(ActionError::Refused(
+                            "that device has moved on; nothing to continue".into(),
+                        ));
+                    }
+                    let done = if id == CONTINUE_ID {
+                        state.accept_continuity_suggestion(now)
+                    } else {
+                        state.dismiss_continuity_suggestion(now)
+                    };
+                    drop(state);
+                    done.map(|_| ()).ok_or_else(|| {
+                        ActionError::Refused("nothing to continue from another device".into())
+                    })
+                },
+            ),
+            on_invoke: None,
+            on_begin_invoke: None,
+        }
+    }
+}
+
+impl SearchProvider for ContinueFromDeviceProvider {
+    fn id(&self) -> &str {
+        CONTINUE_PROVIDER_ID
+    }
+    fn name(&self) -> &'static str {
+        "Continue from another device"
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Action]
+    }
+    fn available_in_active_app_scope(&self) -> bool {
+        true
+    }
+
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        ctx.chrome
+            .continuity_suggestion(std::time::Instant::now())
+            .map_or_else(
+                || "continuity-continue:none".into(),
+                |offer| {
+                    format!(
+                        "continuity-continue:{}:{}:{}",
+                        offer.device.as_str(),
+                        offer.revision,
+                        offer.tab
+                    )
+                },
+            )
+    }
+
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let Some(offer) = ctx.chrome.continuity_suggestion(std::time::Instant::now()) else {
+            return Vec::new();
+        };
+        let device = offer.device_label.as_str();
+        let app = offer.app_label.as_str();
+        let rows = [
+            (
+                CONTINUE_ID,
+                crate::shell::continuity_suggestion::continue_label(&offer),
+                crate::shell::i18n::t_args(
+                    "continuity-continue-subtitle",
+                    &[("device", device.into())],
+                ),
+            ),
+            (
+                CONTINUE_DISMISS_ID,
+                crate::shell::i18n::t_args(
+                    "continuity-dismiss-title",
+                    &[("app", app.into()), ("device", device.into())],
+                ),
+                crate::shell::i18n::t_args(
+                    "continuity-dismiss-subtitle",
+                    &[("device", device.into())],
+                ),
+            ),
+        ];
+        rows.into_iter()
+            .filter_map(|(id, title, subtitle)| {
+                let score = matches(ctx.needle, &title, &subtitle, id)?;
+                Some(Self::row(id, title, subtitle, score, &offer))
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::shell::state::FreshId as _;
@@ -1404,5 +1532,109 @@ mod tests {
         live.borrow_mut().local_media.clear();
         assert_ne!(before, provider.search_revision(&context("Now playing")));
         assert!(provider.query(context("Now playing")).is_empty());
+    }
+
+    #[test]
+    fn palette_continue_focuses_the_offered_tab_and_then_retires() {
+        use crate::shell::continuity_suggestion::{ContinuityFeed, FocusObservation};
+        use crate::shell::personal_continuity::{AppInstanceId, ContinuityStamp};
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use crate::shell::search::{SearchRegistry, SearchScope};
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let workspace = tree.desktop.workspaces[0].id;
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        let tab = |id: u64, title: &str| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: title.into(),
+                note: String::new(),
+            },
+        };
+        tree.desktop.workspaces[0].strips[0].window_groups = vec![
+            WindowGroup {
+                id: 1,
+                tabs: vec![tab(11, "Terminal")],
+                active_tab: 11,
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+            WindowGroup {
+                id: 2,
+                tabs: vec![tab(22, "Notes")],
+                active_tab: 22,
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+        ];
+        tree.desktop.active = workspace;
+        tree.desktop.active_strip.insert(workspace, strip);
+        tree.desktop.set_active_group(strip, 1);
+        let chrome = ChromeState::new(tree);
+        let laptop = device("laptop");
+        chrome.borrow_mut().set_continuity_feed(ContinuityFeed {
+            local_device: None,
+            observations: vec![FocusObservation {
+                device: laptop.clone(),
+                room,
+                app: AppInstanceId(22),
+                stamp: ContinuityStamp {
+                    counter: 4,
+                    device: laptop.clone(),
+                },
+                observed_at: Some(std::time::Instant::now()),
+                revision: 1,
+                withdrawn: false,
+            }],
+            devices: std::collections::BTreeMap::from([(laptop, "Laptop".to_string())]),
+        });
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(ContinueFromDeviceProvider));
+        let mut doc = AutoCommit::new();
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build(
+                &registry,
+                "",
+                SearchScope::All,
+                None,
+                &state,
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+        };
+        let titles = catalog
+            .enumerate()
+            .into_iter()
+            .map(|action| action.title)
+            .collect::<Vec<_>>();
+        assert!(
+            titles.contains(&"Continue Notes from Laptop".to_string()),
+            "{titles:?}"
+        );
+        catalog
+            .select(&ResourceRef::new(CONTINUE_PROVIDER_ID, CONTINUE_ID))
+            .expect("continue row")
+            .invoke(&mut doc, &automerge::ROOT, &chrome, [])
+            .expect("accepted");
+        let focused_group = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_group
+            .get(&strip)
+            .copied();
+        assert_eq!(focused_group, Some(2));
+        assert!(
+            chrome
+                .borrow()
+                .continuity_suggestion(std::time::Instant::now())
+                .is_none()
+        );
     }
 }
