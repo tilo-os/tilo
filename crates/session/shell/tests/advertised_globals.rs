@@ -132,6 +132,17 @@ fn every_interface_a_toolkit_requires_is_advertised() {
     );
 }
 
+/// Video players and presentations keep the screen on with this; without it
+/// they fall back to nothing and the session locks mid-film.
+#[test]
+fn the_idle_inhibit_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "zwp_idle_inhibit_manager_v1"),
+        "zwp_idle_inhibit_manager_v1 is not advertised. Advertised: {globals:?}"
+    );
+}
+
 /// Keep this check separate so its failure identifies the clipboard global.
 #[test]
 fn the_clipboard_global_is_advertised() {
