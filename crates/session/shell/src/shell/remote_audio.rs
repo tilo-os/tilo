@@ -4,29 +4,48 @@
 //! a short-lived picker token to a freshly enumerated local stream, the target
 //! shell asks for explicit consent, and approval mints a random capability
 //! bound to the exact `(source, target, session)` tuple. PCM is deliberately a
-//! small version-1 transport: 48 kHz stereo S16LE in bounded 20 ms frames.
+//! small transport: 48 kHz stereo S16LE in bounded 20 ms frames.
+//!
+//! Every frame carries its media timestamp (the index of its first sample on
+//! the source's monotonic clock) and the source-clock time at which that
+//! sample plays. The source is the group leader: every target that receives
+//! the same stream plays each sample at that one instant, converted to its own
+//! clock through the device fabric's peer clock estimate, so two devices form
+//! a synchronized stereo pair or a larger speaker group. Each inbound route
+//! plays one [`ChannelRole`] (both channels by default) through a native
+//! `PipeWire` stream whose device delay feeds the schedule. The source's own
+//! local playback could join the group by playing the same frames through the
+//! same playout with an identity clock.
 //!
 //! The transport is lossy by design: each frame travels on its own stream and
-//! a slow send is dropped rather than retried. The receiver therefore plays
-//! any newer frame, conceals short gaps with silence, and relies on
-//! keepalives from both peers to tell a paused source from a dead link.
+//! a slow send is dropped rather than retried. The receiver's jitter buffer
+//! reorders by media timestamp, ignores duplicates, conceals gaps with a short
+//! fade to silence, and never waits for a missing frame; keepalives from both
+//! peers tell a paused source from a dead link.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::sync::{Mutex, OnceLock};
-use std::thread::JoinHandle;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use media::pw_stream::{
+    AudioStreams, CaptureChunk, PlaybackConfig, PlaybackSource, PlaybackStream,
+};
+use media::sync_playout::{
+    AudioFrame, ChannelRole, Payload, PlayoutConfig, PushOutcome, SyncPlayout,
+};
 use rand_core::Rng;
 
 use crate::shell::device_fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    REMOTE_AUDIO_GROUP_LATENCY_NS, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_FRAME_BYTES,
+    REMOTE_AUDIO_SAMPLE_RATE_HZ, remote_audio_media_ns,
 };
+use crate::shell::device_fabric_runtime::{
+    FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync,
+};
+use crate::shell::fabric_clock::PeerPlayoutClock;
 use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
@@ -42,17 +61,14 @@ const IDLE_SESSION_TTL: Duration = Duration::from_secs(15 * 60);
 /// lost its link and is interrupted.
 const PEER_SILENCE_TIMEOUT: Duration = Duration::from_secs(3);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
-/// Lost frames are concealed with at most this many frames of silence
-/// (100 ms); a longer outage resumes at the newest frame instead of adding
-/// latency.
-const MAX_CONCEALED_FRAMES: u64 = 5;
 /// How long an interrupted route stays listed so the loss is visible.
 const INTERRUPTED_NOTICE_TTL: Duration = Duration::from_secs(30);
 /// How stale the cached application-stream list may get before the picker
 /// refreshes it off the calling thread.
 const AUDIO_GRAPH_REFRESH: Duration = Duration::from_secs(2);
 const CAPTURE_QUEUE: usize = 12;
-const PLAYBACK_QUEUE: usize = 12;
+/// `node.name` of the stream an inbound route plays through.
+const PLAYBACK_NODE_NAME: &str = "tilo-remote-audio-sink";
 const SEND_BUDGET: usize = 8;
 const MAX_PENDING_PCM_BYTES: usize = MAX_REMOTE_AUDIO_FRAME_BYTES * SEND_BUDGET * 2;
 
@@ -85,28 +101,6 @@ fn frame_matches(
     claimed_authorization: [u8; 16],
 ) -> bool {
     claimed_source == source && claimed_target == target && claimed_authorization == authorization
-}
-
-/// Decide whether a frame is playable after `last_sequence`. Returns how many
-/// lost frames to conceal before it, or `None` for a duplicate or a frame
-/// that arrived after a newer one.
-fn admit_sequence(last_sequence: u64, sequence: u64) -> Option<u64> {
-    (sequence > last_sequence).then(|| {
-        sequence
-            .saturating_sub(last_sequence)
-            .saturating_sub(1)
-            .min(MAX_CONCEALED_FRAMES)
-    })
-}
-
-/// Prefix one received frame with silence standing in for lost frames.
-fn with_concealment(concealed_frames: u64, pcm_s16le: &[u8]) -> Vec<u8> {
-    let silence = usize::try_from(concealed_frames)
-        .unwrap_or(0)
-        .saturating_mul(MAX_REMOTE_AUDIO_FRAME_BYTES);
-    let mut pcm = vec![0; silence];
-    pcm.extend_from_slice(pcm_s16le);
-    pcm
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,7 +162,7 @@ struct OutboundRoute {
     last_heard: Instant,
     last_keepalive: Instant,
     capture: Option<PcmCapture>,
-    pending_pcm: Vec<u8>,
+    pending: PendingAudio,
 }
 
 struct InboundRoute {
@@ -176,13 +170,228 @@ struct InboundRoute {
     target: DeviceId,
     label: String,
     authorization: [u8; 16],
-    last_sequence: u64,
-    /// When the route was approved, then when the last frame was played.
+    /// When the route was approved, then when the last frame was queued.
     last_audio: Instant,
     /// When the source last sent any authenticated frame or keepalive.
     last_heard: Instant,
     last_keepalive: Instant,
-    sink: Option<PcmSink>,
+    playback: Option<InboundPlayback>,
+    /// Keeps the source's clock estimate fresh while the route plays.
+    _clock_sync: Option<FabricClockSync>,
+}
+
+/// The member side of an inbound route: the jitter buffer and drift-steered
+/// playout, and the source clock it schedules against.
+struct RoutePlayout {
+    playout: SyncPlayout,
+    /// Maps the source's clock to this device's; `None` until the fabric has
+    /// an estimate, during which the route plays silence.
+    clock: Option<PeerPlayoutClock>,
+}
+
+/// Shared between the fabric handler that queues frames and the playback
+/// stream that renders them.
+#[derive(Clone)]
+struct SharedPlayout(Arc<Mutex<RoutePlayout>>);
+
+impl SharedPlayout {
+    fn lock(&self) -> std::sync::MutexGuard<'_, RoutePlayout> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl PlaybackSource for SharedPlayout {
+    fn render(&mut self, presentation_ns: i64, out: &mut [f32]) {
+        let mut route = self.lock();
+        let RoutePlayout { playout, clock } = &mut *route;
+        match clock {
+            Some(clock) => playout.render(clock, presentation_ns, out),
+            None => out.fill(0.0),
+        }
+        drop(route);
+    }
+}
+
+struct InboundPlayback {
+    role: ChannelRole,
+    shared: SharedPlayout,
+    stream: Box<dyn PlaybackStream>,
+}
+
+/// Opens the playback stream for an inbound route playing `role`.
+fn start_playback(
+    streams: &dyn AudioStreams,
+    label: &str,
+    role: ChannelRole,
+) -> Result<InboundPlayback, String> {
+    let latency = i64::try_from(REMOTE_AUDIO_GROUP_LATENCY_NS).unwrap_or(i64::MAX);
+    let shared = SharedPlayout(Arc::new(Mutex::new(RoutePlayout {
+        playout: SyncPlayout::new(PlayoutConfig::new(
+            REMOTE_AUDIO_SAMPLE_RATE_HZ,
+            latency,
+            role,
+        )),
+        clock: None,
+    })));
+    let config =
+        PlaybackConfig::for_role(PLAYBACK_NODE_NAME, label, REMOTE_AUDIO_SAMPLE_RATE_HZ, role);
+    let stream = streams
+        .open_playback(&config, Box::new(shared.clone()))
+        .map_err(|error| format!("start remote audio playback: {error}"))?;
+    Ok(InboundPlayback {
+        role,
+        shared,
+        stream,
+    })
+}
+
+/// One authenticated frame as the receiver sees it.
+struct ReceivedFrame<'a> {
+    sequence: u64,
+    media_ts: u64,
+    presentation_ns: u64,
+    pcm_s16le: &'a [u8],
+}
+
+/// Queues one frame for playout at its presentation time. `clock` is the
+/// latest estimate of the source's clock; without one the last known
+/// estimate stays in use.
+fn ingest_frame(
+    playback: &InboundPlayback,
+    frame: &ReceivedFrame<'_>,
+    clock: Option<PeerPlayoutClock>,
+) -> Result<PushOutcome, String> {
+    if let Some(failure) = playback.stream.failure() {
+        return Err(failure);
+    }
+    let media_ts =
+        i64::try_from(frame.media_ts).map_err(|_| "frame timestamp out of range".to_string())?;
+    let latency = remote_audio_media_ns(frame.media_ts)
+        .and_then(|media_ns| frame.presentation_ns.checked_sub(media_ns))
+        .and_then(|latency| i64::try_from(latency).ok())
+        .ok_or_else(|| "frame presentation time out of range".to_string())?;
+    let samples = frame
+        .pcm_s16le
+        .chunks_exact(2)
+        .map(|pair| <[u8; 2]>::try_from(pair).map_or(0, i16::from_le_bytes))
+        .collect();
+    let mut route = playback.shared.lock();
+    if clock.is_some() {
+        route.clock = clock;
+    }
+    if route.playout.config().group_latency_ns != latency {
+        route.playout.set_group_latency_ns(latency);
+    }
+    let outcome = route.playout.push(&AudioFrame {
+        seq: frame.sequence,
+        media_ts,
+        channels: u16::from(REMOTE_AUDIO_CHANNELS),
+        payload: Payload::I16(samples),
+    });
+    drop(route);
+    Ok(outcome)
+}
+
+/// Where a frame's first sample sits on the source clock and when it plays:
+/// `(media_ts, presentation_ns)`.
+fn frame_schedule(first_frame: i64) -> Option<(u64, u64)> {
+    let media_ts = u64::try_from(first_frame).ok()?;
+    let presentation_ns =
+        remote_audio_media_ns(media_ts)?.checked_add(REMOTE_AUDIO_GROUP_LATENCY_NS)?;
+    Some((media_ts, presentation_ns))
+}
+
+/// A run of captured samples with no gap in it.
+struct AudioRun {
+    first_frame: i64,
+    pcm: Vec<u8>,
+}
+
+impl AudioRun {
+    fn end_frame(&self) -> i64 {
+        self.first_frame.saturating_add(frames_in(self.pcm.len()))
+    }
+}
+
+fn frames_in(bytes: usize) -> i64 {
+    i64::try_from(bytes / REMOTE_AUDIO_SAMPLE_FRAME_BYTES).unwrap_or(i64::MAX)
+}
+
+/// Captured audio waiting to be framed. A gap in the capture timestamps
+/// closes a run: the frames before it go out, the last one short, and the
+/// next frame starts at the new timestamp, so the receiver sees the gap
+/// instead of time-shifted audio.
+#[derive(Default)]
+struct PendingAudio {
+    runs: VecDeque<AudioRun>,
+}
+
+impl PendingAudio {
+    fn push(&mut self, chunk: CaptureChunk) {
+        if chunk.pcm_s16le.is_empty() {
+            return;
+        }
+        match self.runs.back_mut() {
+            Some(run) if run.end_frame() == chunk.first_frame => {
+                run.pcm.extend_from_slice(&chunk.pcm_s16le);
+            }
+            _ => self.runs.push_back(AudioRun {
+                first_frame: chunk.first_frame,
+                pcm: chunk.pcm_s16le,
+            }),
+        }
+        self.bound();
+    }
+
+    fn len(&self) -> usize {
+        self.runs.iter().map(|run| run.pcm.len()).sum()
+    }
+
+    /// Drops the oldest audio beyond the bound, at a sample boundary: live
+    /// routing favours bounded latency over replaying a backlog after
+    /// transport backpressure clears.
+    fn bound(&mut self) {
+        let excess = self.len().saturating_sub(MAX_PENDING_PCM_BYTES);
+        let mut discard = excess
+            .checked_next_multiple_of(REMOTE_AUDIO_SAMPLE_FRAME_BYTES)
+            .unwrap_or(usize::MAX);
+        while discard > 0 {
+            let Some(front) = self.runs.front_mut() else {
+                return;
+            };
+            if front.pcm.len() <= discard {
+                discard = discard.saturating_sub(front.pcm.len());
+                self.runs.pop_front();
+            } else {
+                front.pcm.drain(..discard);
+                front.first_frame = front.first_frame.saturating_add(frames_in(discard));
+                discard = 0;
+            }
+        }
+    }
+
+    /// The next frame to send as `(first frame, pcm)`: a full frame from the
+    /// oldest run, or the rest of the oldest run once a gap has closed it.
+    fn next_frame(&mut self) -> Option<(i64, Vec<u8>)> {
+        loop {
+            let closed = self.runs.len() > 1;
+            let front = self.runs.front_mut()?;
+            if front.pcm.len() >= MAX_REMOTE_AUDIO_FRAME_BYTES {
+                let tail = front.pcm.split_off(MAX_REMOTE_AUDIO_FRAME_BYTES);
+                let pcm = std::mem::replace(&mut front.pcm, tail);
+                let first_frame = front.first_frame;
+                front.first_frame = first_frame.saturating_add(frames_in(pcm.len()));
+                return Some((first_frame, pcm));
+            }
+            if !closed {
+                return None;
+            }
+            let run = self.runs.pop_front()?;
+            if !run.pcm.is_empty() {
+                return Some((run.first_frame, run.pcm));
+            }
+        }
+    }
 }
 
 struct InterruptedRoute {
@@ -289,19 +498,6 @@ fn queue_egress(
         action,
         outbound_session,
     });
-}
-
-fn append_bounded_pcm(pending: &mut Vec<u8>, bytes: &[u8]) {
-    pending.extend_from_slice(bytes);
-    if pending.len() > MAX_PENDING_PCM_BYTES {
-        let excess = pending.len().saturating_sub(MAX_PENDING_PCM_BYTES);
-        // Stereo S16LE is four bytes per sample frame. Drop old audio at a
-        // sample boundary: live routing favours bounded latency over replaying
-        // a growing backlog after transport backpressure clears. A rounded-up
-        // count past usize::MAX still clamps to dropping the whole buffer.
-        let discard = excess.checked_next_multiple_of(4).unwrap_or(usize::MAX);
-        pending.drain(..discard.min(pending.len()));
-    }
 }
 
 #[expect(
@@ -797,7 +993,7 @@ pub fn request(
                 last_heard: now,
                 last_keepalive: now,
                 capture: None,
-                pending_pcm: Vec::new(),
+                pending: PendingAudio::default(),
             },
         );
         drop(state);
@@ -821,8 +1017,9 @@ pub fn request(
     Ok(session_id)
 }
 
-/// Resolve one target-local consent row. Approval starts the local sink before
-/// minting and sending the capability, so false readiness is impossible.
+/// Resolve one target-local consent row. Approval starts the local playback
+/// stream before minting and sending the capability, so false readiness is
+/// impossible. The route plays both channels until [`set_role`] picks one.
 ///
 /// # Errors
 ///
@@ -842,8 +1039,12 @@ pub fn authorize(
         .ok_or_else(|| "that remote audio request expired".to_string())?;
     let authorization = approved.then(random_nonzero_16);
     if let Some(authorization) = authorization {
-        let sink = match PcmSink::start() {
-            Ok(sink) => sink,
+        let playback = match start_playback(
+            media::pw_stream::native_streams(),
+            &pending.label,
+            ChannelRole::Stereo,
+        ) {
+            Ok(playback) => playback,
             Err(error) => {
                 if let Ok(mut state) = state().lock() {
                     state.pending.insert(session_id, pending);
@@ -866,11 +1067,11 @@ pub fn authorize(
                 target: pending.target,
                 label: pending.label,
                 authorization,
-                last_sequence: 0,
                 last_audio: now,
                 last_heard: now,
                 last_keepalive: now,
-                sink: Some(sink),
+                playback: Some(playback),
+                _clock_sync: Some(hold_fabric_clock_sync(pending.source.clone())),
             },
         );
     }
@@ -888,6 +1089,75 @@ pub fn authorize(
         state.inbound.remove(&session_id);
     }
     result.map(|_| ())
+}
+
+/// Choose which part of the stereo stream this device plays for an inbound
+/// route: one side of a stereo pair, a mono, centre or LFE feed, or both
+/// channels. The route's playback stream restarts with the role's channel
+/// count, so the switch costs one group latency of audio.
+///
+/// # Errors
+///
+/// Returns a message when the route is no longer active or the new playback
+/// stream cannot start.
+pub fn set_role(session_id: [u8; 16], role: ChannelRole) -> Result<(), String> {
+    set_role_with(
+        state(),
+        media::pw_stream::native_streams(),
+        session_id,
+        role,
+    )
+}
+
+fn set_role_with(
+    state: &Mutex<RemoteAudioState>,
+    streams: &dyn AudioStreams,
+    session_id: [u8; 16],
+    role: ChannelRole,
+) -> Result<(), String> {
+    let inactive = || "that remote audio route is no longer active".to_string();
+    let current = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let route = current.inbound.get(&session_id).map(|route| {
+        (
+            route.label.clone(),
+            route.playback.as_ref().map(|playback| playback.role),
+        )
+    });
+    drop(current);
+    let (label, playing) = route.ok_or_else(inactive)?;
+    if playing == Some(role) {
+        return Ok(());
+    }
+    // Opening a stream talks to the daemon; never while holding the state.
+    let playback = start_playback(streams, &label, role)?;
+    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let route = state.inbound.get_mut(&session_id).ok_or_else(inactive)?;
+    if let Some(previous) = route.playback.as_ref() {
+        let clock = previous.shared.lock().clock;
+        playback.shared.lock().clock = clock;
+    }
+    route.playback = Some(playback);
+    drop(state);
+    Ok(())
+}
+
+/// Delay this device's playout of an inbound route by `trim_ns` beyond the
+/// group latency, the per-member offset acoustic calibration measures. A
+/// change under 20 ms is absorbed by resampling, without a gap.
+///
+/// # Errors
+///
+/// Returns a message when the route is no longer active or not playing.
+pub fn set_trim(session_id: [u8; 16], trim_ns: i64) -> Result<(), String> {
+    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let playback = state
+        .inbound
+        .get(&session_id)
+        .and_then(|route| route.playback.as_ref())
+        .ok_or_else(|| "that remote audio route is no longer active".to_string())?;
+    playback.shared.lock().playout.set_trim_ns(trim_ns);
+    drop(state);
+    Ok(())
 }
 
 /// Stop either direction locally and notify the exact peer when an issued
@@ -1014,8 +1284,13 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             session_id,
             authorization,
             sequence,
+            media_ts,
+            presentation_ns,
             pcm_s16le,
         } => {
+            // Read before taking the route state: the estimate has its own lock.
+            let clock =
+                fabric_peer_clock(&envelope.source).map(|estimate| estimate.playout_clock());
             let mut failed = false;
             if let Ok(mut state) = state().lock() {
                 if let Some(route) = state.inbound.get_mut(session_id)
@@ -1030,21 +1305,20 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
                 {
                     let now = Instant::now();
                     route.last_heard = now;
-                    // Frames travel on independent streams and a slow send
-                    // is dropped, so play any newer frame, conceal the gap,
-                    // and ignore duplicates or frames overtaken in flight.
-                    if let Some(concealed) = admit_sequence(route.last_sequence, *sequence) {
-                        let pcm = with_concealment(concealed, pcm_s16le);
-                        if route
-                            .sink
-                            .as_mut()
-                            .is_some_and(|sink| sink.try_write(pcm).is_ok())
-                        {
-                            route.last_sequence = *sequence;
-                            route.last_audio = now;
-                        } else {
-                            failed = true;
-                        }
+                    let frame = ReceivedFrame {
+                        sequence: *sequence,
+                        media_ts: *media_ts,
+                        presentation_ns: *presentation_ns,
+                        pcm_s16le,
+                    };
+                    match route
+                        .playback
+                        .as_ref()
+                        .map(|playback| ingest_frame(playback, &frame, clock))
+                    {
+                        Some(Ok(PushOutcome::Queued)) => route.last_audio = now,
+                        Some(Ok(_)) => {}
+                        Some(Err(_)) | None => failed = true,
                     }
                 }
                 if failed && let Some(route) = state.inbound.remove(session_id) {
@@ -1177,22 +1451,25 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
         let Some(capture) = route.capture.as_mut() else {
             continue;
         };
-        if let Ok(bytes) = capture.drain() {
-            append_bounded_pcm(&mut route.pending_pcm, &bytes);
+        if let Ok(chunks) = capture.drain() {
+            for chunk in chunks {
+                route.pending.push(chunk);
+            }
         } else {
             terminate_capture_failure(&mut guard, session_id, &mut egress);
             continue;
         }
+        let Some(authorization) = route.authorization else {
+            continue;
+        };
         for _ in 0..SEND_BUDGET {
-            if route.pending_pcm.len() < MAX_REMOTE_AUDIO_FRAME_BYTES {
-                break;
-            }
-            let tail = route.pending_pcm.split_off(MAX_REMOTE_AUDIO_FRAME_BYTES);
-            let pcm_s16le = std::mem::replace(&mut route.pending_pcm, tail);
-            route.sequence = route.sequence.saturating_add(1);
-            let Some(authorization) = route.authorization else {
+            let Some((first_frame, pcm_s16le)) = route.pending.next_frame() else {
                 break;
             };
+            let Some((media_ts, presentation_ns)) = frame_schedule(first_frame) else {
+                continue;
+            };
+            route.sequence = route.sequence.saturating_add(1);
             route.last_audio = now;
             queue_egress(
                 &mut egress,
@@ -1201,6 +1478,8 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
                     session_id,
                     authorization,
                     sequence: route.sequence,
+                    media_ts,
+                    presentation_ns,
                     pcm_s16le,
                 },
                 Some(session_id),
@@ -1267,110 +1546,21 @@ impl PcmCapture {
         Ok(Self { stream })
     }
 
-    fn drain(&mut self) -> Result<Vec<u8>, String> {
-        let chunks = self
-            .stream
+    fn drain(&mut self) -> Result<Vec<CaptureChunk>, String> {
+        self.stream
             .drain()
-            .map_err(|error| format!("remote audio capture ended: {error}"))?;
-        Ok(chunks
-            .into_iter()
-            .flat_map(|chunk| chunk.pcm_s16le)
-            .collect())
-    }
-}
-
-struct PcmSink {
-    child: Child,
-    sender: Option<SyncSender<Vec<u8>>>,
-    writer: Option<JoinHandle<()>>,
-}
-
-impl PcmSink {
-    fn start() -> Result<Self, String> {
-        let mut child = Command::new("pw-play")
-            .args(raw_audio_args())
-            .args(["--media-category", "Playback", "--raw", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("start PipeWire remote audio sink: {error}"))?;
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("check PipeWire remote audio sink: {error}"))?
-        {
-            return Err(format!("PipeWire remote audio sink ended ({status})"));
-        }
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "PipeWire sink did not expose audio input".to_string())?;
-        let (sender, receiver) = sync_channel(PLAYBACK_QUEUE);
-        let writer = std::thread::Builder::new()
-            .name("tilo-remote-audio-playback".into())
-            .spawn(move || write_playback(stdin, &receiver))
-            .map_err(|error| format!("start remote audio playback writer: {error}"))?;
-        Ok(Self {
-            child,
-            sender: Some(sender),
-            writer: Some(writer),
-        })
-    }
-
-    fn try_write(&mut self, bytes: Vec<u8>) -> Result<(), String> {
-        if let Some(status) = self
-            .child
-            .try_wait()
-            .map_err(|error| format!("check remote audio sink: {error}"))?
-        {
-            return Err(format!("remote audio sink ended ({status})"));
-        }
-        match self.sender.as_ref().map(|sender| sender.try_send(bytes)) {
-            Some(Ok(()) | Err(TrySendError::Full(_))) => Ok(()),
-            Some(Err(TrySendError::Disconnected(_))) | None => {
-                Err("remote audio sink disconnected".into())
-            }
-        }
-    }
-}
-
-impl Drop for PcmSink {
-    fn drop(&mut self) {
-        self.sender.take();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
-    }
-}
-
-fn raw_audio_args() -> [&'static str; 12] {
-    [
-        "--media-type",
-        "Audio",
-        "--latency",
-        "20ms",
-        "--rate",
-        "48000",
-        "--channels",
-        "2",
-        "--channel-map",
-        "Stereo",
-        "--format",
-        "s16",
-    ]
-}
-
-fn write_playback(mut stdin: impl Write, receiver: &Receiver<Vec<u8>>) {
-    while let Ok(bytes) = receiver.recv() {
-        if stdin.write_all(&bytes).is_err() {
-            break;
-        }
+            .map_err(|error| format!("remote audio capture ended: {error}"))
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    reason = "fixture arithmetic on literal sample counts, levels and times"
+)]
 mod tests {
     use super::*;
 
@@ -1398,7 +1588,7 @@ mod tests {
             last_heard: at,
             last_keepalive: at,
             capture: None,
-            pending_pcm: Vec::new(),
+            pending: PendingAudio::default(),
         }
     }
 
@@ -1408,11 +1598,11 @@ mod tests {
             target: target.clone(),
             label: "Podcast".into(),
             authorization: [5; 16],
-            last_sequence: 7,
             last_audio: at,
             last_heard: at,
             last_keepalive: at,
-            sink: None,
+            playback: None,
+            _clock_sync: None,
         }
     }
 
@@ -1459,62 +1649,316 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn the_next_frame_plays_without_concealment() {
-        assert_eq!(admit_sequence(0, 1), Some(0));
-        assert_eq!(admit_sequence(8, 9), Some(0));
+    #[derive(Default)]
+    struct FakeStreams {
+        opened: Mutex<Vec<(PlaybackConfig, Box<dyn PlaybackSource>)>>,
+        failing: bool,
+    }
+
+    impl FakeStreams {
+        fn take(&self) -> (PlaybackConfig, Box<dyn PlaybackSource>) {
+            self.opened.lock().unwrap().remove(0)
+        }
+    }
+
+    struct FakePlayback {
+        failing: bool,
+    }
+
+    impl PlaybackStream for FakePlayback {
+        fn timing(&self) -> Option<media::pw_stream::DeviceTiming> {
+            None
+        }
+
+        fn failure(&self) -> Option<String> {
+            self.failing.then(|| "the device was unplugged".into())
+        }
+    }
+
+    impl AudioStreams for FakeStreams {
+        fn open_playback(
+            &self,
+            config: &PlaybackConfig,
+            source: Box<dyn PlaybackSource>,
+        ) -> Result<Box<dyn PlaybackStream>, media::pw_stream::StreamError> {
+            self.opened.lock().unwrap().push((config.clone(), source));
+            Ok(Box::new(FakePlayback {
+                failing: self.failing,
+            }))
+        }
+
+        fn open_capture(
+            &self,
+            _config: &media::pw_stream::CaptureConfig,
+        ) -> Result<Box<dyn media::pw_stream::CaptureStream>, media::pw_stream::StreamError>
+        {
+            Err(media::pw_stream::StreamError::Unavailable(
+                "these tests play only".into(),
+            ))
+        }
+    }
+
+    const RATE: i64 = REMOTE_AUDIO_SAMPLE_RATE_HZ as i64;
+    const FRAME_SAMPLES: i64 = REMOTE_AUDIO_FRAME_SAMPLES as i64;
+    /// The source booted five seconds before this device.
+    const SOURCE_AHEAD_NS: i64 = 5_000_000_000;
+    const LATENCY_NS: i64 = REMOTE_AUDIO_GROUP_LATENCY_NS as i64;
+    /// The test stream starts 100 s after the source booted.
+    const START_FRAME: i64 = 100 * RATE;
+
+    fn source_clock() -> PeerPlayoutClock {
+        PeerPlayoutClock::new(0, SOURCE_AHEAD_NS, 0.0)
+    }
+
+    fn sample_ns(frame: i64) -> i64 {
+        frame * 1_000_000_000 / RATE
+    }
+
+    /// Where on this device's clock the source's `frame` plays.
+    fn local_playout_ns(frame: i64) -> i64 {
+        sample_ns(frame) - SOURCE_AHEAD_NS + LATENCY_NS
+    }
+
+    /// One 20 ms frame holding constant levels.
+    fn level_pcm(left: f32, right: f32) -> Vec<u8> {
+        let left = ((left * 32_767.0) as i16).to_le_bytes();
+        let right = ((right * 32_767.0) as i16).to_le_bytes();
+        (0..FRAME_SAMPLES)
+            .flat_map(|_| [left[0], left[1], right[0], right[1]])
+            .collect()
+    }
+
+    fn deliver(
+        playback: &InboundPlayback,
+        index: i64,
+        pcm: &[u8],
+        clock: Option<PeerPlayoutClock>,
+    ) -> PushOutcome {
+        let first_frame = START_FRAME + index * FRAME_SAMPLES;
+        let (media_ts, presentation_ns) = frame_schedule(first_frame).unwrap();
+        ingest_frame(
+            playback,
+            &ReceivedFrame {
+                sequence: u64::try_from(index + 1).unwrap(),
+                media_ts,
+                presentation_ns,
+                pcm_s16le: pcm,
+            },
+            clock,
+        )
+        .unwrap()
     }
 
     #[test]
-    fn duplicate_and_overtaken_frames_are_dropped() {
-        assert_eq!(admit_sequence(8, 8), None, "duplicate");
-        assert_eq!(admit_sequence(8, 7), None, "arrived after a newer frame");
-        assert_eq!(admit_sequence(u64::MAX, 1), None);
-    }
-
-    #[test]
-    fn a_lost_frame_is_concealed_and_the_route_keeps_playing() {
-        // Frame 9 was lost; 10 still plays, preceded by one frame of silence.
-        let concealed = admit_sequence(8, 10).unwrap();
-        assert_eq!(concealed, 1);
-        let frame = vec![1; MAX_REMOTE_AUDIO_FRAME_BYTES];
-        let pcm = with_concealment(concealed, &frame);
-        assert_eq!(pcm.len(), 2 * MAX_REMOTE_AUDIO_FRAME_BYTES);
-        assert!(
-            pcm[..MAX_REMOTE_AUDIO_FRAME_BYTES]
-                .iter()
-                .all(|byte| *byte == 0)
-        );
-        assert!(
-            pcm[MAX_REMOTE_AUDIO_FRAME_BYTES..]
-                .iter()
-                .all(|byte| *byte == 1)
-        );
-    }
-
-    #[test]
-    fn a_long_outage_conceals_only_a_bounded_amount_of_silence() {
-        let concealed = admit_sequence(8, 1_008).unwrap();
-        assert_eq!(concealed, MAX_CONCEALED_FRAMES);
-        let pcm = with_concealment(concealed, &[1; 4]);
+    fn frames_are_scheduled_one_group_latency_after_capture() {
+        let (media_ts, presentation_ns) = frame_schedule(START_FRAME).unwrap();
+        assert_eq!(media_ts, 4_800_000);
         assert_eq!(
-            pcm.len(),
-            5 * MAX_REMOTE_AUDIO_FRAME_BYTES + 4,
-            "100 ms of silence at most"
+            presentation_ns,
+            100_000_000_000 + REMOTE_AUDIO_GROUP_LATENCY_NS
         );
+        assert_eq!(frame_schedule(-1), None);
     }
 
     #[test]
-    fn reordered_frames_play_the_newest_and_drop_the_straggler() {
-        let mut last = 8;
-        let mut played = Vec::new();
-        for sequence in [10, 9, 11] {
-            if admit_sequence(last, sequence).is_some() {
-                last = sequence;
-                played.push(sequence);
+    fn jittered_lost_and_reordered_frames_play_continuously_at_their_presentation_time() {
+        const FRAMES: i64 = 40;
+        const LOST: i64 = 7;
+        const DUPLICATED: i64 = 10;
+        let level = |index: i64| 0.1 + 0.02 * (index % 20) as f32;
+        let streams = FakeStreams::default();
+        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+        let (config, mut source) = streams.take();
+        assert_eq!(config.channels, 2);
+
+        // Each frame leaves once its last sample is captured and crosses the
+        // network in 2–12 ms; frame 3 is overtaken by frame 4, frame 7 never
+        // arrives and frame 10 arrives twice.
+        let mut arrivals = Vec::new();
+        for index in 0..FRAMES {
+            if index == LOST {
+                continue;
+            }
+            let sent = sample_ns(START_FRAME + (index + 1) * FRAME_SAMPLES) - SOURCE_AHEAD_NS;
+            let transit = if index == 3 {
+                30_000_000
+            } else {
+                2_000_000 + (index * 7 % 11) * 1_000_000
+            };
+            arrivals.push((sent + transit, index));
+            if index == DUPLICATED {
+                arrivals.push((sent + transit + 3_000_000, index));
             }
         }
-        assert_eq!(played, vec![10, 11]);
+        arrivals.sort_unstable();
+
+        // The device pulls 10 ms blocks, each presented when it is rendered.
+        let block = 480_usize;
+        let block_ns = 10_000_000;
+        let start = arrivals[0].0;
+        let end = local_playout_ns(START_FRAME + (FRAMES + 1) * FRAME_SAMPLES);
+        let mut output = Vec::new();
+        let mut delivered = 0;
+        let mut now = start;
+        while now < end {
+            while delivered < arrivals.len() && arrivals[delivered].0 <= now {
+                let index = arrivals[delivered].1;
+                let pcm = level_pcm(level(index), -level(index));
+                deliver(&playback, index, &pcm, Some(source_clock()));
+                delivered += 1;
+            }
+            let mut out = vec![0.0; block * 2];
+            source.render(now, &mut out);
+            output.extend(out);
+            now += block_ns;
+        }
+
+        let stats = *playback.shared.lock().playout.stats();
+        assert_eq!(stats.duplicates, 1);
+        assert_eq!(
+            stats.late, 0,
+            "every frame arrived within the group latency"
+        );
+        let at = |local_ns: i64| {
+            let index =
+                usize::try_from(((local_ns - start) * RATE + 500_000_000) / 1_000_000_000).unwrap();
+            (output[index * 2], output[index * 2 + 1])
+        };
+        for index in 1..FRAMES - 1 {
+            let first = START_FRAME + index * FRAME_SAMPLES;
+            if index == LOST {
+                let (left, right) = at(local_playout_ns(first + FRAME_SAMPLES / 2));
+                assert!(
+                    left.abs() < 0.01 && right.abs() < 0.01,
+                    "the lost frame is silent"
+                );
+                continue;
+            }
+            if (LOST - 1..=LOST + 1).contains(&index) {
+                continue;
+            }
+            // Away from the frame edges, where the resampler rings between
+            // levels, every sample is the frame's level at its scheduled time.
+            for offset in (64..FRAME_SAMPLES - 64).step_by(32) {
+                let (left, right) = at(local_playout_ns(first + offset));
+                assert!(
+                    (left - level(index)).abs() < 0.005 && (right + level(index)).abs() < 0.005,
+                    "frame {index} sample {offset}: ({left}, {right})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_route_plays_silence_until_the_source_clock_is_known() {
+        let streams = FakeStreams::default();
+        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+        let (_, mut source) = streams.take();
+        let pcm = level_pcm(0.4, 0.4);
+        for index in 0..3 {
+            assert_eq!(deliver(&playback, index, &pcm, None), PushOutcome::Queued);
+        }
+        let mut out = vec![1.0; 960];
+        source.render(local_playout_ns(START_FRAME + FRAME_SAMPLES), &mut out);
+        assert!(out.iter().all(|sample| sample.abs() < f32::EPSILON));
+
+        deliver(&playback, 3, &pcm, Some(source_clock()));
+        let mut out = vec![0.0; 960];
+        source.render(
+            local_playout_ns(START_FRAME + 3 * FRAME_SAMPLES + 100),
+            &mut out,
+        );
+        assert!(
+            (out[400] - 0.4).abs() < 0.005,
+            "plays once the clock is known"
+        );
+    }
+
+    #[test]
+    fn each_route_plays_its_own_channel_role() {
+        let streams = FakeStreams::default();
+        let left = start_playback(&streams, "Left speaker", ChannelRole::Left).unwrap();
+        let right = start_playback(&streams, "Right speaker", ChannelRole::Right).unwrap();
+        let (left_config, mut left_source) = streams.take();
+        let (right_config, mut right_source) = streams.take();
+        assert_eq!((left_config.channels, right_config.channels), (1, 1));
+        let pcm = level_pcm(0.3, -0.2);
+        for playback in [&left, &right] {
+            for index in 0..3 {
+                deliver(playback, index, &pcm, Some(source_clock()));
+            }
+        }
+        let now = local_playout_ns(START_FRAME + FRAME_SAMPLES);
+        let mut left_out = vec![0.0; 480];
+        let mut right_out = vec![0.0; 480];
+        left_source.render(now, &mut left_out);
+        right_source.render(now, &mut right_out);
+        assert!((left_out[240] - 0.3).abs() < 0.005, "{}", left_out[240]);
+        assert!((right_out[240] + 0.2).abs() < 0.005, "{}", right_out[240]);
+    }
+
+    #[test]
+    fn a_route_switches_role_and_keeps_its_clock() {
+        let streams = FakeStreams::default();
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let mut route = inbound(&source, &target, Instant::now());
+        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+        playback.shared.lock().clock = Some(source_clock());
+        route.playback = Some(playback);
+        let state = Mutex::new(RemoteAudioState::default());
+        state.lock().unwrap().inbound.insert([1; 16], route);
+
+        set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
+        let guard = state.lock().unwrap();
+        let playback = guard.inbound[&[1; 16]].playback.as_ref().unwrap();
+        let role = playback.role;
+        let shared = playback.shared.clone();
+        drop(guard);
+        let playout = shared.lock();
+        let playout_role = playout.playout.config().role;
+        let clock = playout.clock;
+        drop(playout);
+        assert_eq!(role, ChannelRole::Left);
+        assert_eq!(playout_role, ChannelRole::Left);
+        assert_eq!(clock, Some(source_clock()));
+        let channels = streams
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(config, _)| config.channels)
+            .collect::<Vec<_>>();
+        assert_eq!(channels, vec![2, 1], "a one-sided role plays mono");
+        set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
+        assert_eq!(
+            streams.opened.lock().unwrap().len(),
+            2,
+            "choosing the current role changes nothing"
+        );
+        assert!(set_role_with(&state, &streams, [9; 16], ChannelRole::Right).is_err());
+    }
+
+    #[test]
+    fn a_failed_playback_stream_rejects_frames_so_the_route_is_interrupted() {
+        let streams = FakeStreams {
+            failing: true,
+            ..FakeStreams::default()
+        };
+        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
+        let pcm = level_pcm(0.1, 0.1);
+        let (media_ts, presentation_ns) = frame_schedule(START_FRAME).unwrap();
+        let outcome = ingest_frame(
+            &playback,
+            &ReceivedFrame {
+                sequence: 1,
+                media_ts,
+                presentation_ns,
+                pcm_s16le: &pcm,
+            },
+            Some(source_clock()),
+        );
+        assert_eq!(outcome, Err("the device was unplugged".into()));
     }
 
     #[test]
@@ -1791,30 +2235,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pending_pcm_keeps_only_the_newest_bounded_audio() {
-        let mut pending = vec![1; MAX_PENDING_PCM_BYTES];
-        append_bounded_pcm(&mut pending, &vec![2; MAX_PENDING_PCM_BYTES]);
-        assert!(pending.len() <= MAX_PENDING_PCM_BYTES);
-        assert!(pending.iter().all(|byte| *byte == 2));
-        assert_eq!(pending.len() % 4, 0, "stereo S16LE stays sample-aligned");
+    fn chunk(first_frame: i64, frames: usize, byte: u8) -> CaptureChunk {
+        CaptureChunk {
+            first_frame,
+            pcm_s16le: vec![byte; frames * REMOTE_AUDIO_SAMPLE_FRAME_BYTES],
+        }
     }
 
     #[test]
-    fn pending_pcm_rounds_partial_overflow_up_to_a_sample_frame() {
-        let mut at_limit = vec![1; MAX_PENDING_PCM_BYTES];
-        append_bounded_pcm(&mut at_limit, &[]);
-        assert_eq!(
-            at_limit.len(),
-            MAX_PENDING_PCM_BYTES,
-            "at the limit keeps everything"
-        );
+    fn contiguous_capture_is_framed_with_continuous_timestamps() {
+        let mut pending = PendingAudio::default();
+        pending.push(chunk(1_000, 700, 1));
+        assert_eq!(pending.next_frame(), None, "less than a frame waits");
+        pending.push(chunk(1_700, 700, 2));
+        let (first, pcm) = pending.next_frame().unwrap();
+        assert_eq!(first, 1_000);
+        assert_eq!(pcm.len(), MAX_REMOTE_AUDIO_FRAME_BYTES);
+        assert_eq!(pending.next_frame(), None);
+        pending.push(chunk(2_400, 520, 3));
+        assert_eq!(pending.next_frame().map(|(first, _)| first), Some(1_960));
+    }
 
-        // Five bytes over the limit drops two whole sample frames (eight bytes).
-        let mut over = vec![1; MAX_PENDING_PCM_BYTES];
-        append_bounded_pcm(&mut over, &[2; 5]);
-        assert_eq!(over.len(), MAX_PENDING_PCM_BYTES - 3);
-        assert_eq!(over.last(), Some(&2));
+    #[test]
+    fn a_capture_gap_sends_the_run_before_it_short_and_restarts_at_the_new_timestamp() {
+        let mut pending = PendingAudio::default();
+        pending.push(chunk(1_000, 1_200, 1));
+        pending.push(chunk(5_000, 960, 2));
+        let frames = std::iter::from_fn(|| pending.next_frame())
+            .map(|(first, pcm)| (first, pcm.len() / REMOTE_AUDIO_SAMPLE_FRAME_BYTES, pcm[0]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frames,
+            vec![(1_000, 960, 1), (1_960, 240, 1), (5_000, 960, 2)]
+        );
+    }
+
+    #[test]
+    fn pending_audio_keeps_only_the_newest_bounded_audio() {
+        let frames = MAX_PENDING_PCM_BYTES / REMOTE_AUDIO_SAMPLE_FRAME_BYTES;
+        let offset = i64::try_from(frames).unwrap();
+        let mut pending = PendingAudio::default();
+        pending.push(chunk(0, frames, 1));
+        pending.push(chunk(offset, frames, 2));
+        assert_eq!(pending.len(), MAX_PENDING_PCM_BYTES);
+        let (first, pcm) = pending.next_frame().unwrap();
+        assert_eq!(first, offset, "the dropped audio's timestamps went with it");
+        assert!(pcm.iter().all(|byte| *byte == 2));
     }
 
     #[test]
