@@ -19,7 +19,7 @@ pub struct Collaborator {
     #[serde(default)]
     pub avatar: Option<String>,
     /// Display-only role chip. Authority comes from
-    /// [`Workspace::role_of`], never from this field.
+    /// `Workspace::role_of`, never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
     /// Named by the room but has not taken part yet.

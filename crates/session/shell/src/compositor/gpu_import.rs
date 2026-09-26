@@ -152,7 +152,7 @@ impl GpuImporter {
     /// Import `dmabuf` and read it back into `out` as row-major RGBA8.
     ///
     /// Returns the buffer's `(width, height)`. `out` is cleared and refilled; the caller's `Vec` is
-    /// reused across commits so a steady-state client costs no reallocation. The GL scratch the readback allocates is released before this returns — see [`Self::release_readback_scratch`].
+    /// reused across commits so a steady-state client costs no reallocation. The GL scratch the readback allocates is released before this returns — see `Self::release_readback_scratch`.
     ///
     /// # Errors
     ///

@@ -424,8 +424,8 @@ impl SidebarWheelDisc {
     /// was actually laid out into — a fixed angle can't be right at more
     /// than one window size, since arc length per degree grows with
     /// radius. Divides the band's angular height across up to
-    /// [`SECTORS_ACROSS_BAND`] sectors, then widens each by
-    /// [`SECTOR_SIZE_BOOST`].
+    /// `SECTORS_ACROSS_BAND` sectors, then widens each by
+    /// `SECTOR_SIZE_BOOST`.
     pub fn spoke_gap_deg(&self) -> f32 {
         let n = self.spokes.len();
         // Single-workspace disc is treated as 360° so it can't scroll

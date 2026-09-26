@@ -916,7 +916,7 @@ pub enum Outcome {
 
 /// Send `cmd` to the active player on the session runtime and return at
 /// once. `on_outcome` runs there with the resulting state once the player
-/// accepted the command within [`DEADLINE`]; it should only publish (wake the
+/// accepted the command within `DEADLINE`; it should only publish (wake the
 /// compositor loop). With no player, no bus, a refusal or a late answer it
 /// is not called — the caller shows nothing rather than claim something
 /// happened. Returns `false` when the command could not be dispatched.

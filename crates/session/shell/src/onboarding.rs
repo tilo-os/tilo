@@ -18,7 +18,7 @@
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
 //! recovery is ever wired up, this copy changes in the same commit —
-//! [`tests::copy_does_not_promise_recovery`] guards against drift.
+//! `tests::copy_does_not_promise_recovery` guards against drift.
 
 use std::error::Error;
 use std::fmt;
@@ -56,7 +56,7 @@ pub const NO_RECOVERY_TITLE: &str =
     "If you lose this device without a backup, this identity is gone";
 
 /// The plain truth, without making people read an implementation tour before
-/// they can reach the backup step. Read [`tests::copy_does_not_promise_recovery`]
+/// they can reach the backup step. Read `tests::copy_does_not_promise_recovery`
 /// before editing these statements.
 pub const NO_RECOVERY_POINTS: &[&str] = &[
     "There is no recovery service. No backup code and no recovery phrase can recreate this identity.",

@@ -116,7 +116,7 @@ impl LockController {
     }
 
     /// Append printable text (a typed char or a pasted/`type`d string),
-    /// clamped to [`MAX_PASSWORD_LEN`]. Control characters are ignored.
+    /// clamped to `MAX_PASSWORD_LEN`. Control characters are ignored.
     /// Typing clears a previously shown error.
     pub fn push_str(&mut self, s: &str) {
         for c in s.chars() {

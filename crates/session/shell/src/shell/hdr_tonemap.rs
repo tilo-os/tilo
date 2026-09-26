@@ -8,7 +8,7 @@
 //! # Pipeline
 //!
 //! Unpack P010 (top 10 bits of each `u16`) → BT.2020 non-constant-luminance
-//! Y'`CbCr` → R'G'B' ([`bt2020_ycbcr_to_rgb`]) → PQ/HLG EOTF to linear cd/m²
+//! Y'`CbCr` → R'G'B' (`bt2020_ycbcr_to_rgb`) → PQ/HLG EOTF to linear cd/m²
 //! → BT.2020→BT.709 gamut (ITU-R BT.2087 §3.1.2, negatives clipped) →
 //! Hable tone-map to `[0,1]` at the target peak → BT.709/sRGB OETF to 8-bit.
 //!
@@ -28,7 +28,7 @@ pub const SHADER_SOURCE: &str = include_str!("hdr_tonemap.wgsl");
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HdrTonemapConfig {
     /// Peak luminance of the source content, cd/m². Derived from
-    /// [`Hdr10Metadata::mastering.max_display_mastering_luminance`],
+    /// `Hdr10Metadata::mastering.max_display_mastering_luminance`,
     /// defaulting to 1000 nits (the HDR10 baseline).
     pub source_peak_nits: f32,
     /// Peak luminance to compress to. Default 100 cd/m² ("SDR display

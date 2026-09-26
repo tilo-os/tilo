@@ -482,7 +482,7 @@ pub enum AuthPhase {
 impl AuthPhase {
     /// Whether an attempt currently owns the form: inputs disabled and
     /// submit ignored. The primary action stays enabled — it is inert
-    /// because [`GreeterApp::attempt_login`] refuses a second attempt, not
+    /// because `GreeterApp::attempt_login` refuses a second attempt, not
     /// because it is greyed out — so it remains the card's keyboard home
     /// instead of the focus ring falling through to the power actions.
     pub fn is_busy(self) -> bool {
@@ -506,7 +506,7 @@ pub enum StatusKind {
 }
 
 /// A machine power action the greeter can request before login. Routed to
-/// logind via `systemctl` — see [`GreeterApp::run_power`].
+/// logind via `systemctl` — see `GreeterApp::run_power`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAction {
     Reboot,

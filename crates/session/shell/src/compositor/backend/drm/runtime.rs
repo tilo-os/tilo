@@ -475,7 +475,7 @@ pub struct LiveEntry {
 /// What the loop thread asks the owner of the scanouts to do.
 ///
 /// The scanouts move to the render thread at startup
-/// ([`super::DrmBackend::take_presenter`]) since presentation is the only
+/// (`super::DrmBackend::take_presenter`) since presentation is the only
 /// thing that touches them per frame; hotplug, VT switches and resume
 /// originate on the loop thread and must reach across. A channel drained
 /// at the top of each frame keeps the scanouts single-owner and orders every reconfiguration against surrounding frames.

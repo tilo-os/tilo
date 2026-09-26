@@ -1138,7 +1138,7 @@ pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityReq
     InstalledContinuityRequirements::Required(manifest.continuity)
 }
 
-/// Installed packages, memoised for [`APP_CACHE_TTL`]. Errors are not
+/// Installed packages, memoised for `APP_CACHE_TTL`. Errors are not
 /// cached, so a transiently unreadable registry doesn't wedge the
 /// launcher for the rest of the TTL.
 ///
@@ -2250,11 +2250,11 @@ fn admit_launch(
 
 /// Launch `command` under `(package_id, display_name)`, or hold it while
 /// the session's services start (see [`hold_launches`]). A held launch
-/// reports through [`EVENTS`] like any other once it runs or fails.
+/// reports through `EVENTS` like any other once it runs or fails.
 ///
 /// # Errors
 ///
-/// As [`start_launch`] for a launch that starts now; also when a launch
+/// As `start_launch` for a launch that starts now; also when a launch
 /// cannot be held because too many are already waiting.
 #[cfg(any(test, target_os = "linux"))]
 pub fn spawn_launch(

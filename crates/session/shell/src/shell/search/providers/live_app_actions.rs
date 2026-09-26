@@ -1390,7 +1390,7 @@ impl LiveAppActionsProvider {
     /// The palette needs only the opaque id. Headless integrations also need
     /// its existing resource hierarchy so they can reveal one application,
     /// then one object, without flattening every action into their initial
-    /// context. Keep the decoding beside [`Self::result_id`], where the wire
+    /// context. Keep the decoding beside `Self::result_id`, where the wire
     /// address is minted, rather than making those integrations duplicate it.
     pub fn hierarchy(id: &str) -> Option<(&str, &str, &str, &str, &str)> {
         let (app, _permission, cluster, record, resource, action) = Self::result_parts(id)?;

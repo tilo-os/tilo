@@ -22,7 +22,7 @@ impl AppKind {
         }
     }
 
-    /// The key into the per-workspace [`Workspace::grants`] map — distinct
+    /// The key into the per-workspace `Workspace::grants` map — distinct
     /// from [`Self::as_str`]'s display label. Foreign clients carry their
     /// real `xdg_toplevel::set_app_id` (`org.gimp.GIMP`, …) straight in;
     /// built-ins get namespaced under the compositor's reverse-DNS prefix

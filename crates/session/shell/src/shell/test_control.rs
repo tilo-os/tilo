@@ -68,7 +68,7 @@ pub enum Command {
     },
     /// Re-paint the current scene into a fresh `OffscreenRenderer` and write the PNG to `path`. Only an empty `path` is pre-validated (`invalid_path`); other I/O errors are logged, not surfaced.
     Snapshot { path: String },
-    /// Read-only snapshot of the live [`shell::state::WorkspaceTree`] plus [`ChromeState`], both as opaque `serde_json::Value` so future fields don't break the wire.
+    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
     StateDump,
     /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
     ///
@@ -177,7 +177,7 @@ pub enum Response {
     Err { code: String, message: String },
     /// `foreign_frames` response — one opaque entry per tracked foreign surface.
     ForeignFrames { frames: serde_json::Value },
-    /// `state_dump` response — persisted [`WorkspaceTree`] + [`ChromeState`], both opaque.
+    /// `state_dump` response — persisted `WorkspaceTree` + [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque.
     State {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
@@ -213,11 +213,11 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted [`WorkspaceTree`] — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
+    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
     fn workspace_tree_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// JSON view of [`ChromeState`] (`overlays`, `search_scope`, `ws_settings_tab`, `revision`, `editing_workspace_name`). Defaults to `Null`.
+    /// JSON view of [`ChromeState`](crate::shell::chrome_state::ChromeState) (`overlays`, `search_scope`, `ws_settings_tab`, `revision`, `editing_workspace_name`). Defaults to `Null`.
     fn chrome_state_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }

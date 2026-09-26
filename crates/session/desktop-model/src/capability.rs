@@ -25,7 +25,7 @@ pub const GRANT_SESSION: Expiry = Expiry::EndOfSession;
 /// "Always" — survives a restart.
 pub const GRANT_ALWAYS: Expiry = Expiry::Never;
 
-/// Per-app capability grant stored on a [`Workspace`]. Each variant maps
+/// Per-app capability grant stored on a [`Workspace`](crate::workspace::Workspace). Each variant maps
 /// to its own enforcement layer: Bubblewrap allowlist for filesystem,
 /// Pipewire ACL for camera/mic, nftables for network.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

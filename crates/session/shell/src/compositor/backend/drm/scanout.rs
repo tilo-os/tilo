@@ -91,7 +91,7 @@ struct GbmScanoutBuffers {
 }
 
 /// Immutable description borrowed by the Vulkan importer.  Ownership stays in
-/// [`GbmScanoutBuffers`], which outlives every alias and KMS flip.
+/// `GbmScanoutBuffers`, which outlives every alias and KMS flip.
 pub struct GbmScanoutSlot<'a> {
     pub fd: BorrowedFd<'a>,
     pub width: u32,
@@ -666,7 +666,7 @@ impl CardHandle {
     }
 
     /// `dev_t` of the underlying node — the device half of an output's stable
-    /// identity. This is normalized through [`device_id_from_dev_t`], the
+    /// identity. This is normalized through `device_id_from_dev_t`, the
     /// same conversion the udev add/remove path uses.
     pub fn device_id(&self) -> u64 {
         self.device_id
@@ -1352,13 +1352,13 @@ impl DrmScanout {
 
     /// Single-output convenience: opens `card_path`, picks the first connected connector + mode +
     /// crtc, and brings it up. Returns `Err`, never panics; the runtime uses
-    /// [`CardHandle::bring_up_all`] instead, sharing [`Self::from_card`].
+    /// [`CardHandle::bring_up_all`] instead, sharing `Self::from_card`.
     ///
     /// # Errors
     ///
     /// Returns `Err` if the card can't be opened, if `resource_handles` fails, if no connected
     /// connector advertises a usable mode, if no crtc is available for the chosen connector, or
-    /// if the modeset/framebuffer setup in [`Self::from_card`] fails.
+    /// if the modeset/framebuffer setup in `Self::from_card` fails.
     pub fn new<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
         let card = Self::open_card(session, card_path)?;
         let res = card
@@ -2171,7 +2171,7 @@ impl DrmScanout {
     }
 
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
-    /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips [`Self::present`] while blanked.
+    /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips `Self::present` while blanked.
     pub fn set_dpms(&mut self, on: bool) {
         self.invalidate_xrgb_history();
         self.set_dpms_property(on);
@@ -2244,7 +2244,7 @@ impl Drop for DrmScanout {
     }
 }
 
-/// One output's scanout plus the fields the runtime needs to intern a stable [`OutputId`](super::OutputId) and lay outputs out side-by-side.
+/// One output's scanout plus the fields the runtime needs to intern a stable [`OutputId`] and lay outputs out side-by-side.
 pub struct ScanoutBuild {
     /// `dev_t` of the `cardN` node this output is on.
     pub device_id: u64,
