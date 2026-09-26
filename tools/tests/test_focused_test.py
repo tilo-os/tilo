@@ -321,6 +321,47 @@ class FocusedTests(unittest.TestCase):
                 focused.execute(root / 'source', self.values)
             read.assert_not_called()
 
+    def builder_root_config(self, target):
+        # Render the exact printf the builder image uses for /.cargo/config.toml.
+        recipe = (PATH.parents[2] / 'os/Containerfile.builder').read_text()
+        template = recipe.split('"$target" "$target" > /.cargo/config.toml', 1)[0].rsplit('&& printf ', 1)[1]
+        template = template.strip().rstrip('\\').strip()
+        self.assertTrue(template.startswith("'") and template.endswith("'"), template)
+        return template[1:-1].replace('\\n', '\n') % (target, target)
+
+    def test_builder_image_root_linker_config_is_the_only_accepted_ancestor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = Path(tmp).resolve()
+            source = system / 'workspace/qos/qos'
+            source.mkdir(parents=True)
+            (system / '.cargo').mkdir()
+            config = system / '.cargo/config.toml'
+            for target in ('x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'):
+                config.write_text(self.builder_root_config(target))
+                self.assertIsNone(focused.inherited_cargo_config(source, system))
+            accepted = config.read_text()
+            for content in (accepted + '[build]\nrustflags = ["-Cdebuginfo=2"]\n',
+                            accepted.replace('TILO_CI_MOLD_TARGET = "aarch64', 'TILO_CI_MOLD_TARGET = "x86_64'),
+                            accepted.replace('tilo-ci-mold', 'other-linker'),
+                            '[build]\njobs=1\n', ''):
+                with self.subTest(content=content):
+                    config.write_text(content)
+                    self.assertEqual(focused.inherited_cargo_config(source, system), config)
+            config.write_text(accepted)
+            # The image's content anywhere but the filesystem root is a checkout's.
+            (system / 'workspace/.cargo').mkdir()
+            (system / 'workspace/.cargo/config.toml').write_text(accepted)
+            self.assertEqual(focused.inherited_cargo_config(source, system),
+                             system / 'workspace/.cargo/config.toml')
+            (system / 'workspace/.cargo/config.toml').unlink()
+            (system / '.cargo/config').write_text(accepted)
+            self.assertEqual(focused.inherited_cargo_config(source, system), system / '.cargo/config')
+            (system / '.cargo/config').unlink()
+            config.unlink()
+            config.symlink_to(system / 'elsewhere.toml')
+            (system / 'elsewhere.toml').write_text(accepted)
+            self.assertEqual(focused.inherited_cargo_config(source, system), config)
+
     def test_group_inputs_are_bounded_unique_and_exact(self):
         for cases in ([], ['module::case'] * 2, ['case_' + str(n) for n in range(33)],
                       ['case; echo bad'], [123], 'case', {'case': True}):

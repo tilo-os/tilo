@@ -148,12 +148,50 @@ def history_runner_wrapper(root):
     return wrapper
 
 
+# The tilo-builder image writes exactly this root Cargo configuration
+# (os/Containerfile.builder): mold as the native linker, nothing else. It is
+# part of the digest-pinned image every CI step already builds under, not a
+# checkout's settings, so it is the one ancestor configuration accepted.
+BUILDER_ROOT_CARGO_CONFIG = re.compile(
+    r'\[target\.(?P<target>(?:x86_64|aarch64)-unknown-linux-gnu)\]\n'
+    r'linker = "/usr/local/bin/tilo-ci-mold"\n\n'
+    r'\[env\]\nTILO_CI_MOLD_TARGET = "(?P=target)"\n')
+
+
+def is_builder_root_cargo_config(path):
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return False
+        with path.open('rb') as source:
+            content = source.read(4097)
+    except OSError:
+        return False
+    try:
+        return len(content) <= 4096 and BUILDER_ROOT_CARGO_CONFIG.fullmatch(content.decode()) is not None
+    except UnicodeDecodeError:
+        return False
+
+
+def inherited_cargo_config(root, filesystem_root=None):
+    """Return an ancestor Cargo configuration that would leak into root, if any."""
+    root = root.resolve()
+    image_config = Path(filesystem_root or root.anchor) / '.cargo' / 'config.toml'
+    for parent in root.parents:
+        for name in ('config', 'config.toml'):
+            path = parent / '.cargo' / name
+            if not (path.exists() or path.is_symlink()):
+                continue
+            if path != image_config or not is_builder_root_cargo_config(path):
+                return path
+    return None
+
+
 def execute(root, values, outcomes=None):
     # Cargo merges configuration from ancestors. The workflow helper checkout
     # must be a sibling, never a parent supplying another revision's settings.
-    for parent in root.resolve().parents:
-        if any((parent / '.cargo' / name).exists() for name in ('config', 'config.toml')):
-            raise ValueError('source inherits an ancestor Cargo configuration')
+    inherited = inherited_cargo_config(root)
+    if inherited is not None:
+        raise ValueError('source inherits an ancestor Cargo configuration: ' + str(inherited))
     def read(args):
         return subprocess.check_output(args, cwd=root, text=True)
     actual = read(['git', 'rev-parse', 'HEAD']).strip()
