@@ -28,9 +28,10 @@
 //! ## Text injection and session integration
 //! * [`imclient`] is the preferred `input-method-v2` commit path and drives
 //!   focus-based visibility plus content-purpose layouts.
-//! * [`inject`] provides the `virtual-keyboard-v1` client used only for editing
-//!   keys the current winit text-input client cannot consume, plus a standalone
-//!   compatibility fallback for other compositors.
+//! * [`output`] is the ordered preedit/commit/key stream the widget emits and
+//!   the routing that keeps it ordered across both connections.
+//! * [`inject`] provides the `virtual-keyboard-v1` client for editing keys
+//!   (Backspace, Return), plus a standalone fallback for other compositors.
 //! * The Tilo compositor exposes both privileged globals only on its
 //!   process-credential-gated OSK socket and floats the stable
 //!   [`KEYBOARD_APP_ID`] surface outside the workspace tile tree.
@@ -86,6 +87,7 @@ pub mod futo;
 pub mod imclient;
 pub mod inject;
 pub mod layout;
+pub mod output;
 pub mod predict;
 pub mod suggest;
 pub mod swipe;
@@ -98,10 +100,10 @@ pub use imclient::{
     ImEvent, ImState, ImTransition, InputMethodClient, purpose_from_wire, try_input_method,
 };
 pub use inject::{
-    NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, action_symbols, build_keymap,
-    default_injector,
+    NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, build_keymap, default_injector,
 };
 pub use layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
+pub use output::{Channel, OrderedRouter, OskOutput, PreeditEmulator, Step, TextMirror};
 pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
