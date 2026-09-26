@@ -14255,6 +14255,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-resource",
  "tilo-ui",
  "tracing",
@@ -14723,6 +14724,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tilo-rich-text"
+version = "0.1.0"
+dependencies = [
+ "qdoc",
+ "qdoc-rich-text",
+ "serde",
+ "tilo-app",
+ "tracing",
 ]
 
 [[package]]

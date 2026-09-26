@@ -163,7 +163,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let updaters = Updaters::new();
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(resource_id, read_only);
+    let dispatch = Dispatcher::new(A::ID, resource_id, read_only);
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
     let mut cx = ViewCx::root(

@@ -626,6 +626,9 @@ pub struct BlockEditor {
     find_previous_rect: Rect,
     find_next_rect: Rect,
     find_close_rect: Rect,
+    /// Presence keys by block id, for a host whose model names the blocks
+    /// ([`Self::set_presence_key`]); by position otherwise.
+    presence_key: Option<present::PresenceKeyFn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -718,6 +721,7 @@ impl BlockEditor {
             find_previous_rect: Rect::ZERO,
             find_next_rect: Rect::ZERO,
             find_close_rect: Rect::ZERO,
+            presence_key: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -7425,15 +7429,32 @@ impl Widget for BlockEditor {
         }
         if let Some(selection) = self.document_selection {
             let (start, end) = selection.ordered();
+            if !self.presence_keyed_by_id() {
+                return Some((
+                    document_selection_presence_key(start.block, end.block),
+                    PresencePayload::Selection {
+                        start: start.byte,
+                        end: end.byte,
+                    },
+                ));
+            }
+            // Keyed by block id, a selection is reported as its part in the
+            // caret's block, which is where a peer's caret lands.
+            let from = if start.block == idx { start.byte } else { 0 };
+            let to = if end.block == idx {
+                end.byte
+            } else {
+                block.text().len()
+            };
             return Some((
-                document_selection_presence_key(start.block, end.block),
+                self.presence_key_of(idx),
                 PresencePayload::Selection {
-                    start: start.byte,
-                    end: end.byte,
+                    start: from.min(to),
+                    end: to.max(from),
                 },
             ));
         }
-        let key = block_presence_key(idx);
+        let key = self.presence_key_of(idx);
         // A selection takes priority over the bare caret.
         if let Some((start, end)) = block.line.selection_range() {
             return Some((key, PresencePayload::Selection { start, end }));
@@ -8351,7 +8372,7 @@ impl BlockEditor {
     /// bands for one block — collaboration overlays drawn after every
     /// block's own content so they land on top.
     fn draw_block_presence(&self, i: usize, b: &Block, ctx: &mut BlockDrawCtx<'_>) {
-        let key = block_presence_key(i);
+        let key = self.presence_key_of(i);
         let line = &b.line;
         let brect = line.get_rect();
         let _tr_rect = {
@@ -9140,6 +9161,10 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     }
     CODE_HEADER_HEIGHT * scale
 }
+
+#[path = "block_editor_present.rs"]
+mod present;
+pub use present::{BlockContent, PresenceKeyFn};
 
 #[cfg(test)]
 #[path = "block_editor_fence_tests.rs"]

@@ -2213,6 +2213,7 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::SetParagraphStyle { blocks, .. }
         | RichTextAction::ApplyNamedStyle { blocks, .. }
         | RichTextAction::SetBlockAttr { blocks, .. }
+        | RichTextAction::ClearBlockAttr { blocks, .. }
         | RichTextAction::RemoveBlocks { blocks } => tilo_actions::InteractionAnchor::Objects {
             ids: blocks.clone(),
         },
