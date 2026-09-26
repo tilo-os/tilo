@@ -220,6 +220,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
+          filter: blob:none
       - name: Download native child descriptors
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
@@ -442,6 +443,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
+          filter: blob:none
       - name: Reconcile open snapshot pin pull requests with main
         env:
           FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
