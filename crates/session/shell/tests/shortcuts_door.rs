@@ -612,7 +612,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
 /// Every change an action made in `doc` is grouped under run `run` of the
 /// shortcut "Publish a draft" in the fixture.
 fn assert_attributed_to(doc: &mut AutoCommit, run: InvocationId) {
-    let contexts: Vec<ActionContext> = qdoc::history::versions(doc)
+    let contexts: Vec<ActionContext> = tilo_resource::history::versions(doc)
         .into_iter()
         .filter_map(|version| ActionContext::from_change_message(version.message.as_deref()?))
         .collect();
