@@ -205,7 +205,6 @@ def validate_cmdline(cmdline, digest):
     require(not any(c in cmdline for c in '\\"\''), 'quoted or escaped command line unsupported')
     tokens = cmdline.split()
     require(len(tokens) <= 64, 'too many kernel arguments')
-    require(not any(token.startswith('qos.') for token in tokens), 'legacy qos.* kernel argument')
     names = [token.split('=', 1)[0] for token in tokens]
     require(all(names.count(name) == 1 for name in names if name != 'console'), 'duplicate kernel argument')
     consoles = [token for token in tokens if token.startswith('console=')]

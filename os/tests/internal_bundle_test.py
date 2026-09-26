@@ -126,17 +126,6 @@ class LiveCmdlineTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bundle.validate_cmdline(base.replace('root=tilo-auto', root), DIGEST)
 
-    def test_legacy_qos_tokens_are_rejected(self):
-        base = live_cmdline()
-        legacy = base
-        for name in ('install', 'mode', 'generation'):
-            legacy = legacy.replace('tilo.' + name, 'qos.' + name)
-        for cmdline in (legacy, base + ' qos.install', base + ' qos.generation=7',
-                        base + ' qos.luks=' + '0'*43, base.replace('root=tilo-auto', 'qos.root=' + '0'*37)):
-            with self.subTest(cmdline=cmdline[-40:]):
-                with self.assertRaises(ValueError):
-                    bundle.validate_cmdline(cmdline, DIGEST)
-
     def test_live_cmdline_profile_is_closed(self):
         base = live_cmdline()
         for change in (' ro', ' rw', ' init=/bin/sh', ' console=tty1', ' tilo.generation=0',
@@ -310,7 +299,6 @@ class ManifestTests(unittest.TestCase):
         mutations = [
             ('schema', lambda m: m.update(schema=True)),
             ('schema 1', lambda m: m.update(schema=1)),
-            ('legacy purpose', lambda m: m.update(purpose='qos-internal-installer')),
             ('unknown', lambda m: m.update(extra=1)),
             ('release bound', lambda m: m.update(release_id='x'*129)),
             ('duplicate roles', lambda m: m['components'][1].update(role='staging-esp')),
@@ -326,7 +314,6 @@ class ManifestTests(unittest.TestCase):
             ('device-bound root', lambda m: m['boot_binding'].update(
                 uki_cmdline=live_cmdline().replace('root=tilo-auto', 'root=UUID='+ROOT_UUID))),
             ('root locator field', lambda m: m['boot_binding'].update(root_locator='UUID='+ROOT_UUID)),
-            ('legacy placeholder', lambda m: m['boot_binding'].update(uki_cmdline='qos.root='+'0'*37+' qos.install')),
             ('efi escape', lambda m: m['boot_binding'].update(efi_path='/EFI/../evil.efi')),
             ('efi not fallback', lambda m: m['boot_binding'].update(efi_path='/EFI/Linux/fixture.efi')),
             ('efi other arch', lambda m: m['boot_binding'].update(efi_path='/EFI/BOOT/BOOTAA64.EFI')),

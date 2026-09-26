@@ -1533,8 +1533,8 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 }
 
 /// Resolve the palette, text scale, and motion policy used by screenshot
-/// capture. An explicit `--text-scale` wins over the compatibility
-/// `QOS_SHOTS_TEXT_SCALE` environment variable.
+/// capture. An explicit `--text-scale` wins over the
+/// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
     capture_theme(args.text_scale)
@@ -1560,21 +1560,18 @@ pub fn capture_theme(text_scale: Option<f32>) -> Theme {
 }
 
 /// The screenshot theme for capture frontends that have no [`LaunchArgs`]
-/// (the `ui-shots` examples): `QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE` and
+/// (the `ui-shots` examples): `TILO_SHOTS_THEME`, `TILO_SHOTS_TEXT_SCALE` and
 /// the motion preference through the same policy as [`shot_theme`]. An
 /// unknown theme name is an error rather than a silent fall back to dark, so
 /// a mis-typed light capture cannot masquerade as a dark one.
 pub fn shot_theme_from_env() -> Result<Theme, String> {
-    let theme =
-        match std::env::var("TILO_SHOTS_THEME").or_else(|_| std::env::var("QOS_SHOTS_THEME")) {
-            Ok(name) => {
-                Theme::named(&name).ok_or_else(|| format!("unknown QOS_SHOTS_THEME `{name}`"))?
-            }
-            Err(_) => Theme::dark(),
-        };
-    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .or_else(|_| std::env::var("QOS_SHOTS_TEXT_SCALE"))
-        .ok();
+    let theme = match std::env::var("TILO_SHOTS_THEME") {
+        Ok(name) => {
+            Theme::named(&name).ok_or_else(|| format!("unknown TILO_SHOTS_THEME `{name}`"))?
+        }
+        Err(_) => Theme::dark(),
+    };
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     Ok(theme
         .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
         .with_reduce_motion(shot_motion_reduced()))
@@ -1603,9 +1600,6 @@ fn shot_motion_reduced() -> bool {
         "TILO_SHOTS_REDUCE_MOTION",
         "TILO_A11Y_REDUCE_MOTION",
         "TILO_REDUCE_MOTION",
-        "QOS_SHOTS_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
     ]
     .into_iter()
     .filter_map(|key| std::env::var(key).ok())

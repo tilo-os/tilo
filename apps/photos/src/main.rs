@@ -184,8 +184,8 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .and_then(parse_size)
         .or(args.viewport)
         .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    // The shared shot policy: `QOS_SHOTS_THEME`, `--text-scale` /
-    // `QOS_SHOTS_TEXT_SCALE` and the reduced-motion preference resolve the
+    // The shared shot policy: `TILO_SHOTS_THEME`, `--text-scale` /
+    // `TILO_SHOTS_TEXT_SCALE` and the reduced-motion preference resolve the
     // same way here as in every app on the standard launcher.
     render_scenario(scenario, viewport, &ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
