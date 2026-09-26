@@ -42,7 +42,7 @@ thread_local! {
     static NEXT_ATTEMPT: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
 }
 fn now() -> u64 {
-    tilo_relay::clock::now_ns()
+    tilo_delivery_protocol::clock::now_ns()
 }
 fn attempt(id: u32) -> Result<Rc<Attempt>, JsValue> {
     ATTEMPTS
@@ -458,19 +458,22 @@ pub fn cloud_descriptor(id: u32, bytes: Vec<u8>) -> Result<(), JsValue> {
     let state = state
         .as_ref()
         .ok_or_else(|| error("No admitted Cloud owner"))?;
-    let authority = tilo_relay::delivery_v3::descriptor::DescriptorAuthority {
+    let authority = tilo_delivery_protocol::delivery_v3::descriptor::DescriptorAuthority {
         peer: state,
         pinned_governor: scope.host(),
         pinned_host: scope.host(),
         workspace: scope.workspace(),
-        generation: tilo_relay::delivery_v3::descriptor::GenerationExpectation::FirstAccepted {
-            minimum_generation: 1,
-        },
-        allowed_delivery_capabilities: tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1,
+        generation:
+            tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation::FirstAccepted {
+                minimum_generation: 1,
+            },
+        allowed_delivery_capabilities:
+            tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1,
         now: SystemTime::now(),
     };
-    let preflight = tilo_relay::delivery_v3::descriptor::verify_transport_hint(&hint, &authority)
-        .map_err(error)?;
+    let preflight =
+        tilo_delivery_protocol::delivery_v3::descriptor::verify_transport_hint(&hint, &authority)
+            .map_err(error)?;
     if preflight.origin() != value.origin.as_str() {
         return Err(error(
             "Cloud owner descriptor origin differs from the page origin",

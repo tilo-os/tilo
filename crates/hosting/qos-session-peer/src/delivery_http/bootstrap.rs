@@ -1,7 +1,7 @@
 //! Read-only independently governor-signed first-contact bootstrap.
 use super::*;
 use ed25519_dalek::{Signature, Signer, VerifyingKey};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     descriptor,
     media_wire::{BootstrapRequest, BootstrapResponse, join_signature, split_signature},
 };

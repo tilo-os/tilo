@@ -4,7 +4,7 @@ use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
 fn selected() -> (tempfile::TempDir, Store) {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     (dir, store)
 }

@@ -169,7 +169,7 @@ pub(crate) fn bind_local(
     // This is an inert projection of the independently pinned signed native
     // descriptor. Current host membership/admission remains the parent's later
     // ordinary governance + verify_transport_hint check.
-    let pin = tilo_relay::delivery_v3::descriptor::inspect_pinned_hint_scope(
+    let pin = tilo_delivery_protocol::delivery_v3::descriptor::inspect_pinned_hint_scope(
         &info.bootstrap.delivery_hint,
         &info.host_certificate,
     )
@@ -507,10 +507,10 @@ pub(crate) async fn local_governance(
 ) -> Result<GovernanceReply, String> {
     let live = || {
         current()?;
-        context.check_continuation(tilo_relay::clock::now_ns())
+        context.check_continuation(tilo_delivery_protocol::clock::now_ns())
     };
     live()?;
-    context.claim(material, raw, tilo_relay::clock::now_ns())?;
+    context.claim(material, raw, tilo_delivery_protocol::clock::now_ns())?;
     let extracted = extract(raw)?;
     if !extracted.manifest {
         live()?;
@@ -523,12 +523,15 @@ pub(crate) async fn local_governance(
         return Err("local governance generation mismatch".into());
     }
     drop(manifest);
-    let transfer =
-        handoff::Handoff::start(&extracted.reply.bytes, purpose, tilo_relay::clock::now_ns())?;
+    let transfer = handoff::Handoff::start(
+        &extracted.reply.bytes,
+        purpose,
+        tilo_delivery_protocol::clock::now_ns(),
+    )?;
     let deadline = transfer.expires_at_ns();
     let transfer_live = || {
         live()?;
-        if tilo_relay::clock::now_ns() >= deadline {
+        if tilo_delivery_protocol::clock::now_ns() >= deadline {
             return Err("local governance handoff expired".into());
         }
         Ok(())

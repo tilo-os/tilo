@@ -1,6 +1,6 @@
 //! Exact browser protocol source against actual operator pin and Store barriers.
 use super::OperatorConfig;
-use qos_relay as relay;
+
 use qos_user_identity as identity;
 #[path = "../../../../../browser/qos-browser-runtime/src/peer_cloud/protocol.rs"]
 #[allow(
@@ -227,7 +227,7 @@ fn hosted_attempt_refuses_collaborator_dto_even_when_owner_fields_match() {
         device_cert: certificate,
         role: qos_peer_state::join::MemberRole::Editor,
         room: f.store.state.room.clone(),
-        workspace_id: relay::room_workspace_id(&f.store.state.room).unwrap(),
+        workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
         authority: peer.authority().clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),

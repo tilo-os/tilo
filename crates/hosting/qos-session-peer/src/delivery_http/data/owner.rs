@@ -10,7 +10,7 @@ use crate::{
     owner::resources::{OwnerDataOperation, OwnerResourceTurn},
 };
 use anyhow::Context as _;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::DurableAdmissionKind,
     http_proof::VerifiedRequest,
@@ -105,7 +105,7 @@ pub(in crate::delivery_http) fn admission_for(
 pub(in crate::delivery_http) fn receipt_admission(
     delivery: DeliveryId,
     digest: Digest,
-    record: &tilo_relay::delivery_v3::commit::AdmissionRecord,
+    record: &tilo_delivery_protocol::delivery_v3::commit::AdmissionRecord,
 ) -> anyhow::Result<StateAdmission> {
     anyhow::ensure!(record.digest == digest, "native receipt digest mismatch");
     Ok(match record.result {
@@ -174,7 +174,7 @@ pub(in crate::delivery_http) fn replay_core(
 /// One served page and the signed cursor of its last complete group.
 pub(in crate::delivery_http) struct ServedPage {
     pub bytes: Vec<u8>,
-    pub end: tilo_relay::delivery_v3::cursor::CursorToken,
+    pub end: tilo_delivery_protocol::delivery_v3::cursor::CursorToken,
 }
 /// `replay_core` for a PIPELINED_POLL_V1 chain: served after the later of the
 /// request cursor and `floor` (the end of the chain's previous page, a cursor
@@ -183,7 +183,7 @@ pub(in crate::delivery_http) fn replay_core_from(
     owner: &SessionOwner,
     current: &CommittedAuthority,
     request: &VerifiedRequest<'_>,
-    floor: Option<&tilo_relay::delivery_v3::cursor::CursorToken>,
+    floor: Option<&tilo_delivery_protocol::delivery_v3::cursor::CursorToken>,
     revalidate: impl FnMut(&SessionOwner, &CommittedView, &VerifiedSession) -> anyhow::Result<u64>,
     turn: OwnerResourceTurn,
 ) -> anyhow::Result<Option<ServedPage>> {
@@ -246,7 +246,7 @@ fn replay_page_core(
     mut turn: OwnerResourceTurn,
 ) -> anyhow::Result<Option<ServedPage>> {
     use std::ops::Bound::{Excluded, Unbounded};
-    use tilo_relay::delivery_v3::capabilities::{PAGE_BYTES, page_bounds};
+    use tilo_delivery_protocol::delivery_v3::capabilities::{PAGE_BYTES, page_bounds};
     let guard = current.read().map_err(anyhow::Error::msg)?;
     // Keep Current until policy, exact cuts, all event bytes and final
     // boundaries have been selected. The page contains no borrowed evidence.
@@ -316,12 +316,12 @@ fn replay_group(
     turn: &mut OwnerResourceTurn,
     source: &crate::owner::delivery::consumer::VerifiedDeliverySource<'_>,
     session: &VerifiedSession,
-    ledger: &tilo_relay::delivery_v3::commit::DeliveryLedgerV1,
+    ledger: &tilo_delivery_protocol::delivery_v3::commit::DeliveryLedgerV1,
     sequence: u64,
-    entry: &tilo_relay::delivery_v3::commit::ReplayCommit,
+    entry: &tilo_delivery_protocol::delivery_v3::commit::ReplayCommit,
 ) -> anyhow::Result<EncodedGroup> {
     use crate::owner::delivery::oversized_replay_group as oversized;
-    use tilo_relay::delivery_v3::{
+    use tilo_delivery_protocol::delivery_v3::{
         capabilities::{GROUP_PAGE_FRAMES, PAGE_BYTES},
         commit::CommitRef,
         state::{CommitBoundary, EventKind, visible_order_digest},
@@ -417,16 +417,16 @@ fn replay_group(
 struct ReplayEvent<'a> {
     ordinal: u32,
     digest: Digest,
-    kind: tilo_relay::delivery_v3::state::EventKind,
+    kind: tilo_delivery_protocol::delivery_v3::state::EventKind,
     canonical: &'a [u8],
 }
 impl ReplayEvent<'_> {
     fn visit_chunks(
         &self,
-        committed: &tilo_relay::delivery_v3::commit::CommitRef,
+        committed: &tilo_delivery_protocol::delivery_v3::commit::CommitRef,
         mut visit: impl FnMut(&[u8]) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        use tilo_relay::delivery_v3::state::{EventChunk, EventSource};
+        use tilo_delivery_protocol::delivery_v3::state::{EventChunk, EventSource};
         anyhow::ensure!(
             !self.canonical.is_empty(),
             "empty native replay publication"

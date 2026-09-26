@@ -763,7 +763,7 @@ impl Store {
             publication.validate()?;
         }
         ensure_relay_publishable(&state.host_key().verifying_key().to_bytes(), &state.outbox)?;
-        delivery::validate(&state, qos_relay::clock::now_ns())?;
+        delivery::validate(&state, tilo_delivery_protocol::clock::now_ns())?;
         let mut store = Self {
             policy_time: None,
             root: root.into(),
@@ -783,7 +783,7 @@ impl Store {
             if mode == StoreOpenMode::ExistingDelivery {
                 return Ok(store);
             }
-            let now = qos_relay::clock::now_ns();
+            let now = tilo_delivery_protocol::clock::now_ns();
             let (before, mut peer) = store.peer_transition_at(now)?;
             if bootstrap_desktop(&mut peer, &store.key())? {
                 let mut state = store.state.clone();
@@ -963,7 +963,7 @@ impl Store {
     pub(crate) fn policy_now_ns(&self) -> Result<u64> {
         match &self.policy_time {
             Some(time) => Ok(time.now_ns()?),
-            None => Ok(qos_relay::clock::now_ns()), // Explicit ordinary/CLI legacy entrypoint.
+            None => Ok(tilo_delivery_protocol::clock::now_ns()), // Explicit ordinary/CLI legacy entrypoint.
         }
     }
     pub(crate) fn policy_now_or(&self, legacy: u64) -> Result<u64> {

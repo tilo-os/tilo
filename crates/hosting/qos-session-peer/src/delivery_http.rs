@@ -8,7 +8,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth,
     descriptor::GenerationExpectation,
     http_proof::{self, HttpSessionAdmission, Request, RequestProof, VerifiedRequest},

@@ -479,7 +479,7 @@ fn validate_authority(
         || current.pinned_governor.user_public_key == [0; 32]
         || current.pinned_host.user_public_key == [0; 32]
         || peer.authority() != current.pinned_governor
-        || !crate::room_workspace_id_matches(peer.room(), current.workspace)
+        || !tilo_relay_protocol::room_workspace_id_matches(peer.room(), current.workspace)
         || peer.admitted_room().is_none()
         || qos_peer_state::room::governance_of(peer.admitted_room())
             .0

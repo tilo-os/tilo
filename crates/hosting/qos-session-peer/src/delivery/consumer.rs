@@ -7,7 +7,7 @@ use crate::delivery_planning::{
     AckPlan, ConsumerPlan, CursorCut, DeliveryPolicyBasis, PlanningCapacity, PlanningFailure,
 };
 #[cfg(any(test, feature = "media"))]
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth,
     cursor::{CursorIssue, CursorToken},
     state::ResetReason,

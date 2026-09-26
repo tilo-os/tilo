@@ -385,10 +385,14 @@ where
     let NativeOperation::ModelComplete { text } = &call.request.operation else {
         bail!("unsupported mesh action")
     };
-    Store::open(root, machine)?.mesh_authorize(cert, call, qos_relay::clock::now_ns())?;
+    Store::open(root, machine)?.mesh_authorize(
+        cert,
+        call,
+        tilo_delivery_protocol::clock::now_ns(),
+    )?;
     let outcome = dispatch(pending.clone(), text.clone()).await;
     let mut store = Store::open(root, machine)?;
-    let source = store.mesh_authorize(cert, call, qos_relay::clock::now_ns())?;
+    let source = store.mesh_authorize(cert, call, tilo_delivery_protocol::clock::now_ns())?;
     store.finish_model_authorized(source,&call.request,&pending,outcome,Some(serde_json::json!({"execution_machine_id":machine,"source_machine_id":call.source_machine_id,"link_id":call.link_id})))
 }
 
@@ -433,7 +437,7 @@ impl Handler {
                     &l.grant.source.machine_id
                 };
                 store
-                    .mesh_peer(id, machine, qos_relay::clock::now_ns())
+                    .mesh_peer(id, machine, tilo_delivery_protocol::clock::now_ns())
                     .is_ok_and(|p| {
                         p.host_certificate == hello.cert
                             && serde_json::from_str::<iroh_base::EndpointAddr>(&p.action_address)
@@ -491,7 +495,7 @@ impl Handler {
         Ok(())
     }
     async fn respond(&self, cert: &DeviceCert, call: &MeshAction) -> Result<ActionReceipt> {
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         {
             Store::open(&self.root, &self.machine)?.mesh_authorize(cert, call, now)?;
         }
@@ -559,7 +563,7 @@ pub(crate) async fn forward(
         {
             bail!("invalid action identity")
         }
-        store.authorize_model(source, qos_relay::clock::now_ns())?;
+        store.authorize_model(source, tilo_delivery_protocol::clock::now_ns())?;
         if !matches!(
             operation.as_ref(),
             NativeOperation::ModelComplete { .. }
@@ -572,7 +576,11 @@ pub(crate) async fn forward(
         if let NativeOperation::ModelComplete { text } = operation.as_ref() {
             model::validate_text(text)?;
         }
-        let peer = store.mesh_peer(link_id, target_machine_id, qos_relay::clock::now_ns())?;
+        let peer = store.mesh_peer(
+            link_id,
+            target_machine_id,
+            tilo_delivery_protocol::clock::now_ns(),
+        )?;
         let call = MeshAction {
             version: 1,
             link_id: link_id.clone(),
@@ -610,8 +618,12 @@ pub(crate) async fn forward(
     // Revocation during an in-flight call prevents delivery of its result.
     {
         let store = Store::open(root, machine)?;
-        store.authorize_model(source, qos_relay::clock::now_ns())?;
-        store.mesh_peer(link_id, target_machine_id, qos_relay::clock::now_ns())?;
+        store.authorize_model(source, tilo_delivery_protocol::clock::now_ns())?;
+        store.mesh_peer(
+            link_id,
+            target_machine_id,
+            tilo_delivery_protocol::clock::now_ns(),
+        )?;
     }
     result
 }
@@ -641,7 +653,7 @@ async fn exchange(
         auth::AuthDomain::LegacyQos,
         &ack,
         &RevocationList::new(),
-        qos_relay::clock::now_ns(),
+        tilo_delivery_protocol::clock::now_ns(),
         &nonce,
     )?;
     write_frame(

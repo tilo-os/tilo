@@ -1,7 +1,7 @@
 use super::super::{HttpSessions, tests::Fixture};
 use super::*;
 use crate::https::tests::held_poll_test_request;
-use tilo_relay::delivery_v3::http_proof::{Request, RequestProof};
+use tilo_delivery_protocol::delivery_v3::http_proof::{Request, RequestProof};
 
 fn capture(
     f: &Fixture,

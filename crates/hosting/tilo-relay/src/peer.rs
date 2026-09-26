@@ -19,14 +19,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
-use crate::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
 use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
 use crate::store::StoreError;
 use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
-use crate::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 use crate::workspace::{SharedWorkspace, Subscriber};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
+use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.
@@ -586,7 +586,9 @@ where
                 {
                     authorize_state_frame(&frame, &peer, &session).await?;
                     write
-                        .write_all(&crate::transport_v2::encode_state(&frame, v2)?)
+                        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                            &frame, v2,
+                        )?)
                         .await?;
                     private_burst = 0;
                     raw_turn = false;
@@ -913,7 +915,7 @@ async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
     match private {
         PrivateOutbound::Reply(reply) => {
             write
-                .write_all(&crate::transport_v2::encode(&reply)?)
+                .write_all(&tilo_delivery_protocol::transport_v2::encode(&reply)?)
                 .await?;
         }
         PrivateOutbound::Delivery(delivery) => {
@@ -1008,7 +1010,9 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                         let source = StateSource::new(peer, session);
                         authorize_replay(&ws, &source, &ticket.authority).await?;
                         write
-                            .write_all(&crate::transport_v2::encode_state(frame, session.v2)?)
+                            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                                frame, session.v2,
+                            )?)
                             .await?;
                         frames.pop_written();
                     }
@@ -1138,7 +1142,9 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             }
         }
         write
-            .write_all(&crate::transport_v2::encode_state(&reply, session.v2)?)
+            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                &reply, session.v2,
+            )?)
             .await?;
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
             complete_replay_ready(&workspace, &source, &ticket.authority, &catchup).await?;
@@ -4450,7 +4456,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
     }
     write
-        .write_all(&crate::transport_v2::encode_state(
+        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
             &delivery.envelope,
             session.v2,
         )?)
@@ -5301,7 +5307,8 @@ async fn route_private(
         private_phase(action, "route_rejected_message");
         return Ok(Some(U::InvalidRequest));
     }
-    if crate::transport_v2::encode(&EnvelopeV2::Directed(action.clone())).is_err() {
+    if tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(action.clone())).is_err()
+    {
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
@@ -5416,7 +5423,7 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
                     source_user: delivery.source.user_public_key,
                 }
             };
-            let Ok(bytes) = crate::transport_v2::encode(&frame) else {
+            let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode(&frame) else {
                 private_phase(&delivery.action, "delivery_encoding_rejected");
                 let _ = delivery.source_disconnect.try_send(());
                 return Ok(());
@@ -6587,8 +6594,11 @@ mod private_transport_tests {
         let mut client_reader = SessionReader::new(client_read, true);
         client_write
             .write_all(
-                &crate::transport_v2::encode_state(&Envelope::Subscribe { workspace_id: id }, true)
-                    .unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode_state(
+                    &Envelope::Subscribe { workspace_id: id },
+                    true,
+                )
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -6637,12 +6647,14 @@ mod private_transport_tests {
             })
             .collect::<Vec<_>>();
         client_write
-            .write_all(&crate::transport_v2::encode_state(&blocker, true).unwrap())
+            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(&blocker, true).unwrap())
             .await
             .unwrap();
         for envelope in &envelopes {
             client_write
-                .write_all(&crate::transport_v2::encode_state(envelope, true).unwrap())
+                .write_all(
+                    &tilo_delivery_protocol::transport_v2::encode_state(envelope, true).unwrap(),
+                )
                 .await
                 .unwrap();
         }
@@ -7487,7 +7499,7 @@ mod private_transport_tests {
             let mut reader = SessionReader::new(read, true);
             write
                 .write_all(
-                    &crate::transport_v2::encode_state(
+                    &tilo_delivery_protocol::transport_v2::encode_state(
                         &Envelope::Subscribe { workspace_id: id },
                         true,
                     )
@@ -7501,7 +7513,10 @@ mod private_transport_tests {
             ));
             write
                 .write_all(
-                    &crate::transport_v2::encode(&EnvelopeV2::EnableActions { room }).unwrap(),
+                    &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions {
+                        room,
+                    })
+                    .unwrap(),
                 )
                 .await
                 .unwrap();
@@ -7551,8 +7566,11 @@ mod private_transport_tests {
                 )
                 .unwrap();
             aw.write_all(
-                &crate::transport_v2::encode_state(&Envelope::Subscribe { workspace_id: id }, true)
-                    .unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode_state(
+                    &Envelope::Subscribe { workspace_id: id },
+                    true,
+                )
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -7561,16 +7579,21 @@ mod private_transport_tests {
                 Some(EnvelopeV2::State(pending))
             );
         } else {
-            aw.write_all(&crate::transport_v2::encode_state(&envelope, true).unwrap())
-                .await
-                .unwrap();
+            aw.write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(&envelope, true).unwrap(),
+            )
+            .await
+            .unwrap();
         }
         reached.await.unwrap();
         if held_cleanup {
             for _ in 0..if full_backlog { 64 } else { 12 } {
-                aw.write_all(&crate::transport_v2::encode_state(&Envelope::Ping, true).unwrap())
-                    .await
-                    .unwrap();
+                aw.write_all(
+                    &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             }
         }
         if full_backlog {
@@ -7622,7 +7645,10 @@ mod private_transport_tests {
             let (private_release, private_reached) =
                 crate::store::test_barrier::install(store.root(), "private-authorization");
             aw.write_all(
-                &crate::transport_v2::encode(&EnvelopeV2::Directed(request.clone())).unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(
+                    request.clone(),
+                ))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -7668,8 +7694,10 @@ mod private_transport_tests {
             if check_lock {
                 drop(workspace.lock().await);
             }
-            let encoded_request =
-                crate::transport_v2::encode(&EnvelopeV2::Directed(request.clone())).unwrap();
+            let encoded_request = tilo_delivery_protocol::transport_v2::encode(
+                &EnvelopeV2::Directed(request.clone()),
+            )
+            .unwrap();
             if check_lock {
                 aw.write_all(&encoded_request).await.unwrap();
             } else {
@@ -7683,7 +7711,10 @@ mod private_transport_tests {
                     ..request.clone()
                 };
                 bw.write_all(
-                    &crate::transport_v2::encode(&EnvelopeV2::Directed(probe.clone())).unwrap(),
+                    &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(
+                        probe.clone(),
+                    ))
+                    .unwrap(),
                 )
                 .await
                 .unwrap();
@@ -7704,7 +7735,10 @@ mod private_transport_tests {
                 ..request.clone()
             };
             bw.write_all(
-                &crate::transport_v2::encode(&EnvelopeV2::Directed(response.clone())).unwrap(),
+                &tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::Directed(
+                    response.clone(),
+                ))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -7805,7 +7839,7 @@ mod private_transport_tests {
             for (position, room) in rooms.iter().enumerate() {
                 write
                     .write_all(
-                        &crate::transport_v2::encode_state(
+                        &tilo_delivery_protocol::transport_v2::encode_state(
                             &Envelope::Subscribe {
                                 workspace_id: ids[position],
                             },
@@ -7822,9 +7856,9 @@ mod private_transport_tests {
                 if position < 2 && !(index == 0 && position == 0 && control == 0) {
                     write
                         .write_all(
-                            &crate::transport_v2::encode(&EnvelopeV2::EnableActions {
-                                room: *room,
-                            })
+                            &tilo_delivery_protocol::transport_v2::encode(
+                                &EnvelopeV2::EnableActions { room: *room },
+                            )
                             .unwrap(),
                         )
                         .await
@@ -7838,10 +7872,12 @@ mod private_transport_tests {
             if index == 1 && control > 0 {
                 write
                     .write_all(
-                        &crate::transport_v2::encode(&EnvelopeV2::RegisterBroker {
-                            room: rooms[0],
-                            host,
-                        })
+                        &tilo_delivery_protocol::transport_v2::encode(
+                            &EnvelopeV2::RegisterBroker {
+                                room: rooms[0],
+                                host,
+                            },
+                        )
                         .unwrap(),
                     )
                     .await
@@ -7880,7 +7916,7 @@ mod private_transport_tests {
                 .unwrap();
         }
         aw.write_all(
-            &crate::transport_v2::encode_state(
+            &tilo_delivery_protocol::transport_v2::encode_state(
                 &Envelope::Subscribe {
                     workspace_id: ids[2],
                 },
@@ -7899,9 +7935,12 @@ mod private_transport_tests {
         reached.await.unwrap();
         if reply_wait {
             for _ in 0..12 {
-                aw.write_all(&crate::transport_v2::encode_state(&Envelope::Ping, true).unwrap())
-                    .await
-                    .unwrap();
+                aw.write_all(
+                    &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping, true)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             }
         }
         let capability = match control {
@@ -7929,7 +7968,7 @@ mod private_transport_tests {
             EnvelopeV2::Directed(dependent.clone()),
             EnvelopeV2::Directed(unrelated.clone()),
         ] {
-            aw.write_all(&crate::transport_v2::encode(&frame).unwrap())
+            aw.write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
                 .await
                 .unwrap();
         }
@@ -9439,12 +9478,12 @@ mod retention_diagnostic_tests {
         ];
         let suffix_before = suffix
             .iter()
-            .map(|frame| crate::transport_v2::encode(frame).unwrap())
+            .map(|frame| tilo_delivery_protocol::transport_v2::encode(frame).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(eligible_checkpoint_prefix(&current, suffix.iter()), 2);
         let suffix_after = suffix
             .iter()
-            .map(|frame| crate::transport_v2::encode(frame).unwrap())
+            .map(|frame| tilo_delivery_protocol::transport_v2::encode(frame).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(suffix_before, suffix_after);
     }

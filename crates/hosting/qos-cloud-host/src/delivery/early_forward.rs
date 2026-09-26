@@ -42,7 +42,7 @@ mod tests {
     fn prepared() -> (tempfile::TempDir, [u8; 32]) {
         let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         (dir, device)
     }
@@ -147,7 +147,7 @@ mod tests {
         drop(store);
         // Reopen: durable state does not cover the forwarded change.
         let mut store = crate::Store::open(dir.path(), "agent-admission").unwrap();
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         assert!(!store.peer_at(now).unwrap().covers(&message));
         // The author's retry commits the same item; durable state now covers it.
         let (sink, seen) = recorder(dir.path());
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1);
         assert!(
             store
-                .peer_at(qos_relay::clock::now_ns())
+                .peer_at(tilo_delivery_protocol::clock::now_ns())
                 .unwrap()
                 .covers(&message)
         );

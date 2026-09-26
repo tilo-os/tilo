@@ -84,7 +84,7 @@ fn expiring_guest(owner: &mut SessionOwner) -> tilo_user_identity::DeviceCert {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -149,7 +149,7 @@ fn desktop_policy_clock_advance_during_encoding_rechecks_original_caller_expiry(
         unreachable!()
     };
     *actual = caller;
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (clock, control) = OwnerPolicyClock::for_test(now);
     let origin = clock.new_origin();
     let time = origin.capture().unwrap();
@@ -200,7 +200,7 @@ fn desktop_policy_retained_retry_refresh_uses_original_clock_without_another_fac
     owner.activate_delivery().unwrap();
     owner.activate_creation().unwrap();
     let request = request(&owner);
-    let (clock, control) = OwnerPolicyClock::for_test(tilo_relay::clock::now_ns());
+    let (clock, control) = OwnerPolicyClock::for_test(tilo_delivery_protocol::clock::now_ns());
     let origin = clock.new_origin();
     let time = origin.capture().unwrap();
     owner

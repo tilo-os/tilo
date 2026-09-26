@@ -10,9 +10,8 @@ use qos_session_peer::{
     collaboration::{CollaborationService, IssueInvitationRequest},
 };
 use std::sync::{Arc, Mutex};
-use tilo_relay::workspace_join::{
-    WORKSPACE_JOIN_ALPN, WorkspaceJoinProtocol, WorkspaceJoinService,
-};
+use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 
 #[path = "native_exchange_tests/refresh.rs"]
 mod refresh;

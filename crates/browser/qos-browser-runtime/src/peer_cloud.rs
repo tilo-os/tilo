@@ -1,5 +1,4 @@
 //! Private hosted enrollment custody. Only the owner facade admits a Peer state.
-use tilo_relay as relay;
 use tilo_user_identity as identity;
 mod protocol;
 // Browser-only owner continuation; the host protocol test includes only

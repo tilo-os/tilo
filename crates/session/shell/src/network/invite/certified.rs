@@ -6,7 +6,7 @@ use qos_peer_state::join::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
-use tilo_relay::workspace_join::{
+use tilo_delivery_protocol::workspace_join::{
     DeliveryOriginLocatorV1, IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES,
     TRANSPORT_DELIVERY_ORIGIN_V1, WorkspaceHostMode,
 };

@@ -8,7 +8,7 @@ const RECORD: &str = "tab:0000000000000001";
 /// Canonical browser-authored incremental delta from the enrolled [8; 32] device.
 pub(crate) fn browser_delta(root: &std::path::Path, machine: &str, text: &str) -> Vec<u8> {
     let store = Store::open(root, machine).unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut browser = store.peer_at(now).unwrap();
     drop(store);
     let device = SigningKey::from_bytes(&[8; 32]);
@@ -37,7 +37,9 @@ pub(crate) fn browser_delta(root: &std::path::Path, machine: &str, text: &str) -
 
 pub(crate) fn document_text(root: &std::path::Path, machine: &str) -> String {
     let store = Store::open(root, machine).unwrap();
-    let peer = store.peer_at(qos_relay::clock::now_ns()).unwrap();
+    let peer = store
+        .peer_at(tilo_delivery_protocol::clock::now_ns())
+        .unwrap();
     let doc = automerge::AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     let model = qdoc::model::open(&doc, &automerge::ROOT).unwrap();
     qdoc::model::blocks_in_order(&doc, &model)
@@ -51,7 +53,7 @@ pub(crate) fn document_text(root: &std::path::Path, machine: &str) -> String {
 fn cloud_admission_binds_receipt_in_same_commit_and_survives_reopen() {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let canonical = browser_delta(dir.path(), "agent-admission", "durable");
@@ -68,7 +70,7 @@ fn cloud_admission_binds_receipt_in_same_commit_and_survives_reopen() {
     drop(store);
     let store = Store::open(dir.path(), "agent-admission").unwrap();
     let ledger = store.state.delivery.as_ref().unwrap().ledger();
-    let key = qos_relay::delivery_v3::commit::ReceiptKey {
+    let key = tilo_delivery_protocol::delivery_v3::commit::ReceiptKey {
         device,
         delivery: [7; 16],
     };
@@ -87,7 +89,7 @@ pub(crate) fn browser_deltas(
     texts: &[&str],
 ) -> Vec<Vec<u8>> {
     let store = Store::open(root, machine).unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut browser = store.peer_at(now).unwrap();
     drop(store);
     let device = SigningKey::from_bytes(&[8; 32]);
@@ -123,7 +125,7 @@ pub(crate) fn browser_deltas(
 fn cloud_group_binds_every_receipt_to_one_commit_and_replay_group() {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let deltas = browser_deltas(dir.path(), "agent-admission", &["one ", "two ", "three "]);
@@ -155,7 +157,7 @@ fn cloud_group_binds_every_receipt_to_one_commit_and_replay_group() {
     // Receipts survive reopen; a lost-reply retry answers from them alone.
     let mut store = Store::open(dir.path(), "agent-admission").unwrap();
     for ((delivery, delta), record) in items.iter().zip(&records) {
-        let key = qos_relay::delivery_v3::commit::ReceiptKey {
+        let key = tilo_delivery_protocol::delivery_v3::commit::ReceiptKey {
             device,
             delivery: *delivery,
         };
@@ -186,7 +188,7 @@ fn cloud_group_binds_every_receipt_to_one_commit_and_replay_group() {
 fn cloud_group_stops_before_a_refused_item_and_never_commits_it() {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let deltas = browser_deltas(dir.path(), "agent-admission", &["a ", "b "]);
@@ -221,14 +223,12 @@ fn cloud_group_stops_before_a_refused_item_and_never_commits_it() {
     assert_eq!(records.len(), 2);
     assert_eq!(store.state.generation, before + 1);
     let ledger = store.state.delivery.as_ref().unwrap().ledger();
-    assert!(
-        !ledger
-            .admissions
-            .contains_key(&qos_relay::delivery_v3::commit::ReceiptKey {
-                device,
-                delivery: [9; 16],
-            })
-    );
+    assert!(!ledger.admissions.contains_key(
+        &tilo_delivery_protocol::delivery_v3::commit::ReceiptKey {
+            device,
+            delivery: [9; 16],
+        }
+    ));
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn cloud_group_forwards_each_verified_item_before_its_one_barrier() {
     use std::sync::{Arc, Mutex};
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let deltas = browser_deltas(dir.path(), "agent-admission", &["x ", "y "]);

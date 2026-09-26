@@ -1,4 +1,4 @@
-//! Client side of PIPELINED_POLL_V1 (`tilo_relay::delivery_v3::poll_chain`):
+//! Client side of PIPELINED_POLL_V1 (`tilo_delivery_protocol::delivery_v3::poll_chain`):
 //! several held event polls outstanding as one ordered chain, so a page no
 //! longer waits a full round trip for the next poll to reach the host.
 //!
@@ -7,7 +7,7 @@
 //! host may have served them, but nothing after a missing page is admitted),
 //! and the next poll starts a new chain at the client's own cursor.
 use std::collections::VecDeque;
-use tilo_relay::delivery_v3::poll_chain::ChainPoll;
+use tilo_delivery_protocol::delivery_v3::poll_chain::ChainPoll;
 
 /// Polls kept outstanding while pages keep arriving. One poll when idle, so an
 /// idle consumer holds one request at the host like a plain poll.

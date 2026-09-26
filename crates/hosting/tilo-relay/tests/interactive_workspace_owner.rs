@@ -20,7 +20,9 @@ use iroh::endpoint::presets;
 use qos_peer_state::GovernedAccess;
 use qos_peer_state::join::{InviteGrant, MemberRole};
 use qos_peer_state::retained_proof::RetentionAuthority;
-use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode, WorkspaceHostTrust};
+use tilo_delivery_protocol::workspace_join::{
+    IrohWorkspaceHostHintV1, WorkspaceHostMode, WorkspaceHostTrust,
+};
 use tilo_relay::{
     CheckpointPrefixRecovery, Envelope, Relay, RelayClient, RelayConfig, ReplicationIntent,
     WorkspaceBinding,
@@ -225,27 +227,29 @@ async fn interactive_owner_is_exactly_cert_and_room_scoped() {
         Some(Envelope::Ready { .. })
     ));
     owner_client
-        .send_action(tilo_relay::transport_v2::EnvelopeV2::EnableActions { room })
+        .send_action(tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableActions { room })
         .unwrap();
     assert!(matches!(
         owner_client.recv_action().await,
-        Some(tilo_relay::transport_v2::EnvelopeV2::ActionsReady {
+        Some(tilo_delivery_protocol::transport_v2::EnvelopeV2::ActionsReady {
             room: ready_room,
-            capability: tilo_relay::transport_v2::ActionCapability::TransportOnly,
+            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         }) if ready_room == room
     ));
     let broker_host = uuid::Uuid::from_u128(9);
     owner_client
-        .send_action(tilo_relay::transport_v2::EnvelopeV2::RegisterBroker {
-            room,
-            host: broker_host,
-        })
+        .send_action(
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::RegisterBroker {
+                room,
+                host: broker_host,
+            },
+        )
         .unwrap();
     assert!(matches!(
         owner_client.recv_action().await,
-        Some(tilo_relay::transport_v2::EnvelopeV2::ActionsReady {
+        Some(tilo_delivery_protocol::transport_v2::EnvelopeV2::ActionsReady {
             room: ready_room,
-            capability: tilo_relay::transport_v2::ActionCapability::DurableBroker { host },
+            capability: tilo_delivery_protocol::transport_v2::ActionCapability::DurableBroker { host },
         }) if ready_room == room && host == broker_host
     ));
 
@@ -296,9 +300,11 @@ async fn interactive_owner_is_exactly_cert_and_room_scoped() {
     );
     assert!(
         client
-            .send_action(tilo_relay::transport_v2::EnvelopeV2::EnableActions {
-                room: uuid::Uuid::new_v4(),
-            })
+            .send_action(
+                tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableActions {
+                    room: uuid::Uuid::new_v4(),
+                }
+            )
             .is_err(),
         "interactive trust cannot address actions outside its signed room"
     );

@@ -1,5 +1,7 @@
 use super::*;
-use tilo_relay::delivery_v3::commit::{DeliveryLedgerV1, PublicationPool, PublicationRef};
+use tilo_delivery_protocol::delivery_v3::commit::{
+    DeliveryLedgerV1, PublicationPool, PublicationRef,
+};
 
 // Independent frozen DTO: this describes the approved wire ABI, not runtime fields.
 #[derive(Serialize)]
@@ -239,7 +241,7 @@ fn session_v5_hint_is_bounded_inert_storage_not_restore_time_authority() {
     // Deliberately unusable/unsigned descriptor. Storage parsing may not make it authoritative
     // or prevent restoring otherwise valid native data because current verification fails.
     let hint = TransportHint {
-        kind: tilo_relay::delivery_v3::descriptor::KIND.into(),
+        kind: tilo_delivery_protocol::delivery_v3::descriptor::KIND.into(),
         opaque_json: "expired inert descriptor".into(),
         host: owner.host_certificate().clone(),
         service_public_key: [0; 32],
@@ -258,7 +260,8 @@ fn session_v5_hint_is_bounded_inert_storage_not_restore_time_authority() {
     assert!(Aggregate::decode_payload(&postcard::to_stdvec(&value).unwrap()).is_err());
     value.transport_hint = Some(vec![
         0;
-        tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES + 1
+        tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES
+            + 1
     ]);
     assert!(Aggregate::decode_payload(&postcard::to_stdvec(&value).unwrap()).is_err());
 }
@@ -280,7 +283,7 @@ fn session_v5_codec_rejects_future_mismatched_and_noncanonical_storage() {
     value.generation -= 1;
     value.delivery[0] = 2;
     assert!(Aggregate::decode_payload(&postcard::to_stdvec(&value).unwrap()).is_err());
-    value.delivery = vec![0; tilo_relay::delivery_v3::commit::MAX_LEDGER_BYTES + 1];
+    value.delivery = vec![0; tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES + 1];
     assert!(Aggregate::decode_payload(&postcard::to_stdvec(&value).unwrap()).is_err());
 }
 #[test]
@@ -339,7 +342,7 @@ fn session_v5_v4_open_flush_and_mutation_keep_writer_version_four() {
 }
 
 fn complete_literal_fixture(old: &Aggregate) -> FixtureV5<'_> {
-    use tilo_relay::delivery_v3::commit::*;
+    use tilo_delivery_protocol::delivery_v3::commit::*;
     let mut value = fixture_from(old);
     let r = value.publication.baseline[0].clone();
     value.publication.baseline.push(r.clone()); // two references, one retained payload allocation
@@ -511,7 +514,7 @@ fn completed_join_with_membership_challenge() -> (
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
     let endpoint = device.verifying_key().to_bytes();
@@ -662,7 +665,7 @@ fn enrolled_fixture() -> (
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         request_id: hex::encode([61; 32]),
     };
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = crate::enrollment::EnrollmentAuthority::default();
     let first = service.challenge(&owner, request.clone(), now).unwrap();
     let certificate = service
@@ -681,7 +684,7 @@ fn enrolled_fixture() -> (
         certificate,
         proof,
         request,
-        tilo_relay::clock::now_ns(),
+        tilo_delivery_protocol::clock::now_ns(),
     )
 }
 #[test]

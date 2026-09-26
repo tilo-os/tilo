@@ -3,9 +3,9 @@ use super::*;
 use crate::storage::test_support::with_save_failure;
 use atomic_file::test_support::Checkpoint;
 use ed25519_dalek::SigningKey;
-use qos_relay::delivery_v3::{auth, state::ResetReason};
 use qos_session_peer::ingress::{HostBytes, PreparedTransport};
 use std::{os::unix::fs::PermissionsExt, path::Path};
+use tilo_delivery_protocol::delivery_v3::{auth, state::ResetReason};
 
 // Component fixture only: real selected Store and original ingress pool, with
 // explicitly unqualified test entry. No installed bounded-owner witness exists.
@@ -64,7 +64,7 @@ pub(in crate::https_owner) async fn fixture() -> Fixture {
     let pool = transport.host_bytes().unwrap();
     let (root, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let host = store.key();
     let source = CloudStoreSource::bind(&store).unwrap();
@@ -188,7 +188,12 @@ fn issue(f: &Fixture, cut: CommitRef) -> CursorToken {
     })
     .unwrap()
 }
-fn state(f: &Fixture) -> (u64, qos_relay::delivery_v3::commit::DeliveryLedgerV1) {
+fn state(
+    f: &Fixture,
+) -> (
+    u64,
+    tilo_delivery_protocol::delivery_v3::commit::DeliveryLedgerV1,
+) {
     let store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
     (
         store.state.generation,
@@ -211,7 +216,7 @@ fn document_named(root: &Path, device: [u8; 32], invocation: &str) {
                     text: "actual indexed suffix".into(),
                 },
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
 }

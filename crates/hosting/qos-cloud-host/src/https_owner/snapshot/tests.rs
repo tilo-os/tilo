@@ -3,7 +3,7 @@ use super::super::{
     data::tests::{Fixture, authenticate_with_capabilities, fixture, register},
 };
 use super::*;
-use qos_relay::delivery_v3::cursor::CursorToken;
+use tilo_delivery_protocol::delivery_v3::cursor::CursorToken;
 
 pub(super) async fn snapshot_fixture() -> Fixture {
     let mut f = fixture().await;
@@ -58,7 +58,7 @@ pub(super) fn edit(f: &Fixture, id: &str) {
                     text: "actual snapshot suffix".into(),
                 },
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
 }

@@ -2,7 +2,7 @@
 use crate::{
     SessionOwner, https::MediaRoute, media_authority::MediaError, media_service::MediaService,
 };
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     http_proof::VerifiedRequest,
     media_wire::{ControlCommand, ControlReply},
 };

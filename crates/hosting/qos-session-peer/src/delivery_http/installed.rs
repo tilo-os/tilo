@@ -2,7 +2,7 @@
 //! No constructor in this module currently qualifies or advertises a data route.
 use super::*;
 use crate::{host_bytes::HostBytes, owner::resources::OwnerDataOperation};
-use tilo_relay::delivery_v3::capabilities;
+use tilo_delivery_protocol::delivery_v3::capabilities;
 
 /// Scheduling output, not current authority or a durable state admission.
 pub(super) type DataReady = super::carrier::CarrierReady;

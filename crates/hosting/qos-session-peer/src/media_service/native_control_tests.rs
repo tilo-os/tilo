@@ -13,7 +13,7 @@ use crate::{
     media_ingress::{IngressConfig, InstalledIngress},
 };
 use protocol::{NativeControl, OwnerView, PreparedRequest, Step};
-use tilo_relay::delivery_v3::{descriptor, http_proof, media_wire};
+use tilo_delivery_protocol::delivery_v3::{descriptor, http_proof, media_wire};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -59,7 +59,8 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let registry = HttpSessions::new(&owner, &current, tilo_relay::clock::now_ns()).unwrap();
+        let registry =
+            HttpSessions::new(&owner, &current, tilo_delivery_protocol::clock::now_ns()).unwrap();
         let service =
             MediaService::for_owner(&owner, current.clone(), &format!("{origin}/moq/voice"))
                 .unwrap();
@@ -92,11 +93,11 @@ impl Fixture {
                 generation: meta.generation,
                 descriptor_digest: meta.descriptor_digest,
             },
-            now_ns: tilo_relay::clock::now_ns(),
+            now_ns: tilo_delivery_protocol::clock::now_ns(),
         })
     }
     fn exchange(&mut self, prepared: &PreparedRequest) -> Vec<u8> {
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         match prepared.target {
             "/peer/v3/challenge" => self
                 .registry
@@ -118,7 +119,7 @@ impl Fixture {
                     return crate::media_control::dispatch(&self.owner, &self.service, &admitted)
                         .unwrap();
                 }
-                use tilo_relay::delivery_v3::auth;
+                use tilo_delivery_protocol::delivery_v3::auth;
                 let observed = self.service.0.source.with_current(|turn| {
                     let view = turn.current.view();
                     let now = SystemTime::UNIX_EPOCH + Duration::from_nanos(turn.now_ns());

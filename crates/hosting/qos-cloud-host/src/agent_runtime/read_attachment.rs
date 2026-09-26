@@ -9,8 +9,8 @@ use qos_action_broker::{
     },
 };
 use qos_agent_control_protocol::{AgentError, AgentErrorCode, AgentRequest, AgentResponse};
-use qos_relay::agent_reads::AgentReadBinding;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_delivery_protocol::agent_reads::AgentReadBinding;
 use tokio::time::Instant as Deadline;
 
 #[derive(Clone, Copy)]
@@ -117,7 +117,7 @@ impl CloudAgentCommands {
             {
                 return Err(AgentReadError::InvalidRequest.into());
             }
-            CommandKind::Read if !matches!(&evidence.action().message,ActionMessage::AgentReadV1{invocation,request,..}if !invocation.is_nil()&&qos_relay::agent_reads::valid_request(request)) =>
+            CommandKind::Read if !matches!(&evidence.action().message,ActionMessage::AgentReadV1{invocation,request,..}if !invocation.is_nil()&&tilo_delivery_protocol::agent_reads::valid_request(request)) =>
             {
                 return Err(AgentReadError::InvalidRequest.into());
             }
@@ -278,7 +278,7 @@ fn current_binding(
     if publication.governance_revision != current.governance_revision()
         || binding.agent.room != evidence.action().room.to_string()
         || binding.agent.device != hex::encode(current.device())
-        || !qos_relay::agent_reads::valid_binding(&binding, publication.host)
+        || !tilo_delivery_protocol::agent_reads::valid_binding(&binding, publication.host)
     {
         return Err(AgentReadError::Denied);
     }
@@ -410,7 +410,7 @@ pub(super) fn read_current(
     };
     if *host != evidence.action().room
         || invocation.is_nil()
-        || !qos_relay::agent_reads::valid_request(request)
+        || !tilo_delivery_protocol::agent_reads::valid_request(request)
         // Revocation changes state: only [`revoke_current`] serves it.
         || matches!(request, AgentRequest::Revoke { .. })
     {
@@ -499,7 +499,7 @@ pub(crate) fn revoke_current(
     };
     if *host != evidence.action().room
         || invocation.is_nil()
-        || !qos_relay::agent_reads::valid_request(request)
+        || !tilo_delivery_protocol::agent_reads::valid_request(request)
     {
         return Err(AgentReadError::InvalidRequest);
     }
@@ -547,8 +547,8 @@ pub(crate) fn revoke_current(
             }
         }
     };
-    if !qos_relay::agent_reads::valid_result(*host, *invocation, &binding, &response)
-        || !qos_relay::agent_reads::matches_request(request, &response)
+    if !tilo_delivery_protocol::agent_reads::valid_result(*host, *invocation, &binding, &response)
+        || !tilo_delivery_protocol::agent_reads::matches_request(request, &response)
     {
         return Err(AgentReadError::InvalidResult);
     }

@@ -51,7 +51,7 @@ impl Handler {
                 &b.root,
                 &policy,
                 &revocations(&state_peer.revocations())?,
-                qos_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )?;
             if !access.member_devices.contains(&peer.device_public_key)
                 || !state_peer
@@ -213,16 +213,19 @@ pub(crate) async fn respond(
     request: &ActionRequest,
 ) -> Result<ActionReceipt> {
     if matches!(request.operation, NativeOperation::ModelComplete { .. }) {
-        model::invoke(root,machine,source,request,qos_relay::clock::now_ns(),|pending,text| async move {
+        model::invoke(root,machine,source,request,tilo_delivery_protocol::clock::now_ns(),|pending,text| async move {
                 gateway.complete(machine,&pending.gateway_id,&text).await
             }).await
     } else {
         let mut store = Store::open(root, machine)?;
-        let mut result = store.action(source, request, qos_relay::clock::now_ns());
+        let mut result = store.action(source, request, tilo_delivery_protocol::clock::now_ns());
         if matches!(request.operation, NativeOperation::Catalogue)
-            && gateway.available(machine, qos_relay::clock::now_ns() / 1_000_000_000)
+            && gateway.available(
+                machine,
+                tilo_delivery_protocol::clock::now_ns() / 1_000_000_000,
+            )
             && store
-                .authorize_model(source, qos_relay::clock::now_ns())
+                .authorize_model(source, tilo_delivery_protocol::clock::now_ns())
                 .is_ok()
             && let Ok(receipt) = &mut result
             && let Some(operations) = receipt
@@ -235,7 +238,7 @@ pub(crate) async fn respond(
         }
         if matches!(request.operation, NativeOperation::Catalogue)
             && store
-                .authorize_model(source, qos_relay::clock::now_ns())
+                .authorize_model(source, tilo_delivery_protocol::clock::now_ns())
                 .is_ok()
             && let Ok(receipt) = &mut result
             && let Some(operations) = receipt

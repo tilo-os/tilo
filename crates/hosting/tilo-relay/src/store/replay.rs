@@ -360,7 +360,7 @@ impl ReplaySnapshot {
         // `retained` independently requires complete Coedit consumption.
         let coverage = !meta.pending && retained && encoded == bytes;
         drop(encoded);
-        let v2 = crate::transport_v2::state_payload(&envelope)
+        let v2 = tilo_delivery_protocol::transport_v2::state_payload(&envelope)
             .map_err(|_| invalid("v2 replay re-encoding failed"))?;
         let charge = v1_charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
         self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(
@@ -1339,7 +1339,7 @@ impl PublicationCursor {
         let v1 = transport::encode(&envelope).map_err(|_| invalid("activation encoding"))?;
         let mut charge = v1_frame_charge(&envelope, bytes.len(), &v1, v1.capacity())?;
         drop(v1);
-        let v2 = crate::transport_v2::state_payload(&envelope)
+        let v2 = tilo_delivery_protocol::transport_v2::state_payload(&envelope)
             .map_err(|_| invalid("activation v2 encoding"))?;
         charge = charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
         drop(v2);

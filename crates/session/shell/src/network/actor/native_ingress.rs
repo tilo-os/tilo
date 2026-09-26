@@ -5,7 +5,7 @@ use super::{
 };
 use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::RoomId};
 use qos_peer_state::{NeighbourMsg, TransportOrigin, join::TransportHint};
-use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
+use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 
 #[derive(Clone)]
 pub struct Connect {

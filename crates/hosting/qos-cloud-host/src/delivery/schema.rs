@@ -1,8 +1,8 @@
 //! Inert persisted delivery data. Only the enclosing Store transaction commits it.
 use crate::{PublicationKind, State};
 use anyhow::Result;
-use qos_relay::delivery_v3::commit::*;
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
+use tilo_delivery_protocol::delivery_v3::commit::*;
 
 pub(crate) const VERSION: u32 = 6;
 pub(super) const POOL_LIMIT: usize = 64 * 1024 * 1024;

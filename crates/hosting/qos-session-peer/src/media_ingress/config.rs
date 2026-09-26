@@ -281,7 +281,7 @@ mod tests {
         assert!(installed.discovery_hint(&owner).is_err());
         assert!(
             installed
-                .refresh_at(&mut owner, tilo_relay::clock::now_ns())
+                .refresh_at(&mut owner, tilo_delivery_protocol::clock::now_ns())
                 .is_err()
         );
         installed.shutdown().await.unwrap();

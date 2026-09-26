@@ -764,7 +764,7 @@ pub(crate) fn operator_receipt_fixture() -> (tempfile::TempDir, uuid::Uuid, [u8;
     let agent = admitted.ids.agent_id.clone();
     let task = admitted.ids.task_id.clone();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     (dir, invocation, digest, agent, task)
 }

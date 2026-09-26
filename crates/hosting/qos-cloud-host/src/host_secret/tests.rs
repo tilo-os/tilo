@@ -123,7 +123,7 @@ fn tampered_or_foreign_sealed_secret_is_refused() {
 fn state_file_holds_no_host_secret_material() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let secret = store.state.host_secret().clone();
     drop(store);

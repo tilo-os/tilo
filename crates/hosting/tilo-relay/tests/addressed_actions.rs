@@ -92,7 +92,7 @@ impl AgentReadWire {
             &ack,
             &relay.relay.own_user_public_key(),
             &RevocationList::new(),
-            tilo_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
             &nonce,
         )
         .unwrap();
@@ -131,7 +131,7 @@ impl AgentReadWire {
     }
     async fn send(&mut self, frame: EnvelopeV2) {
         self.send
-            .write_all(&tilo_relay::transport_v2::encode(&frame).unwrap())
+            .write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
             .await
             .unwrap();
     }
@@ -140,13 +140,13 @@ impl AgentReadWire {
             Duration::from_secs(5),
             tilo_relay::framing::read_frame(
                 &mut self.receive,
-                tilo_relay::peer_actions::MAX_PRIVATE_BYTES,
+                tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES,
             ),
         )
         .await
         .unwrap()
         .unwrap();
-        tilo_relay::transport_v2::decode(&bytes).unwrap()
+        tilo_delivery_protocol::transport_v2::decode(&bytes).unwrap()
     }
     async fn close(self) {
         self.connection.close(0u32.into(), b"test complete");
@@ -209,7 +209,7 @@ async fn agent_read_both_legs_and_registered_host_are_required_on_real_wire() {
             },
         };
         caller.send(EnvelopeV2::Directed(request.clone())).await;
-        let binding = tilo_relay::agent_reads::AgentReadBinding {
+        let binding = tilo_delivery_protocol::agent_reads::AgentReadBinding {
             action_host: host.to_string(),
             agent: qos_agent_control_protocol::AgentBinding {
                 machine: "machine".into(),
@@ -325,8 +325,8 @@ async fn addressed_actions_alpn_is_served_by_the_existing_relay() {
 
 use crate::common::{TestDevice, TestRelay};
 use std::time::Duration;
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
-use tilo_relay::transport_v2::{ActionCapability, EnvelopeV2};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
+use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::RevocationList;
 use uuid::Uuid;

@@ -69,7 +69,7 @@ impl MediaAuthoritySource for NativeAuthoritySource {
                 MediaObservation::Current(action(&NativeMediaTurn {
                     current,
                     workspace: self.workspace,
-                    now_ns: tilo_relay::clock::now_ns(),
+                    now_ns: tilo_delivery_protocol::clock::now_ns(),
                 }))
             }
             Observation::Updating => MediaObservation::Busy,

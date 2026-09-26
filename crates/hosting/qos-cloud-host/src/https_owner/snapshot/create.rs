@@ -31,7 +31,7 @@ impl PreparedSnapshot {
         session: &VerifiedSession,
         inventory: &HostWorkInventory,
     ) -> Result<DraftSnapshot> {
-        use qos_relay::delivery_v3::state::{ManifestIssue, SNAPSHOT_CHUNK_BYTES};
+        use tilo_delivery_protocol::delivery_v3::state::{ManifestIssue, SNAPSHOT_CHUNK_BYTES};
         const WORK_BYTES: usize = 512 * 1024;
         let pool = turn.host_bytes()?;
         require(inventory.same_pool(pool), CloudDeliveryError::Denied)?;

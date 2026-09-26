@@ -3,14 +3,14 @@ use crate::delivery::admission::{
     StateOutcome, StateRefusal,
     tests::{browser_delta, document_text},
 };
-use qos_relay::delivery_v3::commit::{CommitRef, ConsumerState};
+use tilo_delivery_protocol::delivery_v3::commit::{CommitRef, ConsumerState};
 
 const MACHINE: &str = "agent-admission";
 
 fn selected() -> (tempfile::TempDir, [u8; 32]) {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     (dir, device)
 }
@@ -48,7 +48,7 @@ fn receipt(
     store: &Store,
     device: [u8; 32],
     id: u8,
-) -> Option<&qos_relay::delivery_v3::commit::AdmissionRecord> {
+) -> Option<&tilo_delivery_protocol::delivery_v3::commit::AdmissionRecord> {
     delivery(store).ledger.admissions.get(&ReceiptKey {
         device,
         delivery: [id; 16],
@@ -71,7 +71,7 @@ fn rotation_certifies_a_snapshot_baseline_and_keeps_admitted_state_and_journals(
     let old = delivery(&store).ledger.store_generation;
     assert!(delivery(&store).ledger.replay.len() >= 5);
     let report = store
-        .retain_delivery_with(qos_relay::clock::now_ns(), true)
+        .retain_delivery_with(tilo_delivery_protocol::clock::now_ns(), true)
         .unwrap()
         .expect("forced rotation commits");
     let generation = store.state.generation;
@@ -141,7 +141,7 @@ fn receipt_release_without_rotation_requires_budget_pressure_and_an_acknowledgem
     // Far below the receipt budget: nothing is due, nothing commits.
     assert!(
         store
-            .retain_delivery(qos_relay::clock::now_ns())
+            .retain_delivery(tilo_delivery_protocol::clock::now_ns())
             .unwrap()
             .is_none()
     );
@@ -264,7 +264,7 @@ fn nothing_due_commits_nothing() {
     let generation = store.state.generation;
     assert!(
         store
-            .retain_delivery(qos_relay::clock::now_ns())
+            .retain_delivery(tilo_delivery_protocol::clock::now_ns())
             .unwrap()
             .is_none()
     );

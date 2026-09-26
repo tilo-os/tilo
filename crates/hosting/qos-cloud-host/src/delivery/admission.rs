@@ -7,7 +7,7 @@ use crate::{
     now_time,
 };
 use qos_peer_state::{InputDisposition, NeighbourMsg, TransportOrigin};
-use qos_relay::delivery_v3::commit::{
+use tilo_delivery_protocol::delivery_v3::commit::{
     AdmissionRecord, CommitRef, DeliveryId, Digest, DurableAdmissionKind, MAX_ADMISSIONS,
     ReceiptKey,
 };

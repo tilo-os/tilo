@@ -3,7 +3,7 @@
 use super::schema::QueuedPublication;
 use crate::{Store, StoredPublication};
 use anyhow::{Context, Result, ensure};
-use qos_relay::delivery_v3::commit::{PublicationPayload, StoreGeneration};
+use tilo_delivery_protocol::delivery_v3::commit::{PublicationPayload, StoreGeneration};
 
 pub(crate) struct RelayBatch {
     incarnation: StoreGeneration,

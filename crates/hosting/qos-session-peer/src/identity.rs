@@ -92,7 +92,7 @@ fn enroll(
     label: &str,
     capabilities: DeviceCapabilities,
 ) -> Result<(SigningKey, DeviceCert)> {
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (key, device) = DeviceIdentity::generate(label, now);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -109,8 +109,10 @@ fn enroll(
 pub(crate) fn initialize(root: &Path, host: &Path) -> Result<Identity> {
     let paths = directories(root)?;
     let host_paths = directories(host)?;
-    let (key, user) =
-        UserIdentity::generate("Local qOS session authority", tilo_relay::clock::now_ns());
+    let (key, user) = UserIdentity::generate(
+        "Local qOS session authority",
+        tilo_delivery_protocol::clock::now_ns(),
+    );
     let (native_key, native_cert) =
         enroll(&key, "Native workspace peer", DeviceCapabilities::primary())?;
     let (host_key, host_cert) = enroll(&key, "Local native relay", DeviceCapabilities::host())?;
@@ -163,7 +165,7 @@ pub(crate) fn load(root: &Path, host: &Path) -> Result<Identity> {
         (&native_cert, native.verifying_key().to_bytes()),
         (&host_cert, host_key.verifying_key().to_bytes()),
     ] {
-        verify_device_cert_at(cert, tilo_relay::clock::now_ns())?;
+        verify_device_cert_at(cert, tilo_delivery_protocol::clock::now_ns())?;
         if cert.device_public_key != public || cert.user_public_key != root_public {
             bail!("native identity and certificate disagree");
         }

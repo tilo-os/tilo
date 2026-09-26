@@ -10,8 +10,8 @@ use ed25519_dalek::SigningKey;
 use qos_peer_state::StatePeer;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 #[cfg(test)]
-use tilo_relay::delivery_v3::descriptor::VerifiedDescriptor;
-use tilo_relay::delivery_v3::{descriptor, media_wire};
+use tilo_delivery_protocol::delivery_v3::descriptor::VerifiedDescriptor;
+use tilo_delivery_protocol::delivery_v3::{descriptor, media_wire};
 #[cfg(test)]
 use tilo_user_identity::{DeviceCert, RevocationList};
 

@@ -4,7 +4,7 @@ use qos_action_broker::collaboration_admin::{self as admin, CollaborationAdmin};
 
 pub(crate) fn voice_store() -> (tempfile::TempDir, Store, qos_user_identity::DeviceCert) {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (before, mut peer) = store.peer_transition_at(now).unwrap();
     let mut chat = AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
@@ -221,7 +221,7 @@ fn cloud_media_governance_failed_barrier_never_returns_success_or_replays_effect
             store.action(
                 caller.device_public_key,
                 &request,
-                qos_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )
         },
     );
@@ -231,7 +231,7 @@ fn cloud_media_governance_failed_barrier_never_returns_success_or_replays_effect
             .action(
                 caller.device_public_key,
                 &request,
-                qos_relay::clock::now_ns()
+                tilo_delivery_protocol::clock::now_ns()
             )
             .is_err()
     );
@@ -242,7 +242,7 @@ fn cloud_media_governance_failed_barrier_never_returns_success_or_replays_effect
         .action(
             caller.device_public_key,
             &request,
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
     assert_eq!(receipt.status, "completed");
@@ -265,7 +265,7 @@ fn cloud_media_governance_publication_reconciles_verified_revocation_before_sign
     let admin::CollaborationAdminOperation::MediaCreate(input) = create() else {
         unreachable!()
     };
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     store
         .action(
             caller.device_public_key,

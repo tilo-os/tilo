@@ -20,16 +20,16 @@
 //! `Store::commit_agent_document_checked`, `on_worker_commit` in
 //! `apply_worker_document`, `on_progress` / `on_update` in `RuntimeOwner`,
 //! and `process_exited` in the Linux runtime.
-use qos_relay::delivery_v3::live_wire::{
-    AGENT_ACTIVITY_STATES, MAX_AGENT_LABEL_BYTES, MAX_AGENT_NAME_BYTES, MAX_AGENT_TOOL_BYTES,
-    MAX_PREVIEW_TEXT_BYTES, bounded_display_text,
-};
 use serde::Deserialize;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
     sync::Mutex,
     time::{Duration, Instant},
+};
+use tilo_delivery_protocol::delivery_v3::live_wire::{
+    AGENT_ACTIVITY_STATES, MAX_AGENT_LABEL_BYTES, MAX_AGENT_NAME_BYTES, MAX_AGENT_TOOL_BYTES,
+    MAX_PREVIEW_TEXT_BYTES, bounded_display_text,
 };
 use uuid::Uuid;
 

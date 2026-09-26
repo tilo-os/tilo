@@ -8,7 +8,7 @@ use qos_peer_state::{
     transport::Retention,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction, MAX_PRIVATE_BYTES};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, MAX_PRIVATE_BYTES};
 use ui::automerge::{AutoCommit, transaction::Transactable};
 
 type Route = (String, String);
@@ -162,7 +162,7 @@ fn is_current_snapshot(
 
 fn action_packet_budget(
     invocation: tilo_actions::InvocationId,
-    opened: Option<tilo_relay::peer_actions::OpenedDesktopTab>,
+    opened: Option<tilo_delivery_protocol::peer_actions::OpenedDesktopTab>,
 ) -> Option<usize> {
     let empty = serde_json::to_vec(&ActionMessage::CommittedDesktop {
         invocation,
@@ -350,7 +350,7 @@ impl SessionOwner {
 
 fn tab_locations(
     state: &qos_peer_state::StatePeer,
-) -> Vec<tilo_relay::peer_actions::OpenedDesktopTab> {
+) -> Vec<tilo_delivery_protocol::peer_actions::OpenedDesktopTab> {
     let mut tree = qos_desktop::WorkspaceTree::default();
     let Some(room) = qos_desktop::RoomId::parse(state.room()) else {
         return vec![];
@@ -366,13 +366,13 @@ fn tab_locations(
         .flat_map(|w| &w.strips)
         .flat_map(|s| {
             s.window_groups.iter().flat_map(move |g| {
-                g.tabs
-                    .iter()
-                    .map(move |t| tilo_relay::peer_actions::OpenedDesktopTab {
+                g.tabs.iter().map(
+                    move |t| tilo_delivery_protocol::peer_actions::OpenedDesktopTab {
                         strip: s.id.0.to_string(),
                         group: g.id.to_string(),
                         tab: t.id.to_string(),
-                    })
+                    },
+                )
             })
         })
         .collect()
@@ -391,7 +391,7 @@ mod tests {
         desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
         owner_commit::{CommitOperation, OwnerCommitRequest},
     };
-    use tilo_relay::transport_v2::EnvelopeV2;
+    use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 
     fn request(owner: &SessionOwner, command: DesktopCommand) -> OwnerCommitRequest {
         OwnerCommitRequest {

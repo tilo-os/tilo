@@ -1,7 +1,7 @@
 use super::*;
 use crate::peer_delivery_cursor::CursorIdentity;
 use ed25519_dalek::SigningKey;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::CommitRef,
     cursor::{CursorIssue, CursorToken},
     state::{
@@ -212,7 +212,7 @@ fn replay_checks_declared_bytes_before_allocating_and_bounds_aggregate() {
 
 #[test]
 fn staged_stream_reads_split_headers_and_one_canonical_item_at_a_time() {
-    use tilo_relay::delivery_v3::state::{TransferKind, TransferRecordHeader};
+    use tilo_delivery_protocol::delivery_v3::state::{TransferKind, TransferRecordHeader};
     let mut stream = Vec::new();
     let items = [
         (3_u32, b"governance".as_slice()),
@@ -255,7 +255,7 @@ fn staged_stream_reads_split_headers_and_one_canonical_item_at_a_time() {
 }
 #[test]
 fn staged_stream_rejects_incomplete_corrupt_oversized_and_out_of_order_items() {
-    use tilo_relay::delivery_v3::state::{TransferKind, TransferRecordHeader};
+    use tilo_delivery_protocol::delivery_v3::state::{TransferKind, TransferRecordHeader};
     let header =
         TransferRecordHeader::new(4, TransferKind::State, 6, canonical_item_digest(b"abcdef"))
             .unwrap()
@@ -434,7 +434,7 @@ fn group_frames(
     items: &[&[u8]],
     page: &mut Vec<u8>,
 ) {
-    use tilo_relay::delivery_v3::framing::{self, MessageType};
+    use tilo_delivery_protocol::delivery_v3::framing::{self, MessageType};
     let mut order = Vec::new();
     for (ordinal, bytes) in items.iter().enumerate() {
         let event = chunk(commit, ordinal as u32, bytes, 0..bytes.len());
@@ -505,9 +505,9 @@ fn a_multi_group_page_refuses_reordered_partial_or_oversized_groups() {
     let mut page = Vec::new();
     group_frames(&identity, &key, &commit_at(9), &[b"x"], &mut page);
     let event = chunk(&commit_at(10), 0, b"y", 0..1);
-    tilo_relay::delivery_v3::framing::append_frame(
+    tilo_delivery_protocol::delivery_v3::framing::append_frame(
         &mut page,
-        tilo_relay::delivery_v3::framing::MessageType::EventChunk,
+        tilo_delivery_protocol::delivery_v3::framing::MessageType::EventChunk,
         &event.encode().unwrap(),
         1 << 20,
     )
@@ -524,9 +524,9 @@ fn a_multi_group_page_refuses_reordered_partial_or_oversized_groups() {
     // A group's events cannot be relabelled under another group's boundary.
     let mut page = Vec::new();
     let event = chunk(&commit_at(4), 0, b"z", 0..1);
-    tilo_relay::delivery_v3::framing::append_frame(
+    tilo_delivery_protocol::delivery_v3::framing::append_frame(
         &mut page,
-        tilo_relay::delivery_v3::framing::MessageType::EventChunk,
+        tilo_delivery_protocol::delivery_v3::framing::MessageType::EventChunk,
         &event.encode().unwrap(),
         1 << 20,
     )

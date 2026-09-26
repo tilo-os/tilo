@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use qos_peer_state::join::JoinTransportRequest;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     capabilities::PRODUCT_DATA_V1,
     onboarding_wire::{OnboardingOperation, OnboardingRequest, OnboardingScope},
 };

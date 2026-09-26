@@ -10,7 +10,7 @@ use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
 use std::{sync::Arc, time::Duration};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth,
     http_proof::{Request, RequestProof},
     media_wire::*,
@@ -180,19 +180,20 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
             .unwrap();
         assert_eq!(
             descriptor.media_capabilities(),
-            tilo_relay::delivery_v3::descriptor::MEDIA_VOICE_V1
-                | tilo_relay::delivery_v3::live_wire::MEDIA_LIVE_V1
+            tilo_delivery_protocol::delivery_v3::descriptor::MEDIA_VOICE_V1
+                | tilo_delivery_protocol::delivery_v3::live_wire::MEDIA_LIVE_V1
         );
     }
     let locator_hint = f
         .owner
         .sign_delivery_origin_hint(&ingress)
         .expect("only actual installed ingress emits invitation locator");
-    let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
-        &locator_hint,
-        f.owner.host_certificate(),
-    )
-    .unwrap();
+    let locator =
+        tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
+            &locator_hint,
+            f.owner.host_certificate(),
+        )
+        .unwrap();
     assert_eq!(locator.origin, origin);
     let mut foreign = Fixture::new();
     assert!(foreign.owner.sign_delivery_origin_hint(&ingress).is_err());
@@ -240,7 +241,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     };
     let ((status, bytes), ()) = tokio::join!(transport, actor);
     assert_eq!(status, StatusCode::OK);
-    assert!(bytes.len() <= tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES);
+    assert!(bytes.len() <= tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES);
     assert_eq!(
         bytes,
         postcard::to_stdvec(f.owner.stored_delivery_hint().unwrap()).unwrap()
@@ -292,7 +293,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         .await,
     )
     .unwrap();
-    f.now = tilo_relay::clock::now_ns();
+    f.now = tilo_delivery_protocol::clock::now_ns();
     let finish = f.client(&server, nonce).encode().unwrap();
     let ready = exchange(
         &mut ingress,
@@ -437,7 +438,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         .request("/peer/v3/media/presence/", vec![], None)
         .await;
     assert_ne!(result.0, StatusCode::OK);
-    let old = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+    let old = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
         f.owner.stored_delivery_hint().unwrap(),
         f.owner.host_certificate(),
     )
@@ -449,7 +450,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     assert!(ingress.refresh_at(&mut f.owner, old.expires_at_ns).unwrap());
     // The live HTTPS session survives the renewal (retained generation).
     assert!(ingress.sessions.has_session(id));
-    let renewed = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+    let renewed = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
         f.owner.stored_delivery_hint().unwrap(),
         f.owner.host_certificate(),
     )
@@ -469,8 +470,8 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
             .unwrap();
         assert_eq!(
             descriptor.media_capabilities(),
-            tilo_relay::delivery_v3::descriptor::MEDIA_VOICE_V1
-                | tilo_relay::delivery_v3::live_wire::MEDIA_LIVE_V1
+            tilo_delivery_protocol::delivery_v3::descriptor::MEDIA_VOICE_V1
+                | tilo_delivery_protocol::delivery_v3::live_wire::MEDIA_LIVE_V1
         );
     }
     // Real maintenance -> enrollment discovery -> fresh governor bootstrap,
@@ -489,7 +490,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         postcard::to_stdvec(&advertised).unwrap(),
         postcard::to_stdvec(f.owner.stored_delivery_hint().unwrap()).unwrap()
     );
-    use tilo_relay::delivery_v3::media_wire::{BootstrapRequest, BootstrapResponse};
+    use tilo_delivery_protocol::delivery_v3::media_wire::{BootstrapRequest, BootstrapResponse};
     let mut bootstrap = BootstrapRequest {
         version: 1,
         device: f.owner.identity.native_cert.device_public_key,
@@ -632,7 +633,7 @@ async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
     )
     .await
     .unwrap();
-    let old = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+    let old = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
         &ingress.discovery_hint(&f.owner).unwrap(),
         f.owner.host_certificate(),
     )
@@ -645,7 +646,7 @@ async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
         "installed discovery accepted a descriptor already expired on its actual owner clock"
     );
     assert!(ingress.refresh_current(&mut f.owner).unwrap());
-    let renewed = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+    let renewed = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
         &ingress.discovery_hint(&f.owner).unwrap(),
         f.owner.host_certificate(),
     )

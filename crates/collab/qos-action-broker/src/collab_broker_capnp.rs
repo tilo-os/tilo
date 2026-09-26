@@ -2775,7 +2775,7 @@ impl CapnpBrokerState {
 
     fn published_surfaces_for_scope(
         &self,
-        scope: Option<&tilo_relay::peer_actions::ExactActionRoute>,
+        scope: Option<&tilo_delivery_protocol::peer_actions::ExactActionRoute>,
     ) -> Vec<PublishedSurface> {
         let Some(scope) = scope else {
             return self.published_surfaces();
@@ -3387,7 +3387,7 @@ impl CapnpBrokerState {
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
-        scope: Option<&tilo_relay::peer_actions::ExactActionRoute>,
+        scope: Option<&tilo_delivery_protocol::peer_actions::ExactActionRoute>,
     ) -> Result<String, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let membership = self
@@ -12551,7 +12551,7 @@ pub mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let full_message = tilo_relay::peer_actions::ActionMessage::BrokerCatalogue {
+        let full_message = tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
             host: uuid::Uuid::new_v4(),
             catalogue: full,
         };
@@ -12561,9 +12561,9 @@ pub mod tests {
         );
         assert!(
             serde_json::to_vec(&full_message).unwrap().len()
-                > tilo_relay::peer_actions::MAX_PRIVATE_BYTES
+                > tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES
         );
-        let scope = tilo_relay::peer_actions::ExactActionRoute {
+        let scope = tilo_delivery_protocol::peer_actions::ExactActionRoute {
             app_id: qos_peer_state::desktop_command::APP_ID.into(),
             record_id: String::new(),
             resource: qos_peer_state::desktop_command::RESOURCE.into(),
@@ -12594,7 +12594,7 @@ pub mod tests {
             denied["surfaces"].as_array().unwrap().is_empty(),
             "scope narrows discovery but never grants authorization"
         );
-        let launcher_scope = tilo_relay::peer_actions::ExactActionRoute {
+        let launcher_scope = tilo_delivery_protocol::peer_actions::ExactActionRoute {
             app_id: "dev.qos.word-processor".into(),
             record_id: String::new(),
             resource: "app.dev.qos.word-processor".into(),
@@ -12610,12 +12610,12 @@ pub mod tests {
             launcher["surfaces"].as_array().unwrap().is_empty(),
             "scope cannot add a launcher hidden by another live record of that app"
         );
-        let directed = tilo_relay::peer_actions::DirectedAction {
+        let directed = tilo_delivery_protocol::peer_actions::DirectedAction {
             room: uuid::Uuid::parse_str(&cluster).unwrap(),
             request_id: uuid::Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],
-            message: tilo_relay::peer_actions::ActionMessage::BrokerCatalogue {
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
                 host: uuid::Uuid::new_v4(),
                 catalogue: scoped,
             },
@@ -13661,7 +13661,7 @@ pub mod tests {
                 assert!(cancelled.cancellation_requested);
                 // A durable cancellation request acknowledges receipt only; it
                 // does not assert that the running external effect stopped.
-                use tilo_relay::{
+                use tilo_delivery_protocol::{
                     delivery_v3::private_wire,
                     peer_actions::{ActionMessage, DirectedAction},
                 };

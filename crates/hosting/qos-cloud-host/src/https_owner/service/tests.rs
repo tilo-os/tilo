@@ -3,7 +3,9 @@
 //! owner reopen after clean shutdown.
 use crate::delivery::admission::tests::{browser_delta, document_text};
 use ed25519_dalek::{Signer, SigningKey};
-use qos_relay::delivery_v3::{
+use qos_user_identity::{DeviceCert, RevocationList};
+use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use tilo_delivery_protocol::delivery_v3::{
     auth,
     capabilities::PRODUCT_DATA_V1,
     cursor::CursorToken,
@@ -17,9 +19,7 @@ use qos_relay::delivery_v3::{
         SnapshotOperation, SnapshotRequest, StateAdmission, StateItemChunk, encode_cursor_url,
     },
 };
-use qos_relay::peer_actions::{ActionMessage, DirectedAction};
-use qos_user_identity::{DeviceCert, RevocationList};
-use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 
 const MACHINE: &str = "https-owner";
 
@@ -58,7 +58,7 @@ impl Client {
             .request(method.clone(), format!("{}{target}", self.origin))
             .body(body.clone());
         if let Some((id, digest, _)) = self.session {
-            let now = qos_relay::clock::now_ns();
+            let now = tilo_delivery_protocol::clock::now_ns();
             let exact = http_proof::Request::new(method.as_str(), target, &body).unwrap();
             let proof = http_proof::RequestProof::sign(
                 id,
@@ -89,7 +89,7 @@ impl Client {
 fn peer(root: &Path) -> qos_peer_state::StatePeer {
     crate::Store::open(root, MACHINE)
         .unwrap()
-        .peer_at(qos_relay::clock::now_ns())
+        .peer_at(tilo_delivery_protocol::clock::now_ns())
         .unwrap()
 }
 fn authority<'a>(
@@ -141,7 +141,7 @@ fn chunk(delivery: [u8; 16], canonical: &[u8], offset: usize, end: usize) -> Vec
         .unwrap(),
     )
 }
-fn accepted(bytes: &[u8]) -> qos_relay::delivery_v3::commit::CommitRef {
+fn accepted(bytes: &[u8]) -> tilo_delivery_protocol::delivery_v3::commit::CommitRef {
     let frames = frames(bytes);
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].0, MessageType::StateAdmission);
@@ -294,7 +294,7 @@ async fn handshake_negotiating(
                 host_revocations: &revocations,
             },
             authority: &Pinned,
-            now_ns: qos_relay::clock::now_ns(),
+            now_ns: tilo_delivery_protocol::clock::now_ns(),
         },
         nonce,
         &proof,
@@ -361,7 +361,7 @@ async fn enrolled_deployment() -> (
     let request = crate::tests::approved(store.inspect(10).unwrap(), &owner_root, &device);
     store.apply(&request, 11).unwrap();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let mut json: serde_json::Value =
@@ -543,7 +543,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
     assert_eq!(manifest_frames[0].0, MessageType::SnapshotManifest);
     let manifest = SnapshotManifest::from_bytes(&manifest_frames[0].1).unwrap();
     let signed = manifest
-        .authenticate(&host_key, qos_relay::clock::now_ns())
+        .authenticate(&host_key, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let issue = signed.issue();
     let chunks = issue.chunk_digests.len();
@@ -590,7 +590,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
     assert_eq!(renewed_frames[0].0, MessageType::SnapshotManifest);
     let renewed = SnapshotManifest::from_bytes(&renewed_frames[0].1)
         .unwrap()
-        .authenticate(&host_key, qos_relay::clock::now_ns())
+        .authenticate(&host_key, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     assert_eq!(renewed.issue().pin, issue.pin);
     assert!(renewed.issue().expires_at_ns > issue.expires_at_ns);
@@ -667,11 +667,9 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         Some(large_commit.sequence)
     );
     for delivery in [[1; 16], [2; 16], [3; 16]] {
-        assert!(
-            ledger
-                .admissions
-                .contains_key(&qos_relay::delivery_v3::commit::ReceiptKey { device, delivery })
-        );
+        assert!(ledger.admissions.contains_key(
+            &tilo_delivery_protocol::delivery_v3::commit::ReceiptKey { device, delivery }
+        ));
     }
     drop(store);
     let text = document_text(&root, MACHINE);
@@ -818,17 +816,17 @@ async fn cloud_https_serve_refuses_unactivated_store_without_ready() {
 /// One signed onboarding exchange from an unenrolled device over HTTPS.
 async fn onboard(
     client: &Client,
-    scope: qos_relay::delivery_v3::onboarding_wire::OnboardingScope<'_>,
+    scope: tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingScope<'_>,
     certificate: &DeviceCert,
-    operation: qos_relay::delivery_v3::onboarding_wire::OnboardingOperation,
+    operation: tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingOperation,
     join: &qos_peer_state::join::JoinTransportRequest,
 ) -> qos_peer_state::join::JoinTransportResponse {
-    use qos_relay::delivery_v3::onboarding_wire::{
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         OnboardingRequest, OnboardingResponse, ReplyBodyKind,
     };
     let body = postcard::to_stdvec(join).unwrap();
     let certificate_bytes = postcard::to_stdvec(certificate).unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut request = OnboardingRequest {
         version: 3,
         operation,
@@ -858,7 +856,7 @@ async fn onboard(
     );
     let response = OnboardingResponse::decode(&reply).unwrap();
     response
-        .verify_host_signature(&request, qos_relay::clock::now_ns())
+        .verify_host_signature(&request, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     assert_eq!(response.body_kind, ReplyBodyKind::InlineLegacy);
     postcard::from_bytes(response.body).unwrap()
@@ -870,7 +868,9 @@ async fn cloud_https_invited_device_onboards_then_authenticates_for_product_data
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest as Join,
         JoinTransportResponse as Reply, decode_and_verify_invitation_text, sign_join_proof,
     };
-    use qos_relay::delivery_v3::onboarding_wire::{OnboardingOperation, OnboardingScope};
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
+        OnboardingOperation, OnboardingScope,
+    };
     let (_transport_root, store_root, config, ready, enrollment) = enrolled_deployment().await;
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
@@ -899,21 +899,24 @@ async fn cloud_https_invited_device_onboards_then_authenticates_for_product_data
         issued["invite"].as_str().unwrap(),
         None,
         &RevocationList::new(),
-        qos_relay::clock::now_ns(),
+        tilo_delivery_protocol::clock::now_ns(),
     )
     .unwrap();
     let locators = verified
         .grant()
         .transport
         .iter()
-        .filter(|hint| hint.kind == qos_relay::workspace_join::TRANSPORT_DELIVERY_ORIGIN_V1)
+        .filter(|hint| {
+            hint.kind == tilo_delivery_protocol::workspace_join::TRANSPORT_DELIVERY_ORIGIN_V1
+        })
         .collect::<Vec<_>>();
     assert_eq!(locators.len(), 1);
-    let locator = qos_relay::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
-        locators[0],
-        &locators[0].host,
-    )
-    .unwrap();
+    let locator =
+        tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
+            locators[0],
+            &locators[0].host,
+        )
+        .unwrap();
     assert_eq!(locator.origin, origin);
     let signed_invitation = verified.signed_invitation().to_vec();
 
@@ -924,7 +927,7 @@ async fn cloud_https_invited_device_onboards_then_authenticates_for_product_data
         device_public_key: guest_device.verifying_key().to_bytes(),
         device_label: "Guest device".into(),
         capabilities: qos_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: qos_relay::clock::now_ns() - 1_000_000_000,
+        issued_at_ns: tilo_delivery_protocol::clock::now_ns() - 1_000_000_000,
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -1013,7 +1016,9 @@ async fn cloud_https_structural_owner_membership_refresh_returns_owner_bootstrap
         JoinTransportRequest as Join, JoinTransportResponse as Reply, MembershipChallengeRequest,
         MembershipCompleteRequest, sign_membership_proof,
     };
-    use qos_relay::delivery_v3::onboarding_wire::{OnboardingOperation, OnboardingScope};
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
+        OnboardingOperation, OnboardingScope,
+    };
     let (_transport_root, store_root, config, ready, enrollment) = enrolled_deployment().await;
     let root = store_root.path().to_owned();
     let (authority, room) = {
@@ -1340,7 +1345,7 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
     assert_eq!(manifest_frames[0].0, MessageType::SnapshotManifest);
     let manifest = SnapshotManifest::from_bytes(&manifest_frames[0].1).unwrap();
     let signed = manifest
-        .authenticate(&host_key, qos_relay::clock::now_ns())
+        .authenticate(&host_key, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let issue = signed.issue();
     let chunks = issue.chunk_digests.len();
@@ -1377,7 +1382,7 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
 /// at the head restores it past that group; later commits replay normally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refusing() {
-    use qos_relay::delivery_v3::state::{ResetReason, SnapshotRequired};
+    use tilo_delivery_protocol::delivery_v3::state::{ResetReason, SnapshotRequired};
     let (_transport_root, store_root, config, ready) = deployment().await;
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
@@ -1413,7 +1418,7 @@ async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refu
         let root = root.clone();
         tokio::task::spawn_blocking(move || {
             let mut store = crate::delivery::access::open(&root, MACHINE).unwrap();
-            let now = qos_relay::clock::now_ns();
+            let now = tilo_delivery_protocol::clock::now_ns();
             let (_, mut peer) = store.peer_transition_at(now).unwrap();
             let generation = store.next_generation().unwrap();
             let messages = crate::durable_bootstrap_messages(
@@ -1487,7 +1492,7 @@ async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refu
 /// retransmission whose receipt was released is a certified duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffix() {
-    use qos_relay::delivery_v3::state::{ResetReason, SnapshotRequired};
+    use tilo_delivery_protocol::delivery_v3::state::{ResetReason, SnapshotRequired};
     let (_transport_root, store_root, config, ready) = deployment().await;
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
@@ -1861,7 +1866,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     );
     let manifest = SnapshotManifest::from_bytes(&frames(&body)[0].1).unwrap();
     let signed = manifest
-        .authenticate(&host_key, qos_relay::clock::now_ns())
+        .authenticate(&host_key, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let issue = signed.issue().clone();
     stop.send(()).unwrap();
@@ -1947,7 +1952,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     assert_eq!(renewed_frames[0].0, MessageType::SnapshotManifest);
     let renewed = SnapshotManifest::from_bytes(&renewed_frames[0].1)
         .unwrap()
-        .authenticate(&host_key, qos_relay::clock::now_ns())
+        .authenticate(&host_key, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     assert_eq!(renewed.issue().pin, issue.pin);
     assert_eq!(renewed.issue().chunk_digests, issue.chunk_digests);
@@ -1963,7 +1968,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_media_control_route_grants_over_installed_listener() {
     trace();
-    use qos_relay::delivery_v3::media_wire::{
+    use tilo_delivery_protocol::delivery_v3::media_wire::{
         ChallengeTranscript, ControlCommand, ControlReply, ControlRequest, ControlResult,
         GrantOperation, GrantRequest, MediaDirections, SignedGrant,
     };
@@ -1973,7 +1978,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
     let call = {
         use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
         let mut store = crate::Store::open(&root, MACHINE).unwrap();
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let (before, mut peer) = store.peer_transition_at(now).unwrap();
         let mut chat =
             automerge::AutoCommit::load(&peer.document("so.tilo.chat", "").unwrap()).unwrap();
@@ -2024,7 +2029,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
                         },
                     ),
                 },
-                qos_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )
             .unwrap();
         let result: qos_peer_state::room::media::MediaCallResultV1 =
@@ -2279,7 +2284,7 @@ async fn cloud_https_routes_are_served_over_h3_and_advertised_with_alt_svc() {
 /// exactly one group per page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_https_multi_item_upload_is_one_group_and_new_sessions_catch_up_in_one_page() {
-    use qos_relay::delivery_v3::capabilities::{
+    use tilo_delivery_protocol::delivery_v3::capabilities::{
         KNOWN_DATA, MULTI_GROUP_REPLAY_V1, client_allowed, handshake_policy,
     };
     let (_transport_root, store_root, config, ready) = deployment().await;
@@ -2561,7 +2566,7 @@ async fn cloud_busy_store_turn_returns_quickly_and_is_deferrable() {
     let pool = transport.host_bytes().unwrap();
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let source = CloudStoreSource::bind(&store).unwrap();
     drop(store);

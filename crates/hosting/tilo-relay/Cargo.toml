@@ -74,6 +74,8 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Both ends of every relay stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
+# Delivery, private-action, agent-read, v2 live and join records the relay carries.
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 # Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay

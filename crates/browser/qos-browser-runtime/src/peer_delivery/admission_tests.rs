@@ -4,7 +4,7 @@ use crate::peer_journal::Journal;
 use crate::peer_storage_batch::PeerStorageBatches;
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::CommitRef,
     cursor::{CursorIssue, CursorToken},
     state::canonical_item_digest,

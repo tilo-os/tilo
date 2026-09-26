@@ -1,7 +1,7 @@
 use super::super::super::tests::{baseline, run, snapshot_fixture};
 use super::*;
 use crate::https_owner::data::tests::{Fixture, register};
-use qos_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     framing::{MessageType, decode_frame_prefix},
     state::{CommitBoundary, SnapshotChunk},
 };
@@ -42,7 +42,10 @@ async fn cloud_snapshot_chunk_actual_stream_boundary_never_acknowledges() {
     let chunk = SnapshotChunk::decode(payload).unwrap();
     SnapshotManifestPair::decode(&original)
         .unwrap()
-        .authenticate(&f.host.verifying_key(), qos_relay::clock::now_ns())
+        .authenticate(
+            &f.host.verifying_key(),
+            tilo_delivery_protocol::clock::now_ns(),
+        )
         .unwrap()
         .current()
         .validate_chunk(&chunk)

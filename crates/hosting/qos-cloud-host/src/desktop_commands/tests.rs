@@ -176,7 +176,7 @@ fn unknown_callers_and_applications_are_refused_without_a_commit() {
 /// broker publishes the desktop's open actions and runs them on the Store.
 #[tokio::test(flavor = "current_thread")]
 async fn a_person_opens_notes_through_the_cloud_broker() {
-    use qos_relay::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
+    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
     let (directory, owner, store, caller) = owner_store();
     let room: uuid::Uuid = store.state.room.parse().unwrap();
     let host = store.peer().unwrap().authority().device_public_key;
@@ -658,7 +658,7 @@ fn every_openable_application_opens_and_closes_once() {
 /// native action reply limit.
 #[tokio::test(flavor = "current_thread")]
 async fn fifty_open_close_cycles_keep_the_catalogue_bounded() {
-    use qos_relay::peer_actions::{ActionMessage, DirectedAction};
+    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     let (directory, owner, store, caller) = owner_store();
     let room: uuid::Uuid = store.state.room.parse().unwrap();
     let host = store.peer().unwrap().authority().device_public_key;

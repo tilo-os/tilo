@@ -86,7 +86,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         device_public_key: foreign_key.verifying_key().to_bytes(),
         device_label: "foreign fixture author".into(),
         capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_relay::clock::now_ns(),
+        issued_at_ns: tilo_delivery_protocol::clock::now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -240,7 +240,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         std::fs::create_dir_all(&dir).unwrap();
         let manifest = serde_json::json!({
             "version":1, "room":owner.peer().room(), "authority":owner.peer().authority(), "certificates":owner.peer().certificates(),
-            "now_ns":tilo_relay::clock::now_ns(), "rows":rows,
+            "now_ns":tilo_delivery_protocol::clock::now_ns(), "rows":rows,
             "baseline":fixture_batch(&dir,"baseline",&baseline,&baseline_kinds),
             "tail":fixture_batch(&dir,"tail",&tail,&tail_kinds),
             "checkpoint2":fixture_batch(&dir,"checkpoint2",&outgoing_bytes(&owner),&outgoing_kinds(&owner))

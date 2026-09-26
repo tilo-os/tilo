@@ -70,7 +70,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 fn now() -> u64 {
-    tilo_relay::clock::now_ns()
+    tilo_delivery_protocol::clock::now_ns()
 }
 fn stage_identity(value: &TransferState, id: &str) -> Result<(), JsValue> {
     if value.id != id {

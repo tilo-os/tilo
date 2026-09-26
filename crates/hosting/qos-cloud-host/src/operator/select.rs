@@ -66,7 +66,7 @@ mod tests {
         let enrollment = crate::tests::approved(store.inspect(10).unwrap(), root, device);
         store.apply(&enrollment, 11).unwrap();
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
     }
 

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{committed_authority::CommittedAuthority, https::ingress_channel};
 use ed25519_dalek::{Signer, SigningKey};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     media_wire::split_signature,
     onboarding_wire::{OnboardingRequest, OnboardingScope},
 };
@@ -26,7 +26,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
         owner.activate_delivery().unwrap();
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         owner
             .install_delivery_transport(origin, 0, at(now))
             .unwrap();
@@ -114,7 +114,7 @@ impl Fixture {
         nonce: u8,
     ) -> qos_peer_state::join::JoinTransportResponse {
         use crate::https::onboarding_tests::request;
-        use tilo_relay::delivery_v3::onboarding_wire::*;
+        use tilo_delivery_protocol::delivery_v3::onboarding_wire::*;
         let wire = self.wire_for(&inner, [nonce; 32]);
         let original = OnboardingRequest::decode(&wire).unwrap();
         let (buffered, probe) = request(&self.ingress, original.operation.path(), wire.clone());
@@ -171,10 +171,10 @@ impl Fixture {
     }
     async fn hydrate(
         &mut self,
-        manifest: &tilo_relay::delivery_v3::onboarding_wire::HandoffManifest<'_>,
+        manifest: &tilo_delivery_protocol::delivery_v3::onboarding_wire::HandoffManifest<'_>,
     ) -> Vec<u8> {
         use crate::https::onboarding_tests::request;
-        use tilo_relay::delivery_v3::onboarding_wire::*;
+        use tilo_delivery_protocol::delivery_v3::onboarding_wire::*;
         let mut bytes = Vec::new();
         while bytes.len() < manifest.total_bytes as usize {
             let remaining = manifest.total_bytes as usize - bytes.len();
@@ -490,7 +490,8 @@ async fn onboarding_charged_request_and_reply_keep_custody_on_cancel_and_complet
         "undrained encoded reply retains request charge"
     );
     let reply =
-        tilo_relay::delivery_v3::onboarding_wire::OnboardingResponse::decode(&bytes).unwrap();
+        tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingResponse::decode(&bytes)
+            .unwrap();
     reply
         .verify_host_signature(&OnboardingRequest::decode(&f.wire([5; 32])).unwrap(), f.now)
         .unwrap();
@@ -655,7 +656,7 @@ fn large_publication(f: &mut Fixture) {
 async fn onboarding_large_local_handoff_uses_actual_scoped_pin_and_exact_governance_stream() {
     use crate::{enrollment::EnrollmentAuthority, owner::resources::OwnerOperation};
     use qos_peer_state::enrollment::{ChallengeRequest, decode, sign};
-    use tilo_relay::delivery_v3::onboarding_wire::{
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         GovernanceBundle, HandoffManifest, HandoffPurpose,
     };
     let mut f = Fixture::new();
@@ -761,7 +762,9 @@ async fn onboarding_large_local_handoff_uses_actual_scoped_pin_and_exact_governa
         1,
         "last-range retries retain bounded backing until timeout"
     );
-    use tilo_relay::delivery_v3::onboarding_wire::{HANDOFF_CHUNKS_PATH, HandoffRequest};
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
+        HANDOFF_CHUNKS_PATH, HandoffRequest,
+    };
     let (offset, length) = f.registry.pins[0].last_range.unwrap();
     let mut fetch = HandoffRequest {
         version: 1,
@@ -962,7 +965,7 @@ async fn onboarding_large_join_reply_preserves_frozen_response_bytes_through_chu
         })
         .unwrap()
         .unwrap();
-    use tilo_relay::delivery_v3::onboarding_wire::{
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         HANDOFF_CHUNKS_PATH, HandoffManifest, HandoffRequest,
     };
     let manifest = HandoffManifest::decode(&existing[0]).unwrap();

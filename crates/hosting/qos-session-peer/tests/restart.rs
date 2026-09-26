@@ -631,7 +631,7 @@ fn revoked_identity_and_replay_floors_survive_restart() {
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let root = persist::read_signing_key(&IdentityPaths::under(path.join("identity")).user_privkey)
         .unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (_, device) = DeviceIdentity::generate("revoked member", now);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),

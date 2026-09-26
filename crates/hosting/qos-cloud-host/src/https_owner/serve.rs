@@ -10,13 +10,13 @@ use super::{
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use atomic_file::{Privacy, PublishMode, StorageDirectory};
-use qos_relay::delivery_v3::capabilities::PRODUCT_DATA_V1;
 use qos_session_peer::ingress::PreparedTransport;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
 };
+use tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1;
 struct PreparedCloud {
     config: OperatorConfig,
     transport: PreparedTransport,
@@ -104,7 +104,7 @@ impl PreparedCloud {
                     "enrolled Cloud Store required"
                 );
                 if legacy.state.version != crate::delivery::VERSION {
-                    legacy.activate_delivery_storage(qos_relay::clock::now_ns())?;
+                    legacy.activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())?;
                 }
                 drop(legacy);
                 open()?

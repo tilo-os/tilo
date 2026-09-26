@@ -1,6 +1,6 @@
 //! Wasm exports over the existing certified peer; no independent identity or storage.
 use super::*;
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 
 fn current(id: u32) -> Result<(Rc<Peer>, serde_json::Value), JsValue> {
     let peer = PEERS

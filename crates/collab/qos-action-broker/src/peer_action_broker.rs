@@ -5,7 +5,7 @@ use super::{
     LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
     admit_verified_join_at,
 };
-use tilo_relay::peer_actions::{ActionMessage, Confirmation};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, Confirmation};
 
 impl CapnpBrokerState {
     pub(crate) fn peer_action_queue(&self) -> crate::peer_actions::PeerActionQueue {
@@ -203,7 +203,7 @@ impl CapnpBrokerState {
                     // Native fallback does not forward Cloud mutation commands.
                     // Only an actual same-host read-only provider may be exposed here.
                     if tokio::time::Instant::now() < deadline
-                        && tilo_relay::agent_reads::valid_binding(binding, host)
+                        && tilo_delivery_protocol::agent_reads::valid_binding(binding, host)
                         && binding.agent.room == evidence.action().room.to_string()
                         && binding.agent.device == hex::encode(evidence.action().source)
                         && binding.spawn.is_none()

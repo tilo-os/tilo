@@ -37,10 +37,10 @@ use super::*;
 #[cfg(any(test, feature = "media"))]
 use std::collections::BTreeSet;
 #[cfg(any(test, feature = "media"))]
-use tilo_relay::delivery_v3::commit::{
+use tilo_delivery_protocol::delivery_v3::commit::{
     DeliveryLedgerV1, MAX_ADMISSIONS, PublicationPool, PublicationRef, ReceiptKey,
 };
-use tilo_relay::delivery_v3::commit::{Digest, MAX_REFERENCES};
+use tilo_delivery_protocol::delivery_v3::commit::{Digest, MAX_REFERENCES};
 #[cfg(any(test, feature = "media"))]
 use ui::automerge::transaction::Transactable as _;
 
@@ -64,7 +64,7 @@ pub(crate) const CHECKPOINT_MAX_AGE_NS: u64 = 30_000_000_000;
 /// A checkpoint whose publications exceed this cannot be one replay page.
 #[cfg(any(test, feature = "media"))]
 pub(crate) const ROTATE_CHECKPOINT_BYTES: usize =
-    tilo_relay::delivery_v3::capabilities::PAGE_BYTES - 64 * 1024;
+    tilo_delivery_protocol::delivery_v3::capabilities::PAGE_BYTES - 64 * 1024;
 /// History (retained replay payloads outside the current roots) that makes a
 /// rotation due, unless twice the current roots is larger. Kept small: the
 /// aggregate is re-encoded on every commit and scales the per-turn byte

@@ -31,6 +31,7 @@ tilo-actions = { path = "../actions" }
 qos-peer-state = { path = "../qos-peer-state" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 serde.workspace = true
 serde_json.workspace = true

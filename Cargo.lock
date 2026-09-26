@@ -10995,6 +10995,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-isolate",
+ "tilo-delivery-protocol",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",
@@ -11058,7 +11059,8 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-content",
- "tilo-relay",
+ "tilo-delivery-protocol",
+ "tilo-relay-protocol",
  "tilo-ui",
  "tilo-user-identity",
  "uuid",
@@ -11123,9 +11125,11 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-isolate",
+ "tilo-delivery-protocol",
  "tilo-model-gateway",
  "tilo-net",
  "tilo-relay",
+ "tilo-relay-protocol",
  "tilo-seal",
  "tilo-ui",
  "tilo-user-identity",
@@ -11275,6 +11279,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-isolate",
+ "tilo-delivery-protocol",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",
@@ -13419,6 +13424,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-clock",
  "tilo-content",
+ "tilo-delivery-protocol",
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-net",
@@ -14914,6 +14920,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-delivery-protocol"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh-base",
+ "n0-future",
+ "postcard",
+ "qos-agent-control-protocol",
+ "qos-peer-state",
+ "rand 0.10.1",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-actions",
+ "tilo-automerge-isolate",
+ "tilo-relay-client",
+ "tilo-relay-protocol",
+ "tilo-user-identity",
+ "tokio",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
@@ -15125,6 +15160,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-delivery-protocol",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-rt",

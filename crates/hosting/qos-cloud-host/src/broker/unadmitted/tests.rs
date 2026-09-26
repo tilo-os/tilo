@@ -2,7 +2,7 @@
 //! deadline, only for invocations the host holds no record of, and fences
 //! the identity so the original can never be admitted afterwards.
 use super::*;
-use qos_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 
 type Owner = Arc<crate::agent_runtime_adapter::RuntimeOwner>;
 struct Fixture {

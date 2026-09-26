@@ -146,7 +146,7 @@ pub struct SnapshotPin {
 /// enclosing native aggregate embeds the encoded ledger.
 ///
 /// ```compile_fail
-/// use tilo_relay::delivery_v3::commit::DeliveryLedgerV1;
+/// use tilo_delivery_protocol::delivery_v3::commit::DeliveryLedgerV1;
 /// let _ = postcard::from_bytes::<DeliveryLedgerV1>(&[]);
 /// ```
 pub struct DeliveryLedgerV1 {
@@ -183,7 +183,7 @@ impl DeliveryLedgerV1 {
     /// Encode local metadata after structural validation; does not prove admission.
     ///
     /// ```
-    /// use tilo_relay::delivery_v3::commit::DeliveryLedgerV1;
+    /// use tilo_delivery_protocol::delivery_v3::commit::DeliveryLedgerV1;
     /// let unknown = DeliveryLedgerV1 {
     ///     version: 2, store_generation: [1; 16], resolved_through: 0,
     ///     replay: Default::default(), admissions: Default::default(),

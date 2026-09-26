@@ -22,7 +22,8 @@ pub type EarlySink = Arc<dyn Fn([u8; 32], &[u8]) + Send + Sync>;
 /// `OpsFrame` (`MAX_STREAM_FRAME_BYTES`) including record and digest, so
 /// larger items are never copied here and reach members by durable replay.
 #[cfg(any(test, feature = "media"))]
-pub const MAX_FORWARD_BYTES: usize = tilo_relay::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES;
+pub const MAX_FORWARD_BYTES: usize =
+    tilo_delivery_protocol::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES;
 
 thread_local! {
     static SINK: RefCell<Option<EarlySink>> = const { RefCell::new(None) };

@@ -1,6 +1,6 @@
 use super::*;
 use qos_peer_state::{SeedState, seed_room};
-use tilo_relay::delivery_v3::{auth, descriptor, http_proof};
+use tilo_delivery_protocol::delivery_v3::{auth, descriptor, http_proof};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -111,7 +111,7 @@ impl Fixture {
             governor: &self.governor,
             host: &self.host,
             device: &self.device,
-            workspace: tilo_relay::room_workspace_id(ROOM).unwrap(),
+            workspace: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
             lease_epoch: "held-lease",
             generation: descriptor::GenerationExpectation::FirstAccepted {
                 minimum_generation: 1,

@@ -14,12 +14,13 @@ use qos_peer_state::{
     NeighbourMsg,
     owner_commit::{PrivateAgentState, VerifiedAgentCaller},
 };
-use qos_relay::{client::CertifiedAction, peer_actions::ActionMessage};
+use qos_relay::client::CertifiedAction;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
+use tilo_delivery_protocol::peer_actions::ActionMessage;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 #[cfg(target_os = "linux")]

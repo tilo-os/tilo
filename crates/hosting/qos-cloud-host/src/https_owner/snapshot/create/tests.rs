@@ -25,7 +25,10 @@ async fn cloud_snapshot_prepared_pair_is_real_durable_inert_disk_before_owner_pi
     assert!(!directory.join(format!("{name}.pair")).exists());
     let pair = SnapshotManifestPair::decode(&expected).unwrap();
     let signed = pair
-        .authenticate(&f.host.verifying_key(), qos_relay::clock::now_ns())
+        .authenticate(
+            &f.host.verifying_key(),
+            tilo_delivery_protocol::clock::now_ns(),
+        )
         .unwrap();
     assert_eq!(signed.current().issue().pin, id);
     assert_eq!(signed.current().issue().expires_at_ns, expiry);
@@ -136,7 +139,10 @@ async fn cloud_snapshot_signer_rejects_changed_worker_claims_kind_and_cut() {
     .unwrap();
     let parsed = SnapshotManifestPair::decode(&draft.pair.bytes).unwrap();
     let signed = parsed
-        .authenticate(&f.host.verifying_key(), qos_relay::clock::now_ns())
+        .authenticate(
+            &f.host.verifying_key(),
+            tilo_delivery_protocol::clock::now_ns(),
+        )
         .unwrap();
     let original = signed.current().issue().clone();
     run(&f, DeliveryOperation::SnapshotCommit, |turn| {

@@ -2,7 +2,7 @@
 use super::*;
 use crate::peer_journal::AcknowledgedDescriptorFloor;
 use crate::peer_media::{OwnerView, PeerMedia, PreparedRequest, Step};
-use tilo_relay::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
 
 pub(super) struct MediaEnrollment {
     pub workspace: u64,
@@ -78,7 +78,7 @@ pub(super) fn with_view<T>(
         workspace: pins.workspace,
         lease_epoch: lease,
         generation,
-        now_ns: tilo_relay::clock::now_ns(),
+        now_ns: tilo_delivery_protocol::clock::now_ns(),
         state_revision: peer.state_revision.get(),
     };
     operation(&view).map_err(error)
@@ -86,10 +86,12 @@ pub(super) fn with_view<T>(
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
-fn namespace(n: &tilo_relay::delivery_v3::media_wire::MediaNamespace) -> String {
+fn namespace(n: &tilo_delivery_protocol::delivery_v3::media_wire::MediaNamespace) -> String {
     format!("{}/{}", hex(&n.call), hex(&n.publisher))
 }
-fn inventory(v: &tilo_relay::delivery_v3::media_wire::PublisherInventory) -> serde_json::Value {
+fn inventory(
+    v: &tilo_delivery_protocol::delivery_v3::media_wire::PublisherInventory,
+) -> serde_json::Value {
     serde_json::json!({"revision":v.revision.to_string(),"namespaces":v.namespaces.iter().map(namespace).collect::<Vec<_>>()})
 }
 fn prepared(value: PreparedRequest) -> serde_json::Value {
@@ -169,7 +171,7 @@ pub fn peer_media_join(
         c.start_join(
             v,
             &call_id,
-            tilo_relay::delivery_v3::media_wire::MediaDirections { publish, subscribe },
+            tilo_delivery_protocol::delivery_v3::media_wire::MediaDirections { publish, subscribe },
         )
         .map(Step::Request)
     })

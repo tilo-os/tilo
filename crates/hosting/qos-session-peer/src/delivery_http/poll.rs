@@ -1,7 +1,7 @@
 //! Actor-owned continuations retain the original charged request, never a native guard.
 use crate::https::{BufferedRequest, Route};
 use std::collections::BTreeMap;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::{Binding, VerifiedSession},
     cursor::CursorToken,
     http_proof::{Request, VerifiedRequest},
@@ -82,7 +82,7 @@ impl Polls {
         // Chained polls exist only for sessions that negotiated them.
         if chain.is_some()
             && admitted.session().capabilities()
-                & tilo_relay::delivery_v3::capabilities::PIPELINED_POLL_V1
+                & tilo_delivery_protocol::delivery_v3::capabilities::PIPELINED_POLL_V1
                 == 0
         {
             return Err(PollError::Invalid);

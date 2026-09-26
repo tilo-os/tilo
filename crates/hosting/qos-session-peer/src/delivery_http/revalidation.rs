@@ -143,7 +143,7 @@ impl ContextPins {
         // Everything above is a pure function of this committed generation
         // except its time bounds: the signed descriptor window and the
         // governor, host and device certificate windows.
-        let expires = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+        let expires = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
             owner.stored_delivery_hint()?,
             owner.host_certificate(),
         )?

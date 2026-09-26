@@ -143,7 +143,7 @@ impl postcard::ser_flavors::Flavor for Exact<'_> {
 }
 fn decode<'a, T: Deserialize<'a> + Serialize>(bytes: &'a [u8]) -> Result<T> {
     ensure!(
-        bytes.len() <= tilo_relay::delivery_v3::onboarding_wire::MAX_REQUEST_BYTES,
+        bytes.len() <= tilo_delivery_protocol::delivery_v3::onboarding_wire::MAX_REQUEST_BYTES,
         "join input exceeds bound"
     );
     let value: T = postcard::from_bytes(bytes)?;

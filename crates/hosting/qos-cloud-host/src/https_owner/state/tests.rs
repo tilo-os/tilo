@@ -2,7 +2,7 @@ use super::super::{
     CloudDeliveryError, Current, DeliveryOperation,
     data::tests::{Fixture, fixture, register},
 };
-use qos_relay::delivery_v3::state::{AdmissionCode, AdmissionOutcome, CommitScope};
+use tilo_delivery_protocol::delivery_v3::state::{AdmissionCode, AdmissionOutcome, CommitScope};
 
 /// Canonical browser-authored delta from the enrolled device key.
 pub(in crate::https_owner) fn browser_delta(root: &std::path::Path, text: &str) -> Vec<u8> {

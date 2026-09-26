@@ -28,7 +28,7 @@ fn delivery_security_host_revocation_survives_without_revoked_signature_or_repla
                             },
                         ),
                     },
-                    qos_relay::clock::now_ns(),
+                    tilo_delivery_protocol::clock::now_ns(),
                 )
                 .unwrap();
         }
@@ -36,7 +36,7 @@ fn delivery_security_host_revocation_survives_without_revoked_signature_or_repla
         let before = store.state.delivery.as_ref().unwrap().clone();
         let generation = store.state.generation;
         let root = SigningKey::from_bytes(&[7; 32]);
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let mut entry = RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: store.key().verifying_key().to_bytes(),
@@ -88,7 +88,7 @@ fn delivery_security_document_change_without_publication_is_not_metadata() {
         "",
         document,
         &store.key(),
-        now_time(qos_relay::clock::now_ns()),
+        now_time(tilo_delivery_protocol::clock::now_ns()),
     )
     .unwrap();
     let mut next = store.state.clone();
@@ -101,7 +101,7 @@ fn delivery_security_document_change_without_publication_is_not_metadata() {
 #[test]
 fn delivery_security_proof_cannot_authorize_an_added_document_effect() {
     let (dir, mut store, caller) = crate::actions::media_tests::voice_store();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let before = store.peer_at(now).unwrap();
     let mut clean = before.clone();
     let mut tampered = before.clone();

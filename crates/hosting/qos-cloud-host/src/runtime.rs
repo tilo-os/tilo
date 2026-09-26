@@ -6,9 +6,9 @@ use qos_relay::{
     Relay, RelayClient, RelayConfig, WorkspaceBinding,
     client::CertifiedActionEvent,
     coedit::{Inbound, RelayCoeditSession},
-    transport_v2::{ActionCapability, EnvelopeV2},
 };
 use std::time::Duration;
+use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2};
 const STARTUP_ACTION_BUFFER: usize = 32;
 mod delivery;
 
@@ -231,7 +231,7 @@ where
             revocations: revocations(&bound.revocations)?,
         },
         mode.clone(),
-        qos_relay::workspace_join::WORKSPACE_JOIN_ALPN,
+        tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
         qos_relay::workspace_join::WorkspaceJoinProtocol::new(join_service),
     )
     .await?;
@@ -258,7 +258,7 @@ where
         let owner_result: Result<()> = async {
             {
                 let mut store = Store::open(root, machine)?;
-                let (before, mut peer) = store.peer_transition_at(qos_relay::clock::now_ns())?;
+                let (before, mut peer) = store.peer_transition_at(tilo_delivery_protocol::clock::now_ns())?;
                 let mut state = store.state.clone();
                 let messages = durable_bootstrap_messages(
                     &mut peer, &store.key(), web_time::SystemTime::now(), store.next_generation()?,
@@ -386,7 +386,7 @@ where
                        let mut store=Store::open(root,machine)?;
                        if let Ok(message)=postcard::from_bytes::<NeighbourMsg>(&body){
                         // Rejection of untrusted input is scoped to that message, never process termination.
-                        match store.receive(origin,message,qos_relay::clock::now_ns()) {
+                        match store.receive(origin,message,tilo_delivery_protocol::clock::now_ns()) {
                             Ok(()) => {},
                             Err(crate::ReceiveError::Rejected(error)) => tracing::debug!(%error, "state message rejected"),
                             Err(crate::ReceiveError::Owner(error)) => return Err(error),
@@ -400,8 +400,8 @@ where
                       Some(CertifiedActionEvent::Delivered(evidence))=>{
                        let response=match agents.handle_certified(&evidence).await {
                           Ok(Some(response))=>response,
-                          Ok(None)=>crate::broker::handle(root,machine,evidence.certificate(),evidence.action(),qos_relay::clock::now_ns()).await?,
-                          Err(error)=>{tracing::debug!(%error,"private agent action rejected or observation unavailable");qos_relay::peer_actions::ActionMessage::Rejected {code:crate::https_owner::agent_rejection_code(&error).into()}},
+                          Ok(None)=>crate::broker::handle(root,machine,evidence.certificate(),evidence.action(),tilo_delivery_protocol::clock::now_ns()).await?,
+                          Err(error)=>{tracing::debug!(%error,"private agent action rejected or observation unavailable");tilo_delivery_protocol::peer_actions::ActionMessage::Rejected {code:crate::https_owner::agent_rejection_code(&error).into()}},
                        };
                        // A successful membership mutation is not observable until the relay
                        // has replaced its live exact-device access from durable Store state.
@@ -659,11 +659,11 @@ mod publication_tests {
             room: uuid::Uuid,
             source: [u8; 32],
             host: [u8; 32],
-            message: qos_relay::peer_actions::ActionMessage,
-        ) -> qos_relay::peer_actions::ActionMessage {
+            message: tilo_delivery_protocol::peer_actions::ActionMessage,
+        ) -> tilo_delivery_protocol::peer_actions::ActionMessage {
             let request_id = uuid::Uuid::new_v4();
             client
-                .send_action(qos_relay::peer_actions::DirectedAction {
+                .send_action(tilo_delivery_protocol::peer_actions::DirectedAction {
                     room,
                     request_id,
                     source,
@@ -687,7 +687,7 @@ mod publication_tests {
             .await
             .unwrap()
         }
-        use qos_relay::peer_actions::ActionMessage as A;
+        use tilo_delivery_protocol::peer_actions::ActionMessage as A;
         let catalogue = query(
             &client,
             room,
@@ -699,7 +699,7 @@ mod publication_tests {
         let A::BrokerCatalogue { catalogue, .. } = catalogue else {
             panic!("native catalogue missing: {catalogue:?}")
         };
-        let binding: qos_relay::agent_reads::AgentReadBinding =
+        let binding: tilo_delivery_protocol::agent_reads::AgentReadBinding =
             serde_json::from_value(catalogue["agentReadsV1"].clone())
                 .expect("Store-backed read provider must survive missing executable runtime");
         assert!(binding.spawn.is_none() && binding.message.is_none());
@@ -982,12 +982,14 @@ mod publication_tests {
     fn startup_ack_demux_retains_early_delivery_and_rejects_wrong_authority() {
         let room = uuid::Uuid::from_u128(0x51);
         let host = uuid::Uuid::from_u128(0x52);
-        let action = qos_relay::peer_actions::DirectedAction {
+        let action = tilo_delivery_protocol::peer_actions::DirectedAction {
             room,
             request_id: uuid::Uuid::from_u128(0x53),
             source: [1; 32],
             target: [2; 32],
-            message: qos_relay::peer_actions::ActionMessage::CatalogueRefresh { scope: None },
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
+                scope: None,
+            },
         };
         let mut pending = std::collections::VecDeque::new();
         assert!(

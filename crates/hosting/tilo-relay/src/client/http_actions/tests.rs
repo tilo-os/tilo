@@ -3,14 +3,14 @@
     reason = "paired test fixtures are named after the roles they mirror"
 )]
 use super::*;
-use crate::delivery_v3::{
+use ed25519_dalek::SigningKey;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_delivery_protocol::delivery_v3::{
     auth::*,
     http_proof::*,
     private_wire::{self, PrivateOperation, PrivateScope},
 };
-use crate::peer_actions::{ActionMessage, DirectedAction};
-use ed25519_dalek::SigningKey;
-use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use uuid::Uuid;
 struct Fixture {

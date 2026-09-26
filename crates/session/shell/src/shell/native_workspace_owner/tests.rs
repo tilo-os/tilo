@@ -6,7 +6,7 @@ use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{SeedDocument, SeedState, join, room::media, seed_room};
 use std::collections::BTreeMap;
-use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -77,7 +77,7 @@ fn raw_fixture_at(
     );
     host.capabilities.can_act_as_host = true;
     sign_device_cert(&mut host, &SigningKey::from_bytes(&[62; 32])).unwrap();
-    let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1 {
+    let locator = tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 {
         version: 1,
         origin: "https://native.example".into(),
     }
@@ -520,7 +520,7 @@ fn bootstrap_candidate(
     generation: u64,
     now: SystemTime,
 ) -> join::TransportHint {
-    use tilo_relay::delivery_v3::descriptor;
+    use tilo_delivery_protocol::delivery_v3::descriptor;
     owner
         .with_current(RoomId::parse(ROOM).unwrap(), |view| {
             let authority = descriptor::DescriptorAuthority {
@@ -554,9 +554,9 @@ fn bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_relay::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
     use ed25519_dalek::Signer;
-    use tilo_relay::delivery_v3::{descriptor, media_wire};
+    use tilo_delivery_protocol::delivery_v3::{descriptor, media_wire};
     let metadata = descriptor::inspect_persisted_hint(hint, &hint.host).unwrap();
     let mut response = media_wire::BootstrapResponse {
         version: 1,
@@ -851,7 +851,7 @@ pub(crate) fn test_bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_relay::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
     bootstrap_response(pending, hint, now)
 }
 fn fresh_slot(

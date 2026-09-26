@@ -2,7 +2,7 @@
 //! signing remain in the actor; native TLS trust is independently required.
 use super::protocol::PreparedRequest;
 use std::time::Duration;
-use tilo_relay::delivery_v3::{descriptor, http_proof, media_wire};
+use tilo_delivery_protocol::delivery_v3::{descriptor, http_proof, media_wire};
 const DEADLINE: Duration = Duration::from_secs(3);
 #[derive(Clone)]
 pub(super) struct Http {

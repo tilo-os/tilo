@@ -4,7 +4,7 @@ use crate::https::{
     BufferedRequest, Ingress,
     tests::{HeldPollTestClient, data_test_request},
 };
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::CommitRef,
     http_proof::{Request, RequestProof},
     state::{AdmissionOutcome, CommitScope, StateAdmission, StateItemChunk},
@@ -40,8 +40,8 @@ fn charged_request(
     proof: &RequestProof,
 ) -> (BufferedRequest, HeldPollTestClient) {
     let method = match request.method() {
-        tilo_relay::delivery_v3::http_proof::Method::Get => "GET",
-        tilo_relay::delivery_v3::http_proof::Method::Post => "POST",
+        tilo_delivery_protocol::delivery_v3::http_proof::Method::Get => "GET",
+        tilo_delivery_protocol::delivery_v3::http_proof::Method::Post => "POST",
         _ => panic!("not a data callback method"),
     };
     data_test_request(
@@ -352,7 +352,7 @@ fn poll(
 }
 #[test]
 fn replay_callback_returns_original_native_group_before_its_real_signed_boundary() {
-    use tilo_relay::delivery_v3::state::{
+    use tilo_delivery_protocol::delivery_v3::state::{
         CommitBoundary, EventChunk, EventSource, visible_order_digest,
     };
     let (mut f, budget, ingress) = attached_fixture();
@@ -778,7 +778,7 @@ fn oversized_real_replay_group_answers_snapshot_reset_without_page_or_ack_advanc
                 .downcast_ref::<crate::owner::delivery::error::OwnerDataFailure>()
                 .map(|failure| failure.kind()),
             Some(crate::owner::delivery::error::OwnerDataFailureKind::Reset(
-                tilo_relay::delivery_v3::state::ResetReason::HistoryUnavailable
+                tilo_delivery_protocol::delivery_v3::state::ResetReason::HistoryUnavailable
             ))
         );
         assert_eq!(f.owner.status().generation, generation);
@@ -869,7 +869,7 @@ fn rotated_store_cursor_ack_is_a_no_op_and_its_poll_answers_store_rotated() {
             .downcast_ref::<crate::owner::delivery::error::OwnerDataFailure>()
             .map(|failure| failure.kind()),
         Some(crate::owner::delivery::error::OwnerDataFailureKind::Reset(
-            tilo_relay::delivery_v3::state::ResetReason::StoreRotated
+            tilo_delivery_protocol::delivery_v3::state::ResetReason::StoreRotated
         ))
     );
 }
@@ -1616,7 +1616,7 @@ fn a_refused_item_ends_the_group_without_entering_its_commit() {
     assert_eq!(ledger.admissions.len(), admissions + 2);
     let device = f.owner.identity.native_cert.device_public_key;
     let receipt = |id: u8| {
-        ledger.admissions[&tilo_relay::delivery_v3::commit::ReceiptKey {
+        ledger.admissions[&tilo_delivery_protocol::delivery_v3::commit::ReceiptKey {
             device,
             delivery: [id; 16],
         }]
@@ -1624,14 +1624,12 @@ fn a_refused_item_ends_the_group_without_entering_its_commit() {
             .clone()
     };
     assert_eq!(receipt(1), receipt(2));
-    assert!(
-        !ledger
-            .admissions
-            .contains_key(&tilo_relay::delivery_v3::commit::ReceiptKey {
-                device,
-                delivery: [3; 16],
-            })
-    );
+    assert!(!ledger.admissions.contains_key(
+        &tilo_delivery_protocol::delivery_v3::commit::ReceiptKey {
+            device,
+            delivery: [3; 16],
+        }
+    ));
 }
 
 #[test]
@@ -1681,7 +1679,7 @@ fn a_duplicate_or_single_item_keeps_the_single_item_path() {
 /// Handshake a data session with explicit requested/allowed capabilities
 /// against a host whose descriptor advertises the product contract.
 fn product_fixture() -> (Fixture, HostBytes, Ingress) {
-    use tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1;
+    use tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1;
     let mut f = Fixture::new();
     let now = f.now;
     f.current
@@ -1707,11 +1705,11 @@ fn product_session(
     registry: &mut HttpSessions,
     budget: &HostBytes,
     requested: u64,
-    client: tilo_relay::delivery_v3::auth::CapabilityPolicy,
+    client: tilo_delivery_protocol::delivery_v3::auth::CapabilityPolicy,
     nonce: u8,
 ) -> (([u8; 16], [u8; 32]), u64) {
     use crate::owner::delivery::NativeDeliveryAuthority;
-    use tilo_relay::delivery_v3::{
+    use tilo_delivery_protocol::delivery_v3::{
         auth, capabilities::PRODUCT_DATA_V1, descriptor::GenerationExpectation,
     };
     let nonce = [nonce; 32];
@@ -1787,8 +1785,8 @@ fn product_session(
     ((wire.1, wire.2), wire.4)
 }
 /// Decode a page into its groups' boundaries, checking group shape.
-fn page_boundaries(page: &[u8]) -> Vec<tilo_relay::delivery_v3::state::CommitBoundary> {
-    use tilo_relay::delivery_v3::state::{CommitBoundary, EventChunk};
+fn page_boundaries(page: &[u8]) -> Vec<tilo_delivery_protocol::delivery_v3::state::CommitBoundary> {
+    use tilo_delivery_protocol::delivery_v3::state::{CommitBoundary, EventChunk};
     let mut boundaries = Vec::new();
     let mut group = None;
     let mut rest = page;
@@ -1812,7 +1810,7 @@ fn page_boundaries(page: &[u8]) -> Vec<tilo_relay::delivery_v3::state::CommitBou
     assert!(group.is_none(), "trailing partial group");
     boundaries
 }
-fn cursor_target(boundary: &tilo_relay::delivery_v3::state::CommitBoundary) -> String {
+fn cursor_target(boundary: &tilo_delivery_protocol::delivery_v3::state::CommitBoundary) -> String {
     format!(
         "/peer/v3/events?cursor={}&mode=poll",
         state::encode_cursor_url(boundary.cursor().as_bytes()).unwrap()
@@ -1821,7 +1819,7 @@ fn cursor_target(boundary: &tilo_relay::delivery_v3::state::CommitBoundary) -> S
 
 #[test]
 fn multi_group_pages_only_for_sessions_that_negotiated_the_extension() {
-    use tilo_relay::delivery_v3::{
+    use tilo_delivery_protocol::delivery_v3::{
         auth::CapabilityPolicy,
         capabilities::{
             KNOWN_DATA, MULTI_GROUP_REPLAY_V1, PRODUCT_DATA_V1, client_allowed, handshake_policy,
@@ -2093,7 +2091,7 @@ fn long_session_state_and_replay_turns_stay_within_measured_reservations() {
 #[test]
 fn chained_poll_floor_serves_after_previous_page_and_never_before_cursor() {
     use crate::delivery_http::poll::{PollError, Polls};
-    use tilo_relay::delivery_v3::{
+    use tilo_delivery_protocol::delivery_v3::{
         auth::CapabilityPolicy,
         capabilities::{
             KNOWN_DATA, PIPELINED_POLL_V1, PRODUCT_DATA_V1, client_allowed, handshake_policy,
@@ -2144,7 +2142,7 @@ fn chained_poll_floor_serves_after_previous_page_and_never_before_cursor() {
         .unwrap(),
     );
     assert!(all.len() >= 4);
-    let chained = |b: &tilo_relay::delivery_v3::state::CommitBoundary, index| {
+    let chained = |b: &tilo_delivery_protocol::delivery_v3::state::CommitBoundary, index| {
         chain_target(b.cursor().as_bytes(), ChainPoll { chain: 9, index }).unwrap()
     };
     // Without the capability a chained poll is not captured as a held poll.
@@ -2187,47 +2185,48 @@ fn chained_poll_floor_serves_after_previous_page_and_never_before_cursor() {
         141,
     );
     assert_eq!(caps, KNOWN_DATA);
-    let served = |f: &Fixture,
-                  registry: &mut HttpSessions,
-                  target: &str,
-                  floor: Option<&tilo_relay::delivery_v3::cursor::CursorToken>| {
-        let request = Request::new("GET", target, b"").unwrap();
-        let proof = RequestProof::sign(
-            session.0,
-            session.1,
-            &request,
-            f.now,
-            f.now + 30_000_000_000,
-            &f.owner.identity.native,
-        )
-        .unwrap();
-        let (original, _client) = charged_request(&ingress, &request, &proof);
-        let (admitted, mut checker, turn) = registry
-            .admit_revalidating_at(
-                &f.owner,
-                &f.current,
-                &budget,
-                OwnerDataOperation::Replay,
-                &proof,
+    let served =
+        |f: &Fixture,
+         registry: &mut HttpSessions,
+         target: &str,
+         floor: Option<&tilo_delivery_protocol::delivery_v3::cursor::CursorToken>| {
+            let request = Request::new("GET", target, b"").unwrap();
+            let proof = RequestProof::sign(
+                session.0,
+                session.1,
                 &request,
-                &original,
-                &TestClock::new(f.now),
+                f.now,
+                f.now + 30_000_000_000,
+                &f.owner.identity.native,
             )
             .unwrap();
-        let ticket = Polls::new()
-            .capture(&admitted, &original, checker.entry_serial())
+            let (original, _client) = charged_request(&ingress, &request, &proof);
+            let (admitted, mut checker, turn) = registry
+                .admit_revalidating_at(
+                    &f.owner,
+                    &f.current,
+                    &budget,
+                    OwnerDataOperation::Replay,
+                    &proof,
+                    &request,
+                    &original,
+                    &TestClock::new(f.now),
+                )
+                .unwrap();
+            let ticket = Polls::new()
+                .capture(&admitted, &original, checker.entry_serial())
+                .unwrap();
+            let page = replay_core_from(
+                &f.owner,
+                &f.current,
+                &admitted,
+                floor,
+                |owner, view, session| checker.check(owner, view, session),
+                turn,
+            )
             .unwrap();
-        let page = replay_core_from(
-            &f.owner,
-            &f.current,
-            &admitted,
-            floor,
-            |owner, view, session| checker.check(owner, view, session),
-            turn,
-        )
-        .unwrap();
-        (ticket.chain(), page)
-    };
+            (ticket.chain(), page)
+        };
     let committed = |page: &ServedPage| {
         page_boundaries(&page.bytes)
             .iter()

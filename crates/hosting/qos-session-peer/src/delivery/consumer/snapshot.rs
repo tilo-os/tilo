@@ -9,7 +9,7 @@ use crate::{
 #[cfg(any(test, feature = "media"))]
 use error::DataResult;
 #[cfg(any(test, feature = "media"))]
-use tilo_relay::delivery_v3::state::{SnapshotKind, SnapshotOperation};
+use tilo_delivery_protocol::delivery_v3::state::{SnapshotKind, SnapshotOperation};
 #[cfg(any(test, feature = "media"))]
 pub(crate) struct SnapshotSelection {
     scope: CursorIssue,
@@ -184,7 +184,7 @@ impl SessionOwner {
         &mut self,
         turn: &mut OwnerResourceTurn,
         source: &VerifiedDeliverySource<'_>,
-        issue: &tilo_relay::delivery_v3::state::ManifestIssue,
+        issue: &tilo_delivery_protocol::delivery_v3::state::ManifestIssue,
         host: &HostBytes,
     ) -> DataResult<(SnapshotSelection, OwnedPublicationPin)> {
         self.with_data_operation(turn, OwnerDataOperation::SnapshotPrepare, |owner| {
@@ -408,8 +408,8 @@ impl SessionOwner {
         stream: &crate::delivery_http::snapshot::SnapshotStream,
         expires_at_ns: u64,
         now_ns: u64,
-    ) -> Result<tilo_relay::delivery_v3::state::SnapshotManifest> {
-        use tilo_relay::delivery_v3::state::{
+    ) -> Result<tilo_delivery_protocol::delivery_v3::state::SnapshotManifest> {
+        use tilo_delivery_protocol::delivery_v3::state::{
             ManifestIssue, SNAPSHOT_CHUNK_BYTES, SnapshotManifest,
         };
         ensure!(

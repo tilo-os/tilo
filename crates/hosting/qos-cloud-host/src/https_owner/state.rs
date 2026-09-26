@@ -2,7 +2,7 @@
 //! The wire receipt is derived only from the record read back after commit.
 use super::{CloudDeliveryError, CloudStoreTurn, DeliveryOperation};
 use crate::delivery::admission::{StateOutcome, StateRefusal};
-use qos_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     capabilities::STATE_REPLAY_V1,
     commit::{AdmissionRecord, DeliveryId, Digest, DurableAdmissionKind},

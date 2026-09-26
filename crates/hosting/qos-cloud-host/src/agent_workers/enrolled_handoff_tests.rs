@@ -19,8 +19,8 @@ use qos_action_broker::enrolled_dispatch::{
     FixtureProcess, ParentFailure, ParentOwner, ParentReceipt, ParentRecord, ParentStep,
     VerifiedEnrolledDispatch,
 };
-use qos_relay::peer_actions::ActionMessage;
 use std::os::fd::IntoRawFd;
+use tilo_delivery_protocol::peer_actions::ActionMessage;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 const WRITER: &str = "so.tilo.word-processor";
@@ -1354,7 +1354,7 @@ fn owner_read(
 ) -> qos_agent_control_protocol::AgentResponse {
     let store = owner.store().unwrap();
     let caller = store.agent_caller(device()).unwrap();
-    let binding = qos_relay::agent_reads::AgentReadBinding {
+    let binding = tilo_delivery_protocol::agent_reads::AgentReadBinding {
         action_host: store.state.room.clone(),
         agent: qos_agent_control_protocol::AgentBinding {
             machine: store.state.machine_id.clone(),

@@ -43,7 +43,7 @@ struct Enrolled {
     cert: DeviceCert,
 }
 fn enrol(root: &SigningKey, name: &str, capabilities: DeviceCapabilities) -> Result<Enrolled> {
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (key, device) = DeviceIdentity::generate(name, now);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
     }
     let (root, user) = UserIdentity::generate(
         "Isolated browser interoperability workspace",
-        tilo_relay::clock::now_ns(),
+        tilo_delivery_protocol::clock::now_ns(),
     );
     let host = enrol(&root, "Local native relay", DeviceCapabilities::host())?;
     let native = enrol(
@@ -262,7 +262,8 @@ async fn main() -> Result<()> {
         ],
     )?;
     directory.set_host_devices(workspace_id, &[host.cert.device_public_key])?;
-    let signed_directory = directory.sync_incremental(&native.key, tilo_relay::clock::now_ns())?;
+    let signed_directory =
+        directory.sync_incremental(&native.key, tilo_delivery_protocol::clock::now_ns())?;
     // Stable signed enrollment namespace; all app state arrives through the relay.
     let bootstrap = json!({"directory_update":signed_directory, "directory_author":native.cert, "certified_roster":[native.cert,a.cert,b.cert], "room":room, "workspace_id":workspace_id.to_string(), "writer_tab_id":1, "chat_package_primary":true, "records":application.rows()});
     let mut routes = HashMap::new();

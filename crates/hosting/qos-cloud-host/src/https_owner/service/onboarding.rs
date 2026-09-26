@@ -5,14 +5,14 @@
 use super::*;
 use ed25519_dalek::Signer;
 use qos_peer_state::join::{JoinTransportRequest, JoinTransportResponse};
-use qos_relay::delivery_v3::onboarding_wire::{
+use qos_session_peer::ingress::ByteCredit;
+use qos_session_peer::onboarding_input as input;
+use qos_user_identity::DeviceCert;
+use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
     HANDOFF_CHUNKS_PATH, HandoffChunk, HandoffManifest, HandoffPurpose, HandoffRequest,
     HandoffSegment, MAX_HANDOFF_RANGE_BYTES, MAX_RESPONSE_BYTES, MAX_SEGMENT_BYTES,
     OnboardingOperation, OnboardingRequest, OnboardingResponse, OnboardingScope, ReplyBodyKind,
 };
-use qos_session_peer::ingress::ByteCredit;
-use qos_session_peer::onboarding_input as input;
-use qos_user_identity::DeviceCert;
 
 const NONCE_LIMIT: usize = 16_384;
 const PIN_NS: u64 = 30_000_000_000;

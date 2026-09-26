@@ -236,28 +236,28 @@ async fn deployed_v1_and_v2_clients_authenticate_actual_new_handlers() {
     let (v2_connection, mut v2_send, mut v2_receive) = deployed_client_handshake(
         &endpoint,
         relay.node_addr(),
-        tilo_relay::transport_v2::LEGACY_ALPN_V2,
+        tilo_delivery_protocol::transport_v2::LEGACY_ALPN_V2,
         &client,
         relay_public_key,
     )
     .await;
     v2_send
         .write_all(
-            &tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::State(
-                Envelope::Ping,
-            ))
+            &tilo_delivery_protocol::transport_v2::encode(
+                &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Ping),
+            )
             .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(
-        tilo_relay::transport_v2::decode(
+        tilo_delivery_protocol::transport_v2::decode(
             &read_frame(&mut v2_receive, MAX_FRAME_BYTES + 1)
                 .await
                 .unwrap()
         )
         .unwrap(),
-        tilo_relay::transport_v2::EnvelopeV2::State(Envelope::Pong)
+        tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Pong)
     );
     v2_connection.close(0u32.into(), b"");
 
@@ -349,7 +349,8 @@ impl ProtocolHandler for FrozenServer {
         )
         .map_err(accept_error)?;
         frozen_verify_cert(&hello.cert, self.client_cert_tag).map_err(accept_error)?;
-        verify_device_cert_at(&hello.cert, tilo_relay::clock::now_ns()).map_err(accept_error)?;
+        verify_device_cert_at(&hello.cert, tilo_delivery_protocol::clock::now_ns())
+            .map_err(accept_error)?;
         if hello.cert.user_public_key != self.expected_client_user {
             return Err(accept_error("client user is not admitted"));
         }
@@ -419,7 +420,7 @@ async fn frozen_one_shot_router(alpn: &'static [u8], legacy: FrozenServer) -> Ro
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_read_fallback_retains_state_and_withholds_reads_on_old_relays() {
-    use tilo_relay::transport_v2::EnvelopeV2;
+    use tilo_delivery_protocol::transport_v2::EnvelopeV2;
     for (alpn, auth_tag) in [
         (b"tilo-relay/2" as &'static [u8], CURRENT_AUTH_TAG),
         (b"qos-relay/2" as &'static [u8], DEPLOYED_AUTH_TAG),
@@ -453,12 +454,12 @@ async fn agent_read_fallback_retains_state_and_withholds_reads_on_old_relays() {
         .await
         .unwrap();
         assert!(!client.supports_agent_reads_v1());
-        let request = tilo_relay::peer_actions::DirectedAction {
+        let request = tilo_delivery_protocol::peer_actions::DirectedAction {
             room: uuid::Uuid::from_u128(1),
             request_id: uuid::Uuid::from_u128(2),
             source: device.device_pubkey(),
             target: host.device_pubkey(),
-            message: tilo_relay::peer_actions::ActionMessage::AgentReadV1 {
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadV1 {
                 host: uuid::Uuid::from_u128(3),
                 invocation: uuid::Uuid::from_u128(4),
                 request: qos_agent_control_protocol::AgentRequest::Capabilities { version: 1 },

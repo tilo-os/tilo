@@ -10,7 +10,7 @@ use super::{
 use crate::live_service::{PACKAGE_PRIMARY_RECORD, signed_change};
 use hyper::StatusCode;
 use std::sync::Mutex;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     framing::{self, MessageType},
     live_wire::{LiveRecord, OpsFrame, ops_track},
     state::{AdmissionOutcome, StateAdmission, StateItemChunk},
@@ -92,7 +92,7 @@ async fn replayed_groups(h: &mut Harness) -> usize {
             .last_key_value()
             .unwrap()
             .0;
-    let mut previous: Option<tilo_relay::delivery_v3::state::CommitBoundary> = None;
+    let mut previous: Option<tilo_delivery_protocol::delivery_v3::state::CommitBoundary> = None;
     let mut groups = 0;
     while previous
         .as_ref()
@@ -371,7 +371,7 @@ async fn subscribe_ops(
     tokio::task::JoinHandle<()>,
 ) {
     use super::live_tests::{grant, live_connect, request};
-    use tilo_relay::delivery_v3::live_wire::room_digest;
+    use tilo_delivery_protocol::delivery_v3::live_wire::room_digest;
     use tokio::time::{Duration, Instant, timeout};
     let wanted = request(h, participation, true);
     let (status, token) = grant(h, &wanted).await;
@@ -441,7 +441,7 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
             .last_key_value()
             .unwrap()
             .0;
-    let mut boundary: Option<tilo_relay::delivery_v3::state::CommitBoundary> = None;
+    let mut boundary: Option<tilo_delivery_protocol::delivery_v3::state::CommitBoundary> = None;
     while boundary
         .as_ref()
         .is_none_or(|b| b.committed().sequence < last)

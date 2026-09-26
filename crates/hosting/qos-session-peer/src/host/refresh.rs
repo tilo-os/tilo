@@ -35,7 +35,7 @@ pub(super) async fn execute(
                 &ResourceRef::Room(room),
                 Verb::Read,
                 &caps,
-                Some(tilo_relay::clock::now_ns() / 1_000_000_000),
+                Some(tilo_delivery_protocol::clock::now_ns() / 1_000_000_000),
             ) != CapDecision::Allow
             {
                 return Err("checkpoint refresh requires current room read".into());

@@ -23,11 +23,11 @@ async fn private_http_installs_only_actual_live_broker_and_close_is_terminal() {
     actions.close(&owner).unwrap();
 }
 
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth, http_proof,
     private_wire::{self, PrivateOperation, PrivateScope},
 };
-use tilo_relay::peer_actions::ActionMessage;
+use tilo_delivery_protocol::peer_actions::ActionMessage;
 use uuid::Uuid;
 fn with_admitted<R>(
     owner: &SessionOwner,
@@ -89,7 +89,7 @@ fn with_signed_session<R>(
     // Real signed session + actual current owner policy. This unit does not issue
     // an installed-data descriptor or a native memory qualification witness.
     let guard = current.read().unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let authority = crate::owner::delivery::NativeDeliveryAuthority {
         view: guard.view(),
         workspace: owner.workspace_id(),

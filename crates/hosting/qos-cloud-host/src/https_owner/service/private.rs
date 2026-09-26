@@ -11,9 +11,9 @@ use qos_action_broker::{
     agent_reads::AgentReadCustody,
     peer_actions::{PeerActionQueue, Request as QueueRequest},
 };
-use qos_relay::peer_actions::{ActionMessage, DirectedAction};
 use qos_session_peer::ingress::ResponseCredits;
 use std::{path::PathBuf, sync::Arc};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 
 /// Active agent invocations whose later durable transitions are published to
 /// the queue's transition stream (and from there to watching sessions).

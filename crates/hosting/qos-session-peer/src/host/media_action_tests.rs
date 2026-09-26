@@ -11,11 +11,11 @@ use ed25519_dalek::SigningKey;
 use qos_action_broker::collaboration_admin::APP_ID;
 use qos_peer_state::room::media;
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_relay::{
-    Envelope,
+use tilo_delivery_protocol::{
     peer_actions::{ActionMessage, DirectedAction},
     transport_v2::EnvelopeV2,
 };
+use tilo_relay::Envelope;
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use uuid::Uuid;

@@ -1,5 +1,5 @@
+use super::identity;
 use super::protocol::*;
-use super::{identity, relay};
 use ed25519_dalek::SigningKey;
 
 fn selection() -> Selection {
@@ -41,7 +41,9 @@ fn challenge() -> identity::cloud_enrollment::Challenge {
         version: 1,
         machine_id: "machine".into(),
         room: room.into(),
-        workspace_id: relay::room_workspace_id(room).unwrap().to_string(),
+        workspace_id: tilo_relay_protocol::room_workspace_id(room)
+            .unwrap()
+            .to_string(),
         host_public_key: host.verifying_key().to_bytes(),
         nonce: [75; 32],
         expires_at_ns: 300_000_000_100,

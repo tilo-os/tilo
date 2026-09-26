@@ -41,7 +41,7 @@ fn current(
 ) -> Result<(), String> {
     check()?;
     cancel.check()?;
-    if tilo_relay::clock::now_ns() >= deadline {
+    if tilo_delivery_protocol::clock::now_ns() >= deadline {
         return Err("original onboarding deadline elapsed".into());
     }
     Ok(())
@@ -58,7 +58,7 @@ pub(super) async fn fetch(
 ) -> Result<Vec<u8>, String> {
     current(cancel, check, deadline)?;
     let remaining = deadline
-        .checked_sub(tilo_relay::clock::now_ns())
+        .checked_sub(tilo_delivery_protocol::clock::now_ns())
         .filter(|n| *n > 0)
         .ok_or("onboarding fetch expired")?;
     // Origin is borrowed only from an already verified closed wrapper/context.
@@ -223,7 +223,7 @@ pub(crate) async fn exchange_invited(
     check()?;
     let request =
         wire::OnboardingRequest::decode(prepared.request_bytes()).map_err(|e| e.to_string())?;
-    if tilo_relay::clock::now_ns() >= request.expires_at_ns {
+    if tilo_delivery_protocol::clock::now_ns() >= request.expires_at_ns {
         return Err("onboarding request expired".into());
     }
     let raw = fetch(
@@ -236,7 +236,7 @@ pub(crate) async fn exchange_invited(
         &check,
     )
     .await?;
-    let reply = prepared.verify_reply(&raw, tilo_relay::clock::now_ns())?;
+    let reply = prepared.verify_reply(&raw, tilo_delivery_protocol::clock::now_ns())?;
     let mut deadline = request.expires_at_ns;
     let result = match reply.kind {
         wire::ReplyBodyKind::InlineLegacy => OnboardingReply::decode(reply.body)?,
@@ -249,8 +249,11 @@ pub(crate) async fn exchange_invited(
                 request_nonce: request.nonce,
                 expires_at_ns: request.expires_at_ns,
             };
-            let transfer =
-                handoff::Handoff::start(reply.body, context, tilo_relay::clock::now_ns())?;
+            let transfer = handoff::Handoff::start(
+                reply.body,
+                context,
+                tilo_delivery_protocol::clock::now_ns(),
+            )?;
             deadline = deadline.min(transfer.expires_at_ns());
             let bytes = transfer_all(
                 transfer,
@@ -277,7 +280,7 @@ pub(super) async fn transfer_all(
     let deadline = transfer.expires_at_ns();
     while transfer.remaining() != 0 {
         current(cancel, check, deadline)?;
-        let request = transfer.request(key, tilo_relay::clock::now_ns())?;
+        let request = transfer.request(key, tilo_delivery_protocol::clock::now_ns())?;
         let body = encode(&request, 512)?;
         let chunk = fetch(
             origin,
@@ -289,8 +292,8 @@ pub(super) async fn transfer_all(
             check,
         )
         .await?;
-        transfer.push(&request, &chunk, tilo_relay::clock::now_ns())?;
+        transfer.push(&request, &chunk, tilo_delivery_protocol::clock::now_ns())?;
     }
     current(cancel, check, deadline)?;
-    transfer.finish(tilo_relay::clock::now_ns())
+    transfer.finish(tilo_delivery_protocol::clock::now_ns())
 }

@@ -209,7 +209,7 @@ pub struct Relay {
     /// Exact server-side room ceiling for native interactive startup. A
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
-    interactive_owner_trust: Option<crate::workspace_join::InteractiveOwnerTrust>,
+    interactive_owner_trust: Option<tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust>,
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -514,7 +514,7 @@ impl Relay {
                     RelayError::Identity("interactive shell authority disappeared".into())
                 })?;
                 Some(
-                    crate::workspace_join::interactive_owner_trust(
+                    tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust::verify(
                         authority.room().to_owned(),
                         binding.id,
                         authority.governor().clone(),
@@ -611,7 +611,7 @@ impl Relay {
         );
         let mut router = Router::builder(endpoint.clone())
             .accept(
-                crate::transport_v2::ALPN_AGENT_READS_V1,
+                tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
                 RelayProtocol {
                     v2: true,
                     agent_reads_v1: true,
@@ -620,7 +620,7 @@ impl Relay {
                 },
             )
             .accept(
-                crate::transport_v2::ALPN_V2,
+                tilo_delivery_protocol::transport_v2::ALPN_V2,
                 RelayProtocol {
                     v2: true,
                     auth_domain: AuthDomain::Tilo,
@@ -628,7 +628,7 @@ impl Relay {
                 },
             )
             .accept(
-                crate::transport_v2::LEGACY_ALPN_V2,
+                tilo_delivery_protocol::transport_v2::LEGACY_ALPN_V2,
                 RelayProtocol {
                     v2: true,
                     auth_domain: AuthDomain::LegacyQos,
@@ -718,7 +718,7 @@ impl Relay {
 
         let interactive_workspace_id = interactive_owner_trust
             .as_ref()
-            .map(crate::workspace_join::InteractiveOwnerTrust::workspace_id);
+            .map(tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust::workspace_id);
         Ok(Self {
             endpoint,
             router,
@@ -971,7 +971,7 @@ impl Relay {
     #[must_use]
     pub fn native_interactive_owner_trust(
         &self,
-    ) -> Option<crate::workspace_join::InteractiveOwnerTrust> {
+    ) -> Option<tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust> {
         self.interactive_owner_trust.clone()
     }
 
@@ -1183,9 +1183,9 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
     let reserved: &[&[u8]] = &[
         ALPN,
         LEGACY_ALPN,
-        crate::transport_v2::ALPN_V2,
-        crate::transport_v2::ALPN_AGENT_READS_V1,
-        crate::transport_v2::LEGACY_ALPN_V2,
+        tilo_delivery_protocol::transport_v2::ALPN_V2,
+        tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
+        tilo_delivery_protocol::transport_v2::LEGACY_ALPN_V2,
         DISCOVERY_ALPN,
         LEGACY_DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
@@ -2754,9 +2754,9 @@ mod tests {
         for alpn in [
             ALPN,
             LEGACY_ALPN,
-            crate::transport_v2::ALPN_V2,
-            crate::transport_v2::ALPN_AGENT_READS_V1,
-            crate::transport_v2::LEGACY_ALPN_V2,
+            tilo_delivery_protocol::transport_v2::ALPN_V2,
+            tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
+            tilo_delivery_protocol::transport_v2::LEGACY_ALPN_V2,
             DISCOVERY_ALPN,
             LEGACY_DISCOVERY_ALPN,
             MANAGEMENT_ALPN,

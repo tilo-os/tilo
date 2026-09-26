@@ -103,7 +103,7 @@ impl Fixture {
             peer: &self.peer,
             pinned_governor: &self.governor,
             pinned_host: &self.host,
-            workspace: crate::room_workspace_id(ROOM).unwrap(),
+            workspace: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
             generation: GenerationExpectation::FirstAccepted {
                 minimum_generation: 1,
             },

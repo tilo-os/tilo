@@ -4,7 +4,7 @@ use super::*;
 fn delivery_relay_exact_original_backing_survives_store_and_send_retirement() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let delivery = store.state.delivery.as_ref().unwrap();
     let pointers = delivery
@@ -67,7 +67,7 @@ fn delivery_relay_exact_original_backing_survives_store_and_send_retirement() {
 fn delivery_relay_zero_pressure_and_wrong_incarnation_never_retire() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let mut batch = store.delivery_relay_batch().unwrap();
     let path = dir.path().join("state.json");

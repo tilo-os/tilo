@@ -4,7 +4,7 @@ use super::{
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use qos_peer_state::join::TransportHint;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::Carrier,
     descriptor::{self, DescriptorAuthority, VerifiedDescriptor},
     media_wire,
@@ -38,7 +38,8 @@ impl NativeCommittedView {
                 .ok_or("no independently pinned native delivery host")?,
             workspace: self.workspace(),
             generation: self.descriptor_expectation()?,
-            allowed_delivery_capabilities: tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1,
+            allowed_delivery_capabilities:
+                tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1,
             now,
         })
     }
@@ -58,7 +59,7 @@ impl NativeWorkspaceOwner {
             let authority = view.descriptor_authority(now)?;
             let descriptor = descriptor::verify_transport_hint(candidate, &authority)
                 .map_err(|e| e.to_string())?;
-            let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
+            let locator = tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
                 view.delivery_locator()
                     .ok_or("native delivery locator missing")?,
                 view.host().ok_or("native delivery pin missing")?,

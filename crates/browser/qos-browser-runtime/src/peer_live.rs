@@ -12,7 +12,7 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use tilo_relay::delivery_v3::live_wire::{
+use tilo_delivery_protocol::delivery_v3::live_wire::{
     self, DragPhase, LiveAnchor, LiveDirections, LiveGrantRequest, LiveObject, LiveRecord,
     OpsFrame, PresenceFrame, PreviewOp, SignedLiveGrant,
 };
@@ -505,7 +505,7 @@ pub(crate) fn author_signed_change(canonical: &[u8]) -> Option<([u8; 32], LiveRe
         return None;
     };
     let record = durable_live_record(&app_id, &record_id)?;
-    let digest = tilo_relay::delivery_v3::state::canonical_item_digest(canonical);
+    let digest = tilo_delivery_protocol::delivery_v3::state::canonical_item_digest(canonical);
     let frame = OpsFrame::SignedChange {
         record: record.clone(),
         digest,

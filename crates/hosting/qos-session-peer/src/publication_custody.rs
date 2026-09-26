@@ -7,7 +7,7 @@ use crate::{
     },
 };
 use std::sync::Arc;
-use tilo_relay::delivery_v3::commit::{
+use tilo_delivery_protocol::delivery_v3::commit::{
     CommitError, MAX_REFERENCES, PublicationPayload, PublicationPool, PublicationRef,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

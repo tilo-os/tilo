@@ -1,7 +1,7 @@
 use super::*;
 use crate::delivery_http::tests::Fixture;
 use ed25519_dalek::SigningKey;
-use tilo_relay::delivery_v3::capabilities::STATE_REPLAY_V1;
+use tilo_delivery_protocol::delivery_v3::capabilities::STATE_REPLAY_V1;
 
 fn fixture() -> Fixture {
     let mut f = Fixture::new();

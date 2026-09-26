@@ -1,13 +1,13 @@
 //! Snapshot lifecycle for the actual held Cloud Store, never a second owner.
 //! The parent alone admits resource turns and commits the original Store barrier.
 use super::{CloudDeliveryError, CloudStoreSource, CloudStoreTurn, DeliveryOperation};
-use qos_relay::delivery_v3::{
+use qos_session_peer::ingress::{ByteCredit, HostBytes, PublicationCustody, SnapshotStream};
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::{CommitRef, Digest},
     cursor::CursorIssue,
     state::{ResetReason, SnapshotKind, SnapshotOperation},
 };
-use qos_session_peer::ingress::{ByteCredit, HostBytes, PublicationCustody, SnapshotStream};
 type Result<T> = std::result::Result<T, CloudDeliveryError>;
 
 /// Created only by actual source-selected roots. No public or wire constructor.
@@ -60,7 +60,7 @@ fn require(value: bool, error: CloudDeliveryError) -> Result<()> {
     if value { Ok(()) } else { Err(error) }
 }
 fn require_capability(session: &VerifiedSession) -> Result<()> {
-    use qos_relay::delivery_v3::capabilities::{SNAPSHOT_V1, STATE_REPLAY_V1};
+    use tilo_delivery_protocol::delivery_v3::capabilities::{SNAPSHOT_V1, STATE_REPLAY_V1};
     let required = SNAPSHOT_V1 | STATE_REPLAY_V1;
     require(
         session.capabilities() & required == required,

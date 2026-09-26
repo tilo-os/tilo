@@ -1,7 +1,7 @@
 use super::*;
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
+use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
-use tilo_relay::transport_v2::EnvelopeV2;
 use tilo_relay::{Envelope, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use uuid::Uuid;
@@ -175,7 +175,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let host_client = client(&relay, 54, room).await;
         // Production transport stays unavailable before a healthy attachment.
         let denied = send(&caller, room, 52, invoke(&request));
-        assert!(matches!(caller.recv_action().await, Some(EnvelopeV2::Unavailable { request_id, reason: tilo_relay::peer_actions::UnavailableReason::AdmissionUnavailable, .. }) if request_id == denied));
+        assert!(matches!(caller.recv_action().await, Some(EnvelopeV2::Unavailable { request_id, reason: tilo_delivery_protocol::peer_actions::UnavailableReason::AdmissionUnavailable, .. }) if request_id == denied));
         let session = Arc::new(RelayCoeditSession::join(host_client, ws, device(54, false).1.device_public_key).unwrap());
         assert!(matches!(session.recv().await, Some(tilo_relay::Inbound::Ready { .. })));
         let worker = fixture.state.start_peer_action_bridge(fixture.directories.clone()).unwrap();
@@ -232,11 +232,11 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let rejected = send(&caller, room, 52, invoke(&request));
         assert!(matches!(reply(&caller, rejected).await, ActionMessage::Rejected { .. }));
         let mut confirmed = invoke(&request);
-        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(tilo_relay::peer_actions::Confirmation::Phrase("wrong".into())); }
+        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(tilo_delivery_protocol::peer_actions::Confirmation::Phrase("wrong".into())); }
         let rejected = send(&caller, room, 52, confirmed.clone());
         assert!(matches!(reply(&caller, rejected).await, ActionMessage::Rejected { .. }));
         assert!(fixture.invocation_rx.try_recv().is_err());
-        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(tilo_relay::peer_actions::Confirmation::Phrase("DO IT".into())); }
+        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(tilo_delivery_protocol::peer_actions::Confirmation::Phrase("DO IT".into())); }
         let first = send(&caller, room, 52, confirmed);
         let duplicate = send(&caller, room, 52, invoke(&request));
         assert!(matches!(reply(&caller, first).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { invocation }), .. } if invocation == request.invocation));

@@ -487,7 +487,7 @@ mod tests {
         use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
         use collab_types::caps::{CapOverride, Expiry, Subject, Verb};
         let (dir, mut store, _, cert) = selected();
-        let raw = qos_relay::clock::now_ns();
+        let raw = tilo_delivery_protocol::clock::now_ns();
         let expiry = raw / 1_000_000_000 + 100;
         let peer = store.peer().unwrap();
         let mut doc = peer.admitted_room().unwrap().clone();

@@ -19,7 +19,7 @@ pub(crate) enum Dispatched {
 
 /// Data capabilities the installed native host advertises and serves.
 pub(crate) const INSTALLED_DATA_CAPABILITIES: u64 =
-    tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1;
+    tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1;
 
 pub(crate) struct DataRoutes {
     polls: poll::Polls,
@@ -94,11 +94,11 @@ struct ChainState {
     /// The index answered next; later indexes wait.
     next: u32,
     /// Signed cursor ending the chain's last served page.
-    floor: Option<tilo_relay::delivery_v3::cursor::CursorToken>,
+    floor: Option<tilo_delivery_protocol::delivery_v3::cursor::CursorToken>,
 }
 
 enum ChainGate {
-    Ready(Option<tilo_relay::delivery_v3::cursor::CursorToken>),
+    Ready(Option<tilo_delivery_protocol::delivery_v3::cursor::CursorToken>),
     Wait,
     Stale,
 }
@@ -484,7 +484,7 @@ impl DataRoutes {
     fn chain_gate(
         &self,
         session: [u8; 16],
-        chain: Option<tilo_relay::delivery_v3::poll_chain::ChainPoll>,
+        chain: Option<tilo_delivery_protocol::delivery_v3::poll_chain::ChainPoll>,
     ) -> ChainGate {
         let Some(chain) = chain else {
             return ChainGate::Ready(None);
@@ -503,8 +503,8 @@ impl DataRoutes {
     fn chain_answered(
         &mut self,
         session: [u8; 16],
-        chain: tilo_relay::delivery_v3::poll_chain::ChainPoll,
-        end: Option<tilo_relay::delivery_v3::cursor::CursorToken>,
+        chain: tilo_delivery_protocol::delivery_v3::poll_chain::ChainPoll,
+        end: Option<tilo_delivery_protocol::delivery_v3::cursor::CursorToken>,
     ) {
         let Some(state) = self.chains.get_mut(&session) else {
             return;

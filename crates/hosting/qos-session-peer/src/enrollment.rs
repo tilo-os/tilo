@@ -373,7 +373,7 @@ fn append_delivery_hint_value(
     hint: qos_peer_state::join::TransportHint,
 ) -> Result<(), EnrollmentError> {
     let bytes = postcard::to_stdvec(&hint).map_err(EnrollmentError::unavailable)?;
-    if bytes.len() > tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES {
+    if bytes.len() > tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES {
         return Err(EnrollmentError::new(
             503,
             "delivery discovery exceeds bound",

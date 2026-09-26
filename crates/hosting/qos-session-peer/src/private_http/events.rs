@@ -1,7 +1,7 @@
 //! One bounded watcher slot includes its in-flight or ready private event.
 //! Delivery is best effort: lost replies recover only through original Status.
 use super::*;
-use tilo_relay::{
+use tilo_delivery_protocol::{
     delivery_v3::{
         auth::Carrier, capabilities, http_proof::Method, private_wire::PRIVATE_EVENTS_TARGET,
     },
@@ -194,11 +194,11 @@ impl PrivateService {
     /// revalidated its parked continuation; the exact original bytes are rechecked.
     pub fn poll_events_resumed(
         &mut self,
-        session: &tilo_relay::delivery_v3::auth::VerifiedSession,
+        session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
         original: &crate::https::BufferedRequest,
         peer: &qos_peer_state::StatePeer,
     ) -> Result<Option<(PendingPrivate, DirectedAction)>, PrivateError> {
-        let exact = tilo_relay::delivery_v3::http_proof::Request::new(
+        let exact = tilo_delivery_protocol::delivery_v3::http_proof::Request::new(
             original.method().as_str(),
             original.target(),
             original.body(),
@@ -208,8 +208,8 @@ impl PrivateService {
     }
     fn poll_events_for(
         &mut self,
-        session: &tilo_relay::delivery_v3::auth::VerifiedSession,
-        exact: &tilo_relay::delivery_v3::http_proof::Request<'_>,
+        session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
+        exact: &tilo_delivery_protocol::delivery_v3::http_proof::Request<'_>,
         peer: &qos_peer_state::StatePeer,
     ) -> Result<Option<(PendingPrivate, DirectedAction)>, PrivateError> {
         if self.is_closed() {

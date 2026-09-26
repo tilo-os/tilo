@@ -9,12 +9,12 @@ use super::*;
 use crate::peer_actions::OwnerPolicyClock;
 use ed25519_dalek::SigningKey;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::*,
     http_proof::{HttpSessionAdmission, RequestProof, session_binding_digest},
     private_wire::{self, PrivateOperation, PrivateScope},
 };
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use uuid::Uuid;
 struct Fixture {
@@ -194,7 +194,7 @@ fn certified() -> CertifiedAction {
     let f = Fixture::new(2);
     let action = f.action();
     let body = f.body(&action);
-    let request = tilo_relay::delivery_v3::http_proof::Request::new(
+    let request = tilo_delivery_protocol::delivery_v3::http_proof::Request::new(
         "POST",
         PrivateOperation::Status.path(),
         &body,

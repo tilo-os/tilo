@@ -1,7 +1,9 @@
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use qos_peer_state::join::{self, InviteGrant, JoinCompleteRequest, MemberRole};
-use tilo_relay::delivery_v3::onboarding_wire::{OnboardingOperation, OnboardingRequest};
+use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
+    OnboardingOperation, OnboardingRequest,
+};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 const NOW: u64 = 1_000_000_000_000;
@@ -32,14 +34,14 @@ fn invited() -> (InvitedIdentity, DeviceCert, DeviceCert) {
     let delivery_key = SigningKey::from_bytes(&[3; 32]);
     let governor = certificate(&root, &governor_key, DeviceCapabilities::primary());
     let delivery = certificate(&root, &delivery_key, DeviceCapabilities::host());
-    let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1 {
+    let locator = tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 {
         version: 1,
         origin: ORIGIN.into(),
     }
     .transport_hint(&delivery, &delivery_key)
     .unwrap();
     let grant = InviteGrant {
-        workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap(),
+        workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
         room: ROOM.into(),
         authority: governor.clone(),
         issuer: governor.clone(),
@@ -115,7 +117,7 @@ fn retained_completion_preflight_accepts_canonical_and_rejects_hostile_lengths()
 
 #[test]
 fn signed_reply_must_match_the_original_prepared_request_not_only_its_host() {
-    use tilo_relay::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
     let (identity, _, _) = invited();
     let complete = postcard::from_bytes(identity.completion().unwrap()).unwrap();
     let prepared =
@@ -231,7 +233,7 @@ fn bootstrap(
         device_cert: identity.certificate().clone(),
         role: MemberRole::Editor,
         room: ROOM.into(),
-        workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap(),
+        workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
         authority: governor.clone(),
         certified_roster: vec![identity.certificate().clone()],
         revocations: vec![],
@@ -359,7 +361,7 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
         version: 2,
         root_public_key: root.verifying_key().to_bytes(),
         room: ROOM.into(),
-        workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap(),
+        workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
         device_public_key: cert.device_public_key,
         request_id: unhex(&request.request_id),
         nonce: [8; 32],
@@ -395,14 +397,14 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
             time,
         )
         .unwrap();
-    use tilo_relay::delivery_v3::descriptor::{
+    use tilo_delivery_protocol::delivery_v3::descriptor::{
         self, DescriptorAuthority, DescriptorSettings, GenerationExpectation,
     };
     let authority = DescriptorAuthority {
         peer: &owner,
         pinned_governor: &governor,
         pinned_host: &host,
-        workspace: tilo_relay::room_workspace_id(ROOM).unwrap(),
+        workspace: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
         generation: GenerationExpectation::FirstAccepted {
             minimum_generation: 1,
         },
@@ -424,7 +426,7 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
     let (identity, governor, delivery) = invited();
     let actual = bootstrap(&identity, &governor, &delivery).governance_messages;
     let kinds: Vec<_> = actual.iter().map(|_| Retention::Checkpoint).collect();
-    let raw = serde_json::json!({"version":2,"certificate":cert,"root_public_key":root.verifying_key().to_bytes(),"host_certificate":host,"bootstrap":{"room":ROOM,"workspace_id":tilo_relay::room_workspace_id(ROOM).unwrap().to_string(),"delivery_hint":hint,"governance_messages":actual,"governance_retention":kinds,"governance_generation":"17"}}).to_string();
+    let raw = serde_json::json!({"version":2,"certificate":cert,"root_public_key":root.verifying_key().to_bytes(),"host_certificate":host,"bootstrap":{"room":ROOM,"workspace_id":tilo_relay_protocol::room_workspace_id(ROOM).unwrap().to_string(),"delivery_hint":hint,"governance_messages":actual,"governance_retention":kinds,"governance_generation":"17"}}).to_string();
     // The inline fixture must fit native's exact initial reply ceiling.
     // Use a smaller, still genuinely signed governance publication here.
     let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -511,7 +513,7 @@ fn handoff_rejects_host_signed_bad_digests_and_replayed_ranges() {
         scope: wire::OnboardingScope {
             origin: ORIGIN,
             host: host.device_public_key,
-            workspace: tilo_relay::room_workspace_id(ROOM).unwrap(),
+            workspace: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
             root: host.user_public_key,
             room: ROOM.parse().unwrap(),
         },

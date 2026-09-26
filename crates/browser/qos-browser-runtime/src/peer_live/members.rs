@@ -73,7 +73,7 @@ pub fn peer_live_members(id: u32) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn peer_live_agent_publisher(id: u32, agent_id: String) -> Result<String, JsValue> {
     if agent_id.is_empty()
-        || agent_id.len() > tilo_relay::delivery_v3::live_wire::MAX_AGENT_ID_BYTES
+        || agent_id.len() > tilo_delivery_protocol::delivery_v3::live_wire::MAX_AGENT_ID_BYTES
         || agent_id.chars().any(char::is_control)
     {
         return Err(JsValue::from_str("invalid agent id"));
@@ -83,7 +83,7 @@ pub fn peer_live_agent_publisher(id: u32, agent_id: String) -> Result<String, Js
         .filter(|peer| !peer.closed.get())
         .ok_or_else(|| JsValue::from_str("closed Peer"))?;
     let state = peer.state.borrow();
-    let publisher = tilo_relay::delivery_v3::live_wire::agent_publisher(
+    let publisher = tilo_delivery_protocol::delivery_v3::live_wire::agent_publisher(
         state.room(),
         state.authority().device_public_key,
         &agent_id,

@@ -18,7 +18,9 @@ fn fresh_challenge(now: u64) -> identity::cloud_enrollment::Challenge {
         version: 1,
         machine_id: MACHINE.into(),
         room: ROOM.into(),
-        workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap().to_string(),
+        workspace_id: tilo_relay_protocol::room_workspace_id(ROOM)
+            .unwrap()
+            .to_string(),
         host_public_key: host_key().verifying_key().to_bytes(),
         nonce: [92; 32],
         expires_at_ns: now + 300_000_000_000,
@@ -46,7 +48,7 @@ fn apply_payload(owner: &CloudOwner) -> (String, String) {
 fn store_reply(request: &identity::cloud_enrollment::EnrollmentRequest, now: u64) -> String {
     let host = &request.host_certificate;
     let browser = &request.browser_certificate;
-    let workspace = tilo_relay::room_workspace_id(ROOM).unwrap();
+    let workspace = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
     let mut view = identity::WorkspaceDirectory::new(host.user_public_key, host.device_public_key);
     view.add_workspace(workspace, "My Tilo workspace").unwrap();
     view.set_member_devices(
@@ -333,7 +335,7 @@ fn owner_bootstrap_admits_signed_governance_and_requires_the_structural_owner() 
 
 #[test]
 fn owner_onboarding_wrapper_is_signed_for_the_enrolled_scope_and_membership_only() {
-    use tilo_relay::delivery_v3::onboarding_wire as wire;
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire as wire;
     let (owner, _) = enrolled_owner();
     let scope = owner.enrolled().unwrap();
     let origin = "https://cloud.example:8443";

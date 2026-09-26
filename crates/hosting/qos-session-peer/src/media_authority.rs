@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes, signing_digest};
 use web_time::SystemTime;
 
-use tilo_relay::delivery_v3::media_wire::{
+use tilo_delivery_protocol::delivery_v3::media_wire::{
     ChallengeTranscript, NativeChallenge, RefreshChallenge, RelayProofChallenge, SignedGrant,
 };
-pub use tilo_relay::delivery_v3::media_wire::{
+pub use tilo_delivery_protocol::delivery_v3::media_wire::{
     GrantMetadata, GrantOperation, GrantRequest, MediaDirections, MediaNamespace,
 };
 

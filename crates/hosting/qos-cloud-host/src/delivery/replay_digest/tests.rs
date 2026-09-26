@@ -1,6 +1,6 @@
 use super::*;
 use qos_peer_state::transport::Retention;
-use qos_relay::delivery_v3::commit::{CommitRef, PublicationRef};
+use tilo_delivery_protocol::delivery_v3::commit::{CommitRef, PublicationRef};
 fn reference(state: &State, store: StoreGeneration, replay: &ReplayCommit) -> Digest {
     let bytes = postcard::to_stdvec(&(
         store,
@@ -20,7 +20,7 @@ fn reference(state: &State, store: StoreGeneration, replay: &ReplayCommit) -> Di
 fn fixture() -> (tempfile::TempDir, crate::Store) {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     (dir, store)
 }

@@ -62,7 +62,7 @@ fn verified_same_device_new_request_preserves_the_exact_publication_basis() {
     let path = temp.path().join("owner");
     let mut owner = owner_with_twenty_four_records(&path);
     let key = SigningKey::from_bytes(&[31; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let first = proof(&mut service, &owner, &key, 1, now);
     let certificate = service.complete(&mut owner, first, now).unwrap();
@@ -101,7 +101,7 @@ fn verified_same_device_new_request_preserves_the_exact_publication_basis() {
 fn new_device_and_missing_directory_membership_still_replace_publication() {
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let first_key = SigningKey::from_bytes(&[32; 32]);
     let first = proof(&mut service, &owner, &first_key, 1, now);
@@ -149,7 +149,7 @@ fn eight_independent_keys_share_canonical_room_and_full_directory() {
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let records = owner.status().records;
     let mut service = EnrollmentAuthority::default();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     for n in 1..=8 {
         let key = SigningKey::from_bytes(&[n; 32]);
         let complete = proof(&mut service, &owner, &key, n, now);
@@ -201,7 +201,7 @@ fn lost_response_retry_after_restart_keeps_certificate_but_refreshes_metadata() 
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = SigningKey::from_bytes(&[21; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let complete = proof(&mut service, &owner, &key, 7, now);
     let replay = complete.clone();
@@ -233,7 +233,7 @@ fn proof_scope_expiry_signature_and_replay_are_enforced_without_membership_chang
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let before = owner.status();
     let key = SigningKey::from_bytes(&[22; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let response = service.challenge(&owner, request(&key, 4), now).unwrap();
     let original = enrollment::decode(&response.challenge).unwrap();
@@ -272,7 +272,7 @@ fn failed_native_commit_cannot_publish_an_issuance_result() {
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let before = owner.status();
     let key = SigningKey::from_bytes(&[23; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let complete = proof(&mut service, &owner, &key, 3, now);
     std::fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
@@ -295,7 +295,7 @@ fn failed_same_device_audit_commit_cannot_return_enrollment_success() {
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = SigningKey::from_bytes(&[34; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let first = proof(&mut service, &owner, &key, 1, now);
     service.complete(&mut owner, first, now).unwrap();
@@ -331,7 +331,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = SigningKey::from_bytes(&[24; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let complete = proof(&mut service, &owner, &key, 24, now);
     service.complete(&mut owner, complete, now).unwrap();
@@ -456,7 +456,7 @@ fn local_bootstrap_admits_real_governance_without_transport_sync() {
     use qos_peer_state::{StatePeer, TransportOrigin, transport::Retention};
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let key = SigningKey::from_bytes(&[73; 32]);
     let mut enrollment = EnrollmentAuthority::default();
     let complete = proof(&mut enrollment, &owner, &key, 73, now);

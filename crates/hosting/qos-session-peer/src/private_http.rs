@@ -7,14 +7,14 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use tilo_relay::{
-    client::CertifiedAction,
+use tilo_delivery_protocol::{
     delivery_v3::{
         http_proof::VerifiedRequest,
         private_wire::{PrivateOperation, WireError},
     },
     peer_actions::DirectedAction,
 };
+use tilo_relay::client::CertifiedAction;
 use tokio::time::Instant;
 #[derive(Debug)]
 pub enum PrivateError {
@@ -78,7 +78,7 @@ impl PendingPrivate {
         {
             return Err(PrivateError::Unavailable);
         }
-        use tilo_relay::peer_actions::ActionMessage;
+        use tilo_delivery_protocol::peer_actions::ActionMessage;
         if matches!(&reply.message,ActionMessage::Observation{host,..}|ActionMessage::BrokerCatalogue{host,..}|ActionMessage::AgentReadResultV1{host,..} if *host!=self.host)
         {
             return Err(PrivateError::Unavailable);
@@ -91,7 +91,7 @@ impl PendingPrivate {
         reply: &DirectedAction,
     ) -> Result<(), PrivateError> {
         self.check_reply(reply)?;
-        tilo_relay::delivery_v3::private_wire::encode_response(
+        tilo_delivery_protocol::delivery_v3::private_wire::encode_response(
             self.operation,
             self.pending.evidence().action(),
             reply,
@@ -113,11 +113,13 @@ impl PendingPrivate {
     #[cfg(test)]
     fn encode_reply(&self, reply: &DirectedAction) -> Result<Vec<u8>, PrivateError> {
         self.check_reply(reply)?;
-        Ok(tilo_relay::delivery_v3::private_wire::encode_response(
-            self.operation,
-            self.pending.evidence().action(),
-            reply,
-        )?)
+        Ok(
+            tilo_delivery_protocol::delivery_v3::private_wire::encode_response(
+                self.operation,
+                self.pending.evidence().action(),
+                reply,
+            )?,
+        )
     }
 }
 impl PrivateService {

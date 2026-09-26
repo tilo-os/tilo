@@ -264,8 +264,8 @@ fn delivery_restore_rotates_only_explicitly_and_retains_native_receipt_identity(
 pub(super) fn authenticated_session(
     owner: &SessionOwner,
     committed: &crate::committed_authority::CommittedAuthority,
-) -> tilo_relay::delivery_v3::auth::VerifiedSession {
-    use tilo_relay::delivery_v3::auth::*;
+) -> tilo_delivery_protocol::delivery_v3::auth::VerifiedSession {
+    use tilo_delivery_protocol::delivery_v3::auth::*;
     let current = committed.read().unwrap();
     let authority = NativeDeliveryAuthority {
         view: current.view(),
@@ -724,8 +724,8 @@ fn delivery_authenticated_replay_requires_actual_native_coverage_not_response_me
 pub(super) fn register_and_cursor(
     owner: &mut SessionOwner,
     committed: &crate::committed_authority::CommittedAuthority,
-    session: &tilo_relay::delivery_v3::auth::VerifiedSession,
-) -> tilo_relay::delivery_v3::cursor::CursorToken {
+    session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
+) -> tilo_delivery_protocol::delivery_v3::cursor::CursorToken {
     committed
         .with_owner_view(owner, |view, owner| {
             let source = owner.delivery_source(view, session, now_ns())?;
@@ -750,7 +750,7 @@ pub(super) fn register_and_cursor(
 #[test]
 fn delivery_cursor_native_scope_checks_and_restore_reset_survive_content_mutation() {
     use crate::committed_authority::CommittedAuthority;
-    use tilo_relay::delivery_v3::cursor::CursorToken;
+    use tilo_delivery_protocol::delivery_v3::cursor::CursorToken;
     let (_temp, mut owner) = hosted_owner();
     let committed = CommittedAuthority::new(&owner);
     let session = authenticated_session(&owner, &committed);
@@ -1300,7 +1300,7 @@ fn delivery_replay_guard_prevents_concurrent_owner_update_until_selection_finish
 #[test]
 fn delivery_wrong_consumer_is_denied_before_any_requested_index_lookup() {
     use crate::committed_authority::CommittedAuthority;
-    use tilo_relay::delivery_v3::cursor::CursorToken;
+    use tilo_delivery_protocol::delivery_v3::cursor::CursorToken;
     let (_temp, mut owner) = hosted_owner();
     let committed = CommittedAuthority::new(&owner);
     let session = authenticated_session(&owner, &committed);

@@ -28,7 +28,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime},
 };
-use tilo_relay::delivery_v3::media_wire;
+use tilo_delivery_protocol::delivery_v3::media_wire;
 
 pub(crate) use registry::Registry;
 

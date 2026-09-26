@@ -45,8 +45,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::RelayClient;
-use crate::clock::now_ns;
 use crate::transport::Envelope;
+use tilo_delivery_protocol::clock::now_ns;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
 /// receiver can distinguish retained checkpoints from their incremental tail.
@@ -289,7 +289,7 @@ impl RelayCoeditSession {
             ));
         }
         self.client
-            .send_action(crate::transport_v2::EnvelopeV2::EnableActions { room })
+            .send_action(tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableActions { room })
     }
 
     /// Negotiate client access to an attached durable broker on this same lane.
@@ -304,8 +304,9 @@ impl RelayCoeditSession {
                 "action room differs from co-edit room".into(),
             ));
         }
-        self.client
-            .send_action(crate::transport_v2::EnvelopeV2::EnableBrokerClient { room })
+        self.client.send_action(
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::EnableBrokerClient { room },
+        )
     }
 
     /// Send privately through the co-edit session's existing demultiplexer.
@@ -314,7 +315,7 @@ impl RelayCoeditSession {
     /// Returns an error for a different room, v1, or a full/disconnected queue.
     pub fn send_action(
         &self,
-        action: crate::peer_actions::DirectedAction,
+        action: tilo_delivery_protocol::peer_actions::DirectedAction,
     ) -> Result<(), crate::client::ClientError> {
         if !crate::room_workspace_id_matches(&action.room.to_string(), self.workspace_id) {
             return Err(crate::client::ClientError::Codec(
@@ -322,11 +323,13 @@ impl RelayCoeditSession {
             ));
         }
         self.client
-            .send_action(crate::transport_v2::EnvelopeV2::Directed(action))
+            .send_action(tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(
+                action,
+            ))
     }
 
     /// Receive only private events; this never consumes shared co-edit state.
-    pub async fn recv_action(&self) -> Option<crate::transport_v2::EnvelopeV2> {
+    pub async fn recv_action(&self) -> Option<tilo_delivery_protocol::transport_v2::EnvelopeV2> {
         self.client.recv_action().await
     }
 
@@ -346,8 +349,9 @@ impl RelayCoeditSession {
                 "invalid broker room or host".into(),
             ));
         }
-        self.client
-            .send_action(crate::transport_v2::EnvelopeV2::RegisterBroker { room, host })
+        self.client.send_action(
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::RegisterBroker { room, host },
+        )
     }
     /// Receive opaque source evidence using this connection's authenticated demultiplexer.
     pub async fn recv_certified_action(&self) -> Option<crate::client::CertifiedActionEvent> {
@@ -676,7 +680,7 @@ mod tests {
             &ack,
             &cert.user_public_key,
             &RevocationList::new(),
-            crate::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
             &[1; 32],
         )
         .unwrap();

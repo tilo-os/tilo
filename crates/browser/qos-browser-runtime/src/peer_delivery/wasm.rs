@@ -8,7 +8,7 @@ use crate::peer_delivery_auth::{self, DeliveryAuthority, HttpStep, PreparedReque
 use crate::peer_delivery_cursor::StoredDeliveryCursor;
 use crate::peer_journal::AcknowledgedDescriptorFloor;
 use std::collections::VecDeque;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     cursor::CursorToken,
     framing::{self, MessageType},
     poll_chain::ChainPoll,
@@ -17,7 +17,7 @@ use tilo_relay::delivery_v3::{
         self, AdmissionOutcome, CommitScope, CursorAck, FlowCredit, StateAdmission, StateItemChunk,
     },
 };
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 #[path = "wasm_transfer.rs"]
 mod transfers;
 
@@ -719,13 +719,14 @@ fn next_poll(peer: &Rc<Peer>, base: Option<&StoredDeliveryCursor>) -> Result<Str
         return Ok(IDLE.into());
     }
     let Some(poll) = delivery.chain.next(|| {
-        let nonce = tilo_relay::delivery_v3::media_wire::fresh_nonce().unwrap_or([7; 32]);
+        let nonce =
+            tilo_delivery_protocol::delivery_v3::media_wire::fresh_nonce().unwrap_or([7; 32]);
         u64::from_le_bytes(nonce[..8].try_into().expect("eight bytes"))
     }) else {
         return Ok(IDLE.into());
     };
-    let target =
-        tilo_relay::delivery_v3::poll_chain::chain_target(&base.token, poll).map_err(error)?;
+    let target = tilo_delivery_protocol::delivery_v3::poll_chain::chain_target(&base.token, poll)
+        .map_err(error)?;
     drop(delivery);
     let result = request(
         peer,
@@ -880,7 +881,7 @@ pub fn peer_delivery_advance(
             let source_user = peer.state.borrow().authority().user_public_key;
             receive_private_action(
                 &peer,
-                tilo_relay::transport_v2::EnvelopeV2::Delivered {
+                tilo_delivery_protocol::transport_v2::EnvelopeV2::Delivered {
                     action: response,
                     source_user,
                 },
@@ -985,7 +986,7 @@ pub fn peer_delivery_advance(
             let source_user = peer.state.borrow().authority().user_public_key;
             receive_private_action(
                 &peer,
-                tilo_relay::transport_v2::EnvelopeV2::Delivered {
+                tilo_delivery_protocol::transport_v2::EnvelopeV2::Delivered {
                     action: response,
                     source_user,
                 },
@@ -1066,8 +1067,8 @@ fn poll_page(peer: &Rc<Peer>, epoch: u64, bytes: Vec<u8>) -> Result<String, JsVa
         .authority
         .as_ref()
         .is_some_and(|authority| authority.borrow().multi_group_replay());
-    let bounds = tilo_relay::delivery_v3::capabilities::page_bounds(if negotiated {
-        tilo_relay::delivery_v3::capabilities::MULTI_GROUP_REPLAY_V1
+    let bounds = tilo_delivery_protocol::delivery_v3::capabilities::page_bounds(if negotiated {
+        tilo_delivery_protocol::delivery_v3::capabilities::MULTI_GROUP_REPLAY_V1
     } else {
         0
     });

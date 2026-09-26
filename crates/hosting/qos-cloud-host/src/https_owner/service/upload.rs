@@ -3,15 +3,15 @@
 //! with FlowCredit only after the original continuation is freshly revalidated.
 //! The final range enters the same Store admission as a complete inline item.
 use super::{data::frame, *};
-use qos_relay::delivery_v3::{
-    framing::{self, MessageType},
-    state::{AdmissionOutcome, StateItemChunk},
-};
 use qos_session_peer::ingress::{
     ByteCredit, PendingCarrier, StageIdentity, StagingReservation, UploadChunk, UploadFailure,
     UploadStage,
 };
 use std::{collections::HashMap, io::Read, sync::mpsc};
+use tilo_delivery_protocol::delivery_v3::{
+    framing::{self, MessageType},
+    state::{AdmissionOutcome, StateItemChunk},
+};
 
 /// Bounded concurrent disk work and idle file handles between chunks.
 const INFLIGHT: usize = 8;
@@ -215,7 +215,8 @@ impl Uploads {
             let (admitted, ticket) =
                 registry.admit_buffered_in(&proof, &exact, request, &context.verification())?;
             let session = admitted.session();
-            if session.capabilities() & qos_relay::delivery_v3::capabilities::RESUMABLE_STATE_V1
+            if session.capabilities()
+                & tilo_delivery_protocol::delivery_v3::capabilities::RESUMABLE_STATE_V1
                 == 0
             {
                 bail!("resumable state not negotiated");

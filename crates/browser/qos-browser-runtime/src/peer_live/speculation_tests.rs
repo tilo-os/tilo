@@ -7,7 +7,7 @@ use crate::peer_delivery::{CompleteEvent, admission::CutAdmission};
 use automerge::{ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::TransportOrigin;
-use tilo_relay::delivery_v3::state::{EventKind, canonical_item_digest};
+use tilo_delivery_protocol::delivery_v3::state::{EventKind, canonical_item_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime, UNIX_EPOCH};
 

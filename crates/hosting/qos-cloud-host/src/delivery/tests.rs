@@ -8,7 +8,7 @@ fn delivery_v6_baseline_generation_is_explicit_and_old_inner_preserves_bytes() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     let activation = store.state.generation + 1;
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let selected = serde_json::to_value(&store.state).unwrap();
     assert_eq!(selected["delivery"]["version"], 2);
@@ -111,7 +111,7 @@ fn delivery_v6_explicit_activation_preserves_each_private_schema_and_reopens() {
         let original_key = store.key().verifying_key();
         let generation = store.state.generation;
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         assert_eq!(store.state.version, 6);
         assert_eq!(store.state.generation, generation + 1);
@@ -133,7 +133,7 @@ fn delivery_v6_explicit_activation_preserves_each_private_schema_and_reopens() {
         assert!(store.peer().unwrap().admission_v5_selected());
         let bytes = std::fs::read(dir.path().join("state.json")).unwrap();
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         assert_eq!(std::fs::read(dir.path().join("state.json")).unwrap(), bytes);
         drop(store);
@@ -156,7 +156,7 @@ fn delivery_v6_activation_failure_uses_real_store_barrier_and_reconciliation() {
         let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
         let before = store.state.generation;
         let error = with_failure(checkpoint, || {
-            store.activate_delivery_storage(qos_relay::clock::now_ns())
+            store.activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         })
         .unwrap_err();
         assert!(
@@ -175,7 +175,7 @@ fn delivery_v6_activation_failure_uses_real_store_barrier_and_reconciliation() {
 fn delivery_v6_later_private_selection_keeps_outer_version_and_public_lineage() {
     let (_dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let caller = store.agent_caller(device).unwrap();
     let before = store.state.delivery.as_ref().unwrap();
@@ -275,7 +275,7 @@ fn admit_guest(store: &mut Store, source: [u8; 32], now: u64) -> [u8; 32] {
 fn delivery_v6_policy_lineage_fences_cross_writer_aba_but_not_documents() {
     use qos_peer_state::join::MemberRole;
     let (dir, mut store, source) = crate::agent_owner_tests::enrolled();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let guest = admit_guest(&mut store, source, now);
     store.activate_delivery_storage(now).unwrap();
     let original = store
@@ -364,7 +364,7 @@ fn delivery_v6_queue_drain_retains_original_pool_and_replay() {
         .map(|item| (postcard::to_stdvec(&item.message).unwrap(), item.kind))
         .collect::<Vec<_>>();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let delivery = store.state.delivery.as_ref().unwrap();
     for ((bytes, kind), queued) in pending.iter().zip(&delivery.queue) {
@@ -394,7 +394,7 @@ fn delivery_v6_malformed_or_downgraded_metadata_is_preserved_and_rejected() {
     let caller = store.agent_caller(source).unwrap();
     store.activate_private_agent_ledger(&caller).unwrap();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let original = serde_json::to_value(&store.state).unwrap();
     drop(store);

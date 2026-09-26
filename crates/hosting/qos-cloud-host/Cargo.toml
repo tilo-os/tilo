@@ -45,6 +45,7 @@ qos-desktop = {path="../../session/qos-desktop"}
 collab-types = {path="../../collab/collab-types"}
 qos-actions = { package = "tilo-actions", path = "../../collab/actions" }
 qos-relay = { package = "tilo-relay", path = "../tilo-relay" }
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 atomic-file = {path="../../system/atomic-file"}
 private-fs = { path = "../../system/private-fs" }
 secret-vault = { path = "../../system/secret-vault" }
@@ -54,6 +55,7 @@ word-processor = {path="../../../apps/word-processor"}
 chat = {path="../../../apps/chat",default-features=false}
 qdoc = {path="../../doc/qdoc"}
 [dev-dependencies]
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 tilo-automerge.workspace = true
 qos-action-broker = {path="../../collab/qos-action-broker", features=["test-support"]}
 atomic-file = {path="../../system/atomic-file", features=["test-support"]}

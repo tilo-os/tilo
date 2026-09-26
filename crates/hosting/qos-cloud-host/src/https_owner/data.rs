@@ -1,17 +1,17 @@
 //! Cloud delivery orchestration over the actual held Store turn.
 //! Shared plans are inert; only the parent performs the Store barrier/refresh.
 use super::{CloudDeliveryError, CloudStoreTurn, DeliveryOperation};
-use qos_relay::delivery_v3::{
+use qos_session_peer::ingress::delivery_planning::{
+    AckPlan, ConsumerPlan, CursorCut, PlanningFailure, ReplaySelection,
+};
+use rand::TryRng as _;
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     capabilities::STATE_REPLAY_V1,
     commit::{CommitRef, ConsumerId, MAX_CONSUMERS},
     cursor::CursorToken,
     state::ResetReason,
 };
-use qos_session_peer::ingress::delivery_planning::{
-    AckPlan, ConsumerPlan, CursorCut, PlanningFailure, ReplaySelection,
-};
-use rand::TryRng as _;
 
 type Result<T> = std::result::Result<T, CloudDeliveryError>;
 fn planning(error: PlanningFailure) -> CloudDeliveryError {
@@ -220,10 +220,10 @@ impl CloudStoreTurn {
 
     fn select_replay<'a>(
         basis: qos_session_peer::ingress::delivery_planning::DeliveryPolicyBasis<'_>,
-        ledger: &'a qos_relay::delivery_v3::commit::DeliveryLedgerV1,
+        ledger: &'a tilo_delivery_protocol::delivery_v3::commit::DeliveryLedgerV1,
         after: Option<&CommitRef>,
         sequence: u64,
-        entry: &qos_relay::delivery_v3::commit::ReplayCommit,
+        entry: &tilo_delivery_protocol::delivery_v3::commit::ReplayCommit,
     ) -> Result<Option<ReplaySelection<'a>>> {
         // Current schema validation requires a complete predecessor chain.
         // Keep this full-cut check if a future retained index permits holes.

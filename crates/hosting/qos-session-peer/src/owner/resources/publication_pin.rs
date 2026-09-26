@@ -3,7 +3,7 @@ use super::*;
 #[cfg(any(test, feature = "media"))]
 use crate::publication_custody::{PublicationCustody, PublicationCustodyFailure};
 #[cfg(any(test, feature = "media"))]
-use tilo_relay::delivery_v3::commit::{MAX_REFERENCES, PublicationRef};
+use tilo_delivery_protocol::delivery_v3::commit::{MAX_REFERENCES, PublicationRef};
 /// Native generation remains an owner fact; the neutral holder conveys bytes only.
 #[cfg(any(test, feature = "media"))]
 pub(crate) struct OwnedPublicationPin {

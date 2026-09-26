@@ -282,7 +282,7 @@ fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
     use qos_peer_state::join::{
         JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest,
     };
-    use qos_relay::workspace_join::WorkspaceJoinService;
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
     let (dir, store, device, enrollment) = enrolled();
     let request = MembershipChallengeRequest {
         room: store.state.room.clone(),
@@ -360,7 +360,7 @@ async fn addressed_request(
             auth::AuthDomain::LegacyQos,
             &ack,
             &RevocationList::new(),
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
             &nonce,
         )?;
         write_frame(
@@ -431,7 +431,9 @@ fn durability_addressed_exchange_does_not_report_uncertain_commit_as_rejected() 
 
 pub(super) fn document_message(store: &Store, device: &SigningKey) -> NeighbourMsg {
     use qos_actions::Action;
-    let mut browser = store.peer_at(qos_relay::clock::now_ns()).unwrap();
+    let mut browser = store
+        .peer_at(tilo_delivery_protocol::clock::now_ns())
+        .unwrap();
     let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut doc = automerge::AutoCommit::load(&browser.document(app, record).unwrap()).unwrap();
@@ -457,14 +459,14 @@ pub(super) fn document_message(store: &Store, device: &SigningKey) -> NeighbourM
             record,
             doc.save_after(&before),
             device,
-            now_time(qos_relay::clock::now_ns()),
+            now_time(tilo_delivery_protocol::clock::now_ns()),
         )
         .unwrap()
 }
 
 #[test]
 fn durability_broker_cannot_convert_storage_failure_to_terminal_observation() {
-    use qos_relay::peer_actions::{ActionMessage, DirectedAction};
+    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     let (dir, store, device, enrollment) = enrolled();
     let room = store.state.room.parse().unwrap();
     drop(store);
@@ -627,7 +629,7 @@ fn durability_nested_duplicate_keys_and_trailing_json_refuse_without_rewrite() {
 fn durability_receive_owner_failure_never_audits_committed_document() {
     let (dir, mut store, device, _) = enrolled();
     // Refresh the real attestation to current wall time before a live edit.
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (before, mut peer) = store.peer_transition_at(now).unwrap();
     let messages = peer
         .durable_bootstrap_messages(
@@ -661,7 +663,7 @@ fn durability_receive_owner_failure_never_audits_committed_document() {
         store.receive(
             TransportOrigin::RelayDelta(device.verifying_key().to_bytes()),
             message,
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
     });
     assert!(matches!(result, Err(ReceiveError::Owner(_))));
@@ -704,7 +706,7 @@ fn durability_populated_current_state_and_typed_publications_survive_uncertain_r
         }))
         .unwrap();
     let mut store = Store::open(dir.path(), "durability").unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let guest_root = SigningKey::from_bytes(&[31; 32]);
     let guest_device = SigningKey::from_bytes(&[32; 32]);
     let mut cert = DeviceCert {

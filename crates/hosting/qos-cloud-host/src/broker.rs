@@ -6,10 +6,10 @@ use anyhow::{Result, anyhow, bail};
 use qos_action_broker::collaboration_admin as shared;
 use qos_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use qos_peer_state::join::MemberRole;
-use qos_relay::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
 use qos_user_identity::DeviceCert;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
 type RetainedPolicy = (
     Arc<RuntimePolicyClock>,
     qos_action_broker::peer_actions::PolicyTime,

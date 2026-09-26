@@ -88,7 +88,8 @@ async fn clock_fixture() -> (
     use crate::https_owner::{Current, data::tests::authenticate_with_capabilities};
     use qos_action_broker::peer_actions::OwnerPolicyClock;
     let mut f = snapshot_fixture().await;
-    let (clock, control) = OwnerPolicyClock::for_test(qos_relay::clock::now_ns() + 1_000_000_000);
+    let (clock, control) =
+        OwnerPolicyClock::for_test(tilo_delivery_protocol::clock::now_ns() + 1_000_000_000);
     let store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
     f.source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
     drop(store);
@@ -192,7 +193,7 @@ fn admit_large_original(f: &crate::https_owner::data::tests::Fixture) {
     doc.put(ROOT, "large-snapshot", ScalarValue::Bytes(bytes))
         .unwrap();
     doc.commit();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let message = author
         .publish_incremental(
             "so.tilo.chat",
@@ -231,7 +232,7 @@ fn finish_renew(
 }
 #[tokio::test]
 async fn cloud_snapshot_large_original_higher_progress_renews_after_restart_and_one_anchor_only() {
-    use qos_relay::delivery_v3::framing::{MessageType, decode_frame_prefix};
+    use tilo_delivery_protocol::delivery_v3::framing::{MessageType, decode_frame_prefix};
     let f = snapshot_fixture().await;
     register(&f);
     admit_large_original(&f);

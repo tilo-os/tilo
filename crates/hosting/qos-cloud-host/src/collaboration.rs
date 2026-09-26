@@ -8,11 +8,11 @@ use qos_peer_state::join::{
     MembershipChallengeRequest, MembershipChallengeResponse, MembershipCompleteRequest,
     VerifiedJoin, decode_and_verify_invitation, verify_join_proof, verify_membership_proof,
 };
-use qos_relay::workspace_join::WorkspaceJoinService;
 use qos_user_identity::DeviceCert;
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
 
 mod owner_bootstrap;
 pub use owner_bootstrap::MembershipRefresh;
@@ -938,7 +938,7 @@ impl WorkspaceJoinService for CloudJoinService {
         remote_endpoint: [u8; 32],
         request: JoinTransportRequest,
     ) -> JoinTransportResponse {
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         match request {
             JoinTransportRequest::Inspect { signed_invitation } => {
                 match Store::open(&self.root, &self.machine)
@@ -979,7 +979,7 @@ impl WorkspaceJoinService for CloudJoinService {
                         store.verify_cached_membership(
                             remote_endpoint,
                             &bootstrap,
-                            qos_relay::clock::now_ns(),
+                            tilo_delivery_protocol::clock::now_ns(),
                         )
                     }) {
                         Ok(()) => JoinTransportResponse::Complete(bootstrap),
@@ -1020,7 +1020,7 @@ impl WorkspaceJoinService for CloudJoinService {
                         store.verify_membership_refresh(
                             remote_endpoint,
                             &refresh,
-                            qos_relay::clock::now_ns(),
+                            tilo_delivery_protocol::clock::now_ns(),
                         )
                     }) {
                         Ok(()) => refresh.into_response(),

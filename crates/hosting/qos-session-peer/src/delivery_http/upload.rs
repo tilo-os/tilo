@@ -9,7 +9,7 @@ use std::{
     fs::File,
     io::{Read, Seek, Write},
 };
-use tilo_relay::delivery_v3::state::{FlowCredit, StateItemChunk};
+use tilo_delivery_protocol::delivery_v3::state::{FlowCredit, StateItemChunk};
 const UPLOAD_IDLE_NS: u64 = 300_000_000_000;
 const SCRATCH_BYTES: usize = 64 * 1024;
 #[derive(Debug, PartialEq, Eq)]

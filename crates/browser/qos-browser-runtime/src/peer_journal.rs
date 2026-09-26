@@ -87,8 +87,10 @@ impl DescriptorFloorV1 {
         Ok(())
     }
     #[cfg(target_arch = "wasm32")]
-    pub fn expectation(&self) -> tilo_relay::delivery_v3::descriptor::GenerationExpectation {
-        tilo_relay::delivery_v3::descriptor::GenerationExpectation::Current {
+    pub fn expectation(
+        &self,
+    ) -> tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation {
+        tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation::Current {
             generation: self.generation,
             descriptor_digest: self.descriptor_digest,
         }

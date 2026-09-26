@@ -375,7 +375,7 @@ async fn addressed_native_action_requires_device_proof_and_returns_private_recei
         let dir = tempfile::tempdir().unwrap();
         let root = SigningKey::from_bytes(&[7; 32]);
         let device = SigningKey::from_bytes(&[8; 32]);
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let r = {
             let mut store = Store::open(dir.path(), "network-test").unwrap();
             let r = approved(store.inspect(now).unwrap(), &root, &device);
@@ -792,7 +792,7 @@ fn expired_browser_does_not_brick_workspace_restart_or_new_enrollment() {
     let root = SigningKey::from_bytes(&[7; 32]);
     let expired = SigningKey::from_bytes(&[8; 32]);
     let fresh = SigningKey::from_bytes(&[9; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut store = Store::open(dir.path(), "expiry-test").unwrap();
     let mut request = approved(store.inspect(now).unwrap(), &root, &expired);
     request.browser_certificate.expires_at_ns = Some(now + 1);
@@ -842,7 +842,7 @@ fn compact_enrollment_imports_existing_history_after_prior_browser_expires() {
     let old = SigningKey::from_bytes(&[8; 32]);
     let fresh = SigningKey::from_bytes(&[9; 32]);
     let stable = SigningKey::from_bytes(&[10; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut store = Store::open(dir.path(), "fresh-expiry-bootstrap").unwrap();
     let mut first = approved(store.inspect(now).unwrap(), &root, &old);
     first.browser_certificate.expires_at_ns = Some(now + 2);
@@ -1071,7 +1071,7 @@ fn expiry_cleanup_publishes_room_delta_while_preserving_encrypted_metadata() {
     let root = SigningKey::from_bytes(&[11; 32]);
     let expiring = SigningKey::from_bytes(&[12; 32]);
     let stable = SigningKey::from_bytes(&[13; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut store = Store::open(dir.path(), "expiry-encrypted-metadata").unwrap();
     let mut first = approved(store.inspect(now).unwrap(), &root, &expiring);
     first.browser_certificate.expires_at_ns = Some(now + 2);
@@ -1520,7 +1520,7 @@ async fn model_catalogue_requires_valid_private_config_and_current_actor() {
             .iter()
             .any(|op| op["kind"] == "model_complete")
     );
-    let now = qos_relay::clock::now_ns() / 1_000_000_000;
+    let now = tilo_delivery_protocol::clock::now_ns() / 1_000_000_000;
     let token = format!("tilo-ai-{}", "z".repeat(43));
     atomic_file::write_with_mode(&path,&serde_json::to_vec(&serde_json::json!({"machineId":"catalogue-machine","endpoint":"https://api.example/api/machines/catalogue-machine/ai/v1/chat/completions","model":"gpt-4.1-mini-2025-04-14","token":token,"expiresAt":now+1000})).unwrap(),0o600).unwrap();
     let available =
@@ -2643,7 +2643,7 @@ async fn guest_authenticated_action_stream_rejects_forced_owner_operation() {
 
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let dir = tempfile::tempdir().unwrap();
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let owner_root = SigningKey::from_bytes(&[31; 32]);
         let owner_device = SigningKey::from_bytes(&[32; 32]);
         let guest_root = SigningKey::from_bytes(&[33; 32]);

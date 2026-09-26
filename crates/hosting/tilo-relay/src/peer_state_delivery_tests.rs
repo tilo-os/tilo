@@ -452,14 +452,17 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     ))
     .await
     .unwrap();
-    let mut reader = crate::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut reader =
+        tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice(), true);
     let mut frames = Vec::new();
     let ready = loop {
         match reader.read_next().await.unwrap() {
-            Some(crate::transport_v2::EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => {
+            Some(tilo_delivery_protocol::transport_v2::EnvelopeV2::State(
+                envelope @ Envelope::Delta { .. },
+            )) => {
                 frames.push(envelope);
             }
-            Some(crate::transport_v2::EnvelopeV2::State(Envelope::Ready {
+            Some(tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Ready {
                 pending_deltas,
                 ..
             })) => break pending_deltas,

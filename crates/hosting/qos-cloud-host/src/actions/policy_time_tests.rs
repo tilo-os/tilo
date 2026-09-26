@@ -15,7 +15,7 @@ pub(super) fn before_document() {
 #[test]
 fn cloud_policy_clock_expiry_during_guest_writer_preparation_denies_actual_effect() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
-    let raw = qos_relay::clock::now_ns();
+    let raw = tilo_delivery_protocol::clock::now_ns();
     let expiry = raw / 1_000_000_000 + 100;
     let owner_device = SigningKey::from_bytes(&[8; 32]);
     let guest_root = SigningKey::from_bytes(&[9; 32]);

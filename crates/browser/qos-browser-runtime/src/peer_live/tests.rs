@@ -1,6 +1,6 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use tilo_relay::delivery_v3::live_wire::{
+use tilo_delivery_protocol::delivery_v3::live_wire::{
     GRANT_LIFETIME_NS, LIVE_WEBTRANSPORT_PATH, LiveGrantMetadata, LiveNamespace,
 };
 
@@ -341,7 +341,7 @@ fn signed_change_projection_hides_canonical_bytes() {
         record: "n1".into(),
     };
     let canonical = vec![1, 2, 3, 4];
-    let digest = tilo_relay::delivery_v3::state::canonical_item_digest(&canonical);
+    let digest = tilo_delivery_protocol::delivery_v3::state::canonical_item_digest(&canonical);
     let bytes = OpsFrame::SignedChange {
         record: record.clone(),
         digest,

@@ -2,7 +2,7 @@
 //! durability qualification is established by these helpers.
 pub use crate::owner::PublicationView;
 use qos_peer_state::StatePeer;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::*,
     cursor::{CursorIssue, SignedCursorClaims},

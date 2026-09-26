@@ -5,7 +5,7 @@ use crate::committed_authority::CommittedView;
 #[cfg(any(test, feature = "media"))]
 use qos_peer_state::join::TransportHint;
 #[cfg(any(test, feature = "media"))]
-use tilo_relay::delivery_v3::descriptor::{
+use tilo_delivery_protocol::delivery_v3::descriptor::{
     self, DescriptorAuthority, DescriptorSettings, GenerationExpectation, VerifiedDescriptor,
 };
 
@@ -18,7 +18,7 @@ impl SessionOwner {
     ) -> Result<TransportHint> {
         let origin = installed.origin_for_discovery(self)?;
         Ok(
-            tilo_relay::workspace_join::DeliveryOriginLocatorV1 { version: 1, origin }
+            tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 { version: 1, origin }
                 .transport_hint(self.host_certificate(), &self.identity.host)?,
         )
     }
@@ -48,7 +48,7 @@ impl SessionOwner {
         installed.validate_installation(self, view, origin)?;
         // LIVE_V1 is advertised only while its relay is installed on this endpoint.
         let live = if installed.live_installed() {
-            tilo_relay::delivery_v3::live_wire::MEDIA_LIVE_V1
+            tilo_delivery_protocol::delivery_v3::live_wire::MEDIA_LIVE_V1
         } else {
             0
         };

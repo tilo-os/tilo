@@ -97,7 +97,7 @@ impl NativePrivateService {
     /// Held poll continuation: the owner revalidated the parked original.
     pub(crate) fn poll_events_resumed(
         &mut self,
-        session: &tilo_relay::delivery_v3::auth::VerifiedSession,
+        session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
         original: &crate::https::BufferedRequest,
         view: &CommittedView,
     ) -> Result<Option<(NativePendingPrivate, DirectedAction)>, PrivateError> {
@@ -174,7 +174,7 @@ impl NativePendingPrivate {
         // Final owner policy checks are exercised separately from inert codecs.
         self.disclosure.check(view)?;
         self.carrier.check_reply(reply)?;
-        let bytes = tilo_relay::delivery_v3::private_wire::encode_response(
+        let bytes = tilo_delivery_protocol::delivery_v3::private_wire::encode_response(
             self.carrier.operation,
             self.carrier.original_request(),
             reply,

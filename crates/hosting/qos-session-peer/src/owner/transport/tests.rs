@@ -1,5 +1,5 @@
 use super::super::*;
-use tilo_relay::delivery_v3::descriptor;
+use tilo_delivery_protocol::delivery_v3::descriptor;
 
 #[test]
 fn transport_descriptor_admits_real_host_and_persists_exact_revision_across_reopen() {

@@ -35,12 +35,12 @@
 use super::{DeliveryState, schema};
 use crate::{StatePeer, Store, baseline_publications, durable_bootstrap_messages, now_time};
 use anyhow::{Context, Result, anyhow, ensure};
-use qos_relay::delivery_v3::commit::{
+use rand::TryRng as _;
+use std::collections::{BTreeMap, BTreeSet};
+use tilo_delivery_protocol::delivery_v3::commit::{
     ConsumerState, DeliveryLedgerV1, MAX_ADMISSIONS, MAX_REFERENCES, PublicationPool, ReceiptKey,
     ReplayCommit, StoreGeneration,
 };
-use rand::TryRng as _;
-use std::collections::{BTreeMap, BTreeSet};
 
 /// Rotate once any budget is half used, so the fresh checkpoint still fits.
 const DUE: (usize, usize) = (1, 2);
@@ -341,7 +341,9 @@ impl Store {
 }
 /// Digest set referenced by the delivery state; used by tests.
 #[cfg(test)]
-fn referenced(delivery: &DeliveryState) -> BTreeSet<qos_relay::delivery_v3::commit::Digest> {
+fn referenced(
+    delivery: &DeliveryState,
+) -> BTreeSet<tilo_delivery_protocol::delivery_v3::commit::Digest> {
     delivery
         .baseline
         .iter()

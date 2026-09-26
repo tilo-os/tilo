@@ -7,7 +7,7 @@ fn delivery_runtime_tick_uses_actual_selected_payload_owner_and_preserves_legacy
         let expected = postcard::to_stdvec(&store.state.outbox[0]).unwrap();
         if selected {
             store
-                .activate_delivery_storage(qos_relay::clock::now_ns())
+                .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
                 .unwrap();
             assert!(store.state.outbox.is_empty());
         }
@@ -44,7 +44,7 @@ fn foreign_authored_item_never_enters_the_outbox_or_reaches_the_relay() {
         let (dir, mut store, member) = crate::agent_owner_tests::enrolled();
         if selected {
             store
-                .activate_delivery_storage(qos_relay::clock::now_ns())
+                .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
                 .unwrap();
         }
         let host = store.key().verifying_key().to_bytes();

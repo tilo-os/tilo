@@ -353,7 +353,7 @@ impl Store {
                         .as_ref()
                         .and_then(|delivery| delivery.transport_hint())
                         .map(|hint| {
-                            qos_relay::delivery_v3::descriptor::inspect_pinned_hint_scope(
+                            tilo_delivery_protocol::delivery_v3::descriptor::inspect_pinned_hint_scope(
                                 hint,
                                 &bound.authority,
                             )
@@ -362,7 +362,7 @@ impl Store {
                         .map(|scope| scope.origin)
                     {
                         transport.push(
-                            qos_relay::workspace_join::DeliveryOriginLocatorV1 {
+                            tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 {
                                 version: 1,
                                 origin,
                             }
@@ -386,9 +386,9 @@ impl Store {
                             iroh_base::PublicKey::from_bytes(&service_public_key)?,
                         )
                         .with_relay_url(packet_url.clone());
-                        let descriptor = qos_relay::workspace_join::IrohWorkspaceHostHintV1 {
+                        let descriptor = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
                             version: 1,
-                            mode: qos_relay::workspace_join::WorkspaceHostMode::CertifiedHost,
+                            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::CertifiedHost,
                             room: self.state.room.clone(),
                             workspace_id: qos_relay::room_workspace_id(&self.state.room)?,
                             governing_authority: peer.authority().clone(),

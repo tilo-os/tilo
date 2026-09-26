@@ -2,8 +2,8 @@
 //! Storage activation alone never qualifies a native allocation path or ingress.
 use crate::{PublicationKind, State, StatePeer, Store, StoredPublication, now_time};
 use anyhow::{Context, Result, ensure};
-use qos_relay::delivery_v3::commit::*;
 use rand::TryRng as _;
+use tilo_delivery_protocol::delivery_v3::commit::*;
 pub(crate) mod access;
 pub(crate) mod admission;
 pub(crate) mod commit_wake;

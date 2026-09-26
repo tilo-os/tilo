@@ -1,6 +1,6 @@
 //! Narrow HTTP proof adapter into the existing certified private broker value.
 use super::CertifiedAction;
-use crate::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::Carrier,
     capabilities,
     http_proof::{Method, VerifiedRequest},

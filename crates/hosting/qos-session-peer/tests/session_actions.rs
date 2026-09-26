@@ -721,7 +721,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         device_public_key: observer_key.verifying_key().to_bytes(),
         device_label: "partial checkpoint recovery observer".into(),
         capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_relay::clock::now_ns(),
+        issued_at_ns: tilo_delivery_protocol::clock::now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -787,7 +787,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         let raw = tilo_relay::transport::encode(&tilo_relay::transport::Envelope::Delta {
             workspace_id: workspace,
             author_device_public_key: initial.authority().device_public_key,
-            authored_at_ns: tilo_relay::clock::now_ns(),
+            authored_at_ns: tilo_delivery_protocol::clock::now_ns(),
             signature: [0; 64],
             delta: payload.encode().unwrap(),
         })
@@ -1037,12 +1037,11 @@ async fn checked_application_catalogue(
 ) {
     #[cfg(not(feature = "test-support"))]
     let _ = publication_failure;
-    use tilo_relay::{
-        RelayClient,
+    use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
-        transport::Envelope,
         transport_v2::EnvelopeV2,
     };
+    use tilo_relay::{RelayClient, transport::Envelope};
     let temp = tempfile::tempdir().unwrap();
     let state = temp.path().join("owner");
     let ready = temp.path().join("ready.json");
@@ -1862,10 +1861,10 @@ async fn invoke_and_expect_closed_publication(
     native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
-    operation: tilo_relay::peer_actions::ActionMessage,
+    operation: tilo_delivery_protocol::peer_actions::ActionMessage,
     origin: &str,
 ) {
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
     };
@@ -1963,7 +1962,7 @@ async fn invoke_and_observe(
     native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
-    operation: tilo_relay::peer_actions::ActionMessage,
+    operation: tilo_delivery_protocol::peer_actions::ActionMessage,
 ) {
     invoke_and_observe_until(
         client,
@@ -1991,10 +1990,10 @@ async fn invoke_and_observe_until(
     native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
-    operation: tilo_relay::peer_actions::ActionMessage,
+    operation: tilo_delivery_protocol::peer_actions::ActionMessage,
     complete: impl Fn(&qos_peer_state::StatePeer) -> bool,
 ) {
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
     };
@@ -2149,7 +2148,7 @@ struct ObserverBinding {
 #[cfg(feature = "test-support")]
 enum ObserverEvent {
     State(tilo_relay::transport::Envelope),
-    Action(tilo_relay::transport_v2::EnvelopeV2),
+    Action(tilo_delivery_protocol::transport_v2::EnvelopeV2),
     Ended,
 }
 
@@ -2168,7 +2167,8 @@ async fn connect_observer(
     remote: &mut qos_peer_state::StatePeer,
     deadline: Instant,
 ) -> Result<(tilo_relay::RelayClient, usize), String> {
-    use tilo_relay::{transport::Envelope, transport_v2::EnvelopeV2};
+    use tilo_delivery_protocol::transport_v2::EnvelopeV2;
+    use tilo_relay::transport::Envelope;
     tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
         let client = tilo_relay::RelayClient::connect_v2_to_enrolled_home_peer(
             binding.endpoint.clone(),
@@ -2276,7 +2276,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "observer recovery fixture".into(),
         capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_relay::clock::now_ns(),
+        issued_at_ns: tilo_delivery_protocol::clock::now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -2483,14 +2483,14 @@ async fn active_replacement(
     native: &tilo_user_identity::DeviceCert,
     broker_host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
-    operation: tilo_relay::peer_actions::ActionMessage,
+    operation: tilo_delivery_protocol::peer_actions::ActionMessage,
 ) -> tilo_relay::RelayClient {
     use std::io::Write;
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
-        transport::Envelope,
         transport_v2::EnvelopeV2,
     };
+    use tilo_relay::transport::Envelope;
     use ui::automerge::transaction::Transactable;
     writeln!(
         host.0.stdin.as_mut().unwrap(),
@@ -2577,7 +2577,7 @@ async fn active_replacement(
         .send(Envelope::Delta {
             workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
             author_device_public_key: cert.device_public_key,
-            authored_at_ns: tilo_relay::clock::now_ns(),
+            authored_at_ns: tilo_delivery_protocol::clock::now_ns(),
             delta: active_replacement_state_delta(&signed),
             signature: [0; 64],
         })
@@ -2733,12 +2733,11 @@ async fn owner_and_room_isolation(
     broker_host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,
 ) {
-    use tilo_relay::{
-        RelayClient,
+    use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction, UnavailableReason},
-        transport::Envelope,
         transport_v2::EnvelopeV2,
     };
+    use tilo_relay::{RelayClient, transport::Envelope};
     let key = SigningKey::from_bytes(&[94; 32]);
     let complete = proof(origin, capability, &key, 94).await;
     let (code, bootstrap) = request(
@@ -2947,7 +2946,7 @@ async fn selective_publication_failure_after_commit(
     failure: PublicationFailureFixture,
 ) -> usize {
     use std::io::Write;
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
     };
@@ -3088,10 +3087,10 @@ fn desktop_open_operation(
 ) -> (
     qos_desktop::WorkspaceTree,
     tilo_actions::InvocationId,
-    tilo_relay::peer_actions::ActionMessage,
+    tilo_delivery_protocol::peer_actions::ActionMessage,
 ) {
     use qos_peer_state::desktop_command::*;
-    use tilo_relay::peer_actions::ActionMessage;
+    use tilo_delivery_protocol::peer_actions::ActionMessage;
     let mut tree = qos_desktop::WorkspaceTree::default();
     qos_desktop::projection::RoomProjection::apply_admitted_room(
         &mut tree,
@@ -3149,7 +3148,7 @@ async fn desktop_open_through_broker(
     catalogue: &serde_json::Value,
 ) -> (
     tilo_actions::InvocationId,
-    tilo_relay::peer_actions::ActionMessage,
+    tilo_delivery_protocol::peer_actions::ActionMessage,
     usize,
 ) {
     #[cfg(not(feature = "test-support"))]
@@ -3232,7 +3231,7 @@ async fn desktop_close_through_broker(
     catalogue: &serde_json::Value,
 ) {
     use qos_peer_state::desktop_command::*;
-    use tilo_relay::peer_actions::ActionMessage;
+    use tilo_delivery_protocol::peer_actions::ActionMessage;
     let project = |remote: &qos_peer_state::StatePeer| {
         let mut tree = qos_desktop::WorkspaceTree::default();
         qos_desktop::projection::RoomProjection::apply_admitted_room(

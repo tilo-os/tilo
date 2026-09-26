@@ -18,14 +18,14 @@
 use super::live::{live_record, signed_change};
 use crate::agent_live::{AgentLiveEvent, Caret, WRITER_APP};
 use qos_moq::live::LiveRelay;
-use qos_relay::delivery_v3::live_wire::{
-    AgentActivity, LiveAnchor, LiveRecord, MAX_AGENT_LABEL_BYTES, MAX_AGENT_TOOL_BYTES,
-    MAX_OBJECT_ID_BYTES, OpsFrame, PresenceFrame, PreviewOp, agent_activity_record,
-    agent_publisher, bounded_display_text, room_digest,
-};
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
+};
+use tilo_delivery_protocol::delivery_v3::live_wire::{
+    AgentActivity, LiveAnchor, LiveRecord, MAX_AGENT_LABEL_BYTES, MAX_AGENT_TOOL_BYTES,
+    MAX_OBJECT_ID_BYTES, OpsFrame, PresenceFrame, PreviewOp, agent_activity_record,
+    agent_publisher, bounded_display_text, room_digest,
 };
 use ui::presence::{PathSegment, PresenceKey};
 

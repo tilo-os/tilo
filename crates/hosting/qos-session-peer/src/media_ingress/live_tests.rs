@@ -4,7 +4,7 @@
 use super::{data_tests::Harness, *};
 use hyper::StatusCode;
 use qos_moq::live::LiveAuthority;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     capabilities::PRODUCT_DATA_V1, live_wire::*, state::AdmissionOutcome,
 };
 use tokio::time::timeout;
@@ -63,7 +63,7 @@ async fn live_grant_route_issues_host_signed_grants_advertises_live_and_renews()
             .unwrap();
         assert_eq!(
             descriptor.media_capabilities(),
-            tilo_relay::delivery_v3::descriptor::MEDIA_VOICE_V1 | MEDIA_LIVE_V1,
+            tilo_delivery_protocol::delivery_v3::descriptor::MEDIA_VOICE_V1 | MEDIA_LIVE_V1,
             "an installed live relay is advertised beside voice"
         );
     }
@@ -78,7 +78,7 @@ async fn live_grant_route_issues_host_signed_grants_advertises_live_and_renews()
     );
     assert!(bytes.len() <= MAX_GRANT_BYTES);
     let first = SignedLiveGrant::decode(&bytes).unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     first.verify(&host_key(&h), now).unwrap();
     let m = &first.metadata;
     assert_eq!(

@@ -1,8 +1,8 @@
 //! Shared retained delivery checks; no owner or admission witness.
 use super::{DeliveryState, VERSION, replay_digest};
 use crate::State;
-use qos_relay::delivery_v3::commit::{CommitError, Digest, MAX_REFERENCES};
 use std::collections::BTreeSet;
+use tilo_delivery_protocol::delivery_v3::commit::{CommitError, Digest, MAX_REFERENCES};
 
 /// Fixed structural failures stay allocation-free on the paid caller path.
 #[derive(Debug)]

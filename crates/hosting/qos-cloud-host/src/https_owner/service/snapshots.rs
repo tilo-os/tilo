@@ -4,7 +4,7 @@
 //! on the next Renew; anything unrecoverable answers SnapshotRequired.
 use super::{data::frame, *};
 use crate::https_owner::snapshot::{self as phases, LiveSnapshot, Renewal};
-use qos_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::Digest,
     framing::{self, MessageType},
@@ -54,7 +54,7 @@ fn chunk_target(path: &str) -> Option<([u8; 16], u32)> {
         return None;
     }
     let index: u32 = index.parse().ok()?;
-    if index >= qos_relay::delivery_v3::state::MAX_SNAPSHOT_CHUNKS {
+    if index >= tilo_delivery_protocol::delivery_v3::state::MAX_SNAPSHOT_CHUNKS {
         return None;
     }
     Some((hex::decode(pin).ok()?.try_into().ok()?, index))
@@ -163,7 +163,7 @@ impl Snapshots {
         work: &HostWorkInventory,
         retries: u32,
     ) -> Result<()> {
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         self.swept_at = now;
         self.live
             .retain(|transfer| transfer.live.expires_at_ns() > now);
@@ -199,7 +199,7 @@ impl Snapshots {
         pool: &HostBytes,
         work: &HostWorkInventory,
     ) -> Result<()> {
-        if qos_relay::clock::now_ns().saturating_sub(self.swept_at) < SWEEP_NS {
+        if tilo_delivery_protocol::clock::now_ns().saturating_sub(self.swept_at) < SWEEP_NS {
             return Ok(());
         }
         self.recover(source, pool, work)
@@ -322,7 +322,7 @@ impl Snapshots {
 
     /// Pins of this process's live transfers (expired ones dropped first).
     fn live_pins(&mut self) -> Vec<[u8; 16]> {
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         self.live
             .retain(|transfer| transfer.live.expires_at_ns() > now);
         self.live
@@ -346,7 +346,7 @@ impl Snapshots {
         device: [u8; 32],
         live: LiveSnapshot,
     ) -> Result<()> {
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         self.live
             .retain(|transfer| transfer.live.expires_at_ns() > now);
         while self.live.iter().filter(|t| t.device == device).count() >= LIVE_DEVICE {

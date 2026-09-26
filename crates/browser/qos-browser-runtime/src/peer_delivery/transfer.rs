@@ -2,7 +2,7 @@
 //! remain with the closed Peer owner on every transition.
 use super::*;
 use state::{SignedSnapshotManifest, SnapshotChunk, SnapshotKind, SnapshotManifest};
-use tilo_relay::delivery_v3::cursor::CursorToken;
+use tilo_delivery_protocol::delivery_v3::cursor::CursorToken;
 
 pub(crate) struct PinnedTransfer {
     identity: CursorIdentity,
@@ -217,7 +217,7 @@ impl PinnedTransfer {
 }
 fn matches_identity(
     identity: &CursorIdentity,
-    scope: &tilo_relay::delivery_v3::cursor::CursorIssue,
+    scope: &tilo_delivery_protocol::delivery_v3::cursor::CursorIssue,
 ) -> bool {
     scope.workspace == identity.workspace
         && scope.room == identity.room

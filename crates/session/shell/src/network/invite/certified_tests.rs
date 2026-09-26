@@ -3,7 +3,7 @@ use ed25519_dalek::SigningKey;
 use qos_peer_state::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, MemberRole};
 use qos_peer_state::{SeedState, StatePeer, seed_room};
 use std::time::{Duration, SystemTime};
-use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
 
 fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {

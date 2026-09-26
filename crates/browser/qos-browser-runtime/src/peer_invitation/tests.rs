@@ -43,7 +43,7 @@ impl Fixture {
     }
     fn invitation_until(&self, recipient: Option<[u8; 32]>, expires_at_ns: u64) -> String {
         let grant = InviteGrant {
-            workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap(),
+            workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
             room: ROOM.into(),
             authority: self.governor.clone(),
             issuer: self.governor.clone(),
@@ -178,7 +178,7 @@ fn admitted_fixture_with_document(
     )
     .unwrap();
     let mut grant = original.grant().clone();
-    let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1 {
+    let locator = tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 {
         version: 1,
         origin: "https://delivery.example".into(),
     }
@@ -256,7 +256,7 @@ fn admitted_fixture_with_document(
         device_cert: identity.certificate().clone(),
         role: MemberRole::Editor,
         room: ROOM.into(),
-        workspace_id: tilo_relay::room_workspace_id(ROOM).unwrap(),
+        workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
         authority: f.governor,
         certified_roster: vec![identity.certificate().clone()],
         revocations: vec![],

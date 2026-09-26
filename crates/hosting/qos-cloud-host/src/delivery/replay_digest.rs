@@ -1,6 +1,6 @@
 //! Exact inert Cloud replay digest. No owner, admission or policy assertion.
 use crate::State;
-use qos_relay::delivery_v3::commit::{Digest, ReplayCommit, StoreGeneration};
+use tilo_delivery_protocol::delivery_v3::commit::{Digest, ReplayCommit, StoreGeneration};
 
 #[derive(Debug)]
 pub(crate) enum ReplayDigestError {

@@ -7,11 +7,11 @@ use qos_agent_control_protocol::*;
 use qos_peer_state::owner_commit::{
     AgentRuntimeFact, PrivateAgentState, TaskOutcomeV2, VerifiedAgentCaller,
 };
-use qos_relay::{
+use std::collections::BTreeMap;
+use tilo_delivery_protocol::{
     agent_reads::{AgentReadBinding, MAX_RESULT_BYTES},
     peer_actions::ActionMessage,
 };
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -181,7 +181,7 @@ impl ReadBasis {
     ) -> Result<ActionMessage, String> {
         let current = &self.current;
         if invocation.is_nil()
-            || !qos_relay::agent_reads::valid_request(request)
+            || !tilo_delivery_protocol::agent_reads::valid_request(request)
             || binding.agent.machine != self.machine
             || binding.agent.room != self.room
             || binding.agent.host != self.room
@@ -306,8 +306,8 @@ impl ReadBasis {
                 },
             )
         });
-        if !qos_relay::agent_reads::valid_result(host, invocation, &binding, &response)
-            || !qos_relay::agent_reads::matches_request(request, &response)
+        if !tilo_delivery_protocol::agent_reads::valid_result(host, invocation, &binding, &response)
+            || !tilo_delivery_protocol::agent_reads::matches_request(request, &response)
             || !fits(host, invocation, &binding, &response)
         {
             return Err("private read exceeded canonical carrier contract".into());

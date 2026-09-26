@@ -5,7 +5,7 @@ use crate::{delivery_http::tests::Fixture, owner::delivery::NativeDeliveryAuthor
 use hyper::StatusCode;
 use rustls::pki_types::PrivatePkcs8KeyDer;
 use std::future::Future;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth,
     capabilities::PRODUCT_DATA_V1,
     descriptor::GenerationExpectation,
@@ -57,7 +57,7 @@ pub(super) async fn drive<T>(
 }
 
 fn client_proof(f: &Fixture, server: &auth::ServerProof, nonce: [u8; 32]) -> auth::ClientProof {
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let guard = f.current.read().unwrap();
     let descriptor = f
         .owner
@@ -127,7 +127,7 @@ impl Harness {
         drop(std::mem::replace(&mut f.owner, placeholder));
         f.owner = SessionOwner::open(&path).unwrap();
         f.current = crate::committed_authority::CommittedAuthority::new(&f.owner);
-        f.now = tilo_relay::clock::now_ns();
+        f.now = tilo_delivery_protocol::clock::now_ns();
         Self::serve(f).await
     }
     async fn serve(mut f: Fixture) -> Self {
@@ -233,7 +233,7 @@ impl Harness {
     }
 
     pub(super) fn proof(&self, method: &str, target: &str, body: &[u8]) -> Vec<u8> {
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         RequestProof::sign(
             self.session.0,
             self.session.1,
@@ -343,7 +343,9 @@ pub(super) fn native_edit(owner: &SessionOwner, key: &str, value: Vec<u8>) -> Ve
     postcard::to_stdvec(&message).unwrap()
 }
 
-pub(super) fn committed(admission: &StateAdmission) -> tilo_relay::delivery_v3::commit::CommitRef {
+pub(super) fn committed(
+    admission: &StateAdmission,
+) -> tilo_delivery_protocol::delivery_v3::commit::CommitRef {
     match admission.outcome() {
         AdmissionOutcome::Accepted { committed, .. }
         | AdmissionOutcome::Duplicate { committed, .. } => committed.clone(),
@@ -373,7 +375,7 @@ pub(super) fn page(bytes: &[u8]) -> (Vec<EventChunk>, CommitBoundary) {
 fn state_events(events: &[EventChunk]) -> Vec<Vec<u8>> {
     let mut out: std::collections::BTreeMap<u32, Vec<u8>> = Default::default();
     for event in events {
-        if event.kind() != tilo_relay::delivery_v3::state::EventKind::State {
+        if event.kind() != tilo_delivery_protocol::delivery_v3::state::EventKind::State {
             continue;
         }
         let bytes = out.entry(event.ordinal()).or_default();
@@ -387,8 +389,10 @@ pub(super) fn poll_target(boundary: Option<&CommitBoundary>) -> String {
     match boundary {
         Some(boundary) => format!(
             "/peer/v3/events?cursor={}&mode=poll",
-            tilo_relay::delivery_v3::state::encode_cursor_url(boundary.cursor().as_bytes())
-                .unwrap()
+            tilo_delivery_protocol::delivery_v3::state::encode_cursor_url(
+                boundary.cursor().as_bytes()
+            )
+            .unwrap()
         ),
         None => "/peer/v3/events?mode=poll".into(),
     }
@@ -595,10 +599,11 @@ async fn installed_https_poll_answers_authorization_change_with_snapshot_reset()
     let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
     assert_eq!(kind, MessageType::SnapshotRequired);
     assert!(rest.is_empty(), "the reset is the only frame");
-    let reset = tilo_relay::delivery_v3::state::SnapshotRequired::decode(payload).unwrap();
+    let reset =
+        tilo_delivery_protocol::delivery_v3::state::SnapshotRequired::decode(payload).unwrap();
     assert_eq!(
         reset.reason(),
-        tilo_relay::delivery_v3::state::ResetReason::AuthorizationChanged
+        tilo_delivery_protocol::delivery_v3::state::ResetReason::AuthorizationChanged
     );
     assert_eq!(
         reset.store_generation(),
@@ -606,10 +611,12 @@ async fn installed_https_poll_answers_authorization_change_with_snapshot_reset()
     );
 }
 
-fn snapshot_body(operation: tilo_relay::delivery_v3::state::SnapshotOperation) -> Vec<u8> {
+fn snapshot_body(
+    operation: tilo_delivery_protocol::delivery_v3::state::SnapshotOperation,
+) -> Vec<u8> {
     frame(
         MessageType::SnapshotManifest,
-        &tilo_relay::delivery_v3::state::SnapshotRequest::new(operation)
+        &tilo_delivery_protocol::delivery_v3::state::SnapshotRequest::new(operation)
             .unwrap()
             .encode()
             .unwrap(),
@@ -618,7 +625,7 @@ fn snapshot_body(operation: tilo_relay::delivery_v3::state::SnapshotOperation) -
 
 #[tokio::test]
 async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
-    use tilo_relay::delivery_v3::state::{
+    use tilo_delivery_protocol::delivery_v3::state::{
         SnapshotChunk, SnapshotKind, SnapshotManifest, SnapshotOperation, SnapshotRequired,
         TransferRecordHeader,
     };
@@ -656,7 +663,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
     assert!(rest.is_empty());
     let manifest = SnapshotManifest::from_bytes(payload).unwrap();
     let signed = manifest
-        .authenticate(&host, tilo_relay::clock::now_ns())
+        .authenticate(&host, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let issue = signed.issue().clone();
     assert_eq!(issue.kind, SnapshotKind::Baseline);
@@ -708,7 +715,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
     }
     assert_eq!(order.len() as u32, issue.item_count);
     assert_eq!(
-        tilo_relay::delivery_v3::state::visible_order_digest(&order).unwrap(),
+        tilo_delivery_protocol::delivery_v3::state::visible_order_digest(&order).unwrap(),
         boundary.visible_order_digest()
     );
 
@@ -728,7 +735,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
     assert_eq!(kind, MessageType::SnapshotManifest);
     let renewed = SnapshotManifest::from_bytes(payload)
         .unwrap()
-        .authenticate(&host, tilo_relay::clock::now_ns())
+        .authenticate(&host, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     assert!(renewed.same_content(&signed));
     assert!(renewed.issue().expires_at_ns >= issue.expires_at_ns);
@@ -775,7 +782,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
     assert_eq!(kind, MessageType::SnapshotManifest);
     let replay = SnapshotManifest::from_bytes(payload)
         .unwrap()
-        .authenticate(&host, tilo_relay::clock::now_ns())
+        .authenticate(&host, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     assert_eq!(replay.issue().kind, SnapshotKind::Replay);
     assert_eq!(
@@ -798,7 +805,7 @@ async fn installed_https_private_catalogue_over_actual_action_runtime() {
         host_signing::HostSigning,
         owner_commit::OwnerCommitMailbox,
     };
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         delivery_v3::private_wire::{self, PrivateOperation, PrivateScope},
         peer_actions::{ActionMessage, DirectedAction},
     };
@@ -926,14 +933,14 @@ impl Harness {
     ) -> qos_peer_state::join::JoinTransportResponse {
         use ed25519_dalek::Signer;
         use qos_peer_state::join::JoinTransportRequest as J;
-        use tilo_relay::delivery_v3::{
+        use tilo_delivery_protocol::delivery_v3::{
             media_wire::split_signature,
             onboarding_wire::{
                 OnboardingOperation, OnboardingRequest, OnboardingResponse, OnboardingScope,
                 ReplyBodyKind,
             },
         };
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let origin = self.ingress.origin().to_owned();
         let body = postcard::to_stdvec(&inner).unwrap();
         let certificate = postcard::to_stdvec(&joiner.certificate).unwrap();
@@ -994,22 +1001,23 @@ impl Harness {
         );
         let response = OnboardingResponse::decode(&bytes).unwrap();
         response
-            .verify_host_signature(&request, tilo_relay::clock::now_ns())
+            .verify_host_signature(&request, tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         match response.body_kind {
             ReplyBodyKind::InlineLegacy => postcard::from_bytes(response.body).unwrap(),
             ReplyBodyKind::HandoffManifest => {
-                let manifest = tilo_relay::delivery_v3::onboarding_wire::HandoffManifest::decode(
-                    response.body,
-                )
-                .unwrap();
+                let manifest =
+                    tilo_delivery_protocol::delivery_v3::onboarding_wire::HandoffManifest::decode(
+                        response.body,
+                    )
+                    .unwrap();
                 manifest
                     .verify_host_signature(
                         request.scope,
                         joiner.certificate.device_public_key,
                         request.request_digest().unwrap(),
                         request.nonce,
-                        tilo_relay::clock::now_ns(),
+                        tilo_delivery_protocol::clock::now_ns(),
                     )
                     .unwrap();
                 self.handoffs += 1;
@@ -1024,10 +1032,10 @@ impl Harness {
         &mut self,
         host: &crate::host::LocalHost,
         joiner: &Joiner,
-        manifest: &tilo_relay::delivery_v3::onboarding_wire::HandoffManifest<'_>,
+        manifest: &tilo_delivery_protocol::delivery_v3::onboarding_wire::HandoffManifest<'_>,
     ) -> Vec<u8> {
         use ed25519_dalek::Signer;
-        use tilo_relay::delivery_v3::{
+        use tilo_delivery_protocol::delivery_v3::{
             media_wire::split_signature,
             onboarding_wire::{
                 HANDOFF_CHUNKS_PATH, HandoffChunk, HandoffRequest, MAX_HANDOFF_RANGE_BYTES,
@@ -1035,7 +1043,7 @@ impl Harness {
         };
         let mut bytes = Vec::new();
         while bytes.len() < manifest.total_bytes as usize {
-            let now = tilo_relay::clock::now_ns();
+            let now = tilo_delivery_protocol::clock::now_ns();
             let remaining = manifest.total_bytes as usize - bytes.len();
             let mut fetch = HandoffRequest {
                 version: 1,
@@ -1081,7 +1089,7 @@ impl Harness {
             );
             let chunk = HandoffChunk::decode(&encoded).unwrap();
             chunk
-                .verify_host_signature(manifest, &fetch, tilo_relay::clock::now_ns())
+                .verify_host_signature(manifest, &fetch, tilo_delivery_protocol::clock::now_ns())
                 .unwrap();
             assert_eq!(chunk.offset, bytes.len() as u64);
             bytes.extend_from_slice(chunk.body);
@@ -1098,7 +1106,7 @@ async fn installed_https_onboarding_invited_and_open_invitation_join() {
     use qos_peer_state::join::*;
     let mut h = Harness::start().await;
     let host = crate::host::LocalHost::start(&h.f.owner).await.unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let invited = Joiner::new(171, now);
     let fresh = Joiner::new(181, now);
 
@@ -1222,7 +1230,7 @@ async fn installed_https_private_status_cancel_invoke_and_read_over_actual_actio
         host_signing::HostSigning,
         owner_commit::OwnerCommitMailbox,
     };
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         delivery_v3::private_wire::{self, PrivateOperation, PrivateScope},
         peer_actions::{ActionMessage, DirectedAction},
     };
@@ -1344,7 +1352,7 @@ async fn installed_https_large_join_reply_hydrates_through_the_chunk_route() {
             .unwrap();
     }
     let host = crate::host::LocalHost::start(&h.f.owner).await.unwrap();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let joiner = Joiner::new(151, now);
     h.ingress
         .install_onboarding(CollaborationService::new(vec![]))
@@ -1424,7 +1432,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
         .try_init();
-    use tilo_relay::delivery_v3::state::{
+    use tilo_delivery_protocol::delivery_v3::state::{
         SnapshotChunk, SnapshotManifest, SnapshotOperation, SnapshotRequired,
     };
     let mut h = Harness::start().await;
@@ -1452,7 +1460,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     assert_eq!(kind, MessageType::SnapshotManifest);
     let manifest = SnapshotManifest::from_bytes(payload).unwrap();
     let signed = manifest
-        .authenticate(&host, tilo_relay::clock::now_ns())
+        .authenticate(&host, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let issue = signed.issue().clone();
     assert_eq!(issue.scope.committed, committed(&second));
@@ -1479,7 +1487,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     );
     let renewed_manifest = SnapshotManifest::from_bytes(payload).unwrap();
     let renewed = renewed_manifest
-        .authenticate(&host, tilo_relay::clock::now_ns())
+        .authenticate(&host, tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     assert!(renewed.same_content(&signed));
     assert_eq!(renewed.issue().pin, issue.pin);
@@ -1542,7 +1550,7 @@ async fn installed_https_abandoned_staging_is_reclaimed_for_a_new_upload() {
     let device = h.f.owner.identity.native_cert.device_public_key;
     let work = h.ingress.host_work();
     let pool = h.ingress.host_bytes();
-    let past = tilo_relay::clock::now_ns() - 10 * 60 * 1_000_000_000;
+    let past = tilo_delivery_protocol::clock::now_ns() - 10 * 60 * 1_000_000_000;
     for id in [[21u8; 16], [22u8; 16]] {
         let canonical = vec![id[0]; 2 * CHUNK];
         let digest = *blake3::hash(&canonical).as_bytes();

@@ -312,7 +312,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 device_public_key: member.verifying_key().to_bytes(),
                 device_label: format!("qualification member {number}"),
                 capabilities: DeviceCapabilities::member(),
-                issued_at_ns: tilo_relay::clock::now_ns(),
+                issued_at_ns: tilo_delivery_protocol::clock::now_ns(),
                 expires_at_ns: None,
                 signature: [0; 64],
             };

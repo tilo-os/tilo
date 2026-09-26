@@ -224,6 +224,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # provider host, plus the Cloud native-owner path (workspace join, delivery
 # v3, peer actions, sync refresh).
 tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry

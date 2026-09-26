@@ -3,7 +3,7 @@ use crate::peer_invitation::InvitedIdentity;
 use ed25519_dalek::{Signer, SigningKey};
 use qos_peer_state::join::JoinTransportRequest;
 use serde::Serialize;
-use tilo_relay::delivery_v3::{onboarding_wire as wire, state::canonical_item_digest};
+use tilo_delivery_protocol::delivery_v3::{onboarding_wire as wire, state::canonical_item_digest};
 mod handoff;
 mod local;
 mod preflight;
@@ -247,7 +247,7 @@ pub(crate) fn prepare_owner(
     if !host.capabilities.can_act_as_host
         || host.user_public_key != certificate.user_public_key
         || owner.key.verifying_key().to_bytes() != certificate.device_public_key
-        || !tilo_relay::room_workspace_id_matches(owner.room, owner.workspace)
+        || !tilo_relay_protocol::room_workspace_id_matches(owner.room, owner.workspace)
     {
         return Err("invalid Cloud owner onboarding scope".into());
     }

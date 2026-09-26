@@ -1,5 +1,5 @@
 //! Bounded inert route preparation. Native authority and commits remain owner scheduled.
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::{DeliveryId, Digest},
     cursor::CursorToken,
     framing::{self, FrameError, MessageType},
@@ -9,7 +9,7 @@ use tilo_relay::delivery_v3::{
 };
 // Route tests decode replay frames through this module's glob import.
 #[cfg(test)]
-use tilo_relay::delivery_v3::state;
+use tilo_delivery_protocol::delivery_v3::state;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DataError {
@@ -92,7 +92,7 @@ pub(super) fn prepare_poll_chain(
     if request.method() != Method::Get || !request.body().is_empty() {
         return Err(DataError::InvalidFrame);
     }
-    tilo_relay::delivery_v3::poll_chain::parse_poll_target(request.target())
+    tilo_delivery_protocol::delivery_v3::poll_chain::parse_poll_target(request.target())
         .ok_or(DataError::InvalidFrame)
 }
 

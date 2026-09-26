@@ -354,7 +354,7 @@ fn receipts_are_released_only_for_devices_that_acknowledged_their_commit() {
 #[test]
 fn offline_consumer_cursor_resets_after_rotation_and_recovers_with_snapshot_and_suffix() {
     use crate::committed_authority::CommittedAuthority;
-    use tilo_relay::delivery_v3::state::ResetReason;
+    use tilo_delivery_protocol::delivery_v3::state::ResetReason;
     let (_temp, mut owner) = hosted_owner();
     let committed = CommittedAuthority::new(&owner);
     let session = authenticated_session(&owner, &committed);

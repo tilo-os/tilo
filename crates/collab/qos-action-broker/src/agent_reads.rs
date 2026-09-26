@@ -1,9 +1,8 @@
 //! Host-installed certified read service. The trait is a local service contract,
 //! not an authority witness; production hosts attach their actual live owner.
 use std::{future::Future, pin::Pin, sync::Arc};
-use tilo_relay::{
-    agent_reads::AgentReadBinding, client::CertifiedAction, peer_actions::ActionMessage,
-};
+use tilo_delivery_protocol::{agent_reads::AgentReadBinding, peer_actions::ActionMessage};
+use tilo_relay::client::CertifiedAction;
 use tokio::time::Instant;
 
 pub type AgentReadFuture<'a, T> =
@@ -141,7 +140,7 @@ pub async fn read_from_owner(
             && *id == invocation
             && binding.agent.room == room
             && binding.agent.device == device
-            && tilo_relay::agent_reads::matches_request(&request, response)
+            && tilo_delivery_protocol::agent_reads::matches_request(&request, response)
             && result.value().validate() =>
         {
             Ok(result)

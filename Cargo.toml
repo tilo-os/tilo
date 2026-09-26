@@ -154,6 +154,7 @@ members = [
     "crates/doc/tilo-automerge-isolate",
 
     # Hosting
+    "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",

@@ -101,7 +101,7 @@ fn cloud_operator_receipt_refuses_symlink_root_and_selected_private_v1() {
     let caller = store.agent_caller(device).unwrap();
     store.activate_private_agent_ledger(&caller).unwrap();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let before = std::fs::read(v1.path().join("state.json")).unwrap();

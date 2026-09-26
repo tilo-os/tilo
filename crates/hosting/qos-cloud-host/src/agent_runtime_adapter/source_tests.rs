@@ -102,12 +102,14 @@ async fn cloud_policy_clock_ordinary_broker_rejects_replacement_store() {
         let store = owner.store().unwrap();
         let peer = store.peer().unwrap();
         let certificate = peer.authority().clone();
-        let action = qos_relay::peer_actions::DirectedAction {
+        let action = tilo_delivery_protocol::peer_actions::DirectedAction {
             room: peer.room().parse().unwrap(),
             request_id: uuid::Uuid::new_v4(),
             source: certificate.device_public_key,
             target: certificate.device_public_key,
-            message: qos_relay::peer_actions::ActionMessage::CatalogueRefresh { scope: None },
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
+                scope: None,
+            },
         };
         (certificate, action)
     };
@@ -127,7 +129,7 @@ async fn cloud_policy_clock_ordinary_broker_rejects_replacement_store() {
     assert!(
         !matches!(
             result,
-            Ok(qos_relay::peer_actions::ActionMessage::BrokerCatalogue { .. })
+            Ok(tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue { .. })
         ),
         "ordinary fallback disclosed from replacement Store"
     );

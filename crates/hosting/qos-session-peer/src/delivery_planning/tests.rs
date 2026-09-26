@@ -2,14 +2,14 @@ use super::*;
 use crate::{
     SessionOwner, delivery_http::tests::Fixture, owner::delivery::NativeDeliveryAuthority,
 };
-use tilo_relay::delivery_v3::cursor::CursorToken;
+use tilo_delivery_protocol::delivery_v3::cursor::CursorToken;
 use tilo_user_identity::RevocationList;
 
 fn authenticated_session(
     owner: &SessionOwner,
     committed: &crate::committed_authority::CommittedAuthority,
-) -> tilo_relay::delivery_v3::auth::VerifiedSession {
-    use tilo_relay::delivery_v3::auth::*;
+) -> tilo_delivery_protocol::delivery_v3::auth::VerifiedSession {
+    use tilo_delivery_protocol::delivery_v3::auth::*;
     let current = committed.read().unwrap();
     let authority = NativeDeliveryAuthority {
         view: current.view(),
@@ -45,7 +45,7 @@ fn authenticated_session(
             host_revocations: &revocations,
         },
         authority: &authority,
-        now_ns: tilo_relay::clock::now_ns(),
+        now_ns: tilo_delivery_protocol::clock::now_ns(),
     };
     let (challenge, proof) = Challenge::issue(&context, [9; 32], &owner.identity.host).unwrap();
     let client = verify_server(
@@ -83,7 +83,8 @@ fn basis<'a>(f: &'a Fixture, session: &'a VerifiedSession) -> DeliveryPolicyBasi
 fn register(f: &mut Fixture, session: &VerifiedSession) -> CursorToken {
     f.current
         .with_owner_view(&mut f.owner, |view, owner| {
-            let source = owner.delivery_source(view, session, tilo_relay::clock::now_ns())?;
+            let source =
+                owner.delivery_source(view, session, tilo_delivery_protocol::clock::now_ns())?;
             owner.register_delivery_consumer(&source)
         })
         .unwrap()
@@ -91,7 +92,11 @@ fn register(f: &mut Fixture, session: &VerifiedSession) -> CursorToken {
     let guard = f.current.read().unwrap();
     let source = f
         .owner
-        .delivery_source(guard.view(), session, tilo_relay::clock::now_ns())
+        .delivery_source(
+            guard.view(),
+            session,
+            tilo_delivery_protocol::clock::now_ns(),
+        )
         .unwrap();
     let (sequence, entry) = f
         .owner

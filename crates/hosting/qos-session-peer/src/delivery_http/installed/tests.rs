@@ -1,6 +1,6 @@
 use super::*;
 use crate::delivery_http::tests::Fixture;
-use tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1;
+use tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1;
 
 fn fixture() -> (
     Fixture,

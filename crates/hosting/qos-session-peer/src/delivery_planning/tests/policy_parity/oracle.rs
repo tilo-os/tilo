@@ -2,7 +2,7 @@
 use super::{PlanningCapacity, PlanningFailure};
 use anyhow::{Context, Result, bail};
 use qos_peer_state::StatePeer;
-use tilo_relay::delivery_v3::commit::Digest;
+use tilo_delivery_protocol::delivery_v3::commit::Digest;
 use tilo_user_identity::DeviceCert;
 use ui::automerge::{ROOT, ReadDoc, ScalarValue, Value};
 use web_time::SystemTime;

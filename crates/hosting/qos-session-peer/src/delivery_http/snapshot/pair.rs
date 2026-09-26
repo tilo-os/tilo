@@ -10,21 +10,23 @@ pub struct ManifestPair<'a> {
     renewed_through: u64,
 }
 pub struct AuthenticatedPair {
-    current: tilo_relay::delivery_v3::state::SignedSnapshotManifest,
-    previous: Option<tilo_relay::delivery_v3::state::SignedSnapshotManifest>,
+    current: tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest,
+    previous: Option<tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest>,
     renewed_through: u64,
 }
 /// Timeless signature/canonical evidence only. Never a live retained owner pin.
 pub struct RetainedAuthenticatedPair {
-    current: tilo_relay::delivery_v3::state::SignedSnapshotManifest,
-    previous: Option<tilo_relay::delivery_v3::state::SignedSnapshotManifest>,
+    current: tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest,
+    previous: Option<tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest>,
     renewed_through: u64,
 }
 impl RetainedAuthenticatedPair {
-    pub fn current(&self) -> &tilo_relay::delivery_v3::state::SignedSnapshotManifest {
+    pub fn current(&self) -> &tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest {
         &self.current
     }
-    pub fn previous(&self) -> Option<&tilo_relay::delivery_v3::state::SignedSnapshotManifest> {
+    pub fn previous(
+        &self,
+    ) -> Option<&tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest> {
         self.previous.as_ref()
     }
     pub fn renewed_through(&self) -> u64 {
@@ -51,11 +53,13 @@ impl RetainedAuthenticatedPair {
 }
 impl AuthenticatedPair {
     /// Signed inert claims only; the concrete owner must select the live pin.
-    pub fn current(&self) -> &tilo_relay::delivery_v3::state::SignedSnapshotManifest {
+    pub fn current(&self) -> &tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest {
         &self.current
     }
     /// Timeless recovery anchor, never independent current authorization.
-    pub fn previous(&self) -> Option<&tilo_relay::delivery_v3::state::SignedSnapshotManifest> {
+    pub fn previous(
+        &self,
+    ) -> Option<&tilo_delivery_protocol::delivery_v3::state::SignedSnapshotManifest> {
         self.previous.as_ref()
     }
     pub fn renewed_through(&self) -> u64 {
@@ -105,7 +109,7 @@ impl<'a> ManifestPair<'a> {
         .with_renewed_through(u64::from_le_bytes(bytes[12..20].try_into().unwrap()))
     }
     pub fn with_renewed_through(mut self, floor: u64) -> Result<Self, SnapshotFailure> {
-        if floor > u64::from(tilo_relay::delivery_v3::state::MAX_SNAPSHOT_CHUNKS) {
+        if floor > u64::from(tilo_delivery_protocol::delivery_v3::state::MAX_SNAPSHOT_CHUNKS) {
             return Err(SnapshotFailure::Invalid);
         }
         self.renewed_through = floor;
@@ -139,7 +143,7 @@ impl<'a> ManifestPair<'a> {
         &self,
         key: &ed25519_dalek::VerifyingKey,
     ) -> Result<RetainedAuthenticatedPair, SnapshotFailure> {
-        use tilo_relay::delivery_v3::state::SnapshotManifest;
+        use tilo_delivery_protocol::delivery_v3::state::SnapshotManifest;
         let current = SnapshotManifest::from_bytes(self.current)
             .map_err(|_| SnapshotFailure::Invalid)?
             .authenticate_retained(key)
@@ -218,7 +222,10 @@ mod tests {
     fn snapshot_pair_combined_budget_includes_header_before_any_renewal_write() {
         let maximum = vec![0; MEMBER];
         // Both are individually size-valid inert SnapshotManifest envelopes.
-        assert!(tilo_relay::delivery_v3::state::SnapshotManifest::from_bytes(&maximum).is_ok());
+        assert!(
+            tilo_delivery_protocol::delivery_v3::state::SnapshotManifest::from_bytes(&maximum)
+                .is_ok()
+        );
         assert!(ManifestPair::new(&maximum, Some(&maximum)).is_err());
         let boundary = vec![0; MEMBER - 20];
         let pair = ManifestPair::new(&maximum, Some(&boundary)).unwrap();
@@ -243,7 +250,7 @@ mod tests {
 #[cfg(test)]
 mod authenticity_tests {
     use super::*;
-    use tilo_relay::delivery_v3::{
+    use tilo_delivery_protocol::delivery_v3::{
         commit::CommitRef,
         cursor::CursorIssue,
         state::{ManifestIssue, SnapshotKind, SnapshotManifest},

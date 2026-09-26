@@ -12,9 +12,8 @@ use qos_session_peer::{
         SetMemberRoleRequest,
     },
 };
-use tilo_relay::workspace_join::{
-    WORKSPACE_JOIN_ALPN, WorkspaceJoinClient, WorkspaceJoinProtocol, WorkspaceJoinService,
-};
+use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use tilo_relay::workspace_join::{WorkspaceJoinClient, WorkspaceJoinProtocol};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 fn service() -> CollaborationService {

@@ -12,15 +12,15 @@
 //! descriptor issuance identity. Device, host, roster and revocation checks
 //! remain the current turn's.
 use anyhow::{Context as _, Result, ensure};
-use qos_relay::delivery_v3::{
-    auth::{self, Binding},
-    http_proof::{Request, RequestProof, VerifiedRequest},
-};
 use qos_session_peer::ingress::{
     BufferedRequest, CarrierFinish, CarrierIntent, CarrierReady, CarrierRegistry, CarrierTicket,
     PendingCarrier,
 };
 use std::collections::BTreeMap;
+use tilo_delivery_protocol::delivery_v3::{
+    auth::{self, Binding},
+    http_proof::{Request, RequestProof, VerifiedRequest},
+};
 
 /// Superseded registries kept for their live sessions. Sessions last at most
 /// 15 minutes and renewal runs every ~12, so two cover every live session.

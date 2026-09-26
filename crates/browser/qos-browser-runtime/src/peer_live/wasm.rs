@@ -5,7 +5,7 @@ use super::*;
 use crate::peer_delivery::admission::CutAdmission;
 use crate::peer_delivery_auth::{OwnerView, fail, time};
 use crate::peer_live::{self, GrantBinding, LiveCustody, VerifiedGrant};
-use tilo_relay::delivery_v3::live_wire::{self, LiveDirections};
+use tilo_delivery_protocol::delivery_v3::live_wire::{self, LiveDirections};
 
 thread_local! {
     static LIVE: RefCell<BTreeMap<u32, LiveCustody>> = const { RefCell::new(BTreeMap::new()) };
@@ -127,7 +127,7 @@ pub fn peer_live_grant(
                     })
                 },
                 fresh,
-                || tilo_relay::delivery_v3::media_wire::fresh_nonce().map_err(fail),
+                || tilo_delivery_protocol::delivery_v3::media_wire::fresh_nonce().map_err(fail),
             )
         })?;
         let prepared = (|| {
@@ -156,7 +156,7 @@ pub fn peer_live_grant_complete(id: u32, request: u32, bytes: Vec<u8>) -> Result
         with_custody(id, |custody| custody.forget(request));
         return Err(error("oversized live grant"));
     }
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     with_custody(id, |custody| custody.complete(request, &bytes, now))
         .map(|value| grant_json(&value))
         .map_err(error)
@@ -279,7 +279,7 @@ pub(super) fn settle_durable_cut(
     Vec<crate::peer_live::speculation::Speculative>,
     Vec<crate::peer_live::speculation::Speculative>,
 ) {
-    let now_ns = tilo_relay::clock::now_ns();
+    let now_ns = tilo_delivery_protocol::clock::now_ns();
     let now = SystemTime::now();
     let (previous, settled) = with_custody(peer.id, |custody| {
         let previous = custody.speculation.outstanding().to_vec();
@@ -332,7 +332,7 @@ pub(super) fn restore_durable_basis(peer: &Peer, basis: StatePeer) {
 /// built on the view, so its persisted state already contains the changes:
 /// they are promoted.
 pub(super) fn after_durable_install(peer: &Peer) {
-    let now_ns = tilo_relay::clock::now_ns();
+    let now_ns = tilo_delivery_protocol::clock::now_ns();
     let rebased = LIVE.with(|live| {
         let mut live = live.borrow_mut();
         let custody = live.get_mut(&peer.id)?;
@@ -409,7 +409,7 @@ pub(super) fn author_canonical(
     {
         return None;
     }
-    let now_ns = tilo_relay::clock::now_ns();
+    let now_ns = tilo_delivery_protocol::clock::now_ns();
     let publishing = LIVE.with(|live| {
         live.borrow()
             .get(&peer.id)
@@ -488,7 +488,7 @@ pub fn peer_live_admit(id: u32, frame: Vec<u8>, checked_base: String) -> Result<
     let result = |kind: &str| {
         Ok(serde_json::json!({"kind": kind, "digest": peer_live::hex(&digest), "speculative": false}).to_string())
     };
-    let now_ns = tilo_relay::clock::now_ns();
+    let now_ns = tilo_delivery_protocol::clock::now_ns();
     let live_authorized = with_custody(id, |custody| custody.current(now_ns).is_some());
     if !live_authorized {
         return Err(error("live authorization absent"));
@@ -553,7 +553,7 @@ pub fn peer_live_admit(id: u32, frame: Vec<u8>, checked_base: String) -> Result<
 #[wasm_bindgen]
 pub fn peer_live_reconcile(id: u32) -> Result<String, JsValue> {
     let peer = owner(id)?;
-    let now_ns = tilo_relay::clock::now_ns();
+    let now_ns = tilo_delivery_protocol::clock::now_ns();
     let now = SystemTime::now();
     let expired = with_custody(id, |custody| {
         custody.speculation.expire(now_ns, |state, bytes| {

@@ -212,10 +212,9 @@ impl InvitedIdentity {
 
     pub(crate) fn selected_delivery_pin(&self) -> Result<Option<(DeviceCert, String)>, String> {
         let verified = self.retained_invitation()?;
-        let mut locators =
-            verified.grant().transport.iter().filter(|hint| {
-                hint.kind == tilo_relay::workspace_join::TRANSPORT_DELIVERY_ORIGIN_V1
-            });
+        let mut locators = verified.grant().transport.iter().filter(|hint| {
+            hint.kind == tilo_delivery_protocol::workspace_join::TRANSPORT_DELIVERY_ORIGIN_V1
+        });
         let Some(hint) = locators.next() else {
             return Ok(None);
         };
@@ -225,10 +224,11 @@ impl InvitedIdentity {
         // The certificate is selected from the verified outer invitation, never
         // from the subsequently discovered descriptor. Current appointment is
         // checked against admitted governance before this origin is used.
-        let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
-            hint, &hint.host,
-        )
-        .map_err(|error| error.to_string())?;
+        let locator =
+            tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
+                hint, &hint.host,
+            )
+            .map_err(|error| error.to_string())?;
         Ok(Some((hint.host.clone(), locator.origin)))
     }
 

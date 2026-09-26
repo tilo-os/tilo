@@ -17,7 +17,7 @@ use std::{
     },
     time::Duration,
 };
-use tilo_relay::delivery_v3::http_proof::{Request, RequestProof};
+use tilo_delivery_protocol::delivery_v3::http_proof::{Request, RequestProof};
 use tokio::{net::TcpListener, sync::watch, task::JoinSet, time::timeout};
 pub(crate) struct IngressConfig {
     pub origin: String,
@@ -149,7 +149,7 @@ impl InstalledIngress {
                 && view.committed_peer_identity() == owner.committed_peer_identity(),
             "installed ingress owner mismatch"
         );
-        let persisted = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+        let persisted = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
             owner.stored_delivery_hint()?,
             owner.host_certificate(),
         )?;
@@ -188,7 +188,7 @@ impl InstalledIngress {
                 web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(now),
             )
         })??;
-        let persisted = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(
+        let persisted = tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(
             owner.stored_delivery_hint()?,
             owner.host_certificate(),
         )?;
@@ -333,13 +333,13 @@ impl InstalledIngress {
     }
     fn descriptor_bytes(&self, owner: &SessionOwner) -> Result<Vec<u8>> {
         let hint = self.discovery_hint(owner)?;
-        let mut bounded = [0; tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES];
+        let mut bounded = [0; tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES];
         Ok(postcard::to_slice(&hint, &mut bounded)?.to_vec())
     }
     #[cfg(test)]
     fn descriptor_bytes_at(&self, owner: &SessionOwner, now: u64) -> Result<Vec<u8>> {
         let hint = self.discovery_hint_at(owner, now)?;
-        let mut bounded = [0; tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES];
+        let mut bounded = [0; tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES];
         Ok(postcard::to_slice(&hint, &mut bounded)?.to_vec())
     }
     pub(crate) async fn recv(&mut self) -> Option<BufferedRequest> {

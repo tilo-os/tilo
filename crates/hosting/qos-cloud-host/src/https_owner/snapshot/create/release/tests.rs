@@ -88,7 +88,7 @@ async fn cloud_snapshot_orphan_pins_of_a_device_are_released_but_live_ones_kept(
 /// never refuse every other device's snapshot.
 #[tokio::test]
 async fn cloud_snapshot_full_pin_table_releases_oldest_orphans_of_any_device() {
-    use qos_relay::delivery_v3::commit::MAX_PINS;
+    use tilo_delivery_protocol::delivery_v3::commit::MAX_PINS;
     let f = snapshot_fixture().await;
     register(&f);
     let kept = live(&f);

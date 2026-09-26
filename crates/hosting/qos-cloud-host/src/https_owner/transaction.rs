@@ -1,7 +1,13 @@
 //! Cloud transaction entry: one host-byte reservation sized from the persisted
 //! aggregate BEFORE the actual Store lock/decode, then the original Store barrier.
 use super::{CloudStoreSource, CloudStoreTurn, Current};
-use qos_relay::delivery_v3::{
+use qos_session_peer::ingress::ByteCredit;
+use qos_session_peer::ingress::{
+    AuthenticatedSnapshotPair, HostBytes, PublicationCustody, RetainedAuthenticatedSnapshotPair,
+    SnapshotManifestPair, SnapshotStream,
+    delivery_planning::{DeliveryPolicyBasis, PlanningFailure},
+};
+use tilo_delivery_protocol::delivery_v3::{
     auth::{self, VerifiedSession},
     commit::{
         CommitRef, ConsumerId, ConsumerState, DeliveryLedgerV1, PublicationPool, PublicationRef,
@@ -9,12 +15,6 @@ use qos_relay::delivery_v3::{
     },
     cursor::{CursorIssue, CursorToken, SignedCursorClaims},
     state::{ManifestIssue, ResetReason, SNAPSHOT_CHUNK_BYTES, SnapshotKind, SnapshotManifest},
-};
-use qos_session_peer::ingress::ByteCredit;
-use qos_session_peer::ingress::{
-    AuthenticatedSnapshotPair, HostBytes, PublicationCustody, RetainedAuthenticatedSnapshotPair,
-    SnapshotManifestPair, SnapshotStream,
-    delivery_planning::{DeliveryPolicyBasis, PlanningFailure},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl DeliveryOperation {
             }
             Self::SnapshotCommit | Self::SnapshotRenew | Self::SnapshotRelease => aggregate
                 .checked_mul(5)?
-                .checked_add(qos_relay::delivery_v3::commit::MAX_LEDGER_BYTES)?,
+                .checked_add(tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES)?,
             Self::Onboarding => aggregate.checked_mul(6)?.checked_add(2 * 1024 * 1024)?,
             // The complete input itself is already paid by its carrier credit;
             // this covers its decoded message and the candidate/outbox copies.
@@ -73,7 +73,7 @@ impl DeliveryOperation {
             }
             Self::SnapshotCommit | Self::SnapshotRenew | Self::SnapshotRelease => aggregate
                 .checked_mul(2)?
-                .checked_add(qos_relay::delivery_v3::commit::MAX_LEDGER_BYTES)?,
+                .checked_add(tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES)?,
             Self::Onboarding => aggregate.checked_mul(3)?.checked_add(2 * 1024 * 1024)?,
             Self::State => aggregate
                 .checked_mul(2)?
@@ -579,7 +579,7 @@ impl CloudStoreTurn {
         device: [u8; 32],
         live: &[[u8; 16]],
     ) -> Result<Vec<[u8; 16]>> {
-        use qos_relay::delivery_v3::commit::MAX_PINS;
+        use tilo_delivery_protocol::delivery_v3::commit::MAX_PINS;
         // Its own Release turn, or the draft turn of the new transfer.
         if self
             .require_delivery_operation(DeliveryOperation::SnapshotCommit)
@@ -918,7 +918,7 @@ impl CloudStoreTurn {
                     }
                     return Err(CloudDeliveryError::Denied);
                 }
-                if ledger.pins.len() >= qos_relay::delivery_v3::commit::MAX_PINS {
+                if ledger.pins.len() >= tilo_delivery_protocol::delivery_v3::commit::MAX_PINS {
                     return Err(CloudDeliveryError::Capacity);
                 }
                 ledger.pins.insert(id, pin);

@@ -8,18 +8,18 @@ use super::{
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use context::Pins;
 use ed25519_dalek::{Signature, Signer, VerifyingKey};
-use qos_relay::delivery_v3::{
+use qos_session_peer::ingress::{
+    BufferedRequest, CarrierRegistry, HostBytes, HostWorkInventory, Route,
+};
+use reqwest::StatusCode;
+use std::sync::Arc;
+use tilo_delivery_protocol::delivery_v3::{
     auth::Authority,
     capabilities::{PRODUCT_DATA_V1, validate},
     descriptor,
     http_proof::{Request, RequestProof},
     media_wire::{self, BootstrapRequest, BootstrapResponse, ControlReply},
 };
-use qos_session_peer::ingress::{
-    BufferedRequest, CarrierRegistry, HostBytes, HostWorkInventory, Route,
-};
-use reqwest::StatusCode;
-use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
 mod context;
@@ -156,7 +156,7 @@ pub(crate) struct Installed {
 }
 impl Installed {
     pub(crate) fn capabilities(self) -> u64 {
-        use qos_relay::delivery_v3::capabilities::*;
+        use tilo_delivery_protocol::delivery_v3::capabilities::*;
         // Every data bit depends on the durable replay/consumer lane.
         if !self.state {
             return 0;
@@ -399,7 +399,7 @@ impl CloudService {
         } else {
             0
         } | if live.is_some() {
-            qos_relay::delivery_v3::live_wire::MEDIA_LIVE_V1
+            tilo_delivery_protocol::delivery_v3::live_wire::MEDIA_LIVE_V1
         } else {
             0
         };
@@ -702,7 +702,7 @@ impl CloudService {
     /// It is withdrawn at expiry until the maintenance renewal replaces it.
     fn descriptor(&self) -> Result<Vec<u8>> {
         ensure!(
-            qos_relay::clock::now_ns() < self.descriptor_expires_ns,
+            tilo_delivery_protocol::clock::now_ns() < self.descriptor_expires_ns,
             "descriptor expired"
         );
         Ok(self.descriptor_hint.clone())
@@ -901,7 +901,7 @@ impl CloudService {
                 )?;
                 let verification = context.verification();
                 let binding = registry.binding_for(proof.session_id(), verification.binding)?;
-                let verification = qos_relay::delivery_v3::auth::VerificationContext {
+                let verification = tilo_delivery_protocol::delivery_v3::auth::VerificationContext {
                     binding: &binding,
                     ..verification
                 };
@@ -1032,7 +1032,7 @@ impl CloudService {
         }
     }
     fn renew_descriptor(&mut self) -> Result<()> {
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         self.registry.prune(now);
         if self.descriptor_expires_ns.saturating_sub(now) > context::RENEW_MARGIN_NS
             && !context::renewal_forced(&self.origin)

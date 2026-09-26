@@ -38,7 +38,7 @@ fn cloud_https_backend_existing_open_rejects_replaced_directory_before_effect() 
 fn cloud_https_backend_rejects_foreign_origin_on_the_same_clock_and_store() {
     let (_dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let clock = OwnerPolicyClock::new().unwrap();
     let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
@@ -50,7 +50,7 @@ fn cloud_https_backend_rejects_foreign_origin_on_the_same_clock_and_store() {
 fn source() -> (tempfile::TempDir, CloudStoreSource, [u8; 32]) {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let source = CloudStoreSource::bind(&store).unwrap();
     (dir, source, device)
@@ -59,7 +59,7 @@ fn source() -> (tempfile::TempDir, CloudStoreSource, [u8; 32]) {
 #[test]
 fn cloud_https_current_shared_clock_keeps_runtime_floor_across_store_opens() {
     let (_dir, mut store, _) = crate::agent_owner_tests::enrolled();
-    let initial = qos_relay::clock::now_ns();
+    let initial = tilo_delivery_protocol::clock::now_ns();
     store.activate_delivery_storage(initial).unwrap();
     let (clock, control) = OwnerPolicyClock::for_test(initial + 2_000_000_000);
     let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
@@ -94,7 +94,7 @@ fn cloud_https_current_shared_clock_keeps_runtime_floor_across_store_opens() {
 fn cloud_https_current_shared_clock_source_denial_retires_retained_origin() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let clock = OwnerPolicyClock::new().unwrap();
     let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
@@ -153,7 +153,7 @@ fn cloud_https_current_real_busy_and_fresh_committed_store_turn() {
                     text: "fresh current".into(),
                 },
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
     drop(store);
@@ -210,7 +210,7 @@ fn cloud_https_current_generation_rollback_is_terminal_not_busy() {
                     text: "advance".into(),
                 },
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
     drop(store);

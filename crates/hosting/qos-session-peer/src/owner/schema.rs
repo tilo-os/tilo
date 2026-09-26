@@ -1,7 +1,7 @@
 use super::*;
 use crate::canonical_records::creation::CreationLedgerV1;
 use qos_peer_state::join::TransportHint;
-use tilo_relay::delivery_v3::commit::{
+use tilo_delivery_protocol::delivery_v3::commit::{
     DeliveryLedgerV1, MAX_REFERENCES, PublicationPool, PublicationRef,
 };
 
@@ -552,7 +552,10 @@ impl Aggregate {
                     validate_message(pool.resolve(&r.payload)?, r.kind)?;
                 }
                 if let Some(hint) = transport_hint {
-                    counted(hint, tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES)?;
+                    counted(
+                        hint,
+                        tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES,
+                    )?;
                 }
             }
         }
@@ -613,10 +616,11 @@ impl Aggregate {
                 } else {
                     (exact::<AggregateV5<'_>>(bytes)?, None)
                 };
-                if old.delivery.len() > tilo_relay::delivery_v3::commit::MAX_LEDGER_BYTES
+                if old.delivery.len()
+                    > tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES
                     || old.publications.len() > crate::store::MAX_AGGREGATE_BYTES
                     || old.transport_hint.is_some_and(|b| {
-                        b.len() > tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES
+                        b.len() > tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES
                     })
                 {
                     bail!("V5 encoded field exceeds storage bound");
@@ -706,12 +710,15 @@ impl Aggregate {
                     Some(pool.encoded_len(crate::store::MAX_AGGREGATE_BYTES)?),
                     Some(counted(
                         delivery,
-                        tilo_relay::delivery_v3::commit::MAX_LEDGER_BYTES,
+                        tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES,
                     )?),
                     transport_hint
                         .as_ref()
                         .map(|hint| {
-                            counted(hint, tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES)
+                            counted(
+                                hint,
+                                tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES,
+                            )
                         })
                         .transpose()?,
                 ]
@@ -791,7 +798,12 @@ impl Aggregate {
                 let ledger_len = delivery.encoded_len()?;
                 let hint_len = transport_hint
                     .as_ref()
-                    .map(|h| counted(h, tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES))
+                    .map(|h| {
+                        counted(
+                            h,
+                            tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES,
+                        )
+                    })
                     .transpose()?;
                 let mut length = counted(&wire, crate::store::MAX_AGGREGATE_BYTES)?;
                 for n in [Some(pool_len), Some(ledger_len), hint_len]
@@ -815,7 +827,10 @@ impl Aggregate {
                 let hint = transport_hint
                     .as_ref()
                     .map(|hint| {
-                        encode_bounded(hint, tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES)
+                        encode_bounded(
+                            hint,
+                            tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES,
+                        )
                     })
                     .transpose()?;
                 wire.publications = &pool;

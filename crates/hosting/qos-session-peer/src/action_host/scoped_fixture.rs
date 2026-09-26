@@ -146,7 +146,7 @@ impl ScopedAppFixture {
         if let Some(seed) = seed {
             crate::owner::mutate_owned_record_for_test(&mut owner, app, &record, seed).unwrap();
         }
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let (certificate, key) = admit_caller(&mut owner, now);
         if delivery {
             owner.activate_delivery().unwrap();

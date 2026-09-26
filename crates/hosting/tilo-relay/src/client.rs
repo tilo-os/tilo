@@ -27,17 +27,17 @@ use crate::transport::{
 };
 
 use crate::session_carrier::{CarrierHandle, LegacyIrohCarrier, SessionChannels};
-use crate::transport_v2::{EnvelopeV2, SessionReader};
+use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
 /// Authenticated relay delivery, never constructible from application payloads.
 #[derive(Clone, Debug)]
 pub struct CertifiedAction {
-    action: crate::peer_actions::DirectedAction,
+    action: tilo_delivery_protocol::peer_actions::DirectedAction,
     certificate: DeviceCert,
 }
 impl CertifiedAction {
     /// Exact source-bound private request.
-    pub fn action(&self) -> &crate::peer_actions::DirectedAction {
+    pub fn action(&self) -> &tilo_delivery_protocol::peer_actions::DirectedAction {
         &self.action
     }
     /// Certificate retained from the relay's mutually authenticated source.
@@ -233,11 +233,11 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
-            Self::TiloAgentReadsV1 => crate::transport_v2::ALPN_AGENT_READS_V1,
+            Self::TiloAgentReadsV1 => tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             Self::TiloV1 => ALPN,
-            Self::TiloV2 => crate::transport_v2::ALPN_V2,
+            Self::TiloV2 => tilo_delivery_protocol::transport_v2::ALPN_V2,
             Self::LegacyQosV1 => LEGACY_ALPN,
-            Self::LegacyQosV2 => crate::transport_v2::LEGACY_ALPN_V2,
+            Self::LegacyQosV2 => tilo_delivery_protocol::transport_v2::LEGACY_ALPN_V2,
         }
     }
 
@@ -351,7 +351,7 @@ impl RelayClient {
             &ack,
             &expected_server_user,
             &revocations,
-            crate::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
             &nonce,
         )?;
         if ack.cert.device_public_key != expected_server_device {
@@ -557,14 +557,14 @@ impl RelayClient {
                 &ack,
                 user,
                 &revocations,
-                crate::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
                 &nonce,
             )?,
             None => auth::verify_pinned_host_ack(
                 generation.auth_domain(),
                 &ack,
                 &revocations,
-                crate::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
                 &nonce,
             )?,
         };
@@ -818,7 +818,7 @@ impl RelayClient {
     pub async fn connect_v2_to_interactive_workspace_owner(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
-        trust: crate::workspace_join::InteractiveOwnerTrust,
+        trust: tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust,
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
@@ -923,7 +923,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now_ns = crate::clock::now_ns();
+        let now_ns = tilo_delivery_protocol::clock::now_ns();
         let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
             auth::verify_interactive_owner_ack(
                 protocol.auth_domain(),
@@ -1019,7 +1019,9 @@ impl RelayClient {
                                     authored_at_ns
                                 );
                             }
-                            let Ok(bytes) = crate::transport_v2::encode_state(&env, false) else {
+                            let Ok(bytes) =
+                                tilo_delivery_protocol::transport_v2::encode_state(&env, false)
+                            else {
                                 break;
                             };
                             if send.write_all(&bytes).await.is_err() {
@@ -1168,7 +1170,7 @@ impl RelayClient {
     /// Returns an error on v1, invalid/oversized frames, or bounded backpressure.
     pub fn send_action(&self, frame: EnvelopeV2) -> Result<(), ClientError> {
         if !self.agent_reads_v1
-            && matches!(&frame, EnvelopeV2::Directed(action) if matches!(action.message, crate::peer_actions::ActionMessage::AgentReadV1 {..} | crate::peer_actions::ActionMessage::AgentReadResultV1 {..}))
+            && matches!(&frame, EnvelopeV2::Directed(action) if matches!(action.message, tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadV1 {..} | tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadResultV1 {..}))
         {
             return Err(ClientError::Codec(
                 "agent reads protocol not negotiated".into(),
@@ -1190,7 +1192,8 @@ impl RelayClient {
                 "interactive owner trust does not cover this action room".into(),
             ));
         }
-        crate::transport_v2::encode(&frame).map_err(|e| ClientError::Codec(e.to_string()))?;
+        tilo_delivery_protocol::transport_v2::encode(&frame)
+            .map_err(|e| ClientError::Codec(e.to_string()))?;
         tx.try_send(frame)
             .map_err(|error| private_send_error(&error))
     }
@@ -1208,8 +1211,11 @@ impl RelayClient {
                     || action.source != cert.device_public_key
                     || !action.validate()
                     || cert.capabilities.can_act_as_host
-                    || tilo_user_identity::verify_device_cert_at(&cert, crate::clock::now_ns())
-                        .is_err()
+                    || tilo_user_identity::verify_device_cert_at(
+                        &cert,
+                        tilo_delivery_protocol::clock::now_ns(),
+                    )
+                    .is_err()
                 {
                     return None;
                 }
@@ -1319,7 +1325,8 @@ where
                 {
                     tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
                 }
-                let Ok(bytes) = crate::transport_v2::encode_state(&env, true) else {
+                let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode_state(&env, true)
+                else {
                     return false;
                 };
                 if tokio::io::AsyncWriteExt::write_all(send, &bytes)
@@ -1334,7 +1341,7 @@ where
                 if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
                     return false;
                 }
-                let Ok(bytes) = crate::transport_v2::encode(&action) else {
+                let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode(&action) else {
                     return false;
                 };
                 if tokio::io::AsyncWriteExt::write_all(send, &bytes)
@@ -1660,10 +1667,10 @@ mod scheduling_tests {
         assert_eq!(written.lock().unwrap().len(), 1);
         let response = EnvelopeV2::ActionsReady {
             room: uuid::Uuid::from_u128(7),
-            capability: crate::transport_v2::ActionCapability::TransportOnly,
+            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         };
         relay_write
-            .write_all(&crate::transport_v2::encode(&response).unwrap())
+            .write_all(&tilo_delivery_protocol::transport_v2::encode(&response).unwrap())
             .await
             .unwrap();
         let observed =
@@ -1716,7 +1723,7 @@ mod scheduling_tests {
         let frames = Arc::new(Mutex::new(Vec::new()));
         let writer = RefillingWrite {
             states: state_tx,
-            expected_enable: crate::transport_v2::encode(&enable).unwrap(),
+            expected_enable: tilo_delivery_protocol::transport_v2::encode(&enable).unwrap(),
             enable_seen: Some(enable_seen_tx),
             frames: frames.clone(),
         };
@@ -1738,10 +1745,10 @@ mod scheduling_tests {
 
         let response = EnvelopeV2::ActionsReady {
             room,
-            capability: crate::transport_v2::ActionCapability::TransportOnly,
+            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         };
         relay_write
-            .write_all(&crate::transport_v2::encode(&response).unwrap())
+            .write_all(&tilo_delivery_protocol::transport_v2::encode(&response).unwrap())
             .await
             .unwrap();
         assert_eq!(
@@ -1755,9 +1762,12 @@ mod scheduling_tests {
             .expect("continuous state refills extended the finite enable prefix")
             .unwrap();
 
-        let encoded_subscribe =
-            crate::transport_v2::encode_state(&Envelope::Subscribe { workspace_id }, true).unwrap();
-        let encoded_enable = crate::transport_v2::encode(&enable).unwrap();
+        let encoded_subscribe = tilo_delivery_protocol::transport_v2::encode_state(
+            &Envelope::Subscribe { workspace_id },
+            true,
+        )
+        .unwrap();
+        let encoded_enable = tilo_delivery_protocol::transport_v2::encode(&enable).unwrap();
         let (subscribe_position, enable_position) = {
             let frames = frames.lock().unwrap();
             (
@@ -1897,7 +1907,7 @@ mod scheduling_tests {
             super::ClientError::UnsupportedProtocol
         ));
     }
-    use crate::peer_actions::{ActionMessage, DirectedAction};
+    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     use uuid::Uuid;
 
     fn action() -> EnvelopeV2 {
@@ -1954,8 +1964,10 @@ mod scheduling_tests {
             workspace_id: id,
             pending_deltas: 0,
         };
-        let first = crate::transport_v2::encode(&EnvelopeV2::State(frame(256))).unwrap();
-        let second = crate::transport_v2::encode(&EnvelopeV2::State(frame(257))).unwrap();
+        let first =
+            tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(frame(256))).unwrap();
+        let second =
+            tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(frame(257))).unwrap();
         let first_len = first.len();
         let wire = [first, second].concat();
         let bytes_read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2007,9 +2019,10 @@ mod scheduling_tests {
             }
             count
         });
-        let bytes = crate::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong))
-            .unwrap()
-            .repeat(1024);
+        let bytes =
+            tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong))
+                .unwrap()
+                .repeat(1024);
         let mut reader = SessionReader::new(std::io::Cursor::new(bytes), true);
         run_v2_reader(&mut reader, &incoming, &actions, None).await;
         drop(incoming);
@@ -2092,7 +2105,7 @@ mod scheduling_tests {
 
     #[tokio::test]
     async fn private_inbound_overflow_ends_the_shared_v2_pump() {
-        let frame = crate::transport_v2::encode(&action()).unwrap();
+        let frame = tilo_delivery_protocol::transport_v2::encode(&action()).unwrap();
         let mut reader = SessionReader::new(std::io::Cursor::new(frame), true);
         let (state_tx, mut states) = mpsc::channel(256);
         let (action_tx, mut actions) = mpsc::channel(32);
@@ -2197,7 +2210,7 @@ mod session_carrier_tests {
             &ack,
             &host_cert.user_public_key,
             &RevocationList::new(),
-            crate::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
             &[1; 32],
         )
         .unwrap();
@@ -2372,12 +2385,12 @@ mod session_carrier_tests {
     #[tokio::test]
     async fn agent_read_cannot_enter_a_session_without_negotiated_support() {
         let fixture = fixture(true);
-        let frame = EnvelopeV2::Directed(crate::peer_actions::DirectedAction {
+        let frame = EnvelopeV2::Directed(tilo_delivery_protocol::peer_actions::DirectedAction {
             room: uuid::Uuid::from_u128(1),
             request_id: uuid::Uuid::from_u128(2),
             source: [30; 32],
             target: [40; 32],
-            message: crate::peer_actions::ActionMessage::AgentReadV1 {
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadV1 {
                 host: uuid::Uuid::from_u128(3),
                 invocation: uuid::Uuid::from_u128(4),
                 request: qos_agent_control_protocol::AgentRequest::Capabilities { version: 1 },
@@ -2393,12 +2406,14 @@ mod session_carrier_tests {
     async fn private_evidence_still_binds_source_certificate_and_recipient() {
         let fixture = fixture(true);
         let cert = certificate(40, DeviceCapabilities::primary());
-        let action = crate::peer_actions::DirectedAction {
+        let action = tilo_delivery_protocol::peer_actions::DirectedAction {
             room: uuid::Uuid::from_u128(1),
             request_id: uuid::Uuid::from_u128(2),
             source: cert.device_public_key,
             target: [30; 32],
-            message: crate::peer_actions::ActionMessage::CatalogueRefresh { scope: None },
+            message: tilo_delivery_protocol::peer_actions::ActionMessage::CatalogueRefresh {
+                scope: None,
+            },
         };
         let frame = |action| EnvelopeV2::CertifiedDelivered {
             action,

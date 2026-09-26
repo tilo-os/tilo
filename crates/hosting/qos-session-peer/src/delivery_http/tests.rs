@@ -1,6 +1,6 @@
 use super::*;
 use crate::owner::delivery::NativeDeliveryAuthority;
-use tilo_relay::delivery_v3::{auth, descriptor::GenerationExpectation};
+use tilo_delivery_protocol::delivery_v3::{auth, descriptor::GenerationExpectation};
 use tilo_user_identity::RevocationList;
 use web_time::{Duration, SystemTime};
 
@@ -15,7 +15,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
         owner.activate_delivery().unwrap();
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         owner
             .install_delivery_transport("https://localhost:9443", 0, at(now))
             .unwrap();
@@ -264,7 +264,7 @@ fn registry_rechecks_committed_authority_and_fences_descriptor_replacement() {
 #[test]
 fn bootstrap_requires_enrolled_device_and_attests_exact_store_under_governor_custody() {
     use ed25519_dalek::{Signer, VerifyingKey};
-    use tilo_relay::delivery_v3::media_wire::{
+    use tilo_delivery_protocol::delivery_v3::media_wire::{
         BootstrapRequest, BootstrapResponse, join_signature, split_signature,
     };
     let f = Fixture::new();
@@ -345,7 +345,7 @@ fn authenticated_native_control_grant_setup_presence_refresh_close_and_leave() {
     };
     use ed25519_dalek::{Signer, VerifyingKey};
     use qos_moq::relay::RelayAuthority;
-    use tilo_relay::delivery_v3::media_wire::*;
+    use tilo_delivery_protocol::delivery_v3::media_wire::*;
     let mut f = Fixture::new();
     f.current
         .with_owner(&mut f.owner, |owner| {

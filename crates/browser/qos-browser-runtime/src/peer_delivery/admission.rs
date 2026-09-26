@@ -11,7 +11,7 @@ use super::CompleteEvent;
 use crate::peer_delivery_cursor::StoredDeliveryCursor;
 use crate::peer_journal::{JournalFormat, JournalStorage};
 use qos_peer_state::{NativePublicationCut, NeighbourMsg, StatePeer};
-use tilo_relay::delivery_v3::{cursor::CursorToken, state::EventKind};
+use tilo_delivery_protocol::delivery_v3::{cursor::CursorToken, state::EventKind};
 use web_time::SystemTime;
 
 /// Largest outer allocation one decoded publication may make.

@@ -23,7 +23,7 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tilo_relay::delivery_v3::http_proof;
+use tilo_delivery_protocol::delivery_v3::http_proof;
 use tokio::{
     net::TcpListener,
     sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
@@ -52,9 +52,9 @@ pub enum Route {
     Bootstrap,
     Challenge,
     Sessions,
-    Onboarding(tilo_relay::delivery_v3::onboarding_wire::OnboardingOperation),
+    Onboarding(tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingOperation),
     OnboardingChunk,
-    Private(tilo_relay::delivery_v3::private_wire::PrivateOperation),
+    Private(tilo_delivery_protocol::delivery_v3::private_wire::PrivateOperation),
     PrivatePoll,
     State,
     EventsPoll,
@@ -113,7 +113,7 @@ impl Route {
             Self::Challenge | Self::Sessions | Self::Acks | Self::Snapshot | Self::Media(_) => {
                 AUTH_BYTES
             }
-            Self::LiveGrant => tilo_relay::delivery_v3::live_wire::MAX_GRANT_BYTES,
+            Self::LiveGrant => tilo_delivery_protocol::delivery_v3::live_wire::MAX_GRANT_BYTES,
             _ => 0,
         }
     }
@@ -305,7 +305,7 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
             Route::OnboardingChunk
         }
         ("POST", "/peer/v3/snapshots") if parts.uri.query().is_none() => Route::Snapshot,
-        ("POST", tilo_relay::delivery_v3::live_wire::LIVE_GRANT_TARGET)
+        ("POST", tilo_delivery_protocol::delivery_v3::live_wire::LIVE_GRANT_TARGET)
             if parts.uri.query().is_none() =>
         {
             Route::LiveGrant
@@ -314,7 +314,8 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
             Route::SnapshotChunk
         }
         ("GET", "/peer/v3/private/events")
-            if target == tilo_relay::delivery_v3::private_wire::PRIVATE_EVENTS_TARGET =>
+            if target
+                == tilo_delivery_protocol::delivery_v3::private_wire::PRIVATE_EVENTS_TARGET =>
         {
             Route::PrivatePoll
         }
@@ -323,7 +324,7 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
             // PIPELINED_POLL_V1 chained poll (canonical sorted query, cursor
             // required); the session capability is enforced on admission.
             if query.starts_with("chain=") {
-                if tilo_relay::delivery_v3::poll_chain::parse_poll_target(target)
+                if tilo_delivery_protocol::delivery_v3::poll_chain::parse_poll_target(target)
                     .is_none_or(|(_, chain)| chain.is_none())
                 {
                     return Err(Rejection::unsupported());
@@ -333,7 +334,8 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
                 let mode = if let Some(cursor) = query.strip_prefix("cursor=") {
                     let (cursor, mode) = cursor.split_once('&').ok_or_else(Rejection::invalid)?;
                     if cursor.is_empty()
-                        || cursor.len() > tilo_relay::delivery_v3::state::MAX_CURSOR_URL_BYTES
+                        || cursor.len()
+                            > tilo_delivery_protocol::delivery_v3::state::MAX_CURSOR_URL_BYTES
                         || cursor.len() % 2 != 0
                         || !cursor
                             .bytes()
@@ -363,13 +365,13 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
         }
         ("POST", path) if parts.uri.query().is_none() => {
             if let Ok(operation) =
-                tilo_relay::delivery_v3::onboarding_wire::OnboardingOperation::from_target(
+                tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingOperation::from_target(
                     "POST", target,
                 )
             {
                 Route::Onboarding(operation)
             } else if let Ok(operation) =
-                tilo_relay::delivery_v3::private_wire::PrivateOperation::from_target("POST", target)
+                tilo_delivery_protocol::delivery_v3::private_wire::PrivateOperation::from_target("POST", target)
             {
                 Route::Private(operation)
             } else {
@@ -438,7 +440,7 @@ pub(crate) fn snapshot_chunk_target(path: &str) -> Option<([u8; 16], u32)> {
         return None;
     }
     let index: u32 = index.parse().ok()?;
-    if index >= tilo_relay::delivery_v3::state::MAX_SNAPSHOT_CHUNKS {
+    if index >= tilo_delivery_protocol::delivery_v3::state::MAX_SNAPSHOT_CHUNKS {
         return None;
     }
     Some((hex::decode(pin).ok()?.try_into().ok()?, index))
@@ -500,7 +502,7 @@ impl BufferedRequest {
         credits: ResponseCredits,
     ) -> Result<(), &'static str> {
         let response_limit = if self.route == Route::Descriptor {
-            tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES
+            tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES
         } else if self.route == Route::Bootstrap {
             32 * 1024
         } else if matches!(self.route, Route::Media(_)) {

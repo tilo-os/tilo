@@ -3,7 +3,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use qos_peer_state::StatePeer;
 use std::collections::BTreeMap;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::{self, Carrier},
     capabilities,
     descriptor::{self, VerifiedDescriptor},

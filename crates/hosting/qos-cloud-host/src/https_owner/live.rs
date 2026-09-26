@@ -31,7 +31,13 @@ use qos_moq::{
     live::{LiveAuthority, LiveRelay, LiveSession},
     relay::{Admission, AuthorizationStatus},
 };
-use qos_relay::delivery_v3::{
+use rand::TryRng as _;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+use tilo_delivery_protocol::delivery_v3::{
     capabilities::PRODUCT_DATA_V1,
     http_proof::{Method, VerifiedRequest},
     live_wire::{
@@ -39,12 +45,6 @@ use qos_relay::delivery_v3::{
         LiveGrantMetadata, LiveGrantRequest, LiveNamespace, LiveRecord, MAX_STREAM_FRAME_BYTES,
         OpsFrame, PresenceFrame, SignedLiveGrant, room_digest,
     },
-};
-use rand::TryRng as _;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
 };
 use web_time::SystemTime;
 
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn relay_bounds_match_the_frozen_wire_contract() {
         use qos_moq::live;
-        use qos_relay::delivery_v3::live_wire as wire;
+        use tilo_delivery_protocol::delivery_v3::live_wire as wire;
         assert_eq!(live::LIVE_PATH, wire::LIVE_WEBTRANSPORT_PATH);
         assert_eq!(live::LIVE_PROTOCOL, wire::LIVE_PROTOCOL);
         assert_eq!(live::NAMESPACE_ROOT, wire::LIVE_NAMESPACE_ROOT);

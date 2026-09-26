@@ -2,9 +2,10 @@
 //! frames never enter the v1 codec or durable relay store.
 #![allow(missing_docs)]
 use crate::peer_actions::{DirectedAction, MAX_PRIVATE_BYTES, UnavailableReason};
-use crate::transport::{Envelope, FrameError, MAX_FRAME_BYTES};
 use serde::{Deserialize, Serialize};
 use tilo_actions::InvocationId;
+use tilo_relay_client::frame::FrameError;
+use tilo_relay_protocol::transport::{Envelope, MAX_FRAME_BYTES};
 use uuid::Uuid;
 
 /// Current Tilo v2 transport.
@@ -118,7 +119,7 @@ pub fn decode(payload: &[u8]) -> Result<EnvelopeV2, postcard::Error> {
 
 /// Stateful framing survives cancellation by a concurrent writer/access audit.
 /// Read the discriminant before allocating so private frames have a small cap.
-pub(crate) struct SessionReader<R> {
+pub struct SessionReader<R> {
     inner: R,
     v2: bool,
     prefix: [u8; 4],
@@ -195,7 +196,7 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
         let value = if self.v2 {
             decode(&self.payload)
         } else {
-            crate::transport::decode(&self.payload).map(EnvelopeV2::State)
+            tilo_relay_client::frame::decode(&self.payload).map(EnvelopeV2::State)
         }
         .map_err(FrameError::Decode)?;
         self.prefix_read = 0;
@@ -205,7 +206,12 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
     }
 }
 
-pub(crate) fn encode_state(env: &Envelope, v2: bool) -> Result<Vec<u8>, postcard::Error> {
+/// Encode one state envelope in the session's negotiated live framing.
+///
+/// # Errors
+///
+/// Returns a postcard error if the envelope cannot be encoded within the frame bound.
+pub fn encode_state(env: &Envelope, v2: bool) -> Result<Vec<u8>, postcard::Error> {
     if v2 {
         let payload = state_payload(env)?;
         if payload.len() > MAX_FRAME_BYTES + 1 {
@@ -217,13 +223,17 @@ pub(crate) fn encode_state(env: &Envelope, v2: bool) -> Result<Vec<u8>, postcard
         out.extend_from_slice(&payload);
         Ok(out)
     } else {
-        crate::transport::encode(env)
+        tilo_relay_client::frame::encode(env)
     }
 }
 
 /// Same zero-valued State discriminant as `EnvelopeV2`, borrowing its payload so
 /// the replay allocation permit covers every live representation during writes.
-pub(crate) fn state_payload(env: &Envelope) -> Result<Vec<u8>, postcard::Error> {
+///
+/// # Errors
+///
+/// Returns a postcard error if the envelope cannot be encoded.
+pub fn state_payload(env: &Envelope) -> Result<Vec<u8>, postcard::Error> {
     #[derive(serde::Serialize)]
     enum BorrowedState<'a> {
         State(&'a Envelope),

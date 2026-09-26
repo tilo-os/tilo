@@ -1,11 +1,11 @@
 //! Opt-in genuine signed-process qualification, never a fabricated authority fixture.
 use super::*;
-use qos_relay::{agent_reads::AgentReadBinding, peer_actions::ActionMessage as A};
 use std::{
     os::unix::net::UnixStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
 };
+use tilo_delivery_protocol::{agent_reads::AgentReadBinding, peer_actions::ActionMessage as A};
 
 struct Reap(Child);
 impl Drop for Reap {
@@ -23,7 +23,7 @@ async fn query(
 ) -> A {
     let request_id = uuid::Uuid::new_v4();
     client
-        .send_action(qos_relay::peer_actions::DirectedAction {
+        .send_action(tilo_delivery_protocol::peer_actions::DirectedAction {
             room,
             request_id,
             source,

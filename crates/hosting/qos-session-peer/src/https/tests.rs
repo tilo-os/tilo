@@ -1232,7 +1232,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
             panic!("wrong native command")
         };
         let challenge = enrollment
-            .challenge(&owner, request, tilo_relay::clock::now_ns())
+            .challenge(&owner, request, tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         command
             .reply
@@ -1268,7 +1268,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
             panic!("wrong native command")
         };
         let certificate = enrollment
-            .complete(&mut owner, request, tilo_relay::clock::now_ns())
+            .complete(&mut owner, request, tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         command
             .reply
@@ -1515,7 +1515,8 @@ fn descriptor_discovery_reply_rejects_capacity_over_24_kib() {
         response,
         lease: ingress.reserve(0, Lane::Control).unwrap(),
     };
-    let mut body = Vec::with_capacity(tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES + 1);
+    let mut body =
+        Vec::with_capacity(tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES + 1);
     body.push(0);
     assert_eq!(
         request.respond(StatusCode::OK, body),

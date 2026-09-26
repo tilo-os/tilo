@@ -2,13 +2,13 @@
 //! the actual Cloud Store owner, the descriptor live bit, and the live relay on
 //! the real shared QUIC endpoint (pinned loopback TLS leaf, native MoQ clients).
 use super::*;
-use qos_relay::delivery_v3::live_wire::*;
 use rustls::pki_types::CertificateDer;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
+use tilo_delivery_protocol::delivery_v3::live_wire::*;
 use tokio::time::timeout;
 
 const T: Duration = Duration::from_secs(10);
@@ -67,7 +67,9 @@ async fn invite(
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest as Join,
         JoinTransportResponse as Reply, decode_and_verify_invitation_text, sign_join_proof,
     };
-    use qos_relay::delivery_v3::onboarding_wire::{OnboardingOperation, OnboardingScope};
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
+        OnboardingOperation, OnboardingScope,
+    };
     let admin =
         crate::broker::CloudCollaborationAdmin::new(root, MACHINE, &enrollment.challenge.room);
     let issued = qos_action_broker::collaboration_admin::CollaborationAdmin::execute(
@@ -91,7 +93,7 @@ async fn invite(
         issued["invite"].as_str().unwrap(),
         None,
         &RevocationList::new(),
-        qos_relay::clock::now_ns(),
+        tilo_delivery_protocol::clock::now_ns(),
     )
     .unwrap();
     let signed_invitation = verified.signed_invitation().to_vec();
@@ -102,7 +104,7 @@ async fn invite(
         device_public_key: guest_device.verifying_key().to_bytes(),
         device_label: "Guest device".into(),
         capabilities: qos_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: qos_relay::clock::now_ns() - 1_000_000_000,
+        issued_at_ns: tilo_delivery_protocol::clock::now_ns() - 1_000_000_000,
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -263,7 +265,7 @@ const RECORD: &str = "tab:0000000000000001";
 fn delta_by(root: &Path, author: &SigningKey, text: &str) -> Vec<u8> {
     use qos_actions::Action;
     let store = crate::Store::open(root, MACHINE).unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut peer = store.peer_at(now).unwrap();
     drop(store);
     let mut doc = automerge::AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
@@ -362,7 +364,7 @@ async fn cloud_live_grant_route_issues_renews_refuses_and_advertises_live() {
     assert!(bytes.len() <= MAX_GRANT_BYTES);
     let first = SignedLiveGrant::decode(&bytes).unwrap();
     first
-        .verify(&host_key(&root), qos_relay::clock::now_ns())
+        .verify(&host_key(&root), tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let m = &first.metadata;
     assert_eq!(

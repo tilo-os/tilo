@@ -4,7 +4,7 @@ use crate::{ActionRequest, NativeOperation, Store};
 fn fixture() -> (tempfile::TempDir, CloudStoreSource, [u8; 32]) {
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let source = CloudStoreSource::bind(&store).unwrap();
     drop(store);
@@ -40,7 +40,7 @@ fn document(dir: &std::path::Path, device: [u8; 32], id: &str) {
                     text: "stable policy".into(),
                 },
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
 }
@@ -53,7 +53,9 @@ fn cloud_private_disclosure_same_store_origin_and_expiry_are_required() {
     assert!(turn(&source, |turn| fence.check(turn)).is_ok());
     document(dir.path(), device, "progress");
     std::thread::sleep(std::time::Duration::from_nanos(
-        fence.expiry_ns.saturating_sub(qos_relay::clock::now_ns()),
+        fence
+            .expiry_ns
+            .saturating_sub(tilo_delivery_protocol::clock::now_ns()),
     ));
     assert!(
         turn(&source, |turn| fence.check(turn)).is_err(),
@@ -66,11 +68,11 @@ const TLS_CERT: &str = "3082017d30820123a00302010202147ac297cf4de83a0525b286d5c7
 const TLS_KEY: &str = "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b020101042058815db9251f1c7a1bbb3ccfd7ea7d5c0b0b680eac16f8bb2b09b60e06cc771da1440342000457ce6d80dfc27f71bc5c546417cf92a1621aa614a707057f2447ea54ede7034f0976988f9774dd07fa000cc12de7f304af8f32cb0ca315166245077b1b314655";
 
 use ed25519_dalek::SigningKey;
-use qos_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth, http_proof,
     private_wire::{PrivateOperation, PrivateScope},
 };
-use qos_relay::peer_actions::ActionMessage;
+use tilo_delivery_protocol::peer_actions::ActionMessage;
 use uuid::Uuid;
 // Genuine proofs use the production authority on the actual Store turn.
 // Descriptor/boot installation remains outside this component fixture.
@@ -261,7 +263,7 @@ fn policy(dir: &std::path::Path, cap: collab_types::caps::CapOverride) {
                     .map(|c| c.raw_bytes().to_vec())
                     .collect(),
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
 }
@@ -671,7 +673,7 @@ fn cloud_private_same_uuid_status_does_not_refresh_older_ready_event_fence() {
 #[test]
 fn cloud_private_at_unix_rechecked_within_same_actual_store_turn() {
     let (dir, source, _) = fixture();
-    let expiry = qos_relay::clock::now_ns() / 1_000_000_000 + 2;
+    let expiry = tilo_delivery_protocol::clock::now_ns() / 1_000_000_000 + 2;
     policy(
         dir.path(),
         cap(true).expiring(collab_types::caps::Expiry::AtUnix(expiry)),
@@ -691,7 +693,9 @@ fn cloud_private_at_unix_rechecked_within_same_actual_store_turn() {
             "actual Store lock held throughout disclosure"
         );
         std::thread::sleep(std::time::Duration::from_nanos(
-            fence.expiry_ns.saturating_sub(qos_relay::clock::now_ns()),
+            fence
+                .expiry_ns
+                .saturating_sub(tilo_delivery_protocol::clock::now_ns()),
         ));
         assert_eq!(generation, turn.generation());
         assert!(
@@ -738,7 +742,7 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
     let (caller, prepared) = crate::agent_owner_tests::prepare(&store, device, &id.to_string());
     store.commit_agent_request(&prepared, &caller).unwrap();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
     let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
@@ -1062,7 +1066,7 @@ async fn cloud_private_actual_agent_owner_observes_the_evidence_invocation_only(
     let (caller, prepared) = crate::agent_owner_tests::prepare(&store, device, &id.to_string());
     store.commit_agent_request(&prepared, &caller).unwrap();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
     let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();

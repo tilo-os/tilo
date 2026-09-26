@@ -1,6 +1,6 @@
 //! Caller-bound native control. Only an admitted exact HTTP request reaches signing.
 use super::*;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     http_proof::VerifiedRequest,
     media_wire::{
         ChallengeTranscript, ControlCommand, ControlRequest, ControlResult, MediaContext,
@@ -55,7 +55,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
     pub fn control_in(
         &self,
         turn: &S::Turn<'_>,
-        context: &tilo_relay::delivery_v3::auth::VerificationContext<'_>,
+        context: &tilo_delivery_protocol::delivery_v3::auth::VerificationContext<'_>,
         request: &VerifiedRequest<'_>,
         sign: impl FnMut(MediaSigningInput) -> Result<[u8; 64], MediaError>,
     ) -> Result<ControlResult, MediaError> {
@@ -76,7 +76,8 @@ impl<S: MediaAuthoritySource> MediaService<S> {
     ) -> Result<ControlResult, MediaError> {
         let wire = ControlRequest::decode(request.request().body())
             .map_err(|_| MediaError::InvalidRequest)?;
-        if request.request().method() != tilo_relay::delivery_v3::http_proof::Method::Post
+        if request.request().method()
+            != tilo_delivery_protocol::delivery_v3::http_proof::Method::Post
             || request.request().target() != crate::media_control::route(&wire.command).path()
         {
             return Err(MediaError::InvalidRequest);
@@ -119,7 +120,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
                     peer,
                     policy,
                     nonce,
-                    tilo_relay::delivery_v3::media_wire::join_signature(signature),
+                    tilo_delivery_protocol::delivery_v3::media_wire::join_signature(signature),
                     now,
                     |digest| sign(MediaSigningInput::new(*digest)),
                 )? {
@@ -211,7 +212,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
                     policy,
                     &slot.session,
                     nonce,
-                    tilo_relay::delivery_v3::media_wire::join_signature(signature),
+                    tilo_delivery_protocol::delivery_v3::media_wire::join_signature(signature),
                     now,
                 )?;
                 let expires_at_ns = session.metadata().expires_at_ns;

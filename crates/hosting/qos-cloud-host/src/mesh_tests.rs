@@ -279,7 +279,7 @@ async fn two_hosts_exchange_real_action_catalogue_cancellation_and_receipts() {
             )
             .unwrap()
         };
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         {
             let mut sa = Store::open(a.path(), "a").unwrap();
             let mut sb = Store::open(b.path(), "b").unwrap();
@@ -644,7 +644,7 @@ impl iroh::protocol::ProtocolHandler for RevokingReply {
 async fn source_revoked_while_remote_action_runs_cannot_receive_result() {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let (a, b, mut grant) = linked();
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let browser = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         let ar = action_server::start(a.path(), "a", iroh::RelayMode::Disabled)
             .await
@@ -835,7 +835,7 @@ fn durability_mesh_exchange_does_not_report_uncertain_admission_as_rejected() {
         )
         .unwrap()
     };
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     {
         let mut sa = Store::open(a.path(), "a").unwrap();
         let mut sb = Store::open(b.path(), "b").unwrap();

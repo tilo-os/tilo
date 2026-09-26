@@ -1,4 +1,4 @@
-use super::{HostedAttemptError as Error, Result, identity, relay};
+use super::{HostedAttemptError as Error, Result, identity};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::join::{self, JoinTransportRequest as Request};
 use qos_peer_state::resources::dto_guard::{self as json_guard, GuardLimits};
@@ -11,7 +11,8 @@ pub(super) const MAX_MATERIAL: usize = 1024 * 1024;
 pub(super) const MAX_REQUEST: usize = 12 * 1024;
 pub(super) const MAX_RESULT: usize = 20 * 1024;
 pub(super) const FIRST_HOST_LABEL: &str = "Tilo Cloud";
-pub(super) const MAX_JOIN: usize = relay::delivery_v3::onboarding_wire::MAX_REQUEST_BYTES;
+pub(super) const MAX_JOIN: usize =
+    tilo_delivery_protocol::delivery_v3::onboarding_wire::MAX_REQUEST_BYTES;
 /// Bounded tolerance between the browser clock and the Cloud host clock.
 /// Expiry stays strict (`now < expires`); only freshness bounds and
 /// not-yet-valid checks accept a clock this far behind or ahead.
@@ -464,7 +465,7 @@ impl MaterialV4 {
                 .map_err(|_| Error::Scope)?
                 .to_string()
                 != challenge.room
-            || relay::room_workspace_id(&challenge.room)
+            || tilo_relay_protocol::room_workspace_id(&challenge.room)
                 .map_err(|_| Error::Scope)?
                 .to_string()
                 != challenge.workspace_id

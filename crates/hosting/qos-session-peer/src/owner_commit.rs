@@ -271,14 +271,15 @@ impl PendingOwnerCommit {
     pub fn apply_desktop(
         self,
         owner: &mut SessionOwner,
-    ) -> Result<Option<tilo_relay::peer_actions::DirectedAction>, String> {
+    ) -> Result<Option<tilo_delivery_protocol::peer_actions::DirectedAction>, String> {
         self.defer_desktop(owner)()
     }
     fn defer_desktop(
         mut self,
         owner: &mut SessionOwner,
-    ) -> impl FnOnce() -> Result<Option<tilo_relay::peer_actions::DirectedAction>, String> + use<>
-    {
+    ) -> impl FnOnce()
+        -> Result<Option<tilo_delivery_protocol::peer_actions::DirectedAction>, String>
+    + use<> {
         use qos_peer_state::desktop_command::DesktopCommandError;
         let timing = Timing::new("owner_commit_desktop");
         self.start_execution();
@@ -380,8 +381,9 @@ impl PendingOwnerCommit {
     pub(crate) fn apply_deferred(
         self,
         owner: &mut SessionOwner,
-    ) -> impl FnOnce() -> Result<Option<tilo_relay::peer_actions::DirectedAction>, String> + use<>
-    {
+    ) -> impl FnOnce()
+        -> Result<Option<tilo_delivery_protocol::peer_actions::DirectedAction>, String>
+    + use<> {
         let (ordinary, desktop) = if self.is_desktop() {
             (None, Some(self.defer_desktop(owner)))
         } else {

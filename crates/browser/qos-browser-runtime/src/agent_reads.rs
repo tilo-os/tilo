@@ -1,6 +1,6 @@
 //! Disposable read correlation; current native/browser identity supplies the context.
 use std::collections::BTreeMap;
-use tilo_relay::{
+use tilo_delivery_protocol::{
     agent_reads::AgentReadBinding,
     peer_actions::{ActionMessage, DirectedAction},
     transport_v2::EnvelopeV2,
@@ -37,7 +37,7 @@ impl PendingAgentReads {
             .cloned()
             .and_then(|value| serde_json::from_value::<AgentReadBinding>(value).ok())
             .filter(|binding| {
-                tilo_relay::agent_reads::valid_binding(binding, *host)
+                tilo_delivery_protocol::agent_reads::valid_binding(binding, *host)
                     && identity.get("room").and_then(|value| value.as_str())
                         == Some(binding.agent.room.as_str())
                     && identity.get("sender").and_then(|value| value.as_str())
@@ -78,7 +78,7 @@ impl PendingAgentReads {
             .map(|value| format!("{value:02x}"))
             .collect::<String>();
         if !action.validate()
-            || !tilo_relay::agent_reads::valid_binding(&binding, *host)
+            || !tilo_delivery_protocol::agent_reads::valid_binding(&binding, *host)
             || binding.agent.room != action.room.to_string()
             || binding.agent.device != source
         {
@@ -151,7 +151,9 @@ impl PendingAgentReads {
                     } if host == expected_host
                         && invocation == expected_invocation
                         && *binding == pending.binding
-                        && tilo_relay::agent_reads::matches_request(request, response) => {}
+                        && tilo_delivery_protocol::agent_reads::matches_request(
+                            request, response,
+                        ) => {}
                     ActionMessage::Rejected { .. } => (),
                     _ => return false,
                 }
@@ -204,7 +206,7 @@ mod tests {
     use super::*;
     use qos_agent_control_protocol::{AgentBinding, AgentRequest, AgentResponse};
     use serde_json::json;
-    use tilo_relay::{
+    use tilo_delivery_protocol::{
         agent_reads::AgentReadBinding,
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,

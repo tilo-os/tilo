@@ -1,5 +1,5 @@
 use super::*;
-use qos_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     framing::{MessageType, append_frame},
     state::{CommitBoundary, SNAPSHOT_CHUNK_BYTES, SnapshotChunk},
 };

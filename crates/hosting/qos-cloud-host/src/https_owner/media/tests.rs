@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 fn cloud_media_source_uses_one_actual_store_turn_and_only_real_contention_is_busy() {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let source = CloudStoreSource::bind(&store).unwrap();
     drop(store);

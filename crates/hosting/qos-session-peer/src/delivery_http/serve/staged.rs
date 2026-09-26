@@ -12,7 +12,7 @@ use crate::{
     store::HostWorkInventory,
 };
 use std::{collections::HashMap, sync::mpsc};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     framing::{self, MessageType},
     state::StateItemChunk,
 };

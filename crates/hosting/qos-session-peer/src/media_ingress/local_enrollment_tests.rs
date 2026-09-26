@@ -6,7 +6,7 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use hyper::StatusCode;
 use qos_peer_state::enrollment::{ChallengeRequest, decode, sign};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     media_wire::split_signature,
     onboarding_wire::{
         GovernanceBundle, HANDOFF_CHUNKS_PATH, HandoffChunk, HandoffManifest, HandoffPurpose,
@@ -66,7 +66,7 @@ struct Enrolled {
 /// the issuance, then build the reply exactly as `host::enrollment_reply`.
 fn enroll(h: &mut Harness, seed: u8) -> Enrolled {
     let device = SigningKey::from_bytes(&[seed; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut authority = crate::enrollment::EnrollmentAuthority::default();
     let challenge = authority
         .challenge(
@@ -120,7 +120,7 @@ impl Harness {
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         while bytes.len() < manifest.total_bytes as usize {
-            let now = tilo_relay::clock::now_ns();
+            let now = tilo_delivery_protocol::clock::now_ns();
             let remaining = manifest.total_bytes as usize - bytes.len();
             let mut fetch = HandoffRequest {
                 version: 1,
@@ -166,7 +166,7 @@ impl Harness {
             );
             let chunk = HandoffChunk::decode(&encoded).unwrap();
             chunk
-                .verify_host_signature(manifest, &fetch, tilo_relay::clock::now_ns())
+                .verify_host_signature(manifest, &fetch, tilo_delivery_protocol::clock::now_ns())
                 .unwrap();
             assert_eq!(chunk.offset, bytes.len() as u64);
             bytes.extend_from_slice(chunk.body);
@@ -227,7 +227,7 @@ async fn local_owner_reenrollment_after_hundreds_of_publications_uses_chunked_ha
                 &enrolled.certificate,
                 serde_json::Value::Null,
                 "http://127.0.0.1:1",
-                tilo_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )
             .is_err_and(|error| error.status == 503),
             "{count} publications / {total} bytes must exceed the old inline bound"
@@ -257,7 +257,7 @@ async fn local_owner_reenrollment_after_hundreds_of_publications_uses_chunked_ha
                 enrolled.certificate.device_public_key,
                 enrolled.request_digest,
                 enrolled.nonce,
-                tilo_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )
             .unwrap();
         assert!(manifest.total_bytes as usize > MAX_HANDOFF_RANGE_BYTES);

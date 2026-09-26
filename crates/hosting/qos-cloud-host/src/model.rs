@@ -218,7 +218,8 @@ where
     };
     // Refresh mutable admission immediately before network dispatch.
     {
-        Store::open(root, machine)?.authorize_model(source, qos_relay::clock::now_ns())?;
+        Store::open(root, machine)?
+            .authorize_model(source, tilo_delivery_protocol::clock::now_ns())?;
     }
     let outcome = dispatch(pending.clone(), text).await;
     Store::open(root, machine)?.finish_model(
@@ -226,6 +227,6 @@ where
         request,
         &pending,
         outcome,
-        qos_relay::clock::now_ns(),
+        tilo_delivery_protocol::clock::now_ns(),
     )
 }

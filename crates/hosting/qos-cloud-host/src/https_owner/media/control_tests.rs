@@ -4,12 +4,12 @@ use super::*;
 use crate::{ActionRequest, NativeOperation, Store};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use qos_action_broker::collaboration_admin::{MediaCreateInput, MediaDirectionsInput};
-use qos_relay::delivery_v3::{auth, http_proof, media_wire::*};
 use qos_session_peer::ingress::{AuthorizationStatus, Direction};
 use std::{
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
+use tilo_delivery_protocol::delivery_v3::{auth, http_proof, media_wire::*};
 
 const ORIGIN: &str = "https://localhost:9443";
 
@@ -189,7 +189,7 @@ impl Fixture {
                         },
                     }),
                 },
-                qos_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )
             .unwrap();
         let result: qos_peer_state::room::media::MediaCallResultV1 =

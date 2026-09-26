@@ -4,7 +4,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use qos_peer_state::StatePeer;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::{self, Carrier},
     descriptor::{self, VerifiedDescriptor},
     http_proof, media_wire,
@@ -68,7 +68,8 @@ impl OwnerView<'_> {
             pinned_host: self.host,
             workspace: self.workspace,
             generation: self.generation,
-            allowed_delivery_capabilities: tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1,
+            allowed_delivery_capabilities:
+                tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1,
             now: time(self.now_ns),
         }
     }
@@ -167,7 +168,8 @@ impl CurrentView<'_> {
             pinned_host: self.host,
             workspace: self.workspace,
             generation: self.generation,
-            allowed_delivery_capabilities: tilo_relay::delivery_v3::capabilities::PRODUCT_DATA_V1,
+            allowed_delivery_capabilities:
+                tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1,
             now: time(self.now_ns),
         }
     }

@@ -36,8 +36,8 @@ fn original(
     let (request, client) = data_test_request(
         ingress,
         match exact.method() {
-            tilo_relay::delivery_v3::http_proof::Method::Get => "GET",
-            tilo_relay::delivery_v3::http_proof::Method::Post => "POST",
+            tilo_delivery_protocol::delivery_v3::http_proof::Method::Get => "GET",
+            tilo_delivery_protocol::delivery_v3::http_proof::Method::Post => "POST",
             _ => panic!("unsupported test request method"),
         },
         exact.target(),

@@ -3,7 +3,7 @@
 //! performs its consumer barrier, and only then publishes the finished session.
 use super::*;
 use rand::TryRng as _;
-use tilo_relay::delivery_v3::descriptor::VerifiedDescriptor;
+use tilo_delivery_protocol::delivery_v3::descriptor::VerifiedDescriptor;
 
 /// Inert lookup fields used only to construct a fresh concrete owner context.
 #[derive(Clone, Copy)]
@@ -38,7 +38,7 @@ impl HttpSessions {
     /// Resource/transport mechanics only. This cannot qualify a concrete owner.
     pub fn new_unqualified(descriptor: &VerifiedDescriptor, policy: u64, now: u64) -> Result<Self> {
         ensure!(
-            tilo_relay::delivery_v3::capabilities::validate(policy),
+            tilo_delivery_protocol::delivery_v3::capabilities::validate(policy),
             "unknown data capability"
         );
         let mut boot = [0; 16];
@@ -49,7 +49,7 @@ impl HttpSessions {
             // Transcript extensions (multi-group replay, chained polls) are
             // negotiated beside the descriptor bits and never advertised in
             // the descriptor. This host serves PIPELINED_POLL_V1.
-            capabilities: tilo_relay::delivery_v3::capabilities::pipelined_policy(
+            capabilities: tilo_delivery_protocol::delivery_v3::capabilities::pipelined_policy(
                 policy & descriptor.delivery_capabilities(),
             ),
             boot,
@@ -227,8 +227,8 @@ impl HttpSessions {
             id,
             Live {
                 private_slots: (capabilities
-                    & (tilo_relay::delivery_v3::capabilities::PRIVATE_COMMANDS_V1
-                        | tilo_relay::delivery_v3::capabilities::PRIVATE_READS_V1)
+                    & (tilo_delivery_protocol::delivery_v3::capabilities::PRIVATE_COMMANDS_V1
+                        | tilo_delivery_protocol::delivery_v3::capabilities::PRIVATE_READS_V1)
                     != 0)
                     .then(|| std::sync::Arc::new(tokio::sync::Semaphore::new(8))),
                 entry,

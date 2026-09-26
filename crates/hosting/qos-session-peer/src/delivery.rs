@@ -6,7 +6,7 @@ use error::OwnerCapacityKind as DataCapacity;
 use error::OwnerDataFailureKind as DataFailure;
 #[cfg(any(test, feature = "media"))]
 use qos_peer_state::{InputDisposition, MissingPrerequisite};
-use tilo_relay::delivery_v3::commit::*;
+use tilo_delivery_protocol::delivery_v3::commit::*;
 
 /// Largest complete item the local owner accepts; it has no chunk staging owner.
 #[cfg(any(test, feature = "media"))]
@@ -17,7 +17,9 @@ pub(crate) const MAX_DELIVERY_ITEM_BYTES: usize = 1024 * 1024;
 #[cfg(feature = "media")]
 pub(crate) fn oversized_replay_group(diagnostic: &'static str) -> anyhow::Error {
     error::failure(
-        DataFailure::Reset(tilo_relay::delivery_v3::state::ResetReason::HistoryUnavailable),
+        DataFailure::Reset(
+            tilo_delivery_protocol::delivery_v3::state::ResetReason::HistoryUnavailable,
+        ),
         anyhow::anyhow!(diagnostic),
     )
 }

@@ -3,7 +3,8 @@ use launcher::managed::{ManagedRuntimeFacts, VerifiedManagedProcess, VerifiedMan
 use qos_agent_control_protocol::{AgentBinding, AgentRequest, GrantAction, GrantOffer};
 use qos_peer_state::owner_commit::{AgentIntentV2, AgentInvocationScopeV2, AgentProviderRouteV2};
 use std::sync::Arc;
-use tilo_relay::{client::CertifiedAction, peer_actions::ActionMessage};
+use tilo_delivery_protocol::peer_actions::ActionMessage;
+use tilo_relay::client::CertifiedAction;
 use tilo_user_identity::DeviceCert;
 use uuid::Uuid;
 
@@ -71,7 +72,9 @@ pub struct AgentControlProvider {
     authority: Arc<dyn AgentProviderAuthority>,
 }
 
-pub use tilo_relay::agent_reads::{AgentMutationBinding, AgentMutationRoute, AgentReadBinding};
+pub use tilo_delivery_protocol::agent_reads::{
+    AgentMutationBinding, AgentMutationRoute, AgentReadBinding,
+};
 
 /// No public/data constructor: only verified certified `InvokeBound` can mint this.
 pub struct VerifiedAgentAdmission {
@@ -207,7 +210,7 @@ impl AgentControlProvider {
             spawn: bindings.as_ref().map(|[spawn, _]| spawn.clone()),
             message: bindings.as_ref().map(|[_, message]| message.clone()),
         };
-        if !tilo_relay::agent_reads::valid_binding(&binding, state.host) {
+        if !tilo_delivery_protocol::agent_reads::valid_binding(&binding, state.host) {
             return Err("invalid current agent read binding".into());
         }
         Ok(binding)

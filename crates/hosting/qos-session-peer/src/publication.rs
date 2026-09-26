@@ -162,7 +162,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
         let key = SigningKey::from_bytes(&[41; 32]);
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let mut authority = crate::enrollment::EnrollmentAuthority::default();
         let first = enrollment_proof(&mut authority, &owner, &key, 1, now);
         authority.complete(&mut owner, first, now).unwrap();

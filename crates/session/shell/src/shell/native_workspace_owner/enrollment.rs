@@ -60,8 +60,9 @@ pub(super) fn restore(
         return Err("native persisted descriptor acknowledgement is incomplete".into());
     }
     if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
-        let metadata = tilo_relay::delivery_v3::descriptor::inspect_persisted_hint(hint, host)
-            .map_err(|e| e.to_string())?;
+        let metadata =
+            tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(hint, host)
+                .map_err(|e| e.to_string())?;
         if record.floor.as_ref().is_some_and(|floor| {
             floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
         }) {
@@ -117,7 +118,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<PendingEnrollmentId, String> {
         let bytes = intent.durable_bytes()?;
         if intent.complete_bytes().len()
-            > tilo_relay::workspace_join::MAX_WORKSPACE_JOIN_REQUEST_BYTES
+            > tilo_delivery_protocol::workspace_join::MAX_WORKSPACE_JOIN_REQUEST_BYTES
         {
             return Err("native Complete exceeds enrollment refusal cap".into());
         }

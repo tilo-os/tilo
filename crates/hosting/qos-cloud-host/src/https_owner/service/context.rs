@@ -4,13 +4,13 @@
 use super::super::{CloudDeliveryError, CloudStoreTurn, DeliveryOperation};
 use anyhow::{Context as _, Result, ensure};
 use qos_peer_state::join::TransportHint;
-use qos_relay::delivery_v3::{
+use qos_user_identity::{DeviceCert, RevocationList};
+use tilo_delivery_protocol::delivery_v3::{
     auth,
     descriptor::{
         self, DescriptorAuthority, DescriptorSettings, GenerationExpectation, VerifiedDescriptor,
     },
 };
-use qos_user_identity::{DeviceCert, RevocationList};
 
 /// Signed descriptors live at most 15 minutes; renew with this margin left.
 pub(super) const RENEW_MARGIN_NS: u64 = 180_000_000_000;
@@ -231,7 +231,7 @@ impl CloudStoreTurn {
             return Ok(CloudContext {
                 // Transcript extensions (multi-group replay) ride beside the
                 // descriptor bits; the descriptor itself never carries them.
-                capabilities: qos_relay::delivery_v3::capabilities::handshake_policy(
+                capabilities: tilo_delivery_protocol::delivery_v3::capabilities::handshake_policy(
                     pins.capabilities,
                 ),
                 binding: hit.binding,
@@ -298,7 +298,9 @@ impl CloudStoreTurn {
             },
         );
         Ok(CloudContext {
-            capabilities: qos_relay::delivery_v3::capabilities::handshake_policy(pins.capabilities),
+            capabilities: tilo_delivery_protocol::delivery_v3::capabilities::handshake_policy(
+                pins.capabilities,
+            ),
             binding,
             device,
             turn: self,

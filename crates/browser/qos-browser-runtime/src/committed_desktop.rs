@@ -2,7 +2,7 @@
 //! The private relay authenticates the carrier; StatePeer still verifies every
 //! room change, signed record, causal prerequisite, permission and replay floor.
 use qos_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
-use tilo_relay::{
+use tilo_delivery_protocol::{
     peer_actions::{ActionMessage, OpenedDesktopTab},
     transport_v2::EnvelopeV2,
 };
@@ -56,7 +56,7 @@ fn contains_opened_route(state: &StatePeer, opened: &OpenedDesktopTab) -> Result
 
 fn notice(
     candidate: &StatePeer,
-    action: &tilo_relay::peer_actions::DirectedAction,
+    action: &tilo_delivery_protocol::peer_actions::DirectedAction,
 ) -> Result<Option<CommittedDesktopNotice>, String> {
     let ActionMessage::CommittedDesktop {
         invocation,

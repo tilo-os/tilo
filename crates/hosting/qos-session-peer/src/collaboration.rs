@@ -107,7 +107,7 @@ impl CollaborationHandle {
     }
 }
 
-impl tilo_relay::workspace_join::WorkspaceJoinService for CollaborationHandle {
+impl tilo_delivery_protocol::workspace_join::WorkspaceJoinService for CollaborationHandle {
     async fn handle(
         &self,
         remote_endpoint: [u8; 32],

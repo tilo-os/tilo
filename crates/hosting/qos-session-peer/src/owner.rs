@@ -529,7 +529,7 @@ impl SessionOwner {
     }
     pub(crate) fn sign_workspace_host_hint(
         &self,
-        hint: &tilo_relay::workspace_join::IrohWorkspaceHostHintV1,
+        hint: &tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1,
     ) -> Result<qos_peer_state::join::TransportHint> {
         hint.transport_hint(&self.identity.host)
             .map_err(anyhow::Error::msg)
@@ -846,10 +846,12 @@ impl SessionOwner {
             let baseline = encoded
                 .iter()
                 .map(|bytes| {
-                    Ok(tilo_relay::delivery_v3::commit::PublicationRef {
-                        payload: pool.intern(bytes)?,
-                        kind: Retention::Checkpoint,
-                    })
+                    Ok(
+                        tilo_delivery_protocol::delivery_v3::commit::PublicationRef {
+                            payload: pool.intern(bytes)?,
+                            kind: Retention::Checkpoint,
+                        },
+                    )
                 })
                 .collect::<Result<Vec<_>>>()?;
             roots.baseline = baseline;
@@ -1056,12 +1058,12 @@ impl SessionOwner {
                     for (message, bytes) in messages.iter().zip(&encoded) {
                         let (_, kind) = retention(message, false)
                             .context("unsupported ordinary publication")?;
-                        roots
-                            .tail
-                            .push(tilo_relay::delivery_v3::commit::PublicationRef {
+                        roots.tail.push(
+                            tilo_delivery_protocol::delivery_v3::commit::PublicationRef {
                                 payload: pool.intern(bytes)?,
                                 kind,
-                            });
+                            },
+                        );
                     }
                 }
             }
@@ -2134,7 +2136,7 @@ mod enrollment_migration_tests {
         let mut owner = SessionOwner::open(&path).unwrap();
         let device = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
         let mut enrollment = crate::enrollment::EnrollmentAuthority::default();
-        let now = tilo_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let response = enrollment
             .challenge(
                 &owner,

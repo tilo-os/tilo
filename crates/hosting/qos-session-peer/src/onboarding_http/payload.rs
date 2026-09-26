@@ -2,7 +2,7 @@
 use crate::owner::resources::OwnedPublicationPin;
 use anyhow::{Result, ensure};
 use std::borrow::Cow;
-use tilo_relay::delivery_v3::onboarding_wire::{
+use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
     HandoffSegment, MAX_GOVERNANCE_BYTES, MAX_SEGMENT_BYTES,
 };
 

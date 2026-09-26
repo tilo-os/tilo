@@ -53,7 +53,8 @@ mod tests {
 
     #[test]
     fn native_seed_exposes_the_same_two_canonical_records_to_a_fresh_peer() {
-        let (root, _) = UserIdentity::generate("fixture test", tilo_relay::clock::now_ns());
+        let (root, _) =
+            UserIdentity::generate("fixture test", tilo_delivery_protocol::clock::now_ns());
         let authority = enrol(&root, "native", DeviceCapabilities::primary()).unwrap();
         let browser = enrol(&root, "browser", DeviceCapabilities::member()).unwrap();
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -72,7 +73,8 @@ mod tests {
     }
     #[test]
     fn native_loop_admits_browser_writer_change_then_bootstraps_fresh_peer() {
-        let (root, _) = UserIdentity::generate("fixture test", tilo_relay::clock::now_ns());
+        let (root, _) =
+            UserIdentity::generate("fixture test", tilo_delivery_protocol::clock::now_ns());
         let authority = enrol(&root, "native", DeviceCapabilities::primary()).unwrap();
         let browser = enrol(&root, "browser", DeviceCapabilities::member()).unwrap();
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

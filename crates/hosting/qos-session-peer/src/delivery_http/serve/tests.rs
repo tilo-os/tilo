@@ -1,6 +1,6 @@
 //! Installed data-route dispatch through real owners and ingress requests.
 use super::*;
-use tilo_relay::delivery_v3::{cursor::CursorToken, poll_chain::ChainPoll};
+use tilo_delivery_protocol::delivery_v3::{cursor::CursorToken, poll_chain::ChainPoll};
 
 fn routes() -> DataRoutes {
     let (ingress, _receiver) = crate::https::ingress_channel();

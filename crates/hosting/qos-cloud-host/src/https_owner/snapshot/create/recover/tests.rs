@@ -178,7 +178,7 @@ async fn cloud_snapshot_unknown_recovery_never_allocates_persistent_slots() {
 
 #[tokio::test]
 async fn cloud_snapshot_recovery_rejects_valid_signature_over_changed_original_stream_claims() {
-    use qos_relay::delivery_v3::state::SnapshotManifest;
+    use tilo_delivery_protocol::delivery_v3::state::SnapshotManifest;
     let f = snapshot_fixture().await;
     register(&f);
     let pending = pending(&f);

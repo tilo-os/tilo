@@ -99,8 +99,8 @@ pub(crate) fn parse(raw: &str) -> Result<[Option<Staged>; 2], String> {
 /// current authenticated Renew request. This inert codec confers no authority.
 pub(crate) fn decode_reset(
     payload: &[u8],
-) -> Result<tilo_relay::delivery_v3::state::SnapshotRequired, String> {
-    use tilo_relay::delivery_v3::state::{ResetReason, SnapshotRequired};
+) -> Result<tilo_delivery_protocol::delivery_v3::state::SnapshotRequired, String> {
+    use tilo_delivery_protocol::delivery_v3::state::{ResetReason, SnapshotRequired};
     let reset = SnapshotRequired::decode(payload).map_err(|_| "invalid snapshot reset")?;
     if !matches!(
         reset.reason(),
@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     #[test]
     fn own_stage_reset_accepts_only_closed_native_renewal_reasons() {
-        use tilo_relay::delivery_v3::state::{ResetReason, SnapshotRequired};
+        use tilo_delivery_protocol::delivery_v3::state::{ResetReason, SnapshotRequired};
         for reason in [
             ResetReason::HistoryUnavailable,
             ResetReason::AuthorizationChanged,

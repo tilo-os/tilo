@@ -1,6 +1,6 @@
 //! Private bounded data transport preparation. Wire validation is not StatePeer admission.
 use crate::peer_delivery_cursor::{CursorIdentity, StoredDeliveryCursor};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::{CommitRef, MAX_ENVELOPE_BYTES},
     state::{
         CommitBoundary, EventChunk, EventKind, EventSource, MAX_ADMITTED_OPERATIONS,
@@ -219,7 +219,7 @@ pub(crate) fn collect_page<'a>(
     bytes: &'a [u8],
     (max_groups, max_frames): (usize, usize),
 ) -> Result<PageContents<'a>, String> {
-    use tilo_relay::delivery_v3::{
+    use tilo_delivery_protocol::delivery_v3::{
         capabilities::{GROUP_PAGE_FRAMES, PAGE_BYTES},
         framing::{self, MessageType},
     };
@@ -311,7 +311,7 @@ pub(crate) struct StreamDecoder {
     item: Option<(state::TransferRecordHeader, Vec<u8>)>,
     failed: bool,
 }
-use tilo_relay::delivery_v3::state;
+use tilo_delivery_protocol::delivery_v3::state;
 impl StreamDecoder {
     pub fn new(items: u32, stream_bytes: u64, item_limit: usize) -> Result<Self, String> {
         if stream_bytes == 0

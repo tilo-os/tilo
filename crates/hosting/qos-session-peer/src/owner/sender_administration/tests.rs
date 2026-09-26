@@ -651,7 +651,9 @@ fn sender_admin_noncanonical_old_v4_is_explicitly_ineligible() {
 
 #[test]
 fn sender_admin_v5_v6_exact_borrowed_base_and_delivery_generation_preserved() {
-    use tilo_relay::delivery_v3::commit::{DeliveryLedgerV1, PublicationPool, PublicationRef};
+    use tilo_delivery_protocol::delivery_v3::commit::{
+        DeliveryLedgerV1, PublicationPool, PublicationRef,
+    };
     for version in [5, 6] {
         let container = fixture();
         let root = container.path().join("owner");

@@ -2,8 +2,8 @@ use super::*;
 use crate::{Store, agent_runtime::CloudAgentRuntime};
 use qos_action_broker::agent_reads::{AgentReadError, CertifiedAgentReads};
 use qos_agent_control_protocol::{AgentRequest, AgentResponse};
-use qos_relay::{
-    client::CertifiedAction,
+use qos_relay::client::CertifiedAction;
+use tilo_delivery_protocol::{
     delivery_v3::{auth, http_proof, private_wire},
     peer_actions::{ActionMessage, DirectedAction},
 };
@@ -42,7 +42,7 @@ pub(crate) fn certified(store: &Store, message: ActionMessage) -> CertifiedActio
     let caller = store
         .agent_caller(device_key.verifying_key().to_bytes())
         .unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let binding = auth::Binding {
         workspace: qos_relay::room_workspace_id(peer.room()).unwrap(),
         workspace_root: peer.authority().user_public_key,

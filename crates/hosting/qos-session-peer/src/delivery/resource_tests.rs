@@ -1,7 +1,7 @@
 use super::*;
 use crate::committed_authority::CommittedAuthority;
 use error::{OwnerDataFailure, OwnerDataFailureKind as Kind};
-use tilo_relay::delivery_v3::{cursor::CursorToken, state::ResetReason};
+use tilo_delivery_protocol::delivery_v3::{cursor::CursorToken, state::ResetReason};
 fn kind(error: impl Into<anyhow::Error>) -> Kind {
     let error = error.into();
     error

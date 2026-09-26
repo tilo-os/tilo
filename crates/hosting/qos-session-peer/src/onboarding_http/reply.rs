@@ -3,7 +3,7 @@ use super::payload::Payload;
 use super::*;
 use ed25519_dalek::Signer;
 use qos_peer_state::join::JoinTransportResponse;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     media_wire::split_signature,
     onboarding_wire::{
         HANDOFF_CHUNKS_PATH, HandoffChunk, HandoffManifest, HandoffPurpose, HandoffRequest,

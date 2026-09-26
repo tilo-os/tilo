@@ -313,7 +313,7 @@ fn admitted_guest(owner: &mut SessionOwner) -> tilo_user_identity::DeviceCert {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -398,7 +398,7 @@ fn creation_retained_result_follows_current_original_membership_not_governor_rig
                 user_public_key: caller.user_public_key,
                 role: qos_peer_state::join::MemberRole::Viewer,
             },
-            tilo_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
     owner
@@ -416,7 +416,7 @@ fn creation_retained_result_follows_current_original_membership_not_governor_rig
                 request_id: [94; 32],
                 user_public_key: caller.user_public_key,
             },
-            tilo_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
     let before = owner.status();

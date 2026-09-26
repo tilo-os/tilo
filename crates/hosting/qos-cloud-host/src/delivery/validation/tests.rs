@@ -1,11 +1,11 @@
 use crate::{State, Store, delivery, now_time};
 use qos_peer_state::transport::Retention;
-use qos_relay::delivery_v3::commit::{CommitError, PublicationRef};
+use tilo_delivery_protocol::delivery_v3::commit::{CommitError, PublicationRef};
 
 fn fixture() -> (tempfile::TempDir, Store, Vec<u8>, u64) {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
     let v4 = store.state.bound.as_ref().unwrap().peer.clone();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     store.activate_delivery_storage(now).unwrap();
     let (before, mut peer) = store.peer_transition_at(now).unwrap();
     let document = peer.document("so.tilo.chat", "").unwrap();
@@ -39,12 +39,12 @@ fn fixture() -> (tempfile::TempDir, Store, Vec<u8>, u64) {
             .is_empty(),
         "must exercise real native admission membership"
     );
-    (dir, store, v4, qos_relay::clock::now_ns())
+    (dir, store, v4, tilo_delivery_protocol::clock::now_ns())
 }
 fn error(state: &State, now: u64) -> anyhow::Error {
     delivery::validate(state, now).expect_err("invalid retained state must be refused")
 }
-fn latest_mut(state: &mut State) -> &mut qos_relay::delivery_v3::commit::ReplayCommit {
+fn latest_mut(state: &mut State) -> &mut tilo_delivery_protocol::delivery_v3::commit::ReplayCommit {
     state
         .delivery
         .as_mut()

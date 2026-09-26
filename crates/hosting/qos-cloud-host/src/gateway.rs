@@ -141,7 +141,7 @@ impl Gateway {
             machine,
             id,
             text,
-            qos_relay::clock::now_ns() / 1_000_000_000,
+            tilo_delivery_protocol::clock::now_ns() / 1_000_000_000,
             |request| async {
                 let client = self.client.as_ref().ok_or(())?;
                 let mut response = client.execute(request).await.map_err(|_| ())?;

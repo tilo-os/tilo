@@ -326,9 +326,10 @@ impl SessionOwner {
                 add(add(multiply(current, 2)?, multiply(input, 4)?)?, 512 * 1024)?
             }
             #[cfg(test)]
-            OwnerDataOperation::SnapshotRelease => {
-                add(current, tilo_relay::delivery_v3::commit::MAX_LEDGER_BYTES)?
-            }
+            OwnerDataOperation::SnapshotRelease => add(
+                current,
+                tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES,
+            )?,
             OwnerDataOperation::RegisterConsumer | OwnerDataOperation::Ack => {
                 add(current, 128 * 1024)?
             }
@@ -380,7 +381,7 @@ impl SessionOwner {
             // Replay borrows pool payloads: one page, one complete group
             // (each <= PAGE_BYTES), its decoded events and policy scratch.
             // Measured poll peaks are tens of KiB; independent of aggregate.
-            let page = tilo_relay::delivery_v3::capabilities::PAGE_BYTES;
+            let page = tilo_delivery_protocol::delivery_v3::capabilities::PAGE_BYTES;
             (add(multiply(page, 4)?, multiply(POLICY_BYTES, 3)?)?, 0)
         } else {
             (
@@ -478,7 +479,7 @@ fn common_raw_capacity(aggregate: &Aggregate) -> Result<usize> {
             transport_hint,
             ..
         } => {
-            use tilo_relay::delivery_v3::commit::{Digest, PublicationRef};
+            use tilo_delivery_protocol::delivery_v3::commit::{Digest, PublicationRef};
             add(vector(
                 roots.baseline.capacity(),
                 size_of::<PublicationRef>(),
@@ -543,7 +544,7 @@ use super::delivery::consumer::{
 use super::delivery::{AdmissionOutcome, CompleteStateItem};
 use crate::committed_authority::CommittedView;
 #[cfg(any(test, feature = "media"))]
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::{CommitRef, ConsumerId},
     cursor::CursorToken,
@@ -635,9 +636,9 @@ impl SessionOwner {
         &'a self,
         turn: &mut OwnerResourceTurn,
         source: &VerifiedDeliverySource<'_>,
-        delivery: tilo_relay::delivery_v3::commit::DeliveryId,
-        digest: tilo_relay::delivery_v3::commit::Digest,
-    ) -> DataResult<Option<&'a tilo_relay::delivery_v3::commit::AdmissionRecord>> {
+        delivery: tilo_delivery_protocol::delivery_v3::commit::DeliveryId,
+        digest: tilo_delivery_protocol::delivery_v3::commit::Digest,
+    ) -> DataResult<Option<&'a tilo_delivery_protocol::delivery_v3::commit::AdmissionRecord>> {
         self.validate_data_turn(turn, Some(OwnerDataOperation::ReceiptLookup))?;
         self.delivery_admission_receipt(source, delivery, digest)
             .map_err(|e| self.classify_data_error(e))

@@ -5,7 +5,7 @@ use super::*;
 use crate::enrollment::LocalOnboardingProof;
 use crate::owner::resources::OwnedPublicationPin;
 use ed25519_dalek::Signer;
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     media_wire::split_signature,
     onboarding_wire::{HandoffManifest, HandoffPurpose},
 };

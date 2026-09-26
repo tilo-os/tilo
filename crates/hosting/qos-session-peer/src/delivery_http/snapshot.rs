@@ -3,7 +3,7 @@ use crate::{
     host_bytes::{ByteCredit, HostBytes},
     publication_custody::PublicationCustody,
 };
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::Digest,
     state::{
         MAX_SNAPSHOT_CHUNKS, MAX_TRANSFER_ITEMS, SNAPSHOT_CHUNK_BYTES, TransferKind,

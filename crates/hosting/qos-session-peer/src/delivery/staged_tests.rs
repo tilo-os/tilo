@@ -129,7 +129,7 @@ fn staged_owner_large_native_admission_preserves_original_receipt_after_reopen()
     };
     assert_eq!(
         original.result,
-        tilo_relay::delivery_v3::commit::DurableAdmissionKind::Accepted
+        tilo_delivery_protocol::delivery_v3::commit::DurableAdmissionKind::Accepted
     );
     assert_eq!(original.committed.sequence, before + 1);
     assert_eq!(current.read().unwrap().generation(), before + 1);

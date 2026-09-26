@@ -2,7 +2,8 @@
 //! A held poll retains only its original charged request and continuation;
 //! each resume re-derives the session, policy and page from a fresh turn.
 use super::*;
-use qos_relay::delivery_v3::{
+use qos_session_peer::ingress::PendingCarrier;
+use tilo_delivery_protocol::delivery_v3::{
     auth::VerifiedSession,
     commit::{CommitRef, DeliveryId, Digest},
     cursor::CursorToken,
@@ -13,7 +14,6 @@ use qos_relay::delivery_v3::{
         visible_order_digest,
     },
 };
-use qos_session_peer::ingress::PendingCarrier;
 
 const PAGE_BYTES: usize = 1024 * 1024;
 const PAGE_FRAMES: usize = 64;
@@ -336,7 +336,7 @@ pub(super) fn replay_page(
         Err(error) => return Err(delivery(error)),
     };
     let (max_groups, max_frames) =
-        qos_relay::delivery_v3::capabilities::page_bounds(session.capabilities());
+        tilo_delivery_protocol::delivery_v3::capabilities::page_bounds(session.capabilities());
     let mut page = Vec::new();
     let (mut groups, mut frames) = (0usize, 0usize);
     let mut next = Some(selection);

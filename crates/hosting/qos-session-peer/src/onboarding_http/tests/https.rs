@@ -13,7 +13,7 @@ use hyper_util::rt::TokioIo;
 use qos_peer_state::join::*;
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
 use std::{sync::Arc, time::Duration};
-use tilo_relay::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
+use tilo_delivery_protocol::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
 use tokio::time::timeout;
 
 struct Client {

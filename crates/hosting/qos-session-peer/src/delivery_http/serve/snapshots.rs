@@ -18,7 +18,7 @@ use crate::{
     },
     store::{HostWorkInventory, SnapshotReservation},
 };
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     commit::Digest,
     framing::{self, MessageType},
     state::{

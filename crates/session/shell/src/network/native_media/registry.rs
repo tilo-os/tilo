@@ -7,7 +7,7 @@ use super::{
 use crate::network::actor::HostIdentity;
 use crate::shell::native_workspace_owner::NativeCommittedView;
 use protocol::{CurrentView, OwnerView, PreparedRequest, Step};
-use tilo_relay::delivery_v3::descriptor;
+use tilo_delivery_protocol::delivery_v3::descriptor;
 
 #[derive(Default)]
 pub(crate) struct Registry {
@@ -106,7 +106,7 @@ impl Registry {
                     return Err("ambiguous native governed call".into());
                 }
                 let locator =
-                    tilo_relay::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
+                    tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
                         view.delivery_locator()
                             .ok_or("native discovery locator missing")?,
                         view.host().ok_or("native discovery host missing")?,
@@ -412,7 +412,7 @@ fn act(ticket: &Arc<Ticket>, action: Action, identity: &HostIdentity) -> Result<
         }
         if matches!(action, Action::Bootstrap) {
             ticket.pause();
-            let locator = tilo_relay::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
+            let locator = tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1::from_transport_hint(
                 view.delivery_locator().ok_or("native locator missing")?,
                 view.host().ok_or("native host missing")?,
             )

@@ -55,11 +55,11 @@ async fn run() -> Result<()> {
     }
     let mut store = qos_cloud_host::Store::open(&root, &machine)?;
     let output = if args == ["enrollment", "inspect"] {
-        serde_json::to_value(store.inspect(qos_relay::clock::now_ns())?)?
+        serde_json::to_value(store.inspect(tilo_delivery_protocol::clock::now_ns())?)?
     } else if args == ["mesh", "inspect"] {
-        serde_json::to_value(store.mesh_inspect(qos_relay::clock::now_ns())?)?
+        serde_json::to_value(store.mesh_inspect(tilo_delivery_protocol::clock::now_ns())?)?
     } else if args == ["mesh", "status"] {
-        store.mesh_status(qos_relay::clock::now_ns())?
+        store.mesh_status(tilo_delivery_protocol::clock::now_ns())?
     } else if args.len() == 4
         && args[0] == "mesh"
         && args[1] == "apply"
@@ -72,7 +72,10 @@ async fn run() -> Result<()> {
         if bytes.len() > 64 * 1024 {
             bail!("mesh request too large")
         }
-        store.mesh_apply(&serde_json::from_slice(&bytes)?, qos_relay::clock::now_ns())?
+        store.mesh_apply(
+            &serde_json::from_slice(&bytes)?,
+            tilo_delivery_protocol::clock::now_ns(),
+        )?
     } else if args.len() == 4
         && args[0] == "enrollment"
         && args[1] == "apply"
@@ -86,7 +89,7 @@ async fn run() -> Result<()> {
             bail!("enrollment request too large")
         }
         let request = serde_json::from_slice(&bytes)?;
-        store.apply(&request, qos_relay::clock::now_ns())?
+        store.apply(&request, tilo_delivery_protocol::clock::now_ns())?
     } else {
         bail!(
             "usage: qos-cloud-host serve-https --config PATH --ready-file PATH | agent receipt --invocation-id UUID | agent select-private-runtime --owner-device HEX | serve | enrollment inspect | enrollment apply --request-file PATH | mesh inspect | mesh status | mesh apply --request-file PATH"

@@ -1,10 +1,10 @@
 use super::*;
 use crate::{SessionOwner, committed_authority::CommittedAuthority};
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     auth, http_proof,
     private_wire::{self, PrivateScope},
 };
-use tilo_relay::peer_actions::ActionMessage;
+use tilo_delivery_protocol::peer_actions::ActionMessage;
 use uuid::Uuid;
 
 fn context<R>(
@@ -33,7 +33,7 @@ fn context<R>(
             host_revocations: &revocations,
         },
         authority: &authority,
-        now_ns: tilo_relay::clock::now_ns(),
+        now_ns: tilo_delivery_protocol::clock::now_ns(),
     };
     run(&context, guard.view())
 }

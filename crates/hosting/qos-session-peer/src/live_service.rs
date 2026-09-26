@@ -46,7 +46,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tilo_relay::delivery_v3::{
+use tilo_delivery_protocol::delivery_v3::{
     capabilities::PRODUCT_DATA_V1,
     http_proof::VerifiedRequest,
     live_wire::{
@@ -94,14 +94,15 @@ impl LiveForwarder {
     /// Never blocks the owner loop: a full queue drops the item (the durable
     /// path still delivers it).
     pub(crate) fn offer(&self, device: [u8; 32], canonical: &[u8]) {
-        if canonical.len() <= tilo_relay::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES {
+        if canonical.len() <= tilo_delivery_protocol::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES
+        {
             let _ = self.0.try_send((device, canonical.to_vec()));
         }
     }
 }
 
 fn now_ns() -> u64 {
-    tilo_relay::clock::now_ns()
+    tilo_delivery_protocol::clock::now_ns()
 }
 fn at(ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_nanos(ns)
@@ -206,7 +207,8 @@ impl LiveService {
     ) -> Result<Vec<u8>> {
         let shared = &self.0;
         ensure!(
-            request.request().method() == tilo_relay::delivery_v3::http_proof::Method::Post
+            request.request().method()
+                == tilo_delivery_protocol::delivery_v3::http_proof::Method::Post
                 && request.request().target() == LIVE_GRANT_TARGET,
             "not the live grant route"
         );

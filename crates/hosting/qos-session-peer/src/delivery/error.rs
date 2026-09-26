@@ -1,5 +1,5 @@
 //! Closed owner failures for route classification. Diagnostics never define wire codes.
-use tilo_relay::delivery_v3::state::ResetReason;
+use tilo_delivery_protocol::delivery_v3::state::ResetReason;
 
 pub(crate) type DataResult<T> = std::result::Result<T, OwnerDataFailure>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

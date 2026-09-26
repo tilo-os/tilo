@@ -143,7 +143,7 @@ async fn certified_start(
     resource: &str,
     action: &str,
 ) -> (AppActionBroker, CertifiedJob) {
-    use qos_relay::peer_actions::ActionMessage;
+    use tilo_delivery_protocol::peer_actions::ActionMessage;
     let invocation = qos_actions::InvocationId::new();
     let (queue, host) = workers
         .app_broker()
@@ -204,7 +204,7 @@ async fn certified_start(
                 Ok(Some(reply))
                     if matches!(
                         reply.message,
-                        qos_relay::peer_actions::ActionMessage::Observation { .. }
+                        tilo_delivery_protocol::peer_actions::ActionMessage::Observation { .. }
                     ) =>
                 {
                     replied = true;
@@ -358,7 +358,7 @@ async fn cloud_worker_merges_committed_bytes_after_outbox_drain_without_acknowle
             device.verifying_key().to_bytes().to_vec(),
         ));
         splice(&mut remote, "committed remote ");
-        let now = qos_relay::clock::now_ns();
+        let now = tilo_delivery_protocol::clock::now_ns();
         let message = sender
             .publish_incremental(
                 WRITER,
@@ -698,7 +698,7 @@ async fn cloud_worker_committed_host_revocation_withdraws_publications_and_retai
     let mut entry = RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: workers.certificate.device_public_key,
-        revoked_at_ns: qos_relay::clock::now_ns(),
+        revoked_at_ns: tilo_delivery_protocol::clock::now_ns(),
         reason: RevocationReason::Lost,
         signature: [0; 64],
     };
@@ -717,7 +717,7 @@ async fn cloud_worker_committed_host_revocation_withdraws_publications_and_retai
                     cert: Box::new(certificate),
                     revocations: vec![entry],
                 },
-                qos_relay::clock::now_ns(),
+                tilo_delivery_protocol::clock::now_ns(),
             )
             .unwrap();
     }
@@ -1186,7 +1186,7 @@ async fn cloud_workers_source_root_alias_uses_held_directory_identity() {
     use qos_action_broker::peer_actions::OwnerPolicyClock;
     let (directory, mut store, _) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     // Keep an actual noncanonical spelling in the selected Store/Source. The

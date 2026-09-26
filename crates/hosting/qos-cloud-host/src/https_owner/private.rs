@@ -1,15 +1,15 @@
 //! Store-owned private disclosure. No handler-installation or allocation witness.
 use super::{CloudStoreSource, CloudStoreTurn, Current};
 use qos_action_broker::peer_actions::{PeerActionQueue, PrivatePolicyBasis};
-use qos_relay::{
-    delivery_v3::{http_proof::VerifiedRequest, private_wire},
-    peer_actions::DirectedAction,
-};
 use qos_session_peer::ingress::{
     BufferedRequest, PendingPrivate, PrivateCarrier, PrivateError, ResponseCredits, WatchId,
     WatchUpdate,
 };
 use std::collections::HashMap;
+use tilo_delivery_protocol::{
+    delivery_v3::{http_proof::VerifiedRequest, private_wire},
+    peer_actions::DirectedAction,
+};
 use tokio::time::Instant;
 
 #[derive(Clone)]
@@ -162,7 +162,7 @@ impl CloudPrivateService {
     /// freshly revalidated under `turn`; the exact original bytes are rechecked.
     pub(crate) fn poll_events_resumed(
         &mut self,
-        session: &qos_relay::delivery_v3::auth::VerifiedSession,
+        session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
         original: &BufferedRequest,
         turn: &CloudStoreTurn,
     ) -> Result<Option<(CloudPendingPrivate, DirectedAction)>, PrivateError> {

@@ -178,7 +178,7 @@ fn revoke(w: &Workspace, device: [u8; 32], at_ns: u64) {
                 cert: Box::new(w.person.clone()),
                 revocations: vec![entry],
             },
-            qos_relay::clock::now_ns(),
+            tilo_delivery_protocol::clock::now_ns(),
         )
         .unwrap();
 }
@@ -188,7 +188,11 @@ fn agent_authorization_committed_revocation_refuses_every_retained_worker() {
     let w = workspace(3);
     pass(&w).unwrap();
     pass(&w).unwrap();
-    revoke(&w, w.host.device_public_key, qos_relay::clock::now_ns());
+    revoke(
+        &w,
+        w.host.device_public_key,
+        tilo_delivery_protocol::clock::now_ns(),
+    );
     for route in &w.routes {
         assert!(w.owner.authorize_host_worker(route, &w.host).is_err());
     }

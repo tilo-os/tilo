@@ -13,8 +13,8 @@ use super::*;
 use crate::ActionRequest;
 use ed25519_dalek::SigningKey;
 use qos_peer_state::join::*;
-use qos_relay::delivery_v3::commit::MAX_REFERENCES;
 use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_delivery_protocol::delivery_v3::commit::MAX_REFERENCES;
 
 struct Guest {
     key: SigningKey,
@@ -229,7 +229,7 @@ fn no_whole_replies(store: &Store) {
 #[test]
 fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
     let (dir, mut store, owner) = crate::agent_owner_tests::enrolled();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let guest = join_guest(&mut store, owner, now);
     store.activate_delivery_storage(now).unwrap();
     let room = store.state.room.clone();
@@ -325,7 +325,7 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
 #[test]
 fn legacy_whole_reply_entries_are_compacted_on_the_next_commit() {
     let (dir, mut store, owner) = crate::agent_owner_tests::enrolled();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let guest = join_guest(&mut store, owner, now);
     // Without process reuse (a restarted host) the refresh commits a receipt.
     crate::collaboration::forget_reused_governance(dir.path());
@@ -373,7 +373,7 @@ fn lab_room_history() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::copy(path, dir.path().join("state.json")).unwrap();
     let store = Store::open(dir.path(), &machine).unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let (changes, bytes, saved) = room_history(&store, now);
     let peer = store.peer_at(now).unwrap();
     let room = peer.admitted_room().unwrap();

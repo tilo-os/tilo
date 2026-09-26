@@ -1,5 +1,5 @@
 //! Portable closed protocol, also exercised against the actual Cloud Store.
-use super::{identity, relay};
+use super::identity;
 use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use qos_peer_state::join::{
     self, JoinTransportRequest as Request, JoinTransportResponse as Response,
@@ -579,7 +579,7 @@ impl HostedAttempt {
     reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
 )]
 fn bounded_reply(bytes: &[u8]) -> Result<qos_peer_state::resources::BoundedJoinResponse> {
-    use relay::delivery_v3::onboarding_wire::MAX_RESPONSE_BYTES;
+    use tilo_delivery_protocol::delivery_v3::onboarding_wire::MAX_RESPONSE_BYTES;
     if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
         return Err(HostedAttemptError::Response);
     }

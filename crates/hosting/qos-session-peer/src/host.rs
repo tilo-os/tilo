@@ -619,7 +619,7 @@ impl LocalHost {
                 revocations: revocations(owner)?,
             },
             mode.clone(),
-            tilo_relay::workspace_join::WORKSPACE_JOIN_ALPN,
+            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
             tilo_relay::workspace_join::WorkspaceJoinProtocol::new(join),
         )
         .await?;
@@ -955,7 +955,7 @@ async fn handle_collaboration_exchange(
 ) -> qos_peer_state::join::JoinTransportResponse {
     use qos_peer_state::join::{JoinInspection, JoinTransportRequest, JoinTransportResponse};
 
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let request_id = match &request {
         JoinTransportRequest::Inspect { signed_invitation } => {
             *blake3::hash(signed_invitation).as_bytes()
@@ -1066,7 +1066,7 @@ async fn handle_collaboration_admin(
     request_material.extend_from_slice(request.invocation.0.as_bytes());
     request_material.extend_from_slice(request.room.as_bytes());
     let request_id = *blake3::hash(&request_material).as_bytes();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let caller = request.caller.device_public_key;
     let role = |role| match role {
         CollaborationRole::Viewer => MemberRole::Viewer,
@@ -1252,7 +1252,7 @@ fn enrollment_reply(
     let relay = serde_json::to_value(&host.address)
         .map_err(|error| EnrollmentError::new(503, error.to_string()))?;
     let packet = host.packet_url.to_string();
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     #[cfg(feature = "media")]
     match (delivery_ingress, local_proof) {
         (Some(installed), Some(proof)) => {
@@ -1562,9 +1562,9 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         .install_sync_refresh(owner.workspace_id(), refresh_mailbox)
         .await
         .map_err(anyhow::Error::msg)?;
-    let host_descriptor = tilo_relay::workspace_join::IrohWorkspaceHostHintV1 {
+    let host_descriptor = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
         version: 1,
-        mode: tilo_relay::workspace_join::WorkspaceHostMode::CertifiedHost,
+        mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::CertifiedHost,
         room: owner.peer().room().into(),
         workspace_id: owner.workspace_id(),
         governing_authority: owner.peer().authority().clone(),
@@ -1647,7 +1647,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     #[cfg(feature = "test-support")]
     let mut qualification = QualificationHold::default();
     let mut stdin_open = true;
-    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"workspace_join_alpn":String::from_utf8_lossy(tilo_relay::workspace_join::WORKSPACE_JOIN_ALPN),"workspace_join_transport":collaboration_hint,"room":owner.peer().room(),"workspace_id":owner.workspace_id().to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
+    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"workspace_join_alpn":String::from_utf8_lossy(tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN),"workspace_join_transport":collaboration_hint,"room":owner.peer().room(),"workspace_id":owner.workspace_id().to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
     #[cfg(feature = "media")]
     let mut metadata = {
         let mut metadata = metadata;
@@ -2161,7 +2161,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         Err(crate::enrollment::EnrollmentError::new(503,"native peer is reconnecting; retry enrollment with the same identity"))
                     } else {
                         match command.request {
-                            crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,tilo_relay::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
+                            crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,tilo_delivery_protocol::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
                             crate::enrollment_http::EnrollmentRequest::Complete(request)=>{
                                 let publication_before = owner.publication_revision();
                                 let enrolled = {
@@ -2169,9 +2169,9 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                     // HTTPS local-owner completions keep the receipt that binds a
                                     // bounded governance handoff to this exact request.
                                     let enrolled = if local_https {
-                                        enrollment.complete_for_https(&mut owner,request,tilo_relay::clock::now_ns()).map(|(certificate,proof)|(certificate,Some(proof)))
+                                        enrollment.complete_for_https(&mut owner,request,tilo_delivery_protocol::clock::now_ns()).map(|(certificate,proof)|(certificate,Some(proof)))
                                     } else {
-                                        enrollment.complete(&mut owner,request,tilo_relay::clock::now_ns()).map(|certificate|(certificate,None))
+                                        enrollment.complete(&mut owner,request,tilo_delivery_protocol::clock::now_ns()).map(|certificate|(certificate,None))
                                     };
                                     if !publish_owner_authority(update, &owner)? {
                                         let _ = command.reply.send(Err(crate::enrollment::EnrollmentError::new(503,"native owner durability unavailable")));

@@ -317,7 +317,7 @@ fn worker_commit_capture_keeps_exact_canonical_bytes_and_the_writer_caret() {
     const RECORD: &str = "tab:0000000000000001";
     let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let canonical =

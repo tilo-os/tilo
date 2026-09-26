@@ -615,7 +615,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     let path = root.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[34; 32]);
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut enrollment = qos_session_peer::enrollment::EnrollmentAuthority::default();
     let challenge = enrollment
         .challenge(
@@ -695,7 +695,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
 
 #[test]
 fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery() {
-    use tilo_relay::transport_v2::EnvelopeV2;
+    use tilo_delivery_protocol::transport_v2::EnvelopeV2;
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("direct");
     let mut owner = SessionOwner::initialize(&path).unwrap();
@@ -715,7 +715,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
     let delivery = delivery.expect("normal app launch has a bounded immediate publication");
     let source_user = owner.peer().authority().user_public_key;
     let target = delivery.target;
-    let tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+    let tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop {
         opened: Some(opened_route),
         ..
     } = &delivery.message
@@ -787,8 +787,10 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
             2 => wrong.room = uuid::Uuid::new_v4(),
             3 => root = [91; 32],
             4 => {
-                let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { packets, .. } =
-                    &mut wrong.message
+                let tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop {
+                    packets,
+                    ..
+                } = &mut wrong.message
                 else {
                     panic!()
                 };
@@ -802,7 +804,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
                 *last = hex::encode(bytes);
             }
             _ => {
-                let tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+                let tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop {
                     opened: Some(opened),
                     ..
                 } = &mut wrong.message
@@ -864,7 +866,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
 #[test]
 fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delivery() {
     use qos_peer_state::{NeighbourMsg, TransportOrigin};
-    use tilo_relay::transport_v2::EnvelopeV2;
+    use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 
     let root = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&root.path().join("deferred-direct")).unwrap();
@@ -918,7 +920,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
     let (_, delivery) = owner.commit_desktop_command_with_delivery(&second).unwrap();
     let delivery = delivery.expect("second launch has direct committed delivery");
     let target = delivery.target;
-    let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { packets, .. } =
+    let tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop { packets, .. } =
         &delivery.message
     else {
         panic!("second launch keeps its committed desktop delivery")
@@ -934,7 +936,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
         "the direct delivery includes the exact already-persisted prerequisite that the browser missed"
     );
     let expected_opened = match &delivery.message {
-        tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+        tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop {
             opened: Some(opened),
             ..
         } => opened.clone(),
@@ -993,7 +995,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
 #[test]
 fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first() {
     use qos_peer_state::{NeighbourMsg, TransportOrigin};
-    use tilo_relay::transport_v2::EnvelopeV2;
+    use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 
     let root = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&root.path().join("retained-first")).unwrap();
@@ -1019,7 +1021,7 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
     let delivery = delivery.expect("launch has direct committed delivery");
     let target = delivery.target;
     let expected_opened = match &delivery.message {
-        tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+        tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop {
             opened: Some(opened),
             ..
         } => opened.clone(),

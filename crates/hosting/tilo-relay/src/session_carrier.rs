@@ -9,7 +9,7 @@ use n0_future::boxed::BoxFuture;
 use tokio::sync::mpsc;
 
 use crate::transport::Envelope;
-use crate::transport_v2::EnvelopeV2;
+use tilo_delivery_protocol::transport_v2::EnvelopeV2;
 
 /// Already bounded application channels supplied by an authenticated pump.
 /// Private frames must originate from the same verified session as state.

@@ -1023,8 +1023,8 @@ mod tests {
             signature: server.signature,
         };
         assert!(challenge.finish(&reflection, &f.context()).is_err());
-        server.signature = crate::auth::build_hello_ack(
-            crate::auth::AuthDomain::Tilo,
+        server.signature = tilo_relay_protocol::auth::build_hello_ack(
+            tilo_relay_protocol::auth::AuthDomain::Tilo,
             f.host.clone(),
             &f.host_key,
             server.transcript.server_nonce,

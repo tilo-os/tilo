@@ -24,7 +24,7 @@ use std::{
     time::SystemTime,
 };
 pub use store::NativeStateRuntime;
-use tilo_relay::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
 use tilo_user_identity::DeviceCert;
 
 #[derive(Clone)]

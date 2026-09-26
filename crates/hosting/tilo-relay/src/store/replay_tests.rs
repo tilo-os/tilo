@@ -674,9 +674,11 @@ fn replay_budget_includes_v2_wire_encoding_overlap() {
         )
         .unwrap();
     let envelope = batch.front().unwrap();
-    let payload =
-        postcard::to_allocvec(&crate::transport_v2::EnvelopeV2::State(envelope.clone())).unwrap();
-    let wire = crate::transport_v2::encode_state(envelope, true).unwrap();
+    let payload = postcard::to_allocvec(&tilo_delivery_protocol::transport_v2::EnvelopeV2::State(
+        envelope.clone(),
+    ))
+    .unwrap();
+    let wire = tilo_delivery_protocol::transport_v2::encode_state(envelope, true).unwrap();
     let overlap = heap_bytes(envelope)
         + std::mem::size_of::<Envelope>()
         + payload.capacity()

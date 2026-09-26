@@ -175,9 +175,9 @@ fn preview_event(text: &str, caret: Option<Caret>) -> AgentLiveEvent {
 fn publisher_speaks_in_the_agent_namespace_with_presence_previews_and_activity() {
     let recorder = Recorder::default();
     let mut publisher = Publisher::new(recorder.clone(), ROOM, HOST);
-    let expected = hex::encode(qos_relay::delivery_v3::live_wire::agent_publisher(
-        ROOM, HOST, "agent-1",
-    ));
+    let expected = hex::encode(
+        tilo_delivery_protocol::delivery_v3::live_wire::agent_publisher(ROOM, HOST, "agent-1"),
+    );
     assert_eq!(publisher.publisher_of("agent-1"), expected);
     let start = Instant::now();
     publisher.handle(
@@ -337,7 +337,7 @@ fn publisher_speaks_in_the_agent_namespace_with_presence_previews_and_activity()
 fn commits_forward_the_exact_signed_change_and_clear_the_pending_preview() {
     let (dir, mut store, _device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let canonical =
@@ -491,7 +491,8 @@ async fn publisher_task_reaches_a_fallback_subscriber_through_the_real_relay() {
     // running serve test (the bus itself is covered in `agent_live::tests`).
     let (events, receiver) = tokio::sync::mpsc::channel(crate::agent_live::BUS_CAPACITY);
     let running = AgentLivePublisher::spawn(relay.clone(), ROOM.into(), HOST, receiver);
-    let agent = qos_relay::delivery_v3::live_wire::agent_publisher(ROOM, HOST, "agent-9");
+    let agent =
+        tilo_delivery_protocol::delivery_v3::live_wire::agent_publisher(ROOM, HOST, "agent-9");
     let mut stream = Stream {
         inner: relay
             .fallback_open(b"viewer", [3; 16])
@@ -580,7 +581,7 @@ fn participant_view_and_commit_carets_are_latest_wins_and_carry_selections() {
     // A commit no longer moves the caret the participant view owns.
     let (dir, mut store, _device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let canonical =
@@ -635,7 +636,7 @@ fn participant_view_and_commit_carets_are_latest_wins_and_carry_selections() {
 fn caretless_commits_announce_focus_on_their_record_before_the_change() {
     let (dir, mut store, _device) = crate::agent_owner_tests::enrolled();
     store
-        .activate_delivery_storage(qos_relay::clock::now_ns())
+        .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     drop(store);
     let canonical =

@@ -2149,7 +2149,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
         let (private_tx, mut private_rx) = mpsc::channel(1);
         let reply = EnvelopeV2::ActionsReady {
             room: uuid::Uuid::new_v4(),
-            capability: crate::transport_v2::ActionCapability::TransportOnly,
+            capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
         };
         private_tx
             .send(PrivateOutbound::Reply(reply.clone()))
@@ -2190,7 +2190,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             ))
             .await
         });
-        let mut reader = crate::transport_v2::SessionReader::new(read, true);
+        let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read, true);
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_secs(3), reader.read_next())
                 .await
@@ -2415,7 +2415,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
     let (private_tx, mut private_rx) = mpsc::channel(1);
     let frame = EnvelopeV2::ActionsReady {
         room: uuid::Uuid::from_u128(9),
-        capability: crate::transport_v2::ActionCapability::TransportOnly,
+        capability: tilo_delivery_protocol::transport_v2::ActionCapability::TransportOnly,
     };
     private_tx
         .send(PrivateOutbound::Reply(frame.clone()))
@@ -2522,7 +2522,7 @@ async fn detached_replay_catches_up_pending_without_replaying_selected_baseline(
     fixture.drained_wait().await;
     drop(ready_release);
 
-    let mut reader = crate::transport_v2::SessionReader::new(read, true);
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(read, true);
     let mut deltas = Vec::new();
     let ready = loop {
         match reader.read_next().await.unwrap() {
@@ -2625,7 +2625,8 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
 
     let mut wire = Vec::new();
     Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-    let mut reader = crate::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut reader =
+        tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice(), true);
     let mut tail = 0;
     loop {
         match reader.read_next().await.unwrap() {
@@ -3087,7 +3088,7 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
     }
     let first_batch_bytes: usize = (0..8)
         .map(|i| {
-            crate::transport_v2::encode_state(&fixture.envelope(i), true)
+            tilo_delivery_protocol::transport_v2::encode_state(&fixture.envelope(i), true)
                 .unwrap()
                 .len()
         })

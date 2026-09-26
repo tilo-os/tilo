@@ -1,6 +1,6 @@
 //! Exact authenticated private-response correlation. Never executes effects.
 use std::collections::BTreeMap;
-use tilo_relay::{
+use tilo_delivery_protocol::{
     peer_actions::{ActionMessage, DirectedAction},
     transport_v2::EnvelopeV2,
 };
@@ -202,7 +202,7 @@ mod tests {
         let mut p = PendingActions::default();
         let mut a = request();
         a.message = ActionMessage::CatalogueRefresh {
-            scope: Some(tilo_relay::peer_actions::ExactActionRoute {
+            scope: Some(tilo_delivery_protocol::peer_actions::ExactActionRoute {
                 app_id: "dev.qos.desktop".into(),
                 record_id: String::new(),
                 resource: "desktop:session".into(),

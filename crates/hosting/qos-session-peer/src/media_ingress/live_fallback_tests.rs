@@ -12,7 +12,7 @@ use hyper::StatusCode;
 use hyper_util::rt::TokioIo;
 use qos_moq::live::fallback::*;
 use rustls::pki_types::ServerName;
-use tilo_relay::delivery_v3::live_wire::*;
+use tilo_delivery_protocol::delivery_v3::live_wire::*;
 use tokio::time::timeout;
 
 /// An open fallback response stream over HTTPS (HTTP/1.1, chunked).

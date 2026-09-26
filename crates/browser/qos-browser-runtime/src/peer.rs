@@ -256,15 +256,17 @@ async fn connect_owner(
     let expected_owner = local_owner(existing)?;
     let entry = LOCAL_CONTEXTS
         .with(|table| {
-            table
-                .borrow_mut()
-                .acquire(context, expected_owner, tilo_relay::clock::now_ns())
+            table.borrow_mut().acquire(
+                context,
+                expected_owner,
+                tilo_delivery_protocol::clock::now_ns(),
+            )
         })
         .map_err(error)?;
     let custody = LocalUse { id: context, entry };
     let current = || {
         if !custody.entry.alive.get()
-            || tilo_relay::clock::now_ns() >= custody.entry.context.expires_at_ns()
+            || tilo_delivery_protocol::clock::now_ns() >= custody.entry.context.expires_at_ns()
             || local_owner(existing).map_err(|_| "local onboarding owner closed".to_string())?
                 != expected_owner
         {
@@ -289,7 +291,7 @@ async fn connect_owner(
     {
         return Err(error("enrollment key/root binding mismatch"));
     }
-    let now = tilo_relay::clock::now_ns();
+    let now = tilo_delivery_protocol::clock::now_ns();
     let mut revoked = RevocationList::new();
     for entry in config.revocations {
         if entry.user_public_key != config.root_public_key {
@@ -308,7 +310,7 @@ async fn connect_owner(
         .workspace_id
         .parse::<u64>()
         .map_err(error)?;
-    if !tilo_relay::room_workspace_id_matches(&config.bootstrap.room, workspace) {
+    if !tilo_relay_protocol::room_workspace_id_matches(&config.bootstrap.room, workspace) {
         return Err(error("workspace room binding mismatch"));
     }
     let mut directory = WorkspaceDirectory::new(config.root_public_key, device);
@@ -656,7 +658,7 @@ async fn connect_validated(
 
 fn receive_private_action(
     peer: &Rc<Peer>,
-    event: tilo_relay::transport_v2::EnvelopeV2,
+    event: tilo_delivery_protocol::transport_v2::EnvelopeV2,
     transport_generation: u64,
 ) {
     if peer.closed.get() || peer.transport_generation.get() != transport_generation {
@@ -665,8 +667,8 @@ fn receive_private_action(
     // The closed HTTPS owner admitted this correlated native response.
     // Current membership/certificate validity is rechecked for every response.
     if let Ok(identity) = action_context(peer) {
-        if matches!(&event, tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. }
-                        if matches!(action.message, tilo_relay::peer_actions::ActionMessage::CommittedDesktop { .. }))
+        if matches!(&event, tilo_delivery_protocol::transport_v2::EnvelopeV2::Delivered { action, .. }
+                        if matches!(action.message, tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop { .. }))
         {
             // Flush local edits before cloning admission, just as on
             // the retained channel. A complete batch installs once.
@@ -712,7 +714,7 @@ fn receive_private_action(
             .borrow_mut()
             .receive(&event, &identity, transport_generation);
         let catalogue = match &event {
-            tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. } => {
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::Delivered { action, .. } => {
                 Some(action.message.clone())
             }
             _ => None,
@@ -720,7 +722,10 @@ fn receive_private_action(
         if peer.actions.borrow_mut().receive(event, root)
             && let Some(message) = catalogue
         {
-            if let tilo_relay::peer_actions::ActionMessage::BrokerCatalogue { host, .. } = &message
+            if let tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
+                host,
+                ..
+            } = &message
             {
                 peer.delivery.borrow_mut().broker = Some(*host);
             }
@@ -808,15 +813,21 @@ pub fn bind_identity_for_peer(
     existing: Option<u32>,
 ) -> Result<String, JsValue> {
     let owner = local_owner(existing)?;
-    let bound =
-        crate::peer_onboarding::bind_local(material, challenge, raw, tilo_relay::clock::now_ns())
-            .map_err(error)?;
+    let bound = crate::peer_onboarding::bind_local(
+        material,
+        challenge,
+        raw,
+        tilo_delivery_protocol::clock::now_ns(),
+    )
+    .map_err(error)?;
     let material = bound.material().to_vec();
     let context = LOCAL_CONTEXTS
         .with(|table| {
-            table
-                .borrow_mut()
-                .insert(bound.into_context(), owner, tilo_relay::clock::now_ns())
+            table.borrow_mut().insert(
+                bound.into_context(),
+                owner,
+                tilo_delivery_protocol::clock::now_ns(),
+            )
         })
         .map_err(error)?;
     Ok(serde_json::json!({"material":material,"context":context}).to_string())
@@ -1388,7 +1399,7 @@ pub fn peer_action_context(id: u32) -> Result<String, JsValue> {
 }
 #[wasm_bindgen]
 pub fn peer_action_request(id: u32, message: String) -> Result<String, JsValue> {
-    use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
+    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     let peer = PEERS
         .with(|peers| peers.borrow().get(&id).cloned())
         .ok_or_else(|| error("closed peer"))?;

@@ -1,8 +1,8 @@
 //! Permissioned peer adapter for the ordinary native action broker.
 //! Only inert authenticated requests cross into its bounded `LocalSet` queue.
 use std::sync::Arc;
+use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 use tilo_relay::client::{CertifiedAction, CertifiedActionEvent};
-use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
@@ -306,7 +306,8 @@ impl PeerActionQueue {
         }
         .validate()
             && serde_json::to_vec(&update).is_ok_and(|bytes| {
-                bytes.len() <= tilo_relay::peer_actions::MAX_PRIVATE_BYTES.saturating_sub(1024)
+                bytes.len()
+                    <= tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES.saturating_sub(1024)
             });
         let _ = self.transitions.send((evidence, bounded.then_some(update)));
     }
@@ -431,9 +432,9 @@ impl PeerActionQueue {
                             } else { watches.retain(|(old, id, _)| old.action().source != evidence.action().source || *id != invocation); }
                         }
                     }
-                    Some(CertifiedActionEvent::Control(tilo_relay::transport_v2::EnvelopeV2::Unavailable { request_id, reason, .. })) => {
+                    Some(CertifiedActionEvent::Control(tilo_delivery_protocol::transport_v2::EnvelopeV2::Unavailable { request_id, reason, .. })) => {
                         watches.retain(|(evidence, _, _)| evidence.action().request_id != request_id);
-                        if reason == tilo_relay::peer_actions::UnavailableReason::Backpressure { return Err(PeerActionAttachmentError::Failed); }
+                        if reason == tilo_delivery_protocol::peer_actions::UnavailableReason::Backpressure { return Err(PeerActionAttachmentError::Failed); }
                     },
                     Some(CertifiedActionEvent::Control(control)) => {
                         if registration_acknowledged(&control, room, host) {
@@ -462,15 +463,15 @@ impl PeerActionQueue {
     }
 }
 fn registration_acknowledged(
-    control: &tilo_relay::transport_v2::EnvelopeV2,
+    control: &tilo_delivery_protocol::transport_v2::EnvelopeV2,
     room: Uuid,
     host: Uuid,
 ) -> bool {
     matches!(
         control,
-        tilo_relay::transport_v2::EnvelopeV2::ActionsReady {
+        tilo_delivery_protocol::transport_v2::EnvelopeV2::ActionsReady {
             room: acknowledged_room,
-            capability: tilo_relay::transport_v2::ActionCapability::DurableBroker {
+            capability: tilo_delivery_protocol::transport_v2::ActionCapability::DurableBroker {
                 host: acknowledged_host,
             },
         } if *acknowledged_room == room && *acknowledged_host == host
@@ -504,9 +505,9 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
     // Reject locally with the original correlation ID. Letting the relay reject
     // an invalid response reports only to us and leaves the caller waiting.
     if !reply.validate()
-        || tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(
-            reply.clone(),
-        ))
+        || tilo_delivery_protocol::transport_v2::encode(
+            &tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(reply.clone()),
+        )
         .is_err()
     {
         let diagnostics = reply_limit_diagnostics(&reply);
@@ -587,9 +588,9 @@ fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     let json_bytes = json.as_ref().map_or(0, Vec::len);
     let json_bytes_within_limit = json
         .as_ref()
-        .is_ok_and(|bytes| bytes.len() <= tilo_relay::peer_actions::MAX_PRIVATE_BYTES);
-    let encoded = tilo_relay::transport_v2::encode(
-        &tilo_relay::transport_v2::EnvelopeV2::Directed(reply.clone()),
+        .is_ok_and(|bytes| bytes.len() <= tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES);
+    let encoded = tilo_delivery_protocol::transport_v2::encode(
+        &tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(reply.clone()),
     );
     ReplyLimitDiagnostics {
         message_kind,
@@ -635,7 +636,7 @@ mod tests {
             &request,
             ActionMessage::BrokerCatalogue {
                 host: Uuid::new_v4(),
-                catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(tilo_relay::peer_actions::MAX_PRIVATE_BYTES)}),
+                catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES)}),
             },
         );
         assert!(matches!(reply.message, ActionMessage::Rejected { .. }));
@@ -646,9 +647,9 @@ mod tests {
             (request.target, request.source)
         );
         assert!(
-            tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(
-                reply
-            ))
+            tilo_delivery_protocol::transport_v2::encode(
+                &tilo_delivery_protocol::transport_v2::EnvelopeV2::Directed(reply)
+            )
             .is_ok()
         );
     }
@@ -667,7 +668,7 @@ mod tests {
             catalogue: serde_json::json!({
                 "version": 1,
                 "surfaces": [{"actions": [{}, {}]}],
-                "text": "x".repeat(tilo_relay::peer_actions::MAX_PRIVATE_BYTES),
+                "text": "x".repeat(tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES),
             }),
         };
         let reply = DirectedAction {
@@ -681,7 +682,7 @@ mod tests {
         assert_eq!(diagnostics.message_kind, "broker_catalogue");
         assert!(diagnostics.structural_valid);
         assert!(!diagnostics.json_bytes_within_limit);
-        assert!(diagnostics.json_bytes > tilo_relay::peer_actions::MAX_PRIVATE_BYTES);
+        assert!(diagnostics.json_bytes > tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES);
         assert_eq!(diagnostics.surface_count, Some(1));
         assert_eq!(diagnostics.action_count, Some(2));
         assert!(!diagnostics.envelope_encoded);
@@ -689,7 +690,7 @@ mod tests {
 
     #[test]
     fn only_exact_durable_registration_acknowledges_readiness() {
-        use tilo_relay::transport_v2::{ActionCapability, EnvelopeV2};
+        use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2};
 
         let room = Uuid::from_u128(1);
         let host = Uuid::from_u128(2);

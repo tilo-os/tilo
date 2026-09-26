@@ -40,6 +40,7 @@ tilo-automerge-isolate.workspace = true
 tilo-automerge.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay = { path = "../tilo-relay" }
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }

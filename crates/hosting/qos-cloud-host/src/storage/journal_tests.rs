@@ -565,7 +565,7 @@ fn store_commits_journal_and_retained_decodes_see_every_append() {
     with_journal(|| {
         let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         let checkpoint = fs::read(dir.path().join("state.json")).unwrap();
         let mut now = 1_000_000_000_000u64;
@@ -657,7 +657,7 @@ fn store_failed_journal_barrier_is_not_acknowledged() {
     with_journal(|| {
         let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         let mut now = 1_000_000_000_000u64;
         now += 400_000_000_000;

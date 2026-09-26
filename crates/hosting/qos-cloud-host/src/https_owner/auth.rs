@@ -1,8 +1,8 @@
 //! The shared proof engine calls this only through the actual borrowed Store turn.
 //! Descriptor/origin/boot/capability binding remains the carrier registry's work.
 use super::CloudStoreTurn;
-use qos_relay::delivery_v3::auth::{AuthError, Authority, Binding};
 use qos_user_identity::DeviceCert;
+use tilo_delivery_protocol::delivery_v3::auth::{AuthError, Authority, Binding};
 
 impl Authority for CloudStoreTurn {
     fn authorize(
@@ -39,12 +39,12 @@ impl Authority for CloudStoreTurn {
 mod tests {
     use super::*;
     use crate::https_owner::{CloudStoreSource, Current};
-    use qos_relay::delivery_v3::auth::Carrier;
+    use tilo_delivery_protocol::delivery_v3::auth::Carrier;
     #[test]
     fn cloud_https_current_authority_requires_exact_live_scope_and_certificates() {
         let (_dir, mut store, device) = crate::agent_owner_tests::enrolled();
         store
-            .activate_delivery_storage(qos_relay::clock::now_ns())
+            .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
         let source = CloudStoreSource::bind(&store).unwrap();
         drop(store);
