@@ -17,10 +17,9 @@ path = "src/main.rs"
 # it is independent of the GStreamer decode/export features.
 [dependencies]
 xdg-paths = { path = "../../crates/system/xdg-paths" }
-# `gpu-video` brings in the planar upload + YUV shader the compositor
-# paints hardware-decoded frames with. Without it every decoded frame
-# would have to be converted to RGBA on the CPU first.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal", "gpu-video"] }
+# `ui` brings the host file chooser and the planar upload + YUV shader the
+# compositor paints hardware-decoded frames with (`ui::gpu_video`).
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true

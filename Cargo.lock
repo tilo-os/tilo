@@ -14099,8 +14099,6 @@ dependencies = [
 name = "tilo-app-template-smoke"
 version = "0.1.0"
 dependencies = [
- "serde",
- "serde_json",
  "tilo-app",
  "tilo-app-cli",
 ]
