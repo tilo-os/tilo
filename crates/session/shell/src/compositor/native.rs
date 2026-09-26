@@ -97,6 +97,7 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+use crate::compositor::screen_dim::{Backlight, ScreenDimmer};
 use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
@@ -3042,6 +3043,8 @@ fn pump_test_control_conn(
 
 /// Turn a [`SessionTransition`] into a real backend effect.
 ///
+/// `Dimmed`/`Undimmed` lower and restore the backlight, or switch the paint
+/// path's dimming overlay where there is none ([`ScreenDimmer`]);
 /// `Blanked`/`Woke` drive the backend's DPMS (no-op on winit/headless);
 /// `Locked`/`Unlocked` are pure state the paint path reads via
 /// `SessionManager::is_locked`, needing no backend call. On a render thread,
@@ -3050,8 +3053,11 @@ fn apply_session_transition(
     transition: SessionTransition,
     backend: &mut dyn Backend,
     pipe: Option<&present::PresentPipe>,
+    dimmer: &mut ScreenDimmer<impl Backlight>,
 ) {
     match transition {
+        SessionTransition::Dimmed => dimmer.dim(),
+        SessionTransition::Undimmed => dimmer.restore(),
         SessionTransition::Blanked => {
             backend.set_dpms(false);
             if let Some(p) = pipe {
@@ -5911,6 +5917,8 @@ pub fn run() {
     // Other devices' focus changes arrive over the network at human pace;
     // copying the feed into chrome a few times a second is plenty.
     let mut continuity_feed_polled: Option<Instant> = None;
+    let mut screen_dimmer = ScreenDimmer::default();
+    let mut prev_dim_overlay = None;
     // Set by PrepareForSleep and cleared only after the compositor's lock
     // frame has retired from the presenter (or DPMS is already off).
     let mut sleep_lock_frame_pending = false;
@@ -6426,7 +6434,12 @@ pub fn run() {
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
@@ -6479,6 +6492,7 @@ pub fn run() {
                                         t,
                                         backend.as_mut(),
                                         present_pipe.as_ref(),
+                                        &mut screen_dimmer,
                                     );
                                 }
                             }
@@ -6501,7 +6515,12 @@ pub fn run() {
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                &mut screen_dimmer,
+                            );
                         }
                     } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
@@ -6652,7 +6671,12 @@ pub fn run() {
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
                         for t in session.note_activity(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                &mut screen_dimmer,
+                            );
                         }
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
@@ -6757,7 +6781,12 @@ pub fn run() {
         ) {
             session_changed = true;
             for t in session.note_activity(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
         }
         for wake in controller_nav.take_wakes() {
@@ -6956,7 +6985,12 @@ pub fn run() {
         });
         if shell_lock_requested {
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
             session_changed = true;
         }
@@ -6979,7 +7013,12 @@ pub fn run() {
                     power_bridge.request_suspend();
                 }
             } else {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
             // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
             session_changed = true;
@@ -6992,7 +7031,12 @@ pub fn run() {
             match sig {
                 tilo_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                 }
                 tilo_power_mgmt::PowerSignal::PreparingForSleep => {
@@ -7001,7 +7045,12 @@ pub fn run() {
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
                     for t in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
@@ -7019,7 +7068,12 @@ pub fn run() {
                     // user lock when CanSuspend is refused.
                     if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
                         for t in session.request_unlock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                &mut screen_dimmer,
+                            );
                         }
                     }
                     sleep_lock_was_locked = false;
@@ -7028,7 +7082,12 @@ pub fn run() {
                 tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
                     for t in session.resume_from_sleep(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            &mut screen_dimmer,
+                        );
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
@@ -7093,7 +7152,12 @@ pub fn run() {
         if state.session_lock.take_lock_requested() {
             session_changed = true;
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    &mut screen_dimmer,
+                );
             }
         }
         // Async unlock: pick up an in-flight credential verify's result from the
@@ -7105,7 +7169,12 @@ pub fn run() {
             session_changed = true;
             if outcome == UnlockOutcome::Unlocked {
                 for t in session.request_unlock(Instant::now()) {
-                    apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                    apply_session_transition(
+                        t,
+                        backend.as_mut(),
+                        present_pipe.as_ref(),
+                        &mut screen_dimmer,
+                    );
                 }
             }
         }
@@ -7140,6 +7209,11 @@ pub fn run() {
             }
         }
         prev_locked = session.is_locked();
+        // The dimming overlay is part of the scene, so switching it needs a frame.
+        if screen_dimmer.overlay_alpha() != prev_dim_overlay {
+            prev_dim_overlay = screen_dimmer.overlay_alpha();
+            session_changed = true;
+        }
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
@@ -8370,6 +8444,28 @@ pub fn run() {
                 );
                 let _ = projection_capture.submit_scene(&frame_paint.scene, clamped_viewport);
             }
+            // The idle dim goes on last, after captures and casts took their clean copy, so only
+            // the local panel darkens.
+            if let Some(alpha) = screen_dimmer.overlay_alpha() {
+                let rect = backend
+                    .outputs()
+                    .iter()
+                    .map(|o| {
+                        vello::kurbo::Rect::new(
+                            f64::from(o.position.0),
+                            f64::from(o.position.1),
+                            f64::from(o.position.0) + f64::from(o.size.0),
+                            f64::from(o.position.1) + f64::from(o.size.1),
+                        )
+                    })
+                    .reduce(|a, b| a.union(b))
+                    .unwrap_or_else(|| {
+                        let (w, h) = frame_builder.viewport();
+                        vello::kurbo::Rect::new(0.0, 0.0, w, h)
+                    });
+                crate::compositor::screen_dim::paint_overlay(&mut frame_paint.scene, rect, alpha);
+                frame_paint.force_full();
+            }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
             let mut submitted_serial = None;
@@ -8778,7 +8874,7 @@ fn spawn_auto_brightness_worker() {
                     "auto_brightness",
                 )
                 .unwrap_or(false);
-                if enabled {
+                if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
                         && let Err(error) = os_actions::set_brightness(percent)
@@ -10976,13 +11072,33 @@ mod tests {
             }
         }
 
+        struct NoBacklight;
+        impl crate::compositor::screen_dim::Backlight for NoBacklight {
+            fn brightness(&self) -> Option<f32> {
+                None
+            }
+            fn set_brightness(&self, _fraction: f32) -> bool {
+                false
+            }
+        }
+
         let mut backend = SpyBackend::default();
-        apply_session_transition(SessionTransition::Blanked, &mut backend, None);
-        apply_session_transition(SessionTransition::Woke, &mut backend, None);
-        apply_session_transition(SessionTransition::Locked, &mut backend, None);
-        apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
+        let mut dimmer = ScreenDimmer::new(NoBacklight);
+        for t in [
+            SessionTransition::Dimmed,
+            SessionTransition::Blanked,
+            SessionTransition::Woke,
+            SessionTransition::Locked,
+            SessionTransition::Unlocked,
+        ] {
+            apply_session_transition(t, &mut backend, None, &mut dimmer);
+        }
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
+        // Without a backlight the dim falls back to the paint overlay, lifted by Undimmed.
+        assert!(dimmer.overlay_alpha().is_some());
+        apply_session_transition(SessionTransition::Undimmed, &mut backend, None, &mut dimmer);
+        assert_eq!(dimmer.overlay_alpha(), None);
     }
 }
 
