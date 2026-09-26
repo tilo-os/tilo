@@ -1110,6 +1110,26 @@ pub trait Widget {
         None
     }
 
+    /// Opt out of touch-to-pointer emulation for contacts that begin at
+    /// `point` (logical coords, same space as [`Widget::get_rect`]).
+    ///
+    /// By default the host turns direct touch into pointer events: a tap
+    /// clicks, a drag scrolls, a hold opens the context menu, and a second
+    /// finger turns the contact into a pinch or pan. A widget that returns
+    /// `true` here instead receives only the raw per-finger
+    /// `WindowEvent::Touch` stream (`Started`/`Moved`/`Ended`/`Cancelled`,
+    /// keyed by `Touch::id`, `location` in physical pixels) for every contact
+    /// that begins inside it, and those contacts neither cancel nor are
+    /// cancelled by other fingers. An on-screen keyboard uses this so two
+    /// thumbs can type with overlapping presses.
+    ///
+    /// Hit-tested like [`cursor_shape`](Self::cursor_shape): the host asks
+    /// every laid-out widget whose rect contains the point, so containers
+    /// need not forward it.
+    fn claims_raw_touch(&self, _point: vello::kurbo::Point) -> bool {
+        false
+    }
+
     /// Revealed after a dwell over the widget's rect, via the toolkit's one
     /// tooltip mechanism ([`crate::widget::tooltip::TooltipHost`]),
     /// hit-tested like [`cursor_shape`](Self::cursor_shape) so containers
