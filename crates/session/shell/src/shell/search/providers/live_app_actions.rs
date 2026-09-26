@@ -877,7 +877,9 @@ impl LiveAppActionsProvider {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room.to_string() == root.cluster_id)
+                .find(|workspace| {
+                    workspace.is_shown() && workspace.room.to_string() == root.cluster_id
+                })
                 .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
             let Some(root_actor) = root_actor else {
                 continue;
@@ -1297,6 +1299,7 @@ impl LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
+            .filter(|workspace| workspace.is_shown())
             .map(|workspace| workspace.room)
             .collect::<Vec<_>>();
         for workspace_room in workspace_rooms {
@@ -1792,7 +1795,9 @@ impl SearchProvider for LiveAppActionsProvider {
                     .desktop
                     .workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == root.cluster_id)
+                    .find(|workspace| {
+                        workspace.is_shown() && workspace.room.to_string() == root.cluster_id
+                    })
                     .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
                 let Some(root_actor) = root_actor else {
                     continue;
@@ -2243,7 +2248,7 @@ impl SearchProvider for LiveAppActionsProvider {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == root.cluster_id)
+            .find(|workspace| workspace.is_shown() && workspace.room.to_string() == root.cluster_id)
             .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room))?;
         let cached = self.directory_pages.borrow().iter().find_map(
             |((cached_peer, cached_actor, needle, cursor), page)| {

@@ -3460,6 +3460,7 @@ impl WorkspaceTree {
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
 
         let mut active_strip = HashMap::new();
@@ -3549,18 +3550,7 @@ impl WorkspaceTree {
                     .with_cursor_color("#ec4899")
                     .with_role("editor"),
             ],
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            channel_class: collab_types::ChannelClass::default(),
-            shared_surfaces: SharedSurfaces::default(),
-            ephemeral: false,
+            ..Workspace::default()
         };
 
         let mut tree = Self {
@@ -3644,6 +3634,7 @@ impl WorkspaceTree {
             channel_class,
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(ws);
@@ -3673,6 +3664,17 @@ impl WorkspaceTree {
     /// mirrored into the desktop document peers are served from, and focus
     /// does not move to it; the caller decides that.
     pub fn open_ephemeral_room(&mut self, name: &str, owner: &UserId) -> (WorkspaceId, RoomId) {
+        self.open_ephemeral_room_shown(name, owner, true)
+    }
+
+    /// [`Self::open_ephemeral_room`], or one nobody is shown (`shown ==
+    /// false`): see [`Workspace::hidden`].
+    pub fn open_ephemeral_room_shown(
+        &mut self,
+        name: &str,
+        owner: &UserId,
+        shown: bool,
+    ) -> (WorkspaceId, RoomId) {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let room = RoomId::new();
@@ -3685,6 +3687,7 @@ impl WorkspaceTree {
         }];
         workspace.set_owner(owner.clone());
         workspace.ephemeral = true;
+        workspace.hidden = !shown;
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(workspace);
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
@@ -4141,10 +4144,12 @@ impl WorkspaceTree {
             .iter()
             .position(|w| w.id == self.desktop.active)
             .unwrap_or(0);
-        let Some(prev_idx) = idx.checked_sub(1) else {
-            return false;
-        };
-        let Some(prev) = self.desktop.workspaces.get(prev_idx) else {
+        let Some(prev) = self
+            .desktop
+            .workspaces
+            .get(..idx)
+            .and_then(|before| before.iter().rev().find(|w| w.is_shown()))
+        else {
             return false;
         };
         self.desktop.active = prev.id;
@@ -4160,7 +4165,12 @@ impl WorkspaceTree {
             .iter()
             .position(|w| w.id == self.desktop.active)
             .unwrap_or(0);
-        let Some(next) = self.desktop.workspaces.get(idx.saturating_add(1)) else {
+        let Some(next) = self
+            .desktop
+            .workspaces
+            .get(idx.saturating_add(1)..)
+            .and_then(|after| after.iter().find(|w| w.is_shown()))
+        else {
             return false;
         };
         self.desktop.active = next.id;
@@ -6960,6 +6970,7 @@ mod active_group_tests {
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -7435,6 +7446,7 @@ mod active_workspace_peer_count_tests {
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);

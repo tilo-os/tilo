@@ -1349,10 +1349,15 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         .unwrap_or_default();
     let strip_view: Box<dyn Widget> = Box::new(StripView::new(strips_for_view, 0));
     let workspace_view: Box<dyn Widget> = Box::new(WorkspaceView::new(
-        tree.desktop.workspaces.len(),
         tree.desktop
             .workspaces
             .iter()
+            .filter(|w| w.is_shown())
+            .count(),
+        tree.desktop
+            .workspaces
+            .iter()
+            .filter(|w| w.is_shown())
             .position(|w| w.id == tree.desktop.active)
             .unwrap_or(0),
     ));
@@ -1585,6 +1590,7 @@ fn build_overlay_host_from_chrome(
         .desktop
         .workspaces
         .iter()
+        .filter(|w| w.is_shown())
         .map(|w| sidebar_wheel_disc::SpokeLabel {
             text: w.name.clone(),
             workspace_id: Some(w.id.0),
@@ -1594,6 +1600,7 @@ fn build_overlay_host_from_chrome(
         .desktop
         .workspaces
         .iter()
+        .filter(|w| w.is_shown())
         .position(|w| w.id == tree.desktop.active)
         .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(

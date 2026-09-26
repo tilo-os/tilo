@@ -13566,8 +13566,13 @@ impl ShellOverlayHost {
             self.room_records.borrow().local_record_lookup(),
             chrome.borrow().custody().cloned(),
         );
+        replay.set_viewer(chrome.borrow().active_local_user());
         broker.install_replay(std::sync::Arc::clone(&replay));
-        chrome.borrow_mut().set_replay(replay);
+        chrome
+            .borrow_mut()
+            .set_replay(std::sync::Arc::clone(&replay));
+        // Review checks a recording against its replay out of sight.
+        self.set_remark_replay(replay as _);
     }
 
     /// Replay upkeep: publish what became due, start the recorded apps in a
@@ -13580,7 +13585,21 @@ impl ShellOverlayHost {
             return false;
         };
         let mut changed = replay.pump(std::time::Instant::now());
-        let launches = replay.take_launches();
+        let mut all = vec![replay.take_launches()];
+        all.extend(replay.take_check_launches());
+        for launches in all {
+            changed |= self.apply_replay_launches(&tree, &launches);
+        }
+        changed
+    }
+
+    /// Start the apps a replay room asks for and clean up the rooms left.
+    fn apply_replay_launches(
+        &self,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        launches: &crate::shell::replay::Launches,
+    ) -> bool {
+        let mut changed = false;
         if let Some(chrome) = self.chrome.as_ref() {
             let mut chrome = chrome.borrow_mut();
             for surface in &launches.close_surfaces {
@@ -24977,6 +24996,7 @@ mod tab_context_menu_tests {
             collaborators: vec![],
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -34369,6 +34389,7 @@ mod maximize_harvest_tests {
             collaborators: vec![],
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -34624,6 +34645,7 @@ mod resync_strips_tests {
             collaborators: vec![],
             shared_surfaces: SharedSurfaces::default(),
             ephemeral: false,
+            hidden: false,
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);

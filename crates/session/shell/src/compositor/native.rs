@@ -2615,6 +2615,37 @@ fn execute_planned_action(
     None
 }
 
+/// Drive the replays checked out of sight: size their windows to the
+/// recorded surfaces, and capture them once each has drawn at its offset.
+fn service_offscreen_checks(frame_builder: &FrameBuilder, state: &State) {
+    let Some(replay) = frame_builder.chrome().replay().cloned() else {
+        return;
+    };
+    let scale = if state.scale.is_finite() && state.scale > 0.0 {
+        state.scale
+    } else {
+        1.0
+    };
+    for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+        let id = crate::compositor::state::surface_id(toplevel.wl_surface());
+        if let Some((width, height)) = replay.offscreen_surface_size(id) {
+            foreign::store().note_placement(
+                id,
+                vello::kurbo::Rect::new(0.0, 0.0, width * scale, height * scale),
+            );
+        }
+    }
+    for request in replay.offscreen_captures(std::time::Instant::now()) {
+        let frames = crate::compositor::capture::CaptureExecutor::surface_frames(
+            frame_builder,
+            &request.surfaces,
+            request.at,
+            request.scale,
+        );
+        replay.deliver_captures(&request, frames);
+    }
+}
+
 /// Capture the open replay room's surfaces the way a recording captures
 /// them, named by the routes they were recorded under.
 fn write_replay_frames(
@@ -8292,6 +8323,7 @@ pub fn run() {
             force_first_paint = false;
             // The layout pass above published each foreign tab's rect — tell clients
             // what size to render at, then release the frame throttle for on-screen ones; both no-ops with no external client.
+            service_offscreen_checks(&frame_builder, &state);
             foreign::flush_configures(&mut state);
             foreign::release_frame_throttle(&mut state);
         } else if had_backend_events {

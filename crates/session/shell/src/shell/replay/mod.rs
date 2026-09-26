@@ -17,6 +17,7 @@
 //! at the target.
 
 pub mod headless;
+pub mod offscreen;
 pub mod peer;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -136,6 +137,12 @@ pub struct ReplayController {
     custody: Mutex<Option<Arc<crate::shell::record_custody::RecordCustody>>>,
     /// Replays waiting for their record to arrive from a room.
     fetching: Mutex<Vec<(RecordId, UserId, Presentation)>>,
+    /// The person at this device, whom out-of-sight checks run for.
+    viewer: Mutex<Option<UserId>>,
+    /// Offscreen checks by id, and what they ask the frame loop to launch.
+    checks: Mutex<std::collections::BTreeMap<u64, offscreen::Check>>,
+    check_launches: Mutex<Vec<Launches>>,
+    next_check: std::sync::atomic::AtomicU64,
     /// What the last open or reload asks the frame loop to launch.
     launches: Mutex<Launches>,
 }
@@ -158,6 +165,10 @@ impl ReplayController {
             records: Mutex::new(None),
             custody: Mutex::new(None),
             fetching: Mutex::new(Vec::new()),
+            viewer: Mutex::new(None),
+            checks: Mutex::new(std::collections::BTreeMap::new()),
+            check_launches: Mutex::new(Vec::new()),
+            next_check: std::sync::atomic::AtomicU64::new(1),
             launches: Mutex::new(Launches::default()),
         })
     }
@@ -169,6 +180,11 @@ impl ReplayController {
     /// The replay room, while one is open.
     pub fn room(&self) -> Option<RoomId> {
         lock(&self.replay).as_ref().map(|replay| replay.room)
+    }
+
+    /// The person at this device, whom out-of-sight checks run for.
+    pub fn set_viewer(&self, viewer: UserId) {
+        *lock(&self.viewer) = Some(viewer);
     }
 
     /// Where [`Self::open_record`] looks a record up.
