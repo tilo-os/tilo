@@ -88,6 +88,10 @@ pub struct AudioPrefs {
     /// keeps the bounded virtual sink alive across Settings navigation.
     #[serde(default)]
     pub mono_output: bool,
+    /// Give calls an echo-cancelled microphone. The compositor session owns
+    /// the `PipeWire` client that provides it.
+    #[serde(default = "default_true")]
+    pub echo_cancellation: bool,
 }
 
 const fn default_audio_balance() -> f32 {
@@ -104,6 +108,7 @@ impl Default for AudioPrefs {
             input_device: None,
             balance: default_audio_balance(),
             mono_output: false,
+            echo_cancellation: true,
         }
     }
 }
