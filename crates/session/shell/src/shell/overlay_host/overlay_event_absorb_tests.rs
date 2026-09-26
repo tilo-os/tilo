@@ -1545,6 +1545,7 @@ fn clicking_a_scope_segment_switches_scope_without_dismissing() {
             app_id: "so.tilo.reader".into(),
             resource: "book:42".into(),
             label: "Book of Tilo".into(),
+            kind: "ebook.book".into(),
         });
     assert_eq!(
         h.host.search_scope_pill_label(SearchScope::Workspace),

@@ -338,6 +338,9 @@ pub enum BackendEvent {
         x: f64,
         y: f64,
     },
+    /// An accessibility filter rejected input (a bounce-keys press) and the
+    /// user asked to see it: flash the shell's visual alert.
+    VisualAlert,
     Redraw,
     Focus(bool),
 }

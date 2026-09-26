@@ -50,7 +50,9 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use catalog::{ActionCatalog, ResourceTarget, kind_matches};
+pub use catalog::{
+    ActionCatalog, ResourceTarget, kind_matches, quick_action_arguments, quick_action_input,
+};
 pub use check::{CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, check};
 pub use grant::{grant_permits, required_verb};
 pub use path::StepPath;

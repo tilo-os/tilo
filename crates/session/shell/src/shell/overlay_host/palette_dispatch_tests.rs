@@ -831,6 +831,7 @@ fn escape_leaves_resource_search_scope_before_closing_palette() {
             app_id: "so.tilo.reader".into(),
             resource: "book:42".into(),
             label: "Book of Tilo".into(),
+            kind: "ebook.book".into(),
         });
 
     let mut handled = false;

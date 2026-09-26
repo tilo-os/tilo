@@ -658,6 +658,14 @@ pub trait Decorator {
         self.inner_mut().restore_view_state(view);
     }
 
+    fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
+        self.inner().dev_route()
+    }
+
+    fn restore_dev_route(&mut self, route: &super::router::RouteSnapshot) -> bool {
+        self.inner_mut().restore_dev_route(route)
+    }
+
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
         self.inner().appearance_intent()
     }
@@ -1422,6 +1430,14 @@ impl<T: Decorator> Widget for T {
 
     fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
         Decorator::restore_view_state(self, view);
+    }
+
+    fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
+        Decorator::dev_route(self)
+    }
+
+    fn restore_dev_route(&mut self, route: &super::router::RouteSnapshot) -> bool {
+        Decorator::restore_dev_route(self, route)
     }
 
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {

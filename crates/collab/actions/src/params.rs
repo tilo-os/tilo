@@ -85,6 +85,11 @@ impl ParamType {
     }
 }
 
+/// Schema annotation naming the kind of resource a [`ParamType::Resource`]
+/// parameter takes; see [`ActionParam::of_resource_kind`]. An annotation,
+/// not an assertion: binding does not check it.
+pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
+
 /// One typed parameter an action declares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -187,6 +192,38 @@ impl ActionParam {
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
         self.schema = Some(schema);
         self
+    }
+
+    /// Name the kind of resource this [`ParamType::Resource`] parameter
+    /// takes (e.g. `files.entry`), as the [`RESOURCE_KIND_ANNOTATION`] of its
+    /// schema. Surfaces use it to offer the action on resources of that kind
+    /// and its sub-kinds.
+    #[must_use]
+    pub fn of_resource_kind(mut self, kind: impl Into<String>) -> Self {
+        let mut schema = match self.schema.take() {
+            Some(serde_json::Value::Object(schema)) => schema,
+            _ => serde_json::Map::new(),
+        };
+        schema.insert(
+            RESOURCE_KIND_ANNOTATION.into(),
+            serde_json::Value::String(kind.into()),
+        );
+        self.schema = Some(serde_json::Value::Object(schema));
+        self
+    }
+
+    /// The kind of resource this parameter takes, when it is a resource
+    /// parameter that names one ([`Self::of_resource_kind`]).
+    #[must_use]
+    pub fn resource_kind(&self) -> Option<&str> {
+        if self.ty != ParamType::Resource {
+            return None;
+        }
+        self.schema
+            .as_ref()?
+            .get(RESOURCE_KIND_ANNOTATION)?
+            .as_str()
+            .filter(|kind| !kind.is_empty())
     }
 
     #[must_use]

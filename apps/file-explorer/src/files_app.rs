@@ -505,6 +505,7 @@ pub struct FileExplorerWidget {
     drag_hover: Option<PathBuf>,
     nearby_send: crate::nearby_send::NearbySendState,
     nearby_send_path: Option<PathBuf>,
+    shortcut_menu: crate::shortcut_menu::ShortcutMenuState,
     /// Read-only sharing/history sheet sourced entirely from bounded FUSE
     /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
@@ -829,6 +830,7 @@ impl FileExplorerWidget {
             drag_hover: None,
             nearby_send: crate::nearby_send::NearbySendState::default(),
             nearby_send_path: None,
+            shortcut_menu: crate::shortcut_menu::ShortcutMenuState::default(),
             collab_panel: None,
             collab_panel_focused: false,
             share_result: ui::LatestRequest::new(),
@@ -941,6 +943,34 @@ impl FileExplorerWidget {
             || crate::search_provider::entry_resource_id(&entry.path),
             |id| crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(id)),
         )
+    }
+
+    /// The resource identities (kind and id) of the single selected entry,
+    /// most specific first: its collaborative record, then its path.
+    fn selected_entry_identities(&self) -> Vec<(String, String)> {
+        if self.selection.selected().len() != 1 {
+            return Vec::new();
+        }
+        let displayed = self.displayed_entries();
+        let Some(entry) = self
+            .selection
+            .primary()
+            .and_then(|index| displayed.get(index))
+        else {
+            return Vec::new();
+        };
+        let mut identities = Vec::with_capacity(2);
+        if let Some(record) = entry.record_id {
+            identities.push((
+                "files.record".to_string(),
+                crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(record)),
+            ));
+        }
+        identities.push((
+            "files.entry".to_string(),
+            crate::search_provider::entry_resource_id(&entry.path),
+        ));
+        identities
     }
 
     fn visible_entry_path(&self, resource_id: &str) -> Option<PathBuf> {
@@ -2822,6 +2852,18 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::OpenTemplatesMenu => self.apply_open_templates_menu(),
+            FileCommand::OpenShortcutsMenu => {
+                self.open_shortcuts_submenu(self.last_cursor);
+                true
+            }
+            FileCommand::RunShortcut { shortcut } => {
+                let identities = self.selected_entry_identities();
+                self.status = Some(match self.shortcut_menu.run(&shortcut, &identities) {
+                    Ok(label) => t_args("files-shortcut-running", &[arg("shortcut", label)]),
+                    Err(reason) => reason,
+                });
+                true
+            }
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
             FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
@@ -4661,6 +4703,16 @@ impl FileExplorerWidget {
                     t("files-menu-send-nearby"),
                     Some(FileCommand::OpenNearbySend),
                 ));
+                if !self
+                    .shortcut_menu
+                    .offered_on(&self.selected_entry_identities())
+                    .is_empty()
+                {
+                    spec.push((
+                        t("files-menu-run-shortcut"),
+                        Some(FileCommand::OpenShortcutsMenu),
+                    ));
+                }
             }
             let displayed = self.displayed_entries();
             if self.selection.selected().iter().any(|index| {
@@ -5160,6 +5212,48 @@ impl FileExplorerWidget {
         layout_menu_widget(&mut self.submenu);
     }
 
+    /// Open the "Run shortcut" flyout: one row per shortcut that runs on the
+    /// selected entry.
+    fn open_shortcuts_submenu(&mut self, at: Point) {
+        let identities = self.selected_entry_identities();
+        let offered: Vec<(String, String)> = self
+            .shortcut_menu
+            .offered_on(&identities)
+            .into_iter()
+            .map(|offer| (offer.label().to_string(), offer.id().to_string()))
+            .collect();
+        if offered.is_empty() {
+            self.submenu.close();
+            self.submenu_commands.clear();
+            return;
+        }
+        let mut menu = self.new_overlay_menu();
+        let mut cmds = Vec::with_capacity(offered.len());
+        for (label, shortcut) in offered {
+            menu.push(MenuItem::action(label, || {}));
+            cmds.push(Some(FileCommand::RunShortcut { shortcut }));
+        }
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.submenu = menu;
+        self.submenu_commands = cmds;
+        layout_menu_widget(&mut self.submenu);
+    }
+
+    /// Say on the status line what became of a shortcut run from the menu,
+    /// when `event` says.
+    fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.status = match self.shortcut_menu.handle_event(event) {
+            Some(crate::shortcut_menu::ShortcutOutcome::Started { label }) => {
+                Some(t_args("files-shortcut-started", &[arg("shortcut", label)]))
+            }
+            Some(crate::shortcut_menu::ShortcutOutcome::Refused { label, reason }) => Some(t_args(
+                "files-shortcut-failed",
+                &[arg("shortcut", label), arg("reason", reason)],
+            )),
+            None => return,
+        };
+    }
+
     fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {
         let online = targets
             .iter()
@@ -5489,11 +5583,15 @@ impl FileExplorerWidget {
         }
         if let Some(idx) = self.context_menu.item_at([p.x, p.y]) {
             let cmd = self.menu_commands.get(idx).cloned().flatten();
-            if let Some(FileCommand::OpenTemplatesMenu) = cmd {
+            if let Some(FileCommand::OpenTemplatesMenu | FileCommand::OpenShortcutsMenu) = cmd {
                 // Open the flyout to the right of the clicked row; keep the
                 // main menu open behind it.
                 let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
-                self.open_templates_submenu(anchor);
+                if cmd == Some(FileCommand::OpenShortcutsMenu) {
+                    self.open_shortcuts_submenu(anchor);
+                } else {
+                    self.open_templates_submenu(anchor);
+                }
                 return true;
             }
             self.context_menu.close();
@@ -5561,6 +5659,9 @@ impl FileExplorerWidget {
         if let Some(FileCommand::OpenTemplatesMenu) = command {
             let rect = self.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
+        } else if let Some(FileCommand::OpenShortcutsMenu) = command {
+            let rect = self.context_menu.get_rect();
+            self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
         } else {
             self.submenu.close();
             self.context_menu.close();
@@ -7155,11 +7256,16 @@ impl FileExplorerWidget {
 
 impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        self.nearby_send.poll_if_due(Instant::now());
-        self.nearby_send.take_requests()
+        let now = Instant::now();
+        self.nearby_send.poll_if_due(now);
+        self.shortcut_menu.poll_if_due(now);
+        let mut requests = self.nearby_send.take_requests();
+        requests.extend(self.shortcut_menu.take_requests());
+        requests
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {

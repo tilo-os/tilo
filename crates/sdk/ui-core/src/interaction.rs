@@ -307,6 +307,29 @@ impl InteractionEnvironment {
     }
 }
 
+/// The navigation a mouse side button asks for: Back and Forward go back and
+/// forward through whatever history the view under them owns, as in every
+/// desktop browser and file manager.
+pub(crate) fn mouse_nav_direction(
+    event: &winit::event::WindowEvent,
+) -> Option<crate::gesture::NavDirection> {
+    use crate::gesture::NavDirection;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+    match event {
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Back,
+            ..
+        } => Some(NavDirection::Back),
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Forward,
+            ..
+        } => Some(NavDirection::Forward),
+        _ => None,
+    }
+}
+
 /// Pointer events synthesised from direct touch, so ordinary widgets work on a
 /// touchscreen without interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]

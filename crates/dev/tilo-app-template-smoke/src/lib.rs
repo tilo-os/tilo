@@ -192,13 +192,13 @@ pub mod screens {
         theme: &Theme,
         context: UiBuildContext,
     ) -> Result<Box<dyn Widget>, UiGraphError> {
-        build_with(UI_SOURCE, theme, context)
+        build_with("main", UI_SOURCE, theme, context)
     }
 
     pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphError>> {
         match name {
             "main" => Some(main(theme)),
-            "settings" => Some(build(SETTINGS_SOURCE, theme)),
+            "settings" => Some(build("settings", SETTINGS_SOURCE, theme)),
             _ => None,
         }
     }
@@ -234,21 +234,22 @@ pub mod screens {
                     SETTINGS_SOURCE
                 };
                 let context = context.clone().with_router(navigation.clone());
-                build_with(source, theme, context).map_err(|error| error.to_string())
+                build_with(route, source, theme, context).map_err(|error| error.to_string())
             },
         )
     }
 
-    fn build(source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
-        build_with(source, theme, UiBuildContext::default())
+    fn build(screen: &str, source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
+        build_with(screen, source, theme, UiBuildContext::default())
     }
 
     fn build_with(
+        screen: &str,
         source: &str,
         theme: &Theme,
         context: UiBuildContext,
     ) -> Result<Box<dyn Widget>, UiGraphError> {
-        let graph = UiGraphHandle::from_json(source)?;
+        let graph = UiGraphHandle::from_embedded_or_live(screen, source)?;
         Ok(Box::new(graph.widget_with(theme, context)?))
     }
 }

@@ -133,6 +133,14 @@ pub enum FileCommand {
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,
+    /// Open the "Run shortcut" flyout listing the shortcuts that run on the
+    /// selected entry. Handled by the app's menu routing, like the templates
+    /// flyout.
+    OpenShortcutsMenu,
+    /// Run the shortcut with resource id `shortcut` on the selected entry.
+    RunShortcut {
+        shortcut: String,
+    },
     /// Create a new file in the current directory by copying the given
     /// template file, then drop into inline-rename.
     NewFromTemplate(PathBuf),
