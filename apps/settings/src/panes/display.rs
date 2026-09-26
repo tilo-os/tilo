@@ -54,7 +54,9 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
+use crate::widgets::{
+    El, caption, card, choice_row, rows, setting_row, setting_row_described, value_row,
+};
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
     DisplayTransactionState, MonitorIdentity, OutputConfig, OutputDescriptor, OutputMode,
@@ -67,6 +69,7 @@ pub const BRIGHTNESS_KEY: &str = "display.brightness";
 pub const AUTO_BRIGHTNESS_KEY: &str = "display.auto_brightness";
 /// CRDT key the night-light toggle writes into.
 pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
+pub const NIGHT_LIGHT_SCHEDULE_KEY: &str = "display.night_light_schedule";
 pub const NIGHT_LIGHT_TEMPERATURE_KEY: &str = "display.night_light_temperature";
 /// CRDT key the display-scale dropdown writes into.
 pub const DISPLAY_SCALE_KEY: &str = "display.scale";
@@ -603,6 +606,9 @@ impl DisplayPane {
             Op::SetNightLight { enabled } => {
                 let _ = state.put(root, NIGHT_LIGHT_KEY, *enabled);
             }
+            Op::SetNightLightSchedule { enabled } => {
+                let _ = state.put(root, NIGHT_LIGHT_SCHEDULE_KEY, *enabled);
+            }
             Op::SetNightLightTemperature { label } => {
                 let _ = state.put(root, NIGHT_LIGHT_TEMPERATURE_KEY, label.as_str());
             }
@@ -888,6 +894,22 @@ impl DisplayPane {
                                 crate::actions::display_bool_binding("night_light")
                                     .expect("Night Light is part of the static resource contract"),
                             ),
+                    ),
+                ),
+                setting_row_described(
+                    "Sunset to sunrise",
+                    "Turn Night Light on and off on the Appearance day and night schedule",
+                    Box::new(
+                        Toggle::new(
+                            "settings.display.night_light_schedule",
+                            NIGHT_LIGHT_SCHEDULE_KEY,
+                        )
+                        .with_id("display.night_light_schedule")
+                        .on_action(
+                            crate::actions::display_bool_binding("night_light_schedule").expect(
+                                "the Night Light schedule is part of the static resource contract",
+                            ),
+                        ),
                     ),
                 ),
                 choice_row(
@@ -1654,6 +1676,11 @@ impl DisplayPane {
         );
         let _ = state.put(
             root,
+            NIGHT_LIGHT_SCHEDULE_KEY,
+            automerge::ScalarValue::Boolean(self.initial_prefs.night_light_schedule),
+        );
+        let _ = state.put(
+            root,
             NIGHT_LIGHT_TEMPERATURE_KEY,
             temperature_label(self.initial_prefs.night_light_temperature),
         );
@@ -1843,6 +1870,12 @@ impl DisplayPane {
         {
             self.last_prefs.night_light = b;
             let _ = Self::persist_display(|d| d.night_light = b);
+        }
+        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_SCHEDULE_KEY)
+            && b ^ self.last_prefs.night_light_schedule
+        {
+            self.last_prefs.night_light_schedule = b;
+            let _ = Self::persist_display(|d| d.night_light_schedule = b);
         }
         if let Some(label) = read_str_or_text(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
             && let Some(kelvin) = temperature_from_label(&label)

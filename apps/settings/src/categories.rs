@@ -185,7 +185,11 @@ const APPEARANCE_KEYWORDS: &[&str] = &[
     "text size",
     "font",
     "wallpaper",
+    "background picture",
     "color",
+    "automatic theme",
+    "sunset",
+    "sunrise",
 ];
 const ACCESSIBILITY_KEYWORDS: &[&str] = &[
     "a11y",
@@ -530,9 +534,13 @@ impl Category {
         {
             return true;
         }
+        // A keyword matches a query it contains, or one that contains it as
+        // whole words: "turn on vpn" finds Network, but "wallpaper" must not
+        // find Printers through "paper".
+        let padded = format!(" {q} ");
         self.keywords()
             .iter()
-            .any(|k| k.contains(&q) || q.contains(*k))
+            .any(|k| k.contains(&q) || padded.contains(&format!(" {k} ")))
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
