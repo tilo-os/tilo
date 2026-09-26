@@ -5190,16 +5190,57 @@ fn newer_source_during_build(
 fn terminate_build_child(child: &mut Child) {
     #[cfg(unix)]
     {
-        if let Ok(pid) = i32::try_from(child.id()) {
+        let root = child.id();
+        // Snapshot descendants before signalling. A shell with job control
+        // puts `sleep`/`rustc` in a new group, and killing only the leader's
+        // group would leave that child holding the target lock.
+        let pids = descendant_pids(root);
+        if let Ok(pid) = i32::try_from(root) {
             // SAFETY: the build was spawned as its own process group. Negating
-            // that pid signals Cargo and the rustc children it started.
+            // that pid signals Cargo and the rustc children that inherited it.
             unsafe {
                 libc::kill(pid.saturating_neg(), libc::SIGKILL);
+            }
+        }
+        for pid in pids {
+            if let Ok(pid) = i32::try_from(pid) {
+                // SAFETY: `pid` is the build process or a descendant recorded
+                // from /proc before the signal. SIGKILL is the cancel.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
             }
         }
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// The process and every descendant currently listed under it.
+#[cfg(unix)]
+fn descendant_pids(root: u32) -> Vec<u32> {
+    let mut pids = vec![root];
+    let mut cursor = 0usize;
+    while let Some(pid) = pids.get(cursor).copied() {
+        cursor = cursor.saturating_add(1);
+        for child in direct_child_pids(pid) {
+            if !pids.contains(&child) {
+                pids.push(child);
+            }
+        }
+    }
+    pids
+}
+
+/// Child pids from `/proc/<pid>/task/<pid>/children`, or nothing when the
+/// kernel does not publish that file.
+#[cfg(unix)]
+fn direct_child_pids(pid: u32) -> Vec<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|token| token.parse().ok())
+        .collect()
 }
 
 fn dev_binary_name(manifest: &Path) -> Result<String> {

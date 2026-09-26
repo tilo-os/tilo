@@ -3980,7 +3980,7 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
     std::fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' $$ > '{}'\nsleep 30 &\nprintf '%s\\n' $! > '{}'\nwait\n",
+            "#!/bin/sh\nset +m\nprintf '%s\\n' $$ > '{}'\nsleep 30 &\nprintf '%s\\n' $! > '{}'\nwait\n",
             leader.display(),
             sleeper.display()
         ),
