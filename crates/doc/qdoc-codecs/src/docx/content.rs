@@ -1,5 +1,5 @@
 //! Parse `word/document.xml`'s `w:body` into canonical blocks + marks, resolving
-//! paragraph/heading/list/character styles against a pre-parsed [`StyleRegistry`].
+//! paragraph/heading/list/character styles against a pre-parsed `StyleRegistry`.
 //! Paragraphs become `paragraph`/`heading`/`list_item` per `w:pStyle`/`w:numPr`; runs map
 //! onto inline marks. Unmodeled body-level elements are captured verbatim as fidelity atoms.
 

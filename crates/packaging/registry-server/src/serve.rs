@@ -16,7 +16,7 @@
 //!
 //! The dispatcher is kept small so the wire shape is auditable at
 //! a glance. Business logic (add / update / delete decisions) is
-//! in [`apply_change`].
+//! in `apply_change`.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

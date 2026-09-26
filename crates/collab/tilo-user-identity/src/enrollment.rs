@@ -22,7 +22,7 @@
 //!    the LAN once discoverable).
 //! 4. The issuer forwards the device-pubkey + capabilities to a
 //!    device holding the user's *root* private key (which may be
-//!    the issuer itself), which signs a [`DeviceCert`] and returns
+//!    the issuer itself), which signs a [`DeviceCert`](crate::cert::DeviceCert) and returns
 //!    it. The new device stores its keypair + the cert.
 //!
 //! # Why sign with the issuer's device key

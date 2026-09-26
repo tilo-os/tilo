@@ -2020,6 +2020,22 @@ fn client_input_allowed(fb: &FrameBuilder) -> bool {
     !fb.host().onboarding_active()
 }
 
+/// Results of the background media codecs install (it outlives setup and can
+/// finish once the device comes online) become ordinary notifications.
+fn post_codec_pack_notices(frame_builder: &mut FrameBuilder) -> bool {
+    let notices = crate::shell::codec_pack_notice::drain();
+    if notices.is_empty() {
+        return false;
+    }
+    frame_builder.with_chrome(|chrome| {
+        for notice in notices {
+            chrome.push_notification_full(notice);
+        }
+        chrome.bump();
+    });
+    true
+}
+
 /// Host palette actions are queued by chrome, then launched here so the
 /// compositor can mint an external xdg-activation token before the child is
 /// spawned. This keeps the token single-use and binds it to the exact user
@@ -6479,6 +6495,7 @@ pub fn run() {
         session_changed |=
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
+        session_changed |= post_codec_pack_notices(&mut frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
         // client starts auto-repeat after a press and only stops once it sees the

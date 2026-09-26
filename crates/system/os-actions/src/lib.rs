@@ -42,6 +42,7 @@ pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod bluez;
+pub mod codec_pack;
 pub mod display;
 pub mod firmware;
 #[cfg(target_os = "linux")]
