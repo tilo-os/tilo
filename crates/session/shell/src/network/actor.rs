@@ -345,6 +345,14 @@ pub enum NetEvent {
         membership_epoch: Option<MembershipEpoch>,
         msg: NeighbourMsg,
     },
+    /// One message of a channel replay this device asked a durable host for
+    /// (`NetCmd::ReplayChannel`): an explicitly requested answer, never an
+    /// echo, so it is delivered even when this device authored it.
+    Replayed {
+        ws: WorkspaceId,
+        peer: PeerId,
+        msg: NeighbourMsg,
+    },
     PersonalFabric {
         ws: WorkspaceId,
         peer: PeerId,
@@ -477,6 +485,11 @@ enum HostEvent {
     Message {
         author: EndpointId,
         fingerprint: [u8; 32],
+        msg: NeighbourMsg,
+    },
+    /// One message of a channel replay this device asked for.
+    Replayed {
+        author: EndpointId,
         msg: NeighbourMsg,
     },
     Closed,
@@ -2190,10 +2203,8 @@ impl ActorState {
                 fingerprint,
                 msg,
             } => {
-                // A zero fingerprint is never deduplicated: a remote-action
-                // retry is byte-identical on purpose (the receiving host
-                // deduplicates it by invocation id), and a requested channel
-                // replay repeats messages this device has already seen.
+                // A remote-action retry is byte-identical on purpose; the
+                // receiving host deduplicates it by invocation id instead.
                 if fingerprint != UNDEDUPLICATED
                     && !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
                 {
@@ -2206,6 +2217,11 @@ impl ActorState {
                     msg,
                 })
             }
+            HostEvent::Replayed { author, msg } => Some(NetEvent::Replayed {
+                ws,
+                peer: author,
+                msg,
+            }),
             HostEvent::Closed => {
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
                     runtime.pump.abort();
@@ -3340,11 +3356,7 @@ fn spawn_host_pump(
                         else {
                             continue;
                         };
-                        let event = HostEvent::Message {
-                            author,
-                            fingerprint: UNDEDUPLICATED,
-                            msg,
-                        };
+                        let event = HostEvent::Replayed { author, msg };
                         if tx
                             .send(InternalEvent::Host {
                                 ws,

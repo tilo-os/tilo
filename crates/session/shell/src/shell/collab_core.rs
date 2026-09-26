@@ -93,6 +93,36 @@ pub struct BrokerChannels {
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
     pub peer_history_requests: HashMap<ArtifactId, (u64, std::time::Instant)>,
+    /// Retained entry ids (`SignedOp::retained_entry_id`) of the ops this
+    /// broker validated, per artifact and bounded, so an exact op a durable
+    /// host replays on request is delivered again to a local app — which
+    /// may have restarted since and not hold it — without being refused as
+    /// a sequence regression.
+    pub validated_entries: HashMap<ArtifactId, ValidatedEntries>,
+}
+
+/// A bounded set of validated op ids for one artifact, oldest first.
+#[derive(Default)]
+pub struct ValidatedEntries {
+    known: std::collections::HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
+}
+
+impl ValidatedEntries {
+    /// As many as a durable host retains for one document.
+    const MAX: usize = 65_536;
+
+    fn insert(&mut self, entry: [u8; 32]) {
+        if !self.known.insert(entry) {
+            return;
+        }
+        self.order.push_back(entry);
+        while self.order.len() > Self::MAX {
+            if let Some(oldest) = self.order.pop_front() {
+                self.known.remove(&oldest);
+            }
+        }
+    }
 }
 
 /// How long a peer history request stays open for answers.
@@ -101,6 +131,13 @@ const PEER_HISTORY_WINDOW: std::time::Duration = std::time::Duration::from_secs(
 const PEER_HISTORY_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl BrokerChannels {
+    /// Whether this broker already validated this exact op.
+    pub fn validated(&self, op: &SignedOp) -> bool {
+        self.validated_entries
+            .get(&op.artifact)
+            .is_some_and(|entries| entries.known.contains(&op.retained_entry_id()))
+    }
+
     pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
         self.states.entry(artifact).or_default()
     }
@@ -133,6 +170,10 @@ impl BrokerChannels {
     /// Append a validated op to durable history when it belongs there.
     /// Failure is logged, never fatal: the op is still delivered live.
     pub fn record_history(&mut self, op: &SignedOp) {
+        self.validated_entries
+            .entry(op.artifact)
+            .or_default()
+            .insert(op.retained_entry_id());
         if let Some(history) = self.history.as_mut()
             && let Err(error) = history.record(op)
         {
@@ -353,5 +394,24 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(channels.states.len(), 1);
+    }
+
+    /// Only the exact op the broker validated counts as validated — the
+    /// condition for handing a replayed op to local apps again.
+    #[test]
+    fn exactly_the_validated_op_is_remembered() {
+        let artifact = ArtifactId::new();
+        let mut channels = BrokerChannels::default();
+        let validated = envelope(artifact, 5);
+        assert!(!channels.validated(&validated));
+        channels.record_history(&validated);
+        assert!(channels.validated(&validated));
+        let mut altered = validated.clone();
+        altered.payload.push(1);
+        assert!(!channels.validated(&altered), "a different op is not");
+        assert!(
+            !channels.validated(&envelope(ArtifactId::new(), 5)),
+            "the same op on another artifact is not"
+        );
     }
 }

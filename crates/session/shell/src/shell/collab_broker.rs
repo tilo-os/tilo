@@ -1055,6 +1055,19 @@ impl DrainQueues {
             let artifact = envelope.artifact;
             let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
             let mutation = validate_document_route(&route, &envelope);
+            // A requested replay of an exact op this broker already
+            // validated goes to local apps again — one that restarted since
+            // does not hold it — rather than being refused as a repeat.
+            if entry.replayed
+                && mutation.is_ok()
+                && self
+                    .channels
+                    .lock()
+                    .is_ok_and(|channels| channels.validated(&envelope))
+            {
+                self.fan_out_signed_op(envelope, entry.peer, &route, labels, announced);
+                continue;
+            }
             let validation = if let Err(reason) = &mutation {
                 Err(reason.clone())
             } else {
@@ -1140,6 +1153,18 @@ impl DrainQueues {
         if envelope.op_class == OpClass::Redact {
             apply_redaction_from_envelope(&envelope, artifact, &self.channels);
         }
+        self.fan_out_signed_op(envelope, peer, route, labels, announced);
+    }
+
+    /// Hand a validated signed op to the local apps on `route`.
+    fn fan_out_signed_op(
+        &self,
+        envelope: collab_types::SignedOp,
+        peer: u64,
+        route: &CrdtRoute,
+        labels: &mut HashMap<String, (Instant, PeerLabels)>,
+        announced: &mut HashMap<(String, u64), (String, u64)>,
+    ) {
         // Same id and room lookup the peer's
         // presence arrives under, so one
         // person reads as one participant.

@@ -6834,6 +6834,44 @@ mod tests {
         );
     }
 
+    /// An app restarts with an empty retained log. Its own earlier op,
+    /// replayed back to it by the host, is logged again, so its next
+    /// snapshot names that entry as covered and the host can trim it.
+    #[test]
+    fn a_restarted_app_relearns_its_own_old_entry_ids() {
+        use automerge::transaction::Transactable;
+        let (app_id, cluster, record) = ("so.tilo.chat", "room", "fb");
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "remark", "mine").unwrap();
+        let frame = collab_types::DocumentMutation::Incremental(doc.save_incremental())
+            .encode_frames()
+            .unwrap()
+            .remove(0);
+        let own = collab_types::SignedOp::new_unsigned(
+            frame,
+            collab_types::document_artifact_id(app_id, cluster, record),
+            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+            collab_types::document_attestation_id(app_id, cluster, record),
+            collab_types::OpClass::Comment,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        // After the restart: nothing logged, then the replay arrives.
+        let retained = std::sync::Mutex::new(RetainedLog::default());
+        assert!(!retained.lock().unwrap().knows(&own.retained_entry_id()));
+        let delivered = inbound_document(
+            &postcard::to_stdvec(&own).unwrap(),
+            "self".into(),
+            &std::sync::Arc::new(std::sync::Mutex::new(None)),
+            &std::sync::Mutex::new(collab_types::DocumentReassembler::default()),
+            &retained,
+        );
+        assert!(delivered.is_some());
+        let log = retained.lock().unwrap();
+        assert!(log.knows(&own.retained_entry_id()));
+        assert_eq!(log.covered_by(&doc.save()), vec![own.retained_entry_id()]);
+    }
+
     /// An id seen again (a host replay) becomes the newest: the bound ages
     /// out ids a host no longer retains before the ones it still does.
     #[test]

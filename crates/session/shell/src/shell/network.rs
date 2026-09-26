@@ -1350,6 +1350,10 @@ pub struct InboundDocument {
     /// Boxed to mirror the wire shape and bound the queue entry size —
     /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
+    /// Part of a channel replay this device asked a durable host for, not
+    /// a live delivery: an exact op the broker already validated is handed
+    /// to local apps again instead of being refused as a repeat.
+    pub replayed: bool,
 }
 
 /// One received piece of channel governance, addressed to a room this
@@ -2439,15 +2443,20 @@ impl ShellNetwork {
         role: collab_types::Role,
         envelope: collab_types::SignedOp,
     ) {
+        self.queue_document(InboundDocument {
+            peer,
+            app_id,
+            cluster_id,
+            record_id,
+            role,
+            envelope: Box::new(envelope),
+            replayed: false,
+        });
+    }
+
+    fn queue_document(&self, document: InboundDocument) {
         if let Ok(mut buf) = self.inbound_documents.lock() {
-            buf.push(InboundDocument {
-                peer,
-                app_id,
-                cluster_id,
-                record_id,
-                role,
-                envelope: Box::new(envelope),
-            });
+            buf.push(document);
         }
     }
 
@@ -4931,6 +4940,7 @@ impl ShellNetwork {
                 membership_epoch,
                 msg,
             } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, msg),
+            NetEvent::Replayed { ws, peer, msg } => self.dispatch_replayed_msg(ws, peer, msg),
             NetEvent::PersonalFabric {
                 ws,
                 peer,
@@ -5789,6 +5799,74 @@ impl ShellNetwork {
         }
     }
 
+    /// One message of a channel replay this device asked for. Unlike a live
+    /// delivery it is never an echo: a document this device authored is
+    /// handed to its local apps too, so one that restarted re-learns the
+    /// entries a host still retains from it. Anything but a document goes
+    /// through the ordinary gate.
+    fn dispatch_replayed_msg(&self, ws: u64, peer: iroh::EndpointId, msg: NeighbourMsg) {
+        let NeighbourMsg::AppDocument {
+            peer: peer_hash,
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+        } = msg
+        else {
+            self.dispatch_neighbour_msg(ws, peer, None, msg);
+            return;
+        };
+        if RoomId::parse(&cluster_id)
+            .filter(|room| !room.is_nil())
+            .map(room_topic_id)
+            != Some(ws)
+            || !self.is_in_room(&cluster_id)
+        {
+            return;
+        }
+        let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id) else {
+            return;
+        };
+        let own = peer == self.keypair.public();
+        let role = if !self.require_peer_identity {
+            Some(collab_types::Role::Editor)
+        } else if own {
+            // This device's own op: the role it carries now. Without an
+            // identity it still reaches the broker, which hands it on only
+            // if it already validated this exact op.
+            Some(
+                RoomId::parse(&cluster_id)
+                    .and_then(|room| selected_device_cert(room, &self.keypair).ok())
+                    .and_then(|cert| {
+                        self.document_role(
+                            cert.device_public_key,
+                            cert.user_public_key,
+                            &cluster_id,
+                            &app_id,
+                            &record_id,
+                            &envelope,
+                        )
+                    })
+                    .unwrap_or(collab_types::Role::Viewer),
+            )
+        } else {
+            let origin = crate::shell::state::PeerOrigin::peer(&peer);
+            self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
+        };
+        let Some(role) = role else {
+            return;
+        };
+        self.queue_document(InboundDocument {
+            peer: peer_hash,
+            app_id,
+            cluster_id,
+            record_id,
+            role,
+            envelope,
+            replayed: true,
+        });
+    }
+
     /// The per-variant half of [`Self::dispatch_neighbour_msg`], after every
     /// authentication and room-authority gate has passed.
     #[allow(
@@ -6534,11 +6612,32 @@ impl ShellNetwork {
         envelope: &collab_types::SignedOp,
     ) -> Option<collab_types::Role> {
         let identity = self.peer_identities.get(origin)?;
-        if *envelope.author.as_bytes() != identity.device_pubkey {
+        self.document_role(
+            identity.device_pubkey,
+            identity.user_pubkey,
+            cluster_id,
+            app_id,
+            record_id,
+            envelope,
+        )
+    }
+
+    /// The role a document op authored by `device` of person `user` carries
+    /// in its room, if the op may be taken at all.
+    fn document_role(
+        &self,
+        device: [u8; 32],
+        user: [u8; 32],
+        cluster_id: &str,
+        app_id: &str,
+        record_id: &str,
+        envelope: &collab_types::SignedOp,
+    ) -> Option<collab_types::Role> {
+        if *envelope.author.as_bytes() != device {
             return None;
         }
         let person = collab_types::caps::Principal::person_from_key(
-            collab_types::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+            collab_types::Ed25519PublicKey::from_bytes(user),
         )
         .id()
         .to_string();
@@ -10457,6 +10556,65 @@ mod tests {
         };
         assert_eq!(ws, room_topic_id(room_id));
         assert_eq!(channel, retained_channel);
+    }
+
+    /// A document this device authored, arriving live, is an echo and is
+    /// dropped; the same document arriving in a channel replay this device
+    /// asked for is handed to its local apps, marked as replayed, so an app
+    /// that restarted re-learns the entries a host still retains from it.
+    #[test]
+    fn a_requested_replay_of_an_own_document_reaches_local_apps() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let room_id = tree.read().rooms()[0];
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0xCAFE);
+        net.tick();
+        let room = room_id.to_string();
+        let wire = net.register_local_record("so.tilo.chat", &room, "feedback");
+        let own_document = || NeighbourMsg::AppDocument {
+            peer: net.local_peer_hash,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: room.clone(),
+            record_id: wire.clone(),
+            envelope: Box::new(collab_types::SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Incremental(vec![1, 2, 3])
+                    .encode_frames()
+                    .unwrap()
+                    .remove(0),
+                collab_types::document_artifact_id("so.tilo.chat", &room, "feedback"),
+                collab_types::Ed25519PublicKey::from_bytes(*net.keypair.public().as_bytes()),
+                collab_types::document_attestation_id("so.tilo.chat", &room, "feedback"),
+                collab_types::OpClass::Splice,
+                SystemTime::UNIX_EPOCH,
+                1,
+            )),
+        };
+        let topic = room_topic_id(room_id);
+        net.event_tx
+            .try_send(NetEvent::Msg {
+                ws: topic,
+                peer: net.keypair.public(),
+                membership_epoch: None,
+                msg: own_document(),
+            })
+            .unwrap();
+        net.tick();
+        assert!(
+            net.inbound_documents.lock().unwrap().is_empty(),
+            "a live echo of this device's own document is dropped"
+        );
+
+        net.event_tx
+            .try_send(NetEvent::Replayed {
+                ws: topic,
+                peer: net.keypair.public(),
+                msg: own_document(),
+            })
+            .unwrap();
+        net.tick();
+        let queued = std::mem::take(&mut *net.inbound_documents.lock().unwrap());
+        assert_eq!(queued.len(), 1, "the requested replay is delivered");
+        assert!(queued[0].replayed);
+        assert_eq!(queued[0].record_id, "feedback");
     }
 
     #[test]
