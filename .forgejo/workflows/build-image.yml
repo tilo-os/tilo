@@ -978,11 +978,10 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # The broker gives every CI pool (on-prem and cloud) the same S3
-      # compiler cache and a bucket-scoped credential. A cluster-local
-      # endpoint neither resolves from cloud pools nor accepts that
-      # credential, so the image build uses exactly what the runner provides.
-      # A missing cache fails here instead of compiling uncached for hours.
+      # Every CI job gets the same S3 compiler cache and a bucket-scoped
+      # credential from the workflow env, so the image build uses exactly
+      # that. A missing cache fails here instead of compiling uncached for
+      # hours.
       #
       # A publication never uses it. That credential can write every object
       # in the bucket, and every CI job and agent sandbox holds it, so any of
