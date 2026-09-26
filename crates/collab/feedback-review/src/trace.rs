@@ -735,6 +735,7 @@ mod tests {
                         id: "mail.draft:1".into(),
                         kind: "mail.draft".into(),
                         label: "Draft".into(),
+                        sensitivity: tilo_actions::Sensitivity::Public,
                     },
                     anchor: InteractionAnchor::Resource,
                     group: None,
