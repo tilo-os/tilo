@@ -21,7 +21,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
@@ -29,7 +29,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, TaffyTreeExt, Widget};
@@ -1631,29 +1631,21 @@ impl<Row> DataTable<Row> {
 
     /// `WindowEvent::MouseWheel` — only live when this table owns its scroll
     /// internally (an outer `Scrollable` otherwise consumes the wheel first).
-    fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
+    fn on_wheel(&mut self, delta: &MouseScrollDelta, phase: TouchPhase, handled: &mut bool) {
         if self.internal_scroll() {
             self.drag_scroll.cancel();
-            let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
-                    self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
-                }
-                MouseScrollDelta::LineDelta(_, y) => {
-                    self.momentum.stop();
-                    f64::from(*y) * -WHEEL_LINE_PX
-                }
-                MouseScrollDelta::PixelDelta(pp) => {
-                    self.momentum.stop();
-                    -pp.y
-                }
-            };
             self.last_tick = Some(crate::time::now());
-            let before = self.viewport.offset();
-            self.set_scroll_offset(before + dy);
-            *handled = self.viewport.offset().to_bits() != before.to_bits();
-            if !*handled {
-                self.momentum.stop();
-            }
+            *handled = match self.momentum.wheel(delta, phase, self.reduce_motion) {
+                WheelStep::Scroll(dy) => {
+                    let before = self.viewport.offset();
+                    self.set_scroll_offset(before + dy);
+                    let moved = self.viewport.offset().to_bits() != before.to_bits();
+                    self.momentum.wheel_applied(dy, moved);
+                    moved
+                }
+                WheelStep::Fling => true,
+                WheelStep::Ignored => false,
+            };
         }
     }
 
@@ -1793,7 +1785,6 @@ impl<Row> DataTable<Row> {
 
 const HEADER_HEIGHT: f64 = 28.0;
 const ROW_HEIGHT: f64 = 24.0;
-const WHEEL_LINE_PX: f64 = 60.0;
 
 /// Theme type sizes already carry the accessibility text scale, and the
 /// renderer applies that same scale once more inside `draw_text`/`measure`.
@@ -2127,8 +2118,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
             } => {
                 self.on_left_release(*modifiers, handled, focus_target, node_id);
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.on_wheel(delta, handled);
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.on_wheel(delta, *phase, handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
@@ -3874,7 +3865,11 @@ mod tests {
         assert_eq!(table.scroll_y(), 0.0);
 
         let mut handled = false;
-        table.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), &mut handled);
+        table.on_wheel(
+            &MouseScrollDelta::LineDelta(0.0, -1.0),
+            TouchPhase::Moved,
+            &mut handled,
+        );
         assert!(handled);
         let immediate = table.scroll_y();
         assert_eq!(immediate, 60.0);
@@ -4278,7 +4273,11 @@ mod tests {
         let (mut table, _tree, node) = scrolling_table();
         table.reduce_motion = true;
         let mut handled = false;
-        table.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), &mut handled);
+        table.on_wheel(
+            &MouseScrollDelta::LineDelta(0.0, -1.0),
+            TouchPhase::Moved,
+            &mut handled,
+        );
         assert!(handled);
         assert_eq!(table.scroll_y(), 60.0_f32);
         assert!(!table.momentum.is_active());
