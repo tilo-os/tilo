@@ -6691,7 +6691,7 @@ pub fn run() {
         }
 
         // Advance the idle timers and apply any timeout-driven transitions (blank, auto-lock, suspend).
-        for t in session.tick(Instant::now()) {
+        for t in session.tick_inhibited(Instant::now(), &inhibit_registry) {
             if t == SessionTransition::Suspend {
                 // Idle-suspend is gated by the inhibitor registry (media playing, a task
                 // running); when inhibited, un-latch so it re-fires the instant the last inhibitor releases, no fresh input needed.
@@ -6950,6 +6950,15 @@ pub fn run() {
         } else {
             client_input::sync_keyboard_focus(&mut state, &frame_builder);
         }
+        // An app's idle inhibitor holds the screen on only while its window is visible.
+        crate::compositor::idle_inhibit::sync_idle_inhibitors(
+            &mut state,
+            &frame_builder,
+            &inhibit_registry,
+        );
+        let awake_holders =
+            inhibit_registry.active_reasons_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE);
+        frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),

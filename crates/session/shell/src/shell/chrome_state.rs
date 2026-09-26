@@ -400,6 +400,11 @@ pub struct QuickSettingsState {
     /// `Balanced` so a host without `power-profiles-daemon` still
     /// renders a sensible label.
     pub power_profile: PowerProfile,
+    /// Apps currently keeping the screen awake (an idle inhibitor held
+    /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
+    /// as they asked. Shown on the power row so a screen that never locks
+    /// has a visible reason.
+    pub awake_holders: Vec<String>,
 }
 
 /// One compositor-authoritative screen exposure projected into trusted
@@ -468,6 +473,7 @@ impl Default for QuickSettingsState {
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            awake_holders: Vec::new(),
         }
     }
 }
@@ -508,6 +514,7 @@ impl QuickSettingsState {
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
+            awake_holders: Vec::new(),
         }
     }
 
@@ -1187,6 +1194,15 @@ impl ChromeState {
                     tree.flush_to_disk();
                 }
             }
+            self.bump();
+        }
+    }
+
+    /// Mirror the apps holding the screen awake into quick settings,
+    /// repainting only when the set changed.
+    pub fn set_awake_holders(&mut self, holders: Vec<String>) {
+        if self.quick_settings.awake_holders != holders {
+            self.quick_settings.awake_holders = holders;
             self.bump();
         }
     }
