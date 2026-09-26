@@ -320,3 +320,56 @@ chat-a11y-call-share = Share screen
 chat-a11y-call-participants = Show call participants
 chat-a11y-call-expand = Expand or restore call
 chat-a11y-call-leave = Leave call
+
+# What the edit history calls each change Chat makes.
+chat-undo-send-message = Send message
+chat-undo-edit-message = Edit message
+chat-undo-delete-message = Delete message
+chat-undo-add-reaction = Add reaction
+chat-undo-remove-reaction = Remove reaction
+chat-undo-pin-message = Pin message
+chat-undo-unpin-message = Unpin message
+chat-undo-update-agent-work = Update agent work
+chat-undo-set-report-status = Set report status
+chat-undo-withdraw-attachment = Withdraw attachment
+chat-undo-make-feedback-channel = Make feedback channel
+chat-undo-make-ordinary-channel = Make ordinary channel
+chat-undo-create-channel = Create channel
+chat-undo-create-category = Create category
+chat-undo-rename-category = Rename category
+chat-undo-delete-category = Delete category
+chat-undo-collapse-category = Collapse category
+chat-undo-expand-category = Expand category
+chat-undo-move-channel-up = Move channel up
+chat-undo-move-channel-down = Move channel down
+chat-undo-rename-channel = Rename channel
+chat-undo-delete-channel = Delete channel
+chat-undo-archive-channel = Archive channel
+chat-undo-unarchive-channel = Unarchive channel
+chat-undo-mark-channel-read = Mark channel read
+chat-undo-join-call = Join call
+chat-undo-leave-call = Leave call
+chat-undo-update-call-state = Update call state
+chat-undo-start-presenting = Start presenting
+chat-undo-stop-presenting = Stop presenting
+chat-undo-update-call-connection = Update call connection
+chat-undo-resource-message = Message
+
+# Search: the sections Chat's results are grouped under, and their lines.
+chat-search-group-conversations = Conversations
+chat-search-group-messages = Messages
+chat-search-group-people = People
+chat-search-group-workspaces = Workspaces
+chat-search-group-categories = Categories
+chat-search-subtitle-workspace = Workspace
+chat-search-subtitle-agent = Agent
+chat-search-subtitle-person = Person
+chat-search-category-collapsed = collapsed
+chat-search-category-expanded = expanded
+chat-search-attachment = Attachment
+
+# The emoji picker's categories.
+chat-emoji-category-smileys = Smileys
+chat-emoji-category-gestures = Gestures
+chat-emoji-category-symbols = Symbols
+chat-emoji-category-objects = Objects

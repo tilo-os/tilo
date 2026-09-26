@@ -522,19 +522,19 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
     let mut context = tilo_actions::ActionContext::for_action("org.tilo.Chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
         ChatAction::SendMessage { channel, id, .. } => {
-            ("Send message", channel, id, "chat.message")
+            ("chat-undo-send-message", channel, id, "chat.message")
         }
         ChatAction::EditMessage { channel, id, .. } => {
-            ("Edit message", channel, id, "chat.message")
+            ("chat-undo-edit-message", channel, id, "chat.message")
         }
         ChatAction::DeleteMessage { channel, id } => {
-            ("Delete message", channel, id, "chat.message")
+            ("chat-undo-delete-message", channel, id, "chat.message")
         }
         ChatAction::AddReaction { channel, msg, .. } => {
-            ("Add reaction", channel, msg, "chat.message")
+            ("chat-undo-add-reaction", channel, msg, "chat.message")
         }
         ChatAction::RemoveReaction { channel, msg, .. } => {
-            ("Remove reaction", channel, msg, "chat.message")
+            ("chat-undo-remove-reaction", channel, msg, "chat.message")
         }
         ChatAction::PinMessage {
             channel,
@@ -542,42 +542,51 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
             pinned,
         } => (
             if *pinned {
-                "Pin message"
+                "chat-undo-pin-message"
             } else {
-                "Unpin message"
+                "chat-undo-unpin-message"
             },
             channel,
             msg,
             "chat.message",
         ),
         ChatAction::SetAgentWork { channel, msg, .. } => {
-            ("Update agent work", channel, msg, "chat.message")
+            ("chat-undo-update-agent-work", channel, msg, "chat.message")
         }
         ChatAction::SetReportStatus { channel, msg, .. } => {
-            ("Set report status", channel, msg, "chat.message")
+            ("chat-undo-set-report-status", channel, msg, "chat.message")
         }
-        ChatAction::WithdrawAttachment { channel, msg } => {
-            ("Withdraw attachment", channel, msg, "chat.message")
-        }
+        ChatAction::WithdrawAttachment { channel, msg } => (
+            "chat-undo-withdraw-attachment",
+            channel,
+            msg,
+            "chat.message",
+        ),
         ChatAction::SetChannelFeedback { id, feedback } => (
             if *feedback {
-                "Make feedback channel"
+                "chat-undo-make-feedback-channel"
             } else {
-                "Make ordinary channel"
+                "chat-undo-make-ordinary-channel"
             },
             id,
             id,
             "chat.channel",
         ),
-        ChatAction::CreateChannel { id, .. } => ("Create channel", id, id, "chat.channel"),
-        ChatAction::CreateCategory { id, .. } => ("Create category", id, id, "chat.category"),
-        ChatAction::RenameCategory { id, .. } => ("Rename category", id, id, "chat.category"),
-        ChatAction::DeleteCategory { id } => ("Delete category", id, id, "chat.category"),
+        ChatAction::CreateChannel { id, .. } => {
+            ("chat-undo-create-channel", id, id, "chat.channel")
+        }
+        ChatAction::CreateCategory { id, .. } => {
+            ("chat-undo-create-category", id, id, "chat.category")
+        }
+        ChatAction::RenameCategory { id, .. } => {
+            ("chat-undo-rename-category", id, id, "chat.category")
+        }
+        ChatAction::DeleteCategory { id } => ("chat-undo-delete-category", id, id, "chat.category"),
         ChatAction::SetCategoryCollapsed { id, collapsed } => (
             if *collapsed {
-                "Collapse category"
+                "chat-undo-collapse-category"
             } else {
-                "Expand category"
+                "chat-undo-expand-category"
             },
             id,
             id,
@@ -585,57 +594,70 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ),
         ChatAction::ReorderChannel { id, up } => (
             if *up {
-                "Move channel up"
+                "chat-undo-move-channel-up"
             } else {
-                "Move channel down"
+                "chat-undo-move-channel-down"
             },
             id,
             id,
             "chat.channel",
         ),
-        ChatAction::RenameChannel { id, .. } => ("Rename channel", id, id, "chat.channel"),
-        ChatAction::DeleteChannel { id } => ("Delete channel", id, id, "chat.channel"),
+        ChatAction::RenameChannel { id, .. } => {
+            ("chat-undo-rename-channel", id, id, "chat.channel")
+        }
+        ChatAction::DeleteChannel { id } => ("chat-undo-delete-channel", id, id, "chat.channel"),
         ChatAction::ArchiveChannel { id, archived } => (
             if *archived {
-                "Archive channel"
+                "chat-undo-archive-channel"
             } else {
-                "Unarchive channel"
+                "chat-undo-unarchive-channel"
             },
             id,
             id,
             "chat.channel",
         ),
-        ChatAction::MarkRead { channel, .. } => {
-            ("Mark channel read", channel, channel, "chat.channel")
+        ChatAction::MarkRead { channel, .. } => (
+            "chat-undo-mark-channel-read",
+            channel,
+            channel,
+            "chat.channel",
+        ),
+        ChatAction::JoinCall { channel, .. } => {
+            ("chat-undo-join-call", channel, channel, "chat.call")
         }
-        ChatAction::JoinCall { channel, .. } => ("Join call", channel, channel, "chat.call"),
-        ChatAction::LeaveCall { channel, .. } => ("Leave call", channel, channel, "chat.call"),
+        ChatAction::LeaveCall { channel, .. } => {
+            ("chat-undo-leave-call", channel, channel, "chat.call")
+        }
         ChatAction::SetCallState { channel, .. } => {
-            ("Update call state", channel, channel, "chat.call")
+            ("chat-undo-update-call-state", channel, channel, "chat.call")
         }
         ChatAction::SetScreenShare {
             channel, sharing, ..
         } => (
             if *sharing {
-                "Start presenting"
+                "chat-undo-start-presenting"
             } else {
-                "Stop presenting"
+                "chat-undo-stop-presenting"
             },
             channel,
             channel,
             "chat.call",
         ),
         ChatAction::SetCallTicket { channel, .. }
-        | ChatAction::SetCallVideoCaps { channel, .. } => {
-            ("Update call connection", channel, channel, "chat.call")
-        }
+        | ChatAction::SetCallVideoCaps { channel, .. } => (
+            "chat-undo-update-call-connection",
+            channel,
+            channel,
+            "chat.call",
+        ),
     };
-    context.action_label = label.to_string();
+    // The label a history list shows for the change, in the reader's words.
+    context.action_label = crate::i18n::t(label);
     context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{resource_id}"),
         kind: kind.to_string(),
         label: if kind == "chat.message" {
-            "Message".to_string()
+            crate::i18n::t("chat-undo-resource-message")
         } else {
             channel.clone()
         },

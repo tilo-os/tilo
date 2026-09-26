@@ -9,34 +9,56 @@ pub const QUICK: [&str; 6] = ["👍", "🎉", "❤️", "😂", "🚀", "👀"];
 
 /// A labelled category in the full emoji picker popover.
 pub struct Category {
-    pub name: &'static str,
+    /// The catalogue key of the category's name; see [`Category::name`].
+    pub name_key: &'static str,
     pub emoji: &'static [&'static str],
+}
+
+impl Category {
+    /// The category's name, in the reader's words.
+    pub fn name(&self) -> String {
+        crate::i18n::t(self.name_key)
+    }
 }
 
 /// The full picker content: a handful of categories, each a grid row.
 pub const CATEGORIES: &[Category] = &[
     Category {
-        name: "Smileys",
+        name_key: "chat-emoji-category-smileys",
         emoji: &[
             "😀", "😄", "😁", "😂", "🙂", "😉", "😍", "😎", "🤔", "😇", "🥳", "😴",
         ],
     },
     Category {
-        name: "Gestures",
+        name_key: "chat-emoji-category-gestures",
         emoji: &[
             "👍", "👎", "👏", "🙌", "🙏", "💪", "🤝", "👋", "✌️", "🤙", "👀", "🫶",
         ],
     },
     Category {
-        name: "Symbols",
+        name_key: "chat-emoji-category-symbols",
         emoji: &[
             "❤️", "🔥", "⭐", "✨", "🎉", "🚀", "💯", "✅", "❌", "⚡", "💡", "📌",
         ],
     },
     Category {
-        name: "Objects",
+        name_key: "chat-emoji-category-objects",
         emoji: &[
             "☕", "🍕", "🎧", "📷", "🖥️", "📝", "🐛", "🌈", "🌙", "☀️", "🎈", "🧩",
         ],
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::CATEGORIES;
+
+    #[test]
+    fn every_category_is_named_from_the_catalogue() {
+        for category in CATEGORIES {
+            let name = category.name();
+            assert!(!name.is_empty() && name != category.name_key, "{name}");
+        }
+        assert_eq!(CATEGORIES[0].name(), "Smileys");
+    }
+}

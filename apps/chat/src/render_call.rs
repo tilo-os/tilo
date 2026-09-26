@@ -1531,7 +1531,7 @@ impl ChatApp {
                 scene,
                 tr,
                 tf,
-                cat.name,
+                &cat.name(),
                 10.5,
                 c.text_dim,
                 panel.x0 + 14.0,
