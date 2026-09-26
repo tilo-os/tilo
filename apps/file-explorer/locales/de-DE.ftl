@@ -544,3 +544,25 @@ files-nearby-save-and-remember = In { $destination } speichern und für diese Si
 files-share-not-available = Freigabedienst ist auf diesem Gerät nicht verfügbar
 
 files-name-invalid = Gib einen gültigen Datei- oder Ordnernamen ein
+
+## Öffnen mit und Zuletzt verwendet
+files-menu-open-with = Öffnen mit
+files-open-with-other = Andere Anwendung…
+files-open-with-none = Keine Anwendung öffnet diese Datei
+files-open-with-default = { $app } (Standard)
+files-open-with-default-badge = Standard
+files-open-with-once-group = Einmal öffnen
+files-open-with-always-group = Immer verwenden für { $type }
+files-open-with-search = Anwendung für { $name } wählen
+files-open-with-app = Mit { $app } öffnen
+files-open-with-always-app = { $type } immer mit { $app } öffnen
+files-open-with-app-param = Anwendung
+files-open-with-always-param = Außerdem als Standard für { $type } festlegen
+files-open-with-now-default = { $app } öffnet jetzt { $type }
+files-open-with-unavailable = Die Anwendungswahl ist hier nicht verfügbar ({ $name })
+files-open-with-not-a-candidate = { $app } öffnet diese Datei nicht
+files-place-recent = Zuletzt verwendet
+files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
+files-recent-reveal = Enthaltenden Ordner öffnen
+files-recent-forget = Aus „Zuletzt verwendet“ entfernen
+files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
