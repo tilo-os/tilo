@@ -462,6 +462,13 @@ ENV CARGO_HOME=/build/.cargo-home \
 # engine built in the wpe-builder stage. Overlaying /usr in this throwaway
 # stage keeps pkg-config discovery entirely standard.
 COPY --from=wpe-builder /wpe/ /
+# The link below needs every library the engine records in DT_NEEDED, and the
+# toolchain list above is what provides them. A WPE buildroot refresh that
+# builds the engine with a new feature fails here, naming the packages to add,
+# instead of as undefined references in the browser and shell links.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
+    bash /run/tilo-check-wpe-runtime.sh "the builder stage's dnf list (and its mirror, builder-packages.txt)"
 
 # Copy the frequently changing workspace only after the large, stable WPE
 # overlay. This keeps source-only iterations from re-importing the browser
@@ -1460,7 +1467,9 @@ RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
 # seconds, and installing them either way keeps the two images' package sets —
 # and this layer's cache entry — identical.
 COPY --from=wpe-builder /wpe/ /
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
+    dnf install -y --setopt=reposdir=/repo \
     libepoxy \
     libsoup3 \
     enchant2 \
@@ -1485,7 +1494,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && gst-inspect-1.0 hlssink2 >/dev/null \
     && gst-inspect-1.0 pulsesrc >/dev/null \
     && gst-inspect-1.0 avenc_aac >/dev/null \
-    && gst-inspect-1.0 aacparse >/dev/null
+    && gst-inspect-1.0 aacparse >/dev/null \
+    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above"
 
 # Browser and shell are compiled in one Cargo invocation. The browser's WPE
 # feature can therefore affect shell's dynamic link closure. Check it only
