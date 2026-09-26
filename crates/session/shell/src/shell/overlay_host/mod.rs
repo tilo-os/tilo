@@ -3685,6 +3685,26 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The devices the screenshot receipt's "Send…" offers.
+    pub fn set_capture_send_devices(&mut self, devices: Vec<ui::widget::ScreenshotSendDevice>) {
+        self.capture_studio.set_screenshot_send_devices(devices);
+    }
+
+    /// Queue "Send…" requests from the action door into the capture studio,
+    /// so they take the same path as a pick in the receipt's picker.
+    fn pump_screenshot_sends(&mut self) -> bool {
+        let sends = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow_mut().take_screenshot_sends())
+            .unwrap_or_default();
+        let any = !sends.is_empty();
+        for target in sends {
+            self.capture_studio.send_last_screenshot(target);
+        }
+        any
+    }
+
     pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
         self.capture_studio
             .set_recording_transition_progress(permille);
@@ -16428,6 +16448,7 @@ impl Widget for ShellOverlayHost {
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
         let presence_dirty = self.pump_presence_requests();
+        self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
