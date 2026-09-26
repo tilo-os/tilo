@@ -152,7 +152,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'gl|2d) ./os/dev/vm.sh boot "--$TILO_VM_DISPLAY" ;;' "$workflow" \
    && grep -Fq "*) echo '::error::no installed-desktop display was selected'; exit 1 ;;" "$workflow" \
    && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}' "$workflow" \
-   && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'expected exactly two native child descriptors' "$workflow" \
    && grep -Fq 'descriptor points to $actual_registry_arch content' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \
