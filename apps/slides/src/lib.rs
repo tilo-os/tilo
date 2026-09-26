@@ -82,4 +82,6 @@ pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
 }
 
 #[cfg(test)]
+mod deck_operations_tests;
+#[cfg(test)]
 mod framework_history_tests;
