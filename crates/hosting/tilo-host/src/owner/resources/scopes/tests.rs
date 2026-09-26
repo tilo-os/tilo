@@ -20,13 +20,13 @@ fn fixture() -> (
 fn owner_scope_checkpoint_commits_and_publishes_actual_current() {
     let (_temp, mut owner, pool, current) = fixture();
     let before = owner.committed_generation();
-    let original = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let original = crate::store::test_durable_state(owner.root()).unwrap();
     assert!(
         owner.refresh_checkpoint().is_err(),
         "attached unscoped checkpoint must refuse"
     );
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         original
     );
     let mut scope = owner
@@ -42,7 +42,7 @@ fn owner_scope_checkpoint_commits_and_publishes_actual_current() {
     assert_eq!(receipt.generation, before + 1);
     assert_eq!(current.read().unwrap().generation(), before + 1);
     assert_ne!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         original
     );
     assert!(
@@ -55,7 +55,7 @@ fn owner_scope_checkpoint_commits_and_publishes_actual_current() {
 #[test]
 fn owner_scope_attached_flush_refuses_without_changing_disk_or_live_state() {
     let (_temp, mut owner, _pool, _current) = fixture();
-    let original = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let original = crate::store::test_durable_state(owner.root()).unwrap();
     let generation = owner.committed_generation();
     assert!(
         owner.flush().is_err(),
@@ -63,7 +63,7 @@ fn owner_scope_attached_flush_refuses_without_changing_disk_or_live_state() {
     );
     assert_eq!(owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         original
     );
     assert!(!owner.store.is_poisoned());
@@ -194,7 +194,7 @@ fn owner_scope_wrong_pool_owner_reuse_stale_and_nesting_never_run_callback() {
 #[test]
 fn owner_scope_pressure_and_disk_refuse_before_any_turn() {
     let (_temp, owner, pool, current) = fixture();
-    let before = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(owner.root()).unwrap();
     let pressure = pool
         .try_acquire_bulk(pool.available_bytes() - crate::host_bytes::CONTROL_RESERVE_BYTES)
         .unwrap();
@@ -219,7 +219,7 @@ fn owner_scope_pressure_and_disk_refuse_before_any_turn() {
     );
     assert_eq!(error.kind(), Failure::Capacity(Capacity::Disk));
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         before
     );
     assert!(current.read().is_ok());
@@ -346,7 +346,7 @@ fn owner_scope_deferred_input_keeps_serialized_credit_after_scope_ends() {
     let (device, message, bytes) = deferred_input(&owner);
     let before = pool.available_bytes();
     let generation = owner.committed_generation();
-    let original = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let original = crate::store::test_durable_state(owner.root()).unwrap();
     let mut scope = owner
         .prepare_owner_scope(
             &pool,
@@ -365,7 +365,7 @@ fn owner_scope_deferred_input_keeps_serialized_credit_after_scope_ends() {
     assert_eq!(owner.peer.pending_count(), 1);
     assert_eq!(owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         original
     );
     assert!(

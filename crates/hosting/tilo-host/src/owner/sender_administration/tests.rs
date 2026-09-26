@@ -127,7 +127,7 @@ fn sender_admin_managed_init_commits_active_real_file() {
     let status = result.expect("real managed initializer must commit Active storage");
     assert_eq!(status.phase, AdminPhase::Active);
 
-    let bytes = std::fs::read(root.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&root).unwrap();
     let signed: super::super::SignedAggregate = postcard::from_bytes(&bytes).unwrap();
     super::super::schema::canonical(&signed, &bytes).unwrap();
     let outer: SelectedWire = postcard::from_bytes(&signed.payload).unwrap();
@@ -230,10 +230,10 @@ pub(super) fn physical<T>(operation: impl FnOnce() -> T) -> T {
 }
 fn unselected(root: &Path) -> Vec<u8> {
     drop(SessionOwner::initialize(root).unwrap());
-    std::fs::read(root.join("session.bin")).unwrap()
+    crate::store::test_durable_state(root).unwrap()
 }
 fn outer(root: &Path) -> (Vec<u8>, SelectedWire) {
-    let raw = std::fs::read(root.join("session.bin")).unwrap();
+    let raw = crate::store::test_durable_state(root).unwrap();
     let signed: super::super::SignedAggregate = postcard::from_bytes(&raw).unwrap();
     (raw, postcard::from_bytes(&signed.payload).unwrap())
 }
@@ -261,15 +261,15 @@ fn sender_admin_named_initializer_and_status_reopen_are_inert() {
     let container = fixture();
     let root = container.path().join("named");
     let initialized = initialize_workspace(&root, "Private workspace").unwrap();
-    let before = std::fs::read(root.join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(&root).unwrap();
     for observed in [status(&root).unwrap(), resume(&root).unwrap()] {
         assert_eq!(observed.phase, AdminPhase::Active);
         assert_eq!(observed.instance, initialized.instance);
         assert_eq!(observed.room, initialized.room);
     }
-    assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
+    assert_eq!(before, crate::store::test_durable_state(&root).unwrap());
     assert!(select(&root).is_err());
-    assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
+    assert_eq!(before, crate::store::test_durable_state(&root).unwrap());
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn sender_admin_ordinary_open_encode_and_candidate_change_stay_closed() {
     let (aggregate, _) = super::super::decode(&before).unwrap();
     assert!(aggregate.encode_payload().is_err());
     assert!(SessionOwner::open(&root).is_err());
-    assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
+    assert_eq!(before, crate::store::test_durable_state(&root).unwrap());
     let root2 = container.path().join("ordinary");
     let mut ordinary = SessionOwner::initialize(&root2).unwrap();
     let mut candidate = ordinary.aggregate.clone();
@@ -329,7 +329,7 @@ fn sender_admin_actual_prepared_barrier_failure_retains_original_error_and_owner
         assert!(crate::store::SessionStore::open(&root).is_err());
         assert!(!root.join("private-actions-v1.writer.lock").exists());
         drop(failure);
-        let current = std::fs::read(root.join("session.bin")).unwrap();
+        let current = crate::store::test_durable_state(&root).unwrap();
         if current == before {
             select(&root).unwrap();
         } else {
@@ -345,7 +345,8 @@ fn sender_admin_actual_active_barrier_failure_keeps_physical_lease_until_drop() 
     let root = container.path().join("owner");
     unselected(&root);
     COMMIT.with(|slot| *slot.borrow_mut() = Some((1, Checkpoint::BeforeCommit)));
-    let failure = select(&root).unwrap_err();
+    // A checkpoint publication fails here; journal appends never publish.
+    let failure = crate::store::test_whole_file::with_whole_file(|| select(&root)).unwrap_err();
     assert!(failure.publication_error().is_some());
     let held = failure.operation.as_ref().unwrap();
     let instance = held.status().instance;
@@ -398,7 +399,7 @@ fn sender_admin_active_missing_objects_never_reseed() {
         let container = fixture();
         let root = container.path().join("owner");
         initialize(&root).unwrap();
-        let before = std::fs::read(root.join("session.bin")).unwrap();
+        let before = crate::store::test_durable_state(&root).unwrap();
         let path = root.join(missing);
         if path.is_dir() {
             std::fs::remove_dir_all(&path).unwrap();
@@ -409,7 +410,7 @@ fn sender_admin_active_missing_objects_never_reseed() {
         assert!(resume(&root).is_err());
         assert!(select(&root).is_err());
         assert!(!path.exists());
-        assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
+        assert_eq!(before, crate::store::test_durable_state(&root).unwrap());
     }
 }
 
@@ -624,7 +625,7 @@ fn sender_admin_authenticated_host_certificate_substitution_refuses_without_rewr
     drop(identity);
     assert!(status(&root).is_err());
     assert!(resume(&root).is_err());
-    assert_eq!(bad, std::fs::read(root.join("session.bin")).unwrap());
+    assert_eq!(bad, crate::store::test_durable_state(&root).unwrap());
 }
 
 #[test]
@@ -644,7 +645,7 @@ fn sender_admin_noncanonical_old_v4_is_explicitly_ineligible() {
     let bad = sign_and_commit(&root, overlong, &identity);
     drop(identity);
     assert!(select(&root).is_err());
-    assert_eq!(bad, std::fs::read(root.join("session.bin")).unwrap());
+    assert_eq!(bad, crate::store::test_durable_state(&root).unwrap());
     assert!(!root.join("private-actions-v1.writer.lock").exists());
     assert!(SessionOwner::open(&root).is_ok());
 }
@@ -737,7 +738,7 @@ fn sender_admin_unexplained_unselected_artifacts_precede_prepared() {
     )
     .unwrap();
     assert!(select(&root).is_err());
-    assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
+    assert_eq!(before, crate::store::test_durable_state(&root).unwrap());
     assert!(!root.join("private-actions-v1.writer.lock").exists());
 }
 
@@ -809,7 +810,7 @@ fn sender_admin_active_accepts_later_valid_payload_but_prepared_does_not() {
         } else {
             select(&root).unwrap();
         }
-        let before = std::fs::read(root.join("session.bin")).unwrap();
+        let before = crate::store::test_durable_state(&root).unwrap();
         let payload = nonempty_observation();
         let physical = replace_payload(&root, &payload);
         if prepared {
@@ -818,7 +819,7 @@ fn sender_admin_active_accepts_later_valid_payload_but_prepared_does_not() {
             assert_eq!(status(&root).unwrap().phase, AdminPhase::Active);
             assert_eq!(resume(&root).unwrap().phase, AdminPhase::Active);
         }
-        assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
+        assert_eq!(before, crate::store::test_durable_state(&root).unwrap());
         assert_eq!(
             physical,
             std::fs::read(root.join("private-actions-v1/private-actions-v1.bin")).unwrap()

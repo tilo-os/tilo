@@ -13,7 +13,7 @@ fn kind(error: impl Into<anyhow::Error>) -> Kind {
 fn delivery_resource_input_and_exact_identity_failures_are_typed() {
     let (_temp, mut owner) = tests::hosted_owner();
     let origin = TransportOrigin::RelayDelta(owner.peer.authority().device_public_key);
-    let before = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(owner.root()).unwrap();
     assert_eq!(
         kind(
             owner
@@ -30,7 +30,7 @@ fn delivery_resource_input_and_exact_identity_failures_are_typed() {
         Kind::InvalidNativeInput
     );
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         before
     );
     let mut author = owner.peer.clone();
@@ -188,7 +188,7 @@ fn delivery_resource_preflight_pressure_does_not_mutate_owner() {
     let (ingress, _receiver) = crate::https::ingress_channel();
     let budget = ingress.host_bytes();
     owner.attach_data_resources(&budget).unwrap();
-    let original = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let original = crate::store::test_durable_state(owner.root()).unwrap();
     let generation = owner.status().generation;
     let held = budget
         .try_acquire_bulk(budget.available_bytes() - crate::host_bytes::CONTROL_RESERVE_BYTES)
@@ -202,7 +202,7 @@ fn delivery_resource_preflight_pressure_does_not_mutate_owner() {
         Kind::Capacity(error::OwnerCapacityKind::Bytes)
     );
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         original
     );
     assert_eq!(owner.status().generation, generation);
@@ -421,8 +421,9 @@ fn delivery_resource_actual_turn_binds_owner_generation_and_covers_publish() {
             assert_eq!(owner.status().generation, generation);
             assert_eq!(budget.available_bytes(), before);
         } else {
-            assert_eq!(owner.status().generation, generation + 1);
-            // The ACK's aggregate replaces (not adds to) the prior custody.
+            // An ACK is a signed side record: no new owner generation, and the
+            // aggregate custody it keeps is exactly the prior one.
+            assert_eq!(owner.status().generation, generation);
             let held_after = owner.accounted_retained_bytes();
             assert_eq!(held_after, owner.actual_retained_bytes());
             assert_eq!(
@@ -488,7 +489,7 @@ fn delivery_resource_second_disk_gate_and_barrier_failure_are_distinct() {
             )
             .unwrap();
         let root = owner.root().to_owned();
-        let file = std::fs::read(root.join("session.bin")).unwrap();
+        let file = crate::store::test_durable_state(&root).unwrap();
         let generation = owner.status().generation;
         let operation = || {
             authority.with_owner_view(&mut owner, |view, owner| {
@@ -545,7 +546,7 @@ fn delivery_resource_second_disk_gate_and_barrier_failure_are_distinct() {
             assert!(!owner.store.is_poisoned());
             assert!(authority.read().is_ok());
             assert_eq!(owner.status().generation, generation);
-            assert_eq!(std::fs::read(root.join("session.bin")).unwrap(), file);
+            assert_eq!(crate::store::test_durable_state(&root).unwrap(), file);
         }
     }
 }
@@ -808,7 +809,7 @@ fn delivery_resource_receipt_lookup_returns_only_original_durable_outcome() {
     let current = CommittedAuthority::new(&owner);
     let session = tests::authenticated_session(&owner, &current);
     let generation = owner.committed_generation();
-    let disk = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(owner.root()).unwrap();
     let mut turn = owner
         .prepare_data_turn(&pool, OwnerDataOperation::ReceiptLookup)
         .unwrap();
@@ -846,7 +847,7 @@ fn delivery_resource_receipt_lookup_returns_only_original_durable_outcome() {
     );
     assert_eq!(owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         disk
     );
     let (_other_temp, mut other) = tests::hosted_owner();
@@ -884,7 +885,7 @@ fn delivery_resource_receipt_lookup_returns_only_original_durable_outcome() {
             .unwrap(),
         Some(&original)
     );
-    assert_eq!(std::fs::read(root.join("session.bin")).unwrap(), disk);
+    assert_eq!(crate::store::test_durable_state(&root).unwrap(), disk);
 }
 
 /// Long-session custody: many real owner writes (with periodic ACK

@@ -27,10 +27,13 @@ fn private_file(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
+/// These tests pin the checkpoint publication path, so their store commits
+/// whole files.
 fn seed() -> (tempfile::TempDir, PathBuf, SessionStore) {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("owner");
-    let mut store = SessionStore::create(&root).unwrap();
+    let mut store =
+        super::test_whole_file::with_whole_file(|| SessionStore::create(&root)).unwrap();
     store.commit(b"original signed aggregate bytes").unwrap();
     (temporary, root, store)
 }

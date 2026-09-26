@@ -50,16 +50,16 @@ fn delivery_activation_is_explicit_and_restart_preserves_native_floor_pool_and_u
             .publications
             .is_empty()
     );
-    let file = std::fs::read(path.join("session.bin")).unwrap();
+    let file = crate::store::test_durable_state(&path).unwrap();
     owner.flush().unwrap();
-    assert_eq!(file, std::fs::read(path.join("session.bin")).unwrap());
+    assert_eq!(file, crate::store::test_durable_state(&path).unwrap());
     drop(owner);
     let mut owner = SessionOwner::open(&path).unwrap();
     assert_eq!(owner.delivery_ledger().unwrap(), &ledger);
     assert!(owner.peer.admission_v5_selected());
-    assert_eq!(file, std::fs::read(path.join("session.bin")).unwrap());
+    assert_eq!(file, crate::store::test_durable_state(&path).unwrap());
     owner.activate_delivery().unwrap();
-    assert_eq!(file, std::fs::read(path.join("session.bin")).unwrap());
+    assert_eq!(file, crate::store::test_durable_state(&path).unwrap());
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn delivery_conflict_and_stale_sequence_cannot_mutate_or_claim_duplicate() {
     let bytes = upload(&owner, &mut author, "original");
     let first = durable(send(&mut owner, 1, &bytes).unwrap());
     let before = owner.status();
-    let file = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let file = crate::store::test_durable_state(owner.root()).unwrap();
     let mut changed: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
     let NeighbourMsg::AppDocument { envelope, .. } = &mut changed else {
         unreachable!()
@@ -171,7 +171,7 @@ fn delivery_conflict_and_stale_sequence_cannot_mutate_or_claim_duplicate() {
     assert!(send(&mut owner, 2, &changed).is_err());
     assert_eq!(owner.status(), before);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         file
     );
     assert_eq!(owner.delivery_ledger().unwrap().admissions.len(), 1);
@@ -378,7 +378,8 @@ fn delivery_consumer_ack_is_committed_under_the_same_view_and_idempotent_after_r
         })
         .unwrap()
         .unwrap();
-    assert_eq!(owner.status().generation, before + 1);
+    // The ACK is a durable side record, not an aggregate commit.
+    assert_eq!(owner.status().generation, before);
     assert_eq!(owner.delivery_ledger().unwrap().replay, before_replay);
     assert!(
         owner.delivery_ledger().unwrap().consumers[&owner.identity.native_cert.device_public_key]
@@ -560,11 +561,11 @@ fn delivery_admission_metadata_reference_and_aggregate_pressure_preserve_accepte
     }
     owner.commit(next, owner.peer.clone()).unwrap();
     let before = owner.status();
-    let file = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let file = crate::store::test_durable_state(owner.root()).unwrap();
     assert!(send(&mut owner, 9, &bytes).is_err());
     assert_eq!(owner.status(), before);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         file
     );
     assert_eq!(durable(send(&mut owner, 1, &bytes).unwrap()), record);
@@ -617,7 +618,7 @@ fn delivery_admission_metadata_reference_and_aggregate_pressure_preserve_accepte
     assert!(owner.permits_publication());
     assert_eq!(owner.status(), before);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         file
     );
 }
@@ -1365,7 +1366,7 @@ fn delivery_cross_owner_ack_cut_is_denied_before_requested_index_lookup() {
             .replay
             .contains_key(&sequence)
     );
-    let before = std::fs::read(second.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(second.root()).unwrap();
     let generation = second.status().generation;
     let error = second_committed
         .with_owner_view(&mut second, |view, owner| {
@@ -1382,7 +1383,7 @@ fn delivery_cross_owner_ack_cut_is_denied_before_requested_index_lookup() {
     );
     assert_eq!(second.status().generation, generation);
     assert_eq!(
-        std::fs::read(second.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(second.root()).unwrap(),
         before
     );
     assert!(

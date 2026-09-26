@@ -112,7 +112,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
     for (app, record, document) in &records {
         assert_eq!(owner.peer().document(app, record).unwrap(), *document);
     }
-    let disk = std::fs::read(path.join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(&path).unwrap();
     let mut fixture = ReopenedAppFixture::new(root, owner, committed);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -138,7 +138,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
         refreshed_generation,
         "startup replay must perform no new owner write"
     );
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), disk);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), disk);
     for (app, record, document) in &records {
         assert_eq!(
             fixture.owner.peer().document(app, record).unwrap(),

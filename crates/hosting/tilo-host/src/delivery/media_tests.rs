@@ -53,7 +53,7 @@ fn revoked_candidate(
 fn media_writer_final_normal_gate_rejects_unreconciled_candidate_before_barrier() {
     let (_temp, mut owner, cert, entry) = fixture();
     let candidate = revoked_candidate(&owner, cert, entry);
-    let before = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(owner.root()).unwrap();
     let generation = owner.status().generation;
     assert!(
         owner.commit(owner.aggregate.clone(), candidate).is_err(),
@@ -61,7 +61,7 @@ fn media_writer_final_normal_gate_rejects_unreconciled_candidate_before_barrier(
     );
     assert_eq!(owner.status().generation, generation);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         before
     );
     assert!(owner.peer.validated_media_policy().is_ok());
@@ -115,7 +115,7 @@ fn media_writer_sealed_mode_rejects_changed_aggregate_and_reused_candidate_proof
         policy.authorization_revision = u64::MAX
     });
     let candidate = revoked_candidate(&owner, cert, entry);
-    let before = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(owner.root()).unwrap();
     let generation = owner.status().generation;
     let (persisted, proof) = owner
         .committed_peer()
@@ -161,7 +161,7 @@ fn media_writer_sealed_mode_rejects_changed_aggregate_and_reused_candidate_proof
     );
     assert_eq!(owner.status().generation, generation);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         before
     );
 }
@@ -184,7 +184,7 @@ fn media_writer_restored_revocation_reconciles_only_in_new_explicit_checkpoint()
     let mut owner = SessionOwner::open(&path).unwrap();
     assert!(owner.peer.validated_media_policy().is_err());
     assert_eq!(owner.status().generation, generation);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
     owner.refresh_checkpoint().unwrap();
     let restored = owner.peer.validated_media_policy().unwrap().unwrap();
     assert_eq!(
@@ -273,7 +273,7 @@ fn deferred_then_suspended_uses_stored_basis(delivery: bool) {
     crate::room_media_policy::tests::edit_policy(&mut owner, |policy| {
         policy.authorization_revision = u64::MAX
     });
-    let before_file = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let before_file = crate::store::test_durable_state(owner.root()).unwrap();
     let (before_aggregate, before_signed) = decode(&before_file).unwrap();
     let (before_peer, _) = restore(&before_aggregate, &before_signed, &owner.identity).unwrap();
     assert_eq!(before_peer.pending_count(), 0);
@@ -325,7 +325,7 @@ fn deferred_then_suspended_uses_stored_basis(delivery: bool) {
     );
     assert_eq!(owner.status().generation, generation);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         before_file
     );
     assert_eq!(
@@ -370,7 +370,7 @@ fn deferred_then_suspended_uses_stored_basis(delivery: bool) {
         1,
         "unadmitted queue remains volatile custody"
     );
-    let stored_file = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let stored_file = crate::store::test_durable_state(owner.root()).unwrap();
     let (stored, signed) = decode(&stored_file).unwrap();
     let (stored_peer, _) = restore(&stored, &signed, &owner.identity).unwrap();
     assert_eq!(
@@ -410,7 +410,7 @@ fn deferred_then_suspended_uses_stored_basis(delivery: bool) {
     assert!(reopened.peer.validated_media_policy().is_err());
     assert_eq!(reopened.peer.pending_count(), 0);
     assert_eq!(
-        std::fs::read(path.join("session.bin")).unwrap(),
+        crate::store::test_durable_state(&path).unwrap(),
         stored_file
     );
 }
@@ -431,7 +431,7 @@ fn media_writer_committed_capture_restore_failure_denies_instead_of_using_live_p
     let (_temp, mut owner, _, _) = fixture();
     let committed = CommittedAuthority::new(&owner);
     assert!(matches!(committed.observe(), Observation::Current(_)));
-    let file = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let file = crate::store::test_durable_state(owner.root()).unwrap();
     // Inject an unavailable stored projection while leaving the live peer valid.
     owner.aggregate.peer = vec![255];
     assert!(matches!(
@@ -445,7 +445,7 @@ fn media_writer_committed_capture_restore_failure_denies_instead_of_using_live_p
     assert!(result.is_err());
     assert!(matches!(committed.observe(), Observation::Denied));
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         file
     );
 }
@@ -511,7 +511,7 @@ fn multi_author_fixture() -> (
 #[test]
 fn media_writer_multiauthor_restore_keeps_delivery_and_suspension_valid() {
     let (_temp, mut owner, member, entry) = multi_author_fixture();
-    let original = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let original = crate::store::test_durable_state(owner.root()).unwrap();
     let initial = CommittedAuthority::new(&owner);
     let session = super::tests::authenticated_session(&owner, &initial);
     // Each capture restores independently randomized native watermark maps.
@@ -523,7 +523,7 @@ fn media_writer_multiauthor_restore_keeps_delivery_and_suspension_valid() {
             .expect("same stored multi-author peer remains the current delivery source");
     }
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         original
     );
     crate::room_media_policy::tests::edit_policy(&mut owner, |policy| {
@@ -591,7 +591,7 @@ fn media_writer_multiauthor_changed_raw_baseline_cannot_reuse_security_proof() {
         "equivalent but different stored bytes must invalidate the prior raw-baseline proof"
     );
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         file
     );
 }

@@ -40,13 +40,13 @@ fn desktop_policy_original_retired_origin_refuses_before_factory_or_write() {
     let time = origin.capture().unwrap();
     origin.invalidate();
     let before = owner.status();
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     assert!(matches!(
         owner.commit_desktop_command_with_policy_time(&request, &time),
         Err(DesktopCommandError::Rejected(_))
     ));
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn desktop_policy_origin_retired_after_actual_encoding_refuses_before_store_writ
     let time = origin.capture().unwrap();
     let retiring = origin.clone();
     let before = owner.status();
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     let result = crate::owner::policy_fence::with_before_check(
         move || retiring.invalidate(),
         || owner.commit_desktop_command_with_policy_time(&request, &time),
@@ -72,7 +72,7 @@ fn desktop_policy_origin_retired_after_actual_encoding_refuses_before_store_writ
         "pre-write origin denial is a definite no-effect refusal"
     );
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 
 #[cfg(feature = "test-support")]
@@ -154,14 +154,14 @@ fn desktop_policy_clock_advance_during_encoding_rechecks_original_caller_expiry(
     let origin = clock.new_origin();
     let time = origin.capture().unwrap();
     let before = owner.status();
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     let result = crate::owner::policy_fence::with_before_check(
         move || control.advance_monotonic(std::time::Duration::from_secs(120)),
         || owner.commit_desktop_command_with_delivery_policy_time(&request, &time),
     );
     assert!(matches!(result, Err(DesktopCommandError::Rejected(_))));
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
     assert!(owner.peer().rows().is_empty());
 }
 #[test]
@@ -181,14 +181,14 @@ fn desktop_policy_live_original_context_commits_and_replays_through_direct_deliv
     receipt.validate_for(&request).unwrap();
     assert!(delivery.is_some());
     let before = owner.status();
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     let (receipt, delivery) = owner
         .commit_desktop_command_with_delivery_policy_time(&request, &time)
         .unwrap();
     receipt.validate_for(&request).unwrap();
     assert!(delivery.is_some());
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 
 #[cfg(feature = "test-support")]
@@ -248,12 +248,12 @@ fn desktop_policy_retained_retry_refresh_uses_original_clock_without_another_fac
             .unwrap();
     }
     assert_eq!(replica.rows(), rows);
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     owner
         .commit_desktop_command_with_policy_time(&request, &time)
         .unwrap();
     assert_eq!(owner.status().generation, generation + 1);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn desktop_policy_retained_read_rechecks_origin_after_encoding_without_mutation(
         .commit_desktop_command_with_policy_time(&request, &time)
         .unwrap();
     let before = owner.status();
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     let retiring = origin.clone();
     let result = crate::owner::policy_fence::with_before_check(
         move || retiring.invalidate(),
@@ -279,5 +279,5 @@ fn desktop_policy_retained_read_rechecks_origin_after_encoding_without_mutation(
     );
     assert!(matches!(result, Err(DesktopCommandError::Rejected(_))));
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }

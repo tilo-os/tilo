@@ -26,7 +26,7 @@ struct Forwarded {
 }
 
 fn durable_digest(root: &std::path::Path) -> [u8; 32] {
-    *blake3::hash(&std::fs::read(root.join("session.bin")).unwrap()).as_bytes()
+    *blake3::hash(&crate::store::test_durable_state(root).unwrap()).as_bytes()
 }
 
 /// Replace the live forwarder sink with a recorder on the real data routes.

@@ -8,7 +8,7 @@ fn selected_owner() -> (tempfile::TempDir, SessionOwner) {
     (dir, owner)
 }
 fn version(owner: &SessionOwner) -> u32 {
-    let bytes = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(owner.root()).unwrap();
     let signed: SignedAggregate = postcard::from_bytes(&bytes).unwrap();
     postcard::take_from_bytes::<u32>(&signed.payload).unwrap().0
 }
@@ -17,33 +17,33 @@ fn creation_activation_is_explicit_and_preserves_v5_bytes_until_selected() {
     let (_dir, mut owner) = selected_owner();
     let path = owner.root().to_owned();
     assert_eq!(version(&owner), 5);
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     owner.flush().unwrap();
     drop(owner);
     let mut owner = SessionOwner::open(&path).unwrap();
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
     let generation = owner.status().generation;
     owner.activate_creation().unwrap();
     assert_eq!(version(&owner), 6);
     assert_eq!(owner.status().generation, generation + 1);
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     drop(owner);
     let mut owner = SessionOwner::open(&path).unwrap();
     owner.flush().unwrap();
     owner.activate_delivery().unwrap();
     owner.activate_creation().unwrap();
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 #[test]
 fn creation_activation_requires_existing_native_v5_selection() {
     let dir = tempfile::tempdir().unwrap();
     let mut owner =
         SessionOwner::initialize_workspace(&dir.path().join("owner"), "Legacy").unwrap();
-    let before = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(owner.root()).unwrap();
     assert!(owner.activate_creation().is_err());
     assert_eq!(version(&owner), 4);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         before
     );
 }
@@ -52,7 +52,7 @@ fn creation_activation_fault_cannot_expose_selected_memory_or_acknowledgment() {
     let (_dir, mut owner) = selected_owner();
     let path = owner.root().to_owned();
     let before = owner.status();
-    let bytes = std::fs::read(path.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     let result = crate::store::test_fault::with_fault(
         &path,
         crate::store::test_fault::Point::BeforeWrite,
@@ -60,7 +60,7 @@ fn creation_activation_fault_cannot_expose_selected_memory_or_acknowledgment() {
     );
     assert!(result.is_err());
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
     drop(owner);
     let owner = SessionOwner::open(&path).unwrap();
     assert_eq!(version(&owner), 5);
@@ -112,11 +112,11 @@ fn creation_open_tab_exact_retry_and_restart_retain_one_original_result() {
         .clone();
     assert_eq!(row.result.body.owner_generation, first.generation);
     let before = owner.status();
-    let bytes = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(owner.root()).unwrap();
     owner.commit_desktop_command(&request).unwrap();
     assert_eq!(owner.status(), before);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         bytes
     );
     let root = owner.root().to_owned();
@@ -146,7 +146,7 @@ fn creation_terminal_barrier_failure_leaves_document_topology_and_result_unpubli
     let request = opening(&owner, "so.tilo.notes");
     let root = owner.root().to_owned();
     let before = owner.status();
-    let bytes = std::fs::read(root.join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(&root).unwrap();
     let result = crate::store::test_fault::with_fault(
         &root,
         crate::store::test_fault::Point::BeforeWrite,
@@ -158,7 +158,7 @@ fn creation_terminal_barrier_failure_leaves_document_topology_and_result_unpubli
     ));
     assert_eq!(owner.status(), before);
     assert!(owner.aggregate.creation.as_ref().unwrap().is_empty());
-    assert_eq!(std::fs::read(root.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&root).unwrap(), bytes);
     drop(owner);
     let mut owner = SessionOwner::open(&root).unwrap();
     owner.commit_desktop_command(&request).unwrap();
@@ -243,13 +243,13 @@ fn creation_retained_result_refreshes_expired_checkpoint_and_coalesces_fresh_ret
             .unwrap()
             .is_some()
     );
-    let bytes = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(owner.root()).unwrap();
     with_test_publication_time(later, || owner.replay_desktop_creation(&request, later))
         .unwrap()
         .unwrap();
     assert_eq!(owner.status().generation, generation + 1);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         bytes
     );
 }

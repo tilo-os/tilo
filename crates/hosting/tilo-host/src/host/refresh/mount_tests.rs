@@ -124,8 +124,8 @@ fn mount_refresh_original_origin_retired_after_encoding_never_writes() {
     let time = committed.read().unwrap().view().policy_time().unwrap();
     let retiring = committed.clone();
     let before = owner.status();
-    let path = owner.root().join("session.bin");
-    let bytes = std::fs::read(&path).unwrap();
+    let path = owner.root().to_owned();
+    let bytes = crate::store::test_durable_state(&path).unwrap();
     let thread = std::sync::Arc::new(std::sync::Mutex::new(None));
     let thread_slot = thread.clone();
     let result = crate::owner::policy_fence::with_before_check(
@@ -147,7 +147,7 @@ fn mount_refresh_original_origin_retired_after_encoding_never_writes() {
     thread.lock().unwrap().take().unwrap().join().unwrap();
     assert!(result.is_err());
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
     assert!(
         owner.durability_healthy(),
         "definite refusal never called Store"
@@ -164,7 +164,7 @@ fn mount_refresh_failed_store_never_publishes_a_replacement() {
     let mut owner = SessionOwner::initialize(&directory.path().join("owner")).unwrap();
     let committed = CommittedAuthority::new(&owner);
     let before = owner.status();
-    let bytes = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let bytes = crate::store::test_durable_state(owner.root()).unwrap();
     let root = owner.root().to_owned();
     let result = crate::store::test_fault::with_fault(
         &root,
@@ -173,7 +173,7 @@ fn mount_refresh_failed_store_never_publishes_a_replacement() {
     );
     assert!(result.is_err());
     assert_eq!(owner.status(), before);
-    assert_eq!(std::fs::read(root.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&root).unwrap(), bytes);
     assert!(!owner.durability_healthy());
     assert!(matches!(
         committed.observe(),

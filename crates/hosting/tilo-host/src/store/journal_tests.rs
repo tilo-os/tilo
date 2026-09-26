@@ -1,6 +1,5 @@
 //! Crash consistency of journaled session commits through the real store.
 use super::test_fault::{Point, with_fault};
-use super::test_journal::with_journal;
 use super::*;
 
 fn pseudo(len: usize, seed: u64) -> Vec<u8> {
@@ -42,7 +41,7 @@ fn recovered_after_crash(root: &Path) -> Vec<u8> {
 
 #[test]
 fn journaled_commits_leave_checkpoint_untouched_and_reopen_exactly() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -72,12 +71,12 @@ fn journaled_commits_leave_checkpoint_untouched_and_reopen_exactly() {
         store.commit(&current).unwrap();
         store.abandon();
         assert_eq!(recovered_after_crash(&root), current);
-    });
+    };
 }
 
 #[test]
 fn orderly_drop_folds_the_journal_into_the_checkpoint() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -91,12 +90,12 @@ fn orderly_drop_folds_the_journal_into_the_checkpoint() {
         assert_eq!(fs::read(root.join("session.bin")).unwrap(), current);
         assert_eq!(fs::metadata(journal_path(&root)).unwrap().len(), 0);
         assert_eq!(recovered_after_crash(&root), current);
-    });
+    };
 }
 
 #[test]
 fn torn_journal_tails_recover_the_last_complete_commit_and_are_cut_before_appending() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -134,7 +133,7 @@ fn torn_journal_tails_recover_the_last_complete_commit_and_are_cut_before_append
         torn.truncate(torn.len() - 10);
         fs::write(journal_path(&root), &torn).unwrap();
         assert_eq!(recovered_after_crash(&root), states[4]);
-    });
+    };
 }
 
 #[test]
@@ -144,7 +143,7 @@ fn append_faults_poison_and_reopen_yields_old_or_new_never_other() {
         Point::AfterAtomicWrite,
         Point::DirectoryBarrier,
     ] {
-        with_journal(|| {
+        {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
             let mut store = SessionStore::create(&root).unwrap();
@@ -172,13 +171,13 @@ fn append_faults_poison_and_reopen_yields_old_or_new_never_other() {
             store.commit(&after).unwrap();
             store.abandon();
             assert_eq!(recovered_after_crash(&root), after);
-        });
+        };
     }
 }
 
 #[test]
 fn failed_journal_barrier_is_not_an_acknowledgement() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -196,12 +195,12 @@ fn failed_journal_barrier_is_not_an_acknowledgement() {
         drop(store);
         let recovered = recovered_after_crash(&root);
         assert!(recovered == first || recovered == new);
-    });
+    };
 }
 
 #[test]
 fn journal_bound_checkpoints_and_supersedes_older_records() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -223,12 +222,12 @@ fn journal_bound_checkpoints_and_supersedes_older_records() {
         assert!(checkpointed, "the journal bound forced a checkpoint");
         store.abandon();
         assert_eq!(recovered_after_crash(&root), current);
-    });
+    };
 }
 
 #[test]
 fn a_stale_journal_behind_a_newer_checkpoint_is_ignored() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -259,12 +258,12 @@ fn a_stale_journal_behind_a_newer_checkpoint_is_ignored() {
         store.commit(&next).unwrap();
         store.abandon();
         assert_eq!(recovered_after_crash(&root), next);
-    });
+    };
 }
 
 #[test]
 fn checkpointing_bytes_equal_to_the_current_checkpoint_empties_the_journal() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -289,12 +288,12 @@ fn checkpointing_bytes_equal_to_the_current_checkpoint_empties_the_journal() {
         store.abandon();
         assert_eq!(recovered_after_crash(&root), unrelated);
         assert_eq!(fs::metadata(journal_path(&root)).unwrap().len(), 0);
-    });
+    };
 }
 
 #[test]
 fn a_store_opened_without_recovery_still_retires_an_older_journal() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = SessionStore::create(&root).unwrap();
@@ -310,13 +309,13 @@ fn a_store_opened_without_recovery_still_retires_an_older_journal() {
         store.commit(&base).unwrap();
         store.abandon();
         assert_eq!(recovered_after_crash(&root), base);
-    });
+    };
 }
 
 #[test]
 fn owner_mutations_journal_and_crash_recovery_reopens_the_exact_owner_state() {
     use ui::automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("owner");
         let mut owner = crate::SessionOwner::initialize(&path).unwrap();
@@ -361,5 +360,5 @@ fn owner_mutations_journal_and_crash_recovery_reopens_the_exact_owner_state() {
                 .as_i64(),
             Some(11)
         );
-    });
+    };
 }

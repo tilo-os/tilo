@@ -2254,7 +2254,7 @@ mod enrollment_migration_tests {
                 .all(|kind| *kind == Retention::Checkpoint)
         );
         let migrated: SignedAggregate =
-            postcard::from_bytes(&std::fs::read(path.join("session.bin")).unwrap()).unwrap();
+            postcard::from_bytes(&crate::store::test_durable_state(&path).unwrap()).unwrap();
         assert_eq!(
             postcard::take_from_bytes::<u32>(&migrated.payload)
                 .unwrap()
@@ -2268,7 +2268,7 @@ mod enrollment_migration_tests {
         std::fs::write(path.join("session.bin"), &invalid_bytes).unwrap();
         assert!(SessionOwner::open(&path).is_err());
         assert_eq!(
-            std::fs::read(path.join("session.bin")).unwrap(),
+            crate::store::test_durable_state(&path).unwrap(),
             invalid_bytes,
             "migration must verify the original signed payload before writing"
         );
@@ -2311,7 +2311,7 @@ mod enrollment_migration_tests {
         assert_eq!(owner.status(), before);
         assert_eq!(owner.enrollment_count(), 0);
         let signed: SignedAggregate =
-            postcard::from_bytes(&std::fs::read(path.join("session.bin")).unwrap()).unwrap();
+            postcard::from_bytes(&crate::store::test_durable_state(&path).unwrap()).unwrap();
         let (version, _) = postcard::take_from_bytes::<u32>(&signed.payload).unwrap();
         assert_eq!(version, 4);
     }

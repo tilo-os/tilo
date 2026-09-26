@@ -1,6 +1,5 @@
 //! Crash consistency of the owner side log through the real store.
 use super::test_fault::{Point, with_fault};
-use super::test_journal::with_journal;
 use super::*;
 
 fn owner_store(root: &Path) -> (SessionStore, Vec<u8>, Vec<Vec<u8>>) {
@@ -26,7 +25,7 @@ fn created(root: &Path) -> SessionStore {
 
 #[test]
 fn appends_are_durable_and_survive_abrupt_death_and_compaction() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = created(&root);
@@ -47,12 +46,12 @@ fn appends_are_durable_and_survive_abrupt_death_and_compaction() {
         store.append_side_record(&record(6)).unwrap();
         store.abandon();
         assert_eq!(records_after_crash(&root).len(), 6);
-    });
+    };
 }
 
 #[test]
 fn caller_commit_on_owner_store_folds_and_truncates_but_admin_commit_does_not() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = created(&root);
@@ -76,12 +75,12 @@ fn caller_commit_on_owner_store_folds_and_truncates_but_admin_commit_does_not() 
         store.append_side_record(&record(2)).unwrap();
         store.abandon();
         assert_eq!(records_after_crash(&root), vec![record(2)]);
-    });
+    };
 }
 
 #[test]
 fn every_torn_tail_recovers_exactly_the_acknowledged_prefix_and_is_cut() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = created(&root);
@@ -111,7 +110,7 @@ fn every_torn_tail_recovers_exactly_the_acknowledged_prefix_and_is_cut() {
             expected.push(record(50));
             assert_eq!(records_after_crash(&root), expected, "cut {cut}");
         }
-    });
+    };
 }
 
 #[test]
@@ -122,7 +121,7 @@ fn a_fault_at_each_point_is_never_acknowledged_and_recovers_old_or_new() {
         Point::DirectoryBarrier,
     ] {
         for first in [true, false] {
-            with_journal(|| {
+            {
                 let temp = tempfile::tempdir().unwrap();
                 let root = temp.path().join("state");
                 let mut store = created(&root);
@@ -146,14 +145,14 @@ fn a_fault_at_each_point_is_never_acknowledged_and_recovers_old_or_new() {
                 if point == Point::BeforeWrite {
                     assert_eq!(recovered, old);
                 }
-            });
+            };
         }
     }
 }
 
 #[test]
 fn full_log_refuses_without_writing_or_poisoning() {
-    with_journal(|| {
+    {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut store = created(&root);
@@ -174,16 +173,15 @@ fn full_log_refuses_without_writing_or_poisoning() {
         // Folding makes room again.
         store.commit(b"aggregate folded").unwrap();
         store.append_side_record(&big).unwrap();
-    });
+    };
 }
 
 #[test]
 fn whole_file_mode_never_uses_the_side_log() {
-    if super::test_journal::enabled() {
-        return; // QOS_TEST_SESSION_JOURNAL=1 forces the journaled mode.
-    }
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("state");
-    let store = created(&root);
-    assert!(!store.side_log_enabled());
+    super::test_whole_file::with_whole_file(|| {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let store = created(&root);
+        assert!(!store.side_log_enabled());
+    });
 }

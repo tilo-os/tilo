@@ -460,7 +460,7 @@ fn rotation_is_crash_consistent_at_every_barrier_and_survives_journal_replay() {
             .unwrap();
     }
     // Journaled commits: an abrupt exit after rotation replays the journal.
-    crate::store::test_journal::with_journal(|| {
+    {
         let (_temp, mut owner) = activated();
         let mut author = owner.peer.clone();
         for n in 0..3 {
@@ -486,13 +486,13 @@ fn rotation_is_crash_consistent_at_every_barrier_and_survives_journal_replay() {
                 .values()
                 .any(|r| r.committed == record.committed)
         );
-    });
+    };
 }
 
 #[test]
 fn acknowledgement_side_records_of_a_rotated_incarnation_are_inert_on_recovery() {
     use crate::committed_authority::CommittedAuthority;
-    crate::store::test_journal::with_journal(|| {
+    {
         let (_temp, mut owner) = hosted_owner();
         let committed = CommittedAuthority::new(&owner);
         let session = authenticated_session(&owner, &committed);
@@ -522,5 +522,5 @@ fn acknowledgement_side_records_of_a_rotated_incarnation_are_inert_on_recovery()
         let owner = SessionOwner::open(&path).unwrap();
         // The side record names the old incarnation and is not re-applied.
         assert_eq!(storage(&owner).2, &ledger);
-    });
+    };
 }

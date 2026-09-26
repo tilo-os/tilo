@@ -57,19 +57,15 @@ fn full_barrier(file: &File) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// Whether commits may append to the journal. Unit tests across the crate
-/// inspect or sabotage `session.bin` directly as the whole durable state, so
-/// they keep whole-file commits unless a test opts in (`test_journal`) or the
-/// suite runs with `QOS_TEST_SESSION_JOURNAL=1`.
+/// Whether commits may append to the journal: on every Unix host, tests
+/// included, unless the perf baseline selects whole-file commits. Tests read
+/// the durable state through [`test_durable_state`], never `session.bin`.
 fn journal_enabled() -> bool {
     #[cfg(test)]
-    {
-        test_journal::enabled()
+    if test_whole_file::forced() {
+        return false;
     }
-    #[cfg(not(test))]
-    {
-        cfg!(unix) && !crate::action_pump_cadence::host_perf_baseline()
-    }
+    cfg!(unix) && !crate::action_pump_cadence::host_perf_baseline()
 }
 
 /// In-memory mirror of the durable journal, valid only while not poisoned.
@@ -347,42 +343,9 @@ impl SessionStore {
         Ok(bytes)
     }
     fn recover(&self) -> Result<Recovered> {
-        let directory = self.checked_directory()?;
-        let file = directory.open_read(OsStr::new("session.bin"), Privacy::OwnerOnly)?;
-        let checkpoint_identity = FileIdentity::of(&file)?;
-        let checkpoint = Self::read_bounded(file)?;
-        let checkpoint_digest = *blake3::hash(&checkpoint).as_bytes();
-        let checkpoint_len = checkpoint.len() as u64;
-        let (journal_len, replay) =
-            match directory.open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly) {
-                Ok(file) => {
-                    let bytes = Self::read_bounded(file)?;
-                    (
-                        bytes.len() as u64,
-                        journal::replay(checkpoint, &bytes, MAX_AGGREGATE_BYTES),
-                    )
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
-                    0,
-                    journal::Replay {
-                        state: checkpoint,
-                        valid_len: 0,
-                        records: 0,
-                    },
-                ),
-                Err(error) => return Err(error.into()),
-            };
+        let recovered = recover_in(&self.checked_directory()?)?;
         self.checked_directory()?;
-        Ok(Recovered {
-            state: replay.state,
-            checkpoint_digest,
-            checkpoint_len,
-            checkpoint_identity,
-            journal_exists: journal_len > 0 || replay.valid_len > 0,
-            journal_len,
-            valid_len: replay.valid_len,
-            records: replay.records,
-        })
+        Ok(recovered)
     }
     /// Open-time recovery: returns the durable state and primes the journal
     /// so the next commit can append against it.
@@ -718,6 +681,43 @@ fn open_journal(_: &StorageDirectory) -> Result<File> {
 fn journal_header(state: &JournalState) -> [u8; journal::HEADER_LEN] {
     journal::header_for(state.checkpoint_len, &state.checkpoint_digest)
 }
+fn recover_in(directory: &StorageDirectory) -> Result<Recovered> {
+    let file = directory.open_read(OsStr::new("session.bin"), Privacy::OwnerOnly)?;
+    let checkpoint_identity = FileIdentity::of(&file)?;
+    let checkpoint = SessionStore::read_bounded(file)?;
+    let checkpoint_digest = *blake3::hash(&checkpoint).as_bytes();
+    let checkpoint_len = checkpoint.len() as u64;
+    let (journal_len, replay) =
+        match directory.open_read(OsStr::new(journal::NAME), Privacy::OwnerOnly) {
+            Ok(file) => {
+                let bytes = SessionStore::read_bounded(file)?;
+                (
+                    bytes.len() as u64,
+                    journal::replay(checkpoint, &bytes, MAX_AGGREGATE_BYTES),
+                )
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+                0,
+                journal::Replay {
+                    state: checkpoint,
+                    valid_len: 0,
+                    records: 0,
+                },
+            ),
+            Err(error) => return Err(error.into()),
+        };
+    Ok(Recovered {
+        state: replay.state,
+        checkpoint_digest,
+        checkpoint_len,
+        checkpoint_identity,
+        journal_exists: journal_len > 0 || replay.valid_len > 0,
+        journal_len,
+        valid_len: replay.valid_len,
+        records: replay.records,
+    })
+}
+
 struct Recovered {
     state: Vec<u8>,
     checkpoint_digest: [u8; 32],
@@ -878,8 +878,10 @@ pub(crate) mod test_fault {
     }
 }
 
+/// Selects the whole-file commit path that non-Unix hosts and the perf
+/// baseline use, so its own tests can exercise it.
 #[cfg(test)]
-pub(crate) mod test_journal {
+pub(crate) mod test_whole_file {
     use std::cell::Cell;
     thread_local! { static FORCED: Cell<bool> = const { Cell::new(false) }; }
     struct Restore(bool);
@@ -888,15 +890,23 @@ pub(crate) mod test_journal {
             FORCED.with(|forced| forced.set(self.0));
         }
     }
-    pub(crate) fn enabled() -> bool {
+    pub(super) fn forced() -> bool {
         FORCED.with(Cell::get)
-            || std::env::var_os("QOS_TEST_SESSION_JOURNAL").is_some_and(|value| value == "1")
     }
-    /// Stores opened inside `operation` on this thread journal their commits.
-    pub(crate) fn with_journal<T>(operation: impl FnOnce() -> T) -> T {
+    /// Stores opened inside `operation` on this thread commit whole files.
+    pub(crate) fn with_whole_file<T>(operation: impl FnOnce() -> T) -> T {
         let _restore = Restore(FORCED.with(|forced| forced.replace(true)));
         operation()
     }
+}
+
+/// The durable owner state under `root`, exactly as the next owner would
+/// recover it: the checkpoint plus every complete journal record bound to it.
+/// It takes no custody, so a test may call it while the owner is open.
+#[cfg(test)]
+pub(crate) fn test_durable_state(root: impl AsRef<Path>) -> Result<Vec<u8>> {
+    let directory = File::open(root.as_ref())?;
+    Ok(recover_in(&StorageDirectory::from_file(directory)?)?.state)
 }
 
 #[cfg(test)]

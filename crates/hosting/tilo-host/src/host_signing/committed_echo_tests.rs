@@ -116,7 +116,7 @@ async fn committed_echo_refuses_uncommitted_factory_body_through_the_signing_doo
     let mut fixture = ScopedAppFixture::with_uncommitted_factory_data("so.tilo.notes");
     let pending = fixture.next_signature_for_selected_record().await;
     let generation = fixture.owner.committed_generation();
-    let disk = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let mut echo = None;
     let (complete, result) = pending.0.apply_scoped_fenced(
         crate::owner_commit::execution_deadline(),
@@ -139,7 +139,7 @@ async fn committed_echo_refuses_uncommitted_factory_body_through_the_signing_doo
     );
     assert_eq!(fixture.owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         disk
     );
 }

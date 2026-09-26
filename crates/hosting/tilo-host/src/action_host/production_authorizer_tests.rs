@@ -132,7 +132,7 @@ impl Fixture {
             // Existing exact startup replay only; a real new mutation keeps its
             // existing final refusal, never an alternate admission/barrier.
             let before = self.owner.committed_generation();
-            let disk = std::fs::read(self.owner.root().join("session.bin")).unwrap();
+            let disk = crate::store::test_durable_state(self.owner.root()).unwrap();
             let update = self
                 .authority
                 .committed
@@ -144,7 +144,7 @@ impl Fixture {
             result?;
             assert_eq!(self.owner.committed_generation(), before);
             assert_eq!(
-                std::fs::read(self.owner.root().join("session.bin")).unwrap(),
+                crate::store::test_durable_state(self.owner.root()).unwrap(),
                 disk
             );
         }
@@ -235,7 +235,7 @@ impl Fixture {
 async fn native_production_authorizer_ordinary_startup_and_certified_directory() {
     let mut fixture = Fixture::new();
     let (peer, resource) = fixture.ready_notes().await;
-    let before = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let page = fixture.query(peer, &resource).await.unwrap();
     assert!(!page.revision.is_empty());
     assert!(
@@ -245,7 +245,7 @@ async fn native_production_authorizer_ordinary_startup_and_certified_directory()
         "real Notes action absent from authenticated read-only directory: {page:?}"
     );
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         before
     );
     fixture.host.close(&fixture.owner).unwrap();
@@ -256,7 +256,7 @@ async fn native_production_authorizer_retired_original_owner_denies_certified_re
     let mut fixture = Fixture::new();
     let (peer, resource) = fixture.ready_notes().await;
     fixture.query(peer, &resource).await.unwrap();
-    let before = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let time = fixture.host.registered_policy_time().clone();
     fixture.authority.committed.invalidate();
     assert!(time.now_ns().is_err());
@@ -305,7 +305,7 @@ async fn native_production_authorizer_retired_original_owner_denies_certified_re
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         before
     );
 }
@@ -413,7 +413,7 @@ async fn native_production_authorizer_real_invocation_keeps_final_mutation_close
         fixture.pump().await.unwrap();
         fixture.caller.poll();
     }
-    let disk = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let generation = fixture.owner.committed_generation();
     let records = fixture
         .host
@@ -479,7 +479,7 @@ async fn native_production_authorizer_real_invocation_keeps_final_mutation_close
     );
     assert_eq!(fixture.owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         disk
     );
     // Do not claim success or acknowledge the new local bytes. Actual close

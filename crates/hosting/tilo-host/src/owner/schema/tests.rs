@@ -120,9 +120,9 @@ fn session_v5_restores_exact_bytes_but_denies_mutation_and_publication() {
         .to_string();
     assert!(problem.contains("read-only"), "{problem}");
     assert_eq!(restored.status(), before);
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
     restored.flush().unwrap();
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 #[test]
 fn session_v5_rejects_dangling_root_without_rewriting_original() {
@@ -135,7 +135,7 @@ fn session_v5_rejects_dangling_root_without_rewriting_original() {
     owner.store.commit(&bytes).unwrap();
     drop(owner);
     assert!(SessionOwner::open(&path).is_err());
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -328,14 +328,14 @@ fn session_v5_v4_open_flush_and_mutation_keep_writer_version_four() {
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     owner.queue_pending("first", b"retained", true).unwrap();
-    let before = std::fs::read(path.join("session.bin")).unwrap();
+    let before = crate::store::test_durable_state(&path).unwrap();
     owner.flush().unwrap();
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), before);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), before);
     drop(owner);
     let mut owner = SessionOwner::open(&path).unwrap();
     owner.queue_pending("second", b"new", false).unwrap();
     let signed: SignedAggregate =
-        postcard::from_bytes(&std::fs::read(path.join("session.bin")).unwrap()).unwrap();
+        postcard::from_bytes(&crate::store::test_durable_state(&path).unwrap()).unwrap();
     assert_eq!(signed.payload[0], 4);
     assert_eq!(owner.pending()[0].encoded_request, b"retained");
     assert!(owner.permits_publication());
@@ -498,7 +498,7 @@ fn session_v5_rejects_trailing_signed_envelope_without_rewrite() {
         SessionOwner::open(&path).is_err(),
         "V5 outer envelope must be exact too"
     );
-    assert_eq!(std::fs::read(path.join("session.bin")).unwrap(), bytes);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), bytes);
 }
 
 fn completed_join_with_membership_challenge() -> (

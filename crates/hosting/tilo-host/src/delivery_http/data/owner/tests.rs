@@ -267,7 +267,8 @@ fn callback_ack_uses_real_cursor_and_persists_once_without_relocking_current() {
             turn,
         )
         .unwrap();
-        assert_eq!(f.owner.status().generation, before + 1, "attempt {attempt}");
+        // The ACK is a durable side record, not an aggregate commit.
+        assert_eq!(f.owner.status().generation, before, "attempt {attempt}");
     }
     let device = f.owner.identity.native_cert.device_public_key;
     assert_eq!(
@@ -1284,7 +1285,7 @@ fn held_original_poll_resumes_new_native_group_without_nonce_readmission() {
 /// aggregate commit.
 #[test]
 fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
-    crate::store::test_journal::with_journal(|| {
+    {
         let (mut f, budget, ingress) = attached_fixture();
         let mut registry = HttpSessions::new(&f.owner, &f.current, f.now).unwrap();
         let session = f.handshake(&mut registry, [113; 32]);
@@ -1340,7 +1341,7 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
         let mut body = Vec::new();
         framing::append_frame(&mut body, MessageType::CursorAck, &payload, 8192).unwrap();
         let root = f.owner.root().to_owned();
-        let checkpoint = std::fs::read(root.join("session.bin")).unwrap();
+        let checkpoint = crate::store::test_durable_state(&root).unwrap();
         let before = f.owner.status().generation;
         for attempt in 0..2 {
             let request = Request::new("POST", "/peer/v3/acks", &body).unwrap();
@@ -1382,7 +1383,7 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
                 "attempt {attempt}: side log {log} bytes"
             );
         }
-        assert_eq!(std::fs::read(root.join("session.bin")).unwrap(), checkpoint);
+        assert_eq!(crate::store::test_durable_state(&root).unwrap(), checkpoint);
         let device = f.owner.identity.native_cert.device_public_key;
         assert_eq!(
             f.owner.delivery_ledger().unwrap().consumers[&device].acknowledged,
@@ -1408,7 +1409,7 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
             again.delivery_ledger().unwrap().consumers[&device].acknowledged,
             Some(expected)
         );
-    });
+    };
 }
 
 // ---- One commit/replay group per multi-item request; multi-group pages.

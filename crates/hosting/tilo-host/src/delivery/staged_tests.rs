@@ -145,7 +145,7 @@ fn staged_owner_large_native_admission_preserves_original_receipt_after_reopen()
     drop(turn);
     drop(reservation); // persistent body is retained for an actual lost final reply.
     let root = owner.root().to_owned();
-    let disk = std::fs::read(root.join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(&root).unwrap();
     drop(current);
     drop(owner);
     let mut owner = SessionOwner::open(&root).unwrap();
@@ -167,7 +167,7 @@ fn staged_owner_large_native_admission_preserves_original_receipt_after_reopen()
         panic!("missing original retry")
     };
     assert_eq!(retry, original);
-    assert_eq!(std::fs::read(root.join("session.bin")).unwrap(), disk);
+    assert_eq!(crate::store::test_durable_state(&root).unwrap(), disk);
     drop(turn);
     reservation.remove().unwrap();
 }
@@ -253,7 +253,7 @@ fn staged_owner_rechecks_actual_file_source_root_inventory_and_expiry_before_adm
             replacement.sync_all().unwrap();
         }
         let before = owner.committed_generation();
-        let disk = std::fs::read(owner.root().join("session.bin")).unwrap();
+        let disk = crate::store::test_durable_state(owner.root()).unwrap();
         let mut turn = if case == 6 {
             owner
                 .prepare_data_turn(
@@ -289,7 +289,7 @@ fn staged_owner_rechecks_actual_file_source_root_inventory_and_expiry_before_adm
         );
         assert_eq!(owner.committed_generation(), before);
         assert_eq!(
-            std::fs::read(owner.root().join("session.bin")).unwrap(),
+            crate::store::test_durable_state(owner.root()).unwrap(),
             disk
         );
         assert!(owner.delivery_ledger().unwrap().admissions.is_empty());
@@ -372,7 +372,7 @@ fn staged_owner_existing_delivery_id_conflict_is_typed_before_native_decode() {
     let session = tests::authenticated_session(&owner, &current);
     let complete = stage(&owner, &ingress, delivery_id, &bytes);
     let generation = owner.committed_generation();
-    let disk = std::fs::read(owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(owner.root()).unwrap();
     let mut turn = owner
         .prepare_staged_turn(&pool, &ingress.host_work(), bytes.len())
         .unwrap();
@@ -390,7 +390,7 @@ fn staged_owner_existing_delivery_id_conflict_is_typed_before_native_decode() {
     assert_eq!(owner.committed_generation(), generation);
     assert_eq!(owner.delivery_ledger().unwrap().admissions.len(), 1);
     assert_eq!(
-        std::fs::read(owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(owner.root()).unwrap(),
         disk
     );
 }

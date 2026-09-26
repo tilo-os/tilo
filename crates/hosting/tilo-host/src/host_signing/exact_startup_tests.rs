@@ -7,8 +7,8 @@ async fn exact_startup_replay_uses_actual_signed_baseline_without_any_store_writ
     let pending = fixture.next_startup_signature().await;
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();
-    let path = fixture.owner.root().join("session.bin");
-    let disk = std::fs::read(&path).unwrap();
+    let path = fixture.owner.root().to_owned();
+    let disk = crate::store::test_durable_state(&path).unwrap();
     let outgoing = fixture
         .owner
         .outgoing()
@@ -45,7 +45,7 @@ async fn exact_startup_replay_uses_actual_signed_baseline_without_any_store_writ
         "actual retained baseline must replay: {result:?}"
     );
     assert_eq!(fixture.owner.committed_generation(), generation);
-    assert_eq!(std::fs::read(&path).unwrap(), disk);
+    assert_eq!(crate::store::test_durable_state(&path).unwrap(), disk);
     assert_eq!(
         fixture
             .owner
@@ -74,7 +74,7 @@ async fn exact_startup_replay_refuses_the_retired_original_owner_origin() {
     let pending = fixture.next_startup_signature().await;
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();
-    let disk = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     fixture.retire_policy_origin();
     let (complete, result) = pending.0.apply_scoped_fenced(
         crate::owner_commit::execution_deadline(),
@@ -94,7 +94,7 @@ async fn exact_startup_replay_refuses_the_retired_original_owner_origin() {
     assert!(result.is_err());
     assert_eq!(fixture.owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         disk
     );
     assert_eq!(
@@ -113,7 +113,7 @@ async fn exact_startup_replay_refuses_actual_original_invocation_contributors() 
     }
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();
-    let disk = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let record = fixture.record_id();
     let before_local = fixture
         .records()
@@ -171,7 +171,7 @@ async fn exact_startup_replay_refuses_actual_original_invocation_contributors() 
     assert!(result.is_err());
     assert_eq!(fixture.owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         disk
     );
     assert_eq!(
@@ -187,7 +187,7 @@ async fn exact_startup_replay_refuses_uncommitted_factory_body_with_genuine_sdk_
     let pending = fixture.next_signature_for_selected_record().await;
     let time = fixture.host.registered_policy_time().clone();
     let generation = fixture.owner.committed_generation();
-    let disk = std::fs::read(fixture.owner.root().join("session.bin")).unwrap();
+    let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let (complete, result) = pending.0.apply_scoped_fenced(
         crate::owner_commit::execution_deadline(),
         |route, certificate, mutation, authorization| {
@@ -218,7 +218,7 @@ async fn exact_startup_replay_refuses_uncommitted_factory_body_with_genuine_sdk_
     assert!(result.is_err());
     assert_eq!(fixture.owner.committed_generation(), generation);
     assert_eq!(
-        std::fs::read(fixture.owner.root().join("session.bin")).unwrap(),
+        crate::store::test_durable_state(fixture.owner.root()).unwrap(),
         disk
     );
     assert_eq!(
